@@ -28,6 +28,7 @@ from typing import Any, Dict, List
 
 from ..core.config import settings
 from ..core import timeline as tl
+from ..utils.batch_lock import batch_write_lock
 from ..utils.io import write_json_atomic
 
 log = logging.getLogger(__name__)
@@ -207,103 +208,108 @@ def run_actions(batch_id: str, actions: List[Dict[str, Any]]) -> Dict[str, Any]:
     failed:   List[Dict[str, Any]] = []
     skipped:  List[Dict[str, Any]] = []
 
-    for action_desc in actions:
-        action_type = action_desc.get("action", "")
-        task_id     = action_desc.get("task_id", "")
+    # ── Batch-level write lock ──────────────────────────────────────────────
+    # Serialises all action execution for this batch.  Prevents concurrent
+    # run_actions() calls from racing on idempotency-lock checks, audit
+    # writes, and SMTP queue operations for the same shipment.
+    with batch_write_lock(batch_id):
+        for action_desc in actions:
+            action_type = action_desc.get("action", "")
+            task_id     = action_desc.get("task_id", "")
 
-        # ── Idempotency lock check ──────────────────────────────────────────
-        try:
-            audit_path, audit = _load_audit(batch_id)
-            if _is_action_locked(audit, action_type):
-                skipped.append({
-                    "action":  action_type,
-                    "task_id": task_id,
-                    "reason":  "action_lock_active",
-                })
-                _log_action(batch_id, action_type, task_id, "skipped_locked",
-                            {"reason": "idempotency_lock"})
-                continue
-        except Exception:
-            pass  # If audit can't be loaded, let the handler fail naturally
+            # ── Idempotency lock check ──────────────────────────────────────
+            try:
+                audit_path, audit = _load_audit(batch_id)
+                if _is_action_locked(audit, action_type):
+                    skipped.append({
+                        "action":  action_type,
+                        "task_id": task_id,
+                        "reason":  "action_lock_active",
+                    })
+                    _log_action(batch_id, action_type, task_id, "skipped_locked",
+                                {"reason": "idempotency_lock"})
+                    continue
+            except Exception:
+                pass  # If audit can't be loaded, let the handler fail naturally
 
-        try:
-            result = _dispatch_action(batch_id, action_desc)
+            try:
+                result = _dispatch_action(batch_id, action_desc)
 
-            # Check if handler returned skipped
-            if result.get("skipped"):
-                skipped.append({
-                    "action":  action_type,
-                    "task_id": task_id,
-                    "reason":  result.get("reason", "handler_skipped"),
-                })
-                executed.append({
-                    "action":  action_type,
-                    "task_id": task_id,
-                    "result":  result,
-                })
-            else:
-                executed.append({
-                    "action":  action_type,
-                    "task_id": task_id,
-                    "result":  result,
-                })
+                # Check if handler returned skipped
+                if result.get("skipped"):
+                    skipped.append({
+                        "action":  action_type,
+                        "task_id": task_id,
+                        "reason":  result.get("reason", "handler_skipped"),
+                    })
+                    executed.append({
+                        "action":  action_type,
+                        "task_id": task_id,
+                        "result":  result,
+                    })
+                else:
+                    executed.append({
+                        "action":  action_type,
+                        "task_id": task_id,
+                        "result":  result,
+                    })
 
-                # ── Set action lock on success ──────────────────────────────
-                try:
-                    audit_path, audit = _load_audit(batch_id)
+                    # ── Set action lock on success ──────────────────────────
+                    try:
+                        audit_path, audit = _load_audit(batch_id)
 
-                    # For email actions, check SMTP confirmation first
-                    email_id = result.get("email_id")
-                    send_verified = False
-                    if email_id:
-                        confirmation = _check_smtp_confirmation(email_id, batch_id)
-                        if confirmation["confirmed"]:
-                            send_verified = True
-                            _set_action_lock(audit_path, audit, action_type)
+                        # For email actions, check SMTP confirmation first
+                        email_id = result.get("email_id")
+                        send_verified = False
+                        if email_id:
+                            confirmation = _check_smtp_confirmation(email_id, batch_id)
+                            if confirmation["confirmed"]:
+                                send_verified = True
+                                _set_action_lock(audit_path, audit, action_type)
+                            else:
+                                # Queue accepted but send not yet confirmed
+                                # Still set lock since queue_email succeeded
+                                _set_action_lock(audit_path, audit, action_type)
+                                if not confirmation["provider_message_id"]:
+                                    _add_risk_flag(batch_id, "smtp_unconfirmed_send")
+                                    try:
+                                        tl.log_event(audit_path, "smtp_send_unconfirmed",
+                                                     "cowork_runner", "cowork_action_runner",
+                                                     detail={"email_id": email_id,
+                                                             "action": action_type})
+                                    except Exception:
+                                        pass
                         else:
-                            # Queue accepted but send not yet confirmed
-                            # Still set lock since queue_email succeeded
+                            # Non-email action — set lock directly
                             _set_action_lock(audit_path, audit, action_type)
-                            if not confirmation["provider_message_id"]:
-                                _add_risk_flag(batch_id, "smtp_unconfirmed_send")
-                                try:
-                                    tl.log_event(audit_path, "smtp_send_unconfirmed",
-                                                 "cowork_runner", "cowork_action_runner",
-                                                 detail={"email_id": email_id,
-                                                         "action": action_type})
-                                except Exception:
-                                    pass
-                    else:
-                        # Non-email action — set lock directly
-                        _set_action_lock(audit_path, audit, action_type)
-                        send_verified = True
+                            send_verified = True
 
-                    # ── Write last_ai_action ────────────────────────────────
-                    _write_ai_action(audit_path, action_type, result,
-                                     email_id, send_verified)
+                        # ── Write last_ai_action ────────────────────────────
+                        _write_ai_action(audit_path, action_type, result,
+                                         email_id, send_verified)
 
+                    except Exception:
+                        pass
+
+                _log_action(batch_id, action_type, task_id, "executed", result)
+            except Exception as exc:
+                log.warning("[cowork_runner] action %s failed for %s: %s",
+                            action_type, batch_id, exc)
+                failed.append({
+                    "action":  action_type,
+                    "task_id": task_id,
+                    "error":   str(exc),
+                })
+                _log_action(batch_id, action_type, task_id, "failed", {"error": str(exc)})
+                _add_risk_flag(batch_id, f"cowork_action_failed:{action_type}")
+
+                # Write failed AI action
+                try:
+                    audit_path = _outputs_root() / batch_id / "audit.json"
+                    _write_ai_action(audit_path, action_type,
+                                     {"error": str(exc)}, None, False, "failed")
                 except Exception:
                     pass
-
-            _log_action(batch_id, action_type, task_id, "executed", result)
-        except Exception as exc:
-            log.warning("[cowork_runner] action %s failed for %s: %s",
-                        action_type, batch_id, exc)
-            failed.append({
-                "action":  action_type,
-                "task_id": task_id,
-                "error":   str(exc),
-            })
-            _log_action(batch_id, action_type, task_id, "failed", {"error": str(exc)})
-            _add_risk_flag(batch_id, f"cowork_action_failed:{action_type}")
-
-            # Write failed AI action
-            try:
-                audit_path = _outputs_root() / batch_id / "audit.json"
-                _write_ai_action(audit_path, action_type,
-                                 {"error": str(exc)}, None, False, "failed")
-            except Exception:
-                pass
 
     return {
         "ok":       len(failed) == 0,
