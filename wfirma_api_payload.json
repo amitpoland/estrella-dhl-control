@@ -1,0 +1,48 @@
+{
+  "_status": "API export not enabled. Endpoint verification required.",
+  "_checklist": [
+    "[ ] Confirm exact wFirma PZ API endpoint (POST /api2/documents/warehousedocuments/add.json ?)",
+    "[ ] Obtain wFirma API credentials (app_id, app_key, access_key)",
+    "[ ] Test on sandbox/test company (odrębna firma testowa w wFirma)",
+    "[ ] Compare API-created PZ with manually-entered PZ — line-by-line",
+    "[ ] Verify Nazwa towaru encoding (Polish chars: ą ę ó ś ź ż ć ń ł)",
+    "[ ] Verify numeric format accepted by API (e.g. 1234.56 vs 1234,56)",
+    "[ ] Verify unit (J.m.) accepted values: szt. / para / zest.",
+    "[ ] Confirm Kontrahent ID lookup (by NIP or by name?)",
+    "[ ] Enable only after admin approval",
+    "[ ] Never auto-submit without user confirmation"
+  ],
+  "_notes": [
+    "This file is a planning artifact only. No API calls are made from it.",
+    "When Mode 3 is activated, a new routes_wfirma_api.py will be created.",
+    "All production wFirma API calls must go through the Python service, never directly from browser JS.",
+    "Duty A00 is already included in net_price_pln — do not add it again as a separate cost."
+  ],
+  "example_payload": {
+    "accesskey": "<ACCESS_KEY>",
+    "warehousedocument": {
+      "type": "PZ",
+      "date": "2026-04-27",
+      "period": "2026-04",
+      "contractor": {
+        "name": "Estrella Jewels LLP."
+      },
+      "warehouse": {
+        "name": "Główny"
+      },
+      "description": "Import z AWB 3283625844 / MRN 26PL...",
+      "warehousedocumentcontents": [
+        {
+          "product": {
+            "name": "Kolczyki złote próby 585 z diamentami",
+            "unit": "szt.",
+            "price": 1234.56
+          },
+          "quantity": 5,
+          "price": 1234.56,
+          "description": "Invoice EJL/25-26/1248; AWB 3283625844; MRN 26PL...; A00 allocated in cost; NBP 3,7058"
+        }
+      ]
+    }
+  }
+}

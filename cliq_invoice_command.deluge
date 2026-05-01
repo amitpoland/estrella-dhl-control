@@ -1,0 +1,87 @@
+/**
+ * /invoice — Zoho Cliq Slash Command Handler
+ * ===========================================
+ * Paste into: Cliq → Commands → /invoice → Command Handler
+ *
+ * Usage in Cliq: type /invoice AND attach one or more PDFs in the same message.
+ *
+ * Calls POST /api/v1/batch/add (type="invoice") once per attachment.
+ * file_id is sent empty — backend resolves it from Cliq API at submit time.
+ */
+
+FASTAPI_HOST = "https://pz.estrellajewels.eu";
+API_KEY      = "dev";
+
+response = Map();
+chat_id    = chat.get("id");
+user_id    = user.get("id");
+user_email = user.get("email");
+
+headers = Map();
+headers.put("Content-Type", "application/json");
+headers.put("X-API-Key", API_KEY);
+
+if(attachments == null || attachments.size() == 0)
+{
+    response.put("text",
+        "⚠️ No attachment found.\n\n" +
+        "How to send: type /invoice AND attach the invoice PDF(s) in the same message."
+    );
+    return response;
+}
+
+added   = 0;
+skipped = 0;
+lastMsg = "";
+
+for each att in attachments
+{
+    // In slash commands, att is a plain string (filename only — no file_id available)
+    file_name = att.toString().trim();
+    if(file_name.length() == 0) { file_name = "invoice.pdf"; }
+
+    payload = Map();
+    payload.put("chat_id",    chat_id);
+    payload.put("user_id",    user_id);
+    payload.put("user_email", user_email);
+    payload.put("type",       "invoice");
+    payload.put("file_id",    "");
+    payload.put("file_name",  file_name);
+
+    resp = invokeurl
+    [
+        url:        FASTAPI_HOST + "/api/v1/batch/add"
+        type:       POST
+        parameters: payload.toString()
+        headers:    headers
+    ];
+    data = resp.toMap();
+    if(data.containsKey("message")) { lastMsg = data.get("message"); } else { lastMsg = ""; }
+
+    if(data.get("status") == "ok" || data.get("status") == "auto_submitted")
+    {
+        added = added + 1;
+    }
+    else if(data.get("status") == "duplicate")
+    {
+        skipped = skipped + 1;
+    }
+
+    if(data.get("status") == "auto_submitted")
+    {
+        response.put("text", lastMsg);
+        return response;
+    }
+}
+
+if(added == 0 && skipped == 0)
+{
+    response.put("text", "⚠️ No valid attachments could be processed. Please try again.");
+    return response;
+}
+
+summary = added + " invoice(s) registered";
+if(skipped > 0) { summary = summary + ", " + skipped + " duplicate(s) skipped"; }
+if(lastMsg.length() > 0) { summary = summary + "\n\n" + lastMsg; }
+response.put("text", summary);
+return response;

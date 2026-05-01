@@ -1,0 +1,37 @@
+/**
+ * /status — Zoho Cliq Slash Command Handler
+ * ==========================================
+ * Paste into: Cliq → Commands → /status → Command Handler
+ *
+ * Uses POST /api/v1/batch/status (body: chat_id, user_id, user_email).
+ * Displays the backend's ready-made message field directly — no field parsing.
+ */
+
+FASTAPI_HOST = "https://pz.estrellajewels.eu";
+API_KEY      = "dev";
+
+response = Map();
+
+payload = Map();
+payload.put("chat_id",    chat.get("id"));
+payload.put("user_id",    user.get("id"));
+payload.put("user_email", user.get("email"));
+
+result = invokeurl
+[
+    url:        FASTAPI_HOST + "/api/v1/batch/status"
+    type:       POST
+    parameters: payload.toString()
+    headers:    {"Content-Type":"application/json","X-API-Key":API_KEY}
+];
+
+if(result.get("status") == "no_session")
+{
+    response.put("text", "⚠️ No active shipment.\n\nUse /start <tracking_number>");
+    return response;
+}
+
+msg = "📦 Shipment Status\n\n";
+msg = msg + result.get("message");
+response.put("text", msg);
+return response;

@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User Management — Estrella PZ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --navy: #0f172a;
+      --navy-mid: #1e293b;
+      --navy-bg: #f0f4ff;
+      --gold: #b8952a;
+      --gold-light: #f5e6b8;
+      --ivory: #faf8f5;
+      --surface: #ffffff;
+      --surface2: #f8fafc;
+      --separator: #e2e8f0;
+      --label1: #0f172a;
+      --label2: #334155;
+      --label3: #64748b;
+      --label4: #94a3b8;
+      --green: #16a34a;
+      --green-bg: #f0fdf4;
+      --amber: #d97706;
+      --amber-bg: #fffbeb;
+      --red: #dc2626;
+      --red-bg: #fef2f2;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+      --shadow: 0 4px 16px rgba(0,0,0,.08), 0 1px 4px rgba(0,0,0,.04);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--ivory);
+      color: var(--label1);
+      min-height: 100vh;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      background: var(--navy);
+      padding: 0 28px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .topbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+    }
+    .topbar-diamond {
+      color: var(--gold);
+      font-size: 18px;
+      line-height: 1;
+    }
+    .topbar-name {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: 16px;
+      color: #fff;
+      letter-spacing: .03em;
+    }
+    .topbar-subtitle {
+      font-size: 11px;
+      color: rgba(255,255,255,.5);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .back-btn {
+      background: rgba(255,255,255,.1);
+      border: 1px solid rgba(255,255,255,.2);
+      color: rgba(255,255,255,.8);
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background .15s;
+    }
+    .back-btn:hover { background: rgba(255,255,255,.18); }
+    .user-pill {
+      background: rgba(184,149,42,.15);
+      border: 1px solid rgba(184,149,42,.3);
+      color: var(--gold-light);
+      padding: 4px 12px 4px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .user-pill .role-badge {
+      background: var(--gold);
+      color: var(--navy);
+      font-size: 9px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 10px;
+      text-transform: uppercase;
+    }
+
+    /* ── Page layout ── */
+    .page {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+    .page-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 28px;
+      gap: 16px;
+    }
+    .page-title {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: 26px;
+      color: var(--navy);
+      font-weight: 600;
+    }
+    .page-subtitle {
+      font-size: 13px;
+      color: var(--label3);
+      margin-top: 4px;
+    }
+    .refresh-btn {
+      background: var(--navy);
+      color: #fff;
+      border: none;
+      padding: 8px 18px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: opacity .15s;
+    }
+    .refresh-btn:hover { opacity: .85; }
+
+    /* ── Tabs ── */
+    .tab-bar {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 20px;
+      background: var(--surface);
+      border: 1px solid var(--separator);
+      border-radius: var(--radius-sm);
+      padding: 4px;
+      width: fit-content;
+    }
+    .tab {
+      padding: 7px 20px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      color: var(--label3);
+      transition: all .15s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tab.active { background: var(--navy); color: #fff; }
+    .tab .count-badge {
+      background: var(--amber);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      min-width: 18px;
+      height: 18px;
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 4px;
+    }
+    .tab.active .count-badge { background: rgba(255,255,255,.25); }
+
+    /* ── User cards ── */
+    .users-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .user-card {
+      background: var(--surface);
+      border: 1px solid var(--separator);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      transition: box-shadow .15s;
+    }
+    .user-card:hover { box-shadow: var(--shadow); }
+    .user-card.pending { border-left: 3px solid var(--amber); }
+    .user-card.approved { border-left: 3px solid var(--green); }
+    .user-card.rejected { border-left: 3px solid var(--red); opacity: .75; }
+
+    .user-avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: var(--navy-bg);
+      border: 2px solid var(--navy);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Playfair Display', serif;
+      font-size: 17px;
+      color: var(--navy);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .user-info { flex: 1; min-width: 0; }
+    .user-name {
+      font-weight: 600;
+      font-size: 15px;
+      color: var(--label1);
+    }
+    .user-email {
+      font-size: 12px;
+      color: var(--label3);
+      margin-top: 1px;
+    }
+    .user-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+      align-items: center;
+    }
+    .meta-badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 10px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .badge-role {
+      background: var(--navy-bg);
+      color: var(--navy);
+    }
+    .badge-admin { background: #fef9c3; color: #854d0e; }
+    .badge-status-pending  { background: var(--amber-bg); color: #92400e; }
+    .badge-status-approved { background: var(--green-bg); color: #14532d; }
+    .badge-status-rejected { background: var(--red-bg); color: #991b1b; }
+    .badge-active   { background: var(--green-bg); color: var(--green); }
+    .badge-inactive { background: var(--red-bg); color: var(--red); }
+    .badge-verified { background: #eff6ff; color: #1d4ed8; }
+
+    .user-joined {
+      font-size: 11px;
+      color: var(--label4);
+      margin-top: 4px;
+    }
+
+    /* ── Action buttons ── */
+    .user-actions {
+      display: flex;
+      gap: 6px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .action-btn {
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity .15s, transform .1s;
+    }
+    .action-btn:active { transform: scale(.97); }
+    .action-btn:hover { opacity: .85; }
+    .btn-approve  { background: var(--green); color: #fff; }
+    .btn-reject   { background: var(--red); color: #fff; }
+    .btn-admin    { background: var(--gold); color: var(--navy); }
+    .btn-disable  { background: var(--navy-mid); color: #fff; }
+    .btn-enable   { background: var(--navy); color: #fff; }
+    .btn-viewer   { background: var(--separator); color: var(--label2); }
+
+    /* ── Empty state ── */
+    .empty-state {
+      text-align: center;
+      padding: 48px 20px;
+      color: var(--label4);
+    }
+    .empty-state svg { opacity: .3; margin-bottom: 12px; }
+    .empty-state p { font-size: 14px; }
+
+    /* ── Email queue banner ── */
+    .email-queue-banner {
+      background: var(--amber-bg);
+      border: 1px solid rgba(217,119,6,.2);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: #92400e;
+    }
+    .email-queue-banner button {
+      margin-left: auto;
+      background: var(--amber);
+      color: #fff;
+      border: none;
+      padding: 5px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--navy);
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      z-index: 9999;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: all .25s ease;
+      pointer-events: none;
+      max-width: 340px;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.error { background: var(--red); }
+    .toast.success { background: var(--green); }
+
+    /* ── Role select modal ── */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.4);
+      z-index: 500;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.hidden { display: none; }
+    .modal {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 28px;
+      width: 360px;
+      box-shadow: var(--shadow);
+    }
+    .modal h3 {
+      font-family: 'Playfair Display', serif;
+      font-size: 18px;
+      color: var(--navy);
+      margin-bottom: 16px;
+    }
+    .modal select {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--separator);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      margin-bottom: 18px;
+      background: var(--surface2);
+    }
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .modal-cancel {
+      background: var(--surface2);
+      border: 1px solid var(--separator);
+      color: var(--label2);
+      padding: 7px 18px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .modal-confirm {
+      background: var(--navy);
+      color: #fff;
+      border: none;
+      padding: 7px 18px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    /* ── Loading ── */
+    .loading { text-align: center; padding: 48px; color: var(--label4); font-size: 14px; }
+
+    @media (max-width: 600px) {
+      .user-card { flex-direction: column; align-items: flex-start; }
+      .user-actions { width: 100%; justify-content: flex-start; }
+      .page { padding: 20px 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <a href="/dashboard" class="topbar-brand">
+    <span class="topbar-diamond">✦</span>
+    <div>
+      <div class="topbar-name">Estrella Jewels</div>
+      <div class="topbar-subtitle">Customs Control</div>
+    </div>
+  </a>
+  <div class="topbar-right">
+    <a href="/dashboard" class="back-btn">← Dashboard</a>
+    <div class="user-pill" id="user-pill" style="display:none">
+      <span id="user-name-pill">—</span>
+      <span class="role-badge" id="user-role-pill">admin</span>
+    </div>
+  </div>
+</div>
+
+<!-- Role change modal -->
+<div class="modal-overlay hidden" id="role-modal">
+  <div class="modal">
+    <h3>Change Role</h3>
+    <p style="font-size:13px;color:var(--label3);margin-bottom:14px" id="role-modal-user">—</p>
+    <select id="role-select">
+      <option value="viewer">Viewer</option>
+      <option value="auditor">Auditor</option>
+      <option value="logistics">Logistics</option>
+      <option value="accounts">Accounts</option>
+      <option value="admin">Admin</option>
+    </select>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeRoleModal()">Cancel</button>
+      <button class="modal-confirm" onclick="confirmRoleChange()">Save Role</button>
+    </div>
+  </div>
+</div>
+
+<!-- Page -->
+<div class="page">
+  <div class="page-header">
+    <div>
+      <div class="page-title">User Management</div>
+      <div class="page-subtitle">Approve, reject, and manage user access</div>
+    </div>
+    <button class="refresh-btn" onclick="loadUsers()">&#8635; Refresh</button>
+  </div>
+
+  <div id="email-queue-section" style="display:none"></div>
+
+  <div class="tab-bar">
+    <button class="tab active" data-tab="pending" onclick="switchTab('pending')">
+      Pending <span class="count-badge" id="tab-count-pending">0</span>
+    </button>
+    <button class="tab" data-tab="approved" onclick="switchTab('approved')">
+      Approved <span class="count-badge" id="tab-count-approved">0</span>
+    </button>
+    <button class="tab" data-tab="rejected" onclick="switchTab('rejected')">
+      Rejected <span class="count-badge" id="tab-count-rejected">0</span>
+    </button>
+    <button class="tab" data-tab="all" onclick="switchTab('all')">
+      All users <span class="count-badge" id="tab-count-all">0</span>
+    </button>
+  </div>
+
+  <div class="users-grid" id="users-grid">
+    <div class="loading">Loading users…</div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+let allUsers = [];
+let activeTab = 'pending';
+let roleModalUserId = null;
+let currentUser = null;
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    const r = await fetch('/auth/me', { credentials: 'include' });
+    if (!r.ok) { window.location = '/login'; return; }
+    currentUser = await r.json();
+    if (currentUser.role !== 'admin') {
+      window.location = '/dashboard';
+      return;
+    }
+    document.getElementById('user-pill').style.display = 'flex';
+    document.getElementById('user-name-pill').textContent = currentUser.full_name;
+    document.getElementById('user-role-pill').textContent = currentUser.role;
+  } catch {
+    window.location = '/login';
+    return;
+  }
+  await loadUsers();
+  await loadEmailQueue();
+}
+
+// ── Load users ────────────────────────────────────────────────────────────────
+async function loadUsers() {
+  document.getElementById('users-grid').innerHTML = '<div class="loading">Loading users…</div>';
+  try {
+    const r = await fetch('/auth/users', { credentials: 'include' });
+    if (!r.ok) throw new Error('Failed to load users');
+    allUsers = await r.json();
+    updateTabCounts();
+    renderUsers();
+  } catch (e) {
+    document.getElementById('users-grid').innerHTML = `<div class="empty-state"><p>Error: ${esc(e.message)}</p></div>`;
+  }
+}
+
+// ── Email queue ───────────────────────────────────────────────────────────────
+let _pendingEmails = [];
+
+async function loadEmailQueue() {
+  try {
+    const r = await fetch('/api/v1/admin/email-queue', { credentials: 'include' });
+    if (!r.ok) return;
+    const q = await r.json();
+    _pendingEmails = (q.emails || []).filter(e => e.status === 'pending');
+    const sec = document.getElementById('email-queue-section');
+    if (_pendingEmails.length) {
+      sec.style.display = 'block';
+      const summaryItems = _pendingEmails.slice(0, 5).map(e => {
+        const to = esc(e.to || '—');
+        const subj = esc((e.subject || '').slice(0, 60));
+        const time = e.queued_at ? new Date(e.queued_at).toLocaleString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }) : '';
+        return `<div style="display:flex;gap:8px;align-items:baseline;font-size:12px;padding:4px 0;border-bottom:1px solid rgba(217,119,6,.1)">
+          <span style="color:#92400e;font-weight:600;min-width:60px">→ ${to.split(',')[0].split('@')[0]}</span>
+          <span style="color:var(--label2);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${subj}</span>
+          <span style="color:var(--label4);font-size:11px;flex-shrink:0">${time}</span>
+        </div>`;
+      }).join('');
+      const moreNote = _pendingEmails.length > 5
+        ? `<div style="font-size:11px;color:var(--label4);margin-top:6px">…and ${_pendingEmails.length - 5} more</div>` : '';
+      sec.innerHTML = `
+        <div class="email-queue-banner" style="flex-direction:column;align-items:stretch">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <span style="font-size:18px">✉</span>
+            <div style="flex:1"><strong>${_pendingEmails.length} email${_pendingEmails.length > 1 ? 's' : ''} pending</strong> — queued to send from info@estrellajewels.eu</div>
+            <button onclick="copyEmailQueueInfo()">Copy details</button>
+          </div>
+          <div style="background:rgba(255,255,255,.5);border-radius:6px;padding:6px 10px">${summaryItems}${moreNote}</div>
+        </div>`;
+    } else {
+      sec.style.display = 'none';
+    }
+  } catch {}
+}
+
+function copyEmailQueueInfo() {
+  const lines = _pendingEmails.map(e =>
+    `TO: ${e.to}\nSUBJECT: ${e.subject}\nID: ${e.id}`
+  ).join('\n\n---\n\n');
+  navigator.clipboard.writeText(lines).then(() => toast('Email details copied to clipboard', 'success'));
+}
+
+// ── Tab management ────────────────────────────────────────────────────────────
+function updateTabCounts() {
+  const pending  = allUsers.filter(u => u.approval_status === 'pending');
+  const approved = allUsers.filter(u => u.approval_status === 'approved');
+  const rejected = allUsers.filter(u => u.approval_status === 'rejected');
+  document.getElementById('tab-count-pending').textContent  = pending.length;
+  document.getElementById('tab-count-approved').textContent = approved.length;
+  document.getElementById('tab-count-rejected').textContent = rejected.length;
+  document.getElementById('tab-count-all').textContent      = allUsers.length;
+}
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === tab);
+  });
+  renderUsers();
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function renderUsers() {
+  const filtered = activeTab === 'all'
+    ? allUsers
+    : allUsers.filter(u => u.approval_status === activeTab);
+
+  const grid = document.getElementById('users-grid');
+  if (!filtered.length) {
+    grid.innerHTML = `<div class="empty-state">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+      </svg>
+      <p>No ${activeTab === 'all' ? '' : activeTab + ' '}users found</p>
+    </div>`;
+    return;
+  }
+
+  grid.innerHTML = filtered.map(u => renderUserCard(u)).join('');
+}
+
+function renderUserCard(u) {
+  const initials = u.full_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const status   = u.approval_status || 'pending';
+  const isMe     = currentUser && u.id === currentUser.id;
+
+  const statusBadge = `<span class="meta-badge badge-status-${status}">${status}</span>`;
+  const roleBadge   = `<span class="meta-badge ${u.role === 'admin' ? 'badge-admin' : 'badge-role'}">${u.role}</span>`;
+  const activeBadge = u.is_active
+    ? `<span class="meta-badge badge-active">active</span>`
+    : `<span class="meta-badge badge-inactive">inactive</span>`;
+  const verifiedBadge = u.email_verified
+    ? `<span class="meta-badge badge-verified">email verified</span>` : '';
+  const meBadge = isMe ? `<span class="meta-badge" style="background:#f3f0ff;color:#6d28d9">you</span>` : '';
+
+  const joined = u.created_at ? new Date(u.created_at).toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'}) : '—';
+  const lastLogin = u.last_login ? new Date(u.last_login).toLocaleDateString('en-GB', {day:'2-digit', month:'short'}) : 'never';
+
+  // Build action buttons based on status
+  let actions = '';
+  if (!isMe) {
+    if (status === 'pending') {
+      actions += `<button class="action-btn btn-approve" onclick="approveUser('${u.id}','${esc(u.full_name)}')">✓ Approve</button>`;
+      actions += `<button class="action-btn btn-reject"  onclick="rejectUser('${u.id}','${esc(u.full_name)}')">✗ Reject</button>`;
+    }
+    if (status === 'approved') {
+      actions += `<button class="action-btn btn-disable" onclick="deactivateUser('${u.id}','${esc(u.full_name)}')">Disable</button>`;
+    }
+    if (status === 'rejected') {
+      actions += `<button class="action-btn btn-approve" onclick="approveUser('${u.id}','${esc(u.full_name)}')">Re-approve</button>`;
+    }
+    if (!u.is_active && status !== 'rejected') {
+      actions += `<button class="action-btn btn-enable" onclick="enableUser('${u.id}','${esc(u.full_name)}')">Enable</button>`;
+    }
+    actions += `<button class="action-btn btn-viewer" onclick="openRoleModal('${u.id}','${esc(u.full_name)}','${esc(u.role)}')">Role</button>`;
+  }
+
+  return `
+  <div class="user-card ${status}">
+    <div class="user-avatar">${esc(initials)}</div>
+    <div class="user-info">
+      <div class="user-name">${esc(u.full_name)} ${meBadge}</div>
+      <div class="user-email">${esc(u.email)}${u.company_name ? ' · ' + esc(u.company_name) : ''}</div>
+      <div class="user-meta">${statusBadge}${roleBadge}${activeBadge}${verifiedBadge}</div>
+      <div class="user-joined">Joined ${joined} · Last login: ${lastLogin}</div>
+    </div>
+    <div class="user-actions">${actions || '<span style="font-size:12px;color:var(--label4)">—</span>'}</div>
+  </div>`;
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+async function approveUser(id, name) {
+  if (!confirm(`Approve account for ${name}?\n\nAn approval email will be queued.`)) return;
+  await doAction(`/auth/users/${id}/approve`, 'POST', `✓ ${name} approved — email queued`);
+}
+
+async function rejectUser(id, name) {
+  if (!confirm(`Reject account for ${name}?\n\nA rejection email will be queued.`)) return;
+  await doAction(`/auth/users/${id}/reject`, 'POST', `✗ ${name} rejected — email queued`);
+}
+
+async function deactivateUser(id, name) {
+  if (!confirm(`Disable account for ${name}?`)) return;
+  await doAction(`/auth/users/${id}/deactivate`, 'POST', `${name} disabled`);
+}
+
+async function enableUser(id, name) {
+  await doAction(`/auth/users/${id}/activate`, 'POST', `${name} re-enabled`);
+}
+
+async function doAction(url, method, successMsg) {
+  try {
+    const r = await fetch(url, { method, credentials: 'include' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    toast(successMsg, 'success');
+    await loadUsers();
+    await loadEmailQueue();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+}
+
+// ── Role modal ────────────────────────────────────────────────────────────────
+function openRoleModal(id, name, currentRole) {
+  roleModalUserId = id;
+  document.getElementById('role-modal-user').textContent = name;
+  document.getElementById('role-select').value = currentRole;
+  document.getElementById('role-modal').classList.remove('hidden');
+}
+
+function closeRoleModal() {
+  document.getElementById('role-modal').classList.add('hidden');
+  roleModalUserId = null;
+}
+
+async function confirmRoleChange() {
+  const role = document.getElementById('role-select').value;
+  closeRoleModal();
+  try {
+    const r = await fetch(`/auth/users/${roleModalUserId}/role`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    toast(`Role updated to '${role}'`, 'success');
+    await loadUsers();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `toast show${type ? ' ' + type : ''}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.classList.remove('show'); }, 3500);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Close modal on overlay click
+document.getElementById('role-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeRoleModal();
+});
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+/**
+ * /start — Zoho Cliq Slash Command Handler
+ * =========================================
+ * Paste into: Cliq → Commands → /start → Command Handler
+ *
+ * Usage in Cliq: /start PZ 12/3/2026
+ *   arguments = "PZ 12/3/2026"
+ *
+ * Calls POST /api/v1/batch/start with chat_id, user_id, user_email, doc_no.
+ */
+
+FASTAPI_HOST = "https://pz.estrellajewels.eu";
+API_KEY      = "dev";
+
+response = Map();
+
+doc_no = "";
+if(arguments != null)
+{
+    doc_no = arguments.toString().trim();
+}
+
+if(doc_no.length() == 0)
+{
+    response.put("text", "⚠️ Usage: /start PZ 12/3/2026\nPlease include the document number.");
+    return response;
+}
+
+payload = Map();
+payload.put("chat_id",    chat.get("id"));
+payload.put("user_id",    user.get("id"));
+payload.put("user_email", user.get("email"));
+payload.put("doc_no",     doc_no);
+
+result = invokeurl
+[
+    url:        FASTAPI_HOST + "/api/v1/batch/start"
+    type:       POST
+    parameters: payload.toString()
+    headers:    {"Content-Type":"application/json","X-API-Key":API_KEY}
+];
+
+if(result.containsKey("message"))
+{
+    response.put("text", result.get("message"));
+}
+else
+{
+    response.put("text", "✅ Batch started: " + doc_no);
+}
+return response;

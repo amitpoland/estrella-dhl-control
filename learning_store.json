@@ -1,0 +1,91 @@
+{
+  "version": "1.1",
+  "last_updated": "2026-04-24T11:48:27",
+  "freight_patterns": {
+    "ESTRELLA_JEWELS_LLP_CID_13__EJL_25_26_13": {
+      "pattern_id": "FREIGHT_19BB18",
+      "supplier": "Estrella Jewels LLP(cid:13) EJL/25-26/1319 Date : 30-03-2026 IEC NO. 0311011098",
+      "importer_nip": "5252812119",
+      "route": "IN → PL",
+      "samples": [
+        {
+          "batch_id": "fb9f91fe0a60468ba6c9ae12e1c61ed2",
+          "date": "2026-04-24",
+          "invoice_no": "EJL/25-26/1319",
+          "freight_pct": 0.041322,
+          "insurance_pct": 0.027548,
+          "fob_usd": 363.0
+        },
+        {
+          "batch_id": "fb9f91fe0a60468ba6c9ae12e1c61ed2",
+          "date": "2026-04-24",
+          "invoice_no": "EJL/25-26/1320",
+          "freight_pct": 0.009709,
+          "insurance_pct": 0.006472,
+          "fob_usd": 1545.0
+        }
+      ],
+      "stats": {
+        "count": 2,
+        "avg_freight_pct": 0.025515,
+        "std_freight_pct": 0.022354,
+        "tol_freight_pct": 0.0447,
+        "avg_insurance_pct": 0.01701,
+        "std_insurance_pct": 0.014903,
+        "tol_insurance_pct": 0.0298
+      },
+      "confirmed": false,
+      "confirmation_count": 0,
+      "first_seen": "2026-04-24",
+      "last_seen": "2026-04-24"
+    },
+    "ESTRELLA_JEWELS_LLP_CID_13__EJL_26_27_01": {
+      "pattern_id": "FREIGHT_21D2E5",
+      "supplier": "Estrella Jewels LLP(cid:13) EJL/26-27/013 Date : 04-04-2026 IEC NO. 0311011098",
+      "importer_nip": "5252812119",
+      "route": "IN → PL",
+      "samples": [
+        {
+          "batch_id": "4fefcb4a4510438fbe5fb4daa98d8b28",
+          "date": "2026-04-24",
+          "invoice_no": "EJL/26-27/013",
+          "freight_pct": 0.029863,
+          "insurance_pct": 0.012799,
+          "fob_usd": 1172.0
+        },
+        {
+          "batch_id": "4fefcb4a4510438fbe5fb4daa98d8b28",
+          "date": "2026-04-24",
+          "invoice_no": "EJL/26-27/014",
+          "freight_pct": 0.028807,
+          "insurance_pct": 0.012346,
+          "fob_usd": 1215.0
+        },
+        {
+          "batch_id": "4fefcb4a4510438fbe5fb4daa98d8b28",
+          "date": "2026-04-24",
+          "invoice_no": "EJL/26-27/015",
+          "freight_pct": 0.002737,
+          "insurance_pct": 0.001173,
+          "fob_usd": 12786.0
+        }
+      ],
+      "stats": {
+        "count": 3,
+        "avg_freight_pct": 0.020469,
+        "std_freight_pct": 0.015365,
+        "tol_freight_pct": 0.0307,
+        "avg_insurance_pct": 0.008773,
+        "std_insurance_pct": 0.006585,
+        "tol_insurance_pct": 0.02
+      },
+      "confirmed": false,
+      "confirmation_count": 0,
+      "first_seen": "2026-04-24",
+      "last_seen": "2026-04-24"
+    }
+  },
+  "address_patterns": {},
+  "exporter_aliases": {},
+  "feedback_log": []
+}

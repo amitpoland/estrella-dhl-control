@@ -1,0 +1,3819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Redirect to new unified dashboard with same ?id= param -->
+  <script>
+    (function() {
+      var id = new URLSearchParams(window.location.search).get('id');
+      if (id) {
+        window.location.replace('/dashboard/dashboard.html?id=' + encodeURIComponent(id));
+      } else {
+        window.location.replace('/dashboard/dashboard.html');
+      }
+    })();
+  </script>
+  <title>Shipment Detail — Estrella Jewels</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:        #f4f6f9;
+      --surface:   #ffffff;
+      --surface2:  #f9fafb;
+      --separator: #e5e7eb;
+      --label:     #111827;
+      --label2:    #374151;
+      --label3:    #6b7280;
+      --label4:    #9ca3af;
+      --navy:      #1e40af;
+      --navy-bg:   rgba(30,64,175,.08);
+      --green:     #16a34a;
+      --green-bg:  rgba(22,163,74,.10);
+      --amber:     #d97706;
+      --amber-bg:  rgba(217,119,6,.10);
+      --red:       #dc2626;
+      --red-bg:    rgba(220,38,38,.09);
+      --shadow-sm: 0 1px 3px rgba(0,0,0,.07), 0 1px 2px rgba(0,0,0,.04);
+      --shadow:    0 2px 8px rgba(0,0,0,.08), 0 1px 3px rgba(0,0,0,.05);
+      --radius:    12px;
+      --radius-sm: 8px;
+      --radius-xs: 6px;
+    }
+    html { font-size: 15px; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+      background: var(--bg); color: var(--label);
+      min-height: 100vh; -webkit-font-smoothing: antialiased;
+    }
+
+    .page { max-width: 1200px; margin: 0 auto; padding: 24px 24px 60px; }
+
+    /* ── Back nav + header actions ── */
+    .top-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 18px; flex-wrap: wrap; gap: 10px;
+    }
+    .back-nav {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 13px; font-weight: 500; color: var(--navy);
+      text-decoration: none; transition: opacity .15s;
+    }
+    .back-nav:hover { opacity: .75; }
+    .resend-btn-header {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 18px; background: var(--navy); color: #fff;
+      border: none; border-radius: var(--radius-sm);
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      transition: opacity .15s;
+    }
+    .resend-btn-header:hover    { opacity: .88; }
+    .resend-btn-header:disabled { opacity: .45; cursor: default; }
+
+    /* ── Page header ── */
+    .page-header {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      margin-bottom: 22px; gap: 12px; flex-wrap: wrap;
+    }
+    .page-title  { font-size: 22px; font-weight: 700; letter-spacing: -.3px; color: var(--label); }
+    .page-meta   {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      font-size: 13px; color: var(--label4); margin-top: 6px;
+    }
+    .page-meta .sep { color: var(--separator); }
+
+    /* ── User widget (batch page) ── */
+    .batch-header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-top: 4px; }
+    .user-pill {
+      display: flex; align-items: center; gap: 7px;
+      padding: 4px 10px 4px 5px;
+      border: 1px solid var(--separator);
+      border-radius: 16px;
+      background: var(--surface);
+      font-size: 12px;
+    }
+    .user-pill-avatar {
+      width: 22px; height: 22px; border-radius: 50%;
+      background: linear-gradient(135deg, #1a2a4a, #243755);
+      color: #c8a96e; font-size: 10px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .user-pill-name  { font-weight: 600; color: var(--label); }
+    .user-pill-role  { font-size: 10px; font-weight: 600; color: var(--label3); text-transform: uppercase; }
+    .back-btn {
+      padding: 5px 12px;
+      border: 1px solid var(--separator);
+      border-radius: 7px;
+      background: var(--surface); color: var(--label2);
+      font-size: 12px; font-weight: 600; font-family: inherit;
+      cursor: pointer; text-decoration: none;
+      transition: background .15s;
+    }
+    .back-btn:hover { background: var(--surface2); }
+    .logout-btn-sm {
+      padding: 5px 10px;
+      border: 1px solid #e2d9c8; border-radius: 7px;
+      background: none; color: #a07840;
+      font-size: 12px; font-weight: 600; font-family: inherit;
+      cursor: pointer; transition: all .2s;
+    }
+    .logout-btn-sm:hover { background: #fff5e6; border-color: #c8a96e; }
+
+    /* ── Status badge ── */
+    .badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 12px; border-radius: 20px;
+      font-size: 12px; font-weight: 600; white-space: nowrap;
+    }
+    .badge::before { content: ''; width: 5px; height: 5px; border-radius: 50%; }
+    .badge.success { background: var(--green-bg); color: #15803d; }
+    .badge.success::before { background: var(--green); }
+    .badge.partial  { background: var(--amber-bg); color: #b45309; }
+    .badge.partial::before { background: var(--amber); }
+    .badge.blocked  { background: var(--red-bg);   color: #b91c1c; }
+    .badge.blocked::before { background: var(--red); }
+    .badge.failed   { background: var(--red-bg);   color: #b91c1c; }
+    .badge.failed::before  { background: var(--red); }
+    .badge.unknown  { background: var(--bg);        color: var(--label4); }
+    .badge.unknown::before { background: var(--label4); }
+
+    /* ── Carrier badges ── */
+    .carrier-dhl   { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600; background:#fff3cd; color:#7c4d00; border:1px solid #f0c040; }
+    .carrier-fedex { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600; background:#e8f0fe; color:#1a3b8f; border:1px solid #90aee8; }
+    .carrier-unk   { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600; background:#f3f4f6; color:#6b7280; border:1px solid #d1d5db; }
+
+    /* ── Live tracking tooltip ── */
+    .tracking-status-wrapper { position:relative; display:inline-block; }
+    .tracking-tooltip {
+      display:none; position:absolute; left:0; top:100%;
+      background:#1e293b; color:#f1f5f9; border-radius:8px;
+      padding:10px 14px; font-size:0.8rem; line-height:1.6;
+      white-space:nowrap; z-index:100; min-width:280px;
+      box-shadow:0 4px 16px rgba(0,0,0,0.18);
+    }
+    .tracking-status-wrapper:hover .tracking-tooltip { display:block; }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex; gap: 4px; margin-bottom: 20px;
+      background: var(--surface); border-radius: var(--radius);
+      padding: 4px; box-shadow: var(--shadow-sm);
+      border: 1px solid var(--separator); width: fit-content;
+    }
+    .tab {
+      padding: 7px 20px; font-size: 13px; font-weight: 600;
+      color: var(--label4); cursor: pointer;
+      border-radius: var(--radius-sm);
+      transition: color .15s, background .15s; white-space: nowrap;
+    }
+    .tab:hover  { color: var(--label2); }
+    .tab.active { background: var(--navy); color: #fff; }
+    .tab-pane   { display: none; }
+    .tab-pane.active { display: block; }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface); border-radius: var(--radius);
+      padding: 18px 20px; box-shadow: var(--shadow-sm);
+      border: 1px solid var(--separator); margin-bottom: 14px;
+    }
+    .card-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--label4); margin-bottom: 14px;
+    }
+
+    /* ── Data rows ── */
+    .row {
+      display: flex; justify-content: space-between; align-items: baseline;
+      padding: 7px 0; border-bottom: 1px solid var(--bg); font-size: 13px; gap: 12px;
+    }
+    .row:last-child { border-bottom: none; }
+    .lbl { color: var(--label4); flex-shrink: 0; }
+    .val { font-weight: 500; color: var(--label2); text-align: right; word-break: break-all; }
+
+    /* ── Financial table ── */
+    .fin-table { width: 100%; border-collapse: collapse; }
+    .fin-table td { padding: 8px 0; font-size: 14px; }
+    .fin-table td:last-child { text-align: right; font-weight: 600; color: var(--label); }
+    .fin-table tr { border-bottom: 1px solid var(--bg); }
+    .fin-table tr:last-child { border-bottom: none; }
+    .fin-table .total-row td { font-size: 16px; font-weight: 700; padding-top: 12px; color: var(--navy); }
+
+    /* ── Grid layout ── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
+    .full { grid-column: 1 / -1; }
+
+    /* Verification tri-state */
+    .v-true  { color: var(--green); font-weight: 600; }
+    .v-false { color: var(--red);   font-weight: 600; }
+    .v-none  { color: var(--label4); }
+
+    /* ── Document buttons ── */
+    .doc-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+    }
+    @media (max-width: 700px) { .doc-grid { grid-template-columns: 1fr 1fr; } }
+
+    .doc-btn {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 6px; padding: 16px 12px; border-radius: var(--radius-sm);
+      border: 1px solid var(--separator); background: var(--surface2);
+      text-decoration: none; font-size: 12px; font-weight: 600; color: var(--navy);
+      transition: background .15s, box-shadow .15s; text-align: center; min-height: 80px;
+    }
+    .doc-btn:hover { background: var(--navy-bg); box-shadow: var(--shadow-sm); }
+    .doc-btn.disabled {
+      color: var(--label4); cursor: not-allowed; background: var(--bg);
+      border-color: var(--separator);
+    }
+    .doc-btn.disabled:hover { background: var(--bg); box-shadow: none; }
+    .doc-icon { font-size: 20px; }
+    .doc-name-txt { font-size: 11px; }
+    .doc-status-txt { font-size: 10px; color: var(--label4); font-weight: 400; }
+
+    /* ── Alert boxes ── */
+    .alert {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 12px 14px; border-radius: var(--radius-sm);
+      font-size: 13px; margin-bottom: 10px; line-height: 1.5;
+    }
+    .alert.amber { background: var(--amber-bg); border: 1px solid rgba(217,119,6,.25); color: #92400e; }
+    .alert.red   { background: var(--red-bg);   border: 1px solid rgba(220,38,38,.2);  color: #991b1b; }
+    .alert.blue  { background: var(--navy-bg);  border: 1px solid rgba(30,64,175,.2);  color: var(--navy); }
+    .alert ul    { padding-left: 16px; margin-top: 6px; }
+    .alert li    { margin-top: 3px; }
+
+    /* ── WorkDrive banner ── */
+    .workdrive-banner {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--navy-bg); border: 1px solid rgba(30,64,175,.2);
+      border-radius: var(--radius-sm); padding: 10px 14px;
+      font-size: 13px; color: var(--navy); margin-bottom: 14px;
+    }
+    .wd-copy-btn {
+      margin-left: auto; padding: 4px 12px; background: transparent;
+      border: 1px solid var(--navy); border-radius: 4px;
+      font-size: 11px; font-weight: 600; color: var(--navy);
+      cursor: pointer; transition: background .15s;
+    }
+    .wd-copy-btn:hover { background: var(--navy-bg); }
+
+    /* ── Correction log (Required Actions) ── */
+    .action-list { display: flex; flex-direction: column; gap: 10px; }
+    .action-item {
+      background: var(--surface); border-radius: var(--radius-sm);
+      padding: 12px 14px; border: 1px solid var(--separator);
+      border-left: 4px solid var(--separator); font-size: 13px; line-height: 1.6;
+    }
+    .action-item.gap  { border-left-color: var(--amber); background: var(--amber-bg); color: #92400e; }
+    .action-item.err  { border-left-color: var(--red);   background: var(--red-bg);   color: #991b1b; }
+    .action-item.info { border-left-color: var(--navy);  }
+    .action-num {
+      display: inline-block; width: 22px; height: 22px; border-radius: 50%;
+      background: var(--navy); color: #fff; font-size: 11px; font-weight: 700;
+      text-align: center; line-height: 22px; margin-right: 8px; flex-shrink: 0;
+    }
+
+    /* ── Technical Log ── */
+    .log-wrap {
+      background: var(--surface); border-radius: var(--radius);
+      box-shadow: var(--shadow-sm); border: 1px solid var(--separator); overflow: hidden;
+    }
+    .log-header {
+      padding: 10px 16px; background: var(--surface2);
+      border-bottom: 1px solid var(--separator);
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--label4);
+    }
+    .log-item {
+      font-size: 12px; font-family: 'SF Mono', 'Menlo', monospace;
+      padding: 7px 16px; border-bottom: 1px solid var(--bg);
+      line-height: 1.5; color: var(--label3);
+    }
+    .log-item:last-child { border-bottom: none; }
+    .log-item.gap  { background: rgba(217,119,6,.07); color: #92400e; }
+    .log-item.err  { background: var(--red-bg);       color: #991b1b; }
+
+    /* ── Source file badges ── */
+    .source-docs-section { margin-bottom: 18px; }
+    .source-docs-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--label4); margin-bottom: 10px; }
+    .source-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+    .source-cat { font-size: 12px; color: var(--label3); min-width: 120px; font-weight: 600; flex-shrink: 0; }
+    .file-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--bg); border: 1px solid var(--separator);
+      border-radius: 5px; padding: 3px 9px;
+      font-size: 11px; font-weight: 500; color: var(--label2);
+      font-family: 'SF Mono', 'Menlo', monospace;
+    }
+    .file-badge-missing { font-size: 11px; color: var(--red); font-style: italic; }
+
+    /* ── Source file cards (clickable) ── */
+    .file-section-heading {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--label4); margin-bottom: 14px;
+    }
+    .source-file-card {
+      display: inline-flex; flex-direction: column; align-items: center;
+      gap: 4px; padding: 10px 14px; border-radius: var(--radius-sm);
+      background: var(--surface2); border: 1px solid var(--separator);
+      text-decoration: none; cursor: pointer; font-size: 11px;
+      color: var(--navy); transition: background .15s, box-shadow .15s;
+      font-family: 'SF Mono', 'Menlo', monospace; max-width: 160px;
+      word-break: break-all; text-align: center;
+    }
+    .source-file-card:hover { background: var(--navy-bg); box-shadow: var(--shadow-sm); }
+    .source-file-icon { font-size: 18px; }
+    .source-file-name { font-size: 10px; color: var(--label2); line-height: 1.3; }
+    .source-file-dl   { font-size: 10px; color: var(--label4); font-weight: 600; font-family: inherit; }
+
+    /* ── Audit Review tab ── */
+    /* ── Customs declaration detail grid ── */
+    .detail-label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--label4); margin-bottom: 2px; }
+    .detail-value { display: block; font-size: 13px; color: var(--label2); font-weight: 500; }
+    .detail-value.mono { font-family: ui-monospace, 'SF Mono', monospace; font-size: 13px; }
+
+    .verify-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .verify-table th { background: var(--surface2); color: var(--label4); text-align: left; padding: 8px 14px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--separator); }
+    .verify-table td { padding: 9px 14px; border-bottom: 1px solid var(--bg); color: var(--label2); }
+    .verify-table tr:last-child td { border-bottom: none; }
+    .verify-true  { color: var(--green); font-weight: 600; }
+    .verify-false { color: var(--red);   font-weight: 600; }
+    .verify-null  { color: var(--label4); }
+    .audit-score-bar { height: 6px; border-radius: 3px; margin-top: 6px; background: var(--separator); }
+    .audit-score-fill { height: 6px; border-radius: 3px; }
+
+    /* ── Delivery timeline ── */
+    .delivery-section { margin-top: 28px; }
+    .delivery-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--label4); margin-bottom: 12px;
+    }
+    .timeline { display: flex; flex-direction: column; gap: 8px; }
+    .tl-item {
+      display: flex; align-items: flex-start; gap: 12px;
+      font-size: 12px; color: var(--label3);
+    }
+    .tl-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      margin-top: 3px; background: var(--label4);
+    }
+    .tl-dot.ok   { background: var(--green); }
+    .tl-dot.fail { background: var(--red); }
+    .tl-ts   { color: var(--label4); white-space: nowrap; }
+    .tl-act  { color: var(--label2); font-weight: 500; }
+    .tl-tgt  { color: var(--label4); font-size: 11px; font-family: monospace; }
+
+    .resend-row {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      margin-top: 14px;
+    }
+    .resend-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 9px 18px; background: var(--navy); color: #fff;
+      border: none; border-radius: var(--radius-sm);
+      font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .15s;
+    }
+    .resend-btn:hover    { opacity: .88; }
+    .resend-btn:disabled { opacity: .45; cursor: default; }
+    .copy-msg-btn {
+      display: none; align-items: center; gap: 5px;
+      padding: 9px 16px; background: var(--surface);
+      border: 1px solid var(--separator); border-radius: var(--radius-sm);
+      font-size: 13px; font-weight: 500; cursor: pointer;
+      color: var(--label2); transition: background .15s; margin-left: 8px;
+    }
+    .copy-msg-btn:hover { background: var(--bg); }
+    #resend-status { font-size: 12px; margin-top: 8px; color: var(--label4); }
+
+    /* Learning Status card */
+    .learning-card {
+      background: var(--surface); border-radius: var(--radius);
+      padding: 18px 20px; margin-top: 16px;
+      box-shadow: var(--shadow-sm); border: 1px solid var(--separator);
+    }
+    .learning-card-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--label4); margin-bottom: 12px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .learning-rows { display: flex; flex-direction: column; gap: 6px; }
+    .learning-row  { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; }
+    .learning-row-label { color: var(--label3); min-width: 130px; flex-shrink: 0; }
+    .learning-row-value { color: var(--label); font-weight: 500; }
+    .conf-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 10px;
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    }
+    .conf-unconfirmed { background: var(--separator); color: var(--label3); }
+    .conf-emerging    { background: var(--amber-bg);  color: var(--amber); }
+    .conf-stable      { background: var(--navy-bg);   color: var(--navy); }
+    .conf-trusted     { background: var(--green-bg);  color: var(--green); }
+    .learned-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 9px; border-radius: 10px;
+      font-size: 11px; font-weight: 700;
+      background: var(--green-bg); color: var(--green);
+    }
+    .learning-feedback-row {
+      display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; align-items: center;
+    }
+    .lf-btn {
+      padding: 6px 14px; border-radius: var(--radius-xs);
+      font-size: 12px; font-weight: 600; font-family: inherit;
+      border: 1px solid var(--separator); cursor: pointer;
+      transition: opacity .15s; background: var(--surface); color: var(--label2);
+    }
+    .lf-btn.ok       { background: var(--green-bg); color: var(--green); border-color: transparent; }
+    .lf-btn.bad      { background: var(--red-bg);   color: var(--red);   border-color: transparent; }
+    .lf-btn:hover    { opacity: .78; }
+    .lf-btn:disabled { opacity: .38; cursor: default; }
+    .lf-status { font-size: 12px; color: var(--label4); margin-left: 4px; }
+    .lf-corrections { display: none; margin-top: 12px; }
+    .unstable-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 9px; border-radius: 10px;
+      font-size: 11px; font-weight: 700;
+      background: var(--red-bg); color: var(--red);
+    }
+    .reliability-bar {
+      display: inline-block; height: 6px; border-radius: 3px;
+      background: var(--separator); width: 80px; vertical-align: middle;
+      position: relative; overflow: hidden;
+    }
+    .reliability-bar-fill {
+      position: absolute; left: 0; top: 0; bottom: 0;
+      border-radius: 3px; background: var(--green);
+      transition: width .3s;
+    }
+    .lf-btn.reset { background: var(--surface2); color: var(--label3); border-color: var(--separator); font-size: 11px; }
+    .lf-field-row   { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+    .lf-field-key   {
+      font-size: 12px; font-family: monospace; color: var(--label2);
+      background: var(--surface2); padding: 3px 7px; border-radius: 4px;
+      border: 1px solid var(--separator); min-width: 160px;
+    }
+    input.lf-correction-val {
+      flex: 1; padding: 5px 9px; border: 1px solid var(--separator);
+      border-radius: var(--radius-xs); font-size: 12px; font-family: monospace;
+      color: var(--label); background: var(--surface);
+    }
+
+    /* Feedback (kept from original) */
+    .feedback-section {
+      background: var(--surface); border-radius: var(--radius);
+      padding: 20px 22px; margin-top: 20px;
+      box-shadow: var(--shadow-sm); border: 1px solid var(--separator);
+    }
+    .feedback-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--label4); margin-bottom: 10px;
+    }
+    .fb-note { font-size: 12px; color: var(--label4); line-height: 1.5; margin-bottom: 14px; }
+    input.fb-input {
+      width: 100%; padding: 9px 12px; border: 1px solid var(--separator);
+      border-radius: var(--radius-xs); font-size: 13px; font-family: inherit;
+      color: var(--label); background: var(--surface); outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    input.fb-input + input.fb-input { margin-top: 8px; }
+    input.fb-input::placeholder { color: var(--label4); }
+    input.fb-input:focus {
+      border-color: var(--navy); box-shadow: 0 0 0 3px rgba(30,64,175,.12);
+    }
+    .fb-buttons { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    .fb-btn {
+      padding: 9px 18px; border: none; border-radius: var(--radius-sm);
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      transition: opacity .15s; font-family: inherit;
+    }
+    .fb-btn.valid    { background: var(--green-bg); color: #15803d; }
+    .fb-btn.review   { background: var(--amber-bg); color: #b45309; }
+    .fb-btn.incorrect{ background: var(--red-bg);   color: #b91c1c; }
+    .fb-btn:hover    { opacity: .80; }
+    .fb-btn:disabled { opacity: .40; cursor: default; }
+    .fb-status { font-size: 12px; color: var(--label4); margin-top: 10px; }
+
+    /* Correction cards (preserved) */
+    .corr-card {
+      background: var(--surface); border-radius: var(--radius);
+      padding: 18px 20px; margin-bottom: 14px;
+      box-shadow: var(--shadow-sm); border: 1px solid var(--separator);
+      border-left: 4px solid var(--separator);
+    }
+    .corr-card.CRITICAL { border-left-color: var(--red); }
+    .corr-card.WARNING  { border-left-color: var(--amber); }
+    .corr-card.ADVISORY { border-left-color: var(--navy); }
+    .hard-lock-strip {
+      background: var(--red-bg); color: #b91c1c;
+      border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+      padding: 6px 14px; font-size: 12px; font-weight: 700;
+      letter-spacing: .03em; margin: -18px -20px 16px -20px;
+    }
+    .corr-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+    .corr-sev {
+      flex-shrink: 0; font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; padding: 3px 9px; border-radius: 20px;
+    }
+    .corr-sev.CRITICAL { background: var(--red-bg);   color: #b91c1c; }
+    .corr-sev.WARNING  { background: var(--amber-bg); color: #b45309; }
+    .corr-sev.ADVISORY { background: var(--navy-bg);  color: var(--navy); }
+    .corr-title { font-size: 14px; font-weight: 700; color: var(--label); flex: 1; line-height: 1.3; }
+    .lock-badge { flex-shrink: 0; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+    .lock-badge.hard { background: var(--red-bg); color: #b91c1c; }
+    .lock-badge.soft { background: var(--bg);     color: var(--label4); }
+    .corr-meta { font-size: 11px; color: var(--label4); margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .corr-meta code { font-family: 'SF Mono', 'Menlo', monospace; font-size: 10px; background: var(--bg); padding: 1px 5px; border-radius: 3px; color: var(--label3); }
+    .meta-sep { color: var(--separator); }
+    .conf-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .conf-bar-wrap { flex: 1; max-width: 180px; height: 4px; background: var(--separator); border-radius: 2px; }
+    .conf-bar { height: 4px; border-radius: 2px; transition: width .4s; }
+    .conf-bar.high   { background: var(--green); }
+    .conf-bar.medium { background: var(--amber); }
+    .conf-bar.low    { background: var(--red); }
+    .corr-section { margin-top: 12px; }
+    .corr-section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--label4); margin-bottom: 6px; }
+    .corr-text { font-size: 13px; color: var(--label2); line-height: 1.6; }
+    .corr-divider { border: none; border-top: 1px solid var(--bg); margin: 14px 0 12px; }
+    .amendment-draft {
+      background: var(--bg); border-radius: var(--radius-xs); padding: 10px 13px;
+      font-size: 12px; color: var(--label2); font-family: 'SF Mono', 'Menlo', monospace;
+      line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+    }
+    .sdiff-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+    .sdiff-table th { background: var(--bg); color: var(--label4); text-align: left; padding: 6px 12px; font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+    .sdiff-table td { padding: 7px 12px; border-bottom: 1px solid var(--bg); vertical-align: top; color: var(--label3); }
+    .sdiff-table tr:last-child td { border-bottom: none; }
+    .sdiff-table .current   { color: var(--red); }
+    .sdiff-table .corrected { color: #15803d; font-weight: 600; }
+    .impact-box { background: var(--bg); border-radius: var(--radius-xs); padding: 10px 13px; font-size: 12px; color: var(--label3); display: flex; flex-direction: column; gap: 4px; }
+    .impact-box span { font-weight: 600; color: var(--label2); }
+    .evidence-list { font-size: 12px; color: var(--label4); padding-left: 16px; list-style: disc; display: flex; flex-direction: column; gap: 3px; }
+    .source-refs { display: flex; flex-wrap: wrap; gap: 16px; background: var(--surface2); border: 1px solid var(--separator); border-radius: var(--radius-sm); padding: 10px 16px; margin-bottom: 16px; font-size: 12px; color: var(--label3); }
+    .source-refs .ref-item b { color: var(--label2); font-weight: 600; }
+    .primary-action { background: var(--navy); color: #fff; border-radius: var(--radius-sm); padding: 14px 18px; margin-bottom: 18px; }
+    .primary-action.none-needed { background: var(--green-bg); border: 1px solid rgba(22,163,74,.3); color: #15803d; }
+    .pa-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; opacity: .80; margin-bottom: 5px; }
+    .pa-text  { font-size: 15px; font-weight: 700; line-height: 1.4; }
+    .copy-action-btn { display: inline-flex; align-items: center; gap: 4px; background: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.35); color: #fff; border-radius: var(--radius-xs); padding: 5px 12px; font-size: 11px; font-weight: 600; cursor: pointer; margin-top: 10px; transition: background .15s; }
+    .copy-action-btn:hover { background: rgba(255,255,255,.30); }
+    .overflow-hint { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #b45309; background: var(--amber-bg); border: 1px solid rgba(217,119,6,.25); border-radius: var(--radius-xs); padding: 9px 14px; margin-top: 10px; }
+
+    #error { color: var(--red); margin-top: 12px; font-size: 13px; }
+    .empty-state-inline { color: var(--label4); font-size: 13px; padding: 10px 0; }
+
+    /* ── Parser Fix Proposals card ── */
+    .proposals-card {
+      background: var(--surface); border-radius: var(--radius);
+      padding: 18px 22px; margin-top: 20px;
+      box-shadow: var(--shadow-sm); border: 1px solid var(--separator);
+    }
+    .proposals-card-title {
+      font-size: 13px; font-weight: 700; color: var(--label);
+      display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
+    }
+    .proposals-table {
+      width: 100%; border-collapse: collapse; font-size: 12px;
+    }
+    .proposals-table th {
+      background: var(--surface2); color: var(--label4); text-align: left;
+      padding: 7px 12px; font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .06em;
+      border-bottom: 1px solid var(--separator);
+    }
+    .proposals-table td {
+      padding: 8px 12px; border-bottom: 1px solid var(--separator);
+      vertical-align: top; color: var(--label);
+    }
+    .proposals-table tr:last-child td { border-bottom: none; }
+    .risk-badge {
+      display: inline-block; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .05em;
+      padding: 2px 8px; border-radius: 20px;
+    }
+    .risk-safe       { background: var(--green-bg); color: var(--green); }
+    .risk-review     { background: var(--amber-bg); color: var(--amber); }
+    .risk-restricted { background: var(--red-bg);   color: var(--red); }
+    .prop-action-btn {
+      display: inline-block; font-size: 11px; font-weight: 600;
+      padding: 4px 10px; border-radius: var(--radius-xs);
+      border: none; cursor: pointer; transition: opacity .15s;
+      margin-right: 4px;
+    }
+    .prop-approve-btn { background: var(--green-bg); color: var(--green); }
+    .prop-approve-btn:hover { opacity: .75; }
+    .prop-reject-btn  { background: var(--red-bg);   color: var(--red); }
+    .prop-reject-btn:hover  { opacity: .75; }
+    .prop-result-ok   { font-size: 11px; color: var(--green); font-weight: 600; }
+    .prop-result-warn { font-size: 11px; color: var(--amber); font-weight: 600; }
+    .prop-result-rej  { font-size: 11px; color: var(--red);   font-weight: 600; }
+    .prop-snippet {
+      font-family: 'SF Mono', 'Menlo', monospace; font-size: 10px;
+      color: var(--label3); white-space: pre-wrap; word-break: break-all;
+      max-width: 220px; overflow: hidden; display: -webkit-box;
+      -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    }
+
+    /* ── SAD Review modal ── */
+    .sad-modal-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55);
+      z-index: 2000; align-items: center; justify-content: center;
+    }
+    .sad-modal-overlay.open { display: flex; }
+    .sad-modal-box {
+      background: var(--surface); border-radius: var(--radius);
+      padding: 28px; max-width: 900px; width: 95%;
+      max-height: 85vh; overflow-y: auto;
+      box-shadow: 0 24px 64px rgba(0,0,0,.25);
+    }
+    .sad-modal-title {
+      font-size: 16px; font-weight: 700; color: var(--label);
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px;
+    }
+    .sad-modal-close {
+      background: none; border: none; font-size: 20px; cursor: pointer;
+      color: var(--label3); line-height: 1;
+    }
+    .sad-review-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .sad-review-table th {
+      background: var(--surface2); color: var(--label4); text-align: left;
+      padding: 7px 10px; font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .06em;
+      border-bottom: 1px solid var(--separator);
+    }
+    .sad-review-table td {
+      padding: 7px 10px; border-bottom: 1px solid var(--bg);
+      vertical-align: top; color: var(--label);
+    }
+    .sad-review-table tr:last-child td { border-bottom: none; }
+    .sad-review-table td input {
+      width: 100%; border: 1px solid var(--separator); border-radius: 4px;
+      padding: 3px 6px; font-size: 11px; font-family: inherit;
+      background: var(--surface); color: var(--label);
+    }
+    .sad-review-table td input:focus {
+      outline: none; border-color: var(--navy);
+      box-shadow: 0 0 0 2px rgba(30,64,175,.12);
+    }
+    .sad-save-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 9px 20px; background: var(--navy); color: #fff;
+      border: none; border-radius: var(--radius-sm);
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      transition: opacity .15s; margin-top: 16px;
+    }
+    .sad-save-btn:hover { opacity: .88; }
+    .sad-save-status { font-size: 12px; color: var(--label4); margin-top: 8px; }
+
+    /* ── Pipeline section headers ── */
+    .pipeline-section-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 20px 0 10px;
+      padding-bottom: 6px;
+      border-bottom: 2px solid var(--separator);
+    }
+    .pipeline-section-header .ps-icon {
+      font-size: 16px;
+    }
+    .pipeline-section-header .ps-title {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--label2);
+    }
+
+    /* ── Status badges (pill style) ── */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .02em;
+    }
+    .badge-green  { background: #dcfce7; color: #15803d; }
+    .badge-amber  { background: #fef3c7; color: #92400e; }
+    .badge-red    { background: #fee2e2; color: #991b1b; }
+    .badge-blue   { background: #dbeafe; color: #1d4ed8; }
+    .badge-gray   { background: #f3f4f6; color: #6b7280; }
+
+    /* ── Pipeline card sub-headers ── */
+    .pipeline-card-subheader {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--label4);
+      margin: 14px 0 8px;
+      padding-top: 12px;
+      border-top: 1px solid var(--separator);
+    }
+    .pipeline-card-subheader:first-child { margin-top: 0; border-top: none; }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ── Top bar ── -->
+  <div class="top-bar">
+    <a class="back-nav" href="/dashboard/dashboard.html">&#8249; Back to Dashboard</a>
+    <button class="resend-btn-header" id="resendBtnHeader" onclick="resendToCliq()">Send to Cliq</button>
+  </div>
+
+  <!-- ── Page header ── -->
+  <div class="page-header">
+    <div>
+      <div class="page-title" id="title">Shipment Detail</div>
+      <div class="page-meta" id="page-meta"></div>
+    </div>
+    <div class="batch-header-right">
+      <a href="/dashboard" class="back-btn">&#8592; Dashboard</a>
+      <div class="user-pill" id="batchUserPill" style="display:none">
+        <div class="user-pill-avatar" id="batchUserAvatar">?</div>
+        <span class="user-pill-name" id="batchUserName"></span>
+        <span class="user-pill-role" id="batchUserRole"></span>
+      </div>
+      <button class="logout-btn-sm" id="batchLogoutBtn" style="display:none" onclick="batchLogout()">Sign out</button>
+    </div>
+  </div>
+
+  <!-- ── Tab bar ── -->
+  <div class="tabs">
+    <div class="tab active"  onclick="switchTab('summary')">Shipment Summary</div>
+    <div class="tab"         onclick="switchTab('documents')">Documents</div>
+    <div class="tab"         onclick="switchTab('actions')" id="tab-actions">Required Actions</div>
+    <div class="tab"         onclick="switchTab('auditreview')">Audit Review</div>
+    <div class="tab"         onclick="switchTab('techlog')">Technical Log</div>
+  </div>
+
+  <!-- ── Tab: Shipment Summary ── -->
+  <div class="tab-pane active" id="pane-summary">
+    <div id="error"></div>
+    <div id="summary-content">
+      <div class="empty-state-inline">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Documents ── -->
+  <div class="tab-pane" id="pane-documents">
+    <div id="documents-content">
+      <div class="empty-state-inline">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Required Actions ── -->
+  <div class="tab-pane" id="pane-actions">
+    <div id="actions-content">
+      <div class="empty-state-inline">Loading…</div>
+    </div>
+    <div class="feedback-section" id="feedback-section" style="display:none">
+      <div class="feedback-title">Shipment Learning Feedback</div>
+      <p class="fb-note">
+        Confirm or flag this shipment's result. Your feedback trains the learning system.
+        Hard-lock corrections are never affected by feedback.
+      </p>
+      <input class="fb-input" id="fb-confirmed-by" placeholder="Your name or email (audit trail)" />
+      <input class="fb-input" id="fb-reason"        placeholder="Short reason (optional)" />
+      <div class="fb-buttons">
+        <button class="fb-btn valid"     onclick="submitFeedback('valid')">Valid — all corrections confirmed</button>
+        <button class="fb-btn review"    onclick="submitFeedback('review')">Review — one or more uncertain</button>
+        <button class="fb-btn incorrect" onclick="submitFeedback('incorrect')">Incorrect — corrections are wrong</button>
+      </div>
+      <div class="fb-status" id="fb-status"></div>
+    </div>
+
+    <!-- Learning Status card (hidden until data arrives) -->
+    <div class="learning-card" id="learning-card" style="display:none">
+      <div class="learning-card-title">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="flex-shrink:0">
+          <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 3a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm0 9a5 5 0 0 1-4-2c.02-1.33 2.67-2.06 4-2.06 1.33 0 3.98.73 4 2.06A5 5 0 0 1 8 13z" fill="currentColor"/>
+        </svg>
+        Parser Learning Status
+      </div>
+      <div class="learning-rows" id="learning-rows"></div>
+      <div class="learning-feedback-row" id="learning-feedback-row" style="display:none">
+        <button class="lf-btn ok"    id="lf-confirm-btn" onclick="submitLearningFeedback(true)">✓ Confirm parse correct</button>
+        <button class="lf-btn bad"   id="lf-reject-btn"  onclick="toggleLearningCorrections()">✗ Mark parse incorrect</button>
+        <button class="lf-btn reset" id="lf-reset-btn"   onclick="resetLearningPatterns()" title="Erase all learned patterns for this supplier (use when layout has changed significantly)">↺ Reset learned pattern</button>
+        <span class="lf-status" id="lf-status"></span>
+      </div>
+      <div class="lf-corrections" id="lf-corrections">
+        <div style="font-size:12px;color:var(--label3);margin-bottom:6px">
+          Correct the field labels below (leave blank to skip), then submit:
+        </div>
+        <div id="lf-correction-fields"></div>
+        <div style="margin-top:10px">
+          <button class="lf-btn bad" onclick="submitLearningFeedback(false)">Submit corrections</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Parser Fix Proposals card (hidden until data arrives) ── -->
+  <div class="proposals-card" id="proposals-card" style="display:none">
+    <div class="proposals-card-title">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="flex-shrink:0">
+        <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm1 10H7V7h2v4zm0-6H7V3h2v2z" fill="currentColor"/>
+      </svg>
+      Parser Fix Proposals
+    </div>
+    <div id="proposals-table-wrap"></div>
+  </div>
+
+  <!-- ── Tab: Audit Review ── -->
+  <div class="tab-pane" id="pane-auditreview">
+    <div id="auditreview-content">
+      <div class="empty-state-inline">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Technical Log ── -->
+  <div class="tab-pane" id="pane-techlog">
+    <div class="log-wrap" id="techlog-container">
+      <div class="log-header">Technical Log — internal reference only</div>
+      <div class="log-item">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── Delivery History (always visible) ── -->
+  <div class="delivery-section" id="delivery-section" style="display:none">
+    <div class="delivery-title">Delivery History</div>
+    <div class="timeline" id="delivery-timeline"></div>
+    <div class="resend-row">
+      <button class="resend-btn" id="resendBtn" onclick="resendToCliq()">Send to Cliq</button>
+      <button class="copy-msg-btn" id="copyMsgBtn" onclick="copyMessage()">Copy Message</button>
+    </div>
+    <div id="resend-status"></div>
+  </div>
+
+  <!-- Shipment Timeline Card -->
+  <div class="card" id="timeline-card" style="margin-top:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <strong style="font-size:15px">⏱ Shipment Timeline</strong>
+      <button onclick="loadTimeline(getBatchId())" style="font-size:12px;padding:4px 10px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;cursor:pointer">Refresh</button>
+    </div>
+    <div id="timeline-card-body" style="max-height:400px;overflow-y:auto">
+      <p style="color:#888;font-size:13px">Loading…</p>
+    </div>
+  </div>
+
+</div><!-- .page -->
+
+<script>
+/* ═══════════════════════ auth ═══════════════════════ */
+async function batchInitAuth() {
+  try {
+    const res = await fetch('/auth/me', { credentials: 'include' });
+    if (!res.ok) { window.location.href = '/login'; return; }
+    const user = await res.json();
+    const initials = user.full_name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
+    document.getElementById('batchUserAvatar').textContent = initials;
+    document.getElementById('batchUserName').textContent   = user.full_name;
+    document.getElementById('batchUserRole').textContent   = user.role;
+    document.getElementById('batchUserPill').style.display = '';
+    document.getElementById('batchLogoutBtn').style.display = '';
+
+    // Hide Resend/action buttons for viewer
+    if (user.role === 'viewer') {
+      document.querySelectorAll('.resend-btn, #resendBtn').forEach(el => el.style.display = 'none');
+    }
+  } catch { window.location.href = '/login'; }
+}
+async function batchLogout() {
+  await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
+  window.location.href = '/login';
+}
+batchInitAuth();
+
+/* ═══════════════════════ helpers ═══════════════════════ */
+const id = new URLSearchParams(window.location.search).get('id');
+function getBatchId() { return id; }
+if (!id || id === 'null') {
+  document.body.innerHTML = '<div style="padding:40px;color:#dc2626;font-family:-apple-system,sans-serif;font-size:14px">Invalid shipment ID — go back and select a shipment.</div>';
+  throw new Error('Invalid batch_id');
+}
+
+let _audit = null;
+let _lastMessageText = '';
+let _countdownTimer  = null;
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  const names = ['summary','documents','actions','auditreview','techlog'];
+  const idx = names.indexOf(name);
+  document.querySelectorAll('.tab')[idx].classList.add('active');
+  document.getElementById('pane-' + name).classList.add('active');
+}
+
+function escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmt(n) {
+  if (n == null) return '—';
+  return Number(n).toLocaleString('pl-PL', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' PLN';
+}
+function fmtPLN(n) { return fmt(n); }
+function chk(v) {
+  if (v === true)  return '<span class="v-true">&#10003; Verified</span>';
+  if (v === false) return '<span class="v-false">&#10005; Mismatch</span>';
+  return '<span class="v-none">&#8212; Not parsed</span>';
+}
+function row(label, val) {
+  return `<div class="row"><span class="lbl">${escHtml(label)}</span><span class="val">${val}</span></div>`;
+}
+function badgeLabel(s) {
+  if (s === 'draft')          return 'Draft';
+  if (s === 'in_preparation') return 'In Transit';
+  if (s === 'ready')          return 'Ready for Processing';
+  if (s === 'processing')     return 'Processing…';
+  if (s === 'success')        return 'Completed';
+  if (s === 'partial')        return 'Verification Needed';
+  if (s === 'blocked' || s === 'failed') return 'Action Required';
+  if (s === 'awaiting_dhl_email') return 'Waiting — DHL Email';
+  if (s === 'awaiting_sad')       return 'Waiting — SAD Upload';
+  if (s === 'awaiting_clearance') return 'Waiting — Clearance';
+  if (s === 'collecting')         return 'Collecting Files';
+  return 'Pending';
+}
+function badgeClass(s) {
+  if (s === 'success')   return 'success';
+  if (s === 'partial')   return 'partial';
+  if (s === 'blocked' || s === 'failed') return 'blocked';
+  if (s === 'ready' || s === 'processing') return 'partial';
+  return 'unknown';
+}
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => alert('Copied: ' + text));
+}
+function copyActionText(text) {
+  navigator.clipboard.writeText(text)
+    .then(() => {
+      const el = document.querySelector('.copy-action-btn');
+      if (el) { const orig = el.textContent; el.textContent = 'Copied'; setTimeout(() => el.textContent = orig, 1500); }
+    })
+    .catch(() => alert('Copy failed — text:\n' + text));
+}
+
+/* ═══════════════════════ load batch ═══════════════════════ */
+fetch(`/dashboard/batches/${id}`)
+  .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+  .then(a => {
+    _audit = a;
+
+    const status = a.status || 'unknown';
+    const bc     = badgeClass(status);
+    const bl     = badgeLabel(status);
+
+    // AWB-first identity: primary = tracking_no (or fall back to doc_no)
+    const primaryId = a.tracking_no || a.doc_no || 'Shipment Detail';
+    document.getElementById('title').textContent = primaryId;
+
+    const metaEl = document.getElementById('page-meta');
+    const parts  = [];
+    if (a.doc_no)     parts.push(`<span>PZ Document: ${escHtml(a.doc_no)}</span>`);
+    if (a.inputs && a.inputs.zc429_mrn) parts.push(`<span>MRN: <code style="font-family:monospace;font-size:12px">${escHtml(a.inputs.zc429_mrn)}</code></span>`);
+    if (a.batch_id)   parts.push(`<span>Batch: <code style="font-family:monospace;font-size:12px">${escHtml(a.batch_id)}</code></span>`);
+    parts.push(`<span class="badge ${bc}">${escHtml(bl)}</span>`);
+    metaEl.innerHTML = parts.join('<span class="sep"> | </span>');
+
+    renderWorkflowBanner(a);
+    renderSummary(a);
+    renderDocuments(a);
+    renderActions(a);
+    renderAuditReview(a);
+    renderTechLog(a);
+    renderDelivery(a);
+    renderLearningStatus(a);
+    renderProposals(a);
+
+    // Load timeline asynchronously
+    if (id) loadTimeline(id);
+
+    // Update tab label
+    const cr = a.correction_report;
+    if (cr && cr.corrections && cr.corrections.length) {
+      const n      = cr.corrections.length;
+      const hasCrit = cr.has_critical;
+      document.getElementById('tab-actions').textContent =
+        `Required Actions (${n})${hasCrit ? ' !' : ''}`;
+    }
+
+    // Load live tracking status (non-blocking, uses cache if available)
+    const trkNo = a.tracking_no || '';
+    if (trkNo) loadTracking(trkNo, a.batch_id || id);
+  })
+  .catch(e => { document.getElementById('error').textContent = 'Error loading shipment: ' + e; });
+
+
+/* ═══════════════════════ live tracking ═══════════════════════ */
+window._trackingData = null;
+
+function renderTrackingInfo(data) {
+  window._trackingData = data;
+  // Re-render the workflow banner with updated tracking data
+  if (_audit) renderWorkflowBanner(_audit);
+}
+
+async function loadTracking(trackingNo, batchId) {
+  if (!trackingNo) return;
+  try {
+    const qs  = batchId ? `?batch_id=${encodeURIComponent(batchId)}` : '';
+    const res = await fetch(`/api/v1/tracking/${encodeURIComponent(trackingNo)}${qs}`,
+                            { credentials: 'include' });
+    if (res.ok) renderTrackingInfo(await res.json());
+  } catch (e) { /* silently fail — tracking is non-critical */ }
+}
+
+async function refreshTracking() {
+  const btn = document.getElementById('refresh-tracking-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '↻ Refreshing…'; }
+  const a          = _audit || {};
+  const trackingNo = a.tracking_no || '';
+  const batchId    = a.batch_id    || id;
+  if (!trackingNo) return;
+  try {
+    const qs  = batchId ? `?batch_id=${encodeURIComponent(batchId)}` : '';
+    const res = await fetch(
+      `/api/v1/tracking/${encodeURIComponent(trackingNo)}/refresh${qs}`,
+      { method: 'POST', credentials: 'include' }
+    );
+    if (res.ok) renderTrackingInfo(await res.json());
+  } catch (e) { /* silently fail */ }
+  if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
+}
+
+/* ═══════════════════════ workflow banner ═══════════════════════ */
+function renderWorkflowBanner(a) {
+  const status   = a.status || 'unknown';
+  const batchId  = a.batch_id || '';
+  const hasSad   = !!(a.inputs && a.inputs.zc429);
+  const hasPz    = !!(a.doc_no) && a.pz_confirmed;
+  const carrier  = a.carrier || '';
+  const trkUrl   = a.tracking_url || '';
+  const trkNo    = a.tracking_no  || '';
+
+  // Determine active step (0-indexed)
+  const steps = [
+    { id: 'step-awb',        label: 'Shipment Created',        done: true },
+    { id: 'step-transit',    label: 'In Transit',               done: status !== 'draft' },
+    { id: 'step-sad',        label: 'SAD Received',             done: hasSad },
+    { id: 'step-processing', label: 'Processing',               done: ['success','partial','blocked'].includes(status) },
+    { id: 'step-pz',         label: 'PZ Confirmed',             done: hasPz },
+  ];
+
+  const activeIdx = steps.map(s => s.done).lastIndexOf(true);
+
+  // Build banner
+  let bannerHtml = `<div id="workflow-banner" style="background:var(--surface);border:1px solid var(--separator);border-radius:10px;padding:14px 18px;margin-bottom:16px">`;
+
+  // Step rail
+  bannerHtml += `<div style="display:flex;align-items:center;gap:0;margin-bottom:14px">`;
+  steps.forEach((s, i) => {
+    const isDone   = s.done;
+    const isActive = i === activeIdx + (isDone && i < steps.length - 1 ? 0 : 0);
+    const isCurrent = i === (isDone ? Math.min(activeIdx + 1, steps.length - 1) : activeIdx);
+    const dotColor = isDone ? 'var(--green)' : (isCurrent ? 'var(--navy)' : 'var(--separator)');
+    const txtColor = isDone ? 'var(--green)' : (isCurrent ? 'var(--navy)' : 'var(--label4)');
+    bannerHtml += `<div style="flex:1;text-align:center">
+      <div style="width:24px;height:24px;border-radius:50%;border:2px solid ${dotColor};background:${isDone ? dotColor : 'transparent'};margin:0 auto;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:700">
+        ${isDone ? '&#10003;' : (i + 1)}
+      </div>
+      <div style="font-size:10px;font-weight:600;color:${txtColor};margin-top:4px;white-space:nowrap">${s.label}</div>
+    </div>`;
+    if (i < steps.length - 1) {
+      bannerHtml += `<div style="height:2px;flex:2;background:${isDone ? 'var(--green)' : 'var(--separator)'};margin-bottom:16px"></div>`;
+    }
+  });
+  bannerHtml += `</div>`;
+
+  // Contextual action row
+  bannerHtml += `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">`;
+
+  // Carrier badge + live tracking status
+  if (carrier && carrier !== 'Unknown') {
+    const cls = carrier === 'DHL' ? 'carrier-dhl' : 'carrier-fedex';
+    bannerHtml += `<span class="carrier-badge ${cls}" style="padding:4px 10px">${escHtml(carrier)}</span>`;
+  }
+
+  // Live tracking info (populated after API refresh)
+  const trkData = window._trackingData || {};
+  if (trkData.available && trkData.status_label) {
+    const statusColors = {delivered:'#16a34a', in_transit:'#2563eb', out_for_delivery:'#d97706', exception:'#dc2626', unknown:'#6b7280'};
+    const stColor = statusColors[trkData.status] || '#6b7280';
+    const tooltip = [
+      trkNo         ? `Tracking: ${escHtml(trkNo)}` : '',
+      carrier       ? `Carrier: ${escHtml(carrier)}` : '',
+      trkData.last_update_display ? `Last Update: ${escHtml(trkData.last_update_display)}` : '',
+      trkData.last_location       ? `Location: ${escHtml(trkData.last_location)}` : '',
+      trkData.origin              ? `Origin: ${escHtml(trkData.origin)}` : '',
+      trkData.destination         ? `Destination: ${escHtml(trkData.destination)}` : '',
+      trkData.source              ? `Source: ${escHtml(trkData.source)}` : '',
+    ].filter(Boolean).join('<br>');
+
+    bannerHtml += `
+      <div class="tracking-status-wrapper">
+        <span class="tracking-status-label" style="color:${stColor};font-weight:700;font-size:12px;cursor:default">
+          ${escHtml(trkData.status_label)}
+        </span>
+        <div class="tracking-tooltip">${tooltip}</div>
+      </div>`;
+
+    if (trkData.last_update_display || trkData.last_location) {
+      const updLine = [trkData.last_update_display, trkData.last_location].filter(Boolean).join(', ');
+      bannerHtml += `<span style="font-size:11px;color:var(--label3)">Last Update: ${escHtml(updLine)}</span>`;
+    }
+  }
+
+  if (trkUrl && trkNo) {
+    bannerHtml += `<a href="${escHtml(trkUrl)}" target="_blank" rel="noopener"
+      style="font-size:12px;color:var(--navy);text-decoration:none;font-weight:600">
+      Open ${escHtml(carrier)} Tracking &#8599;</a>`;
+  }
+
+  if (trkNo) {
+    bannerHtml += `
+      <button id="refresh-tracking-btn" onclick="refreshTracking()"
+        style="padding:4px 10px;border-radius:5px;border:1px solid var(--separator);background:var(--surface);
+               color:var(--label3);font-size:11px;font-weight:600;cursor:pointer">
+        &#8635; Refresh
+      </button>`;
+  }
+
+  // Contextual CTA
+  if (status === 'draft' || status === 'in_preparation') {
+    if (!hasSad) {
+      bannerHtml += `<span style="flex:1"></span>
+        <label style="font-size:12px;font-weight:600;color:var(--label3)">
+          Upload SAD when received:
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:6px;border:1px solid var(--navy);color:var(--navy);background:var(--navy-bg);font-size:12px;font-weight:700;cursor:pointer">
+          &#128203; Upload SAD / ZC429
+          <input type="file" accept=".pdf" style="display:none" onchange="uploadSadFile(event,'${escHtml(batchId)}')">
+        </label>`;
+    } else {
+      bannerHtml += `<span style="flex:1"></span>
+        <button onclick="processShipment('${escHtml(batchId)}')"
+          style="padding:7px 18px;border-radius:6px;border:none;background:var(--navy);color:#fff;font-size:12px;font-weight:700;cursor:pointer">
+          &#9654; Process Shipment
+        </button>`;
+    }
+  } else if (status === 'ready') {
+    bannerHtml += `<span style="flex:1"></span>
+      <button onclick="processShipment('${escHtml(batchId)}')"
+        style="padding:7px 18px;border-radius:6px;border:none;background:var(--navy);color:#fff;font-size:12px;font-weight:700;cursor:pointer">
+        &#9654; Process Shipment
+      </button>`;
+  } else if (status === 'processing') {
+    bannerHtml += `<span style="flex:1"></span>
+      <span style="font-size:12px;color:var(--amber);font-weight:600">&#9203; Processing in progress… Refresh in a moment.</span>`;
+  } else if ((status === 'success' || status === 'partial') && !hasPz) {
+    const currentPz = a.doc_no || '';
+    bannerHtml += `<span style="flex:1"></span>
+      <span style="font-size:12px;font-weight:600;color:var(--label3)">Confirm PZ Number:</span>
+      <input id="pz-entry" type="text" value="${escHtml(currentPz)}" placeholder="e.g. PZ 12/3/2026"
+        style="border:1px solid var(--separator);border-radius:6px;padding:5px 10px;font-size:12px;width:160px">
+      <button onclick="confirmPzNumber('${escHtml(batchId)}')"
+        style="padding:6px 14px;border-radius:6px;border:none;background:var(--green);color:#fff;font-size:12px;font-weight:700;cursor:pointer">
+        Confirm PZ
+      </button>`;
+  } else if (hasPz) {
+    bannerHtml += `<span style="flex:1"></span>
+      <span style="font-size:12px;font-weight:600;color:var(--green)">&#10003; PZ Confirmed: ${escHtml(a.doc_no)}</span>`;
+  }
+
+  bannerHtml += `</div></div>`;
+
+  // Inject before the tab bar
+  const existing = document.getElementById('workflow-banner');
+  if (existing) existing.remove();
+  const tabBar = document.querySelector('.tabs');
+  if (tabBar) tabBar.insertAdjacentHTML('beforebegin', bannerHtml);
+}
+
+// SAD upload from batch detail
+async function uploadSadFile(evt, batchId) {
+  const file = evt.target.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('sad', file);
+  try {
+    const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/sad`, { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) { alert('SAD upload failed: ' + (d.detail || r.status)); return; }
+    alert('SAD uploaded. Shipment is now ready for processing.');
+    window.location.reload();
+  } catch (e) { alert('SAD upload error: ' + e.message); }
+}
+
+// Trigger processing from batch detail
+async function processShipment(batchId) {
+  if (!confirm('Start processing this shipment now?')) return;
+  try {
+    const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/process`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { alert('Could not start processing: ' + (d.detail || r.status)); return; }
+    alert('Processing started. The page will refresh automatically when done.');
+    // Poll for completion
+    const poll = setInterval(async () => {
+      try {
+        const sr = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/status`);
+        const sd = await sr.json();
+        if (!['processing','in_preparation'].includes(sd.status)) {
+          clearInterval(poll);
+          window.location.reload();
+        }
+      } catch (_) {}
+    }, 5000);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// Confirm PZ number
+async function confirmPzNumber(batchId) {
+  const pz = (document.getElementById('pz-entry') || {}).value || '';
+  if (!pz.trim()) { alert('Please enter a PZ number.'); return; }
+  const fd = new FormData();
+  fd.append('pz_number', pz.trim());
+  try {
+    const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/set_pz`, { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) { alert('Could not save PZ number: ' + (d.detail || r.status)); return; }
+    window.location.reload();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+
+/* ═══════════════════════ pipeline section header helper ═══════════════════════ */
+function renderSectionHeader(icon, title) {
+  return `<div class="pipeline-section-header">
+    <span class="ps-icon">${icon}</span>
+    <span class="ps-title">${escHtml(title)}</span>
+  </div>`;
+}
+
+/* ═══════════════════════ summary tab ═══════════════════════ */
+function renderSummary(a) {
+  const status = a.status || 'unknown';
+  const t      = a.totals || {};
+  const inp    = a.inputs || {};
+  const v      = a.verification || {};
+  const fd     = a.files_detail || {};
+
+  let s1 = '';  // Section 1: Shipment & DHL Clearance
+  let s2 = '';  // Section 2: Customs Documents
+  let s3 = '';  // Section 3: PZ / Accounting
+
+  // Waiting state banner (stays outside all sections)
+  const waitingBanner = renderWaitingBanner(status);
+
+  // Document info card → s1
+  const bc = badgeClass(status);
+  const bl = badgeLabel(status);
+  const sf = fd.source_files || {};
+  const srcInvCount = (sf.invoices || []).length;
+  const srcSadOk    = (sf.sad  || []).length > 0;
+  const srcAwbOk    = (sf.awb  || []).length > 0;
+  // Fall back to inp when source_files not yet populated (old batches)
+  const inpInvCount = (inp.invoice_files || inp.invoice_pdfs || inp.invoices || []).length;
+  const inpSadOk    = !!(inp.zc429_file || inp.sad_file || inp.zc429);
+  const inpAwbOk    = !!(inp.awb_file   || inp.awb);
+  const invCount    = srcInvCount || inpInvCount;
+  const sadOk       = srcSadOk   || inpSadOk;
+  const awbOk       = srcAwbOk   || inpAwbOk;
+
+  const docInfoHtml =
+    row('Status',    `<span class="badge ${bc}">${escHtml(bl)}</span>`) +
+    row('Document',  escHtml(a.doc_no || '—')) +
+    row('AWB / Tracking', escHtml(a.tracking_no || '—')) +
+    row('MRN',       `<span style="font-family:'SF Mono','Menlo',monospace;font-size:11px">${escHtml(inp.zc429_mrn || '—')}</span>`) +
+    row('Engine',    escHtml(a.engine_version || '—')) +
+    row('Processed', escHtml(a.timestamp || '—')) +
+    row('Invoices uploaded', invCount
+      ? `<span style="color:var(--green);font-weight:600">${invCount} file${invCount !== 1 ? 's' : ''}</span>`
+      : `<span style="color:var(--label4)">—</span>`) +
+    row('SAD', sadOk
+      ? `<span style="color:var(--green);font-weight:600">&#10003; uploaded</span>`
+      : `<span style="color:var(--red-bg);color:#b91c1c">&#10007; missing</span>`) +
+    row('AWB', awbOk
+      ? `<span style="color:var(--green);font-weight:600">&#10003; uploaded</span>`
+      : `<span style="color:var(--label4)">— not provided</span>`);
+  s1 += `<div class="card"><div class="card-title">Document Information</div>${docInfoHtml}</div>`;
+
+  // ── DHL Pre-check card → s1 (shown when dhl_precheck exists in audit) ──────
+  const pc = a.dhl_precheck || null;
+  const cd = a.customs_declaration || {};
+  if (pc) {
+    const pcCarrier  = (pc.carrier || '').toUpperCase();
+    const pcCif      = pc.invoice_cif_total_usd;
+    const pcFob      = pc.fob_total_usd;
+    const pcFrt      = pc.freight_total_usd;
+    const pcIns      = pc.insurance_total_usd;
+    const pcHint     = pc.clearance_hint || '—';
+    const pcDsk      = pc.dsk_required_hint;
+    const pcNote     = pc.note || '';
+    const pcCount    = pc.invoices_parsed || 0;
+    const pcSource   = pc.cif_source || 'invoice_parser';
+    const pcThresh   = pc.threshold_usd || 2500;
+    const pcAt       = pc.completed_at ? new Date(pc.completed_at).toLocaleString('pl-PL', {timeZone:'UTC'}) + ' UTC' : '—';
+
+    const dskColor   = pcDsk === true  ? '#b45309' : pcDsk === false ? '#15803d' : '#6b7280';
+    const dskIcon    = pcDsk === true  ? '⚠' : pcDsk === false ? '✓' : '—';
+    const dskLabel   = pcDsk === true  ? 'Yes — may be required' : pcDsk === false ? 'No — standard clearance' : 'Pending invoice analysis';
+    const borderCol  = pcDsk === true  ? '#d97706' : pcDsk === false ? 'var(--green)' : 'var(--navy)';
+
+    // Sub-block A: Invoice CIF Check
+    const cifColor = (pcCif != null && pcCif > pcThresh) ? 'badge-amber' : 'badge-green';
+    let subBlockA = `<div class="pipeline-card-subheader">🧾 Invoice CIF Check</div>`;
+    if (pcCif != null) {
+      subBlockA += `<div style="margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0">
+          <span class="lbl">Total CIF</span>
+          <span class="val"><span class="status-badge ${cifColor}">${pcCif.toLocaleString('en-US',{minimumFractionDigits:2})} USD</span></span>
+        </div>
+        ${pcFob  != null ? `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span class="lbl">FOB</span><span class="val">${pcFob.toLocaleString('en-US',{minimumFractionDigits:2})} USD</span></div>` : ''}
+        ${pcFrt  != null ? `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span class="lbl">Freight</span><span class="val">${pcFrt.toLocaleString('en-US',{minimumFractionDigits:2})} USD</span></div>` : ''}
+        ${pcIns  != null ? `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span class="lbl">Insurance</span><span class="val">${pcIns.toLocaleString('en-US',{minimumFractionDigits:2})} USD</span></div>` : ''}
+        <div style="font-size:11px;color:var(--label4);margin-top:6px">
+          Invoices parsed: ${pcCount} &bull; Source: ${escHtml(pcSource)} &bull; Threshold: $${pcThresh.toLocaleString('en-US')} USD
+        </div>
+      </div>`;
+    } else {
+      subBlockA += `<div style="font-size:12px;color:var(--label4);margin-bottom:8px">Invoice value not yet parsed (${escHtml(pcSource)})</div>`;
+    }
+
+    // Sub-block B: DHL Clearance Recommendation
+    const recBadgeClass = pcDsk === true ? 'badge-amber' : 'badge-green';
+    const recBadgeText  = pcDsk === true ? '⚠ DSK / broker document may be required' : '✓ DHL standard clearance likely';
+    let subBlockB = `<div class="pipeline-card-subheader">📋 DHL Clearance Recommendation</div>
+      <div style="margin-bottom:8px">
+        <div style="margin-bottom:6px"><span class="status-badge ${recBadgeClass}">${recBadgeText}</span></div>
+        ${pcNote ? `<div style="font-size:12px;color:var(--label3)">Note: ${escHtml(pcNote)}</div>` : ''}
+      </div>`;
+
+    // Sub-block C: DHL Email Status
+    const clrSt = a.clearance_status || '';
+    let emailBadgeClass, emailBadgeText;
+    if (!clrSt || clrSt === 'awaiting_dhl_customs_email') {
+      emailBadgeClass = 'badge-blue';  emailBadgeText = '⏳ Awaiting DHL customs email';
+    } else if (clrSt === 'dhl_clearance_required') {
+      emailBadgeClass = 'badge-green'; emailBadgeText = '✓ DHL email received — self-clearance';
+    } else if (clrSt === 'external_broker_required') {
+      emailBadgeClass = 'badge-amber'; emailBadgeText = '⚠ DHL email received — broker required';
+    } else if (clrSt === 'sent_to_dhl') {
+      emailBadgeClass = 'badge-green'; emailBadgeText = '✓ Response sent to DHL';
+    } else {
+      emailBadgeClass = 'badge-green'; emailBadgeText = '✓ DHL email received';
+    }
+    let subBlockC = `<div class="pipeline-card-subheader">✉ DHL Email Status</div>
+      <div style="margin-bottom:8px"><span class="status-badge ${emailBadgeClass}">${emailBadgeText}</span></div>`;
+
+    // Admin action buttons
+    const batchIdForPc = escHtml(a.batch_id || '');
+    const awbForPc     = escHtml(a.tracking_no || '');
+    const dskBtnStyle  = pcDsk === true
+      ? `border:1px solid #d97706;background:#fef3c7;color:#92400e`
+      : `border:1px solid var(--separator);background:var(--surface2);color:var(--label3)`;
+    const dskBtnLabel  = pcDsk === true ? '⚠ Generate DSK (recommended)' : 'Generate DSK (optional override)';
+    // Show Send Reply button only when reply_queued status not yet reached
+    const replyAlreadySent = clrSt === 'reply_queued' || clrSt === 'sent_to_dhl';
+    const sendReplyBtnHtml = replyAlreadySent
+      ? `<button disabled style="padding:6px 13px;border-radius:6px;border:1px solid var(--separator);
+               background:var(--surface2);color:var(--label4);font-size:12px;font-weight:600;cursor:not-allowed">
+           ✅ Reply already queued
+         </button>`
+      : `<button onclick="buildAndSendReply('${batchIdForPc}','${awbForPc}',this)"
+           style="padding:6px 13px;border-radius:6px;border:none;background:var(--green);color:#fff;
+                  font-size:12px;font-weight:600;cursor:pointer;transition:opacity .15s"
+           onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+           📤 Build Reply Package &amp; Send to DHL
+         </button>`;
+
+    // Email connector status badge
+    const emailConnStatus = `
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;font-size:11px;color:var(--label4)">
+        <span style="width:7px;height:7px;border-radius:50%;background:#f59e0b;display:inline-block"></span>
+        Email connector: not configured — scan &amp; send via MCP only. Manual override available.
+      </div>`;
+
+    const adminActions = `
+      <div class="pipeline-card-subheader" style="margin-bottom:6px">Admin Actions</div>
+      ${emailConnStatus}
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        <button onclick="scanDhlInbox('${batchIdForPc}')"
+          style="padding:6px 13px;border-radius:6px;border:none;background:#0ea5e9;color:#fff;
+                 font-size:12px;font-weight:600;cursor:pointer;transition:opacity .15s"
+          onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+          🔍 Scan DHL Inbox
+        </button>
+        <button onclick="markDhlEmailReceived('${batchIdForPc}','${awbForPc}')"
+          style="padding:6px 13px;border-radius:6px;border:1px solid #d97706;
+                 background:#fef3c7;color:#92400e;font-size:12px;font-weight:600;cursor:pointer">
+          ✉ Mark DHL Email Received
+        </button>
+        <button onclick="triggerDhlDescription('${batchIdForPc}',this)"
+          style="padding:6px 13px;border-radius:6px;border:1px solid var(--navy);
+                 background:var(--navy-bg);color:var(--navy);font-size:12px;font-weight:600;cursor:pointer">
+          📄 Generate Polish Description
+        </button>
+        <button onclick="triggerDsk('${batchIdForPc}','${awbForPc}',${pcCif || 0},this)"
+          style="padding:6px 13px;border-radius:6px;${dskBtnStyle};font-size:12px;font-weight:600;cursor:pointer">
+          📋 ${dskBtnLabel}
+        </button>
+        ${sendReplyBtnHtml}
+      </div>
+      <div id="dhl-action-result-${batchIdForPc}" style="display:none;margin-top:10px"></div>
+      <div id="dhl-reply-status-${batchIdForPc}" style="margin-top:6px;font-size:12px"></div>`;
+
+    s1 += `<div class="card" style="margin-top:12px;border-left:4px solid ${borderCol}">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px">
+        <div class="card-title" style="margin:0">DHL Pre-check</div>
+        <span style="font-size:11px;color:var(--label4)">${escHtml(pcAt)}</span>
+      </div>
+      ${subBlockA}
+      ${subBlockB}
+      ${subBlockC}
+      ${adminActions}
+      <div id="dhl-scan-result-${escHtml(a.batch_id || '')}" style="margin-top:10px;font-size:12px"></div>
+    </div>`;
+  }
+
+  // PZ / Accounting status header → s3
+  if (!sadOk) {
+    // Red locked card
+    s3 += `<div class="card" style="margin-bottom:12px">
+      <div class="card-title">📊 PZ / Accounting Status</div>
+      <div style="margin-bottom:12px"><span class="status-badge badge-red">🔒 Locked — SAD not uploaded</span></div>
+      <div style="font-size:13px;color:var(--label2);margin-bottom:6px">
+        PZ calculation requires the SAD / ZC429 document.<br>
+        Upload the customs declaration to unlock processing.
+      </div>
+      <div style="font-size:12px;color:var(--label4);margin-top:10px">When SAD is available:</div>
+      <ul style="font-size:12px;color:var(--label4);padding-left:18px;line-height:1.8;margin-top:4px">
+        <li>Duty A00, VAT B00, exchange rate will be parsed</li>
+        <li>PZ document (PDF + XLSX) will be generated</li>
+        <li>Audit report will be created</li>
+      </ul>
+    </div>`;
+  } else if (status === 'draft' || status === 'ready') {
+    // SAD present but not yet processed
+    s3 += `<div class="card" style="margin-bottom:12px">
+      <div class="card-title">📊 PZ / Accounting Status</div>
+      <div style="margin-bottom:8px"><span class="status-badge badge-green">🔓 Ready for PZ processing</span></div>
+      <div style="font-size:13px;color:var(--label3)">SAD is uploaded. Click Process Shipment to start.</div>
+    </div>`;
+  } else if (status === 'success' || status === 'partial') {
+    // PZ complete — add header badge before financial summary
+    s3 += `<div style="margin-bottom:10px"><span class="status-badge badge-green">✓ PZ Complete</span></div>`;
+  }
+
+  // Financial summary card → s3
+  s3 += `<div class="card"><div class="card-title">Financial Summary</div>
+    <table class="fin-table">
+      <tr><td>Net Value</td><td>${escHtml(fmt(t.net))}</td></tr>
+      <tr><td>Gross Value</td><td>${escHtml(fmt(t.gross))}</td></tr>
+      <tr><td>Duty A00</td><td>${escHtml(fmt(t.duty))}</td></tr>
+    </table>
+  </div>`;
+
+  // WorkDrive banner → s3
+  const wdLinks = a.workdrive_links || {};
+  const wdPath  = a.workdrive_batch_folder || a.workdrive_folder_path || '';
+  const wdError = a.workdrive_sync_error || '';
+  if (a.workdrive_synced || Object.keys(wdLinks).length || wdPath) {
+    // Show relative path for readability: strip TrueSync prefix
+    const tsSep = 'My Folders/PZ/';
+    const relPath = wdPath.includes(tsSep)
+      ? 'Zoho WorkDrive → PZ → ' + wdPath.split(tsSep)[1]
+      : wdPath || '—';
+    s3 += `<div class="workdrive-banner" style="margin-top:14px">
+      <span>&#128193;</span>
+      <div>
+        <strong>Stored in Zoho WorkDrive</strong>
+        <br><span style="font-size:11px;font-family:monospace;word-break:break-all">${escHtml(relPath)}</span>
+        ${wdError ? `<br><span style="font-size:11px;color:#b91c1c">⚠ Sync error: ${escHtml(wdError)}</span>` : ''}
+      </div>
+      <button class="wd-copy-btn" onclick="copyText(${JSON.stringify(wdPath || relPath)})">Copy path</button>
+    </div>`;
+  }
+
+  // Verification card → s3
+  const amendFlags = a.amendment_flags || [];
+  const verifyGaps = (a.corrections_log || []).filter(c => c.startsWith('[VERIFY-GAP]'));
+  let verHtml =
+    row('Invoice refs match', chk(v.invoice_refs_match)) +
+    row('CIF match',          chk(v.cif_match)) +
+    row('Qty by type',        chk(v.qty_match_by_type)) +
+    row('Importer',           chk(v.importer_match)) +
+    row('Exporter',           chk(v.exporter_match)) +
+    row('Blocked phrases',    chk(v.blocked_phrases_clean)) +
+    row('Duty rate ok',       chk(v.duty_rate_ok));
+
+  let verExtras = '';
+  if (amendFlags.length) {
+    verExtras += `<div class="alert amber" style="margin-top:12px">
+      <div><strong>Amendment flags:</strong><ul>${amendFlags.map(f => `<li>${escHtml(f)}</li>`).join('')}</ul></div>
+    </div>`;
+  }
+  if (verifyGaps.length) {
+    verExtras += `<div class="alert blue" style="margin-top:12px">
+      <div><strong>Verification gaps (informational):</strong><ul>${
+        verifyGaps.map(g => `<li>${escHtml(g.replace('[VERIFY-GAP]','').trim())}</li>`).join('')
+      }</ul></div>
+    </div>`;
+  }
+
+  s3 += `<div class="card" style="margin-top:14px"><div class="card-title">Verification</div>${verHtml}${verExtras}</div>`;
+
+  // ── DHL Customs Clearance Timeline ─────────────────────────────────────────
+  // Clearance status stored in audit.clearance_status (set by Python engine
+  // and updated by dhl_clearance_handler after DHL email arrives).
+  const clearanceStatus = a.clearance_status || null;
+  const carrier = (a.carrier || (a.batch_meta || {}).carrier || '').toUpperCase();
+
+  if (carrier === 'DHL' || clearanceStatus) {
+    const STATUS_STEPS = [
+      { key: 'shipment_created',               label: 'Shipment created' },
+      { key: 'awaiting_dhl_customs_email',      label: 'Awaiting DHL customs email',      amber: true },
+      { key: 'dhl_clearance_required',          label: 'DHL clearance required (≤$2,500)' },
+      { key: 'external_broker_required',        label: 'External broker required (>$2,500)' },
+      { key: 'dsk_generated',                   label: 'DSK generated' },
+      { key: 'polish_description_generated',    label: 'Polish description generated' },
+      { key: 'reply_package_ready',             label: 'Reply package ready' },
+      { key: 'sent_to_dhl',                     label: 'Sent to DHL' },
+    ];
+
+    // Determine which steps are "reached" given the current status
+    const STATUS_ORDER = STATUS_STEPS.map(s => s.key);
+    const currentIdx = STATUS_ORDER.indexOf(clearanceStatus);
+
+    let timelineHtml = '';
+    for (let i = 0; i < STATUS_STEPS.length; i++) {
+      const step = STATUS_STEPS[i];
+      // Skip steps that are mutually exclusive with the current path
+      if (clearanceStatus === 'dhl_clearance_required' && step.key === 'external_broker_required') continue;
+      if (clearanceStatus === 'external_broker_required'   && step.key === 'dhl_clearance_required') continue;
+      if (clearanceStatus === 'dsk_generated' && step.key === 'polish_description_generated') continue;
+      if (clearanceStatus === 'polish_description_generated' && step.key === 'dsk_generated') continue;
+
+      const reached = currentIdx >= 0 && i <= currentIdx;
+      const isCurrent = step.key === clearanceStatus;
+      const dotColor = reached
+        ? (step.amber && isCurrent ? '#d97706' : 'var(--green)')
+        : 'var(--separator)';
+      const labelColor = isCurrent
+        ? (step.amber ? '#d97706' : 'var(--fg)')
+        : (reached ? 'var(--label2)' : 'var(--label4)');
+      const dot = reached
+        ? `<span style="color:${dotColor};font-weight:700">&#9679;</span>`
+        : `<span style="color:${dotColor}">&#9675;</span>`;
+
+      timelineHtml += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0">
+        ${dot}
+        <span style="font-size:12px;color:${labelColor};${isCurrent ? 'font-weight:600' : ''}">${escHtml(step.label)}</span>
+      </div>`;
+    }
+
+    s1 += `<div class="card" style="margin-top:14px;border-left:4px solid ${
+      clearanceStatus === 'awaiting_dhl_customs_email' ? '#f59e0b' :
+      clearanceStatus === 'sent_to_dhl' ? 'var(--green)' : 'var(--navy)'
+    }">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div class="card-title" style="margin:0">DHL Customs Clearance</div>
+        <button id="scan-dhl-btn"
+          onclick="scanDhlInbox('${escHtml(a.batch_id || '')}')"
+          style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;
+                 background:#0ea5e9;color:#fff;border:none;border-radius:var(--radius-sm);
+                 font-size:12px;font-weight:600;cursor:pointer;transition:opacity .15s"
+          onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+          &#128269; Scan DHL Inbox
+        </button>
+      </div>
+      <div style="margin-top:12px">${timelineHtml}</div>
+    </div>`;
+
+    // DSK card — shown only after clearance is triggered
+    if (clearanceStatus && clearanceStatus !== 'awaiting_dhl_customs_email' && clearanceStatus !== 'shipment_created') {
+      const dsk = a.dsk;
+      if (dsk && dsk.generated === true) {
+        const hashShort = dsk.file_hash_sha256 ? dsk.file_hash_sha256.substring(0, 12) + '...' : '—';
+        s1 += `<div class="card" style="margin-top:10px;border-left:4px solid var(--green)">
+          <div class="card-title" style="color:var(--green)">&#10003; DSK Broker Notification</div>
+          ${row('AWB',  `<span style="font-family:'SF Mono','Menlo',monospace;font-size:12px">${escHtml(dsk.awb_formatted || '—')}</span>`)}
+          ${row('File', escHtml(dsk.filename || '—'))}
+          <div style="margin-top:10px">
+            <a href="/api/v1/dhl/download/${escHtml(dsk.filename || '')}"
+               target="_blank"
+               style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;
+                      background:var(--navy);color:#fff;border-radius:var(--radius-sm);
+                      font-size:12px;font-weight:600;text-decoration:none">
+              &#8659; Download DSK PDF
+            </a>
+          </div>
+        </div>`;
+      }
+      // Polish description card
+      if (a.polish_desc_filename) {
+        s1 += `<div class="card" style="margin-top:10px;border-left:4px solid var(--green)">
+          <div class="card-title" style="color:var(--green)">&#10003; Polish Customs Description</div>
+          ${row('File', escHtml(a.polish_desc_filename || '—'))}
+          <div style="margin-top:10px">
+            <a href="/api/v1/dhl/download/${escHtml(a.polish_desc_filename || '')}"
+               target="_blank"
+               style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;
+                      background:var(--navy);color:#fff;border-radius:var(--radius-sm);
+                      font-size:12px;font-weight:600;text-decoration:none">
+              &#8659; Download Polish Description PDF
+            </a>
+          </div>
+        </div>`;
+      }
+    }
+  }
+
+  // ── SAD / ZC429 Status card → s2 ─────────────────────────────────────────
+  {
+    const hasCdData = !!(cd.mrn || cd.duty_a00_pln || cd.nbp_rate);
+    const sadFilename = escHtml(inp.zc429_file || inp.sad_file || inp.zc429 || '');
+    const batchIdSad  = escHtml(a.batch_id || id);
+
+    if (!sadOk) {
+      // State A: SAD not uploaded
+      s2 += `<div class="card" style="margin-bottom:12px">
+        <div style="margin-bottom:10px"><span class="status-badge badge-amber">⚠ SAD / ZC429 — Not uploaded yet</span></div>
+        <div style="font-size:13px;color:var(--label2);margin-bottom:4px">Upload the SAD / ZC429 document to:</div>
+        <ul style="font-size:13px;color:var(--label3);padding-left:18px;line-height:1.8;margin-bottom:8px">
+          <li>Verify customs declaration (MRN, duty, VAT)</li>
+          <li>Enable PZ accounting calculation</li>
+        </ul>
+        <label style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:6px;
+            border:none;background:var(--navy);color:#fff;font-size:12px;font-weight:700;cursor:pointer;margin-top:2px">
+          📂 Upload SAD / ZC429
+          <input type="file" accept=".pdf" style="display:none"
+            onchange="uploadSadFile(event,'${batchIdSad}')">
+        </label>
+      </div>`;
+    } else if (sadOk && hasCdData) {
+      // State B: SAD uploaded and parsed
+      const mrnVal      = escHtml(cd.mrn || inp.zc429_mrn || '—');
+      const dutyVal     = cd.duty_a00_pln != null ? Number(cd.duty_a00_pln).toLocaleString('pl-PL',{minimumFractionDigits:2}) + ' PLN' : '—';
+      const vatVal      = cd.vat_b00_pln  != null ? Number(cd.vat_b00_pln).toLocaleString('pl-PL',{minimumFractionDigits:2}) + ' PLN' : '—';
+      const rateVal     = cd.nbp_rate     != null ? Number(cd.nbp_rate).toFixed(4) + ' PLN/USD' : '—';
+      const art33aVal   = cd.art33a === true ? 'Yes (Art. 33a)' : 'No';
+      const agentVal    = escHtml(cd.customs_agent  || '—');
+      const clearDtVal  = escHtml(cd.clearance_date || '—');
+      s2 += `<div class="card" style="margin-bottom:12px">
+        <div style="margin-bottom:10px"><span class="status-badge badge-green">✓ SAD / ZC429 — Uploaded &amp; parsed</span></div>
+        ${row('MRN',            `<span style="font-family:'SF Mono','Menlo',monospace;font-size:11px">${mrnVal}</span>`)}
+        ${row('Duty A00',       `<span style="font-weight:700">${dutyVal}</span>`)}
+        ${row('VAT B00',        `${vatVal} <span style="color:var(--label4);font-size:11px">(reference only)</span>`)}
+        ${row('Exchange Rate',  rateVal)}
+        ${row('Art. 33a VAT',   art33aVal)}
+        ${row('Customs Agent',  agentVal)}
+        ${row('Clearance Date', clearDtVal)}
+      </div>`;
+    } else {
+      // State C: SAD uploaded, not yet parsed
+      s2 += `<div class="card" style="margin-bottom:12px">
+        <div style="margin-bottom:8px"><span class="status-badge badge-blue">⏳ SAD / ZC429 — Uploaded, awaiting parsing</span></div>
+        ${sadFilename ? `<div style="font-size:12px;color:var(--label3);margin-bottom:4px">File: ${sadFilename}</div>` : ''}
+        <div style="font-size:12px;color:var(--label4)">Run PZ processing to parse SAD data.</div>
+      </div>`;
+    }
+  }
+
+  // ── Customs Description Package card ──────────────────────────────────────
+  // Shown whenever clearance_status is set and is not 'shipment_created'
+  if (clearanceStatus && clearanceStatus !== 'shipment_created') {
+    const pdfFn   = a.polish_desc_filename || a.customs_pdf_filename || '';
+    const jsonFn  = a.sad_ready_filename   || a.customs_json_filename || '';
+    const pdfHash = a.customs_pdf_hash  || '';
+    const jsonHash= a.customs_json_hash || '';
+    const genAt   = a.customs_package_generated_at || '';
+    const approvedBy = a.customs_approved_by || '';
+    const approvedAt = a.customs_approved_at || '';
+    const batchId    = a.batch_id || id;
+
+    if (pdfFn || jsonFn) {
+      // Package already generated — show green card
+      const pdfHashShort  = pdfHash  ? pdfHash.substring(0, 10) + '…'  : '—';
+      const jsonHashShort = jsonHash ? jsonHash.substring(0, 10) + '…' : '—';
+      const genDisplay    = genAt ? new Date(genAt).toLocaleString('pl-PL', {timeZone:'UTC'}) + ' UTC' : '—';
+
+      let approvalHtml = '';
+      if (approvedBy && approvedAt) {
+        const approvedDisplay = new Date(approvedAt).toLocaleString('pl-PL', {timeZone:'UTC'}) + ' UTC';
+        approvalHtml = `<div style="margin-top:10px;padding:8px 12px;border-radius:6px;
+                          background:var(--green-bg);border:1px solid rgba(22,163,74,.25);
+                          font-size:12px;color:#15803d;font-weight:600">
+          &#10003; Approved by ${escHtml(approvedBy)} on ${escHtml(approvedDisplay)}
+        </div>`;
+      } else {
+        approvalHtml = `<button onclick="approveCustomsDesc('${escHtml(batchId)}')"
+            style="display:inline-flex;align-items:center;gap:6px;padding:7px 16px;
+                   background:var(--green);color:#fff;border:none;
+                   border-radius:var(--radius-sm);font-size:12px;font-weight:600;
+                   cursor:pointer;transition:opacity .15s;margin-top:10px"
+            onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'"
+            title="Confirm this description has been reviewed">
+          &#9998; Approve Description
+        </button>`;
+      }
+
+      // ── Classification summary row ──────────────────────────────────────────
+      const cs = a.classification_summary || {};
+      let classHtml = '';
+      if (Object.keys(cs).length) {
+        const allOkIcon  = cs.all_ok
+          ? `<span style="color:var(--green);font-weight:700">&#10003; All OK</span>`
+          : `<span style="color:var(--amber);font-weight:700">&#9888; Review needed</span>`;
+        const warnTxt  = cs.warnings   ? `<span style="color:var(--amber);font-size:11px;margin-left:8px">${cs.warnings} warning${cs.warnings!==1?'s':''}</span>` : '';
+        const mmTxt    = cs.mismatches ? `<span style="color:var(--red);font-size:11px;margin-left:6px">${cs.mismatches} mismatch${cs.mismatches!==1?'es':''}</span>` : '';
+        const invHsnTxt= `<span style="color:var(--label3);font-size:11px;margin-left:6px">${cs.lines_with_hs_from_invoice||0} lines with HSN, ${cs.lines_without_hs||0} without</span>`;
+        classHtml = row('HS Classification', `${allOkIcon}${warnTxt}${mmTxt}${invHsnTxt}`);
+      }
+
+      // ── Customs value breakdown (FOB/Freight/Insurance/CIF) ───────────────
+      const cvb = a.customs_value_breakdown || {};
+      let cifHtml = '';
+      if (cvb.cif_usd !== undefined) {
+        cifHtml = `<div style="margin-top:8px;padding:8px 10px;background:var(--surface2);
+                    border:1px solid var(--separator);border-radius:var(--radius-sm);font-size:12px">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;
+                      color:var(--label4);margin-bottom:6px">Customs Value Breakdown</div>
+          <table style="width:100%;border-collapse:collapse">
+            <tr><td style="color:var(--label3);padding:2px 0">FOB</td>
+                <td style="text-align:right;font-weight:600;color:var(--label2)">${(cvb.fob_usd||0).toLocaleString('en-US',{minimumFractionDigits:2})} USD</td></tr>
+            <tr><td style="color:var(--label3);padding:2px 0">Freight</td>
+                <td style="text-align:right;font-weight:600;color:var(--label2)">${(cvb.freight_usd||0).toLocaleString('en-US',{minimumFractionDigits:2})} USD</td></tr>
+            <tr><td style="color:var(--label3);padding:2px 0">Insurance</td>
+                <td style="text-align:right;font-weight:600;color:var(--label2)">${(cvb.insurance_usd||0).toLocaleString('en-US',{minimumFractionDigits:2})} USD</td></tr>
+            <tr style="border-top:1px solid var(--separator)">
+                <td style="color:var(--label2);font-weight:700;padding-top:4px">CIF Total</td>
+                <td style="text-align:right;font-weight:700;color:var(--navy);padding-top:4px">${(cvb.cif_usd||0).toLocaleString('en-US',{minimumFractionDigits:2})} USD</td></tr>
+          </table>
+          <div style="font-size:10px;color:var(--label4);margin-top:4px">Source: ${escHtml(cvb.source||'--')}</div>
+        </div>`;
+      }
+
+      // ── Reply validation banner ───────────────────────────────────────────
+      const rv = a.reply_validation || {};
+      let replyValidationHtml = '';
+      if (rv.blocked === true && rv.errors && rv.errors.length) {
+        replyValidationHtml = `<div style="margin-top:8px;padding:10px 12px;border-radius:6px;
+            background:var(--red-bg);border:1px solid rgba(220,38,38,.25);
+            font-size:12px;color:#991b1b;font-weight:600">
+          &#128683; Reply blocked: ${escHtml(rv.errors[0])}
+          ${rv.errors.length > 1 ? `<ul style="margin-top:4px;padding-left:16px;font-weight:400">${rv.errors.slice(1).map(e=>`<li>${escHtml(e)}</li>`).join('')}</ul>` : ''}
+        </div>`;
+      }
+
+      // ── Conversation thread history ───────────────────────────────────────
+      const convLog = a.dhl_conversation || {};
+      const emailCount = convLog.email_count || 0;
+      const latestVersion = convLog.responses ? convLog.responses.length : 0;
+      let convHtml = '';
+      if (emailCount > 1) {
+        convHtml = `<div style="margin-top:8px;padding:8px 12px;background:var(--navy-bg);
+            border:1px solid rgba(30,64,175,.15);border-radius:6px;font-size:12px;color:var(--navy)">
+          DHL email thread: ${emailCount} emails &mdash; Response v${latestVersion}
+          <button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'"
+            style="margin-left:8px;padding:2px 8px;border:1px solid var(--navy);border-radius:4px;
+                   background:transparent;color:var(--navy);font-size:11px;font-weight:600;cursor:pointer">
+            Expand
+          </button>
+          <div style="display:none;margin-top:8px">
+            ${(convLog.emails||[]).map((em,i)=>`
+              <div style="padding:4px 0;border-bottom:1px solid rgba(30,64,175,.1);font-size:11px">
+                <strong>Email ${i+1}</strong> &mdash; ${escHtml(em.received_at||'--')}
+                | Intent: ${escHtml((em.intent||{}).request_type||'unknown')}
+                | Response v${em.response_version||'--'}
+              </div>`).join('')}
+          </div>
+        </div>`;
+      }
+
+      // ── Decision reason display ───────────────────────────────────────────
+      const dr = a.clearance_decision_reason || {};
+      let decisionHtml = '';
+      if (dr.routing_basis) {
+        const intentLabel = dr.request_type ? escHtml(dr.request_type.replace('_',' ')) : '--';
+        const kwds = [...(dr.broker_keywords_found||[]), ...(dr.translation_keywords_found||[])];
+        const kwdStr = kwds.length ? kwds.map(k=>`<code style="font-size:10px;background:var(--bg);padding:1px 4px;border-radius:3px">${escHtml(k)}</code>`).join(' ') : '<span style="color:var(--label4)">none</span>';
+        decisionHtml = `<details style="margin-top:8px">
+          <summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--label3);
+                          text-transform:uppercase;letter-spacing:.06em;list-style:none">
+            &#9658; Routing Decision
+          </summary>
+          <div style="margin-top:8px;padding:8px 10px;background:var(--surface2);
+                      border:1px solid var(--separator);border-radius:var(--radius-sm);font-size:12px;line-height:1.7">
+            <div><span style="color:var(--label4)">Email intent:</span> <strong>${intentLabel}</strong></div>
+            <div><span style="color:var(--label4)">Keywords detected:</span> ${kwdStr}</div>
+            <div><span style="color:var(--label4)">Value routing hint:</span> ${escHtml(dr.routing_hint||'--')}</div>
+            <div><span style="color:var(--label4)">Final action:</span> <strong>${escHtml(dr.final_action||'--')}</strong></div>
+            <div><span style="color:var(--label4)">Basis:</span> <span style="font-weight:600;color:${dr.routing_basis==='email_content'?'var(--green)':'var(--amber)'}">${escHtml(dr.routing_basis||'--')}</span></div>
+          </div>
+        </details>`;
+      }
+
+      s2 += `<div class="card" style="margin-top:10px;border-left:4px solid var(--green)">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+          <div class="card-title" style="margin:0;color:var(--green)">&#10003; Customs Description Package</div>
+        </div>
+        ${replyValidationHtml}
+        ${classHtml}
+        ${pdfFn ? row('Polish Description PDF',
+            `<span style="font-family:monospace;font-size:11px">${escHtml(pdfFn)}</span>
+             <a href="/api/v1/dhl/download/${escHtml(pdfFn)}" target="_blank"
+                style="margin-left:8px;font-size:11px;font-weight:600;color:var(--navy);text-decoration:none">&#8659; Download</a>`) : ''}
+        ${jsonFn ? row('SAD-Ready JSON',
+            `<span style="font-family:monospace;font-size:11px">${escHtml(jsonFn)}</span>
+             <a href="/api/v1/dhl/download/${escHtml(jsonFn)}" target="_blank"
+                style="margin-left:8px;font-size:11px;font-weight:600;color:var(--navy);text-decoration:none">&#8659; Download</a>
+             <button onclick="showSadReview('${escHtml(batchId)}')"
+                style="margin-left:6px;padding:2px 8px;border-radius:4px;border:1px solid var(--navy);
+                       background:var(--navy-bg);color:var(--navy);font-size:11px;font-weight:600;cursor:pointer">
+                Review
+             </button>`) : ''}
+        ${pdfHash  ? row('Hash (PDF)',  `<span style="font-family:monospace;font-size:11px;color:var(--label3)">${pdfHashShort}</span>`)  : ''}
+        ${jsonHash ? row('Hash (JSON)', `<span style="font-family:monospace;font-size:11px;color:var(--label3)">${jsonHashShort}</span>`) : ''}
+        ${genAt    ? row('Generated',   escHtml(genDisplay)) : ''}
+        ${cifHtml}
+        ${convHtml}
+        ${decisionHtml}
+        ${approvalHtml}
+        <div id="approve-desc-status-${escHtml(batchId)}" style="font-size:12px;color:var(--label4);margin-top:6px"></div>
+      </div>`;
+    } else if (clearanceStatus === 'awaiting_dhl_customs_email') {
+      // Amber pending state
+      s2 += `<div class="card" style="margin-top:10px;border-left:4px solid var(--amber)">
+        <div class="card-title" style="margin-bottom:6px;color:var(--amber)">&#9203; Customs Description</div>
+        <div style="font-size:13px;color:#92400e">
+          Awaiting DHL customs email to trigger description generation.
+        </div>
+      </div>`;
+    }
+  }
+
+  // Assemble final HTML from the three pipeline sections
+  const html = (waitingBanner || '')
+    + renderSectionHeader('📦', 'Shipment & DHL Clearance') + s1
+    + renderSectionHeader('📋', 'Customs Documents') + s2
+    + renderSectionHeader('📊', 'PZ / Accounting') + s3;
+
+  // DHL Scan Result modal (hidden by default)
+  if (!document.getElementById('dhl-scan-modal')) {
+    const modalHtml = `<div id="dhl-scan-modal"
+        style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;
+               align-items:center;justify-content:center">
+      <div style="background:var(--bg);border-radius:12px;padding:28px;max-width:600px;width:92%;
+                  max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div style="font-weight:700;font-size:16px">DHL Inbox Scan Results</div>
+          <button onclick="document.getElementById('dhl-scan-modal').style.display='none'"
+                  style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--label3)">&#10005;</button>
+        </div>
+        <div id="dhl-scan-modal-body" style="font-size:13px">Loading...</div>
+      </div>
+    </div>`;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+  }
+
+  document.getElementById('summary-content').innerHTML = html;
+}
+
+function renderDocButtons(batchId, fd, auditData) {
+  const files      = (fd && fd.files) ? fd.files : {};
+  const audit      = auditData || {};
+  const auditErr   = audit.audit_generation_error      || '';
+  const auditStat  = audit.audit_generation_status     || '';   // 'ok'|'failed'|'pending'|'not_run'
+  const corrErr    = audit.correction_generation_error || '';
+
+  const docs = [
+    { key: 'pz_pdf',      label: 'PZ Document',      icon: '&#128196;', ext: 'PDF',  errKey: null },
+    { key: 'calc_xlsx',   label: 'Calculation',       icon: '&#128202;', ext: 'XLSX', errKey: null },
+    { key: 'audit_en',    label: 'Audit Report EN',   icon: '&#128196;', ext: 'PDF',  errKey: 'audit' },
+    { key: 'audit_pl',    label: 'Audit Report PL',   icon: '&#128196;', ext: 'PDF',  errKey: 'audit' },
+    { key: 'audit_memo',  label: 'Audit Memo',        icon: '&#128196;', ext: 'PDF',  errKey: 'audit' },
+    { key: 'corrections', label: 'Correction Report', icon: '&#128203;', ext: 'JSON', errKey: 'correction' },
+  ];
+
+  let html = '<div class="doc-grid">';
+  docs.forEach(d => {
+    const f = files[d.key];
+    if (f && f.exists && f.url) {
+      html += `<a class="doc-btn" href="${escHtml(f.url)}" download title="${escHtml(d.label)}">
+        <span class="doc-icon">${d.icon}</span>
+        <span class="doc-name-txt">${escHtml(d.label)}</span>
+        <span class="doc-status-txt">${escHtml(d.ext)} &#8659; Download</span>
+      </a>`;
+    } else {
+      let reason = 'Not generated';
+      let isError = false;
+
+      if (d.errKey === 'audit') {
+        if (auditErr) {
+          // Shorten long Python tracebacks to the last meaningful line
+          const lines = auditErr.split('\n').map(l => l.trim()).filter(Boolean);
+          const shortErr = lines[lines.length - 1] || auditErr;
+          reason  = `Generation failed: ${shortErr.slice(0, 90)}${shortErr.length > 90 ? '…' : ''}`;
+          isError = true;
+        } else if (auditStat === 'failed') {
+          reason  = 'Generation failed (check service log)';
+          isError = true;
+        } else if (!auditStat || auditStat === 'not_run') {
+          reason = 'Not generated (batch pre-dates audit engine)';
+        }
+      } else if (d.errKey === 'correction' && corrErr) {
+        const lines = corrErr.split('\n').map(l => l.trim()).filter(Boolean);
+        const shortErr = lines[lines.length - 1] || corrErr;
+        reason  = `Generation failed: ${shortErr.slice(0, 90)}${shortErr.length > 90 ? '…' : ''}`;
+        isError = true;
+      }
+
+      html += `<div class="doc-btn disabled" title="${escHtml(d.label)} — ${escHtml(reason)}">
+        <span class="doc-icon" style="opacity:.4">${d.icon}</span>
+        <span class="doc-name-txt" style="color:var(--label4)">${escHtml(d.label)}</span>
+        <span class="doc-status-txt" style="${isError ? 'color:var(--amber)' : ''}">${escHtml(reason)}</span>
+      </div>`;
+    }
+  });
+  html += '</div>';
+  return html;
+}
+
+
+/* ═══════════════════════ documents tab ═══════════════════════ */
+function renderSourceFileBadge(file) {
+  // file = { name, url, exists } from source_files API
+  if (file.url) {
+    return `<a class="source-file-card" href="${escHtml(file.url)}" download title="Download ${escHtml(file.name)}">
+      <span class="source-file-icon">&#128196;</span>
+      <span class="source-file-name">${escHtml(file.name)}</span>
+      <span class="source-file-dl">&#8659; PDF</span>
+    </a>`;
+  }
+  return `<span class="file-badge">&#128196; ${escHtml(file.name)}</span>`;
+}
+
+function renderDocuments(a) {
+  const fd  = a.files_detail || {};
+  const inp = a.inputs || {};
+  const sf  = fd.source_files || {};   // populated by new API
+  let html  = '';
+
+  // ── Section 1: Uploaded Shipment Documents ──
+  html += `<div class="card">`;
+  html += `<div class="file-section-heading">Uploaded Shipment Documents</div>`;
+  html += `<div class="source-docs-section">`;
+
+  // Invoices row — prefer source_files (clickable links), fall back to inp for name-only
+  const srcInvoices = sf.invoices || [];
+  const inpInvoices = inp.invoice_files || inp.invoice_pdfs || inp.invoices || [];
+  html += `<div class="source-row"><span class="source-cat">Invoices (${srcInvoices.length || inpInvoices.length}):</span><span>`;
+  if (srcInvoices.length) {
+    srcInvoices.forEach(f => { html += renderSourceFileBadge(f) + ' '; });
+  } else if (inpInvoices.length) {
+    inpInvoices.forEach(f => {
+      const name = typeof f === 'string' ? f : (f.file_name || f.name || String(f));
+      html += `<span class="file-badge">&#128196; ${escHtml(name)}</span> `;
+    });
+  } else {
+    html += `<span class="file-badge-missing">Missing from shipment</span>`;
+  }
+  html += `</span></div>`;
+
+  // SAD / ZC429 row
+  const srcSad = sf.sad && sf.sad.length ? sf.sad[0] : null;
+  const inpSad = inp.zc429_file || inp.sad_file || inp.zc429 || '';
+  html += `<div class="source-row"><span class="source-cat">SAD / ZC429:</span><span>`;
+  if (srcSad) {
+    html += renderSourceFileBadge(srcSad);
+  } else if (inpSad) {
+    const name = typeof inpSad === 'string' ? inpSad : (inpSad.file_name || inpSad.name || String(inpSad));
+    html += `<span class="file-badge">&#128196; ${escHtml(name)}</span>`;
+  } else {
+    html += `<span class="file-badge-missing">Missing from shipment</span>`;
+  }
+  html += `</span></div>`;
+
+  // AWB row
+  const srcAwb = sf.awb && sf.awb.length ? sf.awb[0] : null;
+  const inpAwb = inp.awb_file || inp.awb || '';
+  html += `<div class="source-row"><span class="source-cat">AWB / Tracking PDF:</span><span>`;
+  if (srcAwb) {
+    html += renderSourceFileBadge(srcAwb);
+  } else if (inpAwb) {
+    const name = typeof inpAwb === 'string' ? inpAwb : (inpAwb.file_name || inpAwb.name || String(inpAwb));
+    html += `<span class="file-badge">&#128196; ${escHtml(name)}</span>`;
+  } else {
+    html += `<span class="file-badge-missing">Missing from shipment</span>`;
+  }
+  html += `</span></div>`;
+
+  html += `</div>`; // end source-docs-section
+  html += `</div>`; // end card
+
+  // ── Section 2: Generated Output Documents ──
+  html += `<div class="card" style="margin-top:14px">`;
+  html += `<div class="file-section-heading">Generated Output Documents</div>`;
+  html += renderDocButtons(a.batch_id, fd, a);
+  html += `</div>`;
+
+  document.getElementById('documents-content').innerHTML = html;
+}
+
+
+/* ═══════════════════════ audit review tab ═══════════════════════ */
+function renderAuditReview(a) {
+  const CHECK_LABELS = {
+    importer:         'Importer',
+    exporter:         'Exporter',
+    invoice_refs:     'Invoice References',
+    invoice_refs_match: 'Invoice References',
+    cif_value:        'CIF Value',
+    cif_match:        'CIF Value',
+    duty_rate:        'Duty Rate',
+    duty_rate_ok:     'Duty Rate',
+    qty_by_type:      'Quantity by Type',
+    qty_match_by_type:'Quantity by Type',
+    net_weight:       'Net Weight',
+    gross_weight:     'Gross Weight',
+    country_of_origin:'Country of Origin',
+    currency:         'Currency',
+    total_net:        'Total Net Value',
+    total_gross:      'Total Gross Value',
+    total_duty:       'Total Duty A00',
+    importer_match:   'Importer',
+    exporter_match:   'Exporter',
+    blocked_phrases_clean: 'Blocked Phrases',
+  };
+
+  const v            = a.verification || {};
+  const amendFlags   = a.amendment_flags || [];
+  const verifyGaps   = (a.corrections_log || []).filter(c => c.startsWith('[VERIFY-GAP]'));
+  const auditScore   = a.audit_score;
+  const riskLevel    = a.risk_level || '';
+  const cd           = a.customs_declaration || {};
+
+  let html = '';
+
+  // ── Customs Declaration ──────────────────────────────────────────────────────
+  if (cd && (cd.mrn || cd.customs_agent || cd.sad_customs_rate)) {
+    html += `<div class="card" style="margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:12px">&#127984; Customs Declaration</div>`;
+
+    // Identity row
+    const identityRows = [];
+    if (cd.mrn)           identityRows.push(`<div><span class="detail-label">MRN</span><span class="detail-value mono">${escHtml(cd.mrn)}</span></div>`);
+    if (cd.lrn)           identityRows.push(`<div><span class="detail-label">LRN</span><span class="detail-value mono">${escHtml(cd.lrn)}</span></div>`);
+    if (cd.clearance_date)identityRows.push(`<div><span class="detail-label">Clearance Date</span><span class="detail-value">${escHtml(cd.clearance_date)}</span></div>`);
+    if (cd.customs_agent) identityRows.push(`<div><span class="detail-label">Customs Agent</span><span class="detail-value">${escHtml(cd.customs_agent)}</span></div>`);
+    if (cd.importer_name) identityRows.push(`<div><span class="detail-label">Importer</span><span class="detail-value">${escHtml(cd.importer_name)}${cd.importer_nip ? ` <span style="color:#6b7280;font-size:12px">(NIP: ${escHtml(cd.importer_nip)})</span>` : ''}</span></div>`);
+    if (cd.exporter_name) identityRows.push(`<div><span class="detail-label">Exporter</span><span class="detail-value">${escHtml(cd.exporter_name)}</span></div>`);
+    if (identityRows.length) {
+      html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px 20px;margin-bottom:14px">
+        ${identityRows.join('')}
+      </div>`;
+    }
+
+    // Exchange Rates
+    if (cd.sad_customs_rate || cd.nbp_rate) {
+      html += `<div class="card-section-label" style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af;margin:10px 0 6px">Exchange Rates</div>`;
+      html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px 20px">`;
+      if (cd.sad_customs_rate) {
+        const pmA = cd.a00_payment_method ? ` <span style="color:#6b7280;font-size:12px">(${escHtml(cd.a00_payment_method)})</span>` : '';
+        html += `<div><span class="detail-label">SAD Customs Rate</span><span class="detail-value mono">${cd.sad_customs_rate.toFixed(4)} PLN/USD${pmA}</span></div>`;
+      }
+      if (cd.nbp_rate) {
+        const nbpMeta = cd.nbp_table ? ` <span style="color:#6b7280;font-size:12px">${escHtml(cd.nbp_table)}${cd.nbp_date ? ', ' + escHtml(cd.nbp_date) : ''}</span>` : '';
+        html += `<div><span class="detail-label">NBP Accounting Rate</span><span class="detail-value mono">${cd.nbp_rate.toFixed(4)} PLN/USD${nbpMeta}</span></div>`;
+      }
+      if (cd.rate_delta != null) {
+        html += `<div><span class="detail-label">Rate Difference</span><span class="detail-value mono">${cd.rate_delta.toFixed(4)} PLN/USD${cd.rate_delta_pct != null ? ` (${cd.rate_delta_pct.toFixed(2)}%)` : ''}</span></div>`;
+      }
+      html += `</div>`;
+      if (cd.rate_alert) {
+        html += `<div class="alert amber" style="margin-top:8px;padding:8px 12px">
+          &#9888; Rate difference exceeds 1% — verify exchange rate applied on SAD
+        </div>`;
+      }
+    }
+
+    // Values — Invoice CIF vs SAD CIF
+    // Use v.cif_match (engine verification) as primary truth; cd.values_match as secondary
+    {
+      const cifVerified = v.cif_match === true  || cd.values_match === true;
+      const cifMismatch = v.cif_match === false || cd.values_match === false;
+      // Only show this section when we have at least one CIF value
+      const hasCifData  = cd.invoice_cif_usd || cd.sad_cif_usd || cd.awb_customs_value_usd || cd.sad_invoice_value_usd;
+      if (hasCifData) {
+        html += `<div class="card-section-label" style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af;margin:10px 0 6px">Values</div>`;
+        html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px 20px">`;
+        const fmtUsd = val => val != null ? `$${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—';
+
+        // Invoice CIF (always show if present)
+        const invCif = cd.invoice_cif_usd || cd.awb_customs_value_usd;
+        if (invCif != null) html += `<div><span class="detail-label">Invoice CIF Total</span><span class="detail-value mono">${fmtUsd(invCif)}</span></div>`;
+
+        // SAD CIF — prefer specific sad_invoice_value_usd, fall back to sad_cif_usd
+        const sadCif = cd.sad_invoice_value_usd != null && cd.sad_invoice_value_usd > 0
+                       ? cd.sad_invoice_value_usd
+                       : (cd.sad_cif_usd != null && cd.sad_cif_usd > 0 ? cd.sad_cif_usd : null);
+        if (sadCif != null) {
+          html += `<div><span class="detail-label">SAD Invoice Value</span><span class="detail-value mono">${fmtUsd(sadCif)}</span></div>`;
+        } else {
+          html += `<div><span class="detail-label">SAD Invoice Value</span><span class="detail-value" style="color:var(--label4)">Not parsed from SAD</span></div>`;
+        }
+
+        // Difference — only show when both values exist and are distinct
+        if (invCif != null && sadCif != null) {
+          const diff = Math.abs(invCif - sadCif);
+          const diffColor = diff > 0.5 ? 'var(--amber)' : 'var(--green)';
+          html += `<div><span class="detail-label">Difference</span><span class="detail-value mono" style="color:${diffColor};font-weight:600">$${diff.toFixed(2)}</span></div>`;
+          if (diff > 0.5) {
+            html += `<div><span class="detail-label" style="grid-column:1/-1"></span></div>`;
+          }
+        }
+
+        if (cd.statistical_value_pln) {
+          html += `<div><span class="detail-label">Statistical Value</span><span class="detail-value mono">${fmtPLN(cd.statistical_value_pln)} PLN</span></div>`;
+        }
+
+        // Status — engine cif_match is the truth
+        let valStatus, valColor;
+        if (cifVerified) {
+          valStatus = '&#10003; Verified'; valColor = 'var(--green)';
+        } else if (cifMismatch) {
+          valStatus = '&#9888; Verification needed'; valColor = 'var(--amber)';
+        } else if (invCif && !sadCif) {
+          valStatus = '&#8212; Format not supported / SAD value not parsed'; valColor = 'var(--label3)';
+        } else {
+          valStatus = '&#8212; Could not verify'; valColor = 'var(--label3)';
+        }
+        html += `<div><span class="detail-label">Status</span><span class="detail-value" style="color:${valColor};font-weight:600">${valStatus}</span></div>`;
+        html += `</div>`;
+        if (cd.cif_alert && cifMismatch) {
+          html += `<div class="alert amber" style="margin-top:8px;padding:8px 12px">&#9888; Invoice CIF vs SAD invoice value differ by more than $0.50 — verify declared customs value</div>`;
+        }
+      }
+    }
+
+    // Duties
+    if (cd.duty_a00_pln != null || cd.vat_b00_pln != null) {
+      html += `<div class="card-section-label" style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af;margin:10px 0 6px">Duties & VAT</div>`;
+      html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px 20px">`;
+      if (cd.duty_a00_pln != null) {
+        const pmA = cd.a00_payment_method ? ` <span style="color:#6b7280;font-size:12px">(Method: ${escHtml(cd.a00_payment_method)})</span>` : '';
+        html += `<div><span class="detail-label">A00 Duty Payable</span><span class="detail-value">${fmtPLN(cd.duty_a00_pln)}${pmA}</span></div>`;
+      }
+      if (cd.vat_b00_pln != null) {
+        const pmB = cd.b00_payment_method ? ` <span style="color:#6b7280;font-size:12px">(Method: ${escHtml(cd.b00_payment_method)})</span>` : '';
+        html += `<div><span class="detail-label">B00 VAT (reference)</span><span class="detail-value">${fmtPLN(cd.vat_b00_pln)}${pmB}</span></div>`;
+      }
+      html += `</div>`;
+    }
+
+    // VAT Mode badge
+    if (cd.vat_mode) {
+      const isArt33a     = cd.art33a === true;
+      const vatBadgeColor = isArt33a ? '#15803d' : '#92400e';
+      const vatBadgeBg    = isArt33a ? '#dcfce7' : '#fef3c7';
+      const vatBadgeBorder= isArt33a ? '#86efac' : '#fcd34d';
+      const vatLabel      = cd.vat_mode_label_en || (isArt33a ? 'Art. 33a — VAT deferred (settled in VAT return)' : 'Standard import — VAT paid at customs');
+      html += `<div style="margin-top:10px">
+        <span style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;border:1px solid ${vatBadgeBorder};background:${vatBadgeBg};color:${vatBadgeColor};font-size:13px;font-weight:600">
+          ${isArt33a ? '&#10003; Art. 33a' : '&#9679; Standard VAT'}&nbsp;—&nbsp;${escHtml(vatLabel)}
+        </span>
+        ${cd.a00_payment_method ? `<span style="margin-left:10px;font-size:12px;color:var(--label3)">A00: ${escHtml(cd.a00_payment_method)}</span>` : ''}
+        ${cd.b00_payment_method ? `<span style="margin-left:6px;font-size:12px;color:var(--label3)">B00: ${escHtml(cd.b00_payment_method)}</span>` : ''}
+      </div>`;
+    }
+
+    // AWB transport refs
+    if (cd.transport_refs && cd.transport_refs.length) {
+      html += `<div style="margin-top:10px">
+        <span class="detail-label">SAD Transport Refs</span>
+        <span class="detail-value mono">${cd.transport_refs.map(escHtml).join(' &middot; ')}</span>
+      </div>`;
+    }
+
+    // SAD Quantity + Goods Description
+    html += `<div class="card-section-label" style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af;margin:10px 0 6px">SAD Quantity</div>`;
+    if (cd.sad_qty_total != null) {
+      const qtyByType = cd.sad_qty_by_type || {};
+      const qtyParts  = Object.entries(qtyByType).map(([k,v]) => `${escHtml(String(k))}: ${v}`);
+      html += `<div style="margin-bottom:4px"><span class="detail-label">Supplementary Qty</span><span class="detail-value">${cd.sad_qty_total}${qtyParts.length ? ` <span style="color:#6b7280;font-size:12px">(${qtyParts.join(', ')})</span>` : ''}</span></div>`;
+    } else {
+      html += `<div style="margin-bottom:4px"><span class="detail-label">Supplementary Qty</span><span class="detail-value" style="color:var(--label4)">— not parsed from SAD</span></div>`;
+    }
+    if (cd.goods_description) {
+      html += `<div style="margin-bottom:4px"><span class="detail-label">Goods Description</span><span class="detail-value">${escHtml(cd.goods_description)}</span></div>`;
+    }
+    if (cd.cn_code) {
+      html += `<div><span class="detail-label">CN / TARIC Code</span><span class="detail-value mono">${escHtml(cd.cn_code)}</span></div>`;
+    }
+
+    html += `</div>`;
+  }
+
+  // Invoice Quantity Summary (from parsed invoice items)
+  const it = a.invoice_totals || {};
+  const pc = it.product_counts || {};
+  if (it.total_pcs > 0) {
+    const qtyVerif = a.verification || {};
+    const qtyMatch = qtyVerif.qty_match_by_type;
+    const qtyStatusText = qtyMatch === true  ? 'Verified'
+                        : qtyMatch === false ? 'Mismatch with SAD'
+                        : (cd && cd.sad_qty_total) ? 'Partially verified — invoice item quantities parsed; SAD gives combined jewellery description.'
+                        : 'Category split not available in SAD';
+    const qtyStatusColor = qtyMatch === true ? 'var(--green)' : qtyMatch === false ? 'var(--red)' : 'var(--amber)';
+
+    html += `<div class="card" style="margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:12px">&#128178; Invoice Quantity Summary</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px 20px;margin-bottom:10px">
+        <div><span class="detail-label">Total PCS</span><span class="detail-value" style="font-size:17px;font-weight:700">${it.total_pcs}</span></div>
+        ${pc.rings        ? `<div><span class="detail-label">Rings</span><span class="detail-value">${pc.rings}</span></div>` : ''}
+        ${pc.pendants     ? `<div><span class="detail-label">Pendants</span><span class="detail-value">${pc.pendants}</span></div>` : ''}
+        ${pc.bracelets    ? `<div><span class="detail-label">Bracelets</span><span class="detail-value">${pc.bracelets}</span></div>` : ''}
+        ${pc.earrings     ? `<div><span class="detail-label">Earrings</span><span class="detail-value">${pc.earrings}</span></div>` : ''}
+        ${pc.necklaces    ? `<div><span class="detail-label">Necklaces</span><span class="detail-value">${pc.necklaces}</span></div>` : ''}
+        ${pc.other_jewellery ? `<div><span class="detail-label">Other Jewellery</span><span class="detail-value">${pc.other_jewellery}</span></div>` : ''}
+      </div>
+      <div style="margin-top:6px">
+        <span class="detail-label">Qty Verification</span>
+        <span style="font-size:12px;font-weight:600;color:${qtyStatusColor}">${qtyStatusText}</span>
+      </div>
+    </div>`;
+  }
+
+  // ── Curated Verification Checks (business-level only) ─────────────────────
+  // Raw technical keys are kept in the Technical Log tab only.
+  html += `<div class="card"><div class="card-title">Verification Checks</div>`;
+  if (Object.keys(v).length) {
+    // Helper to build a curated check row
+    const mkRow = (label, val, detail) => {
+      let badge;
+      if      (val === true)  badge = `<span class="verify-true">&#10003; Verified</span>`;
+      else if (val === false) badge = `<span class="verify-false">&#10005; Mismatch</span>`;
+      else                    badge = `<span class="verify-null">&#8212; ${escHtml(detail || 'Not verified')}</span>`;
+      return `<tr><td>${escHtml(label)}</td><td>${badge}</td></tr>`;
+    };
+
+    html += `<table class="verify-table"><thead><tr><th>Check</th><th>Result</th></tr></thead><tbody>`;
+
+    // 1 — Invoice references
+    html += mkRow('Invoice References', v.invoice_refs_match,
+      v.invoice_refs_match === null ? 'Could not compare' : undefined);
+
+    // 2 — CIF / customs value (prefer v.cif_match, fall back to cd.values_match)
+    {
+      const cifResult = v.cif_match != null ? v.cif_match : (cd.values_match != null ? cd.values_match : null);
+      const cifDetail = cifResult === null
+        ? (cd.invoice_cif_usd && !cd.sad_cif_usd ? 'SAD format not supported' : 'Could not compare')
+        : undefined;
+      html += mkRow('CIF / Customs Value', cifResult, cifDetail);
+    }
+
+    // 3 — Importer / VAT number
+    {
+      const impVal    = v.importer_match;
+      const impDetail = impVal === null ? 'Name normalisation applied' : undefined;
+      html += mkRow('Importer / VAT', impVal, impDetail);
+    }
+
+    // 4 — Exporter (nuanced: null + data = "Parsed with variance")
+    {
+      const expVal    = v.exporter_match;
+      const invExp    = v.invoice_exporter_name || '';
+      const sadExp    = v.sad_exporter_name || '';
+      let expDetail;
+      if (expVal === null) {
+        if (!sadExp && invExp)           expDetail = 'Missing from SAD document';
+        else if (sadExp && invExp)       expDetail = 'Parsed — name/address variance';
+        else if (!sadExp && !invExp)     expDetail = 'Not available in either document';
+        else                             expDetail = 'Could not verify';
+      }
+      html += mkRow('Exporter', expVal, expDetail);
+    }
+
+    // 5 — Blocked phrases
+    html += mkRow('Blocked Phrases', v.blocked_phrases_clean,
+      v.blocked_phrases_clean === null ? 'Check skipped' : undefined);
+
+    // 6 — Duty rate
+    html += mkRow('Duty Rate (A00)', v.duty_rate_ok,
+      v.duty_rate_ok === null ? 'Rate comparison skipped' : undefined);
+
+    // 7 — Quantity by type (partial-verified logic)
+    {
+      const qtyVal = v.qty_match_by_type;
+      let qtyDetail;
+      if (qtyVal === null) {
+        const it = a.invoice_totals || {};
+        const sadHasQty = cd && cd.sad_qty_total;
+        if (it.total_pcs > 0 && !sadHasQty)
+          qtyDetail = 'Partially verified — invoice quantities parsed; SAD gives combined goods description';
+        else if (it.total_pcs > 0 && sadHasQty)
+          qtyDetail = 'Partially verified — category breakdown comparison unavailable';
+        else
+          qtyDetail = 'Invoice quantities not parsed';
+      }
+      html += mkRow('Quantity by Type', qtyVal, qtyDetail);
+    }
+
+    html += `</tbody></table>`;
+  } else {
+    html += `<div class="empty-state-inline">No verification data available.</div>`;
+  }
+  html += `</div>`;
+
+  // Amendment flags
+  html += `<div class="card" style="margin-top:14px"><div class="card-title">Amendment Flags</div>`;
+  if (amendFlags.length) {
+    html += `<div class="alert amber"><div><ul style="padding-left:16px;margin:0">${
+      amendFlags.map(f => `<li>${escHtml(f)}</li>`).join('')
+    }</ul></div></div>`;
+  } else {
+    html += `<div class="alert" style="background:var(--green-bg);border:1px solid rgba(22,163,74,.25);color:#15803d">
+      &#10003; No amendment flags
+    </div>`;
+  }
+  html += `</div>`;
+
+  // Verification gaps
+  html += `<div class="card" style="margin-top:14px"><div class="card-title">Verification Gaps</div>`;
+  if (verifyGaps.length) {
+    html += `<div class="alert blue"><div><ul style="padding-left:16px;margin:0">${
+      verifyGaps.map(g => `<li>${escHtml(g.replace('[VERIFY-GAP]','').trim())}</li>`).join('')
+    }</ul></div></div>`;
+  } else {
+    html += `<div class="alert" style="background:var(--green-bg);border:1px solid rgba(22,163,74,.25);color:#15803d">
+      &#10003; No verification gaps
+    </div>`;
+  }
+  html += `</div>`;
+
+  // Audit score (if present)
+  if (auditScore != null) {
+    const score    = Number(auditScore);
+    const scoreColor = score < 30 ? 'var(--green)' : score <= 70 ? 'var(--amber)' : 'var(--red)';
+    const scoreLbl   = riskLevel || (score < 30 ? 'Low Risk' : score <= 70 ? 'Medium Risk' : 'High Risk');
+    html += `<div class="card" style="margin-top:14px"><div class="card-title">Audit Score</div>
+      <div style="font-size:16px;font-weight:700;color:${scoreColor}">Risk Score: ${escHtml(String(score))}/100
+        <span style="font-size:13px;font-weight:500;margin-left:8px">(${escHtml(scoreLbl)})</span>
+      </div>
+      <div class="audit-score-bar">
+        <div class="audit-score-fill" style="width:${Math.min(100,score)}%;background:${scoreColor}"></div>
+      </div>
+    </div>`;
+  }
+
+  document.getElementById('auditreview-content').innerHTML = html;
+}
+
+
+/* ═══════════════════════ required actions tab ═══════════════════════ */
+function renderActions(a) {
+  const cr        = a.correction_report;
+  const container = document.getElementById('actions-content');
+
+  if (!cr || !cr.corrections) {
+    // Fall back to corrections_log
+    const log = a.corrections_log || [];
+    if (!log.length) {
+      container.innerHTML = '<div class="empty-state-inline">No actions required — shipment is clean.</div>';
+      return;
+    }
+    let itemNum = 0;
+    const items = log.map(c => {
+      if (c.startsWith('[VERIFY-GAP]')) {
+        return `<div class="action-item gap">[Verification Gap] ${escHtml(c.replace('[VERIFY-GAP]','').trim())}</div>`;
+      }
+      itemNum++;
+      return `<div class="action-item info"><span class="action-num">${itemNum}</span>${escHtml(c)}</div>`;
+    }).join('');
+    container.innerHTML = `<div class="action-list">${items}</div>`;
+    return;
+  }
+
+  // Full correction report
+  let html = '';
+
+  // Source refs
+  const inp    = a.inputs || {};
+  const mrn    = inp.zc429_mrn || '—';
+  const invRefs = (inp.invoice_refs || []).length
+    ? inp.invoice_refs.join(', ')
+    : ((inp.invoices || []).map(n => n.replace(/\.[^.]+$/, '')).join(', ') || '—');
+  html += `<div class="source-refs">
+    <span class="ref-item"><b>SAD MRN:</b> ${escHtml(mrn)}</span>
+    <span class="ref-item"><b>Invoices:</b> ${escHtml(invRefs)}</span>
+    <span class="ref-item"><b>ZC429:</b> ${escHtml(inp.zc429 || '—')}</span>
+  </div>`;
+
+  if (cr.primary_action) {
+    const paText = cr.primary_action_text || cr.primary_action;
+    html += `<div class="primary-action">
+      <div class="pa-label">Recommended Action</div>
+      <div class="pa-text">${escHtml(paText)}</div>
+      <button class="copy-action-btn" onclick="copyActionText(${JSON.stringify(paText)})">Copy action</button>
+    </div>`;
+  } else if (!cr.has_critical && !cr.has_warning) {
+    html += `<div class="primary-action none-needed">
+      <div class="pa-label">Recommended Action</div>
+      <div class="pa-text">No action required — all checks passed</div>
+    </div>`;
+  }
+
+  if (!cr.corrections.length) {
+    html += '<div class="empty-state-inline">No corrections suggested — shipment is clean.</div>';
+  } else {
+    html += cr.corrections.map((c, i) => buildCorrectionCard(c, i)).join('');
+  }
+
+  const totalCount = cr.total_count || cr.corrections.length;
+  const shownCount = cr.shown_count || cr.corrections.length;
+  if (totalCount > shownCount) {
+    html += `<div class="overflow-hint">
+      Showing top <strong>${shownCount}</strong> of <strong>${totalCount}</strong> issues.
+    </div>`;
+  }
+
+  container.innerHTML = html;
+  document.getElementById('feedback-section').style.display = 'block';
+}
+
+function confClass(c) { return c >= 0.8 ? 'high' : c >= 0.5 ? 'medium' : 'low'; }
+
+function buildCorrectionCard(c, i) {
+  const isHardLock = c.auto_override === false;
+  const hardLockStrip = isHardLock
+    ? '<div class="hard-lock-strip">Hard Lock — cannot be overridden by learning</div>' : '';
+  const lockBadge = isHardLock
+    ? '<span class="lock-badge hard">Hard lock</span>'
+    : '<span class="lock-badge soft">can be overridden</span>';
+
+  const confRaw  = Math.max(0, Math.min(1, c.confidence == null ? 0 : c.confidence));
+  const confPct  = Math.round(confRaw * 100);
+  const confCls  = confClass(confRaw);
+  const confColor = confPct >= 80 ? '#15803d' : confPct >= 50 ? '#b45309' : '#b91c1c';
+
+  let sdiffHtml = '';
+  if (c.structured_diff && c.structured_diff.length) {
+    sdiffHtml = `<div class="corr-section">
+      <div class="corr-section-title">Amendment Details</div>
+      <table class="sdiff-table">
+        <thead><tr><th>Field</th><th>Current</th><th>Corrected</th></tr></thead>
+        <tbody>${c.structured_diff.map(r => `
+          <tr>
+            <td>${escHtml(r.field)}</td>
+            <td class="current">${escHtml(r.current)}</td>
+            <td class="corrected">${escHtml(r.corrected)}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+  }
+
+  let impactHtml = '';
+  if (c.impact && Object.keys(c.impact).length) {
+    impactHtml = `<div class="corr-section">
+      <div class="corr-section-title">Impact</div>
+      <div class="impact-box">${Object.entries(c.impact).map(([k,v]) =>
+        `<div>${escHtml(k)}: <span>${escHtml(v)}</span></div>`).join('')}</div>
+    </div>`;
+  }
+
+  let evidHtml = '';
+  if (c.evidence && c.evidence.length) {
+    evidHtml = `<div class="corr-section">
+      <div class="corr-section-title">Evidence</div>
+      <ul class="evidence-list">${c.evidence.map(e => `<li>${escHtml(e)}</li>`).join('')}</ul>
+    </div>`;
+  }
+
+  return `<div class="corr-card ${c.severity}">
+    ${hardLockStrip}
+    <div class="corr-header">
+      <span class="corr-sev ${c.severity}">${c.severity}</span>
+      <span class="corr-title">${escHtml(c.title_en)}</span>
+      ${lockBadge}
+    </div>
+    <div class="corr-meta">
+      <span>Action: <strong>${escHtml(c.next_action)}</strong></span>
+      <span class="meta-sep">·</span>
+      <span>Check: <code>${escHtml(c.source_check || '—')}</code></span>
+      <span class="meta-sep">·</span>
+      <span>Confidence: <strong style="color:${confColor}">${confPct}%</strong></span>
+    </div>
+    <div class="conf-row">
+      <div class="conf-bar-wrap">
+        <div class="conf-bar ${confCls}" style="width:${confPct}%"></div>
+      </div>
+    </div>
+    <div class="corr-section">
+      <div class="corr-section-title">Problem</div>
+      <div class="corr-text">${escHtml(c.problem_en)}</div>
+    </div>
+    <div class="corr-section">
+      <div class="corr-section-title">Suggested Fix</div>
+      <div class="corr-text">${escHtml(c.fix_en)}</div>
+    </div>
+    ${sdiffHtml}${impactHtml}${evidHtml}
+    <hr class="corr-divider">
+    <div class="corr-section">
+      <div class="corr-section-title">Amendment Draft</div>
+      <div class="amendment-draft">${escHtml(c.amendment_en)}</div>
+    </div>
+  </div>`;
+}
+
+
+/* ═══════════════════════ technical log tab ═══════════════════════ */
+async function prepareDskEmailPackage(batchId, awb) {
+  const modal = document.getElementById('dsk-email-modal');
+  const body  = document.getElementById('dsk-email-modal-body');
+  if (!modal || !body) return;
+  modal.style.display = 'flex';
+  body.innerHTML = '<div style="color:var(--label3)">Loading email package...</div>';
+
+  try {
+    const resp = await fetch('/api/v1/dsk/email-package', {
+      method:      'POST',
+      credentials: 'include',
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify({ batch_id: batchId, awb: awb }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      body.innerHTML = `<div style="color:#dc2626">Error: ${escHtml(err.detail || 'Unknown error')}</div>`;
+      return;
+    }
+    const pkg = await resp.json();
+
+    const missingHtml = pkg.missing && pkg.missing.length
+      ? `<div style="margin-top:10px;padding:8px 12px;background:#fef2f2;border-radius:6px;
+                     color:#dc2626;font-size:12px">
+           Missing attachments: ${pkg.missing.map(m => escHtml(m)).join(', ')}
+         </div>`
+      : '';
+
+    const attachHtml = (pkg.attachments || []).map(a =>
+      `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--separator)">
+         <span style="font-size:16px">&#128206;</span>
+         <div>
+           <div style="font-weight:600;font-size:13px">${escHtml(a.label)}</div>
+           <div style="font-size:11px;color:var(--label4);font-family:'SF Mono','Menlo',monospace">${escHtml(a.path)}</div>
+         </div>
+       </div>`
+    ).join('');
+
+    body.innerHTML = `
+      <div style="margin-bottom:12px">
+        ${row('To', `<a href="mailto:${escHtml(pkg.to)}" style="color:#0ea5e9">${escHtml(pkg.to)}</a>`)}
+        ${row('CC', `<a href="mailto:${escHtml(pkg.cc)}" style="color:#0ea5e9">${escHtml(pkg.cc)}</a>`)}
+        ${row('Subject', `<span style="font-style:italic">${escHtml(pkg.subject)}</span>`)}
+      </div>
+      <div style="margin-bottom:12px">
+        <div style="font-weight:600;font-size:12px;color:var(--label3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">Attachments</div>
+        ${attachHtml || '<div style="color:var(--label4);font-size:12px">No attachments found</div>'}
+      </div>
+      ${missingHtml}
+      <div style="margin-top:16px;padding:12px;background:var(--bg2,#f8f9fa);border-radius:6px">
+        <div style="font-weight:600;font-size:12px;color:var(--label3);margin-bottom:6px">Body (PL)</div>
+        <pre style="font-size:12px;white-space:pre-wrap;margin:0;color:var(--label2)">${escHtml(pkg.body_pl)}</pre>
+      </div>
+      <div style="margin-top:12px;padding:12px;background:var(--bg2,#f8f9fa);border-radius:6px">
+        <div style="font-weight:600;font-size:12px;color:var(--label3);margin-bottom:6px">Body (EN)</div>
+        <pre style="font-size:12px;white-space:pre-wrap;margin:0;color:var(--label2)">${escHtml(pkg.body_en)}</pre>
+      </div>
+      <div style="margin-top:16px;font-size:11px;color:var(--label4);font-style:italic">
+        This package is prepared for review only. Send the email manually after verifying attachments.
+      </div>`;
+  } catch (e) {
+    body.innerHTML = `<div style="color:#dc2626">Network error: ${escHtml(String(e))}</div>`;
+  }
+}
+
+// ── DHL Admin Action helpers ──────────────────────────────────────────────────
+
+function _dhlResult(batchId, state) {
+  // state: { status:'ok'|'error'|'loading'|'info', msg, files, next }
+  const el = document.getElementById('dhl-action-result-' + batchId);
+  if (!el) return;
+  const colors = { ok:'#166534', error:'#b91c1c', loading:'var(--label3)', info:'#1d4ed8' };
+  const icons  = { ok:'✅', error:'❌', loading:'⏳', info:'ℹ️' };
+  const bg     = { ok:'#f0fdf4', error:'#fef2f2', loading:'var(--surface2)', info:'#eff6ff' };
+  const c = colors[state.status] || colors.info;
+  const ic = icons[state.status] || '';
+  const bgc = bg[state.status] || bg.info;
+  const filesHtml = (state.files || []).map(f =>
+    `<div style="margin-top:4px;font-size:11px">
+       📄 ${escHtml(f.label || f.name || '')}
+       ${f.url ? `<a href="${escHtml(f.url)}" target="_blank" style="margin-left:6px;color:#0ea5e9">Download</a>` : ''}
+     </div>`
+  ).join('');
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div style="padding:10px 12px;border-radius:8px;background:${bgc};border:1px solid ${c}33;color:${c}">
+      <div style="font-weight:600;font-size:12px">${ic} ${escHtml(state.msg || '')}</div>
+      ${filesHtml}
+      ${state.next ? `<div style="margin-top:6px;font-size:11px;color:var(--label3)">${escHtml(state.next)}</div>` : ''}
+    </div>`;
+}
+
+function _dhlDetailMsg(d) {
+  // Extract a human-readable message from a backend error response
+  if (!d) return 'Unknown error';
+  if (typeof d === 'string') return d;
+  if (d.error) return d.error;
+  if (d.detail) {
+    if (typeof d.detail === 'string') return d.detail;
+    if (d.detail.error) return d.detail.error;
+    return JSON.stringify(d.detail);
+  }
+  return JSON.stringify(d);
+}
+
+function _btnLoading(btn, label) {
+  if (!btn) return;
+  btn.disabled = true;
+  btn._origText = btn.innerHTML;
+  btn.innerHTML = `⏳ ${label || 'Working…'}`;
+}
+function _btnReset(btn) {
+  if (!btn) return;
+  btn.disabled = false;
+  if (btn._origText) btn.innerHTML = btn._origText;
+}
+
+// ── 1. Scan DHL Inbox ─────────────────────────────────────────────────────────
+
+async function scanDhlInbox(batchId) {
+  const modal = document.getElementById('dhl-scan-modal');
+  const body  = document.getElementById('dhl-scan-modal-body');
+  if (!modal || !body) return;
+  modal.style.display = 'flex';
+  body.innerHTML = '<div style="color:var(--label3);font-size:13px">⏳ Scanning Zoho Mail inbox for DHL customs emails…</div>';
+
+  try {
+    const resp = await fetch('/api/v1/dhl/scan-inbox', { method: 'GET', credentials: 'include' });
+    const data = await resp.json().catch(() => ({}));
+
+    if (!resp.ok) {
+      body.innerHTML = `
+        <div style="padding:12px;background:#fef2f2;border-radius:6px;color:#b91c1c;font-size:13px">
+          <strong>❌ Scan failed (${resp.status})</strong><br>
+          ${escHtml(_dhlDetailMsg(data))}
+        </div>`;
+      return;
+    }
+
+    if (data.scan_method === 'mcp_required') {
+      body.innerHTML = `
+        <div style="padding:14px;background:#fef3c7;border-radius:8px;color:#92400e;font-size:13px;margin-bottom:14px">
+          <strong>⚠ Email connector not configured</strong><br>
+          <span style="font-size:12px">No <code>ZOHO_MAIL_API_TOKEN</code> is set. The inbox cannot be scanned automatically.</span>
+        </div>
+        <div style="font-size:13px;color:var(--label2);margin-bottom:12px">
+          <strong>Options:</strong>
+          <ol style="margin:8px 0 0 0;padding-left:18px;line-height:1.8">
+            <li>Use Estrella Mail MCP connector in Claude to scan manually, then run
+                <code>POST /api/v1/dhl/match-and-handle</code> with the AWB.</li>
+            <li>Click <strong>"Mark DHL Email Received"</strong> below to register the email manually — this unlocks Generate Description &amp; DSK.</li>
+          </ol>
+        </div>
+        <div style="padding:10px;background:var(--surface2);border-radius:6px;font-size:12px;color:var(--label3)">
+          Email connector status: <strong>Not connected</strong>
+        </div>`;
+      return;
+    }
+
+    if (!data.emails || data.emails.length === 0) {
+      body.innerHTML = `
+        <div style="padding:12px;background:var(--surface2);border-radius:6px;font-size:13px;color:var(--label2)">
+          No DHL customs emails found in the inbox (scanned ${data.scanned} messages).
+        </div>
+        <div style="margin-top:12px;font-size:12px;color:var(--label4)">
+          If you received a DHL email but it's not appearing here, use <strong>"Mark DHL Email Received"</strong> instead.
+        </div>`;
+      return;
+    }
+
+    const emailHtml = data.emails.map(e => `
+      <div style="border:1px solid var(--separator);border-radius:8px;padding:14px;margin-bottom:10px">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">${escHtml(e.subject || '—')}</div>
+        <div style="display:grid;grid-template-columns:80px 1fr;gap:3px 8px;font-size:12px">
+          <span style="color:var(--label4)">AWB</span>
+          <span style="font-family:'SF Mono','Menlo',monospace;font-weight:600">${escHtml(e.awb || '—')}</span>
+          <span style="color:var(--label4)">Ticket</span>
+          <span style="font-family:'SF Mono','Menlo',monospace">${escHtml(e.dhl_ticket || '—')}</span>
+          <span style="color:var(--label4)">Received</span>
+          <span>${escHtml(e.received_at || '—')}</span>
+          <span style="color:var(--label4)">Routing</span>
+          <span>${escHtml(e.routing_hint || 'unknown')}</span>
+        </div>
+        ${e.awb ? `
+        <button onclick="matchAndHandle('${escHtml(e.awb)}', '${escHtml(e.dhl_ticket || '')}', '${escHtml(e.message_id || '')}', '${escHtml(e.thread_id || '')}', this)"
+          style="margin-top:10px;padding:6px 14px;background:var(--green);color:#fff;border:none;
+                 border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">
+          ✓ Match to batch &amp; prepare reply
+        </button>` : ''}
+      </div>`).join('');
+
+    body.innerHTML = `
+      <div style="font-size:12px;color:var(--label4);margin-bottom:12px">
+        Found ${data.emails.length} DHL customs email(s) — scanned at ${escHtml(data.scanned_at || '—')}
+      </div>${emailHtml}`;
+
+  } catch (e) {
+    body.innerHTML = `<div style="color:#dc2626;font-size:13px">❌ Network error: ${escHtml(String(e))}</div>`;
+  }
+}
+
+async function matchAndHandle(awb, dhlTicket, messageId, threadId, btn) {
+  _btnLoading(btn, 'Processing…');
+  try {
+    const resp = await fetch('/api/v1/dhl/match-and-handle', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ awb, dhl_ticket: dhlTicket||null, message_id: messageId||null, thread_id: threadId||null }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    const body = document.getElementById('dhl-scan-modal-body');
+    if (!resp.ok) {
+      if (body) body.innerHTML = `
+        <div style="padding:12px;background:#fef2f2;border-radius:6px;color:#b91c1c;font-size:13px">
+          <strong>❌ Match failed (${resp.status})</strong><br>${escHtml(_dhlDetailMsg(data))}
+        </div>`;
+      _btnReset(btn); return;
+    }
+    const rp = data.reply_package || {};
+    const atts = (rp.attachments || []).map(a =>
+      `<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--separator)">
+         <strong>${escHtml(a.label)}</strong>
+         ${a.download_url ? `— <a href="${escHtml(a.download_url)}" target="_blank" style="color:#0ea5e9">Download</a>` : ''}
+       </div>`).join('');
+    if (body) body.innerHTML = `
+      <div style="padding:10px 14px;background:#f0fdf4;border-radius:6px;color:#166534;font-size:13px;margin-bottom:14px">
+        <strong>✅ Matched</strong> — Action: <strong>${escHtml(data.action||'—')}</strong> | Status: <strong>${escHtml(data.clearance_status||'—')}</strong>
+      </div>
+      <div style="font-size:12px;margin-bottom:8px">
+        <strong>Reply package</strong> — To: ${escHtml(rp.to||'odprawacelna@dhl.com')}<br>
+        <em>${escHtml(rp.subject||'—')}</em>
+      </div>
+      <div style="margin-bottom:10px">${atts||'<span style="color:var(--label4);font-size:12px">No attachments</span>'}</div>
+      <div style="font-size:11px;color:var(--label4);font-style:italic">Reloading in 3s…</div>`;
+    setTimeout(() => location.reload(), 3000);
+  } catch (e) {
+    const body = document.getElementById('dhl-scan-modal-body');
+    if (body) body.innerHTML = `<div style="color:#dc2626;font-size:13px">❌ Network error: ${escHtml(String(e))}</div>`;
+    _btnReset(btn);
+  }
+}
+
+// ── 2. Mark DHL Email Received (modal) ───────────────────────────────────────
+
+function markDhlEmailReceived(batchId, awb) {
+  // Inject modal if not already present
+  if (!document.getElementById('dhl-mark-modal')) {
+    document.body.insertAdjacentHTML('beforeend', `
+      <div id="dhl-mark-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
+           z-index:1100;align-items:center;justify-content:center">
+        <div style="background:var(--bg);border-radius:12px;padding:28px;max-width:480px;width:92%;
+                    box-shadow:0 20px 60px rgba(0,0,0,.3)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+            <div style="font-weight:700;font-size:16px">✉ Mark DHL Email Received</div>
+            <button onclick="document.getElementById('dhl-mark-modal').style.display='none'"
+                    style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--label3)">✕</button>
+          </div>
+          <div style="font-size:12px;color:var(--label3);margin-bottom:16px;padding:8px 10px;
+                      background:#fef3c7;border-radius:6px;color:#92400e">
+            This is a manual admin override. It will unlock Generate Description and Generate DSK for this shipment.
+          </div>
+          <div style="display:grid;gap:12px">
+            <label style="font-size:12px;font-weight:600;color:var(--label2)">
+              DHL Sender
+              <input id="dhl-mark-sender" type="text" value="odprawacelna@dhl.com"
+                style="display:block;width:100%;margin-top:4px;padding:7px 10px;border:1px solid var(--separator);
+                       border-radius:6px;font-size:13px;box-sizing:border-box;background:var(--bg);color:var(--label1)">
+            </label>
+            <label style="font-size:12px;font-weight:600;color:var(--label2)">
+              Subject
+              <input id="dhl-mark-subject" type="text" placeholder="Agencja Celna DHL – przesyłka numer: …"
+                style="display:block;width:100%;margin-top:4px;padding:7px 10px;border:1px solid var(--separator);
+                       border-radius:6px;font-size:13px;box-sizing:border-box;background:var(--bg);color:var(--label1)">
+            </label>
+            <label style="font-size:12px;font-weight:600;color:var(--label2)">
+              DHL Ticket / Reference
+              <input id="dhl-mark-ticket" type="text" placeholder="T#12345678"
+                style="display:block;width:100%;margin-top:4px;padding:7px 10px;border:1px solid var(--separator);
+                       border-radius:6px;font-size:13px;box-sizing:border-box;background:var(--bg);color:var(--label1)">
+            </label>
+            <label style="font-size:12px;font-weight:600;color:var(--label2)">
+              Request Type
+              <select id="dhl-mark-type"
+                style="display:block;width:100%;margin-top:4px;padding:7px 10px;border:1px solid var(--separator);
+                       border-radius:6px;font-size:13px;box-sizing:border-box;background:var(--bg);color:var(--label1)">
+                <option value="polish_description">Polish description request</option>
+                <option value="dsk_broker">DSK / broker request</option>
+                <option value="unknown" selected>Unknown / manual review</option>
+              </select>
+            </label>
+            <label style="font-size:12px;font-weight:600;color:var(--label2)">
+              Note (optional)
+              <input id="dhl-mark-note" type="text" placeholder="Additional context…"
+                style="display:block;width:100%;margin-top:4px;padding:7px 10px;border:1px solid var(--separator);
+                       border-radius:6px;font-size:13px;box-sizing:border-box;background:var(--bg);color:var(--label1)">
+            </label>
+          </div>
+          <div id="dhl-mark-error" style="display:none;margin-top:12px;padding:8px 10px;
+               background:#fef2f2;border-radius:6px;color:#b91c1c;font-size:12px"></div>
+          <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">
+            <button onclick="document.getElementById('dhl-mark-modal').style.display='none'"
+              style="padding:8px 18px;border-radius:6px;border:1px solid var(--separator);
+                     background:var(--surface2);color:var(--label2);font-size:13px;cursor:pointer">
+              Cancel
+            </button>
+            <button id="dhl-mark-submit" onclick="submitMarkEmailReceived()"
+              style="padding:8px 18px;border-radius:6px;border:none;background:var(--navy);
+                     color:#fff;font-size:13px;font-weight:600;cursor:pointer">
+              Mark as Received
+            </button>
+          </div>
+        </div>
+      </div>`);
+  }
+  // Store batch context on modal
+  const modal = document.getElementById('dhl-mark-modal');
+  modal.dataset.batchId = batchId;
+  modal.dataset.awb = awb;
+  modal.style.display = 'flex';
+}
+
+async function submitMarkEmailReceived() {
+  const modal    = document.getElementById('dhl-mark-modal');
+  const batchId  = modal.dataset.batchId;
+  const errEl    = document.getElementById('dhl-mark-error');
+  const submitBtn = document.getElementById('dhl-mark-submit');
+
+  const payload = {
+    sender:       document.getElementById('dhl-mark-sender').value.trim()  || 'odprawacelna@dhl.com',
+    subject:      document.getElementById('dhl-mark-subject').value.trim() || null,
+    ticket:       document.getElementById('dhl-mark-ticket').value.trim()  || null,
+    request_type: document.getElementById('dhl-mark-type').value,
+    note:         document.getElementById('dhl-mark-note').value.trim()    || null,
+  };
+
+  errEl.style.display = 'none';
+  _btnLoading(submitBtn, 'Saving…');
+
+  try {
+    const r = await fetch(`/api/v1/dhl/mark-email-received/${encodeURIComponent(batchId)}`, {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      errEl.textContent = '❌ ' + _dhlDetailMsg(d);
+      errEl.style.display = 'block';
+      _btnReset(submitBtn); return;
+    }
+    modal.style.display = 'none';
+    _dhlResult(batchId, {
+      status: 'ok',
+      msg: 'DHL email marked as received. Generate Description & DSK are now unlocked.',
+      next: 'Reloading page…',
+    });
+    setTimeout(() => window.location.reload(), 1500);
+  } catch (e) {
+    errEl.textContent = '❌ Network error: ' + e.message;
+    errEl.style.display = 'block';
+    _btnReset(submitBtn);
+  }
+}
+
+// ── 3. Generate Polish Description ────────────────────────────────────────────
+
+async function triggerDhlDescription(batchId, btn) {
+  _btnLoading(btn, 'Generating…');
+  _dhlResult(batchId, { status: 'loading', msg: 'Generating Polish customs description…' });
+  try {
+    const r = await fetch(`/api/v1/dhl/generate-description/${encodeURIComponent(batchId)}`, {
+      method: 'POST', credentials: 'include',
+    });
+    const d = await r.json().catch(() => ({}));
+    _btnReset(btn);
+    if (!r.ok) {
+      const errMsg = _dhlDetailMsg(d);
+      const isGuard = (d.detail?.code === 'dhl_email_not_received') || (d.detail?.code === 'DHL_NO_EMAIL');
+      _dhlResult(batchId, {
+        status: 'error',
+        msg: isGuard
+          ? 'DHL email required — use "Mark DHL Email Received" first to unlock this action.'
+          : `Generate Description failed (${r.status}): ${errMsg}`,
+        next: isGuard ? 'Click "Mark DHL Email Received" to register the email manually.' : null,
+      });
+      return;
+    }
+    _dhlResult(batchId, {
+      status: 'ok',
+      msg: `Polish description generated: ${d.filename || '—'}`,
+      files: d.filename ? [{ label: d.filename, url: d.download_url }] : [],
+      next: 'Page reloading…',
+    });
+    setTimeout(() => window.location.reload(), 1800);
+  } catch (e) {
+    _btnReset(btn);
+    _dhlResult(batchId, { status: 'error', msg: 'Network error: ' + e.message });
+  }
+}
+
+// ── 4. Generate DSK ───────────────────────────────────────────────────────────
+
+async function triggerDsk(batchId, awb, cifUsd, btn) {
+  _btnLoading(btn, 'Generating DSK…');
+  _dhlResult(batchId, { status: 'loading', msg: 'Generating DSK broker notification PDF…' });
+  try {
+    const r = await fetch('/api/v1/dsk/generate', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ awb, value_usd: cifUsd || 0, carrier: 'DHL', broker_required: true, batch_id: batchId }),
+    });
+    const d = await r.json().catch(() => ({}));
+    _btnReset(btn);
+    if (!r.ok) {
+      const errMsg = _dhlDetailMsg(d);
+      const isGuard = (d.detail?.code === 'DHL_NO_EMAIL');
+      _dhlResult(batchId, {
+        status: 'error',
+        msg: isGuard
+          ? 'DHL email required — use "Mark DHL Email Received" first to unlock this action.'
+          : `DSK generation failed (${r.status}): ${errMsg}`,
+        next: isGuard ? 'Click "Mark DHL Email Received" to register the email manually.' : null,
+      });
+      return;
+    }
+    if (!d.generated) {
+      _dhlResult(batchId, {
+        status: 'info',
+        msg: 'DSK not generated: ' + (d.message || d.skip_reason || 'Not required for this shipment.'),
+      });
+      return;
+    }
+    _dhlResult(batchId, {
+      status: 'ok',
+      msg: `DSK generated: ${d.filename || '—'}`,
+      files: d.filename ? [{ label: d.filename, url: d.download_url ? ('/api/v1/dsk/download/' + encodeURIComponent(d.filename)) : null }] : [],
+      next: 'Review DSK in the DHL Clearance section, then use "Build Reply Package" to proceed.',
+    });
+    setTimeout(() => window.location.reload(), 2000);
+  } catch (e) {
+    _btnReset(btn);
+    _dhlResult(batchId, { status: 'error', msg: 'Network error: ' + e.message });
+  }
+}
+
+// ── 5. Build Reply Package & Send to DHL ─────────────────────────────────────
+
+async function buildAndSendReply(batchId, awb, btn) {
+  _btnLoading(btn, 'Building package…');
+  _dhlResult(batchId, { status: 'loading', msg: '⏳ Step 1/2 — Building email package…' });
+
+  // Step 1: Build package
+  let pkg;
+  try {
+    const r = await fetch('/api/v1/dsk/email-package', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch_id: batchId, awb }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const errMsg = _dhlDetailMsg(d);
+      const isGuard = (d.detail?.code === 'DHL_NO_EMAIL');
+      _dhlResult(batchId, {
+        status: 'error',
+        msg: isGuard
+          ? 'DHL email required — use "Mark DHL Email Received" first.'
+          : `Build failed (${r.status}): ${errMsg}`,
+        next: isGuard ? 'Click "Mark DHL Email Received" to register the email manually.' : null,
+      });
+      _btnReset(btn); return;
+    }
+    pkg = d;
+  } catch (e) {
+    _dhlResult(batchId, { status: 'error', msg: 'Network error (build): ' + e.message });
+    _btnReset(btn); return;
+  }
+
+  // Show package summary in result panel, ask to proceed
+  const attList = (pkg.attachments || []).map(a => a.label || '').filter(Boolean).join(', ') || 'none';
+  const missingList = (pkg.missing || []).join(', ') || 'none';
+  _dhlResult(batchId, {
+    status: 'info',
+    msg: `Package built — To: ${pkg.to || '—'} | Attachments: ${attList}${missingList !== 'none' ? ' | Missing: '+missingList : ''}`,
+    next: 'Sending to queue…',
+  });
+
+  // Step 2: Queue send
+  _btnLoading(btn, 'Queueing…');
+  try {
+    const r2 = await fetch(`/api/v1/dhl/send-reply/${encodeURIComponent(batchId)}`, {
+      method: 'POST', credentials: 'include',
+    });
+    const d2 = await r2.json().catch(() => ({}));
+    _btnReset(btn);
+    if (!r2.ok) {
+      _dhlResult(batchId, {
+        status: 'error',
+        msg: `Queue failed (${r2.status}): ${_dhlDetailMsg(d2)}`,
+        next: 'Package was built successfully — retry the send step.',
+      });
+      return;
+    }
+    // Check if email connector is not available (queue-only mode)
+    const isQueued = d2.queued === true;
+    _dhlResult(batchId, {
+      status: 'ok',
+      msg: isQueued
+        ? `Reply queued (ID: ${(d2.email_id||'').slice(0,12)}…) — pick up from Admin → Email Queue to send via Zoho Mail.`
+        : `Reply sent — ${d2.message || ''}`,
+      next: 'Page reloading…',
+    });
+    setTimeout(() => window.location.reload(), 2000);
+  } catch (e) {
+    _btnReset(btn);
+    _dhlResult(batchId, { status: 'error', msg: 'Network error (send): ' + e.message });
+  }
+}
+
+async function sendDhlReply(batchId) {
+  const statusEl = document.getElementById('dhl-reply-status-' + batchId);
+  if (statusEl) { statusEl.style.color = 'var(--label4)'; statusEl.textContent = '📤 Queueing…'; }
+  try {
+    const r = await fetch(`/api/v1/dhl/send-reply/${encodeURIComponent(batchId)}`, {
+      method: 'POST', credentials: 'include',
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (statusEl) { statusEl.style.color = '#b91c1c'; statusEl.textContent = '❌ Failed: ' + _dhlDetailMsg(d); }
+      return;
+    }
+    if (statusEl) {
+      statusEl.style.color = 'var(--green)';
+      statusEl.textContent = `✅ Queued — ${d.message || 'Email queued for sending.'}`;
+    }
+    setTimeout(() => window.location.reload(), 2000);
+  } catch (e) {
+    if (statusEl) { statusEl.style.color = '#b91c1c'; statusEl.textContent = '❌ Error: ' + e.message; }
+  }
+}
+
+function renderTechLog(a) {
+  const container = document.getElementById('techlog-container');
+  const corrections = a.corrections_log || [];
+
+  let logItems = '';
+  if (corrections.length) {
+    logItems = corrections.map(c => {
+      let cls = '';
+      if (c.includes('[VERIFY-GAP]'))  cls = 'gap';
+      else if (/error|fail/i.test(c))  cls = 'err';
+      return `<div class="log-item ${cls}">${escHtml(c)}</div>`;
+    }).join('');
+  }
+
+  // Also show key audit fields in collapsible sections
+  const fields = ['batch_id','doc_no','tracking_no','status','engine_version','timestamp',
+                  'line_count','mrn'];
+  let fieldItems = fields.map(f => {
+    const v = a[f];
+    if (v == null) return '';
+    return `<div class="log-item">${escHtml(f)}: ${escHtml(String(v))}</div>`;
+  }).filter(Boolean).join('');
+
+  if (!logItems && !fieldItems) {
+    container.innerHTML =
+      '<div class="log-header">Technical Log — internal reference only</div>' +
+      '<div class="log-item" style="color:var(--label4)">No log entries.</div>';
+    return;
+  }
+
+  container.innerHTML =
+    '<div class="log-header">Audit Fields</div>' + fieldItems +
+    (logItems ? '<div class="log-header" style="margin-top:1px">Corrections Log</div>' + logItems : '');
+}
+
+
+/* ═══════════════════════ delivery history ═══════════════════════ */
+function renderDelivery(a) {
+  const log = a.delivery_log || [];
+  const section  = document.getElementById('delivery-section');
+  const timeline = document.getElementById('delivery-timeline');
+
+  if (!log.length) return;
+  section.style.display = 'block';
+
+  // Mask target: keep first 20 chars
+  function maskTarget(t) {
+    if (!t) return '—';
+    return t.length > 20 ? t.slice(0, 20) + '…' : t;
+  }
+
+  timeline.innerHTML = log.map(entry => {
+    const ok  = entry.status === 'success';
+    const cls = ok ? 'ok' : 'fail';
+    return `<div class="tl-item">
+      <div class="tl-dot ${cls}"></div>
+      <div>
+        <span class="tl-ts">${escHtml(entry.timestamp || '')}</span>
+        <span class="tl-act" style="margin:0 8px">${escHtml(entry.action || 'delivery')}</span>
+        <span style="color:${ok ? '#15803d' : '#b91c1c'};font-weight:600">${ok ? 'delivered' : 'failed'}</span>
+        <span class="tl-tgt"> → ${escHtml(maskTarget(entry.target))}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+
+/* ═══════════════════════ feedback ═══════════════════════ */
+function submitFeedback(feedbackValue) {
+  const a = _audit;
+  if (!a) return;
+  const confirmedBy = document.getElementById('fb-confirmed-by').value.trim();
+  const reason      = document.getElementById('fb-reason').value.trim();
+  const status      = document.getElementById('fb-status');
+  document.querySelectorAll('.fb-btn').forEach(b => b.disabled = true);
+  status.style.color = 'var(--label4)'; status.textContent = 'Submitting…';
+  fetch('/api/v1/feedback', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ batch_id: a.batch_id, doc_no: a.doc_no || '', feedback: feedbackValue, confirmed_by: confirmedBy, reason }),
+  })
+    .then(r => r.json().then(d => ({ ok: r.ok, d })))
+    .then(({ ok, d }) => {
+      if (ok) {
+        status.style.color = '#15803d';
+        const promoted = (d.promoted || []).length;
+        status.textContent = `Feedback recorded (${feedbackValue})` + (promoted ? ` — ${promoted} pattern(s) updated` : '');
+      } else {
+        status.style.color = '#b91c1c'; status.textContent = d.detail || JSON.stringify(d);
+        document.querySelectorAll('.fb-btn').forEach(b => b.disabled = false);
+      }
+    })
+    .catch(e => {
+      status.style.color = '#b91c1c'; status.textContent = 'Network error: ' + e;
+      document.querySelectorAll('.fb-btn').forEach(b => b.disabled = false);
+    });
+}
+
+
+/* ═══════════════════════ resend ═══════════════════════ */
+function resendToCliq() {
+  // ── Reply validation gate ─────────────────────────────────────────────────
+  const rv = (_audit || {}).reply_validation || {};
+  if (rv.blocked === true) {
+    const status = document.getElementById('resend-status');
+    const errMsg = (rv.errors && rv.errors[0]) ? rv.errors[0] : 'Reply validation blocked';
+    if (status) { status.style.color = '#b91c1c'; status.textContent = 'Blocked: ' + errMsg; }
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+  const btn1   = document.getElementById('resendBtn');
+  const btn2   = document.getElementById('resendBtnHeader');
+  const status = document.getElementById('resend-status');
+  [btn1, btn2].forEach(b => { if (b) { b.disabled = true; b.textContent = 'Sending…'; } });
+  if (status) { status.textContent = ''; status.style.color = 'var(--label4)'; }
+  clearInterval(_countdownTimer);
+
+  fetch(`/dashboard/batches/${id}/resend`, { method: 'POST' })
+    .then(r => r.json().then(data => ({ ok: r.ok, data })))
+    .then(({ ok, data }) => {
+      [btn1, btn2].forEach(b => { if (b) { b.textContent = 'Send to Cliq'; b.disabled = false; } });
+
+      if (data.skipped) {
+        const tsEpoch  = data.ts_epoch || 0;
+        const cooldown = data.cooldown || 30;
+        if (status) {
+          status.style.color = '#b45309';
+          _countdownTimer = setInterval(() => {
+            const remaining = Math.ceil(cooldown - (Date.now() / 1000 - tsEpoch));
+            if (remaining <= 0) { clearInterval(_countdownTimer); status.textContent = 'Cooldown expired — you can resend now'; }
+            else { status.textContent = `Skipped — retry in ${remaining}s`; }
+          }, 500);
+        }
+      } else if (ok) {
+        if (status) {
+          status.style.color = '#15803d';
+          status.textContent = `Sent at ${data.timestamp}  (msg:${(data.message_id||'').slice(0,8)}…)`;
+        }
+        _lastMessageText = data.message_text || '';
+        if (_lastMessageText) {
+          const copyBtn = document.getElementById('copyMsgBtn');
+          if (copyBtn) copyBtn.style.display = 'inline-flex';
+        }
+        // Show delivery section
+        if (_audit) {
+          _audit.delivery_log = data.delivery_log || _audit.delivery_log;
+          renderDelivery(_audit);
+          document.getElementById('delivery-section').style.display = 'block';
+        }
+      } else {
+        if (status) { status.style.color = '#b91c1c'; status.textContent = data.detail || 'Delivery failed'; }
+      }
+    })
+    .catch(e => {
+      [btn1, btn2].forEach(b => { if (b) { b.textContent = 'Send to Cliq'; b.disabled = false; } });
+      if (status) { status.style.color = '#b91c1c'; status.textContent = String(e); }
+    });
+}
+
+function copyMessage() {
+  if (!_lastMessageText) return;
+  navigator.clipboard.writeText(_lastMessageText)
+    .then(() => {
+      const btn = document.getElementById('copyMsgBtn');
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = 'Copy Message'; }, 1500);
+    });
+}
+
+
+/* ═══════════════════════ learning status ═══════════════════════ */
+// State for learning feedback submission
+let _learningTrace    = null;
+let _learningAllTraces = [];
+
+function _confBadgeHtml(conf) {
+  const cls = conf ? `conf-${conf.toLowerCase()}` : 'conf-unconfirmed';
+  const lbl = conf ? conf.charAt(0).toUpperCase() + conf.slice(1) : 'Unknown';
+  return `<span class="conf-badge ${cls}">${escHtml(lbl)}</span>`;
+}
+
+function renderLearningStatus(a) {
+  const traces = a.learning_traces || [];
+  if (!traces.length) return;
+
+  const card       = document.getElementById('learning-card');
+  const rowsEl     = document.getElementById('learning-rows');
+  const feedbackRow = document.getElementById('learning-feedback-row');
+  if (!card || !rowsEl) return;
+
+  card.style.display = 'block';
+
+  // Use first trace for primary display; multi-invoice batches show all
+  _learningAllTraces = traces;
+  _learningTrace     = traces[0] || null;
+
+  let html = '';
+  traces.forEach((trace, idx) => {
+    const supplier      = trace.supplier_key || '—';
+    const conf          = trace.learning_confidence || 'unconfirmed';
+    const confirmed     = trace.confirmed_count != null ? trace.confirmed_count : '—';
+    const fingerprint   = trace.layout_fingerprint || '—';
+    const hintsUsed     = (trace.hints_used || []).length;
+    const recovered     = trace.fields_recovered || [];
+    const stored        = trace.patterns_stored || [];
+    const lastSeen      = trace.last_seen || '—';
+    const isUnstable    = !!trace.is_unstable;
+    const reliabilityPct = trace.reliability_pct != null ? trace.reliability_pct : null;
+    const lastFailed    = trace.last_failed || null;
+
+    if (idx > 0) html += '<hr style="margin:10px 0;border:none;border-top:1px solid var(--separator)">';
+
+    if (traces.length > 1) {
+      html += `<div style="font-size:11px;font-weight:700;color:var(--label3);margin-bottom:6px">Invoice ${idx + 1}</div>`;
+    }
+
+    // Confidence + optional unstable badge
+    let confCellHtml = `${_confBadgeHtml(conf)} (${confirmed} confirmed)`;
+    if (isUnstable) {
+      confCellHtml += ` <span class="unstable-badge">⚠ Unstable — hints suspended</span>`;
+    }
+
+    html += `
+      <div class="learning-row">
+        <span class="learning-row-label">Supplier</span>
+        <span class="learning-row-value">${escHtml(supplier)}</span>
+      </div>
+      <div class="learning-row">
+        <span class="learning-row-label">Confidence</span>
+        <span class="learning-row-value">${confCellHtml}</span>
+      </div>
+      <div class="learning-row">
+        <span class="learning-row-label">Layout fingerprint</span>
+        <span class="learning-row-value" style="font-family:monospace;font-size:12px">${escHtml(fingerprint)}</span>
+      </div>`;
+
+    // Reliability bar
+    if (reliabilityPct !== null) {
+      const barColor = reliabilityPct >= 80 ? 'var(--green)' : reliabilityPct >= 50 ? 'var(--amber)' : 'var(--red)';
+      html += `
+      <div class="learning-row">
+        <span class="learning-row-label">Parse reliability</span>
+        <span class="learning-row-value">
+          <span class="reliability-bar"><span class="reliability-bar-fill" style="width:${reliabilityPct}%;background:${barColor}"></span></span>
+          &nbsp;<span style="font-size:12px;color:var(--label3)">${reliabilityPct}%</span>
+        </span>
+      </div>`;
+    }
+
+    if (lastFailed) {
+      html += `
+      <div class="learning-row">
+        <span class="learning-row-label">Last failed</span>
+        <span class="learning-row-value" style="font-size:12px;color:var(--red)">${escHtml(lastFailed)}</span>
+      </div>`;
+    }
+
+    if (hintsUsed > 0) {
+      html += `
+      <div class="learning-row">
+        <span class="learning-row-label">Hints applied</span>
+        <span class="learning-row-value">
+          <span class="learned-badge">✦ Recovered using learned parser pattern</span>
+          &nbsp;${hintsUsed} hint(s)
+        </span>
+      </div>`;
+    }
+
+    if (recovered.length) {
+      html += `
+      <div class="learning-row">
+        <span class="learning-row-label">Fields recovered</span>
+        <span class="learning-row-value" style="font-family:monospace;font-size:12px">${escHtml(recovered.join(', '))}</span>
+      </div>`;
+    }
+
+    if (stored.length) {
+      html += `
+      <div class="learning-row">
+        <span class="learning-row-label">Patterns stored</span>
+        <span class="learning-row-value" style="font-family:monospace;font-size:12px">${escHtml(stored.join(', '))}</span>
+      </div>`;
+    }
+
+    html += `
+      <div class="learning-row">
+        <span class="learning-row-label">Last seen</span>
+        <span class="learning-row-value" style="font-size:12px;color:var(--label3)">${escHtml(lastSeen)}</span>
+      </div>`;
+  });
+
+  rowsEl.innerHTML = html;
+
+  // Show feedback buttons only if we have a supplier key to submit against
+  const hasSupplierKey = traces.some(t => t.supplier_key);
+  if (hasSupplierKey) feedbackRow.style.display = 'flex';
+
+  // Build correction fields for "mark incorrect" panel
+  const cfEl = document.getElementById('lf-correction-fields');
+  if (cfEl && _learningTrace) {
+    const labelFields = [
+      'invoice_no_label', 'invoice_date_label', 'exporter_label',
+      'consignee_label', 'buyer_label', 'fob_label', 'freight_label',
+      'insurance_label', 'cif_label', 'total_pcs_label', 'total_prs_label',
+    ];
+    cfEl.innerHTML = labelFields.map(f =>
+      `<div class="lf-field-row">
+        <span class="lf-field-key">${escHtml(f)}</span>
+        <input class="lf-correction-val" id="lf-corr-${f}" placeholder="correct label text…" />
+      </div>`
+    ).join('');
+  }
+}
+
+/* ══════════════════════ Parser Fix Proposals ══════════════════════ */
+
+function renderProposals(a) {
+  const proposals = (a && a.fix_proposals) || [];
+  const card      = document.getElementById('proposals-card');
+  const wrap      = document.getElementById('proposals-table-wrap');
+  if (!card || !wrap || !proposals.length) return;
+
+  card.style.display = 'block';
+
+  const _riskBadge = (risk) => {
+    const cls = risk === 'safe' ? 'risk-safe' : risk === 'review' ? 'risk-review' : 'risk-restricted';
+    return `<span class="risk-badge ${cls}">${escHtml(risk)}</span>`;
+  };
+
+  let rows = '';
+  proposals.forEach((p, idx) => {
+    const rowId    = `prop-row-${idx}`;
+    const actId    = `prop-act-${idx}`;
+    const field    = p.field_missing || '—';
+    const reason   = p.failure_reason || '—';
+    const snippet  = p.text_snippet || '';
+    const rule     = p.suggested_rule || {};
+    const ruleDesc = rule.description || '—';
+    const risk     = p.risk_level || 'review';
+    const propId   = p.proposal_id || '';
+
+    rows += `
+    <tr id="${rowId}">
+      <td><code style="font-family:monospace;font-size:11px">${escHtml(field)}</code></td>
+      <td style="max-width:200px;font-size:11px;color:var(--label2)">${escHtml(reason)}</td>
+      <td style="max-width:220px">
+        <div style="font-size:11px;color:var(--label2);margin-bottom:3px">${escHtml(ruleDesc)}</div>
+        ${snippet ? `<div class="prop-snippet">${escHtml(snippet)}</div>` : ''}
+      </td>
+      <td>${_riskBadge(risk)}</td>
+      <td id="${actId}">
+        <button class="prop-action-btn prop-approve-btn"
+          onclick="approveProposal(${JSON.stringify(propId)}, '${actId}')">Approve</button>
+        <button class="prop-action-btn prop-reject-btn"
+          onclick="rejectProposal(${JSON.stringify(propId)}, '${actId}')">Reject</button>
+      </td>
+    </tr>`;
+  });
+
+  wrap.innerHTML = `
+  <table class="proposals-table">
+    <thead>
+      <tr>
+        <th>Field</th>
+        <th>Failure reason</th>
+        <th>Suggested rule</th>
+        <th>Risk</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function approveProposal(proposalId, actCellId) {
+  const actEl = document.getElementById(actCellId);
+  if (!actEl) return;
+  actEl.innerHTML = '<span style="font-size:11px;color:var(--label4)">Working…</span>';
+  fetch(`/api/v1/proposals/${encodeURIComponent(proposalId)}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) {
+      actEl.innerHTML = `<span class="prop-result-rej">Error: ${escHtml(data.error)}</span>`;
+      return;
+    }
+    if (data.applied_as === 'learning_hint') {
+      actEl.innerHTML = `<span class="prop-result-ok">&#10003; Applied as learning hint</span>`;
+    } else {
+      actEl.innerHTML = `<span class="prop-result-warn">&#9888; Requires manual code review — cannot auto-apply</span>`;
+    }
+  })
+  .catch(e => {
+    actEl.innerHTML = `<span class="prop-result-rej">Request failed: ${escHtml(String(e))}</span>`;
+  });
+}
+
+function rejectProposal(proposalId, actCellId) {
+  const actEl = document.getElementById(actCellId);
+  if (!actEl) return;
+  const reason = prompt('Rejection reason (optional):') || '';
+  actEl.innerHTML = '<span style="font-size:11px;color:var(--label4)">Working…</span>';
+  fetch(`/api/v1/proposals/${encodeURIComponent(proposalId)}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) {
+      actEl.innerHTML = `<span class="prop-result-rej">Error: ${escHtml(data.error)}</span>`;
+      return;
+    }
+    actEl.innerHTML = `<span class="prop-result-rej">&#10007; Rejected</span>`;
+  })
+  .catch(e => {
+    actEl.innerHTML = `<span class="prop-result-rej">Request failed: ${escHtml(String(e))}</span>`;
+  });
+}
+
+function toggleLearningCorrections() {
+  const el = document.getElementById('lf-corrections');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function submitLearningFeedback(correct) {
+  const trace = _learningTrace;
+  if (!trace || !trace.supplier_key) return;
+
+  const statusEl   = document.getElementById('lf-status');
+  const confirmBtn = document.getElementById('lf-confirm-btn');
+  const rejectBtn  = document.getElementById('lf-reject-btn');
+
+  [confirmBtn, rejectBtn].forEach(b => { if (b) b.disabled = true; });
+  if (statusEl) { statusEl.style.color = 'var(--label4)'; statusEl.textContent = 'Submitting…'; }
+
+  // Collect field corrections if marking incorrect
+  const fieldCorrections = {};
+  if (!correct) {
+    document.querySelectorAll('.lf-correction-val').forEach(inp => {
+      const val = inp.value.trim();
+      if (val) {
+        const key = inp.id.replace('lf-corr-', '');
+        fieldCorrections[key] = val;
+      }
+    });
+  }
+
+  const a = _audit;
+  fetch('/api/v1/invoice-learning/feedback', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      batch_id:           a ? (a.batch_id || '') : '',
+      invoice_no:         trace.invoice_no || '',
+      supplier_key:       trace.supplier_key,
+      layout_fingerprint: trace.layout_fingerprint || '',
+      correct,
+      field_corrections:  fieldCorrections,
+    }),
+  })
+    .then(r => r.json().then(d => ({ ok: r.ok, d })))
+    .then(({ ok, d }) => {
+      if (ok) {
+        if (statusEl) {
+          statusEl.style.color = correct ? '#15803d' : '#b45309';
+          const promoted = d.promoted ? ' (promoted to ' + d.confidence + ')' : '';
+          statusEl.textContent = correct
+            ? `Confirmed — confidence now ${d.confidence}${promoted}`
+            : `Marked incorrect — ${Object.keys(fieldCorrections).length} correction(s) stored`;
+        }
+        // Update displayed confidence badge
+        const rows = document.getElementById('learning-rows');
+        if (rows && d.confidence) {
+          rows.querySelectorAll('.conf-badge').forEach(b => {
+            b.className = `conf-badge conf-${d.confidence}`;
+            b.textContent = d.confidence.charAt(0).toUpperCase() + d.confidence.slice(1);
+          });
+        }
+      } else {
+        if (statusEl) { statusEl.style.color = '#b91c1c'; statusEl.textContent = d.detail || JSON.stringify(d); }
+        [confirmBtn, rejectBtn].forEach(b => { if (b) b.disabled = false; });
+      }
+    })
+    .catch(e => {
+      if (statusEl) { statusEl.style.color = '#b91c1c'; statusEl.textContent = 'Network error: ' + e; }
+      [confirmBtn, rejectBtn].forEach(b => { if (b) b.disabled = false; });
+    });
+}
+
+function resetLearningPatterns() {
+  const trace = _learningTrace;
+  if (!trace || !trace.supplier_key) return;
+
+  const statusEl   = document.getElementById('lf-status');
+  const resetBtn   = document.getElementById('lf-reset-btn');
+
+  if (!confirm(`Reset ALL learned patterns for "${trace.supplier_key}"?\n\nThis cannot be undone. The supplier will be re-learned from scratch on the next processed invoice.`)) return;
+
+  if (resetBtn) resetBtn.disabled = true;
+  if (statusEl) { statusEl.style.color = 'var(--label4)'; statusEl.textContent = 'Resetting…'; }
+
+  fetch(`/api/v1/invoice-learning/patterns/${encodeURIComponent(trace.supplier_key)}`, {
+    method: 'DELETE',
+  })
+    .then(r => r.json().then(d => ({ ok: r.ok, d })))
+    .then(({ ok, d }) => {
+      if (ok) {
+        if (statusEl) {
+          statusEl.style.color = '#b45309';
+          statusEl.textContent = `Patterns for "${trace.supplier_key}" deleted — will re-learn on next batch`;
+        }
+        // Hide the learning card content since there's nothing left
+        const rowsEl = document.getElementById('learning-rows');
+        if (rowsEl) rowsEl.innerHTML = '<div style="font-size:13px;color:var(--label3);padding:8px 0">Pattern store cleared. This supplier will start fresh on the next invoice.</div>';
+        const feedbackRow = document.getElementById('learning-feedback-row');
+        if (feedbackRow) feedbackRow.style.display = 'none';
+      } else {
+        if (statusEl) { statusEl.style.color = '#b91c1c'; statusEl.textContent = d.detail || JSON.stringify(d); }
+        if (resetBtn) resetBtn.disabled = false;
+      }
+    })
+    .catch(e => {
+      if (statusEl) { statusEl.style.color = '#b91c1c'; statusEl.textContent = 'Network error: ' + e; }
+      if (resetBtn) resetBtn.disabled = false;
+    });
+}
+
+/* ═══════════════════ customs description approval ═══════════════════ */
+async function approveCustomsDesc(batchId) {
+  const name = prompt('Enter your name for the approval audit trail:');
+  if (!name || !name.trim()) return;
+  const statusEl = document.getElementById('approve-desc-status-' + batchId);
+  if (statusEl) statusEl.textContent = 'Approving…';
+  try {
+    const r = await fetch(`/api/v1/dhl/approve/${encodeURIComponent(batchId)}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved_by: name.trim() }),
+    });
+    const d = await r.json();
+    if (r.ok && d.approved) {
+      if (statusEl) { statusEl.style.color = 'var(--green)'; statusEl.textContent = `Approved by ${d.approved_by} at ${new Date(d.approved_at).toLocaleString()}`; }
+      // Reload to reflect updated state
+      setTimeout(() => window.location.reload(), 1500);
+    } else {
+      if (statusEl) { statusEl.style.color = '#b91c1c'; statusEl.textContent = d.detail || 'Approval failed.'; }
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.style.color = '#b91c1c'; statusEl.textContent = 'Network error: ' + e; }
+  }
+}
+
+/* ═══════════════════ SAD review modal ═══════════════════ */
+let _sadReviewData    = null;
+let _sadReviewBatchId = null;
+
+async function showSadReview(batchId) {
+  _sadReviewBatchId = batchId;
+  // Ensure modal exists
+  if (!document.getElementById('sad-review-modal')) {
+    document.body.insertAdjacentHTML('beforeend', `
+      <div id="sad-review-modal" class="sad-modal-overlay">
+        <div class="sad-modal-box">
+          <div class="sad-modal-title">
+            <span>SAD-Ready JSON — Line Review</span>
+            <button class="sad-modal-close" onclick="closeSadReview()">&#10005;</button>
+          </div>
+          <div id="sad-review-body">Loading…</div>
+          <button class="sad-save-btn" onclick="saveSadCorrections()">&#10003; Save Corrections</button>
+          <div class="sad-save-status" id="sad-save-status"></div>
+        </div>
+      </div>`);
+  }
+
+  const modal = document.getElementById('sad-review-modal');
+  const body  = document.getElementById('sad-review-body');
+  modal.classList.add('open');
+  body.innerHTML = 'Loading…';
+
+  try {
+    const r = await fetch(`/api/v1/dhl/sad-ready/${encodeURIComponent(batchId)}`, { credentials: 'include' });
+    if (!r.ok) { body.innerHTML = `<span style="color:#b91c1c">Error: ${r.status}</span>`; return; }
+    const data = await r.json();
+    _sadReviewData = data;
+    renderSadReviewTable(data, body);
+  } catch (e) {
+    body.innerHTML = `<span style="color:#b91c1c">Network error: ${e}</span>`;
+  }
+}
+
+function closeSadReview() {
+  const m = document.getElementById('sad-review-modal');
+  if (m) m.classList.remove('open');
+}
+
+function renderSadReviewTable(data, container) {
+  const lines = (data && data.lines) || [];
+  if (!lines.length) { container.innerHTML = '<p style="color:var(--label3);font-size:13px">No goods lines in this batch.</p>'; return; }
+
+  let html = `<p style="font-size:12px;color:var(--label3);margin-bottom:12px">
+    AWB: <strong>${escHtml(data.awb || '—')}</strong> &nbsp;|&nbsp;
+    Lines: <strong>${lines.length}</strong> &nbsp;|&nbsp;
+    Total: <strong>${(data.total_value_usd || 0).toLocaleString('en-US', {minimumFractionDigits:2})} USD</strong>
+  </p>`;
+
+  html += `<table class="sad-review-table">
+    <thead><tr>
+      <th style="width:36px">#</th>
+      <th>Invoice</th>
+      <th>Polish Description</th>
+      <th>Material</th>
+      <th>Stones</th>
+      <th>Lab / Natural</th>
+      <th style="width:46px">QTY</th>
+      <th style="width:80px">Value USD</th>
+    </tr></thead>
+    <tbody>`;
+
+  lines.forEach((l, i) => {
+    html += `<tr>
+      <td style="color:var(--label3)">${l.line_order || (i + 1)}</td>
+      <td style="font-family:monospace;font-size:11px">${escHtml(l.invoice_number || '—')}</td>
+      <td><input data-idx="${i}" data-field="polish_customs_description"
+                 value="${escHtml(l.polish_customs_description || '')}"
+                 title="Edit Polish description"></td>
+      <td><input data-idx="${i}" data-field="material"
+                 value="${escHtml(l.material || '')}"
+                 title="Edit material"></td>
+      <td><input data-idx="${i}" data-field="stones"
+                 value="${escHtml(l.stones || '')}"
+                 title="Edit stones"></td>
+      <td><input data-idx="${i}" data-field="natural_or_lab_grown"
+                 value="${escHtml(l.natural_or_lab_grown || 'natural')}"
+                 style="width:80px"
+                 title="natural or lab_grown"></td>
+      <td style="text-align:right;font-weight:600">${l.quantity || 0}</td>
+      <td style="text-align:right;font-weight:600">${(l.line_total_usd || 0).toLocaleString('en-US', {minimumFractionDigits:2})}</td>
+    </tr>`;
+  });
+
+  html += `</tbody></table>`;
+  container.innerHTML = html;
+}
+
+async function saveSadCorrections() {
+  if (!_sadReviewData || !_sadReviewBatchId) return;
+  const statusEl = document.getElementById('sad-save-status');
+  if (statusEl) statusEl.textContent = 'Saving…';
+
+  // Collect edits from inputs
+  const inputs = document.querySelectorAll('#sad-review-body input[data-idx]');
+  inputs.forEach(inp => {
+    const idx   = parseInt(inp.dataset.idx, 10);
+    const field = inp.dataset.field;
+    if (_sadReviewData.lines && _sadReviewData.lines[idx] != null) {
+      _sadReviewData.lines[idx][field] = inp.value;
+    }
+  });
+
+  try {
+    const r = await fetch(
+      `/api/v1/dhl/sad-ready/${encodeURIComponent(_sadReviewBatchId)}/corrections`,
+      {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lines: _sadReviewData.lines }),
+      }
+    );
+    if (r.ok) {
+      if (statusEl) { statusEl.style.color = 'var(--green)'; statusEl.textContent = 'Corrections saved.'; }
+    } else {
+      const d = await r.json().catch(() => ({}));
+      if (statusEl) { statusEl.style.color = '#b91c1c'; statusEl.textContent = d.detail || `Error ${r.status}`; }
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.style.color = '#b91c1c'; statusEl.textContent = 'Network error: ' + e; }
+  }
+}
+
+/* ═══════════════════════ shipment timeline ═══════════════════════ */
+function renderTimeline(events) {
+  if (!events || !events.length) return '<p style="color:#888;padding:12px">No events recorded yet.</p>';
+  const icons = {
+    batch_created:'📦', invoice_uploaded:'📄', sad_uploaded:'📋',
+    awb_uploaded:'✈️', processing_started:'⚙️', pz_generated:'✅',
+    pz_blocked:'⚠️', dhl_email_received:'📧', clearance_started:'🔍',
+    dsk_generated:'📑', description_ready:'📝', reply_approved:'✉️',
+    dhl_precheck_completed:'🔎', error:'❌', status_change:'🔄'
+  };
+  return events.slice().reverse().map(ev => {
+    const icon = icons[ev.event] || '•';
+    const dt   = ev.ts ? new Date(ev.ts).toLocaleString('pl-PL',
+      {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+    const actor   = ev.actor   ? `<span style="color:#888;font-size:11px">&nbsp;·&nbsp;${escHtml(ev.actor)}</span>` : '';
+    const trigger = ev.trigger_source ? `<span style="background:#e0f2fe;color:#0369a1;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px">${escHtml(ev.trigger_source)}</span>` : '';
+    const detail  = ev.detail  ? `<div style="font-size:11px;color:#666;margin-top:3px;word-break:break-all">${escHtml(JSON.stringify(ev.detail))}</div>` : '';
+    return `<div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid #f3f4f6">
+      <div style="font-size:17px;min-width:22px;text-align:center">${icon}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px"><strong>${escHtml((ev.event||'').replace(/_/g,' '))}</strong>${trigger}${actor}</div>
+        <div style="font-size:11px;color:#9ca3af">${dt}</div>${detail}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function loadTimeline(batchId) {
+  try {
+    const r = await fetch(`/api/v1/tracking/shipment/${encodeURIComponent(batchId)}/timeline`);
+    if (!r.ok) return;
+    const d = await r.json();
+    const el = document.getElementById('timeline-card-body');
+    if (el && d.timeline) el.innerHTML = renderTimeline(d.timeline);
+  } catch (_) {}
+}
+
+function renderWaitingBanner(status) {
+  if (!status || !status.startsWith('awaiting_')) return '';
+  const labels = {
+    'awaiting_dhl_email': 'Waiting for DHL customs email (T#... ticket)',
+    'awaiting_sad':       'Waiting for SAD / ZC429 upload',
+    'awaiting_clearance': 'Waiting for clearance confirmation',
+  };
+  const msg = labels[status] || 'Waiting for next trigger';
+  return `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:12px 16px;margin:12px 0;display:flex;gap:12px;align-items:flex-start">
+    <span style="font-size:22px">⏳</span>
+    <div><strong style="color:#92400e">Waiting for next trigger</strong>
+    <div style="font-size:13px;color:#78350f;margin-top:3px">${escHtml(msg)}</div>
+    <div style="font-size:12px;color:#a16207;margin-top:4px">This shipment advances automatically when the trigger arrives.</div></div>
+  </div>`;
+}
+</script>
+</body>
+</html>

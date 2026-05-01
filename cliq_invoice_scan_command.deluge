@@ -1,0 +1,41 @@
+/**
+ * /invoice-scan — Zoho Cliq Slash Command Handler
+ * =================================================
+ * Paste into: Cliq → Commands → /invoice-scan → Command Handler
+ *
+ * Usage: /invoice-scan
+ *
+ * Scans recent chat messages for all invoice/SAD/AWB files and auto-registers
+ * any that are missing from the current session.
+ *
+ * Use this when /invoice only picked up 1 of 4 attachments — run /invoice-scan
+ * to recover the rest before /submit.
+ */
+
+FASTAPI_HOST = "https://pz.estrellajewels.eu";
+API_KEY      = "dev";
+
+response = Map();
+
+payload = Map();
+payload.put("chat_id",    chat.get("id"));
+payload.put("user_id",    user.get("id"));
+payload.put("user_email", user.get("email"));
+
+result = invokeurl
+[
+    url:        FASTAPI_HOST + "/api/v1/batch/scan-chat"
+    type:       POST
+    parameters: payload.toString()
+    headers:    {"Content-Type":"application/json","X-API-Key":API_KEY}
+];
+
+if(result.containsKey("message"))
+{
+    response.put("text", result.get("message"));
+}
+else
+{
+    response.put("text", "🔍 Scan complete. Send /status to check current session.");
+}
+return response;

@@ -1,0 +1,63 @@
+/**
+ * /awb — Zoho Cliq Slash Command Handler
+ * =======================================
+ * Paste into: Cliq → Commands → /awb → Command Handler
+ *
+ * Usage in Cliq: type /awb AND attach the AWB document in the same message.
+ * AWB is optional — batch can /submit without it.
+ *
+ * file_id is sent empty — backend resolves it from Cliq API at submit time.
+ */
+
+FASTAPI_HOST = "https://pz.estrellajewels.eu";
+API_KEY      = "dev";
+
+response = Map();
+chat_id    = chat.get("id");
+user_id    = user.get("id");
+user_email = user.get("email");
+
+headers = Map();
+headers.put("Content-Type", "application/json");
+headers.put("X-API-Key", API_KEY);
+
+if(attachments == null || attachments.size() == 0)
+{
+    response.put("text",
+        "⚠️ No attachment found.\n\n" +
+        "How to send: type /awb AND attach the AWB document in the same message.\n" +
+        "(AWB is optional — you can /submit without it.)"
+    );
+    return response;
+}
+
+// In slash commands, attachments are plain strings (filename only)
+file_name = attachments.get(0).toString().trim();
+if(file_name.length() == 0) { file_name = "awb.pdf"; }
+
+payload = Map();
+payload.put("chat_id",    chat_id);
+payload.put("user_id",    user_id);
+payload.put("user_email", user_email);
+payload.put("type",       "awb");
+payload.put("file_id",    "");
+payload.put("file_name",  file_name);
+
+resp = invokeurl
+[
+    url:        FASTAPI_HOST + "/api/v1/batch/add"
+    type:       POST
+    parameters: payload.toString()
+    headers:    headers
+];
+data = resp.toMap();
+
+if(data.containsKey("message"))
+{
+    response.put("text", data.get("message"));
+}
+else
+{
+    response.put("text", "✈️ AWB registered: " + file_name);
+}
+return response;

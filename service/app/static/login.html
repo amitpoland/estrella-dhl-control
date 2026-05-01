@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In — Estrella Customs Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --gold:        #c8a96e;
+      --gold-light:  #e8d5a3;
+      --gold-dark:   #a07840;
+      --navy:        #1a2a4a;
+      --navy-deep:   #0f1c33;
+      --charcoal:    #2d3748;
+      --ivory:       #faf8f4;
+      --ivory-warm:  #f5f0e8;
+      --white:       #ffffff;
+      --muted:       #718096;
+      --error:       #c53030;
+      --error-bg:    #fff5f5;
+      --success:     #276749;
+      --border:      #e2d9c8;
+    }
+
+    html, body { height: 100%; font-family: 'Inter', sans-serif; }
+
+    body {
+      display: flex;
+      min-height: 100vh;
+      background: var(--ivory);
+    }
+
+    /* ── Left decorative panel ── */
+    .panel {
+      flex: 0 0 46%;
+      background: linear-gradient(160deg, var(--navy-deep) 0%, var(--navy) 50%, #243755 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 48px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .panel::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% 80%, rgba(200,169,110,0.12) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 40% at 80% 20%, rgba(200,169,110,0.08) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    /* Geometric diamond pattern */
+    .panel-pattern {
+      position: absolute;
+      inset: 0;
+      opacity: 0.06;
+      background-image:
+        repeating-linear-gradient(45deg, var(--gold) 0, var(--gold) 1px, transparent 0, transparent 50%),
+        repeating-linear-gradient(-45deg, var(--gold) 0, var(--gold) 1px, transparent 0, transparent 50%);
+      background-size: 40px 40px;
+    }
+
+    .panel-content { position: relative; z-index: 1; text-align: center; max-width: 380px; }
+
+    /* Diamond logo mark */
+    .diamond-mark {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 28px;
+    }
+
+    .brand-name {
+      font-family: 'Playfair Display', serif;
+      font-size: 28px;
+      font-weight: 600;
+      color: var(--white);
+      letter-spacing: 0.02em;
+      margin-bottom: 6px;
+    }
+
+    .brand-sub {
+      font-size: 11px;
+      color: var(--gold-light);
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      margin-bottom: 40px;
+    }
+
+    .panel-divider {
+      width: 48px;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--gold), transparent);
+      margin: 0 auto 36px;
+    }
+
+    .panel-headline {
+      font-family: 'Playfair Display', serif;
+      font-size: 22px;
+      font-weight: 500;
+      color: var(--white);
+      line-height: 1.4;
+      margin-bottom: 18px;
+    }
+
+    .panel-tagline {
+      font-size: 13px;
+      color: rgba(255,255,255,0.55);
+      line-height: 1.7;
+      letter-spacing: 0.01em;
+    }
+
+    .panel-features {
+      margin-top: 48px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      text-align: left;
+    }
+
+    .panel-feature {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 20px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(200,169,110,0.2);
+      border-radius: 10px;
+    }
+
+    .feature-icon {
+      font-size: 18px;
+      flex-shrink: 0;
+      width: 32px;
+      text-align: center;
+    }
+
+    .feature-text {
+      font-size: 12.5px;
+      color: rgba(255,255,255,0.7);
+      line-height: 1.4;
+    }
+
+    .feature-text strong {
+      color: var(--gold-light);
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 2px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    /* ── Right form panel ── */
+    .form-side {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 32px;
+      background: var(--ivory);
+    }
+
+    .form-card {
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .form-header { margin-bottom: 36px; }
+
+    .form-title {
+      font-family: 'Playfair Display', serif;
+      font-size: 26px;
+      font-weight: 600;
+      color: var(--navy);
+      letter-spacing: -0.01em;
+      margin-bottom: 8px;
+    }
+
+    .form-subtitle {
+      font-size: 13.5px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .form-gold-line {
+      width: 36px;
+      height: 2px;
+      background: var(--gold);
+      margin: 16px 0;
+      border-radius: 2px;
+    }
+
+    /* Alert */
+    .alert {
+      display: none;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 20px;
+    }
+    .alert.error  { background: var(--error-bg); color: var(--error); border: 1px solid #fed7d7; display: block; }
+    .alert.success { background: #f0fff4; color: var(--success); border: 1px solid #c6f6d5; display: block; }
+
+    /* Form fields */
+    .field { margin-bottom: 20px; }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--charcoal);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    input[type="email"],
+    input[type="password"],
+    input[type="text"] {
+      width: 100%;
+      padding: 13px 16px;
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      font-size: 14.5px;
+      font-family: 'Inter', sans-serif;
+      color: var(--charcoal);
+      background: var(--white);
+      transition: border-color 0.2s, box-shadow 0.2s;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: var(--gold);
+      box-shadow: 0 0 0 3px rgba(200,169,110,0.12);
+    }
+
+    input.error {
+      border-color: var(--error);
+    }
+
+    .field-error {
+      font-size: 11.5px;
+      color: var(--error);
+      margin-top: 5px;
+      display: none;
+    }
+    .field-error.show { display: block; }
+
+    /* Remember me */
+    .remember-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 28px;
+    }
+
+    .check-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--charcoal);
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 400;
+    }
+
+    .check-label input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--gold-dark);
+      cursor: pointer;
+    }
+
+    .forgot-link {
+      font-size: 13px;
+      color: var(--gold-dark);
+      text-decoration: none;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    .forgot-link:hover { color: var(--navy); }
+
+    /* Submit button */
+    .btn-primary {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, var(--navy) 0%, #243755 100%);
+      color: var(--white);
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+      transition: all 0.25s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .btn-primary::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, transparent 0%, rgba(200,169,110,0.15) 100%);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .btn-primary:hover:not(:disabled)::after { opacity: 1; }
+    .btn-primary:hover:not(:disabled) { box-shadow: 0 4px 16px rgba(26,42,74,0.3); transform: translateY(-1px); }
+    .btn-primary:active:not(:disabled) { transform: translateY(0); }
+    .btn-primary:disabled { opacity: 0.65; cursor: not-allowed; }
+
+    .btn-spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+      display: none;
+    }
+    .btn-primary.loading .btn-spinner { display: inline-block; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Footer links */
+    .form-footer {
+      margin-top: 28px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .form-footer a {
+      color: var(--gold-dark);
+      font-weight: 500;
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    .form-footer a:hover { color: var(--navy); }
+
+    .footer-divider {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      body { flex-direction: column; }
+      .panel { flex: none; padding: 40px 24px; min-height: 220px; }
+      .panel-features { display: none; }
+      .brand-name { font-size: 22px; }
+      .panel-headline { font-size: 18px; }
+      .form-side { padding: 36px 24px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Left decorative panel ── -->
+<div class="panel">
+  <div class="panel-pattern"></div>
+  <div class="panel-content">
+
+    <!-- Diamond SVG mark -->
+    <svg class="diamond-mark" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <polygon points="32,4 58,20 58,44 32,60 6,44 6,20" stroke="#c8a96e" stroke-width="1.5" fill="none" opacity="0.4"/>
+      <polygon points="32,10 54,23 54,41 32,54 10,41 10,23" stroke="#c8a96e" stroke-width="1" fill="none" opacity="0.3"/>
+      <polygon points="32,16 50,26 50,38 32,48 14,38 14,26" fill="rgba(200,169,110,0.08)" stroke="#c8a96e" stroke-width="1.5"/>
+      <line x1="14" y1="26" x2="50" y2="26" stroke="#c8a96e" stroke-width="0.8" opacity="0.5"/>
+      <line x1="32" y1="16" x2="14" y2="26" stroke="#c8a96e" stroke-width="0.8" opacity="0.5"/>
+      <line x1="32" y1="16" x2="50" y2="26" stroke="#c8a96e" stroke-width="0.8" opacity="0.5"/>
+      <circle cx="32" cy="32" r="3" fill="#c8a96e" opacity="0.8"/>
+    </svg>
+
+    <div class="brand-name">Estrella Jewels</div>
+    <div class="brand-sub">Customs Operations Platform</div>
+    <div class="panel-divider"></div>
+
+    <div class="panel-headline">Jewellery shipments.<br>Customs clarity.<br>Audit-ready records.</div>
+    <div class="panel-tagline">Secure access to shipment processing,<br>customs declarations, and audit documentation.</div>
+
+    <div class="panel-features">
+      <div class="panel-feature">
+        <div class="feature-icon">💎</div>
+        <div class="feature-text">
+          <strong>PZ Processing</strong>
+          Landed cost calculation with SAD verification
+        </div>
+      </div>
+      <div class="panel-feature">
+        <div class="feature-icon">📋</div>
+        <div class="feature-text">
+          <strong>Audit Reports</strong>
+          Bilingual compliance documentation
+        </div>
+      </div>
+      <div class="panel-feature">
+        <div class="feature-icon">🔒</div>
+        <div class="feature-text">
+          <strong>Role-Based Access</strong>
+          Admin · Accounts · Logistics · Auditor · Viewer
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Right form panel ── -->
+<div class="form-side">
+  <div class="form-card">
+    <div class="form-header">
+      <div class="form-title">Estrella Customs Control</div>
+      <div class="form-gold-line"></div>
+      <div class="form-subtitle">Secure access to shipment, customs, and audit documents.</div>
+    </div>
+
+    <div class="alert" id="alert"></div>
+
+    <form id="loginForm" novalidate>
+      <div class="field">
+        <label for="email">Email Address</label>
+        <input type="email" id="email" name="email" placeholder="you@estrellajewels.com" autocomplete="email" required>
+        <div class="field-error" id="emailErr"></div>
+      </div>
+
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" placeholder="••••••••" autocomplete="current-password" required>
+        <div class="field-error" id="passwordErr"></div>
+      </div>
+
+      <div class="remember-row">
+        <label class="check-label">
+          <input type="checkbox" id="remember" name="remember">
+          Remember me for 30 days
+        </label>
+        <a href="/forgot-password" class="forgot-link">Forgot password?</a>
+      </div>
+
+      <button type="submit" class="btn-primary" id="submitBtn">
+        <span class="btn-spinner" id="spinner"></span>
+        <span id="btnText">Sign In</span>
+      </button>
+    </form>
+
+    <div class="form-footer">
+      Don't have an account? <a href="/signup">Request access</a>
+    </div>
+
+    <div class="footer-divider">
+      ESTRELLA JEWELS SP. Z O.O. SP.K. &nbsp;·&nbsp; CUSTOMS OPERATIONS &nbsp;·&nbsp; CONFIDENTIAL
+    </div>
+  </div>
+</div>
+
+<script>
+const form     = document.getElementById('loginForm');
+const alertEl  = document.getElementById('alert');
+const submitBtn = document.getElementById('submitBtn');
+const spinner  = document.getElementById('spinner');
+const btnText  = document.getElementById('btnText');
+
+function showAlert(msg, type='error') {
+  alertEl.textContent = msg;
+  alertEl.className = 'alert ' + type;
+}
+
+function clearAlert() {
+  alertEl.className = 'alert';
+  alertEl.textContent = '';
+}
+
+function setLoading(on) {
+  submitBtn.disabled = on;
+  submitBtn.classList.toggle('loading', on);
+  btnText.textContent = on ? 'Signing in…' : 'Sign In';
+}
+
+function validateEmail(val) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearAlert();
+
+  const email    = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const remember = document.getElementById('remember').checked;
+
+  // Basic client validation
+  let hasError = false;
+  if (!email || !validateEmail(email)) {
+    document.getElementById('emailErr').textContent = 'Enter a valid email address';
+    document.getElementById('emailErr').classList.add('show');
+    document.getElementById('email').classList.add('error');
+    hasError = true;
+  } else {
+    document.getElementById('emailErr').classList.remove('show');
+    document.getElementById('email').classList.remove('error');
+  }
+  if (!password) {
+    document.getElementById('passwordErr').textContent = 'Password is required';
+    document.getElementById('passwordErr').classList.add('show');
+    document.getElementById('password').classList.add('error');
+    hasError = true;
+  } else {
+    document.getElementById('passwordErr').classList.remove('show');
+    document.getElementById('password').classList.remove('error');
+  }
+  if (hasError) return;
+
+  setLoading(true);
+  try {
+    const res = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ email, password, remember }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showAlert('Login successful. Redirecting…', 'success');
+      setTimeout(() => { window.location.href = '/dashboard'; }, 600);
+    } else {
+      showAlert(data.detail || 'Login failed. Please check your credentials.');
+      setLoading(false);
+    }
+  } catch (err) {
+    showAlert('Connection error. Please try again.');
+    setLoading(false);
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+# Virtual env
+venv/
+.env
+# OS
+.DS_Store
+# Storage (VERY IMPORTANT)
+service/app/storage/
+service/storage/
+# AI Bridge runtime files
+ai_bridge/tasks/
+ai_bridge/processed/
+ai_bridge/errors/
+# Secrets / configs
+*.env
+.env.*

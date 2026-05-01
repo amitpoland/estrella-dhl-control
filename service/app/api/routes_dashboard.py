@@ -1,0 +1,1772 @@
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from ..core.config import settings
+from ..core.logging import get_logger
+from ..core.security import require_api_key
+from ..auth.dependencies import require_admin
+from ..core import timeline as tl
+from ..services import cliq_service
+from ..utils.io import write_json_atomic
+
+log = get_logger(__name__)
+
+DeliveryStatus = Literal["success", "failed", "skipped"]
+_ARCHIVE_RETENTION_DAYS = 14
+
+router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+_auth  = Depends(require_api_key)
+
+_OUTPUTS  = settings.storage_root / "outputs"
+_ARCHIVED = settings.storage_root / "archived"        # reversible, 14-day retention
+# Note: storage/permanently_deleted/ used for expired/admin-deleted batches (inline in endpoints)
+_MAX_LIST = 300  # read more before dedup
+
+
+# ── Carrier detection ─────────────────────────────────────────────────────────
+
+def _detect_carrier(tracking_no: str, awb_filename: str = "") -> Dict[str, str]:
+    """
+    Detect carrier (DHL / FedEx / Unknown) from tracking number format and AWB filename.
+    Returns dict with: carrier, tracking_url, tracking_label
+    Phase 1 — no API, just public tracking page links.
+    """
+    t   = (tracking_no or "").strip()
+    fn  = (awb_filename or "").lower()
+    digits = re.sub(r"[^\d]", "", t)
+    n   = len(digits)
+
+    # DHL: 10-digit waybill, OR filename/tracking contains DHL hints
+    is_dhl = (
+        n == 10
+        or "dhl" in fn
+        or "waybill" in fn
+        or "mydhl" in fn
+        or re.search(r"\bdhl\b", t, re.IGNORECASE) is not None
+    )
+    # FedEx: 12 / 15 / 20 / 22 digit, OR filename contains fedex
+    is_fedex = (
+        n in (12, 15, 20, 22)
+        or "fedex" in fn
+        or re.search(r"\bfedex\b", t, re.IGNORECASE) is not None
+    )
+
+    # DHL takes priority if both match (10-digit alone is a strong DHL signal)
+    if is_dhl and not (is_fedex and n not in (10,)):
+        url = f"https://www.dhl.com/pl-en/home/tracking.html?tracking-id={t}" if t else ""
+        return {"carrier": "DHL", "tracking_url": url, "tracking_label": "Open DHL Tracking"}
+    if is_fedex:
+        url = f"https://www.fedex.com/en-pl/tracking.html?trknbr={t}" if t else ""
+        return {"carrier": "FedEx", "tracking_url": url, "tracking_label": "Open FedEx Tracking"}
+
+    # Unknown carrier — still provide tracking number
+    return {"carrier": "Unknown", "tracking_url": "", "tracking_label": "Carrier not detected"}
+
+
+def _with_download_urls(audit: Dict[str, Any]) -> Dict[str, Any]:
+    batch_id = audit.get("batch_id", "")
+    for key, entry in audit.get("files", {}).items():
+        # Guard: only process dict entries — string paths (legacy or backfilled)
+        # are skipped; the proper file URLs come from _build_files_detail().
+        if isinstance(entry, dict) and entry.get("name"):
+            entry["download_url"] = f"/api/v1/files/{batch_id}/{entry['name']}"
+    return audit
+
+
+def _derive_clearance_status(a: Dict[str, Any]) -> str:
+    """
+    Fix 6: Derive normalized clearance_status from actual audit fields.
+
+    Canonical values:
+      awaiting_dhl_email | dhl_email_received | dsk_generated | agency_email_queued |
+      agency_email_sent  | customs_parsed | ready_for_pz | pz_generated | completed
+
+    Priority: concrete audit evidence beats stored string labels so that stale
+    strings cannot mask real state.
+    """
+    # PZ generated — three independent signals to be robust in both list and detail views
+    files_detail = a.get("files_detail", {})
+    pz_pdf = (files_detail.get("files") or {}).get("pz_pdf", {})
+    pz_done = (
+        pz_pdf.get("exists")                          # files_detail populated (batch_detail view)
+        or a.get("pz_generated") is True              # explicit flag
+        or a.get("status") in {"success", "partial"}  # engine ran — covers list view too
+    )
+    if pz_done:
+        return "pz_generated"
+
+    # Agency email state
+    arp = a.get("agency_reply_package") or {}
+    if arp.get("status") == "sent":
+        return "agency_email_sent"
+    if arp.get("status") == "queued":
+        return "agency_email_queued"
+
+    # DSK generated
+    if a.get("dsk_filename") or a.get("dsk_status") == "generated":
+        return "dsk_generated"
+
+    # Customs/SAD parsed
+    cd = a.get("customs_declaration") or {}
+    if cd.get("mrn") or cd.get("duty_a00_pln") is not None or a.get("inputs", {}).get("zc429_mrn"):
+        return "customs_parsed"
+
+    # DHL email received
+    if a.get("dhl_email_received") or a.get("clearance_status") == "dhl_email_received":
+        return "dhl_email_received"
+
+    # Awaiting DHL email
+    if a.get("inputs", {}).get("zc429") or a.get("inputs", {}).get("invoices"):
+        if a.get("carrier", "").upper() == "DHL":
+            stored = a.get("clearance_status", "")
+            # If there is a stored value from a legitimate path, honour it
+            _valid = {
+                "awaiting_dhl_email", "dhl_email_received", "dsk_generated",
+                "agency_email_queued", "agency_email_sent", "customs_parsed",
+                "ready_for_pz", "pz_generated", "completed",
+                "awaiting_dhl_customs_email",   # legacy alias
+            }
+            if stored in _valid:
+                # Map legacy aliases
+                return "awaiting_dhl_email" if stored == "awaiting_dhl_customs_email" else stored
+            return "awaiting_dhl_email"
+
+    return a.get("clearance_status", "")
+
+
+def _derive_status(a: Dict[str, Any]) -> str:
+    """
+    Derive status for old audit files that pre-date the `status` field.
+    Priority: explicit field → infer from verification → infer from corrections_log.
+    New business statuses: draft, ready, processing are passed through as-is.
+    """
+    stored = a.get("status")
+    # Pass new lifecycle states straight through
+    if stored in ("draft", "ready", "processing", "in_preparation",
+                  "success", "partial", "blocked", "failed"):
+        return stored
+
+    if stored and stored != "unknown":
+        return stored
+
+    v = a.get("verification", {})
+    hard_fails = [k for k, val in v.items() if not isinstance(val, list) and val is False]
+    if hard_fails:
+        return "blocked"
+    corrections = a.get("corrections_log", [])
+    has_gaps = any(c.startswith("[VERIFY-GAP]") for c in corrections)
+    if has_gaps:
+        return "partial"
+    if v:
+        return "success"
+    return "unknown"
+
+
+def _derive_failed_checks(a: Dict[str, Any]) -> List[str]:
+    """Return failed_checks list, deriving from verification if the field is absent."""
+    stored = a.get("failed_checks")
+    if stored is not None:
+        return stored[:3]
+    v = a.get("verification", {})
+    return [k for k, val in v.items() if not isinstance(val, list) and val is False][:3]
+
+
+def _derive_sad_status(a: Dict[str, Any]) -> str:
+    """
+    Derive SAD pipeline status for list column.
+    Returns: 'uploaded_parsed' | 'uploaded' | 'missing'
+    """
+    inp = a.get("inputs", {})
+    fd  = a.get("files_detail", {})
+    sf  = (fd or {}).get("source_files", {})
+
+    # Check all possible indicators that SAD/ZC429 data exists
+    has_sad = bool(
+        (sf.get("sad") or [])
+        or inp.get("zc429_file") or inp.get("sad_file") or inp.get("zc429")
+        or a.get("zc429", {}).get("mrn")           # pre-parsed XML dict
+        or a.get("customs_declaration", {}).get("mrn")  # already populated
+    )
+    # Also check on-disk source/sad directory (for list view where files_detail not injected)
+    if not has_sad:
+        batch_id = a.get("batch_id", "")
+        if batch_id:
+            sad_dir = _OUTPUTS / batch_id / "source" / "sad"
+            if sad_dir.exists() and any(sad_dir.iterdir()):
+                has_sad = True
+
+    if not has_sad:
+        return "missing"
+
+    cd = a.get("customs_declaration", {})
+    if cd and (cd.get("mrn") or cd.get("duty_a00_pln") is not None):
+        return "uploaded_parsed"
+
+    if inp.get("zc429_mrn"):
+        return "uploaded_parsed"
+
+    # Check zc429 dict from XML parse
+    if a.get("zc429", {}).get("mrn"):
+        return "uploaded_parsed"
+
+    return "uploaded"
+
+
+def _derive_pz_status(a: Dict[str, Any]) -> str:
+    """
+    Derive PZ accounting pipeline status for list column.
+    Returns: 'complete' | 'ready' | 'locked'
+    """
+    status = _derive_status(a)
+    if status in ("success", "partial"):
+        return "complete"
+    sad_status = _derive_sad_status(a)
+    if sad_status == "missing":
+        return "locked"
+    return "ready"
+
+
+def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
+    t      = a.get("totals", {})
+    inp    = a.get("inputs", {})
+    mrn    = inp.get("zc429_mrn") or a.get("mrn")
+    doc_no = a.get("doc_no") or ""
+    # Extract tracking number from batch_id (SHIPMENT_<tracking>_<YYYY-MM>_<uuid>)
+    raw_batch_id = a.get("batch_id", batch_dir_name)
+    tracking_no  = a.get("tracking_no", "")
+    if not tracking_no and raw_batch_id.startswith("SHIPMENT_"):
+        parts = raw_batch_id.split("_")
+        if len(parts) >= 4 and parts[1] != "AUTO":
+            tracking_no = parts[1]
+
+    # Carrier: use explicit field first (set by user at creation), fall back to auto-detection
+    awb_filename = inp.get("awb") or ""
+    stored_carrier = a.get("carrier", "")
+    if stored_carrier and stored_carrier != "Unknown":
+        carrier_info = {
+            "carrier":        stored_carrier,
+            "tracking_url":   a.get("tracking_url") or _detect_carrier(tracking_no, awb_filename)["tracking_url"],
+            "tracking_label": f"Open {stored_carrier} Tracking" if stored_carrier in ("DHL", "FedEx") else "Carrier not detected",
+        }
+    else:
+        carrier_info = _detect_carrier(tracking_no, awb_filename)
+
+    # invoice_refs for search
+    invoice_refs = inp.get("invoice_refs", [])
+
+    # Tracking status from audit (populated by POST /refresh)
+    tracking = a.get("tracking", {})
+
+    return {
+        "batch_id":              raw_batch_id,
+        "tracking_no":           tracking_no,
+        "doc_no":                doc_no,
+        "timestamp":             a.get("timestamp", ""),
+        "status":                _derive_status(a),
+        "engine_version":        a.get("engine_version"),
+        "net":                   t.get("net"),
+        "gross":                 t.get("gross"),
+        "duty":                  t.get("duty"),
+        "total_duty":            t.get("duty"),
+        "total_gross":           t.get("gross"),
+        "mrn":                   mrn,
+        "failed_checks":         _derive_failed_checks(a),
+        "invoice_refs":          invoice_refs,
+        "run_count":             1,   # populated by dedup logic
+        "has_sad":               _derive_sad_status(a) != "missing",
+        "pz_confirmed":          a.get("pz_confirmed", False),
+        # Carrier tracking (Phase 1: public tracking pages only)
+        "carrier":               carrier_info["carrier"],
+        "tracking_url":          carrier_info["tracking_url"],
+        "tracking_label":        carrier_info["tracking_label"],
+        # Live tracking status (populated after API refresh)
+        "tracking_status":       tracking.get("status_label") if tracking else None,
+        "tracking_status_key":   tracking.get("status") if tracking else None,
+        "tracking_available":    tracking.get("available", False) if tracking else False,
+        # ── Pipeline statuses (for dashboard list columns) ────────────────────
+        "dhl_status":   a.get("clearance_status") or None,
+        "sad_status":   _derive_sad_status(a),
+        "pz_status":    _derive_pz_status(a),
+    }
+
+
+# ── Files detail helper ───────────────────────────────────────────────────────
+
+_AUDIT_ONLY_PDFS = {"audit_report_en.pdf", "audit_report_pl.pdf", "audit_memo.pdf"}
+
+
+def _build_source_files(batch_id: str) -> Dict[str, Any]:
+    """Scan source/ subdirectory in the output folder for uploaded source files."""
+    src_base = _OUTPUTS / batch_id / "source"
+
+    def _src_url(category: str, name: str) -> str:
+        from urllib.parse import quote
+        return f"/api/v1/files/{quote(batch_id)}/source/{category}/{quote(name)}"
+
+    def _scan(category: str) -> List[Dict[str, Any]]:
+        d = src_base / category
+        if not d.exists():
+            return []
+        return [
+            {"name": f.name, "url": _src_url(category, f.name), "exists": True}
+            for f in sorted(d.iterdir())
+            if f.is_file() and not f.name.startswith(".")
+        ]
+
+    return {
+        "invoices": _scan("invoices"),
+        "sad":      _scan("sad"),
+        "awb":      _scan("awb"),
+    }
+
+
+def _build_files_detail(batch_id: str) -> Dict[str, Any]:
+    """Scan the batch output folder and return availability of all known files."""
+    batch_dir = _OUTPUTS / batch_id
+
+    def _url(name: str) -> str:
+        from urllib.parse import quote
+        return f"/api/v1/files/{quote(batch_id)}/{quote(name)}"
+
+    def _find_pdf() -> Dict[str, Any]:
+        """First *.pdf that is NOT one of the audit-only names."""
+        if batch_dir.exists():
+            for f in sorted(batch_dir.iterdir()):
+                if f.suffix.lower() == ".pdf" and f.name not in _AUDIT_ONLY_PDFS:
+                    return {"name": f.name, "url": _url(f.name), "exists": True}
+        return {"name": "", "url": "", "exists": False}
+
+    def _find_xlsx() -> Dict[str, Any]:
+        if batch_dir.exists():
+            for f in sorted(batch_dir.iterdir()):
+                if f.suffix.lower() == ".xlsx":
+                    return {"name": f.name, "url": _url(f.name), "exists": True}
+        return {"name": "", "url": "", "exists": False}
+
+    def _check(name: str) -> Dict[str, Any]:
+        exists = (batch_dir / name).exists()
+        return {"name": name, "url": _url(name) if exists else "", "exists": exists}
+
+    def _find_corrections() -> Dict[str, Any]:
+        if batch_dir.exists():
+            for f in sorted(batch_dir.iterdir()):
+                if f.name.startswith("corrections") and f.suffix.lower() == ".json":
+                    return {"name": f.name, "url": _url(f.name), "exists": True}
+        return {"name": "corrections.json", "url": "", "exists": False}
+
+    pz_pdf  = _find_pdf()
+    calc    = _find_xlsx()
+    en_pdf  = _check("audit_report_en.pdf")
+    pl_pdf  = _check("audit_report_pl.pdf")
+    memo    = _check("audit_memo.pdf")
+    corr    = _find_corrections()
+
+    return {
+        "batch_id":     batch_id,
+        "source_files": _build_source_files(batch_id),
+        "files": {
+            "pz_pdf":      pz_pdf,
+            "calc_xlsx":   calc,
+            "audit_en":    en_pdf,
+            "audit_pl":    pl_pdf,
+            "audit_memo":  memo,
+            "corrections": corr,
+        },
+    }
+
+
+# ── List all batches ──────────────────────────────────────────────────────────
+
+@router.get("/batches", dependencies=[_auth])
+def list_batches(
+    all_runs: bool = Query(False, alias="all"),
+) -> List[Dict[str, Any]]:
+    """
+    Return completed batches sorted newest-first.
+
+    By default (all=false) deduplicates by (mrn, doc_no) keeping only the
+    latest run per document.  Pass ?all=1 to see every run.
+    """
+    if not _OUTPUTS.exists():
+        return []
+
+    dirs = sorted(_OUTPUTS.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    raw: List[Dict[str, Any]] = []
+    for batch_dir in dirs[:_MAX_LIST]:
+        if not batch_dir.is_dir():
+            continue
+        audit_path = batch_dir / "audit.json"
+        if not audit_path.exists():
+            continue
+        try:
+            with audit_path.open(encoding="utf-8") as fh:
+                a = json.load(fh)
+        except Exception:
+            continue
+        raw.append(_batch_summary(a, batch_dir.name))
+
+    if all_runs:
+        return raw
+
+    # ── Dedup: keep latest run per (mrn, doc_no) key ────────────────────────
+    seen: Dict[str, Dict[str, Any]] = {}
+    counts: Dict[str, int] = {}
+    for b in raw:
+        mrn    = b["mrn"] or ""
+        doc_no = b["doc_no"] or ""
+        key    = f"{mrn}||{doc_no}" if (mrn or doc_no) else b["batch_id"]
+        if key not in seen:
+            seen[key]   = b
+            counts[key] = 1
+        else:
+            counts[key] += 1
+            # Prefer a non-blocked run over a blocked one (same document, fixed re-run)
+            existing_status = seen[key]["status"]
+            incoming_status = b["status"]
+            prefer_incoming = (
+                existing_status == "blocked"
+                and incoming_status in ("success", "partial")
+            )
+            if prefer_incoming:
+                seen[key] = b
+
+    result = list(seen.values())
+    for b in result:
+        mrn    = b["mrn"] or ""
+        doc_no = b["doc_no"] or ""
+        key    = f"{mrn}||{doc_no}" if (mrn or doc_no) else b["batch_id"]
+        b["run_count"] = counts.get(key, 1)
+
+    return result
+
+
+# ── Batch detail ──────────────────────────────────────────────────────────────
+
+@router.get("/batches/{batch_id}/files", dependencies=[_auth])
+def batch_files(batch_id: str) -> Dict[str, Any]:
+    """Return file availability for a batch folder."""
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+    batch_dir = _OUTPUTS / batch_id
+    if not batch_dir.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    return _build_files_detail(batch_id)
+
+
+@router.get("/batches/{batch_id}", dependencies=[_auth])
+def batch_detail(batch_id: str) -> Dict[str, Any]:
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+
+    with audit_path.open(encoding="utf-8") as fh:
+        audit = json.load(fh)
+
+    # ── Guarantee clearance_decision on batch load (non-destructive backfill) ──
+    if "clearance_decision" not in audit:
+        try:
+            from ..services.clearance_decision import build_clearance_decision
+            _dec = build_clearance_decision(audit)
+            audit["clearance_decision"] = _dec
+            write_json_atomic(audit_path, audit)
+            log.info("[%s] clearance_decision backfilled on load: path=%s",
+                     batch_id, _dec.get("clearance_path"))
+        except Exception as _e:
+            log.warning("[%s] clearance_decision backfill on load (non-fatal): %s", batch_id, _e)
+    else:
+        # ── Drift detection: log warning if stored decision diverges from recomputed ──
+        # Do NOT auto-overwrite — only expose in response for human review.
+        try:
+            from ..services.clearance_decision import build_clearance_decision as _bcd
+            _stored  = audit["clearance_decision"]
+            _recomp  = _bcd(audit)
+            if _recomp.get("clearance_path") != _stored.get("clearance_path"):
+                _drift = (
+                    f"clearance_decision drift: stored={_stored.get('clearance_path')} "
+                    f"recomputed={_recomp.get('clearance_path')} "
+                    f"(cif_stored={_stored.get('total_value_usd')} "
+                    f"cif_current={_recomp.get('total_value_usd')})"
+                )
+                log.warning("[%s] %s", batch_id, _drift)
+                audit["_clearance_drift_warning"] = _drift
+                # Persist the warning to disk so operators can see it without API call.
+                # clearance_decision itself is NOT overwritten — human review required.
+                try:
+                    write_json_atomic(audit_path, audit)
+                except Exception as _we:
+                    log.debug("[%s] drift warning persist (non-fatal): %s", batch_id, _we)
+        except Exception as _de:
+            log.debug("[%s] clearance drift check (non-fatal): %s", batch_id, _de)
+
+    audit = _with_download_urls(audit)
+    audit["files_detail"] = _build_files_detail(batch_id)
+
+    # Inject carrier info derived at read-time
+    inp         = audit.get("inputs", {})
+    tracking_no = audit.get("tracking_no", "")
+    awb_fn      = inp.get("awb") or ""
+    carrier_info = _detect_carrier(tracking_no, awb_fn)
+    audit.update(carrier_info)
+
+    # Fix 2: inject file-on-disk existence flags for generated documents
+    # so the frontend can switch Generate → Download without a separate API call.
+    _dsk_file = audit.get("dsk_filename")
+    if _dsk_file:
+        from .routes_dsk import _DSK_OUTPUT_DIR
+        audit["dsk_file_exists"] = (_DSK_OUTPUT_DIR / _dsk_file).is_file()
+    else:
+        audit["dsk_file_exists"] = False
+
+    _pd_file = audit.get("polish_desc_filename")
+    if _pd_file:
+        # Polish desc stored in dhl_docs/ subfolder or engine_dir outputs
+        _pd_candidates = [
+            _OUTPUTS / batch_id / _pd_file,
+            _OUTPUTS / batch_id / "dhl_docs" / _pd_file,
+        ]
+        audit["polish_desc_file_exists"] = any(p.is_file() for p in _pd_candidates)
+    else:
+        audit["polish_desc_file_exists"] = False
+
+    # Fix 6: Normalize clearance_status from actual audit fields — never stale strings
+    audit["clearance_status"] = _derive_clearance_status(audit)
+
+    return audit
+
+
+# ── Delete individual file from batch ────────────────────────────────────────
+
+@router.delete("/batches/{batch_id}/files/{filename}", dependencies=[_auth])
+def delete_batch_file(batch_id: str, filename: str) -> Dict[str, Any]:
+    """Delete a single file from a batch output folder."""
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+    if "/" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+
+    file_path = _OUTPUTS / batch_id / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    file_path.unlink()
+    log.info("[dashboard] deleted file %s from batch %s", filename, batch_id)
+
+    # Log to timeline
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if audit_path.exists():
+        try:
+            tl.log_event(audit_path, "file_deleted", "dashboard", "user",
+                         detail={"filename": filename})
+        except Exception:
+            pass
+
+    return {"ok": True, "deleted": filename, "files": _build_files_detail(batch_id)}
+
+
+@router.delete("/batches/{batch_id}/files/source/{category}/{filename}", dependencies=[_auth])
+def delete_source_file(batch_id: str, category: str, filename: str) -> Dict[str, Any]:
+    """Delete a source file (invoice, AWB, SAD) from a batch."""
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+    if category not in ("invoices", "sad", "awb"):
+        raise HTTPException(status_code=400, detail="Invalid category.")
+    if "/" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+
+    file_path = _OUTPUTS / batch_id / "source" / category / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Source file not found.")
+
+    file_path.unlink()
+    log.info("[dashboard] deleted source file %s/%s from batch %s", category, filename, batch_id)
+
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if audit_path.exists():
+        try:
+            tl.log_event(audit_path, "source_file_deleted", "dashboard", "user",
+                         detail={"category": category, "filename": filename})
+        except Exception:
+            pass
+
+    return {"ok": True, "deleted": filename, "category": category,
+            "files": _build_files_detail(batch_id)}
+
+
+@router.post("/batches/{batch_id}/regenerate", dependencies=[_auth])
+def regenerate_outputs(batch_id: str) -> Dict[str, Any]:
+    """Delete existing output files and re-trigger processing for a batch."""
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    batch_dir = _OUTPUTS / batch_id
+    audit_path = batch_dir / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+
+    # Delete generated output files (keep source/ and audit.json)
+    deleted_files = []
+    keep = {"audit.json", "source", "timeline.jsonl", "dhl_docs", "agency_docs"}
+    for item in batch_dir.iterdir():
+        if item.name in keep or item.name.startswith("."):
+            continue
+        if item.is_dir():
+            continue
+        item.unlink()
+        deleted_files.append(item.name)
+
+    # Clear output-related fields in audit to reset state
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        # Reset output file references but preserve inputs and tracking
+        for key in ["pz_pdf_path", "calc_xlsx_path", "audit_pdf_path",
+                     "audit_en_path", "audit_pl_path", "audit_memo_path",
+                     "corrections_path", "sad_status", "pz_status"]:
+            audit.pop(key, None)
+        audit["regenerate_requested_at"] = datetime.now(timezone.utc).isoformat()
+        write_json_atomic(audit_path, audit)
+        tl.log_event(audit_path, "regenerate_requested", "dashboard", "user",
+                     detail={"deleted_files": deleted_files})
+    except Exception as exc:
+        log.warning("[dashboard] regenerate audit update: %s", exc)
+
+    return {"ok": True, "deleted_files": deleted_files,
+            "message": "Output files deleted. Re-upload or re-process to regenerate.",
+            "files": _build_files_detail(batch_id)}
+
+
+# ── Soft-delete batch ─────────────────────────────────────────────────────────
+
+# ── Archive helpers ───────────────────────────────────────────────────────────
+
+def _archive_summary(batch_id: str, a: dict) -> dict:
+    """Return a summary dict for an archived shipment."""
+    arch        = a.get("archive_meta", {})
+    tracking_no = a.get("tracking_no") or a.get("inputs", {}).get("tracking_no") or ""
+    doc_no      = a.get("doc_no") or a.get("inputs", {}).get("doc_no") or ""
+    return {
+        "batch_id":    batch_id,
+        "awb":         tracking_no or doc_no or batch_id,
+        "doc_no":      doc_no,
+        "carrier":     a.get("carrier") or a.get("inputs", {}).get("carrier") or "—",
+        "status":      a.get("status", "unknown"),
+        "archived_at": arch.get("archived_at"),
+        "delete_after":arch.get("delete_after"),
+        "reason":      arch.get("reason", ""),
+        "archived_by": arch.get("archived_by", "user"),
+    }
+
+
+def _validate_batch_id(batch_id: str) -> None:
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+
+# ── Action diagnostics endpoint ───────────────────────────────────────────────
+
+@router.get("/batches/{batch_id}/action-diagnostics", dependencies=[_auth])
+def action_diagnostics(batch_id: str) -> Dict[str, Any]:
+    """
+    Returns per-action enabled/disabled status derived purely from audit fields.
+    Read-only — no mutations, no secrets, no financial data.
+    """
+    _validate_batch_id(batch_id)
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not read batch audit.")
+
+    status     = audit.get("status", "")
+    inputs     = audit.get("inputs") or {}
+    cd         = audit.get("customs_declaration") or {}
+    arp        = audit.get("agency_reply_package") or {}
+    pz_done    = status in {"success", "partial"} or audit.get("pz_generated") is True
+    has_sad    = bool(inputs.get("zc429"))
+    has_customs= bool(cd.get("mrn") or cd.get("duty_a00_pln") is not None)
+    has_invoices = bool(inputs.get("invoices"))
+
+    # ── Polish description ────────────────────────────────────────────────────
+    pd_file = audit.get("polish_desc_filename")
+    pd_exists = False
+    if pd_file:
+        pd_exists = any(
+            (_OUTPUTS / batch_id / pd_file).is_file(),
+            ((_OUTPUTS / batch_id / "dhl_docs" / pd_file).is_file(),)
+        ) if False else (
+            (_OUTPUTS / batch_id / pd_file).is_file()
+            or (_OUTPUTS / batch_id / "dhl_docs" / pd_file).is_file()
+        )
+
+    # ── DSK ──────────────────────────────────────────────────────────────────
+    dsk_file = audit.get("dsk_filename")
+    dsk_exists = False
+    if dsk_file:
+        try:
+            from .routes_dsk import _DSK_OUTPUT_DIR
+            dsk_exists = (_DSK_OUTPUT_DIR / dsk_file).is_file()
+        except Exception:
+            pass
+
+    # ── Agency email ─────────────────────────────────────────────────────────
+    arp_queue_id = arp.get("queue_id") or arp.get("email_id")
+    arp_status   = arp.get("status")
+
+    # Check email_queue.json for queue_id confirmation
+    eq_status = None
+    if arp_queue_id:
+        try:
+            from ..services.email_service import get_all_emails
+            for entry in get_all_emails(limit=500):
+                if entry.get("id") == arp_queue_id:
+                    eq_status = entry.get("status")
+                    break
+        except Exception:
+            pass
+
+    # ── PZ files on disk ─────────────────────────────────────────────────────
+    batch_dir = _OUTPUTS / batch_id
+    pz_pdf_exists  = any(
+        f.suffix.lower() == ".pdf" and f.name not in _AUDIT_ONLY_PDFS
+        for f in batch_dir.iterdir()
+    ) if batch_dir.exists() else False
+    pz_xlsx_exists = any(
+        f.suffix.lower() == ".xlsx" for f in batch_dir.iterdir()
+    ) if batch_dir.exists() else False
+
+    # ── Tracking ─────────────────────────────────────────────────────────────
+    tracking = audit.get("tracking") or {}
+    tracking_cache_path = batch_dir / "tracking_cache.json"
+    if tracking_cache_path.exists():
+        try:
+            tracking = json.loads(tracking_cache_path.read_text()) or tracking
+        except Exception:
+            pass
+    t_status = tracking.get("status", "")
+    t_source = tracking.get("source", "")
+    t_blocking = t_status not in {"not_found", "pre_transit", ""}
+    t_note = None
+    if t_source == "dhl_api_404" or t_status == "not_found":
+        t_note = "DHL tracking not available (API 404). Non-blocking — public DHL tracking may work."
+
+    actions: Dict[str, Any] = {
+        "run_pz": {
+            "enabled": has_sad and has_invoices and has_customs,
+            "reason": (
+                "Ready — SAD, invoices, and customs all present"
+                if (has_sad and has_invoices and has_customs)
+                else " + ".join(filter(None, [
+                    "SAD missing" if not has_sad else None,
+                    "no invoice files" if not has_invoices else None,
+                    "customs not parsed" if not has_customs else None,
+                ]))
+            ),
+            "missing": [
+                k for k, v in {
+                    "zc429_sad": has_sad,
+                    "invoices": has_invoices,
+                    "customs_declaration": has_customs,
+                }.items() if not v
+            ],
+            "pz_already_done": pz_done,
+        },
+        "rerun_pz": {
+            "enabled": pz_done and has_sad and has_invoices and has_customs,
+            "reason": "Re-run PZ with updated inputs" if pz_done else "PZ not yet generated",
+        },
+        "download_pz_pdf": {
+            "enabled": pz_pdf_exists,
+            "path_exists": pz_pdf_exists,
+        },
+        "download_pz_xlsx": {
+            "enabled": pz_xlsx_exists,
+            "path_exists": pz_xlsx_exists,
+        },
+        "generate_polish_desc": {
+            "enabled": has_invoices and not pd_exists,
+            "already_generated": pd_exists,
+            "path_exists": pd_exists,
+            "reason": (
+                "Already generated — use download"
+                if pd_exists else
+                ("Ready to generate" if has_invoices else "No invoice files")
+            ),
+        },
+        "download_polish_desc": {
+            "enabled": pd_exists,
+            "path_exists": pd_exists,
+            "file_missing_repair": bool(pd_file and not pd_exists),
+        },
+        "generate_dsk": {
+            "enabled": not dsk_exists and bool(
+                (audit.get("invoice_totals") or {}).get("total_cif_usd")
+            ),
+            "already_generated": dsk_exists,
+            "path_exists": dsk_exists,
+            "reason": (
+                "Already generated — use download"
+                if dsk_exists else
+                ("Ready — CIF value available" if (audit.get("invoice_totals") or {}).get("total_cif_usd")
+                 else "CIF value required (run PZ or recheck first)")
+            ),
+        },
+        "download_dsk": {
+            "enabled": dsk_exists,
+            "path_exists": dsk_exists,
+            "file_missing_repair": bool(dsk_file and not dsk_exists),
+        },
+        "build_agency_email": {
+            "enabled": pd_exists and has_sad and has_customs and not pz_done,
+            "reason": (
+                "Ready to build agency package"
+                if (pd_exists and has_sad and has_customs and not pz_done)
+                else " + ".join(filter(None, [
+                    "Polish description required" if not pd_exists else None,
+                    "SAD required" if not has_sad else None,
+                    "Customs data required" if not has_customs else None,
+                    "Already sent after PZ" if pz_done else None,
+                ]))
+            ),
+        },
+        "send_agency_email": {
+            "enabled": bool(arp_queue_id and arp_status in {"queued", None}),
+            "queue_id": arp_queue_id,
+            "package_status": arp_status,
+            "email_queue_status": eq_status,
+            "endpoint": f"POST /api/v1/admin/email-queue/{arp_queue_id}/send" if arp_queue_id else None,
+            "reason": (
+                "Send via SMTP: POST /api/v1/admin/email-queue/{id}/send body={'method':'smtp'}"
+                if arp_queue_id and arp_status not in {"sent"}
+                else ("Already sent — idempotent" if arp_status == "sent" else "No agency email queued")
+            ),
+        },
+        "wfirma_export": {
+            "enabled": pz_done and has_sad,
+            "reason": (
+                "Ready — PZ generated and SAD present"
+                if (pz_done and has_sad)
+                else " + ".join(filter(None, [
+                    "PZ not yet generated" if not pz_done else None,
+                    "SAD required" if not has_sad else None,
+                ]))
+            ),
+            "requires": "pz_generated + zc429_sad",
+        },
+        "tracking_refresh": {
+            "enabled": True,
+            "tracking_status": t_status,
+            "source": t_source,
+            "blocking": False,   # tracking 404 is never blocking
+            "note": t_note,
+        },
+        "reparse_sad": {
+            "enabled": has_sad,
+            "reason": "Re-parse SAD and update customs_declaration" if has_sad else "No SAD file uploaded",
+            "safe": "Never overwrites non-null fields with null; XML source beats PDF source",
+        },
+    }
+
+    return {
+        "batch_id": batch_id,
+        "pz_status": status,
+        "pz_generated": pz_done,
+        "clearance_status": _derive_clearance_status(audit),
+        "actions": actions,
+    }
+
+
+# ── Email Evidence V2 — read-only API ───────────────────────────────────────
+
+@router.get("/batches/{batch_id}/email-evidence", dependencies=[_auth])
+def email_evidence_for_batch(batch_id: str) -> Dict[str, Any]:
+    """Return local email evidence summary + 9-stage timeline for the AWB on this batch."""
+    from ..services import email_evidence_store as evs
+    _validate_batch_id(batch_id)
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not read batch audit.")
+    awb = str(audit.get("awb") or audit.get("tracking_no") or "")
+    if not awb:
+        return {"batch_id": batch_id, "awb": None, "summary": {}, "timeline": [], "messages": []}
+
+    doc      = evs.get_by_awb(awb)
+    summary  = doc.get("summary", {})
+    pz_done  = audit.get("status") in {"success", "partial"} or audit.get("pz_generated") is True
+    archived = bool(audit.get("archived"))
+
+    # Fixed 9-stage timeline. Outgoing stages distinguish queued vs sent.
+    def _outgoing_status(sent_key: str, queued_key: str) -> str:
+        if summary.get(sent_key):    return "sent"
+        if summary.get(queued_key):  return "queued"
+        return "missing"
+
+    stages = [
+        {"key": "dhl_request",      "label": "DHL request",            "status": "received" if summary.get("dhl_request_received") else "missing"},
+        {"key": "our_dhl_reply",    "label": "Our DHL reply",          "status": _outgoing_status("our_dhl_reply_sent", "our_dhl_reply_queued")},
+        {"key": "dhl_documents",    "label": "DHL document response",  "status": "received" if summary.get("dhl_documents_received") else "missing"},
+        {"key": "agency_forward",   "label": "Agency forward",         "status": _outgoing_status("agency_forward_sent", "agency_forward_queued")},
+        {"key": "agency_sad_reply", "label": "Agency SAD/PZC reply",   "status": "received" if summary.get("agency_sad_received")  else "missing"},
+        {"key": "pz_generated",     "label": "PZ generated",           "status": "processed" if pz_done else "missing"},
+        {"key": "dhl_invoice",      "label": "DHL invoice",            "status": "received" if summary.get("dhl_invoice_received")    else "missing"},
+        {"key": "agency_invoice",   "label": "Agency invoice",         "status": "received" if summary.get("agency_invoice_received") else "missing"},
+        {"key": "shipment_closed",  "label": "Shipment closed",        "status": "processed" if archived else "missing"},
+    ]
+
+    # Per-stage timestamps + message refs
+    messages = []
+    for thread in doc.get("threads", []):
+        for m in thread.get("messages", []):
+            messages.append({
+                "message_id":      m.get("message_id"),
+                "thread_id":       thread.get("thread_id"),
+                "direction":       m.get("direction"),
+                "sender":          m.get("sender"),
+                "to":              m.get("to"),
+                "subject":         m.get("subject"),
+                "timestamp":       m.get("timestamp"),
+                "event_type":      m.get("event_type"),
+                "source":          m.get("source"),
+                "processed":       m.get("processed", False),
+                "delivery_status": m.get("delivery_status"),  # queued|sent|failed|None
+                "sent_at":         m.get("sent_at"),
+                "queued_at":       m.get("queued_at"),
+                "provider_message_id": m.get("provider_message_id"),
+                "attachment_count": len(m.get("attachments") or []),
+                "attachments":  [{"filename": a.get("filename"), "sha256": a.get("sha256"),
+                                  "size": a.get("size"), "document_type": a.get("document_type")}
+                                 for a in (m.get("attachments") or [])],
+            })
+
+    # Annotate stages with latest matching message
+    for st in stages:
+        ev = next((m for m in sorted(messages, key=lambda x: x.get("timestamp") or "", reverse=True)
+                   if m.get("event_type") == st["key"]), None)
+        if ev:
+            st["timestamp"] = ev.get("timestamp")
+            st["sender"]    = ev.get("sender")
+            st["attachment_count"] = ev.get("attachment_count", 0)
+            st["source"]    = ev.get("source")
+
+    return {
+        "batch_id":     batch_id,
+        "awb":          awb,
+        "summary":      summary,
+        "stages":       stages,
+        "messages":     messages,
+        "last_scan_at": doc.get("last_scan_at"),
+        "last_message_at": doc.get("last_message_at"),
+        "batch_ids":    doc.get("batch_ids", []),
+    }
+
+
+@router.post("/batches/{batch_id}/email-evidence/rescan", dependencies=[_auth])
+def email_evidence_rescan(batch_id: str) -> Dict[str, Any]:
+    """Scan Zoho Mail for this AWB and store any new messages in the evidence store."""
+    _validate_batch_id(batch_id)
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    awb = str(audit.get("awb") or audit.get("tracking_no") or "")
+    if not awb:
+        raise HTTPException(status_code=400, detail="Batch has no AWB.")
+
+    try:
+        from ..services.email_evidence_ingestor import scan_and_ingest
+        return scan_and_ingest(awb, batch_id, audit_path, audit, limit=100)
+    except Exception as exc:
+        log.exception("[%s] email-evidence rescan failed", batch_id)
+        return {"ok": False, "awb": awb, "error": str(exc)}
+
+
+@router.post("/batches/{batch_id}/email-evidence/process", dependencies=[_auth])
+def email_evidence_process(batch_id: str) -> Dict[str, Any]:
+    """Run the evidence processor against stored evidence (no Zoho call)."""
+    _validate_batch_id(batch_id)
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    awb = str(audit.get("awb") or audit.get("tracking_no") or "")
+    if not awb:
+        raise HTTPException(status_code=400, detail="Batch has no AWB.")
+    try:
+        from ..services.email_evidence_processor import process_awb_evidence
+        result = process_awb_evidence(awb, batch_id=batch_id)
+        return {"ok": True, "awb": awb, "result": result}
+    except Exception as exc:
+        log.exception("[%s] email-evidence processor failed", batch_id)
+        return {"ok": False, "awb": awb, "error": str(exc)}
+
+
+@router.get("/batches/{batch_id}/email-evidence/attachments/{sha256}", dependencies=[_auth])
+def email_evidence_attachment(batch_id: str, sha256: str):
+    """Stream a stored attachment by sha256."""
+    from fastapi.responses import FileResponse
+    from ..services import email_evidence_store as evs
+    if not re.match(r"^[a-f0-9]{16,64}$", sha256):
+        raise HTTPException(status_code=400, detail="Invalid sha256.")
+    p = evs.attachment_path(sha256)
+    if not p:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    return FileResponse(str(p), filename=p.name)
+
+
+# ── Action Registry V2 — feature-flagged ────────────────────────────────────
+
+@router.get("/batches/{batch_id}/actions", dependencies=[_auth])
+def actions_v2(batch_id: str, request: Request) -> Dict[str, Any]:
+    """
+    Dashboard Action Registry V2 — single source of truth for buttons.
+
+    Returns sectioned Action records derived from file evidence + audit.
+    Frontend renders fixed slots; disabled actions stay visible with reason.
+
+    Read-only. Does NOT modify any field.
+    """
+    from ..services.batch_state_normalizer import normalize_batch_state
+    from ..services.dashboard_action_registry import build_actions_for_batch, all_action_endpoints
+    from ..services.route_contract_validator import validate_endpoints
+
+    _validate_batch_id(batch_id)
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not read batch audit.")
+
+    batch_dir   = _OUTPUTS / batch_id
+    normalized  = normalize_batch_state(audit, batch_dir)
+    sections    = build_actions_for_batch(batch_id, normalized)
+
+    # Validate endpoints against currently-mounted routes
+    broken_routes = validate_endpoints(request.app, all_action_endpoints(normalized))
+
+    # Disable any action whose endpoint is broken — annotate reason
+    broken_ids = {b.action_id for b in broken_routes}
+    if broken_ids:
+        for section_actions in sections.values():
+            for a in section_actions:
+                if a.id in broken_ids:
+                    a.enabled = False
+                    a.reason  = f"Endpoint missing or method mismatch ({a.method} {a.endpoint})"
+                    a.state   = "failed"
+
+    return {
+        "batch_id":          batch_id,
+        "normalized_state":  normalized.to_dict(),
+        "sections":          {k: [a.to_dict() for a in v] for k, v in sections.items()},
+        "warnings":          [],
+        "broken_routes":     [b.to_dict() for b in broken_routes],
+    }
+
+
+# ── Archive a shipment (soft — 14-day retention) ──────────────────────────────
+
+class ArchiveRequest(BaseModel):
+    reason: str = ""
+
+
+@router.delete("/batches/{batch_id}", dependencies=[_auth])
+def delete_batch(batch_id: str, body: ArchiveRequest = ArchiveRequest()) -> Dict[str, Any]:
+    """
+    Archive a shipment: moves it to storage/archived/ with 14-day retention.
+    Nothing is permanently removed. Restore is available via POST /archive/{id}/restore.
+    """
+    _validate_batch_id(batch_id)
+
+    src = _OUTPUTS / batch_id
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="Shipment not found.")
+
+    audit_path  = src / "audit.json"
+    now         = datetime.now(timezone.utc)
+    delete_after = now.replace(microsecond=0)
+    from datetime import timedelta
+    delete_after = (now + timedelta(days=_ARCHIVE_RETENTION_DAYS)).isoformat()
+
+    # Write archive metadata into audit before moving
+    try:
+        a = json.loads(audit_path.read_text(encoding="utf-8"))
+        a["archive_meta"] = {
+            "archived_at":  now.isoformat(),
+            "delete_after": delete_after,
+            "reason":       body.reason or "archived by user",
+            "archived_by":  "user",
+        }
+        write_json_atomic(audit_path, a)
+    except Exception:
+        pass
+
+    tl.log_event(audit_path, tl.EV_SHIPMENT_ARCHIVED, "dashboard", "user",
+                 detail={"reason": body.reason or "archived by user", "delete_after": delete_after})
+
+    _ARCHIVED.mkdir(parents=True, exist_ok=True)
+    dst = _ARCHIVED / batch_id
+    if dst.exists():
+        dst = _ARCHIVED / f"{batch_id}_{int(time.time())}"
+
+    shutil.move(str(src), str(dst))
+    return {
+        "success":      True,
+        "batch_id":     batch_id,
+        "archived_at":  now.isoformat(),
+        "delete_after": delete_after,
+        "message":      f"Shipment archived. Eligible for permanent deletion after {_ARCHIVE_RETENTION_DAYS} days.",
+    }
+
+
+# ── List archived shipments ───────────────────────────────────────────────────
+
+@router.get("/archive", dependencies=[_auth])
+def list_archived() -> List[Dict[str, Any]]:
+    """Return all archived shipments sorted newest-archived-first."""
+    if not _ARCHIVED.exists():
+        return []
+    result = []
+    for batch_dir in sorted(_ARCHIVED.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if not batch_dir.is_dir():
+            continue
+        audit_path = batch_dir / "audit.json"
+        if not audit_path.exists():
+            continue
+        try:
+            a = json.loads(audit_path.read_text(encoding="utf-8"))
+            result.append(_archive_summary(batch_dir.name, a))
+        except Exception:
+            continue
+    return result
+
+
+# ── Restore a shipment ────────────────────────────────────────────────────────
+
+@router.post("/archive/{batch_id}/restore", dependencies=[_auth])
+def restore_batch(batch_id: str) -> Dict[str, Any]:
+    """Restore an archived shipment back to active outputs."""
+    _validate_batch_id(batch_id)
+
+    src = _ARCHIVED / batch_id
+    if not src.exists():
+        # Try with timestamp suffix (edge case)
+        matches = list(_ARCHIVED.glob(f"{batch_id}_*"))
+        if matches:
+            src = sorted(matches)[-1]
+        else:
+            raise HTTPException(status_code=404, detail="Archived shipment not found.")
+
+    audit_path = src / "audit.json"
+
+    # Clear archive metadata
+    try:
+        a = json.loads(audit_path.read_text(encoding="utf-8"))
+        a.pop("archive_meta", None)
+        write_json_atomic(audit_path, a)
+    except Exception:
+        pass
+
+    tl.log_event(audit_path, tl.EV_SHIPMENT_RESTORED, "dashboard", "user",
+                 detail={"restored_from": "archived"})
+
+    dst = _OUTPUTS / batch_id
+    if dst.exists():
+        dst = _OUTPUTS / f"{batch_id}_restored_{int(time.time())}"
+
+    shutil.move(str(src), str(dst))
+    return {
+        "success":  True,
+        "batch_id": batch_id,
+        "message":  "Shipment restored to active dashboard.",
+    }
+
+
+# ── Permanently delete an archived shipment (admin only) ─────────────────────
+
+@router.delete("/archive/{batch_id}", dependencies=[Depends(require_admin)])
+def permanently_delete_archived(batch_id: str) -> Dict[str, Any]:
+    """Permanently delete an archived shipment. Admin only. Cannot be undone."""
+    _validate_batch_id(batch_id)
+
+    src = _ARCHIVED / batch_id
+    if not src.exists():
+        matches = list(_ARCHIVED.glob(f"{batch_id}_*"))
+        if matches:
+            src = sorted(matches)[-1]
+        else:
+            raise HTTPException(status_code=404, detail="Archived shipment not found.")
+
+    audit_path = src / "audit.json"
+    tl.log_event(audit_path, tl.EV_SHIPMENT_PERMANENTLY_DELETED, "dashboard", "admin",
+                 detail={"batch_id": batch_id})
+
+    # Move to a permanent-delete log folder rather than os.rmtree, for a final safety net
+    perm_del = settings.storage_root / "permanently_deleted"
+    perm_del.mkdir(parents=True, exist_ok=True)
+    dst = perm_del / f"{batch_id}_{int(time.time())}"
+    shutil.move(str(src), str(dst))
+
+    return {
+        "success":  True,
+        "batch_id": batch_id,
+        "message":  "Shipment permanently deleted.",
+    }
+
+
+# ── Cleanup: expire archived shipments past 14-day retention (admin only) ─────
+
+@router.post("/archive/cleanup", dependencies=[Depends(require_admin)])
+def archive_cleanup() -> Dict[str, Any]:
+    """
+    Move archived shipments past their delete_after date to permanently_deleted/.
+    Admin only. Must be triggered explicitly — never runs automatically.
+    """
+    if not _ARCHIVED.exists():
+        return {"deleted": [], "skipped": [], "errors": []}
+
+    now     = datetime.now(timezone.utc)
+    deleted = []
+    skipped = []
+    errors  = []
+    perm_del = settings.storage_root / "permanently_deleted"
+    perm_del.mkdir(parents=True, exist_ok=True)
+
+    for batch_dir in _ARCHIVED.iterdir():
+        if not batch_dir.is_dir():
+            continue
+        audit_path = batch_dir / "audit.json"
+        try:
+            a = json.loads(audit_path.read_text(encoding="utf-8"))
+        except Exception:
+            skipped.append(batch_dir.name)
+            continue
+
+        delete_after_str = (a.get("archive_meta") or {}).get("delete_after")
+        if not delete_after_str:
+            skipped.append(batch_dir.name)
+            continue
+
+        try:
+            delete_after = datetime.fromisoformat(delete_after_str)
+            if delete_after.tzinfo is None:
+                delete_after = delete_after.replace(tzinfo=timezone.utc)
+        except Exception:
+            skipped.append(batch_dir.name)
+            continue
+
+        if now >= delete_after:
+            tl.log_event(audit_path, tl.EV_SHIPMENT_PERMANENTLY_DELETED,
+                         "archive_cleanup", "system",
+                         detail={"expired_at": delete_after_str})
+            dst = perm_del / f"{batch_dir.name}_{int(time.time())}"
+            shutil.move(str(batch_dir), str(dst))
+            deleted.append(batch_dir.name)
+        else:
+            days_left = (delete_after - now).days
+            skipped.append({"batch_id": batch_dir.name, "days_remaining": days_left})
+
+    return {
+        "deleted": deleted,
+        "skipped": skipped,
+        "errors":  errors,
+        "ran_at":  now.isoformat(),
+    }
+
+
+# ── Recheck / Reparse ─────────────────────────────────────────────────────────
+
+_DHL_BROKER_THRESHOLD_USD = 2500.0
+
+class RecheckRequest(BaseModel):
+    mode: str = "all"
+
+
+@router.post("/batches/{batch_id}/recheck", dependencies=[_auth])
+async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) -> Dict[str, Any]:
+    """
+    Re-run parsers against existing uploaded source files.
+    Does NOT regenerate PZ PDF/XLSX — only updates audit.json parsed fields.
+    Supported modes: all | invoice | sad | dhl_precheck | quantity
+    """
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    batch_dir  = _OUTPUTS / batch_id
+    audit_path = batch_dir / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Shipment not found.")
+
+    mode    = body.mode or "all"
+    audit   = json.loads(audit_path.read_text(encoding="utf-8"))
+    updated: Dict[str, bool] = {}
+    warnings: List[str]      = []
+    errors:   List[str]      = []
+
+    # ── Ensure engine is importable ──────────────────────────────────────────
+    engine_dir = str(settings.engine_dir)
+    if engine_dir not in sys.path:
+        sys.path.insert(0, engine_dir)
+
+    # ── A. Reparse invoices ──────────────────────────────────────────────────
+    if mode in ("all", "invoice", "quantity"):
+        inv_dir = batch_dir / "source" / "invoices"
+        inv_pdfs = sorted(inv_dir.glob("*.pdf")) if inv_dir.exists() else []
+        if not inv_pdfs:
+            warnings.append("No invoice PDFs found in source/invoices — invoice recheck skipped")
+        else:
+            try:
+                from pz_import_processor import parse_invoice as _pi, compute_invoice_totals as _ct  # noqa: PLC0415
+                _corr:   list = []
+                _parsed: list = []
+                for _pdf in inv_pdfs:
+                    try:
+                        _inv = _pi(str(_pdf), _corr)
+                        if _inv:
+                            _parsed.append(_inv)
+                    except Exception as _ie:
+                        warnings.append(f"Invoice parse error ({_pdf.name}): {_ie}")
+                if _parsed:
+                    _totals = _ct(_parsed)
+                    audit["invoice_totals"] = _totals
+                    updated["invoice_totals"] = True
+                    # Update verification CIF reference
+                    ver = audit.setdefault("verification", {})
+                    ver["invoice_cif_total_usd"] = _totals.get("total_cif_usd")
+                    updated["verification_cif"]  = True
+                    # ── Persist learning traces ──────────────────────────
+                    # parse_invoice() already called learn_from_parse() internally.
+                    # We just capture the _learning_trace it attached and write to audit.
+                    try:
+                        _learning_traces = [
+                            inv["_learning_trace"]
+                            for inv in _parsed
+                            if isinstance(inv.get("_learning_trace"), dict)
+                        ]
+                        if _learning_traces:
+                            audit["learning_traces"] = _learning_traces
+                            updated["learning"] = True
+                            log.info("[LEARNING] [recheck/%s] %d trace(s) written to audit",
+                                     batch_id, len(_learning_traces))
+                        else:
+                            log.debug("[LEARNING] [recheck/%s] no traces in parsed invoices", batch_id)
+                    except Exception as _le:
+                        log.warning("[LEARNING] [recheck/%s] persist error: %s", batch_id, _le)
+                else:
+                    errors.append("Invoice parsing returned no results")
+            except ImportError as _imp:
+                errors.append(f"Parser engine not available: {_imp}")
+
+    # ── B. Re-run DHL pre-check ──────────────────────────────────────────────
+    if mode in ("all", "dhl_precheck"):
+        carrier = (audit.get("inputs", {}).get("carrier") or audit.get("carrier") or "DHL").upper()
+        inv_dir = batch_dir / "source" / "invoices"
+        inv_pdfs = sorted(inv_dir.glob("*.pdf")) if inv_dir.exists() else []
+        cif_usd  = 0.0
+        parsed_n = 0
+        cif_source = "not_parsed"
+        try:
+            from pz_import_processor import parse_invoice as _pi2, compute_invoice_totals as _ct2  # noqa: PLC0415
+            _c2: list = []; _p2: list = []
+            for _pdf in inv_pdfs:
+                try:
+                    _inv = _pi2(str(_pdf), _c2)
+                    if _inv:
+                        _p2.append(_inv)
+                except Exception:
+                    pass
+            if _p2:
+                _t2     = _ct2(_p2)
+                cif_usd = _t2.get("total_cif_usd", 0.0)
+                parsed_n = len(_p2)
+                cif_source = "invoice_parser"
+                # Persist learning traces only when Section A didn't already run
+                if mode == "dhl_precheck":
+                    try:
+                        _lt2 = [
+                            inv["_learning_trace"]
+                            for inv in _p2
+                            if isinstance(inv.get("_learning_trace"), dict)
+                        ]
+                        if _lt2:
+                            audit["learning_traces"] = _lt2
+                            updated["learning"] = True
+                            log.info("[LEARNING] [recheck/dhl/%s] %d trace(s) written to audit",
+                                     batch_id, len(_lt2))
+                    except Exception as _lt2e:
+                        log.warning("[LEARNING] [recheck/dhl/%s] persist error: %s", batch_id, _lt2e)
+        except Exception:
+            pass
+
+        precheck: dict = {
+            "completed_at":          datetime.now(timezone.utc).isoformat(),
+            "carrier":               carrier,
+            "invoice_cif_total_usd": round(cif_usd, 2) if cif_usd > 0 else None,
+            "cif_source":            cif_source,
+            "invoices_parsed":       parsed_n,
+            "threshold_usd":         _DHL_BROKER_THRESHOLD_USD,
+            "recheck_mode":          mode,
+        }
+        if carrier == "DHL":
+            if cif_usd > 0:
+                if cif_usd > _DHL_BROKER_THRESHOLD_USD:
+                    precheck["clearance_hint"]    = "Broker / DSK may be required"
+                    precheck["dsk_required_hint"] = True
+                    precheck["note"] = (f"Invoice CIF ${cif_usd:,.2f} exceeds ${_DHL_BROKER_THRESHOLD_USD:,.0f} threshold.")
+                else:
+                    precheck["clearance_hint"]    = "DHL standard clearance likely"
+                    precheck["dsk_required_hint"] = False
+                    precheck["note"] = (f"Invoice CIF ${cif_usd:,.2f} within ${_DHL_BROKER_THRESHOLD_USD:,.0f} threshold.")
+            else:
+                precheck["clearance_hint"]    = "Invoice CIF not parsed — routing pending"
+                precheck["dsk_required_hint"] = None
+                precheck["note"] = "Invoice value could not be extracted."
+        audit["dhl_precheck"] = precheck
+        updated["dhl_precheck"] = True
+        # Ensure clearance_status is set for DHL shipments so downstream guards
+        # do not block doc generation.  Mirror the same rule used in the upload
+        # precheck pipeline (routes_upload.py).
+        if carrier == "DHL" and not audit.get("clearance_status"):
+            audit["clearance_status"] = "awaiting_dhl_customs_email"
+            updated["clearance_status"] = True
+
+    # ── C. Reparse SAD / ZC429 (orchestrated: XML → PDF → AI fallback) ─────
+    if mode in ("all", "sad"):
+        sad_dir = batch_dir / "source" / "sad"
+        has_files = sad_dir.exists() and any(
+            sad_dir.glob("*.xml")) or any(
+            sad_dir.glob("*.pdf")) or any(
+            sad_dir.glob("*parsed*.json")
+        ) if sad_dir.exists() else False
+        if not has_files and not (audit.get("zc429") or {}).get("mrn"):
+            warnings.append("No SAD/ZC429 files found in source/sad — SAD recheck skipped")
+        else:
+            try:
+                from ..services.customs_parser_orchestrator import parse_customs_document
+                orch = parse_customs_document(batch_id, sad_dir, audit=audit)
+                if orch.get("mapped"):
+                    cd = audit.setdefault("customs_declaration", {})
+                    # Fix 5: Never overwrite non-null with null. XML source always beats PDF source.
+                    # Only update a field when: new value is non-null, OR existing field is null/missing.
+                    existing_source = cd.get("source", "")
+                    new_source = orch.get("source", "")
+                    # Source priority: xml_validated > xml_parsed > pdf_parsed > ai_supplemented
+                    _src_rank = {"xml_validated": 4, "xml_parsed": 3, "pdf_parsed": 2,
+                                 "ai_supplemented": 1, "": 0}
+                    new_beats_existing = _src_rank.get(new_source, 0) >= _src_rank.get(existing_source, 0)
+                    for _k, _v in orch["mapped"].items():
+                        if _v is not None:
+                            # New value is non-null: update if new source is >= existing, or field is absent
+                            if new_beats_existing or cd.get(_k) is None:
+                                cd[_k] = _v
+                        # else: new value is null — never overwrite existing non-null with null
+                    # Always update source+confidence if new source wins
+                    if new_beats_existing:
+                        if new_source:
+                            cd["source"] = new_source
+                        if orch.get("confidence") is not None:
+                            cd["confidence"] = orch["confidence"]
+                    # Propagate MRN to inputs
+                    mrn = cd.get("mrn")
+                    if mrn:
+                        audit.setdefault("inputs", {})["zc429_mrn"] = mrn
+                    updated["customs_declaration"] = True
+                    # Log source for traceability
+                    log.info("[recheck] customs_declaration updated: source=%s confidence=%s (prev_source=%s)",
+                             new_source, orch.get("confidence"), existing_source)
+                    if orch.get("corrections"):
+                        warnings.extend([f"SAD: {c}" for c in orch["corrections"][:5]])
+                    if orch.get("ai_supplemented_fields"):
+                        warnings.append(
+                            f"AI supplemented {len(orch['ai_supplemented_fields'])} field(s): "
+                            f"{', '.join(orch['ai_supplemented_fields'])}"
+                        )
+                elif orch.get("error"):
+                    errors.append(orch["error"])
+                else:
+                    errors.append("Customs parsing returned no results")
+            except ImportError as _imp:
+                errors.append(f"Parser engine not available: {_imp}")
+            except Exception as _se:
+                errors.append(f"SAD parse error: {_se}")
+
+    # ── D. Rebuild verification summary (basic) ──────────────────────────────
+    if mode in ("all",) and not errors:
+        ver = audit.setdefault("verification", {})
+        it  = audit.get("invoice_totals") or {}
+        cd  = audit.get("customs_declaration") or {}
+        # Only overwrite invoice CIF if invoice_totals was actually recomputed
+        # this run — prevents stale invoice_totals from diverging with existing PDFs
+        if updated.get("invoice_totals"):
+            cif = it.get("total_cif_usd") or 0
+            if cif:
+                ver["invoice_cif_total_usd"] = cif
+        if cd.get("duty_a00_pln") is not None:
+            ver["duty_a00"] = cd["duty_a00_pln"]
+        updated["verification"] = True
+
+    # ── D2. Upgrade status if customs data fully parsed ────────────────────
+    if updated.get("customs_declaration") and audit.get("status") == "draft":
+        cd_check = audit.get("customs_declaration") or {}
+        if cd_check.get("mrn") and cd_check.get("duty_a00_pln") is not None:
+            audit["status"] = "ready"
+            updated["status"] = True
+            log.info("[recheck] status upgraded draft → ready (customs_declaration parsed)")
+
+    # ── E. Clearance decision (runs on all modes, non-fatal) ─────────────────
+    _clearance_dec_for_tl: Optional[Dict[str, Any]] = None
+    try:
+        from ..services.clearance_decision import build_clearance_decision
+        _dec = build_clearance_decision(audit)
+        audit["clearance_decision"] = _dec
+        updated["clearance_decision"] = True
+        _clearance_dec_for_tl = _dec   # logged after write so event isn't overwritten
+    except Exception as _de:
+        log.warning("[recheck] clearance_decision failed (non-fatal): %s", _de)
+
+    # ── Write recheck block + updated audit ─────────────────────────────────
+    recheck_block = {
+        "last_run_at":     datetime.now(timezone.utc).isoformat(),
+        "last_mode":       mode,
+        "warnings":        warnings,
+        "errors":          errors,
+        "updated_fields":  [k for k, v in updated.items() if v],
+    }
+    audit["recheck"] = recheck_block
+    write_json_atomic(audit_path, audit)
+
+    # ── Log timeline events (after write so they're not overwritten) ──────────
+    if _clearance_dec_for_tl is not None:
+        tl.log_event(
+            audit_path,
+            tl.EV_CLEARANCE_DECISION,
+            "recheck",
+            "system",
+            detail={
+                "clearance_path":  _clearance_dec_for_tl.get("clearance_path"),
+                "total_value_usd": _clearance_dec_for_tl.get("total_value_usd"),
+                "require_dsk":     _clearance_dec_for_tl.get("require_dsk"),
+            },
+        )
+    tl.log_event(audit_path, tl.EV_SHIPMENT_RECHECKED, "dashboard", "user",
+                 detail={"mode": mode, "updated": list(updated.keys()), "warnings": len(warnings), "errors": len(errors)})
+
+    return {
+        "ok":       not errors,
+        "batch_id": batch_id,
+        "mode":     mode,
+        "updated":  updated,
+        "warnings": warnings,
+        "errors":   errors,
+        "next_step": "Review updated values before regenerating PZ" if not errors else "Fix errors and recheck again",
+    }
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _is_link_alive(url: str) -> bool:
+    if not url.startswith("http"):
+        return True  # local paths are always "alive"
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            r = await client.head(url)
+            return r.status_code < 400
+    except Exception:
+        return False
+
+
+# ── Resend to Cliq ────────────────────────────────────────────────────────────
+
+@router.post("/batches/{batch_id}/resend", dependencies=[_auth])
+async def resend_to_cliq(batch_id: str) -> Dict[str, Any]:
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+
+    if not settings.cliq_webhook_url:
+        raise HTTPException(status_code=503, detail="CLIQ_WEBHOOK_URL not configured.")
+
+    # ── In-flight file lock (prevents cross-tab racing) ───────────────────────
+    lock_path = _OUTPUTS / batch_id / ".resend_lock"
+    if lock_path.exists():
+        age = time.time() - lock_path.stat().st_mtime
+        if age < 10:
+            return {
+                "success": False,
+                "skipped": True,
+                "status":  "skipped",
+                "reason":  "send already in progress — retry in a moment",
+                "error":   None,
+            }
+    lock_path.touch()
+
+    try:
+        with audit_path.open(encoding="utf-8") as fh:
+            audit = json.load(fh)
+
+        # ── Idempotency cooldown ──────────────────────────────────────────────
+        cooldown     = settings.resend_cooldown_seconds
+        delivery_log = audit.get("delivery_log", [])
+        last         = delivery_log[-1] if delivery_log else None
+        if last and last.get("status") == "success":
+            elapsed = time.time() - last.get("ts_epoch", 0)
+            if elapsed < cooldown:
+                return {
+                    "success":  False,
+                    "skipped":  True,
+                    "status":   "skipped",
+                    "ts_epoch": last["ts_epoch"],
+                    "cooldown": cooldown,
+                    "reason":   f"recent successful send (< {cooldown}s ago) — retry later",
+                    "error":    None,
+                }
+
+        # ── Resolve file URLs ─────────────────────────────────────────────────
+        wdl      = audit.get("workdrive_links") or {}
+        files    = audit.get("files", {})
+        base_url = settings.fastapi_public_url.rstrip("/")
+
+        async def _resolve(wd_key: str, file_key: str) -> str:
+            wd_url    = wdl.get(wd_key, "")
+            fname     = files.get(file_key, {}).get("name", "")
+            local_url = f"{base_url}/api/v1/files/{batch_id}/{fname}" if fname else ""
+            if wd_url and await _is_link_alive(wd_url):
+                return wd_url
+            if wd_url and local_url:
+                return local_url  # WorkDrive link stale — fall back to local
+            return wd_url or local_url
+
+        pdf_url, xlsx_url = await _resolve("pdf", "pdf"), await _resolve("xlsx", "xlsx")
+
+        if not pdf_url and not xlsx_url:
+            raise HTTPException(
+                status_code=422,
+                detail="No file links available (WorkDrive sync incomplete or files missing).",
+            )
+
+        # ── Build message ─────────────────────────────────────────────────────
+        status          = audit.get("status", "unknown")
+        doc_no          = audit.get("doc_no", "")
+        tracking_no     = audit.get("tracking_no", "")
+        # Fallback: extract from batch_id if not stored in audit
+        if not tracking_no and batch_id.startswith("SHIPMENT_"):
+            _parts = batch_id.split("_")
+            if len(_parts) >= 4 and _parts[1] != "AUTO":
+                tracking_no = _parts[1]
+        t               = audit.get("totals", {})
+        amendment_flags = audit.get("amendment_flags", [])
+        corrections     = audit.get("corrections_log", [])
+        verify_gaps = [
+            c.removeprefix("[VERIFY-GAP]").strip()
+            for c in corrections if c.startswith("[VERIFY-GAP]")
+        ]
+        msg_id = str(uuid.uuid4())
+
+        if status == "blocked":
+            failed_checks = audit.get("failed_checks", [])
+            failed_lines  = "\n".join(f"- {k} = FALSE" for k in failed_checks)
+            flag_lines    = "\n".join(f"- {f}" for f in amendment_flags)
+            trk_block     = f"Shipment / AWB: {tracking_no}\n" if tracking_no else ""
+            text = (
+                f"⚠️ PZ BLOCKED — verification mismatch\n"
+                f"Document: {doc_no or '—'}\n"
+                f"{trk_block}"
+                f"Batch ID: {batch_id}\n"
+                f"Failed checks:\n{failed_lines}"
+                + (f"\nAmendment flags:\n{flag_lines}" if amendment_flags else "")
+                + f"\nAction required: verify SAD vs invoices\nNo files posted."
+                + f"\n---\nmsg:{msg_id}"
+            )
+        else:
+            text = cliq_service.build_success_message(
+                doc_no          = doc_no,
+                tracking_no     = tracking_no,
+                batch_id        = batch_id,
+                lines           = t.get("line_count") or audit.get("line_count", 0),
+                total_net       = t.get("net") or 0,
+                total_gross     = t.get("gross") or 0,
+                duty_pln        = t.get("duty") or 0,
+                amendment_flags = amendment_flags,
+                verify_gaps     = verify_gaps,
+                pdf_url         = pdf_url,
+                xlsx_url        = xlsx_url,
+                msg_id          = msg_id,
+            )
+
+        # ── Send ──────────────────────────────────────────────────────────────
+        ts        = time.strftime("%Y-%m-%dT%H:%M:%S")
+        ts_epoch  = time.time()
+        masked    = (settings.cliq_webhook_url or "")[:40] + "…"
+        ok        = await cliq_service.post_to_channel(text)
+        error_msg = None if ok else "Channel post failed"
+        dlv_status: DeliveryStatus = "success" if ok else "failed"
+
+        log_entry: Dict[str, Any] = {
+            "timestamp":      ts,
+            "ts_epoch":       ts_epoch,
+            "action":         "resend_to_cliq",
+            "status":         dlv_status,
+            "target":         masked,
+            "message_id":     msg_id,
+            "error":          error_msg,
+        }
+
+        audit.setdefault("delivery_log", []).append(log_entry)
+        audit["message_version"] = "v1"
+        # Atomic write — prevents partial reads by the dashboard poller
+        import os, tempfile
+        dir_ = audit_path.parent
+        fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(audit, fh, indent=2, ensure_ascii=False)
+            os.replace(tmp, audit_path)
+        except Exception:
+            try: os.remove(tmp)
+            except OSError: pass
+            raise
+
+        if not ok:
+            raise HTTPException(status_code=502, detail="Cliq delivery failed — webhook returned error.")
+
+        return {
+            "success":         True,
+            "skipped":         False,
+            "status":          "success",
+            "timestamp":       ts,
+            "ts_epoch":        ts_epoch,
+            "delivery_target": masked,
+            "message_id":      msg_id,
+            "message_text":    text,
+            "error":           None,
+            "delivery_log":    audit["delivery_log"],
+        }
+
+    finally:
+        if lock_path.exists():
+            lock_path.unlink(missing_ok=True)

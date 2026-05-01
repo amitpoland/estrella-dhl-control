@@ -1,0 +1,56 @@
+/**
+ * /submit — Zoho Cliq Slash Command Handler
+ * ==========================================
+ * Paste into: Cliq → Commands → /submit → Command Handler
+ *
+ * Calls POST /api/v1/batch/submit. On validation errors (422), shows what is missing.
+ */
+
+FASTAPI_HOST = "https://pz.estrellajewels.eu";
+API_KEY      = "dev";
+
+response = Map();
+
+payload = Map();
+payload.put("chat_id",    chat.get("id"));
+payload.put("user_id",    user.get("id"));
+payload.put("user_email", user.get("email"));
+
+result = invokeurl
+[
+    url:        FASTAPI_HOST + "/api/v1/batch/submit"
+    type:       POST
+    parameters: payload.toString()
+    headers:    {"Content-Type":"application/json","X-API-Key":API_KEY}
+];
+
+// 422 validation errors arrive under "detail"
+if(result.containsKey("detail"))
+{
+    detail = result.get("detail");
+    if(detail.containsKey("errors"))
+    {
+        errList = detail.get("errors");
+        errText = "";
+        for each err in errList
+        {
+            errText = errText + "\n  • " + err;
+        }
+        response.put("text", "❌ Cannot submit — batch incomplete:" + errText + "\n\nSend /status to see what is missing.");
+    }
+    else
+    {
+        response.put("text", "⚠️ " + detail.toString());
+    }
+    return response;
+}
+
+if(result.containsKey("message"))
+{
+    response.put("text", result.get("message"));
+}
+else
+{
+    response.put("text", "⏳ Processing started. Results will appear in #PZ.");
+}
+return response;

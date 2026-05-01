@@ -1,0 +1,86 @@
+<!--
+  ESTRELLA JEWELS — email signature template
+  Variables to replace per department file:
+    {{NAME}}            e.g. "Import Department"
+    {{TITLE}}           e.g. "Customs & Logistics" (optional second line; leave empty to skip)
+    {{EMAIL}}           e.g. "import@estrellajewels.eu"
+  Replace company-wide placeholders ONCE in every file:
+    {{LOGO_URL}}        public URL of the logo PNG (max 180px wide; ~20 KB)
+    {{PHONE}}           e.g. "+48 22 000 00 00"
+    {{WEBSITE}}         e.g. "www.estrellajewels.eu"
+    {{REGISTERED_OFFICE}}   e.g. "ul. ..., 00-000 Warszawa, Poland"
+    {{SALES_OFFICE}}        e.g. "ul. ..., 00-000 Warszawa, Poland"
+    {{VAT}}             e.g. "PL0000000000"
+    {{REGON}}           e.g. "000000000"
+-->
+<table role="presentation" cellpadding="0" cellspacing="0" border="0"
+       style="width:650px;max-width:650px;font-family:Arial,Helvetica,sans-serif;color:#1f2937;background:#ffffff;border-collapse:collapse;">
+
+  <!-- Top accent bar (solid colour fallback for 'cloud' look — no image dependency) -->
+  <tr>
+    <td colspan="2" style="height:3px;background:linear-gradient(to right,#1e3a8a,#d4af37);background-color:#1e3a8a;line-height:0;font-size:0;">&nbsp;</td>
+  </tr>
+
+  <!-- Logo + name block -->
+  <tr>
+    <td style="padding:14px 16px 6px 16px;vertical-align:top;width:200px;">
+      <img src="{{LOGO_URL}}" alt="Estrella Jewels" width="180"
+           style="display:block;max-width:180px;height:auto;border:0;outline:none;text-decoration:none;">
+    </td>
+    <td style="padding:14px 16px 6px 0;vertical-align:top;">
+      <div style="font-size:18px;font-weight:700;color:#1e3a8a;line-height:1.2;">
+        {{NAME}}
+      </div>
+      <!--TITLE_LINE-->
+      <div style="font-size:13px;color:#6b7280;margin-top:2px;font-style:italic;">
+        Estrella Jewels Sp. z o.o. Sp. k.
+      </div>
+    </td>
+  </tr>
+
+  <!-- Contact block -->
+  <tr>
+    <td colspan="2" style="padding:6px 16px 14px 16px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+             style="font-size:12px;line-height:1.55;color:#374151;">
+        <tr>
+          <td style="padding:1px 8px 1px 0;color:#9ca3af;width:60px;">Email</td>
+          <td style="padding:1px 0;">
+            <a href="mailto:{{EMAIL}}" style="color:#1e3a8a;text-decoration:none;">{{EMAIL}}</a>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:1px 8px 1px 0;color:#9ca3af;">Phone</td>
+          <td style="padding:1px 0;">{{PHONE}}</td>
+        </tr>
+        <tr>
+          <td style="padding:1px 8px 1px 0;color:#9ca3af;">Web</td>
+          <td style="padding:1px 0;">
+            <a href="https://{{WEBSITE}}" style="color:#1e3a8a;text-decoration:none;">{{WEBSITE}}</a>
+          </td>
+        </tr>
+        <tr>
+          <td colspan="2" style="padding-top:8px;border-top:1px solid #e5e7eb;color:#6b7280;font-size:11px;line-height:1.5;">
+            <div><strong style="color:#374151;">Registered office:</strong> {{REGISTERED_OFFICE}}</div>
+            <div><strong style="color:#374151;">Sales office:</strong> {{SALES_OFFICE}}</div>
+            <div style="margin-top:2px;">VAT-EU: {{VAT}} &nbsp;·&nbsp; REGON: {{REGON}}</div>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Bottom accent bar -->
+  <tr>
+    <td colspan="2" style="height:2px;background:#d4af37;line-height:0;font-size:0;">&nbsp;</td>
+  </tr>
+
+  <!-- Disclaimer -->
+  <tr>
+    <td colspan="2" style="padding:10px 16px 12px 16px;font-size:10px;color:#9ca3af;line-height:1.45;font-family:Arial,Helvetica,sans-serif;">
+      This message and any attachments are confidential and intended solely for the addressee. If you are not the intended recipient, please notify the sender and delete this message.
+      <span style="display:block;margin-top:4px;color:#16a34a;">🌱 Please consider the environment before printing this email.</span>
+    </td>
+  </tr>
+
+</table>

@@ -1,0 +1,63 @@
+/**
+ * /cancel — Zoho Cliq Slash Command Handler
+ * ==========================================
+ * Paste into: Cliq → Commands → /cancel → Command Handler
+ *
+ * Behaviour:
+ *   /cancel          → prompts: "To cancel, type /cancel confirm"
+ *   /cancel confirm  → deletes session, replies "❌ Shipment session cancelled."
+ *
+ * arguments variable is populated by Cliq with the text typed after /cancel.
+ * user.get("id") is the Zoho user ID — primary session isolation key.
+ */
+
+FASTAPI_HOST = "https://pz.estrellajewels.eu";
+API_KEY      = "dev";
+
+response   = Map();
+chat_id    = chat.get("id");
+user_id    = user.get("id");
+user_email = user.get("email");
+
+// Safely extract command argument (text after /cancel)
+cancel_args = "";
+if(arguments != null)
+{
+    cancel_args = arguments.toString().trim();
+}
+
+payload = Map();
+payload.put("chat_id",    chat_id);
+payload.put("user_id",    user_id);
+payload.put("user_email", user_email);
+payload.put("args",       cancel_args);
+
+result = invokeurl
+[
+    url:        FASTAPI_HOST + "/api/v1/batch/cancel"
+    type:       POST
+    parameters: payload.toString()
+    headers:    {"Content-Type":"application/json","X-API-Key":API_KEY}
+];
+
+if(result.get("status") == "confirm_required")
+{
+    response.put("text", "⚠️ To cancel this shipment, type:\n/cancel confirm");
+    return response;
+}
+
+if(result.get("status") == "no_session")
+{
+    response.put("text", "⚠️ No active shipment to cancel.");
+    return response;
+}
+
+if(result.get("status") == "cancelled")
+{
+    response.put("text", "❌ Shipment session cancelled.");
+    return response;
+}
+
+// Unexpected — surface raw response for debugging
+response.put("text", "⚠️ Cancel command returned unexpected response:\n" + result.toString());
+return response;

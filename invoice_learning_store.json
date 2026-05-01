@@ -1,0 +1,252 @@
+{
+  "estrella_jewels_llp": {
+    "supplier_key": "estrella_jewels_llp",
+    "display_name": "Estrella Jewels LLP",
+    "invoice_format": "estrella",
+    "gstin": "27AADFE3151H1ZP",
+    "confirmed_count": 0,
+    "confidence": "unconfirmed",
+    "first_seen": "2026-04-26T23:57:11Z",
+    "last_seen": "2026-04-29T19:46:20Z",
+    "parse_count": 35,
+    "failed_count": 0,
+    "layouts": {
+      "d510c6dff71f": {
+        "layout_fingerprint": "d510c6dff71f",
+        "first_seen": "2026-04-26T23:57:11Z",
+        "confirmed_count": 0,
+        "patterns": {
+          "invoice_no_label": "",
+          "invoice_no_pattern": "AAA/AA-AA/AAAA",
+          "invoice_date_label": "Date:",
+          "exporter_label": "Merchant Exporter:",
+          "consignee_label": "",
+          "buyer_label": "",
+          "fob_label": "FOB US $",
+          "freight_label": "Freight US$",
+          "insurance_label": "Insurance US$",
+          "cif_label": "CIF Value",
+          "conv_rate_label": "Conv Rt",
+          "item_row_pattern_name": "estrella",
+          "item_types_seen": [
+            "EARRINGS",
+            "RING"
+          ],
+          "product_words": [
+            "EARRINGS",
+            "RING"
+          ]
+        },
+        "field_corrections": {},
+        "success_count": 7,
+        "failure_count": 0,
+        "consecutive_failures": 0,
+        "last_used": "2026-04-29T16:55:07Z",
+        "last_failed": null,
+        "is_unstable": false
+      },
+      "b0a3c896c92e": {
+        "layout_fingerprint": "b0a3c896c92e",
+        "first_seen": "2026-04-29T16:42:59Z",
+        "confirmed_count": 0,
+        "patterns": {
+          "invoice_no_label": "",
+          "invoice_no_pattern": "AAA/AA-AA/AAA",
+          "invoice_date_label": "Date:",
+          "exporter_label": "Merchant Exporter:",
+          "consignee_label": "",
+          "buyer_label": "",
+          "fob_label": "FOB US $",
+          "freight_label": "Freight US$",
+          "insurance_label": "Insurance US$",
+          "cif_label": "CIF Value",
+          "conv_rate_label": "Conv Rt",
+          "item_row_pattern_name": "estrella",
+          "item_types_seen": [
+            "BRACELET",
+            "EARRINGS",
+            "PENDANT",
+            "RING"
+          ],
+          "product_words": [
+            "BRACELET",
+            "EARRINGS",
+            "PENDANT",
+            "RING"
+          ]
+        },
+        "field_corrections": {},
+        "success_count": 16,
+        "failure_count": 0,
+        "consecutive_failures": 0,
+        "last_used": "2026-04-29T16:55:07Z",
+        "last_failed": null,
+        "is_unstable": false
+      },
+      "b2aa1e21c4ed": {
+        "layout_fingerprint": "b2aa1e21c4ed",
+        "first_seen": "2026-04-29T19:43:45Z",
+        "confirmed_count": 0,
+        "patterns": {
+          "invoice_no_label": "",
+          "invoice_no_pattern": "AAA/AA-AA/AAAA",
+          "invoice_date_label": "Date :",
+          "exporter_label": "Merchant Exporter:",
+          "consignee_label": "",
+          "buyer_label": "",
+          "fob_label": "FOB US $",
+          "freight_label": "Freight US$",
+          "insurance_label": "Insurance US$",
+          "cif_label": "",
+          "conv_rate_label": "",
+          "item_row_pattern_name": "estrella",
+          "item_types_seen": [
+            "EARRINGS",
+            "PENDANT",
+            "RING"
+          ],
+          "product_words": [
+            "EARRINGS",
+            "PENDANT",
+            "RING"
+          ]
+        },
+        "field_corrections": {},
+        "success_count": 9,
+        "failure_count": 0,
+        "consecutive_failures": 0,
+        "last_used": "2026-04-29T19:46:20Z",
+        "last_failed": null,
+        "is_unstable": false
+      },
+      "2cc1cbc93c44": {
+        "layout_fingerprint": "2cc1cbc93c44",
+        "first_seen": "2026-04-29T19:43:45Z",
+        "confirmed_count": 0,
+        "patterns": {
+          "invoice_no_label": "",
+          "invoice_no_pattern": "AAA/AA-AA/AAAA",
+          "invoice_date_label": "Date :",
+          "exporter_label": "Merchant Exporter:",
+          "consignee_label": "Consignee:",
+          "buyer_label": "Buyer:",
+          "fob_label": "FOB US $",
+          "freight_label": "Freight US$",
+          "insurance_label": "Insurance US$",
+          "cif_label": "",
+          "conv_rate_label": "Conv Rt",
+          "item_row_pattern_name": "estrella",
+          "item_types_seen": [
+            "RING"
+          ],
+          "product_words": [
+            "RING"
+          ]
+        },
+        "field_corrections": {},
+        "success_count": 3,
+        "failure_count": 0,
+        "consecutive_failures": 0,
+        "last_used": "2026-04-29T19:46:20Z",
+        "last_failed": null,
+        "is_unstable": false
+      }
+    }
+  },
+  "unknown_supplier_ltd": {
+    "supplier_key": "unknown_supplier_ltd",
+    "display_name": "Unknown Supplier Ltd.",
+    "invoice_format": "generic",
+    "gstin": "",
+    "confirmed_count": 0,
+    "confidence": "unconfirmed",
+    "first_seen": "2026-04-29T19:43:45Z",
+    "last_seen": "2026-04-29T19:46:20Z",
+    "parse_count": 3,
+    "failed_count": 0,
+    "layouts": {
+      "f90eb2cdb187": {
+        "layout_fingerprint": "f90eb2cdb187",
+        "first_seen": "2026-04-29T19:43:45Z",
+        "confirmed_count": 0,
+        "patterns": {
+          "invoice_no_label": "",
+          "invoice_no_pattern": "AA/AAAA/AAA",
+          "invoice_date_label": "Date:",
+          "exporter_label": "Exporter:",
+          "consignee_label": "",
+          "buyer_label": "",
+          "fob_label": "FOB USD",
+          "freight_label": "",
+          "insurance_label": "",
+          "cif_label": "",
+          "conv_rate_label": "",
+          "item_row_pattern_name": "generic",
+          "item_types_seen": [
+            "RING"
+          ],
+          "product_words": [
+            "RING"
+          ]
+        },
+        "field_corrections": {},
+        "success_count": 3,
+        "failure_count": 0,
+        "consecutive_failures": 0,
+        "last_used": "2026-04-29T19:46:20Z",
+        "last_failed": null,
+        "is_unstable": false
+      }
+    }
+  },
+  "global_jewellery_pvt_ltd": {
+    "supplier_key": "global_jewellery_pvt_ltd",
+    "display_name": "Global Jewellery Pvt. Ltd.",
+    "invoice_format": "global_jewellery",
+    "gstin": "",
+    "confirmed_count": 0,
+    "confidence": "unconfirmed",
+    "first_seen": "2026-04-29T19:43:45Z",
+    "last_seen": "2026-04-29T19:46:20Z",
+    "parse_count": 9,
+    "failed_count": 0,
+    "layouts": {
+      "909d6ce52e27": {
+        "layout_fingerprint": "909d6ce52e27",
+        "first_seen": "2026-04-29T19:43:45Z",
+        "confirmed_count": 0,
+        "patterns": {
+          "invoice_no_label": "",
+          "invoice_no_pattern": "AA/AAAA-AA/AAA",
+          "invoice_date_label": "Date:",
+          "exporter_label": "Exporter:",
+          "consignee_label": "Consignee:",
+          "buyer_label": "Account:",
+          "fob_label": "FOB US$",
+          "freight_label": "FRI US$",
+          "insurance_label": "INS US$",
+          "cif_label": "",
+          "conv_rate_label": "",
+          "item_row_pattern_name": "global_jewellery",
+          "item_types_seen": [
+            "EARRINGS",
+            "PENDANT",
+            "RING"
+          ],
+          "product_words": [
+            "EARRINGS",
+            "PENDANT",
+            "RING"
+          ]
+        },
+        "field_corrections": {},
+        "success_count": 9,
+        "failure_count": 0,
+        "consecutive_failures": 0,
+        "last_used": "2026-04-29T19:46:20Z",
+        "last_failed": null,
+        "is_unstable": false
+      }
+    }
+  }
+}

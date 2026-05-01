@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# hooks/pre-commit — PZ Import Processor golden-constants guard
+# =============================================================
+# Install: make install-hooks   (copies this file to .git/hooks/pre-commit)
+#
+# Rule: if golden_constants.py is staged, the full regression suite must pass
+# before the commit is allowed.
+#
+# Rationale: golden_constants.py is a ledger. Committing a change to it without
+# passing tests means the constants were edited to silence a failure rather than
+# to reflect a newly validated batch. This hook makes that physically impossible.
+
+set -euo pipefail
+
+GOLDEN="golden_constants.py"
+TEST="test_pz_regression.py"
+PYTHON="python3"
+
+# Only activate when golden_constants.py is part of this commit
+if git diff --cached --name-only | grep -q "^${GOLDEN}$"; then
+    echo ""
+    echo "  ── pre-commit: ${GOLDEN} is staged ──────────────────────────"
+    echo "  Running regression suite before allowing commit..."
+    echo ""
+
+    if $PYTHON "$TEST"; then
+        echo ""
+        echo "  ✅ Tests passed — commit allowed."
+        echo "  ────────────────────────────────────────────────────────"
+        echo ""
+    else
+        echo ""
+        echo "  ✗  Tests FAILED — commit blocked."
+        echo ""
+        echo "  golden_constants.py may only be committed when all tests pass."
+        echo "  If you are updating reference values for a new validated batch:"
+        echo "    1. Confirm tests fail on the new data first (expected)."
+        echo "    2. Update golden_constants.py with values from the workbook."
+        echo "    3. Re-run: python3 ${TEST}"
+        echo "    4. Once green, commit with the required message format:"
+        echo "         Update golden constants — shipment NNN–NNN"
+        echo "         MRN: ..."
+        echo "         NBP: ..."
+        echo "         Validated against: ..."
+        echo "  ────────────────────────────────────────────────────────"
+        echo ""
+        exit 1
+    fi
+fi

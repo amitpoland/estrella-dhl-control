@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Create Account — Estrella PZ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --gold:        #c8a96e;
+      --gold-light:  #e8d5a3;
+      --gold-dark:   #a07840;
+      --navy:        #1a2a4a;
+      --navy-deep:   #0f1c33;
+      --charcoal:    #2d3748;
+      --ivory:       #faf8f4;
+      --white:       #ffffff;
+      --muted:       #718096;
+      --error:       #c53030;
+      --error-bg:    #fff5f5;
+      --success:     #276749;
+      --border:      #e2d9c8;
+    }
+
+    html, body { height: 100%; font-family: 'Inter', sans-serif; }
+
+    body {
+      display: flex;
+      min-height: 100vh;
+      background: var(--ivory);
+    }
+
+    /* ── Left panel (narrower for signup) ── */
+    .panel {
+      flex: 0 0 38%;
+      background: linear-gradient(160deg, var(--navy-deep) 0%, var(--navy) 60%, #243755 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 40px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .panel::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse 80% 50% at 20% 80%, rgba(200,169,110,0.12) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    .panel-pattern {
+      position: absolute;
+      inset: 0;
+      opacity: 0.055;
+      background-image:
+        repeating-linear-gradient(45deg, var(--gold) 0, var(--gold) 1px, transparent 0, transparent 50%),
+        repeating-linear-gradient(-45deg, var(--gold) 0, var(--gold) 1px, transparent 0, transparent 50%);
+      background-size: 40px 40px;
+    }
+
+    .panel-content { position: relative; z-index: 1; text-align: center; max-width: 320px; }
+
+    .diamond-mark { width: 56px; height: 56px; margin: 0 auto 24px; }
+
+    .brand-name {
+      font-family: 'Playfair Display', serif;
+      font-size: 24px;
+      font-weight: 600;
+      color: var(--white);
+      letter-spacing: 0.02em;
+      margin-bottom: 6px;
+    }
+    .brand-sub {
+      font-size: 10.5px;
+      color: var(--gold-light);
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      margin-bottom: 36px;
+    }
+
+    .panel-divider {
+      width: 40px; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--gold), transparent);
+      margin: 0 auto 30px;
+    }
+
+    .panel-headline {
+      font-family: 'Playfair Display', serif;
+      font-size: 19px;
+      font-weight: 500;
+      color: var(--white);
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+
+    .panel-tagline {
+      font-size: 12.5px;
+      color: rgba(255,255,255,0.5);
+      line-height: 1.7;
+    }
+
+    .roles-list {
+      margin-top: 40px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      text-align: left;
+    }
+
+    .role-item {
+      padding: 12px 16px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(200,169,110,0.18);
+      border-radius: 8px;
+    }
+
+    .role-name {
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--gold-light);
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      margin-bottom: 3px;
+    }
+
+    .role-desc {
+      font-size: 11px;
+      color: rgba(255,255,255,0.5);
+      line-height: 1.4;
+    }
+
+    /* ── Right form ── */
+    .form-side {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 32px;
+      overflow-y: auto;
+    }
+
+    .form-card { width: 100%; max-width: 460px; }
+
+    .form-header { margin-bottom: 28px; }
+
+    .form-title {
+      font-family: 'Playfair Display', serif;
+      font-size: 24px;
+      font-weight: 600;
+      color: var(--navy);
+      margin-bottom: 6px;
+    }
+
+    .form-gold-line {
+      width: 32px; height: 2px;
+      background: var(--gold);
+      margin: 12px 0;
+      border-radius: 2px;
+    }
+
+    .form-subtitle { font-size: 13px; color: var(--muted); line-height: 1.6; }
+
+    .alert {
+      display: none;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 18px;
+    }
+    .alert.error   { background: var(--error-bg); color: var(--error); border: 1px solid #fed7d7; display: block; }
+    .alert.success { background: #f0fff4; color: var(--success); border: 1px solid #c6f6d5; display: block; }
+    .alert.info    { background: #ebf8ff; color: #2c5282; border: 1px solid #bee3f8; display: block; }
+
+    /* Two-column layout for some fields */
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    .field { margin-bottom: 18px; }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--charcoal);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 7px;
+    }
+
+    input[type="text"],
+    input[type="email"],
+    input[type="password"],
+    select {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1.5px solid var(--border);
+      border-radius: 9px;
+      font-size: 14px;
+      font-family: 'Inter', sans-serif;
+      color: var(--charcoal);
+      background: var(--white);
+      transition: border-color 0.2s, box-shadow 0.2s;
+      outline: none;
+    }
+
+    select { cursor: pointer; }
+
+    input:focus, select:focus {
+      border-color: var(--gold);
+      box-shadow: 0 0 0 3px rgba(200,169,110,0.12);
+    }
+
+    input.err, select.err { border-color: var(--error); }
+
+    .field-error { font-size: 11px; color: var(--error); margin-top: 4px; display: none; }
+    .field-error.show { display: block; }
+
+    /* Password strength */
+    .pwd-strength {
+      margin-top: 6px;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--border);
+      overflow: hidden;
+    }
+    .pwd-bar {
+      height: 100%;
+      width: 0%;
+      transition: width 0.3s, background 0.3s;
+      border-radius: 2px;
+    }
+    .pwd-hint { font-size: 10.5px; color: var(--muted); margin-top: 4px; }
+
+    /* Role select with visual hint */
+    .role-hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 5px;
+      padding: 6px 10px;
+      background: var(--ivory);
+      border-radius: 6px;
+      display: none;
+      line-height: 1.4;
+    }
+    .role-hint.show { display: block; }
+
+    .btn-primary {
+      width: 100%;
+      padding: 13px;
+      background: linear-gradient(135deg, var(--navy) 0%, #243755 100%);
+      color: var(--white);
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+      transition: all 0.25s;
+      margin-top: 8px;
+    }
+    .btn-primary:hover:not(:disabled) { box-shadow: 0 4px 16px rgba(26,42,74,0.3); transform: translateY(-1px); }
+    .btn-primary:disabled { opacity: 0.65; cursor: not-allowed; }
+
+    .btn-spinner {
+      display: none;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    .btn-primary.loading .btn-spinner { display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .form-footer {
+      margin-top: 22px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .form-footer a { color: var(--gold-dark); font-weight: 500; text-decoration: none; }
+    .form-footer a:hover { color: var(--navy); }
+
+    .footer-divider {
+      margin-top: 28px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      font-size: 10.5px;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+
+    @media (max-width: 768px) {
+      body { flex-direction: column; }
+      .panel { flex: none; padding: 36px 24px; min-height: 180px; }
+      .roles-list { display: none; }
+      .field-row { grid-template-columns: 1fr; }
+      .form-side { padding: 28px 20px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Left panel ── -->
+<div class="panel">
+  <div class="panel-pattern"></div>
+  <div class="panel-content">
+    <svg class="diamond-mark" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <polygon points="32,4 58,20 58,44 32,60 6,44 6,20" stroke="#c8a96e" stroke-width="1.5" fill="none" opacity="0.4"/>
+      <polygon points="32,16 50,26 50,38 32,48 14,38 14,26" fill="rgba(200,169,110,0.08)" stroke="#c8a96e" stroke-width="1.5"/>
+      <line x1="14" y1="26" x2="50" y2="26" stroke="#c8a96e" stroke-width="0.8" opacity="0.5"/>
+      <circle cx="32" cy="32" r="3" fill="#c8a96e" opacity="0.8"/>
+    </svg>
+    <div class="brand-name">Estrella Jewels</div>
+    <div class="brand-sub">Customs Operations Platform</div>
+    <div class="panel-divider"></div>
+    <div class="panel-headline">You Imagine,<br>We Create.</div>
+    <div class="panel-tagline">Request access to the customs<br>and audit operations platform.</div>
+
+    <div class="roles-list">
+      <div class="role-item">
+        <div class="role-name">Admin</div>
+        <div class="role-desc">Full system access and user management</div>
+      </div>
+      <div class="role-item">
+        <div class="role-name">Accounts</div>
+        <div class="role-desc">View, download and process shipments</div>
+      </div>
+      <div class="role-item">
+        <div class="role-name">Logistics</div>
+        <div class="role-desc">Upload files and track shipment status</div>
+      </div>
+      <div class="role-item">
+        <div class="role-name">Auditor</div>
+        <div class="role-desc">Audit reports and correction review</div>
+      </div>
+      <div class="role-item">
+        <div class="role-name">Viewer</div>
+        <div class="role-desc">Read-only access to records</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Right form ── -->
+<div class="form-side">
+  <div class="form-card">
+    <div class="form-header">
+      <div class="form-title">Create your Estrella PZ account</div>
+      <div class="form-gold-line"></div>
+      <div class="form-subtitle">First account created is automatically admin. All others require admin approval.</div>
+    </div>
+
+    <div class="alert" id="alert"></div>
+
+    <div id="formWrap">
+      <form id="signupForm" novalidate>
+        <div class="field-row">
+          <div class="field">
+            <label for="fullName">Full Name</label>
+            <input type="text" id="fullName" placeholder="Anna Kowalska" autocomplete="name" required>
+            <div class="field-error" id="nameErr"></div>
+          </div>
+          <div class="field">
+            <label for="company">Company</label>
+            <input type="text" id="company" placeholder="Estrella Jewels" autocomplete="organization">
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="email">Work Email</label>
+          <input type="email" id="email" placeholder="you@estrellajewels.com" autocomplete="email" required>
+          <div class="field-error" id="emailErr"></div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="password">Password</label>
+            <input type="password" id="password" placeholder="••••••••" autocomplete="new-password" required>
+            <div class="pwd-strength"><div class="pwd-bar" id="pwdBar"></div></div>
+            <div class="pwd-hint" id="pwdHint">Min. 8 chars, 1 uppercase, 1 number</div>
+            <div class="field-error" id="passwordErr"></div>
+          </div>
+          <div class="field">
+            <label for="confirm">Confirm Password</label>
+            <input type="password" id="confirm" placeholder="••••••••" autocomplete="new-password" required>
+            <div class="field-error" id="confirmErr"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="role">Role</label>
+          <select id="role" name="role">
+            <option value="viewer">Viewer — Read only</option>
+            <option value="auditor">Auditor — Audit reports &amp; corrections</option>
+            <option value="logistics">Logistics — Upload &amp; tracking</option>
+            <option value="accounts" selected>Accounts — View, download &amp; process</option>
+            <option value="admin">Admin — Full access</option>
+          </select>
+          <div class="role-hint show" id="roleHint">View and process shipments, download PZ documents and reports.</div>
+        </div>
+
+        <button type="submit" class="btn-primary" id="submitBtn">
+          <span class="btn-spinner"></span>
+          <span id="btnText">Create Account</span>
+        </button>
+      </form>
+    </div>
+
+    <div class="form-footer">
+      Already have an account? <a href="/login">Sign in</a>
+    </div>
+    <div class="footer-divider">
+      ESTRELLA JEWELS SP. Z O.O. SP.K. &nbsp;·&nbsp; INTERNAL USE ONLY
+    </div>
+  </div>
+</div>
+
+<script>
+const ROLE_HINTS = {
+  viewer:    'Read-only access to batch records, reports, and exports.',
+  auditor:   'Access to audit reports, correction logs, and compliance documents.',
+  logistics: 'Upload invoices and SAD files, create shipments, track status.',
+  accounts:  'View and process shipments, download PZ documents and reports.',
+  admin:     'Full access including user management and system settings.',
+};
+
+// Role hint
+document.getElementById('role').addEventListener('change', function() {
+  const hint = document.getElementById('roleHint');
+  hint.textContent = ROLE_HINTS[this.value] || '';
+  hint.className = 'role-hint show';
+});
+
+// Password strength
+document.getElementById('password').addEventListener('input', function() {
+  const v = this.value;
+  const bar = document.getElementById('pwdBar');
+  let score = 0;
+  if (v.length >= 8) score++;
+  if (/[A-Z]/.test(v)) score++;
+  if (/[0-9]/.test(v)) score++;
+  if (/[^A-Za-z0-9]/.test(v)) score++;
+  const w = [0, 30, 55, 80, 100][score];
+  const c = ['', '#e53e3e', '#d69e2e', '#3182ce', '#38a169'][score];
+  bar.style.width = w + '%';
+  bar.style.background = c;
+});
+
+// Form submit
+const form = document.getElementById('signupForm');
+const alertEl = document.getElementById('alert');
+const submitBtn = document.getElementById('submitBtn');
+const btnText = document.getElementById('btnText');
+
+function showAlert(msg, type='error') {
+  alertEl.textContent = msg;
+  alertEl.className = 'alert ' + type;
+}
+function setLoading(on) {
+  submitBtn.disabled = on;
+  submitBtn.classList.toggle('loading', on);
+  btnText.textContent = on ? 'Creating account…' : 'Create Account';
+}
+function fe(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.classList.toggle('show', !!msg);
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  alertEl.className = 'alert';
+
+  const fullName = document.getElementById('fullName').value.trim();
+  const company  = document.getElementById('company').value.trim();
+  const email    = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const confirm  = document.getElementById('confirm').value;
+  const role     = document.getElementById('role').value;
+
+  let ok = true;
+  fe('nameErr', fullName ? '' : 'Full name is required');
+  if (!fullName) ok = false;
+
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  fe('emailErr', emailValid ? '' : 'Enter a valid email address');
+  if (!emailValid) ok = false;
+
+  const pwdOk = password.length >= 8 && /[A-Z]/.test(password) && /[0-9]/.test(password);
+  fe('passwordErr', pwdOk ? '' : 'Min 8 chars, 1 uppercase, 1 number');
+  if (!pwdOk) ok = false;
+
+  fe('confirmErr', password === confirm ? '' : 'Passwords do not match');
+  if (password !== confirm) ok = false;
+
+  if (!ok) return;
+
+  setLoading(true);
+  try {
+    const res = await fetch('/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ full_name: fullName, company_name: company, email, password, confirm_password: confirm, role }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      if (data.approved) {
+        showAlert('Admin account created! Redirecting to login…', 'success');
+        setTimeout(() => { window.location.href = '/login'; }, 1800);
+      } else {
+        document.getElementById('formWrap').style.display = 'none';
+        showAlert(
+          '✓ Account request submitted. An admin will review and approve your access. You will be notified when you can log in.',
+          'success'
+        );
+      }
+    } else {
+      showAlert(data.detail || 'Signup failed. Please try again.');
+      setLoading(false);
+    }
+  } catch (err) {
+    showAlert('Connection error. Please try again.');
+    setLoading(false);
+  }
+});
+</script>
+</body>
+</html>
