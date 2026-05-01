@@ -35,6 +35,14 @@ _SVC = Path(__file__).parent.parent
 sys.path.insert(0, str(_SVC))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_storage_root(tmp_path, monkeypatch):
+    """Patch the real settings singleton so modules that import it directly
+    (e.g. batch_lock.py) use tmp_path instead of live storage."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+
+
 def _settings(tmp_path: Path):
     class S:
         storage_root = tmp_path
@@ -342,15 +350,24 @@ def test_action_failure_creates_risk_flag(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.cowork_action_runner.settings", _settings(tmp_path))
     _seed_shipment(tmp_path, "B_FAIL")
 
-    from app.services.cowork_action_runner import run_actions
+    from app.services import cowork_action_runner as runner
 
-    actions = [{"action": "build_and_send_dhl_reply", "task_id": "task_fail_1", "reason": "test failure"}]
-    out = run_actions("B_FAIL", actions)
-    assert out["ok"] is False
-    assert len(out["failed"]) == 1
+    # Register a handler that always raises, so the failure is explicit
+    # rather than relying on missing SMTP config or storage mismatches.
+    original_handlers = dict(runner._ACTION_HANDLERS)
+    runner._ACTION_HANDLERS["test_failing_action"] = lambda bid, ad: (_ for _ in ()).throw(
+        RuntimeError("intentional test failure")
+    )
+    try:
+        actions = [{"action": "test_failing_action", "task_id": "task_fail_1", "reason": "test failure"}]
+        out = runner.run_actions("B_FAIL", actions)
+        assert out["ok"] is False
+        assert len(out["failed"]) == 1
 
-    audit = json.loads((tmp_path / "outputs" / "B_FAIL" / "audit.json").read_text())
-    assert "cowork_action_failed:build_and_send_dhl_reply" in (audit.get("risk_flags") or [])
+        audit = json.loads((tmp_path / "outputs" / "B_FAIL" / "audit.json").read_text())
+        assert "cowork_action_failed:test_failing_action" in (audit.get("risk_flags") or [])
+    finally:
+        runner._ACTION_HANDLERS = original_handlers
 
 
 def test_no_financial_fields_modified(tmp_path, monkeypatch):
