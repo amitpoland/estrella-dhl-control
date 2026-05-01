@@ -19,6 +19,7 @@ tools:
   - Bash(find:*)
   - Bash(grep:*)
   - Bash(diff:*)
+concurrency_safe: true
 ---
 
 # Regression Test Guard

@@ -13,6 +13,7 @@ tools:
   - Bash(ls:*)
   - Bash(grep:*)
   - Bash(jq:*)
+concurrency_safe: true
 ---
 
 # AI Bridge Task Generator

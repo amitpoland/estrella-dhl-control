@@ -14,6 +14,7 @@ tools:
   - Bash(find:*)
   - Bash(ls:*)
   - Bash(grep:*)
+concurrency_safe: false
 ---
 
 # Claude Code Instruction Builder

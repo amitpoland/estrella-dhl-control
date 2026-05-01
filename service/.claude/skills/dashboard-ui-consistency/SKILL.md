@@ -12,6 +12,7 @@ tools:
   - Bash(find:*)
   - Bash(grep:*)
   - Bash(ls:*)
+concurrency_safe: true
 ---
 
 # Dashboard UI Consistency Checker

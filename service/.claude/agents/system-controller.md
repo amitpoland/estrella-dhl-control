@@ -104,6 +104,34 @@ When a skill gap is detected (3+ occurrences), output exactly this structure:
 
 Do not produce this report unless the 3-occurrence threshold is met. Do not create any files based on this report without explicit user approval.
 
+## Parallel Read-Only Execution (Phase 3a)
+
+This is a **preparation layer only**. Actual multi-agent execution is **NOT enabled**. These rules define the contract for safe future parallel skill dispatch.
+
+### Rules
+
+1. **Only skills with `concurrency_safe: true` and read-only tools** may be considered for parallel execution.
+2. **Maximum parallel skills: 3.** Never dispatch more than 3 skills simultaneously.
+3. **Domain overlap forbidden.** Before dispatching skills in parallel, verify their exclusive domains in the Domain Boundary Registry do not overlap. If any overlap is detected, fall back to single-skill sequential execution.
+4. **No write tools allowed.** Any skill with `Write`, `Edit`, or other file-mutation tools must run in isolation (single-skill mode). This currently applies to `claude-code-instruction-builder` (`concurrency_safe: false`).
+5. **Output is advisory only.** Parallel skills produce reports, analysis, and validation results. They do not modify files, state, or configuration.
+6. **No shared state mutation.** Parallel skills must not read-then-write any shared resource (audit files, config files, task queues). Each skill operates on its own read-only snapshot.
+7. **Overlap fallback.** If domain overlap is detected at dispatch time, immediately fall back to single-skill execution. Do not attempt partial parallel dispatch.
+
+### Concurrency Safety Registry
+
+| Skill | `concurrency_safe` | Reason |
+|---|---|---|
+| `ai-bridge-result-validator` | `true` | Read-only tools only |
+| `ai-bridge-task-generator` | `true` | Read-only tools only |
+| `audit-trace-reporter` | `true` | Read-only tools only |
+| `backend-route-and-service-builder` | `true` | Read-only / plan-only |
+| `claude-code-instruction-builder` | `false` | Has Write and Edit tools |
+| `customs-pz-safety-checker` | `true` | Read-only tools only |
+| `dashboard-ui-consistency` | `true` | Read-only tools only |
+| `regression-test-guard` | `true` | Read-only tools only |
+| `zoho-context-research` | `true` | Read-only tools only |
+
 ## Output Format
 
 Return results as:

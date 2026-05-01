@@ -13,6 +13,7 @@ tools:
   - Bash(grep:*)
   - Bash(ls:*)
   - Bash(jq:*)
+concurrency_safe: true
 ---
 
 # Audit Trace Reporter
