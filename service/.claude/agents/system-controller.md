@@ -132,6 +132,38 @@ This is a **preparation layer only**. Actual multi-agent execution is **NOT enab
 | `regression-test-guard` | `true` | Read-only tools only |
 | `zoho-context-research` | `true` | Read-only tools only |
 
+## Single-Writer Coordination (Phase 3b)
+
+This section defines coordination discipline for write-capable skills. Actual file-level locking is **not implemented in code** — these are documentation-level guardrails enforced by skill instructions.
+
+### Rules
+
+1. **Only one write-capable skill may run at a time.** Currently the sole write-capable skill is `claude-code-instruction-builder` (`concurrency_safe: false`). If a second write-capable skill is ever added, this constraint still applies — never dispatch two writers simultaneously.
+2. **Read-only skills may run in parallel only when no write-capable skill is active.** If `claude-code-instruction-builder` is executing a Write or Edit, all other skill dispatch must wait until it completes.
+3. **Any write operation requires explicit user approval.** The system-controller must never auto-route a task to a write-capable skill without the user confirming the intent to modify files.
+4. **Write targets are restricted.** `claude-code-instruction-builder` may only write to `**/CLAUDE.md`, `**/AGENTS.md`, and `.claude/**/*.md`. Any request to write outside these paths must be rejected at routing time.
+5. **No enforcement claim.** These rules are discipline-level guardrails. Do not claim that actual file locks, semaphores, or runtime enforcement exist unless they have been implemented in code and tested.
+
+### Coordination sequence
+
+When routing a task that may involve writes:
+
+```
+1. Check: is task write-capable? (matches claude-code-instruction-builder triggers)
+   - No  → route normally, parallel dispatch allowed per Phase 3a rules
+   - Yes → continue to step 2
+
+2. Check: is any other skill currently active?
+   - Yes → wait or ask user to retry after current skill completes
+   - No  → continue to step 3
+
+3. Dispatch claude-code-instruction-builder as sole active skill
+   - No parallel skills during its execution
+   - Skill follows its own Write Discipline checklist (pre-write, post-write)
+
+4. After skill completes → parallel dispatch unlocked again
+```
+
 ## Output Format
 
 Return results as:

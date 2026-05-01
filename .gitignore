@@ -24,6 +24,10 @@ tmp/claude_test_quarantine_*/
 service/app/*quarantine*/
 tmp/*quarantine*/
 
+# Claude Code runtime artifacts (future-safe)
+service/.claude/locks/
+service/.claude/snapshots/
+
 # Secrets / configs
 *.env
 .env.*
