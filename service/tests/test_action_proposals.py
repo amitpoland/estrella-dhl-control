@@ -31,9 +31,19 @@ _ROOT = Path(__file__).parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-_TMP_ROOT = Path("/tmp/test_action_proposals")
 os.environ.setdefault("API_KEY",       "test-key")
-os.environ.setdefault("STORAGE_ROOT",  str(_TMP_ROOT))
+# NOTE: no STORAGE_ROOT setdefault — tests use tmp_path for isolation
+
+
+@pytest.fixture(autouse=True)
+def _isolate_storage(tmp_path, monkeypatch):
+    """Point settings.storage_root at tmp_path so all service code is isolated."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    from app.api import routes_action_proposals
+    from app.services import action_email_builder
+    for mod in (routes_action_proposals, action_email_builder):
+        monkeypatch.setattr(mod, "_OUTPUTS", tmp_path / "outputs")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -45,6 +55,7 @@ def _ts(hours_ago: float = 0.0) -> str:
 
 
 def _make_batch(
+    root: Path,
     extra:     Dict[str, Any] | None = None,
     batch_id:  str | None = None,
     create_files: bool = False,
@@ -54,8 +65,7 @@ def _make_batch(
     Returns (batch_id, batch_dir, audit_path).
     """
     bid = batch_id or str(uuid.uuid4())[:8]
-    from app.core.config import settings
-    batch_dir = settings.storage_root / "outputs" / bid
+    batch_dir = root / "outputs" / bid
     batch_dir.mkdir(parents=True, exist_ok=True)
     audit: Dict[str, Any] = {
         "batch_id":   bid,
@@ -105,9 +115,9 @@ def _make_suggestion(
 # ── Test 1: Cowork suggestion creates proposal ────────────────────────────────
 
 class TestProposalCreation:
-    def test_suggestion_creates_proposal(self):
+    def test_suggestion_creates_proposal(self, tmp_path):
         """DSK_MISSING suggestion → dhl_followup proposal created in audit."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import generate_action_proposals
@@ -121,9 +131,9 @@ class TestProposalCreation:
         assert prop["proposal_id"]
         assert prop["approved_by"] is None
 
-    def test_duty_trigger_creates_duty_proposal(self):
+    def test_duty_trigger_creates_duty_proposal(self, tmp_path):
         """DUTY_PAYMENT_PENDING → duty_payment_followup proposal."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import generate_action_proposals
@@ -132,9 +142,9 @@ class TestProposalCreation:
 
         assert any(p["type"] == "duty_payment_followup" for p in new)
 
-    def test_agency_trigger_creates_agency_proposal(self):
+    def test_agency_trigger_creates_agency_proposal(self, tmp_path):
         """SAD_DELAY → agency_followup proposal."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import generate_action_proposals
@@ -143,9 +153,9 @@ class TestProposalCreation:
 
         assert any(p["type"] == "agency_followup" for p in new)
 
-    def test_unknown_trigger_creates_no_proposal(self):
+    def test_unknown_trigger_creates_no_proposal(self, tmp_path):
         """TIMELINE_EMPTY trigger has no mapping → no proposal created."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import generate_action_proposals
@@ -158,9 +168,9 @@ class TestProposalCreation:
 # ── Test 2: Deduplication ─────────────────────────────────────────────────────
 
 class TestProposalDeduplication:
-    def test_duplicate_suggestion_no_duplicate_proposal(self):
+    def test_duplicate_suggestion_no_duplicate_proposal(self, tmp_path):
         """Same trigger type twice → only one proposal."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import generate_action_proposals
@@ -171,9 +181,9 @@ class TestProposalDeduplication:
         dhl_proposals = [p for p in (audit.get("action_proposals") or []) if p["type"] == "dhl_followup"]
         assert len(dhl_proposals) == 1
 
-    def test_existing_active_proposal_not_duplicated(self):
+    def test_existing_active_proposal_not_duplicated(self, tmp_path):
         """Pre-existing pending_review proposal → generate_action_proposals skips it."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         # Pre-create a proposal
@@ -196,7 +206,7 @@ class TestProposalDeduplication:
 class TestQueueGuard:
     def test_cannot_queue_pending_proposal(self, tmp_path):
         """Queue call on pending_review proposal → 409."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import create_proposal
@@ -214,9 +224,9 @@ class TestQueueGuard:
 # ── Test 4: Approval writes timeline event ────────────────────────────────────
 
 class TestApprovalTimeline:
-    def test_approval_writes_ev_proposal_approved(self):
+    def test_approval_writes_ev_proposal_approved(self, tmp_path):
         """Approving a proposal logs EV_ACTION_PROPOSAL_APPROVED to timeline."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import create_proposal
@@ -241,9 +251,9 @@ class TestApprovalTimeline:
 # ── Test 5: Queue writes email_queued event with approved_by ──────────────────
 
 class TestQueueWritesTimeline:
-    def test_queue_writes_email_queued_with_approved_by(self):
+    def test_queue_writes_email_queued_with_approved_by(self, tmp_path):
         """Queuing a proposal logs EV_EMAIL_QUEUED with approved_by in detail."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import create_proposal
@@ -276,9 +286,9 @@ class TestQueueWritesTimeline:
 # ── Test 6: Missing attachment blocks queue ───────────────────────────────────
 
 class TestAttachmentGuard:
-    def test_missing_attachment_blocks_queue(self):
+    def test_missing_attachment_blocks_queue(self, tmp_path):
         """Attachment path declared in draft but file doesn't exist → 422."""
-        bid, batch_dir, ap = _make_batch()
+        bid, batch_dir, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import create_proposal, _assert_can_queue
@@ -296,9 +306,9 @@ class TestAttachmentGuard:
         assert exc_info.value.status_code == 422
         assert "not found on disk" in exc_info.value.detail
 
-    def test_existing_attachment_passes_guard(self):
+    def test_existing_attachment_passes_guard(self, tmp_path):
         """Attachment that exists on disk passes the guard."""
-        bid, batch_dir, ap = _make_batch(create_files=True)
+        bid, batch_dir, ap = _make_batch(tmp_path, create_files=True)
         audit = _read_audit(ap)
         audit["dsk_filename"] = "dsk.pdf"
         ap.write_text(json.dumps(audit), encoding="utf-8")
@@ -316,9 +326,9 @@ class TestAttachmentGuard:
 # ── Test 7: High-value description-to-DHL blocked ─────────────────────────────
 
 class TestValueGuards:
-    def test_high_value_blocks_carrier_description_reply(self):
+    def test_high_value_blocks_carrier_description_reply(self, tmp_path):
         """carrier_description_reply blocked when CIF > 2500 USD."""
-        bid, _, ap = _make_batch(extra={
+        bid, _, ap = _make_batch(tmp_path, extra={
             "clearance_decision": {
                 "total_value_usd": 5000.0,
                 "clearance_path":  "external_agency_clearance",
@@ -340,9 +350,9 @@ class TestValueGuards:
         assert exc_info.value.status_code == 409
         assert "threshold" in exc_info.value.detail.lower()
 
-    def test_low_value_blocks_dsk_transfer_without_override(self):
+    def test_low_value_blocks_dsk_transfer_without_override(self, tmp_path):
         """dhl_dsk_transfer blocked when CIF < 2500 USD without override."""
-        bid, _, ap = _make_batch(extra={
+        bid, _, ap = _make_batch(tmp_path, extra={
             "clearance_decision": {
                 "total_value_usd": 800.0,
                 "clearance_path":  "carrier_self_clearance",
@@ -364,9 +374,9 @@ class TestValueGuards:
         assert exc_info.value.status_code == 409
         assert "override_value_check" in exc_info.value.detail
 
-    def test_low_value_dsk_with_override_passes(self):
+    def test_low_value_dsk_with_override_passes(self, tmp_path):
         """dhl_dsk_transfer passes when override_value_check=True."""
-        bid, _, ap = _make_batch(extra={
+        bid, _, ap = _make_batch(tmp_path, extra={
             "clearance_decision": {
                 "total_value_usd": 800.0,
                 "clearance_path":  "carrier_self_clearance",
@@ -389,9 +399,9 @@ class TestValueGuards:
 # ── Test 8: Agency clearance email recipients and attachments ─────────────────
 
 class TestAgencyEmailDraft:
-    def test_agency_clearance_email_recipients(self):
+    def test_agency_clearance_email_recipients(self, tmp_path):
         """agency_clearance_email draft has agency + Ganther + internal CC."""
-        bid, batch_dir, ap = _make_batch(create_files=True, extra={
+        bid, batch_dir, ap = _make_batch(tmp_path, create_files=True, extra={
             "polish_desc_filename": "desc_PL.pdf",
             "dsk_filename":         "dsk.pdf",
         })
@@ -404,9 +414,9 @@ class TestAgencyEmailDraft:
         assert "ciagarlak@ganther.com.pl" in draft["cc"]
         assert "import@estrellajewels.eu" in draft["cc"]
 
-    def test_agency_clearance_email_attachments_included(self):
+    def test_agency_clearance_email_attachments_included(self, tmp_path):
         """Files that exist on disk are included as attachments."""
-        bid, batch_dir, ap = _make_batch(create_files=True, extra={
+        bid, batch_dir, ap = _make_batch(tmp_path, create_files=True, extra={
             "polish_desc_filename": "desc_PL.pdf",
             "dsk_filename":         "dsk.pdf",
         })
@@ -419,9 +429,9 @@ class TestAgencyEmailDraft:
         assert "Polish description" in labels
         assert "DSK" in labels
 
-    def test_missing_files_not_in_attachments(self):
+    def test_missing_files_not_in_attachments(self, tmp_path):
         """Files that don't exist on disk are not included as attachments."""
-        bid, batch_dir, ap = _make_batch(extra={
+        bid, batch_dir, ap = _make_batch(tmp_path, extra={
             "polish_desc_filename": "missing_desc.pdf",
             "dsk_filename":         "missing_dsk.pdf",
         })
@@ -437,9 +447,9 @@ class TestAgencyEmailDraft:
 # ── Test 9: Reject proposal blocks queue ──────────────────────────────────────
 
 class TestRejectionBlocking:
-    def test_rejected_proposal_blocked_from_queue(self):
+    def test_rejected_proposal_blocked_from_queue(self, tmp_path):
         """Rejected proposal raises 409 on queue attempt."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import create_proposal, _assert_can_queue
@@ -456,9 +466,9 @@ class TestRejectionBlocking:
         assert exc_info.value.status_code == 409
         assert "rejected" in exc_info.value.detail.lower()
 
-    def test_rejected_proposal_cannot_be_approved(self):
+    def test_rejected_proposal_cannot_be_approved(self, tmp_path):
         """Rejected proposal: approve attempt returns 409."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import create_proposal
@@ -475,9 +485,9 @@ class TestRejectionBlocking:
 # ── Test 10: No auto-send ─────────────────────────────────────────────────────
 
 class TestNoAutoSend:
-    def test_create_proposal_does_not_call_queue_email(self):
+    def test_create_proposal_does_not_call_queue_email(self, tmp_path):
         """create_proposal() never calls queue_email."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         with patch("app.services.email_service.queue_email") as mock_queue:
@@ -485,9 +495,9 @@ class TestNoAutoSend:
             create_proposal(audit, bid, "dhl_followup", "reason", "high")
             mock_queue.assert_not_called()
 
-    def test_approve_does_not_call_queue_email(self):
+    def test_approve_does_not_call_queue_email(self, tmp_path):
         """Approving a proposal never calls queue_email."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import create_proposal
@@ -500,9 +510,9 @@ class TestNoAutoSend:
             ap.write_text(json.dumps(audit, ensure_ascii=False), encoding="utf-8")
             mock_queue.assert_not_called()
 
-    def test_queue_action_calls_queue_email_exactly_once(self):
+    def test_queue_action_calls_queue_email_exactly_once(self, tmp_path):
         """queue endpoint calls queue_email exactly once, then stops."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import create_proposal, _assert_can_queue
@@ -525,9 +535,9 @@ class TestNoAutoSend:
             mock_q.assert_called_once()
             assert email_id == fake_id
 
-    def test_generate_action_proposals_does_not_queue_email(self):
+    def test_generate_action_proposals_does_not_queue_email(self, tmp_path):
         """generate_action_proposals() creates proposals only — no emails queued."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         with patch("app.services.email_service.queue_email") as mock_queue:

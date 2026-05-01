@@ -31,20 +31,28 @@ _ROOT = Path(__file__).parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-_TMP_ROOT = Path("/tmp/test_tracking_cowork")
 os.environ.setdefault("API_KEY",      "test-key")
-os.environ.setdefault("STORAGE_ROOT", str(_TMP_ROOT))
+# NOTE: no STORAGE_ROOT setdefault — tests use tmp_path for isolation
+
+
+@pytest.fixture(autouse=True)
+def _isolate_storage(tmp_path, monkeypatch):
+    """Point settings.storage_root at tmp_path so all service code is isolated."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    from app.api import routes_tracking
+    monkeypatch.setattr(routes_tracking, "_OUTPUTS", tmp_path / "outputs")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_batch(
+    root: Path,
     extra:    Dict[str, Any] | None = None,
     batch_id: str | None = None,
 ) -> tuple[str, Path, Path]:
     bid = batch_id or str(uuid.uuid4())[:8]
-    from app.core.config import settings
-    batch_dir = settings.storage_root / "outputs" / bid
+    batch_dir = root / "outputs" / bid
     batch_dir.mkdir(parents=True, exist_ok=True)
     audit: Dict[str, Any] = {
         "batch_id":    bid,
@@ -232,9 +240,9 @@ class TestCoworkTrigger:
 # ── Test 5–8: cowork-result endpoint ─────────────────────────────────────────
 
 class TestCoworkResultEndpoint:
-    def test_result_writes_status_to_tracking(self):
+    def test_result_writes_status_to_tracking(self, tmp_path):
         """POST cowork-result writes status to audit.tracking."""
-        bid, _, ap = _make_batch(extra={
+        bid, _, ap = _make_batch(tmp_path, extra={
             "tracking": {
                 "cowork_tracking_required": True,
                 "cowork_result_received":   False,
@@ -257,9 +265,9 @@ class TestCoworkResultEndpoint:
         assert updated["tracking"]["status"] == "in_transit"
         assert updated["tracking"]["last_event"] == "Departed customs facility"
 
-    def test_result_clears_cowork_tracking_required(self):
+    def test_result_clears_cowork_tracking_required(self, tmp_path):
         """POST cowork-result sets cowork_tracking_required=False."""
-        bid, _, ap = _make_batch(extra={
+        bid, _, ap = _make_batch(tmp_path, extra={
             "tracking": {"cowork_tracking_required": True, "cowork_result_received": False}
         })
 
@@ -273,9 +281,9 @@ class TestCoworkResultEndpoint:
         assert updated["tracking"]["cowork_tracking_required"] is False
         assert updated["tracking"]["cowork_result_received"] is True
 
-    def test_result_logs_timeline_event(self):
+    def test_result_logs_timeline_event(self, tmp_path):
         """POST cowork-result logs EV_TRACKING_PUBLIC_LOOKUP to timeline."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
 
         from app.api.routes_tracking import submit_cowork_tracking_result, CoworkTrackingResult
         from app.core import timeline as tl
@@ -288,9 +296,9 @@ class TestCoworkResultEndpoint:
         tl_events = [ev["event"] for ev in updated.get("timeline", [])]
         assert tl.EV_TRACKING_PUBLIC_LOOKUP in tl_events
 
-    def test_result_does_not_modify_clearance_decision(self):
+    def test_result_does_not_modify_clearance_decision(self, tmp_path):
         """POST cowork-result never touches clearance_decision."""
-        bid, _, ap = _make_batch(extra={
+        bid, _, ap = _make_batch(tmp_path, extra={
             "clearance_decision": {
                 "total_value_usd": 1200.0,
                 "clearance_path":  "carrier_self_clearance",
@@ -308,9 +316,9 @@ class TestCoworkResultEndpoint:
         after = _read_audit(ap)["clearance_decision"]
         assert after == before
 
-    def test_result_sets_arrived_warehouse_for_delivered(self):
+    def test_result_sets_arrived_warehouse_for_delivered(self, tmp_path):
         """Delivered status sets arrived_warehouse=True in tracking block."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
 
         from app.api.routes_tracking import submit_cowork_tracking_result, CoworkTrackingResult
         body = CoworkTrackingResult(
@@ -336,9 +344,9 @@ class TestCoworkResultEndpoint:
 # ── Test 10: update_tracking writes cowork_tracking_required into audit ───────
 
 class TestUpdateTrackingCoworkSignal:
-    def test_update_tracking_writes_cowork_required(self):
+    def test_update_tracking_writes_cowork_required(self, tmp_path):
         """update_tracking() writes cowork_tracking_required into state when API pending."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         # Patch get_tracking_status to return a pending fallback

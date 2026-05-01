@@ -31,17 +31,26 @@ _ROOT = Path(__file__).parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-_TMP_ROOT = Path("/tmp/test_tracking_proposals")
 os.environ.setdefault("API_KEY",      "test-key")
-os.environ.setdefault("STORAGE_ROOT", str(_TMP_ROOT))
+# NOTE: no STORAGE_ROOT setdefault — tests use tmp_path for isolation
+
+
+@pytest.fixture(autouse=True)
+def _isolate_storage(tmp_path, monkeypatch):
+    """Point settings.storage_root at tmp_path so all service code is isolated."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    from app.api import routes_action_proposals, routes_tracking
+    from app.services import action_email_builder
+    for mod in (routes_action_proposals, routes_tracking, action_email_builder):
+        monkeypatch.setattr(mod, "_OUTPUTS", tmp_path / "outputs")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_batch(extra: Dict[str, Any] | None = None, batch_id: str | None = None):
+def _make_batch(root: Path, extra: Dict[str, Any] | None = None, batch_id: str | None = None):
     bid = batch_id or str(uuid.uuid4())[:8]
-    from app.core.config import settings
-    batch_dir = settings.storage_root / "outputs" / bid
+    batch_dir = root / "outputs" / bid
     batch_dir.mkdir(parents=True, exist_ok=True)
     audit: Dict[str, Any] = {
         "batch_id":    bid,
@@ -68,9 +77,9 @@ def _read_audit(ap: Path) -> Dict[str, Any]:
 # ── Test 1: Trigger → tracking_lookup proposal ───────────────────────────────
 
 class TestTrackingProposalCreation:
-    def test_trigger_creates_tracking_lookup_proposal(self):
+    def test_trigger_creates_tracking_lookup_proposal(self, tmp_path):
         """PUBLIC_TRACKING_LOOKUP_REQUIRED → tracking_lookup proposal in audit."""
-        bid, _, ap = _make_batch(extra={
+        bid, _, ap = _make_batch(tmp_path, extra={
             "tracking": {
                 "cowork_tracking_required": True,
                 "cowork_result_received":   False,
@@ -96,9 +105,9 @@ class TestTrackingProposalCreation:
         assert _TRIGGER_TO_TYPE.get("PUBLIC_TRACKING_LOOKUP_REQUIRED") == "tracking_lookup"
         assert _TRIGGER_TO_TYPE.get("TRACKING_LOOKUP_REQUIRED") == "tracking_lookup"
 
-    def test_no_proposal_when_result_already_received(self):
+    def test_no_proposal_when_result_already_received(self, tmp_path):
         """No tracking_lookup proposal when cowork_result_received=True."""
-        bid, _, ap = _make_batch(extra={
+        bid, _, ap = _make_batch(tmp_path, extra={
             "tracking": {
                 "cowork_tracking_required": True,
                 "cowork_result_received":   True,   # already done
@@ -149,9 +158,9 @@ class TestTrackingLookupQueueGuard:
 # ── Tests 3–4: Update endpoint ────────────────────────────────────────────────
 
 class TestTrackingUpdateEndpoint:
-    def test_update_writes_tracking_to_audit(self):
+    def test_update_writes_tracking_to_audit(self, tmp_path):
         """POST /batch/{batch_id}/update writes status to audit.tracking."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
 
         from app.api.routes_tracking import update_tracking_for_batch, TrackingUpdateBody
         body = TrackingUpdateBody(
@@ -170,9 +179,9 @@ class TestTrackingUpdateEndpoint:
         assert updated["tracking"]["cowork_result_received"] is True
         assert updated["tracking"]["cowork_tracking_required"] is False
 
-    def test_update_logs_ev_tracking_updated(self):
+    def test_update_logs_ev_tracking_updated(self, tmp_path):
         """POST /batch/{batch_id}/update logs EV_TRACKING_UPDATED to timeline."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
 
         from app.api.routes_tracking import update_tracking_for_batch, TrackingUpdateBody
         from app.core import timeline as tl
@@ -183,7 +192,7 @@ class TestTrackingUpdateEndpoint:
         events = [ev["event"] for ev in updated.get("timeline", [])]
         assert tl.EV_TRACKING_UPDATED in events
 
-    def test_update_404_for_unknown_batch(self):
+    def test_update_404_for_unknown_batch(self, tmp_path):
         """Unknown batch_id → 404."""
         from app.api.routes_tracking import update_tracking_for_batch, TrackingUpdateBody
         from fastapi import HTTPException
@@ -192,9 +201,9 @@ class TestTrackingUpdateEndpoint:
             update_tracking_for_batch("nonexistent_xyz_batch", body)
         assert exc_info.value.status_code == 404
 
-    def test_update_does_not_touch_clearance_decision(self):
+    def test_update_does_not_touch_clearance_decision(self, tmp_path):
         """Update never modifies clearance_decision."""
-        bid, _, ap = _make_batch(extra={
+        bid, _, ap = _make_batch(tmp_path, extra={
             "clearance_decision": {"total_value_usd": 1500.0, "clearance_path": "carrier_self_clearance"}
         })
         before = _read_audit(ap)["clearance_decision"]
@@ -210,9 +219,9 @@ class TestTrackingUpdateEndpoint:
 # ── Test 5: Update closes linked proposal ────────────────────────────────────
 
 class TestProposalClosedOnUpdate:
-    def test_update_marks_proposal_done(self):
+    def test_update_marks_proposal_done(self, tmp_path):
         """If proposal_id supplied, tracking_lookup proposal status → done."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         # Create a tracking_lookup proposal
@@ -241,9 +250,9 @@ class TestProposalClosedOnUpdate:
 # ── Tests 6–7: tracking_lookup draft content ──────────────────────────────────
 
 class TestTrackingLookupDraft:
-    def test_draft_has_no_email_recipients(self):
+    def test_draft_has_no_email_recipients(self, tmp_path):
         """tracking_lookup draft has empty to/cc."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.services.action_email_builder import build_email_draft
@@ -252,9 +261,9 @@ class TestTrackingLookupDraft:
         assert draft["to"] == ""
         assert draft["cc"] == ""
 
-    def test_draft_has_cowork_fields(self):
+    def test_draft_has_cowork_fields(self, tmp_path):
         """tracking_lookup draft has channel=cowork, awb, tracking_url."""
-        bid, _, ap = _make_batch(extra={"carrier": "DHL"})
+        bid, _, ap = _make_batch(tmp_path, extra={"carrier": "DHL"})
         audit = _read_audit(ap)
 
         from app.services.action_email_builder import build_email_draft
@@ -265,9 +274,9 @@ class TestTrackingLookupDraft:
         assert draft["tracking_url"]
         assert "dhl.com" in draft["tracking_url"]
 
-    def test_draft_fedex_url_for_fedex_carrier(self):
+    def test_draft_fedex_url_for_fedex_carrier(self, tmp_path):
         """FedEx carrier → FedEx tracking URL in draft."""
-        bid, _, ap = _make_batch(extra={"carrier": "FedEx", "awb": "123456789012"})
+        bid, _, ap = _make_batch(tmp_path, extra={"carrier": "FedEx", "awb": "123456789012"})
         audit = _read_audit(ap)
 
         from app.services.action_email_builder import build_email_draft
@@ -279,9 +288,9 @@ class TestTrackingLookupDraft:
 # ── Test 8: generate_action_proposals maps trigger ───────────────────────────
 
 class TestTriggerToProposalMapping:
-    def test_public_tracking_trigger_maps_to_tracking_lookup(self):
+    def test_public_tracking_trigger_maps_to_tracking_lookup(self, tmp_path):
         """generate_action_proposals: PUBLIC_TRACKING_LOOKUP_REQUIRED → tracking_lookup."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         from app.api.routes_action_proposals import generate_action_proposals
@@ -300,9 +309,9 @@ class TestTriggerToProposalMapping:
 # ── Test 9: no email queued ───────────────────────────────────────────────────
 
 class TestNoEmailForTracking:
-    def test_tracking_lookup_not_in_email_queue(self):
+    def test_tracking_lookup_not_in_email_queue(self, tmp_path):
         """Creating and 'completing' a tracking_lookup proposal never calls queue_email."""
-        bid, _, ap = _make_batch()
+        bid, _, ap = _make_batch(tmp_path)
         audit = _read_audit(ap)
 
         with patch("app.services.email_service.queue_email") as mock_q:
@@ -322,7 +331,7 @@ class TestNoEmailForTracking:
 # ── Test 10: Full flow ─────────────────────────────────────────────────────────
 
 class TestFullTrackingFlow:
-    def test_full_flow_pending_to_done(self):
+    def test_full_flow_pending_to_done(self, tmp_path):
         """
         Full flow:
           cowork_tracking_required=True
@@ -333,7 +342,7 @@ class TestFullTrackingFlow:
           → EV_TRACKING_UPDATED on timeline
           → proposal marked done
         """
-        bid, _, ap = _make_batch(extra={
+        bid, _, ap = _make_batch(tmp_path, extra={
             "tracking": {
                 "cowork_tracking_required": True,
                 "cowork_result_received":   False,

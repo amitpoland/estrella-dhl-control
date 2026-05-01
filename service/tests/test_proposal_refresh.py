@@ -27,9 +27,17 @@ _ROOT = Path(__file__).parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-_TMP_ROOT = Path("/tmp/test_proposal_refresh")
 os.environ.setdefault("API_KEY",      "test-key")
-os.environ.setdefault("STORAGE_ROOT", str(_TMP_ROOT))
+# NOTE: no STORAGE_ROOT setdefault — tests use tmp_path for isolation
+
+
+@pytest.fixture(autouse=True)
+def _isolate_storage(tmp_path, monkeypatch):
+    """Point settings.storage_root at tmp_path so all service code is isolated."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    from app.api import routes_action_proposals
+    monkeypatch.setattr(routes_action_proposals, "_OUTPUTS", tmp_path / "outputs")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -39,10 +47,9 @@ def _ts(hours_ago: float = 0.0) -> str:
     return dt.isoformat()
 
 
-def _make_batch(awb: str = "1234567890", extra: Dict[str, Any] | None = None) -> tuple[str, Path, Path]:
+def _make_batch(root: Path, awb: str = "1234567890", extra: Dict[str, Any] | None = None) -> tuple[str, Path, Path]:
     bid = "TEST_" + str(uuid.uuid4())[:8]
-    from app.core.config import settings
-    batch_dir = settings.storage_root / "outputs" / bid
+    batch_dir = root / "outputs" / bid
     batch_dir.mkdir(parents=True, exist_ok=True)
     audit: Dict[str, Any] = {
         "batch_id":        bid,
@@ -82,12 +89,9 @@ def _dsk_trigger():
 
 class TestProposalRefresh:
 
-    def setup_method(self):
-        _TMP_ROOT.mkdir(parents=True, exist_ok=True)
-
     def test_sweep_creates_proposal_when_trigger_detected(self, tmp_path):
         """Monitor sweep must create a pending_review proposal for a detected trigger."""
-        bid, _, audit_path = _make_batch()
+        bid, _, audit_path = _make_batch(tmp_path)
         audit = _load(audit_path)
 
         from app.api.routes_action_proposals import refresh_proposals
@@ -105,7 +109,7 @@ class TestProposalRefresh:
 
     def test_repeated_sweep_does_not_duplicate(self, tmp_path):
         """A second sweep with the same trigger must NOT create a second proposal."""
-        bid, _, audit_path = _make_batch()
+        bid, _, audit_path = _make_batch(tmp_path)
         audit = _load(audit_path)
 
         from app.api.routes_action_proposals import refresh_proposals
@@ -122,7 +126,7 @@ class TestProposalRefresh:
 
     def test_proposal_resolves_when_trigger_disappears(self, tmp_path):
         """A pending_review proposal must be resolved when its trigger is no longer detected."""
-        bid, _, audit_path = _make_batch()
+        bid, _, audit_path = _make_batch(tmp_path)
         audit = _load(audit_path)
 
         from app.api.routes_action_proposals import refresh_proposals
@@ -143,7 +147,7 @@ class TestProposalRefresh:
 
     def test_created_at_preserved_last_seen_at_updated(self, tmp_path):
         """created_at must be stable; last_seen_at must advance on each sweep."""
-        bid, _, audit_path = _make_batch()
+        bid, _, audit_path = _make_batch(tmp_path)
 
         from app.api.routes_action_proposals import refresh_proposals
         with patch("app.agents.cowork_coordinator.detect_triggers", return_value=_dsk_trigger()):
@@ -165,7 +169,7 @@ class TestProposalRefresh:
 
     def test_manual_refresh_endpoint(self, tmp_path):
         """POST /api/v1/action-proposals/{batch_id}/refresh must return summary dict."""
-        bid, _, audit_path = _make_batch()
+        bid, _, audit_path = _make_batch(tmp_path)
 
         from fastapi.testclient import TestClient
         from app.main import app
@@ -184,7 +188,7 @@ class TestProposalRefresh:
 
     def test_no_financial_fields_modified(self, tmp_path):
         """refresh_proposals must never touch financial fields."""
-        bid, _, audit_path = _make_batch(extra={
+        bid, _, audit_path = _make_batch(tmp_path, extra={
             "clearance_decision": {
                 "total_value_usd": 9999.99,
                 "total_value_pln": 42000.0,

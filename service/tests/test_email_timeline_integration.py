@@ -27,7 +27,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 os.environ.setdefault("API_KEY", "test-key")
-os.environ.setdefault("STORAGE_ROOT", "/tmp/test_email_tl_integration")
+# NOTE: no STORAGE_ROOT setdefault — tests use tmp_path for isolation
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
