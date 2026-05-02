@@ -7,6 +7,10 @@ Tests:
   3. Lock is released after exception inside run_actions()
   4. Different batches do not block each other
   5. Timeout raises clear TimeoutError when lock cannot be acquired
+  6. Concurrent run_cowork_cycle() writes for same batch do not lose updates
+  7. suggest_only=True does not create a lock file or write to audit
+  8. submit_cowork_tracking_result under concurrent load does not corrupt audit
+  9. No stale .audit.lock remains after exception inside run_cowork_cycle
 """
 from __future__ import annotations
 
@@ -271,3 +275,177 @@ class TestLockTimeout:
         finally:
             fcntl.flock(held_fd, fcntl.LOCK_UN)
             held_fd.close()
+
+
+# ── Test 6: Concurrent run_cowork_cycle() writes for same batch ───────────────
+
+class TestConcurrentCoworkCycle:
+    def test_concurrent_cycles_do_not_lose_updates(self, tmp_path):
+        """Two concurrent run_cowork_cycle() calls for the same batch must
+        serialise their audit writes — neither should clobber the other's data."""
+        _seed_batch(tmp_path, "B_CYCLE")
+
+        from app.agents import cowork_coordinator as coord
+
+        # Patch _OUTPUTS so coordinator writes to tmp_path
+        coord._OUTPUTS = tmp_path / "outputs"
+
+        write_count = {"n": 0}
+        original_save = coord._save_audit
+
+        def _counting_save(batch_id, audit):
+            write_count["n"] += 1
+            original_save(batch_id, audit)
+
+        # Patch _save_audit, update_tracking (no-op), and all action senders
+        with (
+            patch.object(coord, "_save_audit", side_effect=_counting_save),
+            patch.object(coord, "update_tracking",    return_value=False),
+            patch.object(coord, "send_followup_dhl",  return_value=None),
+            patch.object(coord, "trigger_agency",     return_value=False),
+            patch.object(coord, "send_followup_agency", return_value=None),
+            patch("app.api.routes_action_proposals.generate_action_proposals",
+                  return_value=[], create=True),
+        ):
+            errors = []
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [
+                    pool.submit(coord.run_cowork_cycle, False)
+                    for _ in range(2)
+                ]
+                for f in as_completed(futures):
+                    try:
+                        f.result()
+                    except Exception as e:
+                        errors.append(str(e))
+
+        assert not errors, f"run_cowork_cycle raised: {errors}"
+        # audit.json must still be readable (not corrupted) after concurrent writes
+        audit_path = tmp_path / "outputs" / "B_CYCLE" / "audit.json"
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        assert audit["batch_id"] == "B_CYCLE"
+
+
+# ── Test 7: suggest_only=True does not create a lock file ────────────────────
+
+class TestSuggestOnlyNoWrite:
+    def test_suggest_only_creates_no_lock_and_no_write(self, tmp_path):
+        """suggest_only=True is pure read — must not create .audit.lock or
+        modify audit.json."""
+        _seed_batch(tmp_path, "B_SUGGEST")
+
+        from app.agents import cowork_coordinator as coord
+        coord._OUTPUTS = tmp_path / "outputs"
+
+        audit_path  = tmp_path / "outputs" / "B_SUGGEST" / "audit.json"
+        lock_path   = tmp_path / "outputs" / "B_SUGGEST" / ".audit.lock"
+        before_mtime = audit_path.stat().st_mtime
+
+        result = coord.run_cowork_cycle(suggest_only=True)
+
+        assert result["mode"] == "suggest_only"
+        assert result["batches_checked"] >= 1
+        # audit.json must not have been modified
+        assert audit_path.stat().st_mtime == before_mtime
+        # .audit.lock must not exist (suggest_only never acquires write lock)
+        assert not lock_path.exists()
+
+
+# ── Test 8: submit_cowork_tracking_result under concurrent load ───────────────
+
+class TestTrackingResultUnderLock:
+    def test_concurrent_tracking_submit_does_not_corrupt_audit(self, tmp_path):
+        """Two concurrent submit_cowork_tracking_result() calls for the same batch
+        must serialise — final audit must have a valid tracking block."""
+        _seed_batch(tmp_path, "B_TR_LOCK",
+                    awb="9876543210", tracking_no="9876543210")
+
+        from app.api import routes_tracking
+        from app.api.routes_tracking import submit_cowork_tracking_result, CoworkTrackingResult
+
+        # Patch module-level _OUTPUTS so the route finds the test batch
+        routes_tracking._OUTPUTS = tmp_path / "outputs"
+
+        statuses = ["in_transit", "customs"]
+        results  = []
+
+        def _submit(status):
+            body = CoworkTrackingResult(
+                status=status,
+                last_event=f"Event for {status}",
+                last_location="WARSAW - PL",
+                source="test",
+                batch_id="B_TR_LOCK",
+            )
+            return submit_cowork_tracking_result("9876543210", body)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(_submit, s) for s in statuses]
+            for f in as_completed(futures):
+                results.append(f.result())
+
+        assert all(r["ok"] for r in results)
+
+        # Audit must be valid JSON with a tracking block
+        audit = json.loads(
+            (tmp_path / "outputs" / "B_TR_LOCK" / "audit.json").read_text(encoding="utf-8")
+        )
+        assert "tracking" in audit
+        assert audit["tracking"]["status"] in statuses
+        assert audit["tracking"]["cowork_result_received"] is True
+        assert audit["tracking"]["cowork_tracking_required"] is False
+
+        # Lock file may exist on disk (POSIX convention) but flock must be released:
+        # verify we can acquire LOCK_EX | LOCK_NB without blocking.
+        lock = tmp_path / "outputs" / "B_TR_LOCK" / ".audit.lock"
+        if lock.exists():
+            fd = open(lock, "w")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)   # must not raise
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                fd.close()
+
+
+# ── Test 9: No stale .audit.lock after exception in run_cowork_cycle ──────────
+
+class TestNoStaleLockAfterCoworkException:
+    def test_stale_lock_not_left_after_cycle_exception(self, tmp_path):
+        """If an exception is raised inside the batch_write_lock block of
+        run_cowork_cycle(), the lock must still be released so the next
+        call can proceed."""
+        _seed_batch(tmp_path, "B_CYCLE_EXC")
+
+        from app.agents import cowork_coordinator as coord
+        coord._OUTPUTS = tmp_path / "outputs"
+
+        # Force an exception inside the locked block by blowing up update_tracking
+        with patch.object(coord, "update_tracking",
+                          side_effect=RuntimeError("boom")):
+            result = coord.run_cowork_cycle(suggest_only=False)
+
+        # The error is captured in summary, not re-raised
+        assert len(result["errors"]) >= 1
+        assert "boom" in result["errors"][0]
+
+        # Lock FILE may persist on disk (POSIX convention) but the flock
+        # advisory lock must be released — verify it can be re-acquired.
+        lock = tmp_path / "outputs" / "B_CYCLE_EXC" / ".audit.lock"
+        if lock.exists():
+            fd = open(lock, "w")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)   # must not raise
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                fd.close()
+
+        # Second call must succeed (can acquire the lock)
+        with (
+            patch.object(coord, "update_tracking",      return_value=False),
+            patch.object(coord, "send_followup_dhl",    return_value=None),
+            patch.object(coord, "trigger_agency",       return_value=False),
+            patch.object(coord, "send_followup_agency", return_value=None),
+        ):
+            result2 = coord.run_cowork_cycle(suggest_only=False)
+
+        assert len(result2["errors"]) == 0

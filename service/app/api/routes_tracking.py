@@ -19,6 +19,7 @@ from ..auth.dependencies import get_current_user
 from ..core import timeline as tl
 from ..core.config import settings
 from ..services.tracking_service import get_tracking_status
+from ..utils.batch_lock import batch_write_lock
 from ..utils.io import write_json_atomic
 
 router = APIRouter(prefix="/api/v1/tracking", tags=["tracking"])
@@ -114,12 +115,10 @@ def refresh_tracking(
         audit_path = _OUTPUTS / batch_id / "audit.json"
         if audit_path.exists():
             try:
-                audit = json.loads(audit_path.read_text(encoding="utf-8"))
-                audit["tracking"] = result
-                audit_path.write_text(
-                    json.dumps(audit, indent=2, ensure_ascii=False, default=str),
-                    encoding="utf-8",
-                )
+                with batch_write_lock(batch_id):
+                    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+                    audit["tracking"] = result
+                    write_json_atomic(audit_path, audit)
             except Exception:
                 pass  # audit patch is best-effort; don't fail the response
 
@@ -167,41 +166,42 @@ def update_tracking_for_batch(
     if not audit_path.exists():
         raise HTTPException(status_code=404, detail=f"Batch {batch_id!r} not found.")
 
-    try:
-        audit = json.loads(audit_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Could not read audit: {exc}")
+    with batch_write_lock(batch_id):
+        try:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Could not read audit: {exc}")
 
-    # ── Patch tracking block ──────────────────────────────────────────────────
-    tr = audit.setdefault("tracking", {})
-    tr.update({
-        "status":                   body.status,
-        "status_label":             body.status.replace("_", " ").title(),
-        "last_event":               body.last_event,
-        "last_location":            body.location,
-        "last_update":              body.event_time,
-        "source":                   body.source,
-        "available":                True,
-        "cowork_result_received":   True,
-        "cowork_tracking_required": False,
-        "cowork_result_at":         _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-    })
-    if body.note:
-        tr["cowork_result_note"] = body.note
-    if body.status in ("delivered", "out_for_delivery"):
-        tr["arrived_warehouse"] = True
+        # ── Patch tracking block ──────────────────────────────────────────────
+        tr = audit.setdefault("tracking", {})
+        tr.update({
+            "status":                   body.status,
+            "status_label":             body.status.replace("_", " ").title(),
+            "last_event":               body.last_event,
+            "last_location":            body.location,
+            "last_update":              body.event_time,
+            "source":                   body.source,
+            "available":                True,
+            "cowork_result_received":   True,
+            "cowork_tracking_required": False,
+            "cowork_result_at":         _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+        if body.note:
+            tr["cowork_result_note"] = body.note
+        if body.status in ("delivered", "out_for_delivery"):
+            tr["arrived_warehouse"] = True
 
-    # ── Close linked tracking_lookup proposal if supplied ─────────────────────
-    if body.proposal_id:
-        for prop in (audit.get("action_proposals") or []):
-            if (prop.get("proposal_id") == body.proposal_id
-                    and prop.get("type") == "tracking_lookup"):
-                prop["status"] = "done"
-                prop["done_at"] = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
-                prop["done_source"] = body.source
-                break
+        # ── Close linked tracking_lookup proposal if supplied ─────────────────
+        if body.proposal_id:
+            for prop in (audit.get("action_proposals") or []):
+                if (prop.get("proposal_id") == body.proposal_id
+                        and prop.get("type") == "tracking_lookup"):
+                    prop["status"] = "done"
+                    prop["done_at"] = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    prop["done_source"] = body.source
+                    break
 
-    write_json_atomic(audit_path, audit)
+        write_json_atomic(audit_path, audit)
 
     # ── Timeline ──────────────────────────────────────────────────────────────
     tl.log_event(
@@ -305,33 +305,34 @@ def submit_cowork_tracking_result(
                    "Provide batch_id in body or ensure the batch exists.",
         )
 
-    # ── Load → patch tracking block → save ───────────────────────────────────
-    try:
-        audit = json.loads(audit_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Could not read audit: {exc}")
+    # ── Load → patch tracking block → save (under per-batch lock) ───────────
+    with batch_write_lock(batch_id):
+        try:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Could not read audit: {exc}")
 
-    tr = audit.setdefault("tracking", {})
-    tr.update({
-        "status":                  body.status,
-        "status_label":            body.status.replace("_", " ").title(),
-        "last_event":              body.last_event,
-        "last_location":           body.last_location,
-        "last_update":             body.event_time,
-        "source":                  body.source,
-        "available":               True,
-        "cowork_result_received":  True,
-        "cowork_tracking_required": False,   # ← clear the lookup task
-        "cowork_result_at":        _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-    })
-    if body.note:
-        tr["cowork_result_note"] = body.note
+        tr = audit.setdefault("tracking", {})
+        tr.update({
+            "status":                  body.status,
+            "status_label":            body.status.replace("_", " ").title(),
+            "last_event":              body.last_event,
+            "last_location":           body.last_location,
+            "last_update":             body.event_time,
+            "source":                  body.source,
+            "available":               True,
+            "cowork_result_received":  True,
+            "cowork_tracking_required": False,   # ← clear the lookup task
+            "cowork_result_at":        _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+        if body.note:
+            tr["cowork_result_note"] = body.note
 
-    # Also update arrived_warehouse if status signals delivery/warehouse arrival
-    if body.status in ("delivered", "out_for_delivery"):
-        tr["arrived_warehouse"] = True
+        # Also update arrived_warehouse if status signals delivery/warehouse arrival
+        if body.status in ("delivered", "out_for_delivery"):
+            tr["arrived_warehouse"] = True
 
-    write_json_atomic(audit_path, audit)
+        write_json_atomic(audit_path, audit)
 
     # ── Timeline event ────────────────────────────────────────────────────────
     tl.log_event(

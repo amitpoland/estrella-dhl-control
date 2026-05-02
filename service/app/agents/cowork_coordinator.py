@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.config import settings
 from ..core import timeline as tl
+from ..utils.batch_lock import batch_write_lock
 from ..utils.io import write_json_atomic
 from ..config.email_routing import DHL_TO, INTERNAL_CC, format_to, format_cc, primary
 
@@ -881,86 +882,93 @@ def run_cowork_cycle(suggest_only: bool = False) -> Dict[str, Any]:
                 log.debug("[cowork] Skipping %s — AWB missing", batch_id)
                 continue
 
-            # ── Email ingestion (BEFORE detect_triggers) ───────────────────────
-            # Process any new inbound emails and append events to the timeline
-            # so that detect_triggers() sees the latest state this cycle.
-            ap = _OUTPUTS / batch_id / "audit.json"
-            ingested_count = 0
-            for email_obj in _scan_recent_emails_hook(batch_id, state):
-                try:
-                    from ..services.email_classifier import process_incoming_email
-                    cls, ev = process_incoming_email(email_obj, ap)
-                    if ev:
-                        ingested_count += 1
-                        log.info(
-                            "[cowork] Email ingested: type=%s → event=%s batch=%s",
-                            cls["type"], ev, batch_id,
-                        )
-                    elif cls.get("warnings"):
-                        log.warning(
-                            "[cowork] Email classified with warnings for %s: %s",
-                            batch_id, cls["warnings"],
-                        )
-                except Exception as exc:
-                    log.warning("[cowork] Email ingestion failed (non-fatal) for %s: %s", batch_id, exc)
-
-            # Re-read audit if emails were ingested (timeline may have changed)
-            if ingested_count > 0:
+            # ── Per-batch write lock ───────────────────────────────────────────
+            # Serialises all audit writes for this batch across concurrent cycles.
+            # The initial load + AWB guard run outside the lock (cheap reads).
+            # Re-read inside the lock to ensure atomic read-modify-write.
+            with batch_write_lock(batch_id):
                 state = load_audit(batch_id) or state
 
-            # ── Detect triggers and generate action proposals ──────────────
-            suggestions = detect_triggers(state, batch_id)
-            if suggestions:
-                try:
-                    from ..api.routes_action_proposals import generate_action_proposals
-                    new_proposals = generate_action_proposals(state, batch_id, suggestions)
-                    if new_proposals:
-                        _save_audit(batch_id, state)
-                        for prop in new_proposals:
-                            tl.log_event(
-                                ap,
-                                tl.EV_ACTION_PROPOSAL_CREATED,
-                                "cowork",
-                                "system",
-                                detail={
-                                    "proposal_id":   prop.get("proposal_id"),
-                                    "proposal_type": prop.get("type"),
-                                    "reason":        prop.get("reason", "")[:120],
-                                },
+                # ── Email ingestion (BEFORE detect_triggers) ───────────────────
+                # Process any new inbound emails and append events to the timeline
+                # so that detect_triggers() sees the latest state this cycle.
+                ap = _OUTPUTS / batch_id / "audit.json"
+                ingested_count = 0
+                for email_obj in _scan_recent_emails_hook(batch_id, state):
+                    try:
+                        from ..services.email_classifier import process_incoming_email
+                        cls, ev = process_incoming_email(email_obj, ap)
+                        if ev:
+                            ingested_count += 1
+                            log.info(
+                                "[cowork] Email ingested: type=%s → event=%s batch=%s",
+                                cls["type"], ev, batch_id,
                             )
-                        log.info(
-                            "[cowork] Created %d proposal(s) for batch=%s",
-                            len(new_proposals), batch_id,
-                        )
-                except Exception as exc:
-                    log.warning("[cowork] generate_action_proposals failed (non-fatal) for %s: %s",
-                                batch_id, exc)
+                        elif cls.get("warnings"):
+                            log.warning(
+                                "[cowork] Email classified with warnings for %s: %s",
+                                batch_id, cls["warnings"],
+                            )
+                    except Exception as exc:
+                        log.warning("[cowork] Email ingestion failed (non-fatal) for %s: %s", batch_id, exc)
 
-            # ── 1. Tracking ────────────────────────────────────────────────────
-            if update_tracking(state, batch_id):
-                summary["tracking_updated"] += 1
+                # Re-read audit if emails were ingested (timeline may have changed)
+                if ingested_count > 0:
+                    state = load_audit(batch_id) or state
 
-            # ── 2. Post-arrival: DSK follow-up ────────────────────────────────
-            dec = state.get("clearance_decision") or {}
-            if dec.get("require_dsk") and arrived_warehouse(state):
-                if not dsk_present(state):
-                    if elapsed_hours(state, "clearance_updated_at") > _DSK_FOLLOWUP_HOURS:
-                        if send_followup_dhl(state, batch_id):
-                            summary["dhl_followups"] += 1
+                # ── Detect triggers and generate action proposals ───────────────
+                suggestions = detect_triggers(state, batch_id)
+                if suggestions:
+                    try:
+                        from ..api.routes_action_proposals import generate_action_proposals
+                        new_proposals = generate_action_proposals(state, batch_id, suggestions)
+                        if new_proposals:
+                            _save_audit(batch_id, state)
+                            for prop in new_proposals:
+                                tl.log_event(
+                                    ap,
+                                    tl.EV_ACTION_PROPOSAL_CREATED,
+                                    "cowork",
+                                    "system",
+                                    detail={
+                                        "proposal_id":   prop.get("proposal_id"),
+                                        "proposal_type": prop.get("type"),
+                                        "reason":        prop.get("reason", "")[:120],
+                                    },
+                                )
+                            log.info(
+                                "[cowork] Created %d proposal(s) for batch=%s",
+                                len(new_proposals), batch_id,
+                            )
+                    except Exception as exc:
+                        log.warning("[cowork] generate_action_proposals failed (non-fatal) for %s: %s",
+                                    batch_id, exc)
 
-            # ── 3. DSK received → trigger agency ──────────────────────────────
-            if dsk_received(state) and dec.get("clearance_path") == "external_agency_clearance":
-                if trigger_agency(state, batch_id):
-                    summary["agency_triggered"] += 1
+                # ── 1. Tracking ────────────────────────────────────────────────
+                if update_tracking(state, batch_id):
+                    summary["tracking_updated"] += 1
 
-            # ── 4. SAD missing → agency follow-up ─────────────────────────────
-            if sad_missing(state):
-                agency_pkg = state.get("agency_reply_package") or {}
-                if agency_pkg.get("status") == "queued":
-                    # Agency was notified; follow up after 3 h if SAD still missing
-                    if elapsed_hours(state, "clearance_updated_at") > _SAD_FOLLOWUP_HOURS:
-                        if send_followup_agency(state, batch_id):
-                            summary["agency_followups"] += 1
+                # ── 2. Post-arrival: DSK follow-up ────────────────────────────
+                dec = state.get("clearance_decision") or {}
+                if dec.get("require_dsk") and arrived_warehouse(state):
+                    if not dsk_present(state):
+                        if elapsed_hours(state, "clearance_updated_at") > _DSK_FOLLOWUP_HOURS:
+                            if send_followup_dhl(state, batch_id):
+                                summary["dhl_followups"] += 1
+
+                # ── 3. DSK received → trigger agency ──────────────────────────
+                if dsk_received(state) and dec.get("clearance_path") == "external_agency_clearance":
+                    if trigger_agency(state, batch_id):
+                        summary["agency_triggered"] += 1
+
+                # ── 4. SAD missing → agency follow-up ─────────────────────────
+                if sad_missing(state):
+                    agency_pkg = state.get("agency_reply_package") or {}
+                    if agency_pkg.get("status") == "queued":
+                        # Agency was notified; follow up after 3 h if SAD still missing
+                        if elapsed_hours(state, "clearance_updated_at") > _SAD_FOLLOWUP_HOURS:
+                            if send_followup_agency(state, batch_id):
+                                summary["agency_followups"] += 1
 
         except Exception as exc:
             log.error("[cowork] Error processing batch %s: %s", batch_id, exc)
