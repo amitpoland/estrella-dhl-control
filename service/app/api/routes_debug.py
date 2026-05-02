@@ -392,6 +392,42 @@ async def clear_test_sessions(force: bool = False) -> Dict[str, Any]:
     }
 
 
+@router.get("/storage/health", dependencies=[_auth])
+def storage_health() -> Dict[str, Any]:
+    """
+    Full storage health snapshot.
+
+    Returns a structured report covering:
+    - outputs/ directory classification (real, test, quarantine, anomalous batches)
+    - .audit.lock probe (lock_files_found, actively_held, releasable)
+    - ok=False if test_batches > 0 (live storage pollution) or actively_held > 0
+
+    Quarantine and anomalous dirs generate warnings but do not set ok=False.
+
+    This endpoint is read-only and makes no writes.
+    """
+    from ..utils.storage_health import storage_health_snapshot
+    return storage_health_snapshot(settings.storage_root)
+
+
+@router.get("/storage/locks", dependencies=[_auth])
+def storage_locks() -> Dict[str, Any]:
+    """
+    Scan all .audit.lock files in outputs/ and report their flock status.
+
+    Each file is probed non-destructively (opened read-only, LOCK_EX|LOCK_NB).
+    - releasable   → lock file exists but flock is not held (safe to ignore)
+    - actively_held → flock held by another OS process (possible stuck worker)
+
+    macOS / same-process caveat: actively_held=True only detects locks held by
+    OTHER OS processes (e.g. a crashed uvicorn worker). Threads in the same
+    process always appear releasable.
+    """
+    from ..utils.storage_health import scan_locks
+    outputs_dir = settings.storage_root / "outputs"
+    return scan_locks(outputs_dir)
+
+
 @router.post("/post-pz-test", dependencies=[_auth])
 async def post_pz_test() -> Dict[str, Any]:
     """
