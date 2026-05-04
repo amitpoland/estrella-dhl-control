@@ -61,6 +61,7 @@ PRESERVED_KEYS: tuple = (
     "email_timeline",
     # Operator overlays
     "operator_overrides",       # never clobber; engine does not know about them
+    "broker_followup_drafts",   # broker email drafts for blocked-batch reconciliation
     "action_proposals",
     "queued_replies",
     "sent_replies",

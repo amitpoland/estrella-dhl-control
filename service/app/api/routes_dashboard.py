@@ -954,6 +954,221 @@ def add_operator_override(
     }
 
 
+# ── Broker follow-up drafts (read-only detection + operator-approved send) ───
+#
+# Detects blocked batches whose failed_checks include `invoice_refs_match` or
+# `cif_match` (forbidden override types), generates a draft broker email per
+# batch, and lets the operator send approved drafts via the email queue.
+#
+# Strict rules:
+#   - GET creates drafts only — never sends.
+#   - POST sends an existing draft only — never auto-creates and never modifies
+#     failed_checks, amendment_flags, customs_declaration, status, or totals.
+#   - Idempotent: a batch with a 'draft' or 'sent' record is skipped on rescan.
+
+from ..services import broker_followup_detector as _bfd
+from ..services import email_service as _email_svc
+
+
+@router.get("/broker-followups", dependencies=[_auth])
+def list_broker_followups() -> Dict[str, Any]:
+    """
+    Scan all batches; for each eligible blocked batch with no live draft,
+    create a draft and persist it under audit.broker_followup_drafts[].
+    Returns the full list of drafts (newly created + pre-existing).
+
+    NEVER sends. NEVER mutates other audit fields.
+    """
+    if not _OUTPUTS.exists():
+        return {"drafts": [], "created": 0, "scanned": 0}
+
+    drafts_out: List[Dict[str, Any]] = []
+    created = 0
+    scanned = 0
+
+    for batch_dir in sorted(_OUTPUTS.iterdir()):
+        if not batch_dir.is_dir():
+            continue
+        audit_path = batch_dir / "audit.json"
+        if not audit_path.exists():
+            continue
+        scanned += 1
+
+        try:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        if not _bfd.is_eligible(audit):
+            continue
+
+        # Pre-existing live draft → just surface it, do not re-create
+        if _bfd.has_live_draft(audit):
+            existing = _bfd.find_draft(audit)
+            if existing:
+                drafts_out.append(existing)
+            continue
+
+        # Build a new draft and persist (additive write)
+        draft = _bfd.build_draft(audit)
+        if draft is None:
+            continue
+
+        with batch_write_lock(batch_dir.name):
+            try:
+                fresh = json.loads(audit_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            # Re-check inside lock (another process may have created one)
+            if _bfd.has_live_draft(fresh):
+                existing = _bfd.find_draft(fresh)
+                if existing:
+                    drafts_out.append(existing)
+                continue
+            existing_drafts = fresh.get("broker_followup_drafts") or []
+            existing_drafts.append(draft)
+            fresh["broker_followup_drafts"] = existing_drafts
+            write_json_atomic(audit_path, fresh)
+
+            tl.log_event(
+                audit_path,
+                "broker_followup_draft_created",
+                "dashboard",
+                "system",
+                detail={
+                    "draft_id": draft["draft_id"],
+                    "reason":   draft["reason"],
+                },
+            )
+
+        drafts_out.append(draft)
+        created += 1
+
+    log.info("[dashboard] broker-followups scan: scanned=%d created=%d total=%d",
+             scanned, created, len(drafts_out))
+
+    return {
+        "drafts":  drafts_out,
+        "created": created,
+        "scanned": scanned,
+    }
+
+
+class BrokerFollowupSendRequest(BaseModel):
+    to:           str = ""    # required at send time; if empty, route returns 400
+    cc:           str = ""    # optional CC
+    from_address: str = ""    # optional sender override
+
+
+@router.post("/broker-followups/{batch_id}/send", dependencies=[_auth])
+def send_broker_followup(
+    batch_id: str,
+    body:     BrokerFollowupSendRequest,
+    request:  Request,
+) -> Dict[str, Any]:
+    """
+    Queue an existing broker follow-up draft via email_service.queue_email.
+
+    Rules
+    -----
+    - Batch must exist (404).
+    - A 'draft'-status broker_followup_drafts entry must exist (409).
+    - 'to' is required (400).
+    - On success: draft.status = 'sent', sent_at + queue_id recorded.
+    - NEVER modifies failed_checks, amendment_flags, status, totals,
+      customs_declaration, or operator_overrides.
+    """
+    _validate_batch_id(batch_id)
+
+    if not body.to or not body.to.strip():
+        raise HTTPException(status_code=400, detail="'to' is required.")
+
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+
+    with batch_write_lock(batch_id):
+        try:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Corrupt audit: {exc}")
+
+        drafts = audit.get("broker_followup_drafts") or []
+        # Find latest 'draft'-status entry
+        target_idx: Optional[int] = None
+        for idx, d in enumerate(drafts):
+            if isinstance(d, dict) and d.get("status") == "draft":
+                target_idx = idx
+        if target_idx is None:
+            raise HTTPException(
+                status_code=409,
+                detail="No 'draft'-status broker follow-up to send.",
+            )
+
+        target = drafts[target_idx]
+        subject = target.get("subject") or ""
+        body_text = target.get("body") or ""
+
+        # Queue via existing email service. Body served as plain text in HTML wrapper.
+        body_html = (
+            "<pre style=\"font-family: ui-sans-serif, system-ui, Arial, sans-serif;"
+            " font-size: 14px; white-space: pre-wrap;\">"
+            + body_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            + "</pre>"
+        )
+
+        try:
+            queue_id = _email_svc.queue_email(
+                to           = body.to.strip(),
+                subject      = subject,
+                body_html    = body_html,
+                body_text    = body_text,
+                batch_id     = batch_id,
+                cc           = body.cc or "",
+                from_address = body.from_address or "",
+                email_type   = "broker_followup",
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"queue_email failed: {exc}")
+
+        operator = (request.headers.get("X-Operator-Id") or "").strip() or "operator"
+        target["status"]    = "sent"
+        target["sent_at"]   = datetime.now(timezone.utc).isoformat()
+        target["queue_id"]  = queue_id
+        target["sent_by"]   = operator
+        target["sent_to"]   = body.to.strip()
+        target["sent_cc"]   = body.cc or ""
+        drafts[target_idx]  = target
+        audit["broker_followup_drafts"] = drafts
+
+        write_json_atomic(audit_path, audit)
+
+        tl.log_event(
+            audit_path,
+            "broker_followup_sent",
+            "dashboard",
+            operator,
+            detail={
+                "draft_id": target.get("draft_id"),
+                "queue_id": queue_id,
+                "to":       body.to.strip(),
+            },
+        )
+
+    log.info("[dashboard] broker-followup sent batch=%s queue_id=%s by=%s",
+             batch_id, queue_id, operator)
+
+    return {
+        "ok":        True,
+        "draft_id":  target.get("draft_id"),
+        "queue_id":  queue_id,
+        "batch_id":  batch_id,
+        "status":    "sent",
+        "sent_at":   target["sent_at"],
+        "sent_to":   target["sent_to"],
+    }
+
+
 # ── Soft-delete batch ─────────────────────────────────────────────────────────
 
 # ── Archive helpers ───────────────────────────────────────────────────────────
