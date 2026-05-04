@@ -22,7 +22,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # Reuse the canonical sender registry + attachment hints
 try:
     from dhl_email_monitor import TRUSTED_SENDERS, _classify_attachment  # type: ignore
-except Exception:
+except Exception as _e:
+    import logging as _logging
+    _logging.getLogger(__name__).warning("TRUSTED_SENDERS load failed — all senders treated as external: %s", _e)
     TRUSTED_SENDERS = {"dhl": [], "agency": [], "ganther": [], "internal": [], "fedex": []}
     def _classify_attachment(filename: str) -> str:  # type: ignore
         return "other"
