@@ -1583,6 +1583,138 @@ function BrokerFollowupPanel({ batchId }) {
 }
 
 /**
+ * BrokerReplyAnalyzerPanel
+ * Helper-only paste-and-classify tool. Operator pastes a broker email
+ * reply; the panel POSTs to /dashboard/broker-reply/analyze and renders
+ * the structured suggestion.
+ *
+ * Strict rules:
+ *  - No audit mutation. No drafts created. No emails sent.
+ *  - The route is read-only (pure classifier).
+ *  - The panel never auto-runs anything based on the result.
+ */
+function BrokerReplyAnalyzerPanel() {
+  const [text,    setText]    = React.useState('');
+  const [busy,    setBusy]    = React.useState(false);
+  const [error,   setError]   = React.useState('');
+  const [result,  setResult]  = React.useState(null);
+
+  const analyze = async () => {
+    if (!text.trim()) return;
+    setBusy(true); setError(''); setResult(null);
+    try {
+      const data = await apiFetch('/dashboard/broker-reply/analyze', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ text }),
+      });
+      setResult(data);
+    } catch (ex) {
+      setError(ex.message || 'Analyze failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clear = () => { setText(''); setResult(null); setError(''); };
+
+  const caseColor = (c) =>
+    c === 'A' ? 'var(--badge-green-text)' :
+    c === 'B' ? 'var(--badge-amber-text)' :
+    c === 'C' ? 'var(--badge-amber-text)' :
+    c === 'D' ? 'var(--text-2)'           :
+    c === 'E' ? 'var(--badge-red-text)'   :
+                'var(--text-3)';
+
+  return (
+    <Card data-testid="broker-reply-analyzer-panel" style={{ marginTop: 4 }}>
+      <div style={{ padding: '14px 18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📋 Paste Broker Reply</div>
+        </div>
+        <div data-testid="broker-reply-analyzer-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+          Paste the broker's email body to get a quick case classification (A–E) and recommended
+          next action. Read-only helper — no email is sent, no audit field is changed.
+        </div>
+
+        <textarea
+          data-testid="broker-reply-input"
+          value={text}
+          onChange={e => setText(e.target.value)}
+          placeholder="Paste broker reply text here…"
+          rows={8}
+          style={{ width: '100%', padding: '8px 10px', fontSize: 11, fontFamily: 'inherit', border: '1px solid var(--border-subtle)', borderRadius: 4, background: 'var(--surface-1)', color: 'var(--text)', resize: 'vertical' }}
+        />
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <Btn
+            data-testid="broker-reply-analyze-btn"
+            small
+            variant="primary"
+            disabled={busy || !text.trim()}
+            style={{ opacity: (busy || !text.trim()) ? 0.45 : 1, cursor: (busy || !text.trim()) ? 'not-allowed' : 'pointer' }}
+            onClick={analyze}
+          >
+            {busy ? '⟳ Analyzing…' : 'Analyze'}
+          </Btn>
+          <Btn
+            data-testid="broker-reply-clear-btn"
+            small
+            variant="outline"
+            disabled={busy || (!text && !result && !error)}
+            onClick={clear}
+          >
+            Clear
+          </Btn>
+        </div>
+
+        {error && (
+          <div data-testid="broker-reply-error" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)' }}>
+            ⚠ {error}
+          </div>
+        )}
+
+        {result && (
+          <div data-testid="broker-reply-result" style={{ marginTop: 12, padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 6, background: 'var(--surface-2)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Case</div>
+              <div data-testid="broker-reply-result-case" style={{ fontSize: 16, fontWeight: 800, color: caseColor(result.case) }}>
+                {result.case || '—'}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)' }}>·</div>
+              <div data-testid="broker-reply-result-confidence" style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)' }}>
+                Confidence: {result.confidence}
+              </div>
+            </div>
+
+            {result.extracted && (result.extracted.invoice_ids || []).length > 0 && (
+              <div data-testid="broker-reply-result-invoices" style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 4 }}>
+                Invoice IDs: <strong>{result.extracted.invoice_ids.join(', ')}</strong>
+              </div>
+            )}
+            {result.extracted && (result.extracted.usd_amounts || []).length > 0 && (
+              <div data-testid="broker-reply-result-amounts" style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 8 }}>
+                USD amounts: <strong>{result.extracted.usd_amounts.join(', ')}</strong>
+              </div>
+            )}
+
+            {result.recommended_action && (
+              <div data-testid="broker-reply-result-recommendation" style={{ marginTop: 8, padding: '8px 10px', borderRadius: 4, background: 'var(--surface-1)', border: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text)', lineHeight: 1.4 }}>
+                {result.recommended_action}
+              </div>
+            )}
+
+            <div data-testid="broker-reply-result-safety-note" style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 8 }}>
+              Suggestion only — does not run PZ, change customs values, send email, or apply overrides.
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+/**
  * MissingFunctionsMatrix
  * Read-only operator visibility card: lists all parked/incomplete modules,
  * their backend/UI/test status and recommended next action.
@@ -2635,6 +2767,9 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
             {/* ── Broker Follow-up (manual operator-approved send) ── */}
             <BrokerFollowupPanel batchId={batchId} />
+
+            {/* ── Paste Broker Reply (read-only classifier) ── */}
+            <BrokerReplyAnalyzerPanel />
           </>
         )}
 

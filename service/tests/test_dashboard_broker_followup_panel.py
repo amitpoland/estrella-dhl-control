@@ -271,8 +271,13 @@ def test_no_hardcoded_broker_email():
     src = _src()
     start = src.find("function BrokerFollowupPanel")
     assert start != -1
-    end = src.find("function MissingFunctionsMatrix", start)
-    assert end != -1
+    candidates = [
+        src.find("function BrokerReplyAnalyzerPanel", start),
+        src.find("function MissingFunctionsMatrix",   start),
+    ]
+    end_options = [c for c in candidates if c != -1]
+    assert end_options
+    end  = min(end_options)
     body = src[start:end]
     # Allow placeholder text inside attributes; reject any literal email used as a default value.
     # Look for default-value patterns like: to: 'someone@x.y' or value="x@y.z"
@@ -286,7 +291,13 @@ def test_no_auto_send_on_load():
     """useEffect must call loadDrafts only — never sendDraft on mount."""
     src = _src()
     start = src.find("function BrokerFollowupPanel")
-    end = src.find("function MissingFunctionsMatrix", start)
+    candidates = [
+        src.find("function BrokerReplyAnalyzerPanel", start),
+        src.find("function MissingFunctionsMatrix",   start),
+    ]
+    end_options = [c for c in candidates if c != -1]
+    assert end_options
+    end  = min(end_options)
     body = src[start:end]
     use_effect_idx = body.find("React.useEffect")
     assert use_effect_idx != -1
@@ -300,7 +311,16 @@ def test_no_post_outside_sendDraft():
     """The only 'POST' literal in the panel must be inside sendDraft (operator-driven)."""
     src = _src()
     start = src.find("function BrokerFollowupPanel")
-    end = src.find("function MissingFunctionsMatrix", start)
+    # Scope to the BrokerFollowupPanel function only — stop at the next sibling
+    # component (BrokerReplyAnalyzerPanel) or MissingFunctionsMatrix, whichever
+    # comes first.
+    candidates = [
+        src.find("function BrokerReplyAnalyzerPanel", start),
+        src.find("function MissingFunctionsMatrix",   start),
+    ]
+    end_options = [c for c in candidates if c != -1]
+    assert end_options, "no terminator found after BrokerFollowupPanel"
+    end  = min(end_options)
     body = src[start:end]
 
     # Count occurrences of the POST literal in the panel body

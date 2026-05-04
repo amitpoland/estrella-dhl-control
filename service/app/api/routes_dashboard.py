@@ -1169,6 +1169,207 @@ def send_broker_followup(
     }
 
 
+# ── Broker reply analyzer (pure read-only classifier) ───────────────────────
+#
+# Operator pastes a broker email reply; this route runs a deterministic
+# keyword + regex classifier and returns a structured suggestion. It NEVER:
+#   - writes to audit
+#   - sends or queues email
+#   - creates a draft
+#   - applies an override
+#   - touches any file or storage
+#
+# Classification cases (first-match wins, ordered A → B → C → E → D):
+#   A: invoice attached / forwarded (positive resolution candidate)
+#   B: SAD amendment in flight (must stop and wait)
+#   C: multiple-invoice or partial-shipment explanation (validate math)
+#   D: clarifying question / asks us for info
+#   E: rejects the discrepancy outright
+#
+# This module-level helper is read-only and side-effect-free.
+
+class BrokerReplyAnalyzeRequest(BaseModel):
+    text: str
+
+
+_RE_INVOICE_ID  = re.compile(r"\b[A-Z]{2,4}\s*/\s*\d{2}-\d{2}\s*/\s*\d{2,6}\b")
+_RE_USD_AMOUNT  = re.compile(
+    r"(?:USD|US\$|\$)\s*([\d]{1,3}(?:[,\s]\d{3})*(?:\.\d+)?)"
+    r"|"
+    r"([\d]{1,3}(?:,\d{3})+(?:\.\d+)?)\s*(?:USD|US\$)?",
+    re.IGNORECASE,
+)
+
+# Lower-case substrings; match against `text.lower()`.
+_SIGNAL_INVOICE_ATTACHED = (
+    "attached invoice",
+    "please find invoice",
+    "please find attached",
+    "find attached",
+    "find the invoice",
+    "invoice is attached",
+    "attached please find",
+    "we attach",
+    "see attached",
+)
+_SIGNAL_SAD_AMENDMENT = (
+    "amend sad",
+    "amended sad",
+    "corrected sad",
+    "correct sad",
+    "new mrn",
+    "sad will be amended",
+    "sad needs amendment",
+    "sad amendment",
+    "amendment of the sad",
+    "issue a corrected",
+    "issue a new sad",
+)
+_SIGNAL_MULTIPLE_INVOICES = (
+    "multiple invoices",
+    "several invoices",
+    "two invoices",
+    "three invoices",
+    "partial shipment",
+    "split shipment",
+    "consolidated",
+    "combined invoices",
+    "made up of",
+    "comprises",
+    "comprised of",
+)
+_SIGNAL_REQUESTS_INFO = (
+    "please confirm",
+    "please provide",
+    "could you confirm",
+    "could you provide",
+    "kindly confirm",
+    "kindly provide",
+    "can you confirm",
+    "can you provide",
+    "we need",
+    "we require",
+)
+_SIGNAL_REJECTS = (
+    "values are correct",
+    "correct as declared",
+    "correct as stated",
+    "no discrepancy",
+    "no error",
+    "we disagree",
+    "we do not agree",
+    "figures are correct",
+    "amount is correct",
+    "the cif is correct",
+)
+
+
+def _classify_broker_reply(text: str) -> Dict[str, Any]:
+    """Pure deterministic classifier. Same input → same output."""
+    if not isinstance(text, str):
+        text = ""
+    body  = text.strip()
+    lower = body.lower()
+
+    # Signal matrix
+    s_attach    = any(p in lower for p in _SIGNAL_INVOICE_ATTACHED)
+    s_amend     = any(p in lower for p in _SIGNAL_SAD_AMENDMENT)
+    s_multi     = any(p in lower for p in _SIGNAL_MULTIPLE_INVOICES)
+    s_requests  = any(p in lower for p in _SIGNAL_REQUESTS_INFO)
+    s_rejects   = any(p in lower for p in _SIGNAL_REJECTS)
+
+    # Extracted entities
+    invoice_ids = sorted({
+        re.sub(r"\s+", "", m.group(0))
+        for m in _RE_INVOICE_ID.finditer(body)
+    })
+    usd_amounts: List[str] = []
+    for m in _RE_USD_AMOUNT.finditer(body):
+        amt = (m.group(1) or m.group(2) or "").strip()
+        if amt:
+            usd_amounts.append(amt)
+    # de-dupe preserving order
+    seen, deduped = set(), []
+    for a in usd_amounts:
+        if a not in seen:
+            seen.add(a)
+            deduped.append(a)
+    usd_amounts = deduped
+
+    # Case selection (priority order)
+    case: Optional[str] = None
+    rec : str = ""
+    conf: str = "low"
+
+    if s_attach:
+        case = "A"
+        rec  = ("Case A — invoice may be attached. Verify the attachment, upload it to "
+                "the batch, and re-run inspection (NOT PZ). Confirm invoice_refs_match "
+                "and cif_match are True before running PZ.")
+    elif s_amend:
+        case = "B"
+        rec  = ("Case B — SAD amendment in flight. STOP. Do not re-run anything. Wait "
+                "for the amended SAD / new MRN to arrive, then start from scratch.")
+    elif s_multi:
+        case = "C"
+        rec  = ("Case C — explanation references multiple invoices or a partial shipment. "
+                "Validate that the listed invoices total exactly USD 17,049. If yes, "
+                "request and upload the missing documents, then re-run inspection. If "
+                "no, push back.")
+    elif s_rejects:
+        case = "E"
+        rec  = ("Case E — broker rejects the discrepancy. Do NOT proceed. Escalate to "
+                "broker management; consider phone follow-up. Do not adjust totals or "
+                "override checks.")
+    elif s_requests:
+        case = "D"
+        rec  = ("Case D — broker is asking us for information (stalling or seeking input). "
+                "Answer narrowly without conceding figures. Restart the 24-hour clock.")
+    else:
+        case = None
+        rec  = ("Could not classify reliably. Read the email manually and pick the matching "
+                "case from the operator playbook. Do not run PZ or override checks based on "
+                "this reply alone.")
+
+    # Confidence heuristic
+    matched = sum([s_attach, s_amend, s_multi, s_requests, s_rejects])
+    if case is None:
+        conf = "low"
+    elif matched >= 2 or (case == "A" and invoice_ids):
+        conf = "high"
+    elif matched == 1:
+        conf = "medium"
+    else:
+        conf = "low"
+
+    return {
+        "case":               case,
+        "confidence":         conf,
+        "signals": {
+            "has_invoice_attachment_hint": s_attach,
+            "mentions_amendment":          s_amend,
+            "mentions_multiple_invoices":  s_multi,
+            "requests_info":               s_requests,
+            "rejects_discrepancy":         s_rejects,
+        },
+        "extracted": {
+            "invoice_ids":   invoice_ids,
+            "usd_amounts":   usd_amounts,
+        },
+        "recommended_action": rec,
+    }
+
+
+@router.post("/broker-reply/analyze", dependencies=[_auth])
+def analyze_broker_reply(body: BrokerReplyAnalyzeRequest) -> Dict[str, Any]:
+    """Read-only classifier for pasted broker email replies.
+
+    Returns a structured suggestion. NEVER mutates audit, queue, drafts,
+    or any other state.
+    """
+    return _classify_broker_reply(body.text or "")
+
+
 # ── Soft-delete batch ─────────────────────────────────────────────────────────
 
 # ── Archive helpers ───────────────────────────────────────────────────────────
