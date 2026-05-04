@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from ..services import document_db as ddb
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
@@ -85,10 +87,35 @@ async def _save(file: UploadFile, dest: Path) -> None:
     dest.write_bytes(content)
 
 
+def _normalize_awb(raw: str) -> str:
+    """
+    Normalize a raw AWB / tracking number for use in batch IDs and the canonical
+    awb field.  Removes all whitespace and non-digit separators so that user-entered
+    values like "53 7881 9972" or "566 591-6826" become safe filesystem names.
+
+    Rules:
+      1. Strip leading/trailing whitespace.
+      2. Remove all interior spaces.
+      3. Remove interior hyphens that sit between digit groups (common DHL format).
+      4. Preserve the result as-is if no digits are present (e.g. non-numeric codes).
+
+    The original value is stored separately as raw_awb in the audit.
+    """
+    stripped = raw.strip()
+    if not stripped:
+        return ""
+    # Remove interior spaces
+    normalized = stripped.replace(" ", "")
+    # Remove hyphens that are surrounded by digits on both sides
+    import re as _re
+    normalized = _re.sub(r"(?<=\d)-(?=\d)", "", normalized)
+    return normalized
+
+
 def _make_batch_id(tracking_no: str) -> str:
     ym  = datetime.now(timezone.utc).strftime("%Y-%m")
     uid = uuid.uuid4().hex[:8]
-    tag = tracking_no.strip() if tracking_no.strip() else "AUTO"
+    tag = _normalize_awb(tracking_no) or "AUTO"
     return f"SHIPMENT_{tag}_{ym}_{uid}"
 
 
@@ -118,12 +145,14 @@ def _write_draft_audit(
         status = "ready"   # SAD present at creation → ready to process
 
     # ── Canonical AWB field (always normalised digits, separate from tracking_no) ──
-    # For DHL: tracking_no IS the AWB. Strip spaces and store canonically.
+    # For DHL: tracking_no IS the AWB.  Normalise via _normalize_awb (strips spaces,
+    # removes intra-digit hyphens) so the canonical field is always a clean number.
+    # raw_awb preserves what the operator originally typed.
     # If absent, set null and add warning so automation can reject the batch.
     awb_canonical: Optional[str] = None
     warnings: List[str] = []
     if tracking_no and tracking_no.strip():
-        awb_canonical = tracking_no.strip().replace(" ", "")
+        awb_canonical = _normalize_awb(tracking_no) or None
     else:
         warnings.append("awb_missing")
         log.warning("[%s] Batch created without AWB/tracking number — automation blocked", batch_id)
@@ -133,6 +162,7 @@ def _write_draft_audit(
         "timestamp":    time.strftime("%Y-%m-%dT%H:%M:%S"),
         "batch_id":     batch_id,
         "awb":          awb_canonical,          # canonical AWB — used by all automation
+        "raw_awb":      tracking_no or None,    # original operator input, preserved for reference
         "tracking_no":  tracking_no,            # raw value as entered
         "carrier":      carrier,
         "tracking_url": _tracking_url(carrier, tracking_no),
@@ -394,6 +424,34 @@ async def upload_shipment(
     audit_path   = output_dir / "audit.json"
     status_label = "ready" if sad_path else "draft"
 
+    # ── Register documents in unified registry (non-blocking) ─────────────────
+    _awb_canonical = _normalize_awb(tracking_no) if tracking_no.strip() else ""
+    try:
+        for _inv_name in inv_names:
+            _inv_p = inv_dir / _inv_name
+            ddb.register_document(
+                batch_id=batch_id, document_type="invoice",
+                file_name=_inv_name, file_path=str(_inv_p),
+                file_hash=ddb.sha256_file(_inv_p),
+                awb=_awb_canonical, source="upload",
+            )
+        if sad_path:
+            ddb.register_document(
+                batch_id=batch_id, document_type="sad_pdf",
+                file_name=sad_name, file_path=str(sad_path),
+                file_hash=ddb.sha256_file(sad_path),
+                awb=_awb_canonical, source="upload",
+            )
+        if awb_path:
+            ddb.register_document(
+                batch_id=batch_id, document_type="awb",
+                file_name=awb_name, file_path=str(awb_path),
+                file_hash=ddb.sha256_file(awb_path),
+                awb=_awb_canonical, source="upload",
+            )
+    except Exception as _e:
+        log.warning("[%s] document_db register failed (non-fatal): %s", batch_id, _e)
+
     # ── Log timeline events ───────────────────────────────────────────────────
     tl.log_event(audit_path, tl.EV_BATCH_CREATED, "dashboard", "user",
                  detail={"tracking_no": tracking_no, "carrier": carrier,
@@ -464,6 +522,18 @@ async def upload_sad(
 
     tl.log_event(output_dir / "audit.json", tl.EV_SAD_UPLOADED, "dashboard", "user",
                  detail={"file": sad_name})
+
+    # Register SAD in document registry (non-blocking)
+    try:
+        _awb = str(audit.get("awb") or "")
+        ddb.register_document(
+            batch_id=batch_id, document_type="sad_pdf",
+            file_name=sad_name, file_path=str(sad_path),
+            file_hash=ddb.sha256_file(sad_path),
+            awb=_awb, source="upload",
+        )
+    except Exception as _e:
+        log.warning("[%s] document_db SAD register failed (non-fatal): %s", batch_id, _e)
 
     return JSONResponse({
         "status":   "ready",
@@ -717,9 +787,68 @@ async def _run_pipeline(
              result.get("total_net", 0))
 
     _r_status = result.get("status", "unknown")
+
+    # ── Stamp SAD import state + emit readiness-compatible event ─────────────
+    # Bridges the gap between pz_generated (pipeline event) and the events
+    # consumed by dhl_readiness (zc429_received / sad_uploaded) and
+    # proposal_engine._sad_received() (sad_imported_ts).
+    if _r_status in ("success", "partial"):
+        _stamp_sad_imported(output_dir, sad_name)
+
     _ev = tl.EV_PZ_GENERATED if _r_status in ("success", "partial") else tl.EV_PZ_BLOCKED
     tl.log_event(output_dir / "audit.json", _ev, "dashboard", "dashboard_user",
                  detail={"status": _r_status, "doc_no": doc_no})
+
+
+def _stamp_sad_imported(output_dir: Path, sad_name: str) -> None:
+    """
+    After successful PZ/customs processing, stamp SAD import state fields and
+    emit a readiness-compatible timeline event so that:
+      - proposal_engine._sad_received() returns True (checks sad_imported_ts)
+      - dhl_readiness advances from agency_forwarded → sad_received (checks
+        zc429_received / sad_uploaded timeline events)
+
+    Event selection:
+      ZC429 filename prefix → tl.EV_ZC429_RECEIVED
+      anything else         → tl.EV_SAD_UPLOADED
+
+    Idempotent: no-op if sad_imported_ts is already set.
+    Non-fatal: any exception is logged at WARNING and swallowed.
+    Does not modify financial or PZ calculation values.
+    """
+    audit_path = output_dir / "audit.json"
+    if not audit_path.exists():
+        return
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+
+        # Idempotent guard — don't overwrite an already-stamped entry
+        if audit.get("sad_imported_ts"):
+            log.debug("[%s] _stamp_sad_imported: already set, skipping", output_dir.name)
+            return
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        audit["sad_imported"]    = True
+        audit["sad_imported_ts"] = now_iso
+        write_json_atomic(audit_path, audit)
+
+        # Select readiness event by filename convention
+        _ev_name = (
+            tl.EV_ZC429_RECEIVED
+            if (sad_name or "").upper().startswith("ZC429")
+            else tl.EV_SAD_UPLOADED
+        )
+
+        # Dedup: only emit if this event type is not already in the timeline
+        _existing_events = {e.get("event") for e in (audit.get("timeline") or [])}
+        if _ev_name not in _existing_events:
+            tl.log_event(audit_path, _ev_name, "system", "pz_pipeline",
+                         detail={"sad_name": sad_name, "trigger": "pz_completed"})
+
+        log.info("[%s] _stamp_sad_imported: sad_imported_ts=%s event=%s",
+                 output_dir.name, now_iso, _ev_name)
+    except Exception as exc:
+        log.warning("[%s] _stamp_sad_imported failed (non-fatal): %s", output_dir.name, exc)
 
 
 def _patch_audit(output_dir: Path, patches: dict) -> None:
@@ -746,13 +875,45 @@ def _patch_audit(output_dir: Path, patches: dict) -> None:
                     audit[k] = v
         # ── Ensure canonical awb is always set when tracking_no is present ──
         if not audit.get("awb") and audit.get("tracking_no"):
-            audit["awb"] = audit["tracking_no"].strip().replace(" ", "")
+            audit["awb"] = _normalize_awb(audit["tracking_no"])
             audit.setdefault("warnings", [])
             if "awb_missing" in audit["warnings"]:
                 audit["warnings"].remove("awb_missing")
         write_json_atomic(audit_path, audit)
     except Exception as e:
         log.error("[%s] Could not patch audit.json: %s", output_dir.name, e)
+
+
+# ── Document Registry (read-only) ─────────────────────────────────────────────
+
+@router.get("/shipment/{batch_id}/documents", dependencies=[_auth])
+def list_batch_documents(batch_id: str) -> JSONResponse:
+    """
+    Return the per-batch document registry: every shipment_documents row for
+    this batch, with its extracted fields embedded (capped at 50 fields per
+    document for payload safety).
+
+    Read-only. Wraps document_db.get_documents_for_batch() and
+    document_db.get_fields_for_document().
+    """
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    docs = ddb.get_documents_for_batch(batch_id)
+    enriched = []
+    for d in docs:
+        all_fields = ddb.get_fields_for_document(d.get("id", ""))
+        enriched.append({
+            **d,
+            "fields":            all_fields[:50],
+            "fields_total":      len(all_fields),
+            "fields_truncated":  len(all_fields) > 50,
+        })
+    return JSONResponse({
+        "batch_id": batch_id,
+        "count":    len(enriched),
+        "documents": enriched,
+    })
 
 
 # ── Status polling ────────────────────────────────────────────────────────────
