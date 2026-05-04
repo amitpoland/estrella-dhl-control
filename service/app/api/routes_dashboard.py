@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..utils.batch_lock import batch_write_lock
 from ..auth.dependencies import require_admin
 from ..core import timeline as tl
 from ..services import cliq_service
@@ -240,6 +241,51 @@ def _derive_pz_status(a: Dict[str, Any]) -> str:
     return "ready"
 
 
+# ── Lightweight per-batch status hints (cheap COUNT-only queries) ─────────────
+#
+# Used by /dashboard/batches list view to show at-a-glance Warehouse / Sales /
+# wFirma columns. Each hint MUST fail silently (return 'n/a') — the list view
+# must never break when a sub-database is missing or empty.
+
+def _warehouse_hint(batch_id: str) -> str:
+    """Return 'clean' | 'partial' | 'empty' | 'n/a' based on completion %."""
+    try:
+        from ..services import warehouse_audit as waudit
+        c = waudit.get_batch_completion(batch_id)
+        total   = c.get("total_items") or 0
+        scanned = c.get("scanned_items") or 0
+        missing = c.get("missing_items") or 0
+        if total == 0:
+            return "n/a"
+        if missing == 0 and scanned > 0:
+            return "clean"
+        if scanned > 0:
+            return "partial"
+        return "empty"
+    except Exception:  # noqa: BLE001
+        return "n/a"
+
+
+def _sales_hint(batch_id: str) -> str:
+    """Return 'present' | 'none' based on sales packing line presence."""
+    try:
+        from ..services import document_db as ddb
+        rows = ddb.get_sales_packing_lines(batch_id)
+        return "present" if rows else "none"
+    except Exception:  # noqa: BLE001
+        return "n/a"
+
+
+def _wfirma_hint(batch_id: str) -> str:
+    """Return 'preview_built' | 'none' based on draft existence."""
+    try:
+        from ..services import wfirma_db as wfdb
+        drafts = wfdb.list_reservation_drafts(batch_id)
+        return "preview_built" if drafts else "none"
+    except Exception:  # noqa: BLE001
+        return "n/a"
+
+
 def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
     t      = a.get("totals", {})
     inp    = a.get("inputs", {})
@@ -301,6 +347,11 @@ def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
         "dhl_status":   a.get("clearance_status") or None,
         "sad_status":   _derive_sad_status(a),
         "pz_status":    _derive_pz_status(a),
+        # ── Lightweight hints for new batch-list columns (Phase 1 polish) ─────
+        # Each fails silently to 'n/a' — list view must never break.
+        "warehouse_status_hint": _warehouse_hint(raw_batch_id),
+        "sales_status_hint":     _sales_hint(raw_batch_id),
+        "wfirma_status_hint":    _wfirma_hint(raw_batch_id),
     }
 
 
@@ -335,44 +386,74 @@ def _build_source_files(batch_id: str) -> Dict[str, Any]:
 
 
 def _build_files_detail(batch_id: str) -> Dict[str, Any]:
-    """Scan the batch output folder and return availability of all known files."""
+    """Scan the batch output folder and return availability of all known files.
+
+    Resolution order for each output:
+      1. canonical filename `{TYPE}_AWB_{awb}_MRN_{mrn}_{date}.{ext}`
+         (read from audit.json `canonical_filenames` block when present)
+      2. legacy generic name (e.g. ``audit_memo.pdf``) — flagged ``stale=True``
+    """
+    import json as _json
+    from urllib.parse import quote
     batch_dir = _OUTPUTS / batch_id
 
     def _url(name: str) -> str:
-        from urllib.parse import quote
         return f"/api/v1/files/{quote(batch_id)}/{quote(name)}"
 
+    # Try to read canonical filenames stamped on the audit.json by the engine.
+    canon: Dict[str, str] = {}
+    try:
+        ap = batch_dir / "audit.json"
+        if ap.is_file():
+            canon = (_json.loads(ap.read_text(encoding="utf-8")) or {}).get("canonical_filenames") or {}
+    except Exception:
+        canon = {}
+
+    def _resolve(key: str, legacy: str) -> Dict[str, Any]:
+        """Prefer canonical filename if it exists on disk; fall back to legacy."""
+        canon_name = canon.get(key) or ""
+        if canon_name and (batch_dir / canon_name).is_file():
+            return {"name": canon_name, "url": _url(canon_name), "exists": True, "stale": False}
+        if legacy and (batch_dir / legacy).is_file():
+            return {"name": legacy, "url": _url(legacy), "exists": True, "stale": True}
+        return {"name": canon_name or legacy, "url": "", "exists": False, "stale": False}
+
     def _find_pdf() -> Dict[str, Any]:
-        """First *.pdf that is NOT one of the audit-only names."""
+        """PZ PDF: prefer canonical AWB+MRN+date name, else first *.pdf not in audit-only list."""
+        canon_name = canon.get("pz_pdf") or ""
+        if canon_name and (batch_dir / canon_name).is_file():
+            return {"name": canon_name, "url": _url(canon_name), "exists": True, "stale": False}
         if batch_dir.exists():
             for f in sorted(batch_dir.iterdir()):
                 if f.suffix.lower() == ".pdf" and f.name not in _AUDIT_ONLY_PDFS:
-                    return {"name": f.name, "url": _url(f.name), "exists": True}
-        return {"name": "", "url": "", "exists": False}
+                    return {"name": f.name, "url": _url(f.name), "exists": True, "stale": True}
+        return {"name": canon_name, "url": "", "exists": False, "stale": False}
 
     def _find_xlsx() -> Dict[str, Any]:
+        canon_name = canon.get("calc_xlsx") or ""
+        if canon_name and (batch_dir / canon_name).is_file():
+            return {"name": canon_name, "url": _url(canon_name), "exists": True, "stale": False}
         if batch_dir.exists():
             for f in sorted(batch_dir.iterdir()):
                 if f.suffix.lower() == ".xlsx":
-                    return {"name": f.name, "url": _url(f.name), "exists": True}
-        return {"name": "", "url": "", "exists": False}
-
-    def _check(name: str) -> Dict[str, Any]:
-        exists = (batch_dir / name).exists()
-        return {"name": name, "url": _url(name) if exists else "", "exists": exists}
+                    return {"name": f.name, "url": _url(f.name), "exists": True, "stale": True}
+        return {"name": canon_name, "url": "", "exists": False, "stale": False}
 
     def _find_corrections() -> Dict[str, Any]:
+        canon_name = canon.get("corrections") or ""
+        if canon_name and (batch_dir / canon_name).is_file():
+            return {"name": canon_name, "url": _url(canon_name), "exists": True, "stale": False}
         if batch_dir.exists():
             for f in sorted(batch_dir.iterdir()):
                 if f.name.startswith("corrections") and f.suffix.lower() == ".json":
-                    return {"name": f.name, "url": _url(f.name), "exists": True}
-        return {"name": "corrections.json", "url": "", "exists": False}
+                    return {"name": f.name, "url": _url(f.name), "exists": True, "stale": True}
+        return {"name": canon_name or "corrections.json", "url": "", "exists": False, "stale": False}
 
     pz_pdf  = _find_pdf()
     calc    = _find_xlsx()
-    en_pdf  = _check("audit_report_en.pdf")
-    pl_pdf  = _check("audit_report_pl.pdf")
-    memo    = _check("audit_memo.pdf")
+    en_pdf  = _resolve("audit_en",   "audit_report_en.pdf")
+    pl_pdf  = _resolve("audit_pl",   "audit_report_pl.pdf")
+    memo    = _resolve("audit_memo", "audit_memo.pdf")
     corr    = _find_corrections()
 
     return {
@@ -549,6 +630,72 @@ def batch_detail(batch_id: str) -> Dict[str, Any]:
     # Fix 6: Normalize clearance_status from actual audit fields — never stale strings
     audit["clearance_status"] = _derive_clearance_status(audit)
 
+    # ── Auto-resolve stale polish_desc_filename pointer ─────────────────────
+    # If audit.polish_desc_filename references a file that no longer exists,
+    # scan the canonical polish_descriptions/ directory for the latest PDF
+    # matching this batch's AWB and update the pointer at read-time only.
+    # Generation logic is untouched.
+    try:
+        from ..services.batch_state_normalizer import resolve_polish_desc_filename
+        _stored_pd = audit.get("polish_desc_filename")
+        _resolved  = resolve_polish_desc_filename(
+            batch_dir = _OUTPUTS / batch_id,
+            awb       = audit.get("tracking_no") or "",
+            stored_fname = _stored_pd,
+        )
+        if _resolved and _resolved != _stored_pd:
+            audit["polish_desc_filename"] = _resolved
+            audit["polish_desc_file_exists"] = True
+            log.info("[%s] polish_desc auto-resolved: %s → %s",
+                     batch_id, _stored_pd, _resolved)
+    except Exception as _pd_err:
+        log.debug("[%s] polish_desc auto-resolve (non-fatal): %s", batch_id, _pd_err)
+
+    # ── Stale row-schema detection (no auto-mutation) ───────────────────────
+    # Surface staleness so the dashboard can prompt regenerate-from-source
+    # rather than re-rendering rows that lack product_code/nazwa fields.
+    try:
+        from ..services.cache_freshness import stale_field_summary
+        audit["cache_freshness"] = stale_field_summary(audit)
+    except Exception as _cf_err:
+        log.debug("[%s] cache_freshness check (non-fatal): %s", batch_id, _cf_err)
+
+    # ── PZ financial totals from pz_rows.json (read-time injection) ─────────
+    # The engine never writes total_net_pln / total_gross_pln / duty_a00_pln to
+    # audit.json root.  If any of the three fields is absent, derive them from
+    # pz_rows.json by summing the per-row columns.  Read-only — never writes to
+    # audit.json.  Fails silently if the file is missing or corrupt.
+    _totals_missing = (
+        audit.get("total_net_pln")   is None
+        or audit.get("total_gross_pln") is None
+        or audit.get("duty_a00_pln")    is None
+    )
+    if _totals_missing:
+        try:
+            _rows_path = _OUTPUTS / batch_id / "pz_rows.json"
+            if _rows_path.is_file():
+                _rows = json.loads(_rows_path.read_text(encoding="utf-8"))
+                if isinstance(_rows, list) and _rows:
+                    if audit.get("total_net_pln") is None:
+                        audit["total_net_pln"] = round(
+                            sum(r.get("line_netto_pln", 0) for r in _rows), 2
+                        )
+                    if audit.get("total_gross_pln") is None:
+                        audit["total_gross_pln"] = round(
+                            sum(r.get("line_brutto_pln", 0) for r in _rows), 2
+                        )
+                    if audit.get("duty_a00_pln") is None:
+                        audit["duty_a00_pln"] = round(
+                            sum(r.get("allocated_duty_pln", 0) for r in _rows), 2
+                        )
+                    log.debug("[%s] pz_rows totals injected: net=%.2f gross=%.2f duty=%.2f",
+                              batch_id,
+                              audit["total_net_pln"],
+                              audit["total_gross_pln"],
+                              audit["duty_a00_pln"])
+        except Exception as _pz_err:
+            log.debug("[%s] pz_rows totals injection (non-fatal): %s", batch_id, _pz_err)
+
     return audit
 
 
@@ -650,6 +797,161 @@ def regenerate_outputs(batch_id: str) -> Dict[str, Any]:
     return {"ok": True, "deleted_files": deleted_files,
             "message": "Output files deleted. Re-upload or re-process to regenerate.",
             "files": _build_files_detail(batch_id)}
+
+
+# ── Operator overrides ────────────────────────────────────────────────────────
+
+from ..services.batch_state_normalizer import (
+    ALLOWED_OVERRIDE_TYPES,
+    FORBIDDEN_OVERRIDE_TYPES,
+)
+
+
+class OperatorOverrideRequest(BaseModel):
+    check: str
+    reason: str
+    evidence_reference: str = ""
+
+
+@router.post("/batches/{batch_id}/operator-override", dependencies=[_auth])
+def add_operator_override(
+    batch_id: str,
+    body: OperatorOverrideRequest,
+    request: Request,
+) -> Dict[str, Any]:
+    """
+    Record an operator acknowledgment for a non-financial blocker.
+
+    Rules
+    -----
+    - Forbidden checks (financial) are always rejected (400).
+    - check must be in ALLOWED_OVERRIDE_TYPES (400 otherwise).
+    - reason must be at least 20 characters (400).
+    - Batch must exist (404).
+    - Batch must currently have audit.status == "blocked" (409 otherwise).
+    - For non-parse-warning checks: check must appear in audit.failed_checks (409).
+    - For invoice_number_parse_warning: at least one "Parse warning:" amendment flag must exist (409).
+    - Duplicate override (same check already accepted) → 400.
+    - audit.status / failed_checks / verification / amendment_flags are NEVER modified.
+    - operator_overrides list is append-only.
+    """
+    _validate_batch_id(batch_id)
+
+    check  = (body.check or "").strip()
+    reason = (body.reason or "").strip()
+
+    # ── Validate check type ──────────────────────────────────────────────────
+    if check in FORBIDDEN_OVERRIDE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Override of '{check}' is forbidden — financial or document-completeness check.",
+        )
+    if check not in ALLOWED_OVERRIDE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown or non-overridable check: '{check}'.",
+        )
+
+    # ── Validate reason length ───────────────────────────────────────────────
+    if len(reason) < 20:
+        raise HTTPException(
+            status_code=400,
+            detail="reason must be at least 20 characters.",
+        )
+
+    # ── Load audit ───────────────────────────────────────────────────────────
+    batch_dir  = _OUTPUTS / batch_id
+    audit_path = batch_dir / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+
+    with batch_write_lock(batch_id):
+        try:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Corrupt audit: {exc}")
+
+        # ── Batch must be blocked ────────────────────────────────────────────
+        if (audit.get("status") or "") != "blocked":
+            raise HTTPException(
+                status_code=409,
+                detail="Batch is not currently blocked; override not applicable.",
+            )
+
+        existing_overrides = audit.get("operator_overrides") or []
+
+        # ── Duplicate guard ──────────────────────────────────────────────────
+        already = [
+            o for o in existing_overrides
+            if o.get("check") == check and o.get("batch_id") == batch_id
+        ]
+        if already:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Check '{check}' has already been overridden for this batch.",
+            )
+
+        # ── Check must currently be failing ─────────────────────────────────
+        if check == "invoice_number_parse_warning":
+            amendment_flags = audit.get("amendment_flags") or []
+            parse_flags = [f for f in amendment_flags if f.startswith("Parse warning:")]
+            if not parse_flags:
+                raise HTTPException(
+                    status_code=409,
+                    detail="No 'Parse warning:' amendment flags found; override not applicable.",
+                )
+        else:
+            failed_checks = set(audit.get("failed_checks") or [])
+            if check not in failed_checks:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Check '{check}' is not in failed_checks for this batch.",
+                )
+
+        # ── Build override record ────────────────────────────────────────────
+        operator = (request.headers.get("X-Operator-Id") or "").strip() or "operator"
+        original_value = (audit.get("verification") or {}).get(check)
+
+        override_record = {
+            "override_id":        str(uuid.uuid4()),
+            "check":              check,
+            "reason":             reason,
+            "operator":           operator,
+            "timestamp":          datetime.now(timezone.utc).isoformat(),
+            "evidence_reference": body.evidence_reference or "",
+            "batch_id":           batch_id,
+            "original_value":     original_value,
+        }
+
+        # ── Append-only write ────────────────────────────────────────────────
+        existing_overrides.append(override_record)
+        audit["operator_overrides"] = existing_overrides
+
+        write_json_atomic(audit_path, audit)
+
+        tl.log_event(
+            audit_path,
+            "operator_override_added",
+            "dashboard",
+            operator,
+            detail={
+                "override_id": override_record["override_id"],
+                "check":       check,
+                "reason":      reason[:120],
+            },
+        )
+
+    log.info("[dashboard] operator override added batch=%s check=%s by=%s",
+             batch_id, check, operator)
+
+    return {
+        "ok":          True,
+        "override_id": override_record["override_id"],
+        "check":       check,
+        "batch_id":    batch_id,
+        "operator":    operator,
+        "timestamp":   override_record["timestamp"],
+    }
 
 
 # ── Soft-delete batch ─────────────────────────────────────────────────────────
