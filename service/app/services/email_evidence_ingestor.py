@@ -139,13 +139,28 @@ def scan_and_ingest(
         return {"ok": False, "error": "no_awb", "ingested": 0, "already_stored": 0, "total_scanned": 0}
 
     # ── 1. Token ──────────────────────────────────────────────────────────────
+    # Required Zoho Mail credentials (service/.env or OS environment):
+    #   Refresh-token flow:  ZOHO_CLIENT_ID + ZOHO_CLIENT_SECRET + ZOHO_MAIL_REFRESH_TOKEN
+    #   Static-token flow:   ZOHO_MAIL_API_TOKEN   (daily-refresh path)
+    # Also set:              ZOHO_MAIL_ACCOUNT_ID = 2261204000000002002
     if token_provider is None:
         try:
             from .zoho_auth import get_valid_access_token, has_zoho_credentials
-            if not has_zoho_credentials():
-                return {"ok": False, "error": "no_credentials", "ingested": 0,
-                        "already_stored": 0, "total_scanned": 0}
-            token_provider = get_valid_access_token
+            if has_zoho_credentials():
+                token_provider = get_valid_access_token
+            else:
+                # Daily token injection path: ZOHO_MAIL_API_TOKEN may be written
+                # to the OS environment by an external refresh job even when it is
+                # absent from service/.env (which is read only once at startup).
+                # Reading os.environ directly here means every scan_and_ingest
+                # call sees the freshest value without needing a service restart.
+                import os as _os
+                _env_token = _os.environ.get("ZOHO_MAIL_API_TOKEN", "").strip()
+                if _env_token:
+                    token_provider = lambda _t=_env_token: _t
+                else:
+                    return {"ok": False, "error": "no_credentials", "ingested": 0,
+                            "already_stored": 0, "total_scanned": 0}
         except Exception as exc:
             return {"ok": False, "error": f"auth_unavailable: {exc}", "ingested": 0,
                     "already_stored": 0, "total_scanned": 0}
@@ -159,8 +174,17 @@ def scan_and_ingest(
     # ── 2. Scan Zoho ─────────────────────────────────────────────────────────
     if scan_fn is None:
         try:
-            # Engine root must be on the path for dhl_email_monitor
-            _engine_root = str(Path(audit_path).parent.parent.parent.parent)
+            # Resolve the CLI root where dhl_email_monitor.py lives.
+            # Use settings.engine_dir (set via ENGINE_DIR in service/.env) so
+            # the path is always correct regardless of where storage_root points.
+            # Fallback: four parent-hops from audit_path — only reliable when
+            # STORAGE_ROOT sits inside the repo tree, which is NOT the case in
+            # production (STORAGE_ROOT = ~/Library/.../estrellajewels/storage).
+            try:
+                from ..core.config import settings as _cfg
+                _engine_root = str(_cfg.engine_dir)
+            except Exception:
+                _engine_root = str(Path(audit_path).parent.parent.parent.parent)
             if _engine_root not in sys.path:
                 sys.path.insert(0, _engine_root)
             from dhl_email_monitor import scan_for_dhl_customs_emails  # type: ignore
