@@ -274,3 +274,169 @@ def test_audit_status_not_pre_mutated_by_gate(tmp_path, monkeypatch):
     assert audit["status"] == "processing", (
         f"Gate must stamp audit.status='processing' before dispatching engine; got: {audit['status']}"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Amendment-flag suppression unit tests (direct _compute_effective_blocked)
+#
+# Tests 14-22: verify that _compute_effective_blocked correctly suppresses
+# amendment flags produced by the engine when the corresponding check is
+# overridden.  These are pure-logic tests — no HTTP client needed.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from app.services.batch_state_normalizer import _compute_effective_blocked  # noqa: E402
+
+
+def _audit(batch_id: str, failed_checks: list, amendment_flags: list,
+           overrides: list | None = None) -> dict:
+    """Minimal audit dict for _compute_effective_blocked unit tests."""
+    return {
+        "batch_id":           batch_id,
+        "status":             "blocked",
+        "failed_checks":      failed_checks,
+        "amendment_flags":    amendment_flags,
+        "operator_overrides": overrides or [],
+    }
+
+
+def _ov(check: str, batch_id: str) -> dict:
+    return {"check": check, "batch_id": batch_id,
+            "reason": "Accepted — sufficient reason given by operator"}
+
+
+# 14. exporter_match override clears "Exporter mismatch" flag
+def test_exporter_match_override_clears_exporter_flag():
+    """14. exporter_match override removes 'Exporter mismatch…' amendment flag."""
+    audit = _audit(
+        "X1",
+        failed_checks=["exporter_match"],
+        amendment_flags=["Exporter mismatch — invoice: 'A' / SAD: 'B'"],
+        overrides=[_ov("exporter_match", "X1")],
+    )
+    assert _compute_effective_blocked(audit) is False
+
+
+# 15. exporter_match override also clears the composite "Review needed" flag
+def test_exporter_match_override_clears_review_needed_flag():
+    """15. 'Review needed: SAD / invoice set…' is suppressed when exporter_match is
+    the only structural mismatch and it is overridden."""
+    audit = _audit(
+        "X2",
+        failed_checks=["exporter_match"],
+        amendment_flags=[
+            "Exporter mismatch — invoice: 'Estrella Jewels LLP' / SAD: 'ESTRELLA'",
+            "Review needed: SAD / invoice set may require amendment or corrected source document check.",
+        ],
+        overrides=[_ov("exporter_match", "X2")],
+    )
+    assert _compute_effective_blocked(audit) is False
+
+
+# 16. cn_match override alone does NOT clear "Review needed" (cn_match is not structural)
+def test_cn_match_override_does_not_clear_review_needed_when_exporter_still_blocked():
+    """16. Overriding cn_match does not suppress 'Review needed' when exporter_match
+    (a structural check) is still in failed_checks."""
+    audit = _audit(
+        "X3",
+        failed_checks=["cn_match", "exporter_match"],
+        amendment_flags=[
+            "Exporter mismatch — invoice: 'A' / SAD: 'B'",
+            "Review needed: SAD / invoice set may require amendment or corrected source document check.",
+        ],
+        overrides=[_ov("cn_match", "X3")],  # only cn_match — exporter_match not overridden
+    )
+    # exporter_match still in remaining_hard AND remaining flags → blocked
+    assert _compute_effective_blocked(audit) is True
+
+
+# 17. cn_match + exporter_match both overridden clears all flags
+def test_cn_match_and_exporter_match_both_overridden_clears_all_flags():
+    """17. Overriding cn_match and exporter_match together suppresses both the
+    'Exporter mismatch' and the 'Review needed' flags."""
+    audit = _audit(
+        "X4",
+        failed_checks=["cn_match", "exporter_match"],
+        amendment_flags=[
+            "Exporter mismatch — invoice: 'Estrella Jewels LLP' / SAD: 'ESTRELLA'",
+            "Review needed: SAD / invoice set may require amendment or corrected source document check.",
+        ],
+        overrides=[_ov("cn_match", "X4"), _ov("exporter_match", "X4")],
+    )
+    assert _compute_effective_blocked(audit) is False
+
+
+# 18. Unrelated flags (freight, insurance) are NOT cleared by any check override
+def test_unrelated_flags_not_cleared_by_override():
+    """18. Freight/insurance amendment flags are not suppressible — they indicate
+    actual data errors unrelated to identity/classification checks."""
+    audit = _audit(
+        "X5",
+        failed_checks=["exporter_match"],
+        amendment_flags=[
+            "Exporter mismatch — invoice: 'A' / SAD: 'B'",
+            "Invalid freight $-5.00 in INV-001 — must be ≥ 0",
+        ],
+        overrides=[_ov("exporter_match", "X5")],
+    )
+    # "Exporter mismatch" and "Review needed" cleared, but freight flag remains
+    assert _compute_effective_blocked(audit) is True
+
+
+# 19. invoice_number_parse_warning still clears "Parse warning:" flags (regression)
+def test_parse_warning_override_still_works():
+    """19. Regression: invoice_number_parse_warning override still clears
+    'Parse warning:' amendment flags via the generic suppression path."""
+    audit = _audit(
+        "X6",
+        failed_checks=[],          # parse warning is not in failed_checks
+        amendment_flags=["Parse warning: could not parse invoice number from filename"],
+        overrides=[_ov("invoice_number_parse_warning", "X6")],
+    )
+    assert _compute_effective_blocked(audit) is False
+
+
+# 20. "Review needed" NOT suppressed when a non-overridden structural check remains
+def test_review_needed_not_suppressed_when_structural_check_remains():
+    """20. If cif_match (forbidden, un-overrideable) is in failed_checks, the
+    'Review needed' flag cannot be suppressed even if exporter_match is overridden."""
+    audit = _audit(
+        "X7",
+        failed_checks=["exporter_match", "cif_match"],
+        amendment_flags=[
+            "Exporter mismatch — invoice: 'A' / SAD: 'B'",
+            "CIF mismatch: invoices total $1000.00 vs SAD $900.00 (diff $+100.00)",
+            "Review needed: SAD / invoice set may require amendment or corrected source document check.",
+        ],
+        overrides=[_ov("exporter_match", "X7")],  # cif_match is forbidden — can't be overridden
+    )
+    # cif_match still in remaining_hard; "Review needed" stays
+    assert _compute_effective_blocked(audit) is True
+
+
+# 21. No overrides — all flags and checks retain blocked state
+def test_no_overrides_leaves_all_flags_blocking():
+    """21. Without overrides, both failed_checks and amendment_flags block normally."""
+    audit = _audit(
+        "X8",
+        failed_checks=["cn_match", "exporter_match"],
+        amendment_flags=[
+            "Exporter mismatch — invoice: 'A' / SAD: 'B'",
+            "Review needed: SAD / invoice set may require amendment or corrected source document check.",
+        ],
+    )
+    assert _compute_effective_blocked(audit) is True
+
+
+# 22. status != "blocked" always returns False regardless of flags
+def test_non_blocked_status_always_unblocked():
+    """22. _compute_effective_blocked returns False for any non-blocked status even
+    if amendment_flags are present (those are informational at that point)."""
+    for status in ("ready", "partial", "success", "processing", "draft"):
+        audit = {
+            "batch_id": "X9",
+            "status": status,
+            "failed_checks": ["exporter_match"],
+            "amendment_flags": ["Exporter mismatch — invoice: 'A' / SAD: 'B'"],
+            "operator_overrides": [],
+        }
+        assert _compute_effective_blocked(audit) is False, f"Expected False for status={status!r}"

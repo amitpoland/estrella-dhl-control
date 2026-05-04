@@ -15,6 +15,43 @@ from typing import Any, Dict, Optional
 
 from .dashboard_action_types import NormalizedState
 
+# ── Operator override constants ───────────────────────────────────────────────
+# Checks that operators may accept without re-running the engine.
+# These are non-financial classification/identity checks only.
+ALLOWED_OVERRIDE_TYPES: frozenset[str] = frozenset({
+    "cn_match",                      # CN parent/child mismatch
+    "exporter_match",                # SAD truncation of known legal entity
+    "invoice_number_parse_warning",  # filename-derived invoice number
+})
+
+# Checks that can NEVER be overridden — financial or document completeness.
+FORBIDDEN_OVERRIDE_TYPES: frozenset[str] = frozenset({
+    "cif_match",
+    "invoice_refs_match",
+    "importer_match",
+    "qty_match_by_type",
+})
+
+# Amendment-flag prefixes suppressed when the corresponding check is overridden.
+# Each entry lists the flag prefixes the engine emits for that check.
+# cn_match is intentionally empty — it produces no amendment_flag of its own.
+_OVERRIDE_FLAG_PREFIXES: dict[str, tuple[str, ...]] = {
+    "cn_match":                     (),
+    "exporter_match":               ("Exporter mismatch",),
+    "invoice_number_parse_warning": ("Parse warning:",),
+}
+
+# Checks that contribute to the engine's composite "Review needed: SAD / invoice set …" flag.
+# When all structural checks remaining in failed_checks are overridden, that flag is suppressed.
+_STRUCTURAL_MISMATCH_CHECKS: frozenset[str] = frozenset({
+    "invoice_refs_match",
+    "cif_match",
+    "qty_match_by_type",
+    "importer_match",
+    "exporter_match",
+})
+_REVIEW_NEEDED_PREFIX = "Review needed: SAD / invoice set may require amendment"
+
 _AUDIT_ONLY_PDFS = {"audit_report_en.pdf", "audit_report_pl.pdf", "audit_memo.pdf"}
 
 
@@ -26,9 +63,68 @@ def _safe_load_json(p: Path) -> Dict[str, Any]:
 
 
 def _polish_desc_exists(batch_dir: Path, fname: Optional[str]) -> bool:
+    """Polish descriptions are written by the engine to one of three places:
+       1. <batch_dir>/<fname>                 (legacy in-batch placement)
+       2. <batch_dir>/dhl_docs/<fname>        (DHL doc copy)
+       3. <storage_root>/polish_descriptions/<fname>  (canonical shared dir)
+    Check all three so the dashboard never reports "not generated yet" when
+    the file is sitting in the shared polish_descriptions directory.
+    """
     if not fname:
         return False
-    return (batch_dir / fname).is_file() or (batch_dir / "dhl_docs" / fname).is_file()
+    if (batch_dir / fname).is_file():
+        return True
+    if (batch_dir / "dhl_docs" / fname).is_file():
+        return True
+    try:
+        from ..core.config import settings
+        if (settings.storage_root / "polish_descriptions" / fname).is_file():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def resolve_polish_desc_filename(batch_dir: Path, awb: Optional[str],
+                                 stored_fname: Optional[str]) -> Optional[str]:
+    """Auto-resolve the canonical Polish description filename for a batch.
+
+    Use case: ``audit.polish_desc_filename`` may point at a stale file
+    (e.g. an Apr 28 generation that was later replaced by a May 2 regen).
+    This helper returns:
+        1. ``stored_fname`` if it exists on disk (legacy or canonical dir)
+        2. otherwise, the most recent file in
+           ``<storage_root>/polish_descriptions/`` whose name contains the
+           batch's AWB
+        3. otherwise None.
+
+    Generation logic is untouched — this only fixes the audit pointer at
+    read-time so the dashboard download link always works.
+    """
+    if stored_fname and _polish_desc_exists(batch_dir, stored_fname):
+        return stored_fname
+    if not awb:
+        return stored_fname
+    awb_digits = "".join(ch for ch in str(awb) if ch.isdigit())
+    if not awb_digits:
+        return stored_fname
+    try:
+        from ..core.config import settings
+        pd_dir = settings.storage_root / "polish_descriptions"
+        if not pd_dir.is_dir():
+            return stored_fname
+        candidates = [
+            p for p in pd_dir.iterdir()
+            if p.is_file() and p.suffix.lower() == ".pdf"
+            and awb_digits in p.name
+        ]
+        if not candidates:
+            return stored_fname
+        # Newest by mtime — the regenerated file is preferred over older copies
+        latest = max(candidates, key=lambda p: p.stat().st_mtime)
+        return latest.name
+    except Exception:
+        return stored_fname
 
 
 def _dsk_exists(fname: Optional[str]) -> bool:
@@ -70,6 +166,64 @@ def _resolve_email_status(queue_id: Optional[str]) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _compute_effective_blocked(audit: Dict[str, Any]) -> bool:
+    """
+    Return True if the batch is effectively blocked AFTER applying operator overrides.
+
+    Rules:
+      - audit.status must be "blocked" or this returns False immediately.
+      - Each override in audit.operator_overrides may clear one allowed check.
+      - Financial checks (cif_match, invoice_refs_match, …) can NEVER be cleared.
+      - Each allowed override also suppresses the specific amendment flags the engine
+        emits for that check (see _OVERRIDE_FLAG_PREFIXES).
+      - The composite "Review needed: SAD / invoice set …" flag is suppressed when all
+        structural-mismatch checks remaining in failed_checks are overridden.
+      - audit.status, audit.failed_checks, and audit.verification are NEVER modified.
+
+    This is called at read time only — it does not write to audit.
+    """
+    if (audit.get("status") or "") != "blocked":
+        return False
+
+    # Collect valid, batch-matched overrides
+    batch_id = audit.get("batch_id") or ""
+    raw_overrides = audit.get("operator_overrides") or []
+    overridden_checks: set[str] = set()
+
+    for o in raw_overrides:
+        check = o.get("check", "")
+        if check not in ALLOWED_OVERRIDE_TYPES:
+            continue                        # invalid or forbidden — ignored
+        if o.get("batch_id") != batch_id:
+            continue                        # batch_id mismatch — ignored
+        overridden_checks.add(check)
+
+    # Hard failures remaining after subtracting overridden checks
+    failed_checks = set(audit.get("failed_checks") or [])
+    remaining_hard = failed_checks - overridden_checks
+
+    # Build the set of flag prefixes to suppress based on active overrides
+    suppressed_prefixes: set[str] = set()
+    for check in overridden_checks:
+        for prefix in _OVERRIDE_FLAG_PREFIXES.get(check, ()):
+            suppressed_prefixes.add(prefix)
+
+    # Suppress the composite "Review needed" flag when every structural-mismatch check
+    # that appears in failed_checks is covered by an override.
+    structural_in_failed = failed_checks & _STRUCTURAL_MISMATCH_CHECKS
+    if structural_in_failed and structural_in_failed.issubset(overridden_checks):
+        suppressed_prefixes.add(_REVIEW_NEEDED_PREFIX)
+
+    # Drop suppressed flags; anything remaining still blocks
+    amendment_flags = audit.get("amendment_flags") or []
+    remaining_flags = [
+        f for f in amendment_flags
+        if not any(f.startswith(p) for p in suppressed_prefixes)
+    ]
+
+    return bool(remaining_hard) or bool(remaining_flags)
 
 
 def normalize_batch_state(audit: Dict[str, Any], batch_dir: Path) -> NormalizedState:
@@ -114,7 +268,7 @@ def normalize_batch_state(audit: Dict[str, Any], batch_dir: Path) -> NormalizedS
     pz_generated = (
         has_pz_pdf and has_pz_xlsx
     ) or audit_status in {"success", "partial"} or audit.get("pz_generated") is True
-    pz_blocked   = audit_status == "blocked"
+    pz_blocked   = _compute_effective_blocked(audit)
 
     # ── wFirma ──────────────────────────────────────────────────────────────
     wfirma_ready = pz_generated and has_sad_pdf
