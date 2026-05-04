@@ -41,6 +41,188 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ── SAD attachment download helpers ───────────────────────────────────────────
+
+_VALID_SAD_DOC_TYPES = frozenset({"sad", "customs_pdf", "customs_xml", "customs_html"})
+_SAD_FILENAME_KEYWORDS = ("zc429", "zc_429", "zc-429", "pzc", "sad")
+
+
+def _is_valid_agency_sad_attachment(a: Dict[str, Any]) -> bool:
+    """True when attachment looks like a SAD/customs document worth downloading."""
+    doc_type = (a.get("document_type") or a.get("type") or "").lower()
+    if doc_type in _VALID_SAD_DOC_TYPES:
+        return True
+    fn = (a.get("filename") or a.get("name") or "").lower()
+    return any(kw in fn for kw in _SAD_FILENAME_KEYWORDS)
+
+
+def _safe_sad_name(raw_name: str) -> str:
+    """Return filesystem-safe version of an attachment filename."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", raw_name)[:120] or "attachment.bin"
+
+
+def _fetch_message_attachment_ids(
+    token: str,
+    account_id: str,
+    message_id: str,
+    api_base: str,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch full attachment list for a Zoho message (includes attachmentId).
+    Returns [] on any failure — callers must handle the empty case.
+    """
+    try:
+        import requests
+        url = f"{api_base.rstrip('/')}/accounts/{account_id}/messages/{message_id}"
+        r = requests.get(url,
+                         headers={"Authorization": f"Zoho-oauthtoken {token}"},
+                         timeout=15)
+        if r.status_code != 200:
+            log.debug("[ingest] fetch_attachment_ids msg=%s status=%s", message_id, r.status_code)
+            return []
+        return r.json().get("data", {}).get("attachments") or []
+    except Exception as exc:
+        log.debug("[ingest] fetch_attachment_ids msg=%s: %s", message_id, exc)
+        return []
+
+
+def _download_one_attachment(
+    token: str,
+    account_id: str,
+    message_id: str,
+    att_id: str,
+    dest: Path,
+    api_base: str,
+) -> bool:
+    """Download a single Zoho Mail attachment to dest. Returns True on success."""
+    try:
+        import requests
+        url = (f"{api_base.rstrip('/')}/accounts/{account_id}"
+               f"/messages/{message_id}/attachments/{att_id}")
+        r = requests.get(url,
+                         headers={"Authorization": f"Zoho-oauthtoken {token}"},
+                         timeout=30)
+        if r.status_code != 200 or not r.content:
+            log.debug("[ingest] download att=%s status=%s", att_id, r.status_code)
+            return False
+        dest.write_bytes(r.content)
+        return True
+    except Exception as exc:
+        log.warning("[ingest] download_one_attachment att=%s: %s", att_id, exc)
+        return False
+
+
+def _write_agency_receipt_to_audit(
+    audit_path: Path,
+    batch_id: str,
+    file_name: str,
+    file_path: Path,
+    file_type: str,
+) -> None:
+    """
+    Merge one downloaded SAD attachment into audit.agency_documents_received(_state).
+    Source = "email_ingestor". Idempotent: skips if absolute path already recorded.
+    """
+    try:
+        from ..utils.io import write_json_atomic
+        live = json.loads(audit_path.read_text(encoding="utf-8"))
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        state: Dict[str, Any] = live.get("agency_documents_received_state") or {}
+        existing_files: List[Dict[str, Any]] = list(state.get("files") or [])
+        abs_path = str(file_path.resolve())
+
+        if any(f.get("path") == abs_path for f in existing_files):
+            return  # already recorded — idempotent
+
+        existing_files.append({"name": file_name, "path": abs_path, "type": file_type})
+        received_at = state.get("received_at") or now_iso
+
+        live["agency_documents_received"] = {
+            "received":    True,
+            "source":      "email_ingestor",
+            "files":       [f["name"] for f in existing_files],
+            "files_count": len(existing_files),
+            "received_at": received_at,
+        }
+        live["agency_documents_received_state"] = {
+            "received":    True,
+            "files":       existing_files,
+            "source":      "email_ingestor",
+            "received_at": received_at,
+        }
+        write_json_atomic(audit_path, live)
+        log.info("[ingest] agency_documents_received updated (email_ingestor): %s in %s",
+                 file_name, batch_id)
+    except Exception as exc:
+        log.warning("[ingest] could not update agency_documents_received: %s", exc)
+
+
+def _ingest_sad_attachments(
+    token: str,
+    account_id: str,
+    message_id: str,
+    attachments: List[Dict[str, Any]],
+    audit_path: Path,
+    batch_id: str,
+    api_base: str,
+) -> List[str]:
+    """
+    Download valid SAD/customs attachments to {batch_dir}/source/sad/.
+
+    - Only downloads attachments that pass _is_valid_agency_sad_attachment.
+    - Fetches Zoho attachmentId via a message-detail API call.
+    - Skips files already present on disk (idempotent by filename).
+    - Updates audit.agency_documents_received_state after each successful download.
+    - Non-fatal: exceptions are caught per-file; returns list of downloaded paths.
+    """
+    valid = [a for a in attachments if _is_valid_agency_sad_attachment(a)]
+    if not valid:
+        return []
+
+    sad_dir = audit_path.parent / "source" / "sad"
+    try:
+        sad_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        log.warning("[ingest] could not create sad_dir %s: %s", sad_dir, exc)
+        return []
+
+    zoho_atts = _fetch_message_attachment_ids(token, account_id, message_id, api_base)
+    # Build filename → attachmentId map from Zoho response
+    id_map: Dict[str, str] = {}
+    for za in zoho_atts:
+        fn  = za.get("attachmentName") or za.get("filename") or za.get("name") or ""
+        aid = str(za.get("attachmentId") or za.get("id") or "")
+        if fn and aid:
+            id_map[fn] = aid
+
+    downloaded: List[str] = []
+    for a in valid:
+        fn        = a.get("filename") or a.get("name") or "attachment.bin"
+        safe_fn   = _safe_sad_name(fn)
+        dest      = sad_dir / safe_fn
+        file_type = "customs_xml" if fn.lower().endswith(".xml") else "customs_pdf"
+
+        # Idempotency: skip if file already on disk and non-empty
+        if dest.exists() and dest.stat().st_size > 0:
+            log.debug("[ingest] SAD attachment already on disk: %s", dest)
+            _write_agency_receipt_to_audit(audit_path, batch_id, fn, dest, file_type)
+            downloaded.append(str(dest))
+            continue
+
+        att_id = id_map.get(fn)
+        if not att_id:
+            log.debug("[ingest] no attachmentId for %r in msg=%s", fn, message_id)
+            continue
+
+        if _download_one_attachment(token, account_id, message_id, att_id, dest, api_base):
+            _write_agency_receipt_to_audit(audit_path, batch_id, fn, dest, file_type)
+            downloaded.append(str(dest))
+            log.info("[ingest] SAD attachment downloaded: %s → %s", fn, dest)
+
+    return downloaded
+
+
 def needs_gap_scan(awb: str, audit: Dict[str, Any], max_age_hours: float = 48) -> bool:
     """
     Return True when the evidence for this AWB has gaps that a Zoho scan
@@ -196,9 +378,11 @@ def scan_and_ingest(
     known_ticket = audit.get("dhl_ticket") or None
     try:
         from ..core.config import settings
-        api_base = getattr(settings, "zoho_mail_api_base", "https://mail.zoho.eu/api")
+        api_base   = getattr(settings, "zoho_mail_api_base",    "https://mail.zoho.eu/api")
+        account_id = getattr(settings, "zoho_mail_account_id",  "") or ""
     except Exception:
-        api_base = "https://mail.zoho.eu/api"
+        api_base   = "https://mail.zoho.eu/api"
+        account_id = ""
 
     try:
         result = scan_fn(
@@ -420,6 +604,16 @@ def scan_and_ingest(
                 if mid:
                     _existing_ids.add(mid)
                     ingested_message_ids.append(mid)
+                # ── Download SAD/customs attachments to {batch_dir}/source/sad/ ──
+                if attachments and token and account_id:
+                    try:
+                        _ingest_sad_attachments(
+                            token, account_id, str(mid or ""),
+                            attachments, audit_path, batch_id, api_base,
+                        )
+                    except Exception as _dl_exc:
+                        log.warning("[ingest] sad attachment download failed mid=%s: %s",
+                                    mid, _dl_exc)
             else:
                 already_stored += 1
         except Exception as exc:
