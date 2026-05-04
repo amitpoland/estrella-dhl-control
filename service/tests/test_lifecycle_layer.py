@@ -468,6 +468,78 @@ def test_closure_idempotent(tmp_path, monkeypatch):
 
 # ── Monitor wiring: agency SLA start + closure auto-fire ─────────────────────
 
+def test_no_forward_if_received_but_no_files(tmp_path, monkeypatch):
+    """_ensure_agency_forward_after_dhl must NOT forward when files list is empty,
+    even if dhl_documents_received.received=True."""
+    from app.services.active_shipment_monitor import _ensure_agency_forward_after_dhl
+
+    audit_path = _seed_audit(
+        tmp_path, "B_RECV_NODOCS",
+        clearance_decision={"clearance_path": "external_agency_clearance"},
+        dhl_email={"received": True},
+        dhl_documents_received={"received": True, "files": []},
+    )
+    audit = json.loads(audit_path.read_text())
+
+    called = []
+
+    def _fake_build(audit, batch_id):
+        called.append(batch_id)
+        return {"error": "stubbed_build"}
+
+    monkeypatch.setattr(
+        "app.services.agency_forward_after_dhl_builder.build_agency_forward_after_dhl",
+        _fake_build,
+        raising=False,
+    )
+
+    result = _ensure_agency_forward_after_dhl(audit_path, audit)
+
+    # Gate must block — builder must not have been called
+    assert called == [], "build was called despite empty files list"
+    assert result.get("built") is False
+    assert result.get("sent") is False
+    assert result.get("error") is None  # clean early return, not a build error
+
+
+def test_forward_if_files_present(tmp_path, monkeypatch):
+    """_ensure_agency_forward_after_dhl must attempt the forward when files list
+    is non-empty, regardless of the received flag value."""
+    from app.services.active_shipment_monitor import _ensure_agency_forward_after_dhl
+
+    audit_path = _seed_audit(
+        tmp_path, "B_FILES_PRESENT",
+        clearance_decision={"clearance_path": "external_agency_clearance"},
+        dhl_email={"received": True},
+        dhl_documents_received={
+            "received":    True,
+            "files":       ["DSK_2824111912.pdf"],
+            "files_count": 1,
+            "source":      "email_ingestor",
+        },
+    )
+    audit = json.loads(audit_path.read_text())
+
+    called = []
+
+    def _fake_build(audit, batch_id):
+        called.append(batch_id)
+        return {"error": "stubbed_build"}   # abort after gate passes
+
+    monkeypatch.setattr(
+        "app.services.agency_forward_after_dhl_builder.build_agency_forward_after_dhl",
+        _fake_build,
+        raising=False,
+    )
+
+    result = _ensure_agency_forward_after_dhl(audit_path, audit)
+
+    # Gate passed → builder was called
+    assert called != [], "build was not called despite files being present"
+    # Builder was stubbed to error, so sent=False but error is from builder, not gate
+    assert result.get("error") is not None
+
+
 def test_monitor_starts_agency_sla_after_forward_sent(tmp_path, monkeypatch):
     from app.services import active_shipment_monitor as m
     from app.services import ai_bridge as ab
@@ -839,3 +911,449 @@ def test_closure_check_get_still_works_after_deprecation(tmp_path, monkeypatch):
     assert resp.status_code == 404, (
         f"GET /check must still be live — got {resp.status_code}"
     )
+
+
+# ── Agency SLA start flag ─────────────────────────────────────────────────────
+
+def test_sla_stops_on_sad_received(tmp_path, monkeypatch):
+    """agency_sla.stopped is set when evidence summary reports agency_sad_received."""
+    from app.services import active_shipment_monitor as m
+    from app.services import ai_bridge as ab
+    monkeypatch.setattr(m,  "settings", _settings(tmp_path))
+    monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: {"ok": False, "error": "stubbed", "active_batches": 0, "shipments": []},
+    )
+    monkeypatch.setattr(
+        "app.services.email_evidence_store.get_summary",
+        lambda awb: {"agency_sad_received": True},
+    )
+
+    _seed_audit(tmp_path, "B_SLA_STOP",
+                clearance_status="awaiting_dhl_customs_email",
+                clearance_decision={"total_value_usd": 3000,
+                                    "clearance_path": "external_agency_clearance"},
+                agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T10:00:00+00:00"},
+                agency_sla={"started": True, "started_at": "2026-05-01T10:00:00+00:00"})
+
+    m.scan_active_shipments()
+
+    audit = json.loads((tmp_path / "outputs" / "B_SLA_STOP" / "audit.json").read_text())
+    assert audit.get("agency_sla", {}).get("stopped") is True, (
+        f"agency_sla.stopped expected True, got: {audit.get('agency_sla')}"
+    )
+    assert "stopped_at" in audit["agency_sla"], "stopped_at must be recorded"
+
+
+def test_sla_not_stop_if_not_started(tmp_path, monkeypatch):
+    """agency_sla.stopped must not be written when SLA was never started."""
+    from app.services import active_shipment_monitor as m
+    from app.services import ai_bridge as ab
+    monkeypatch.setattr(m,  "settings", _settings(tmp_path))
+    monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: {"ok": False, "error": "stubbed", "active_batches": 0, "shipments": []},
+    )
+    monkeypatch.setattr(
+        "app.services.email_evidence_store.get_summary",
+        lambda awb: {"agency_sad_received": True},
+    )
+
+    _seed_audit(tmp_path, "B_SLA_NOSTOP",
+                clearance_status="awaiting_dhl_customs_email",
+                clearance_decision={"total_value_usd": 3000,
+                                    "clearance_path": "external_agency_clearance"},
+                agency_forward_after_dhl={"sent": False})
+
+    m.scan_active_shipments()
+
+    audit = json.loads((tmp_path / "outputs" / "B_SLA_NOSTOP" / "audit.json").read_text())
+    assert not (audit.get("agency_sla") or {}).get("stopped"), (
+        f"agency_sla.stopped must not be set when SLA not started, got: {audit.get('agency_sla')}"
+    )
+
+
+def test_sla_starts_on_forward_sent(tmp_path, monkeypatch):
+    """_process_agency_sla writes agency_sla.started and returns started=True."""
+    from app.services import active_shipment_monitor as m
+    from app.services import ai_bridge as ab
+    monkeypatch.setattr(m,  "settings", _settings(tmp_path))
+    monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: {"ok": False, "error": "stubbed", "active_batches": 0, "shipments": []},
+    )
+
+    _seed_audit(tmp_path, "B_SLA_START",
+                clearance_status="awaiting_dhl_customs_email",
+                clearance_decision={"total_value_usd": 3000,
+                                    "clearance_path": "external_agency_clearance"},
+                agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T10:00:00+00:00"})
+
+    out = m.scan_active_shipments()
+
+    # Disk: agency_sla.started must be written
+    audit = json.loads((tmp_path / "outputs" / "B_SLA_START" / "audit.json").read_text())
+    assert audit.get("agency_sla", {}).get("started") is True, (
+        f"agency_sla.started expected True, got: {audit.get('agency_sla')}"
+    )
+    assert "started_at" in audit["agency_sla"], "started_at must be recorded"
+
+    # Return value: action summary must also report started=True
+    action = next((a for a in out.get("actions", []) if a["batch_id"] == "B_SLA_START"), None)
+    assert action is not None, "B_SLA_START not in actions"
+    assert action.get("agency_sla", {}).get("started") is True, (
+        f"action agency_sla.started must be True, got: {action.get('agency_sla')}"
+    )
+
+
+def test_sla_start_result_reported_directly(tmp_path):
+    """_process_agency_sla returns started=True in its own return value when it writes."""
+    from app.services.active_shipment_monitor import _process_agency_sla
+
+    ap = _seed_audit(tmp_path, "B_SLA_DIRECT",
+                     agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T10:00:00+00:00"})
+    audit = json.loads(ap.read_text())
+
+    result = _process_agency_sla(ap, audit)
+
+    assert result.get("started") is True, (
+        f"_process_agency_sla must return started=True when it writes, got: {result}"
+    )
+    assert result.get("stopped") is False
+
+
+def test_sla_not_restart_if_already_started(tmp_path, monkeypatch):
+    """_process_agency_sla does not overwrite agency_sla.started_at on repeat sweeps."""
+    from app.services import active_shipment_monitor as m
+    from app.services import ai_bridge as ab
+    monkeypatch.setattr(m,  "settings", _settings(tmp_path))
+    monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: {"ok": False, "error": "stubbed", "active_batches": 0, "shipments": []},
+    )
+
+    _seed_audit(tmp_path, "B_SLA_IDEM",
+                clearance_status="awaiting_dhl_customs_email",
+                clearance_decision={"total_value_usd": 3000,
+                                    "clearance_path": "external_agency_clearance"},
+                agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T10:00:00+00:00"},
+                agency_sla={"started": True, "started_at": "2026-05-01T10:00:00+00:00"})
+
+    m.scan_active_shipments()
+
+    audit = json.loads((tmp_path / "outputs" / "B_SLA_IDEM" / "audit.json").read_text())
+    assert audit["agency_sla"]["started_at"] == "2026-05-01T10:00:00+00:00", (
+        f"started_at must not be overwritten, got: {audit['agency_sla']['started_at']}"
+    )
+
+
+# ── Evidence store fallback for agency forward gate ───────────────────────────
+
+def test_forward_uses_evidence_fallback(tmp_path, monkeypatch):
+    """When audit.dhl_documents_received.files is empty but the evidence store
+    summary reports dhl_documents_received=True, the gate must pass."""
+    from app.services.active_shipment_monitor import _ensure_agency_forward_after_dhl
+
+    audit_path = _seed_audit(
+        tmp_path, "B_EV_FALLBACK",
+        clearance_decision={"clearance_path": "external_agency_clearance"},
+        dhl_email={"received": True},
+        dhl_documents_received={"received": True, "files": []},
+    )
+    audit = json.loads(audit_path.read_text())
+
+    called = []
+
+    def _fake_build(audit, batch_id):
+        called.append(batch_id)
+        return {"error": "stubbed_build"}
+
+    monkeypatch.setattr(
+        "app.services.agency_forward_after_dhl_builder.build_agency_forward_after_dhl",
+        _fake_build,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.email_evidence_store.get_summary",
+        lambda awb: {"dhl_documents_received": True},
+    )
+
+    result = _ensure_agency_forward_after_dhl(audit_path, audit)
+
+    assert called != [], "builder not called despite evidence store confirming dhl_documents_received"
+    assert result.get("error") is not None  # error from stub, gate passed
+
+
+def test_no_forward_when_no_files_and_no_evidence(tmp_path, monkeypatch):
+    """When both audit.files is empty AND evidence store returns False,
+    the gate must block the forward."""
+    from app.services.active_shipment_monitor import _ensure_agency_forward_after_dhl
+
+    audit_path = _seed_audit(
+        tmp_path, "B_NO_EV_NO_FILES",
+        clearance_decision={"clearance_path": "external_agency_clearance"},
+        dhl_email={"received": True},
+        dhl_documents_received={"received": True, "files": []},
+    )
+    audit = json.loads(audit_path.read_text())
+
+    called = []
+
+    def _fake_build(audit, batch_id):
+        called.append(batch_id)
+        return {"error": "stubbed_build"}
+
+    monkeypatch.setattr(
+        "app.services.agency_forward_after_dhl_builder.build_agency_forward_after_dhl",
+        _fake_build,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.email_evidence_store.get_summary",
+        lambda awb: {"dhl_documents_received": False},
+    )
+
+    result = _ensure_agency_forward_after_dhl(audit_path, audit)
+
+    assert called == [], "builder called despite no files and no evidence"
+    assert result.get("built") is False
+    assert result.get("sent") is False
+    assert result.get("error") is None
+
+
+# ── SLA start via monitor sweep only ─────────────────────────────────────────
+
+def test_sla_starts_via_monitor_only(tmp_path, monkeypatch):
+    """Agency SLA must start automatically via scan_active_shipments when
+    agency_forward_after_dhl.sent=True — no direct _process_agency_sla call needed."""
+    from app.services import active_shipment_monitor as m
+    from app.services import ai_bridge as ab
+    monkeypatch.setattr(m,  "settings", _settings(tmp_path))
+    monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: {"ok": False, "error": "stubbed", "active_batches": 0, "shipments": []},
+    )
+
+    _seed_audit(
+        tmp_path, "B_SLA_MONITOR",
+        clearance_status="awaiting_agency_customs_docs",
+        clearance_decision={"total_value_usd": 5000,
+                            "clearance_path":  "external_agency_clearance"},
+        dhl_email={"received": True, "received_at": "2026-05-01T08:00:00+00:00"},
+        agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T09:00:00+00:00"},
+        # agency_sla intentionally absent — monitor must create it
+    )
+
+    m.scan_active_shipments()
+
+    audit_after = json.loads(
+        (tmp_path / "outputs" / "B_SLA_MONITOR" / "audit.json").read_text()
+    )
+    sla = audit_after.get("agency_sla") or {}
+    assert sla.get("started") is True, f"SLA not started via monitor sweep: {sla}"
+    assert sla.get("started_at") is not None
+
+
+def test_no_duplicate_sla_start(tmp_path, monkeypatch):
+    """A second monitor sweep must not overwrite agency_sla.started_at when
+    the SLA is already active (started=True, stopped=False)."""
+    from app.services import active_shipment_monitor as m
+    from app.services import ai_bridge as ab
+    monkeypatch.setattr(m,  "settings", _settings(tmp_path))
+    monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: {"ok": False, "error": "stubbed", "active_batches": 0, "shipments": []},
+    )
+
+    original_started_at = "2026-05-01T09:00:00+00:00"
+    _seed_audit(
+        tmp_path, "B_SLA_IDEM2",
+        clearance_status="awaiting_agency_customs_docs",
+        clearance_decision={"total_value_usd": 5000,
+                            "clearance_path":  "external_agency_clearance"},
+        dhl_email={"received": True, "received_at": "2026-05-01T08:00:00+00:00"},
+        agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T09:00:00+00:00"},
+        agency_sla={"started": True, "started_at": original_started_at},
+    )
+
+    m.scan_active_shipments()
+
+    audit_after = json.loads(
+        (tmp_path / "outputs" / "B_SLA_IDEM2" / "audit.json").read_text()
+    )
+    sla = audit_after.get("agency_sla") or {}
+    assert sla.get("started") is True
+    assert sla.get("started_at") == original_started_at, (
+        f"started_at was overwritten on second sweep: {sla.get('started_at')}"
+    )
+
+
+# ── Duplicate forward hard-stop ───────────────────────────────────────────────
+
+def test_no_duplicate_forward_if_already_sent(tmp_path, monkeypatch):
+    """Hard-stop must block _ensure_agency_forward_after_dhl when
+    agency_forward_after_dhl.sent=True AND provider_message_id is set."""
+    from app.services.active_shipment_monitor import _ensure_agency_forward_after_dhl
+
+    audit_path = _seed_audit(
+        tmp_path, "B_DUP_SENT",
+        clearance_decision={"clearance_path": "external_agency_clearance"},
+        dhl_email={"received": True},
+        dhl_documents_received={
+            "received":    True,
+            "files":       ["DSK_2824111912.pdf"],
+            "files_count": 1,
+        },
+        agency_forward_after_dhl={
+            "sent":                True,
+            "sent_at":             "2026-05-01T09:00:00+00:00",
+            "email_id":            "email-001",
+            "provider_message_id": "smtp-msg-id-abc123",
+        },
+    )
+    audit = json.loads(audit_path.read_text())
+
+    called = []
+
+    def _fake_build(audit, batch_id):
+        called.append(batch_id)
+        return {"error": "stubbed"}
+
+    monkeypatch.setattr(
+        "app.services.agency_forward_after_dhl_builder.build_agency_forward_after_dhl",
+        _fake_build, raising=False,
+    )
+
+    result = _ensure_agency_forward_after_dhl(audit_path, audit)
+
+    assert called == [], "builder was called despite already-sent + provider_message_id"
+    assert result.get("built") is False
+    assert result.get("sent") is False
+    assert result.get("error") is None   # clean return, not a build error
+
+
+def test_no_duplicate_forward_if_queued(tmp_path, monkeypatch):
+    """Hard-stop must block _ensure_agency_forward_after_dhl when
+    agency_forward_after_dhl.email_id is set (queued but not yet confirmed sent)."""
+    from app.services.active_shipment_monitor import _ensure_agency_forward_after_dhl
+
+    audit_path = _seed_audit(
+        tmp_path, "B_DUP_QUEUED",
+        clearance_decision={"clearance_path": "external_agency_clearance"},
+        dhl_email={"received": True},
+        dhl_documents_received={
+            "received":    True,
+            "files":       ["DSK_2824111912.pdf"],
+            "files_count": 1,
+        },
+        # sent=False but email_id present → queued state
+        agency_forward_after_dhl={
+            "sent":                False,
+            "email_id":            "email-002",
+            "provider_message_id": None,
+            "status":              "queued",
+        },
+    )
+    audit = json.loads(audit_path.read_text())
+
+    called = []
+
+    def _fake_build(audit, batch_id):
+        called.append(batch_id)
+        return {"error": "stubbed"}
+
+    monkeypatch.setattr(
+        "app.services.agency_forward_after_dhl_builder.build_agency_forward_after_dhl",
+        _fake_build, raising=False,
+    )
+
+    result = _ensure_agency_forward_after_dhl(audit_path, audit)
+
+    assert called == [], "builder was called despite email_id already set (queued)"
+    assert result.get("built") is False
+    assert result.get("sent") is False
+    assert result.get("error") is None
+
+
+# ── Agency SAD parse monitor guard (step 5f retry logic) ─────────────────────
+
+def _stub_sweep(tmp_path, monkeypatch):
+    """Patch settings + Step 0 ingestion so sweep runs fully offline."""
+    from app.services import active_shipment_monitor as m
+    from app.services import ai_bridge as ab
+    monkeypatch.setattr(m,  "settings", _settings(tmp_path))
+    monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: {"ok": False, "error": "stubbed", "active_batches": 0, "shipments": []},
+    )
+    return m
+
+
+def test_parser_runs_when_awaiting_file(tmp_path, monkeypatch):
+    """step 5f must retry when agency_sad_parse.status == 'awaiting_file'."""
+    m = _stub_sweep(tmp_path, monkeypatch)
+    called = []
+
+    def _fake_parse(batch_id, audit_path, audit):
+        called.append(batch_id)
+        return {"parsed": True}
+
+    monkeypatch.setattr("app.services.agency_sad_parser.parse_agency_sad", _fake_parse, raising=False)
+    monkeypatch.setattr(m, "parse_agency_sad", _fake_parse, raising=False)
+
+    _seed_audit(tmp_path, "SAD_RETRY",
+                clearance_status="awaiting_dhl_customs_email",
+                agency_sla={"started": True, "stopped": True},
+                agency_sad_parse={"status": "awaiting_file", "reason": "file_bytes_not_on_disk"})
+
+    m.scan_active_shipments()
+    assert "SAD_RETRY" in called, "parser was not retried when status was awaiting_file"
+
+
+def test_parser_skips_when_parsed(tmp_path, monkeypatch):
+    """step 5f must NOT re-run when agency_sad_parse.status == 'parsed'."""
+    m = _stub_sweep(tmp_path, monkeypatch)
+    called = []
+
+    def _fake_parse(batch_id, audit_path, audit):
+        called.append(batch_id)
+        return {"parsed": True}
+
+    monkeypatch.setattr("app.services.agency_sad_parser.parse_agency_sad", _fake_parse, raising=False)
+    monkeypatch.setattr(m, "parse_agency_sad", _fake_parse, raising=False)
+
+    _seed_audit(tmp_path, "SAD_SKIP",
+                clearance_status="awaiting_dhl_customs_email",
+                agency_sla={"started": True, "stopped": True},
+                agency_sad_parse={"status": "parsed", "mrn": "26PL001"})
+
+    m.scan_active_shipments()
+    assert "SAD_SKIP" not in called, "parser was re-run despite status already 'parsed'"
+
+
+def test_parser_runs_when_partial(tmp_path, monkeypatch):
+    """step 5f must retry when agency_sad_parse.status == 'partial'."""
+    m = _stub_sweep(tmp_path, monkeypatch)
+    called = []
+
+    def _fake_parse(batch_id, audit_path, audit):
+        called.append(batch_id)
+        return {"parsed": True}
+
+    monkeypatch.setattr("app.services.agency_sad_parser.parse_agency_sad", _fake_parse, raising=False)
+    monkeypatch.setattr(m, "parse_agency_sad", _fake_parse, raising=False)
+
+    _seed_audit(tmp_path, "SAD_PARTIAL",
+                clearance_status="awaiting_dhl_customs_email",
+                agency_sla={"started": True, "stopped": True},
+                agency_sad_parse={"status": "partial", "mrn": None})
+
+    m.scan_active_shipments()
+    assert "SAD_PARTIAL" in called, "parser was not retried when status was partial"

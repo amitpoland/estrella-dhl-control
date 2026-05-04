@@ -440,3 +440,73 @@ def test_non_blocked_status_always_unblocked():
             "operator_overrides": [],
         }
         assert _compute_effective_blocked(audit) is False, f"Expected False for status={status!r}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SAD decision hard guard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _ready_with_sad_decision(batch_id: str, decision: dict | None) -> dict:
+    base = _ready(batch_id)
+    if decision is not None:
+        base["agency_sad_decision"] = decision
+    return base
+
+
+def test_process_rejects_when_sad_decision_false(tmp_path, monkeypatch):
+    """SAD decision safe_to_run_pz=False → 409 sad_validation_blocked."""
+    client, outputs = _make_client(tmp_path, monkeypatch)
+    _write_audit(outputs, "SAD1", _ready_with_sad_decision("SAD1", {
+        "safe_to_run_pz": False,
+        "reason":         "mrn_mismatch",
+        "mrn_parsed":     "26PL_AGENCY",
+        "mrn_declared":   "26PL_ORIGINAL",
+    }))
+    _seed_invoices(outputs, "SAD1")
+
+    r = client.post("/api/v1/upload/shipment/SAD1/process")
+    assert r.status_code == 409
+    assert r.json()["error"] == "sad_validation_blocked"
+
+
+def test_process_allows_when_sad_decision_true(tmp_path, monkeypatch):
+    """SAD decision safe_to_run_pz=True → guard passes, pipeline starts."""
+    client, outputs = _make_client(tmp_path, monkeypatch)
+    _write_audit(outputs, "SAD2", _ready_with_sad_decision("SAD2", {
+        "safe_to_run_pz": True,
+        "reason":         "validated",
+    }))
+    _seed_invoices(outputs, "SAD2")
+
+    r = client.post("/api/v1/upload/shipment/SAD2/process")
+    assert r.status_code != 409 or r.json().get("error") != "sad_validation_blocked"
+
+
+def test_process_allows_when_sad_decision_absent(tmp_path, monkeypatch):
+    """No agency_sad_decision in audit → guard is skipped, existing behaviour."""
+    client, outputs = _make_client(tmp_path, monkeypatch)
+    _write_audit(outputs, "SAD3", _ready_with_sad_decision("SAD3", None))
+    _seed_invoices(outputs, "SAD3")
+
+    r = client.post("/api/v1/upload/shipment/SAD3/process")
+    assert r.status_code != 409 or r.json().get("error") != "sad_validation_blocked"
+
+
+def test_reject_response_includes_reason_and_mrns(tmp_path, monkeypatch):
+    """409 body includes error, reason, mrn_parsed, mrn_declared."""
+    client, outputs = _make_client(tmp_path, monkeypatch)
+    _write_audit(outputs, "SAD4", _ready_with_sad_decision("SAD4", {
+        "safe_to_run_pz": False,
+        "reason":         "mrn_mismatch",
+        "mrn_parsed":     "26PL_A",
+        "mrn_declared":   "26PL_B",
+    }))
+    _seed_invoices(outputs, "SAD4")
+
+    r = client.post("/api/v1/upload/shipment/SAD4/process")
+    body = r.json()
+    assert r.status_code == 409
+    assert body["error"] == "sad_validation_blocked"
+    assert body["reason"] == "mrn_mismatch"
+    assert body["mrn_parsed"] == "26PL_A"
+    assert body["mrn_declared"] == "26PL_B"

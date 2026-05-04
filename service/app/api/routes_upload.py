@@ -201,6 +201,65 @@ def _read_audit(output_dir: Path) -> dict:
         raise HTTPException(status_code=500, detail="Could not read shipment data.")
 
 
+def _mark_agency_documents_received(
+    audit_path: Path,
+    batch_id:   str,
+    sad_name:   str,
+    sad_path:   Path,
+) -> None:
+    """
+    Write agency_documents_received / agency_documents_received_state after a
+    SAD/customs file is registered via the direct upload path.
+
+    - Skips when existing source is email_ingestor or operator (trusted receipt preserved)
+    - Merges without path-duplicates when called more than once
+    - Non-fatal: all exceptions are logged and swallowed
+    """
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        existing_recv  = audit.get("agency_documents_received") or {}
+        existing_state = audit.get("agency_documents_received_state") or {}
+        existing_source = existing_state.get("source") or (
+            existing_recv.get("source") if isinstance(existing_recv, dict) else None
+        )
+        if existing_source in ("email_ingestor", "operator"):
+            log.debug(
+                "[%s] agency_documents_received already set by %s — not overwriting",
+                batch_id, existing_source,
+            )
+            return
+
+        file_type = "customs_xml" if sad_path.suffix.lower() == ".xml" else "customs_pdf"
+        abs_path  = str(sad_path.resolve())
+
+        existing_files = existing_state.get("files") or []
+        if not any(f.get("path") == abs_path for f in existing_files):
+            existing_files = existing_files + [{"name": sad_name, "path": abs_path, "type": file_type}]
+
+        received_at = existing_state.get("received_at") or now_iso
+
+        audit["agency_documents_received"] = {
+            "received":    True,
+            "source":      "direct_upload",
+            "files":       [f["name"] for f in existing_files],
+            "files_count": len(existing_files),
+            "received_at": received_at,
+        }
+        audit["agency_documents_received_state"] = {
+            "received":    True,
+            "files":       existing_files,
+            "source":      "direct_upload",
+            "received_at": received_at,
+        }
+        write_json_atomic(audit_path, audit)
+        log.info("[%s] agency_documents_received marked via direct_upload: %s", batch_id, sad_name)
+
+    except Exception as exc:
+        log.warning("[%s] _mark_agency_documents_received failed (non-fatal): %s", batch_id, exc)
+
+
 # ── DHL pre-check (background) ───────────────────────────────────────────────
 
 async def _run_dhl_precheck(
@@ -423,6 +482,8 @@ async def upload_shipment(
         status="draft",
     )
     audit_path   = output_dir / "audit.json"
+    if sad_path:
+        _mark_agency_documents_received(audit_path, batch_id, sad_name, sad_path)
     status_label = "ready" if sad_path else "draft"
 
     # ── Register documents in unified registry (non-blocking) ─────────────────
@@ -524,6 +585,8 @@ async def upload_sad(
     tl.log_event(output_dir / "audit.json", tl.EV_SAD_UPLOADED, "dashboard", "user",
                  detail={"file": sad_name})
 
+    _mark_agency_documents_received(output_dir / "audit.json", batch_id, sad_name, sad_path)
+
     # Register SAD in document registry (non-blocking)
     try:
         _awb = str(audit.get("awb") or "")
@@ -571,6 +634,20 @@ async def process_shipment(
         raise HTTPException(
             status_code=409,
             detail=f"Shipment must be in 'ready', 'partial', or 'success' state to process. Current: {current_status}",
+        )
+
+    # Hard guard: reject if SAD decision engine has already blocked this batch.
+    _sad_dec = audit.get("agency_sad_decision") or {}
+    if _sad_dec and _sad_dec.get("safe_to_run_pz") is False:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok":           False,
+                "error":        "sad_validation_blocked",
+                "reason":       _sad_dec.get("reason"),
+                "mrn_parsed":   _sad_dec.get("mrn_parsed"),
+                "mrn_declared": _sad_dec.get("mrn_declared"),
+            },
         )
 
     # Fix 4: Allow Run PZ from XML/customs_declaration dict without requiring SAD PDF

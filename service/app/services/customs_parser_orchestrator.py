@@ -17,10 +17,80 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
+
+# ── MRN regex helpers ─────────────────────────────────────────────────────────
+# EU MRN structure: 2 digits (year) + 2 uppercase letters (country) +
+# 12-20 alphanumeric chars = 16-24 chars total.
+# Used as a fallback for agency PDF/HTML docs where the "MRN:" prefix is absent.
+
+_MRN_LABELED_RE = re.compile(
+    r"MRN[:\s]+([0-9]{2}\s*[A-Za-z]{2}\s*[A-Za-z0-9][A-Za-z0-9 ]{11,21})",
+    re.IGNORECASE,
+)
+_MRN_BARE_RE = re.compile(r"\b([0-9]{2}[A-Za-z]{2}[A-Za-z0-9]{12,20})\b")
+_MRN_VALID_RE = re.compile(r"^[0-9]{2}[A-Z]{2}[A-Z0-9]{12,20}$")
+
+
+def _norm_mrn(raw: str) -> str:
+    """Strip embedded spaces and uppercase."""
+    return re.sub(r"\s+", "", raw).upper()
+
+
+def _valid_mrn(mrn: str) -> bool:
+    """Return True only if normalized MRN matches EU format."""
+    return bool(_MRN_VALID_RE.fullmatch(mrn))
+
+
+def _extract_mrn_from_text(text: str) -> Optional[str]:
+    """
+    Extract and normalize a valid EU MRN from free text.
+    Tries labeled form first ("MRN: 26PL…"), then bare pattern.
+    Returns normalized (no-spaces, uppercase) MRN or None.
+    """
+    m = _MRN_LABELED_RE.search(text)
+    if m:
+        candidate = _norm_mrn(m.group(1))
+        if _valid_mrn(candidate):
+            return candidate
+    for m in _MRN_BARE_RE.finditer(text):
+        candidate = _norm_mrn(m.group(1))
+        if _valid_mrn(candidate):
+            return candidate
+    return None
+
+
+def _extract_mrn_from_pdf_or_html(sad_dir: Path) -> Optional[str]:
+    """
+    Open PDF/HTML files in sad_dir and attempt MRN extraction via regex.
+    Returns first valid normalized MRN found, or None.
+    """
+    for pdf_path in sorted(sad_dir.glob("*.pdf")):
+        if pdf_path.name.lower().startswith("awizo"):
+            continue
+        try:
+            import pdfplumber
+            with pdfplumber.open(str(pdf_path)) as pdf:
+                text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+            mrn = _extract_mrn_from_text(text)
+            if mrn:
+                return mrn
+        except Exception:
+            pass
+    for html_path in sorted(sad_dir.glob("*.html")):
+        try:
+            raw = html_path.read_text(encoding="utf-8", errors="ignore")
+            text = re.sub(r"<[^>]+>", " ", raw)
+            mrn = _extract_mrn_from_text(text)
+            if mrn:
+                return mrn
+        except Exception:
+            pass
+    return None
 
 # Fields considered critical — if any are missing after PDF parse, AI fallback fires
 REQUIRED_FIELDS = ["mrn", "duty_pln", "vat_pln", "clearance_date", "cn_code"]
@@ -143,6 +213,25 @@ def parse_customs_document(
             except Exception as e:
                 corrections.append(f"PDF parse error: {e}")
                 log.warning("[orchestrator] %s: PDF parse failed: %s", batch_id, e)
+
+    # ── Priority 2b: MRN regex fallback for PDF/HTML ────────────────────────
+    # Fires only when a PDF result exists but MRN was not extracted.
+    # Also fires when no XML/PDF result at all but HTML files may carry MRN.
+    # Never fires when MRN is already present (XML/PDF wins unconditionally).
+    if sad_dir.exists() and not (result_data and result_data.get("mrn")):
+        _fallback_mrn = _extract_mrn_from_pdf_or_html(sad_dir)
+        if _fallback_mrn:
+            if result_data:
+                result_data["mrn"] = _fallback_mrn
+                source = f"{source}+mrn_fallback"
+                confidence = "medium"
+                corrections.append(f"MRN recovered via regex fallback: {_fallback_mrn}")
+            else:
+                result_data = {"mrn": _fallback_mrn}
+                source = "mrn_fallback"
+                confidence = "medium"
+                corrections.append(f"MRN-only result from regex fallback: {_fallback_mrn}")
+            log.info("[orchestrator] %s: MRN regex fallback, mrn=%s", batch_id, _fallback_mrn)
 
     # ── Priority 3: AI fallback (only for missing fields) ───────────────────
     if result_data:

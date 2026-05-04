@@ -344,6 +344,7 @@ def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
         "tracking_status_key":   tracking.get("status") if tracking else None,
         "tracking_available":    tracking.get("available", False) if tracking else False,
         # ── Pipeline statuses (for dashboard list columns) ────────────────────
+        "clearance_status": _derive_clearance_status(a),
         "dhl_status":   _derive_clearance_status(a) or None,
         "sad_status":   _derive_sad_status(a),
         "pz_status":    _derive_pz_status(a),
