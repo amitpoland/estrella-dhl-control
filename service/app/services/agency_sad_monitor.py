@@ -92,6 +92,19 @@ def register_agency_documents(
         except Exception as exc:
             skipped.append({"file": src, "error": f"{type(exc).__name__}: {exc}"})
 
+    # Only mark received when at least one file was actually imported.
+    # A call where every provided path fails is_file() must not create a
+    # false audit record (received=True with zero files).
+    if len(state["files"]) == 0:
+        return {
+            "ok":        False,
+            "error":     "no_files_imported",
+            "batch_id":  batch_id,
+            "imported":  [],
+            "skipped":   skipped,
+            "files_total": 0,
+        }
+
     state["received"]    = True
     state["received_at"] = state.get("received_at") or now_iso
     state["files_count"] = len(state["files"])
@@ -99,6 +112,38 @@ def register_agency_documents(
     audit["agency_documents_received"]       = True
     audit["agency_documents"]                = state["files"]
     write_json_atomic(audit_path, audit)
+
+    # ── Mirror into email evidence store ─────────────────────────────────────
+    _awb_sad = str(audit.get("awb") or audit.get("tracking_no") or "")
+    if _awb_sad:
+        try:
+            from .email_evidence_store import link_batch as _evs_link, save_message as _evs_save
+            _evs_link(_awb_sad, batch_id)
+            _evs_save(_awb_sad, {
+                "message_id":  f"op_agency_docs:{batch_id}",
+                "thread_id":   f"op_agency_docs:{batch_id}",
+                "direction":   "incoming",
+                "sender":      f"agency@{source}",
+                "to":          [],
+                "cc":          [],
+                "subject":     f"Agency documents registered for batch {batch_id}",
+                "body_text":   f"{source} registered {len(imported)} agency document(s) for batch {batch_id}.",
+                "timestamp":   now_iso,
+                "event_type":  "agency_sad_reply",
+                "matched_identifiers": {"awb": True},
+                "attachments": [
+                    {
+                        "filename":      e.get("name", ""),
+                        "document_type": (e.get("type") or "other").lower(),
+                        "size":          e.get("size"),
+                        "sha256":        None,
+                    }
+                    for e in imported
+                ],
+                "source":      source,
+            }, source=source)
+        except Exception as _evs_exc:
+            log.warning("[register_agency_documents] evidence store write failed (non-fatal): %s", _evs_exc)
 
     try:
         tl.log_event(audit_path, "agency_documents_registered",

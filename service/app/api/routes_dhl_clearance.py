@@ -1346,6 +1346,31 @@ async def send_dhl_reply(batch_id: str) -> Dict[str, Any]:
     audit["dhl_reply_subject"]     = subject
     _write_audit(batch_id, audit)
 
+    # ── Mirror into email evidence store ─────────────────────────────────────
+    _awb_reply = str(audit.get("dhl_awb") or audit.get("awb") or audit.get("tracking_no") or "")
+    if _awb_reply:
+        try:
+            from ..services import email_evidence_store as evs
+            evs.link_batch(_awb_reply, batch_id)
+            evs.save_message(_awb_reply, {
+                "message_id":      f"op_dhl_reply:{batch_id}",
+                "thread_id":       f"op_dhl_reply:{batch_id}",
+                "direction":       "outgoing",
+                "sender":          "import@estrellajewels.eu",
+                "to":              [to_addr] if to_addr else [],
+                "cc":              [cc_addr] if cc_addr else [],
+                "subject":         subject,
+                "body_text":       f"DHL reply queued for batch {batch_id}.",
+                "timestamp":       sent_at,
+                "event_type":      "our_dhl_reply",
+                "delivery_status": "queued",
+                "matched_identifiers": {"awb": True},
+                "attachments":     [],
+                "source":          "operator_send",
+            }, source="operator_send")
+        except Exception as _evs_exc:
+            log.warning("[send_dhl_reply] evidence store write failed (non-fatal): %s", _evs_exc)
+
     # Timeline event — distinguish DSK transfer from standard description reply
     _tl_event = tl.EV_DSK_TRANSFER_SENT if _is_dsk_transfer else tl.EV_REPLY_APPROVED
     for sub in ("outputs", "working"):
@@ -1502,6 +1527,30 @@ async def mark_email_received(
     audit["clearance_status"] = "dhl_email_received"
     audit["clearance_updated_at"] = datetime.now(timezone.utc).isoformat()
     _write_audit(batch_id, audit)
+
+    # ── Mirror into email evidence store ─────────────────────────────────────
+    _awb = str(audit.get("dhl_awb") or audit.get("awb") or audit.get("tracking_no") or "")
+    if _awb:
+        try:
+            from ..services import email_evidence_store as evs
+            evs.link_batch(_awb, batch_id)
+            evs.save_message(_awb, {
+                "message_id":  f"op_dhl_request:{batch_id}",
+                "thread_id":   f"op_dhl_request:{batch_id}",
+                "direction":   "incoming",
+                "sender":      _sender,
+                "to":          [],
+                "cc":          [],
+                "subject":     body.subject or "",
+                "body_text":   f"DHL customs email manually marked as received for batch {batch_id}.",
+                "timestamp":   received_at,
+                "event_type":  "dhl_request",
+                "matched_identifiers": {"awb": True},
+                "attachments": [],
+                "source":      "manual_admin",
+            }, source="manual_admin")
+        except Exception as _evs_exc:
+            log.warning("[mark_email_received] evidence store write failed (non-fatal): %s", _evs_exc)
 
     # Log timeline event
     for sub in ("outputs", "working"):

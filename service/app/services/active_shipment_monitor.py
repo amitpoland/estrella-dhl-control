@@ -575,6 +575,34 @@ def _ensure_agency_forward_after_dhl(audit_path: Path, audit: Dict[str, Any]) ->
         }
         write_json_atomic(audit_path, audit)
 
+        # ── Mirror into email evidence store ─────────────────────────────────
+        _awb_fwd = str(audit.get("awb") or audit.get("tracking_no") or "")
+        _batch_id_fwd = audit_path.parent.name
+        if _awb_fwd:
+            try:
+                from .email_evidence_store import link_batch as _evs_link, save_message as _evs_save
+                _evs_link(_awb_fwd, _batch_id_fwd)
+                _evs_save(_awb_fwd, {
+                    "message_id":      f"op_agency_forward:{_batch_id_fwd}",
+                    "thread_id":       f"op_agency_forward:{_batch_id_fwd}",
+                    "direction":       "outgoing",
+                    "sender":          pkg.get("from_address", "import@estrellajewels.eu"),
+                    "to":              pkg.get("to_list") or ([pkg["to"]] if pkg.get("to") else []),
+                    "cc":              pkg.get("cc_list") or ([pkg["cc"]] if pkg.get("cc") else []),
+                    "subject":         pkg["subject"],
+                    "body_text":       f"Agency forward sent for batch {_batch_id_fwd}.",
+                    "timestamp":       now_iso,
+                    "event_type":      "agency_forward",
+                    "delivery_status": "sent" if sent_ok else "queued",
+                    "matched_identifiers": {"awb": True},
+                    "attachments":     [{"filename": a.get("name", Path(a.get("path","")).name),
+                                         "document_type": "other", "size": None, "sha256": None}
+                                        for a in existing_attach],
+                    "source":          "monitor_auto",
+                }, source="monitor_auto")
+            except Exception as _evs_exc:
+                log.warning("[agency_forward] evidence store write failed (non-fatal): %s", _evs_exc)
+
         out["built"]    = True
         out["email_id"] = email_id
         out["sent"]     = sent_ok
