@@ -148,13 +148,27 @@ _PZ_CHANNEL = "pz"
 
 # In-memory token cache (refreshed on 401)
 _access_token: str = ""
-_token_lock = asyncio.Lock()
+_token_lock: "asyncio.Lock | None" = None  # created lazily inside async context (Python 3.9 compat)
+
+
+def _get_token_lock() -> "asyncio.Lock":
+    """Return the module-level token lock, creating it lazily on first call.
+
+    asyncio.Lock() in Python 3.9 binds to the running event loop at construction
+    time.  Creating it at module import time breaks any test that imports this
+    module *after* a previous asyncio.run() call has closed the default loop.
+    Lazy creation inside an async function avoids the issue entirely.
+    """
+    global _token_lock
+    if _token_lock is None:
+        _token_lock = asyncio.Lock()
+    return _token_lock
 
 
 async def _get_access_token() -> str:
     """Return current token, refreshing from Zoho if empty or stale."""
     global _access_token
-    async with _token_lock:
+    async with _get_token_lock():
         if _access_token:
             return _access_token
         # Populate from settings on first call
@@ -188,7 +202,7 @@ async def _refresh_access_token() -> str:
             data = r.json()
             new_token = data.get("access_token", "")
             if new_token:
-                async with _token_lock:
+                async with _get_token_lock():
                     _access_token = new_token
                 log.info("Cliq OAuth token refreshed successfully")
                 return new_token
