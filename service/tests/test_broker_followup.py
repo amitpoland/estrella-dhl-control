@@ -155,6 +155,60 @@ def test_build_draft_returns_none_when_live_draft_exists():
     assert bfd.build_draft(audit) is None
 
 
+def test_normalize_awb_strips_spaces_in_tracking_no():
+    audit = {
+        "tracking_no": "97 6541 6334",
+        "inputs": {"awb": "9765416334 Tracking.pdf"},
+    }
+    assert bfd._normalize_awb(audit) == "9765416334"
+
+
+def test_normalize_awb_strips_filename_suffix():
+    audit = {"inputs": {"awb": "9765416334 Tracking.pdf"}}
+    assert bfd._normalize_awb(audit) == "9765416334"
+
+
+def test_normalize_awb_clean_value_unchanged():
+    audit = {"inputs": {"awb": "9765416334"}}
+    assert bfd._normalize_awb(audit) == "9765416334"
+
+
+def test_normalize_awb_mixed_separators():
+    audit = {"tracking_no": "AWB-976 5416 334"}
+    assert bfd._normalize_awb(audit) == "9765416334"
+
+
+def test_normalize_awb_returns_empty_when_no_digits():
+    audit = {"tracking_no": "no digits here", "inputs": {"awb": "AWB only"}}
+    assert bfd._normalize_awb(audit) == ""
+
+
+def test_normalize_awb_skips_short_candidate_to_next():
+    """First candidate has fewer than 8 digits → fall through to next."""
+    audit = {
+        "tracking_no": "12-34",                       # 4 digits, too short
+        "inputs": {"awb": "9765416334 Tracking.pdf"}, # valid
+    }
+    assert bfd._normalize_awb(audit) == "9765416334"
+
+
+def test_draft_subject_uses_normalized_awb_from_spaced_tracking_no():
+    """End-to-end: spaced tracking_no must yield clean AWB in subject."""
+    audit = _make_audit(
+        failed_checks=["cif_match"],
+        amendment_flags=[
+            "CIF mismatch: invoices total $11,237.00 vs SAD $17,049.00 (diff $-5812.00)",
+        ],
+    )
+    audit["tracking_no"]   = "97 6541 6334"
+    audit["inputs"]["awb"] = "9765416334 Tracking.pdf"
+    draft = bfd.build_draft(audit)
+    assert draft is not None
+    assert "AWB 9765416334" in draft["subject"]
+    assert "97 6541 6334"   not in draft["subject"]
+    assert "AWB: 9765416334" in draft["body"]
+
+
 def test_build_draft_renders_full_email():
     audit = _make_audit(
         failed_checks=["invoice_refs_match", "cif_match"],

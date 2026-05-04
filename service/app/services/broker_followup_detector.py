@@ -137,7 +137,21 @@ def _format_money_usd(amount: float) -> str:
 
 
 def _normalize_awb(audit: Dict[str, Any]) -> str:
-    """Pull the cleanest AWB string out of inputs/tracking fields."""
+    """Pull the cleanest AWB string out of inputs/tracking fields.
+
+    Strategy:
+      1. For each candidate (tracking_no, inputs.tracking_no,
+         inputs.awb, audit.awb), strip ALL non-digit characters.
+      2. If the digit-only result has length >= 8, return it.
+      3. Otherwise try the next candidate.
+      4. Fall back to the empty string if no candidate yields >= 8 digits.
+
+    This handles all of:
+      "97 6541 6334"             → "9765416334"   (DHL spaced format)
+      "9765416334 Tracking.pdf"  → "9765416334"   (filename suffix)
+      "9765416334"               → "9765416334"   (clean)
+      "AWB-976 5416 334"         → "9765416334"   (mixed separators)
+    """
     inputs = audit.get("inputs") or {}
     candidates = [
         audit.get("tracking_no"),
@@ -148,12 +162,9 @@ def _normalize_awb(audit: Dict[str, Any]) -> str:
     for c in candidates:
         if not c:
             continue
-        s = str(c).strip()
-        # Strip "<digits> Tracking.pdf" → "<digits>"
-        m = re.match(r"^\s*(\d{8,})\b", s)
-        if m:
-            return m.group(1)
-        return s
+        digits = re.sub(r"\D", "", str(c))
+        if len(digits) >= 8:
+            return digits
     return ""
 
 
