@@ -274,11 +274,26 @@ def scan_and_ingest(
         subj   = e.get("subject", "")
         body   = e.get("body_text") or e.get("body_snippet") or e.get("body", "") or ""
 
+        # Normalise attachment list from scanner shape {"filename","type"} to
+        # evidence-store shape {"filename","document_type"}.  Backward-compatible:
+        # if the key is already "document_type" it is preserved as-is.
+        raw_attachments = e.get("attachments") or []
+        attachments = [
+            {
+                "filename":      a.get("filename") or a.get("name") or "",
+                "document_type": a.get("document_type") or a.get("type") or "other",
+                "size":          a.get("size"),
+                "sha256":        a.get("sha256"),
+            }
+            for a in raw_attachments
+            if isinstance(a, dict)
+        ]
+
         direction = _cd(sender)
         role      = _csr(sender)
         ev_type   = _cet(
             direction=direction, sender_role=role,
-            subject=subj, body=body, attachments=[],
+            subject=subj, body=body, attachments=attachments,
             to_addresses=e.get("to") or [],
         )
 
@@ -297,7 +312,7 @@ def scan_and_ingest(
                 "timestamp":           e.get("received_at") or e.get("date") or "",
                 "event_type":          ev_type,
                 "matched_identifiers": {"awb": True},
-                "attachments":         [],
+                "attachments":         attachments,
             }, source="zoho_rest")
             if action.get("action") in ("inserted", "promoted"):
                 ingested += 1
