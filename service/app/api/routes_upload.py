@@ -43,6 +43,7 @@ from ..core.guards import guard_pz_requires_sad, guard_trigger_declared
 from ..core import timeline as tl
 from ..services import export_service
 from ..services.batch_service import get_output_dir
+from ..services.batch_state_normalizer import _compute_effective_blocked
 from ..utils.io import write_json_atomic
 
 _DHL_BROKER_THRESHOLD_USD: float = 2500.0
@@ -561,7 +562,12 @@ async def process_shipment(
     audit      = _read_audit(output_dir)
 
     current_status = audit.get("status", "")
-    if current_status not in ("ready", "partial", "success"):
+    # A blocked batch whose only failures are operator-overridden non-financial
+    # checks is effectively unblocked at read time — allow reprocessing.
+    effectively_unblocked = (
+        current_status == "blocked" and not _compute_effective_blocked(audit)
+    )
+    if current_status not in ("ready", "partial", "success") and not effectively_unblocked:
         raise HTTPException(
             status_code=409,
             detail=f"Shipment must be in 'ready', 'partial', or 'success' state to process. Current: {current_status}",
@@ -766,6 +772,28 @@ async def _run_pipeline(
         "inputs.awb":  awb_name or None,
     })
 
+    # ── Preserve operator_overrides and operator-confirmed fields ─────────────
+    # process_shipment() writes a fresh audit.json that does not carry forward
+    # operator_overrides, pz_confirmed, or pz_confirmed_at from before the run.
+    # Restore them from the pre-run audit captured at pipeline start so the
+    # audit trail and effective-blocked gate remain correct on subsequent reads.
+    _pre_overrides = audit.get("operator_overrides")
+    if _pre_overrides:  # non-empty list — restore unconditionally
+        try:
+            _audit_path = output_dir / "audit.json"
+            _aud = json.loads(_audit_path.read_text(encoding="utf-8"))
+            _aud["operator_overrides"] = _pre_overrides
+            if audit.get("pz_confirmed"):
+                _aud.setdefault("pz_confirmed", audit["pz_confirmed"])
+            if audit.get("pz_confirmed_at"):
+                _aud.setdefault("pz_confirmed_at", audit["pz_confirmed_at"])
+            write_json_atomic(_audit_path, _aud)
+            log.info("[%s] operator_overrides restored after engine write (%d entries)",
+                     batch_id, len(_pre_overrides))
+        except Exception as _ov_exc:
+            log.warning("[%s] Could not restore operator_overrides (non-fatal): %s",
+                        batch_id, _ov_exc)
+
     # ── Guarantee clearance_decision is populated after pipeline ────────────
     # Non-destructive: only writes if absent or value=0/routing_pending with real CIF now available
     try:
@@ -787,6 +815,35 @@ async def _run_pipeline(
              result.get("total_net", 0))
 
     _r_status = result.get("status", "unknown")
+
+    # ── Operator-override status reconciliation ───────────────────────────────
+    # The engine sets status="blocked" based on failed_checks and amendment_flags
+    # alone; it has no knowledge of operator overrides.  After the engine writes
+    # its verdict, re-evaluate using _compute_effective_blocked so that a batch
+    # whose only remaining issues are operator-accepted non-financial checks
+    # transitions to "partial" rather than staying "blocked".
+    #
+    # Condition: engine said "blocked" AND all remaining issues are cleared by
+    # operator overrides (effective_blocked=False) AND output files exist.
+    # Result status: "partial" (operator-accepted — not a fully clean run).
+    if _r_status == "blocked":
+        try:
+            from ..services.batch_state_normalizer import _compute_effective_blocked as _ceb
+            _aud_path = output_dir / "audit.json"
+            _aud_now = json.loads(_aud_path.read_text(encoding="utf-8"))
+            if not _ceb(_aud_now):
+                # All remaining issues are operator-accepted — promote to partial
+                _aud_now["status"]      = "partial"
+                _aud_now["pz_generated"] = True
+                write_json_atomic(_aud_path, _aud_now)
+                _r_status = "partial"
+                log.info(
+                    "[%s] operator-override reconciliation: promoted blocked→partial "
+                    "(all remaining issues are operator-accepted)",
+                    batch_id,
+                )
+        except Exception as _rec_exc:
+            log.warning("[%s] override reconciliation (non-fatal): %s", batch_id, _rec_exc)
 
     # ── Stamp SAD import state + emit readiness-compatible event ─────────────
     # Bridges the gap between pz_generated (pipeline event) and the events
