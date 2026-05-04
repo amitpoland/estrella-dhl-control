@@ -12,6 +12,7 @@ from ..utils.io import write_json_atomic
 
 from ..core.config import settings
 from ..core.logging import get_logger
+from . import document_db as ddb
 
 log = get_logger(__name__)
 
@@ -121,15 +122,20 @@ def process_shipment(
         )
 
     # ── PDF export ────────────────────────────────────────────────────────────
-    # Filenames include batch_id to prevent WorkDrive search collisions
+    # Canonical filenames: AWB + MRN + clearance_date so each batch's outputs
+    # are unique on disk and can never be confused with a stale generic file.
     batch_id  = output_dir.name
-    safe_doc  = (doc_no or "PZ").replace(" ", "_").replace("/", "-")
-    pdf_path  = output_dir / f"{safe_doc}_{batch_id}.pdf"
-    xlsx_path = output_dir / f"{safe_doc}_{batch_id}_calc.xlsx"
-
-    # Sanity: doc_no slug should appear in the filename
-    if doc_no and safe_doc not in pdf_path.stem:
-        log.warning("Filename mismatch: doc_no=%r but pdf stem=%r", doc_no, pdf_path.stem)
+    from .output_filenames import canonical_filename, PZ_PDF, PZ_CALC_XLSX
+    _zc429    = result.get("zc429", {}) or {}
+    _awb      = ""
+    if batch_id.startswith("SHIPMENT_"):
+        _parts = batch_id.split("_")
+        if len(_parts) >= 4 and _parts[1] != "AUTO":
+            _awb = _parts[1]
+    _mrn      = _zc429.get("mrn", "") or ""
+    _cdate    = _zc429.get("clearance_date", "") or ""
+    pdf_path  = output_dir / canonical_filename(PZ_PDF,       awb=_awb, mrn=_mrn, clearance_date=_cdate, extension="pdf")
+    xlsx_path = output_dir / canonical_filename(PZ_CALC_XLSX, awb=_awb, mrn=_mrn, clearance_date=_cdate, extension="xlsx")
 
     log.info("Generating PDF → %s", pdf_path)
     save_pz_pdf(result, str(pdf_path), document_no=doc_no)
@@ -168,9 +174,12 @@ def process_shipment(
         log.info("Audit PL PDF → %s", audit_reports["pl"])
         log.info("Audit score  → %d (%s)", audit_reports["score"], audit_reports["risk_level"])
 
-        # PDF memo
+        # PDF memo — canonical name from build_audit_report().memo_filename
         log.info("Generating Audit Memo PDF (generate_audit_pdf)…")
-        audit_pdf_path = output_dir / "audit_memo.pdf"
+        memo_fn = audit_reports.get("memo_filename") or canonical_filename(
+            "AUDIT_MEMO", awb=_awb, mrn=_mrn, clearance_date=_cdate, extension="pdf",
+        )
+        audit_pdf_path = output_dir / memo_fn
         generate_audit_pdf(audit_pdf_path, audit_reports["audit_data"])
         result["audit_pdf_path"] = audit_pdf_path
         result["audit_generation_status"] = "ok"
@@ -354,6 +363,80 @@ def process_shipment(
     log.info("Batch complete. Lines=%d  Netto=%.2f  Brutto=%.2f",
              result["line_count"], result["total_net"], result["total_gross"])
 
+    # ── Register generated outputs in document registry (non-blocking) ─────────
+    try:
+        _doc_awb = str(batch_id)   # batch_id is AWB-derived; store as-is
+        # PZ PDF
+        _pdf_doc_id = ddb.register_document(
+            batch_id=batch_id, document_type="pz_pdf",
+            file_name=pdf_path.name, file_path=str(pdf_path),
+            file_hash=ddb.sha256_file(pdf_path),
+            awb=_awb, related_pz_no=doc_no, related_mrn=_mrn,
+            extraction_status="generated", source="generated",
+        )
+        # PZ XLSX
+        _xlsx_doc_id = ddb.register_document(
+            batch_id=batch_id, document_type="pz_xlsx",
+            file_name=xlsx_path.name, file_path=str(xlsx_path),
+            file_hash=ddb.sha256_file(xlsx_path),
+            awb=_awb, related_pz_no=doc_no, related_mrn=_mrn,
+            extraction_status="generated", source="generated",
+        )
+        # PZ record (links PDF doc)
+        if _pdf_doc_id:
+            _ver = result.get("verification", {})
+            _ver_status = "clean" if all(
+                v is True for v in _ver.values() if v is not None
+            ) else ("partial" if any(
+                v is False for v in _ver.values()
+            ) else "gaps")
+            ddb.store_pz_document(
+                document_id=_pdf_doc_id, batch_id=batch_id,
+                pz_data={
+                    "doc_no":               doc_no,
+                    "line_count":           result.get("line_count", 0),
+                    "total_net_pln":        result.get("total_net", 0),
+                    "total_gross_pln":      result.get("total_gross", 0),
+                    "duty_a00_pln":         result.get("duty_pln", 0),
+                    "verification_status":  _ver_status,
+                    "amendment_flags":      result.get("amendment_flags", []),
+                    "workdrive_pdf_id":     result.get("workdrive_pdf_resource_id", ""),
+                    "workdrive_xlsx_id":    result.get("workdrive_xlsx_resource_id", ""),
+                },
+            )
+        # Customs declaration (if available from ZC429/XML parse)
+        _zc429 = result.get("zc429") or {}
+        if _zc429 and _zc429.get("mrn"):
+            # Register the SAD/ZC429 source file if paths available
+            _sad_p = zc429_path
+            _sad_doc_id = None
+            if _sad_p:
+                _sad_doc_id = ddb.register_document(
+                    batch_id=batch_id, document_type="sad_pdf",
+                    file_name=_sad_p.name, file_path=str(_sad_p),
+                    file_hash=ddb.sha256_file(_sad_p),
+                    awb=_awb, related_mrn=_mrn, source="upload",
+                    extraction_status="extracted",
+                )
+            _dec_doc_id = _sad_doc_id or _pdf_doc_id or ""
+            if _dec_doc_id:
+                ddb.store_customs_declaration(
+                    document_id=_dec_doc_id, batch_id=batch_id,
+                    declaration=_zc429,
+                )
+        # Audit memo PDF (if generated)
+        _memo_p = result.get("audit_pdf_path")
+        if _memo_p and Path(str(_memo_p)).exists():
+            ddb.register_document(
+                batch_id=batch_id, document_type="audit_memo",
+                file_name=Path(str(_memo_p)).name, file_path=str(_memo_p),
+                file_hash=ddb.sha256_file(Path(str(_memo_p))),
+                awb=_awb, related_pz_no=doc_no,
+                extraction_status="generated", source="generated",
+            )
+    except Exception as _dbe:
+        log.warning("[%s] document_db output register failed (non-fatal): %s", batch_id, _dbe)
+
     return result
 
 
@@ -368,6 +451,16 @@ def _sha256(path: Path) -> str:
 
 
 _ENGINE_VERSION = "v1.4"
+
+# Row schema version — bumped whenever the row dict layout written into
+# audit.json / pz_rows.json gains required fields. Consumers (dashboard,
+# normalizer, regeneration scripts) MUST treat any audit whose
+# row_schema_version is missing or below ROW_SCHEMA_VERSION as STALE and
+# regenerate from source documents.
+#
+# v1 — original (no product_code, no nazwa fields)
+# v2 — adds product_code, line_position, nazwa_pl, nazwa_en, nazwa (PL / EN)
+ROW_SCHEMA_VERSION = "v2"
 
 
 def _derive_status(v: dict, amendment_flags: list, corrections_log: list) -> str:
@@ -613,8 +706,13 @@ def _write_pz_rows_json(output_dir: Path, result: Dict[str, Any]) -> None:
         for r in rows:
             slim.append({
                 "invoice_no":        r.get("invoice_no", ""),
+                "product_code":      r.get("product_code", ""),
+                "line_position":     r.get("line_position"),
                 "description_en":    r.get("description_en", ""),
                 "pl_desc":           r.get("pl_desc", "") or r.get("description_en", ""),
+                "nazwa_pl":          r.get("nazwa_pl", "") or r.get("pl_desc", ""),
+                "nazwa_en":          r.get("nazwa_en", "") or r.get("description_en", ""),
+                "nazwa":             r.get("nazwa", ""),
                 "quantity":          r.get("quantity", 1),
                 "unit":              r.get("unit", "PCS"),
                 "unit_netto_pln":    r.get("unit_netto_pln", r.get("landed_per_unit", 0)),
@@ -647,7 +745,61 @@ def _write_audit(
     ver_scalar      = {k: val for k, val in v.items() if not isinstance(val, (list, dict))}
     failed_checks   = [k for k, val in ver_scalar.items() if val is False]
 
-    status = _derive_status(v, amendment_flags, corrections)
+    # Preserve pre-processing fields from the existing draft audit.json
+    # (timeline, dhl_precheck, clearance_status, carrier, etc.)
+    # NOTE: loaded here (before _derive_status) so operator_overrides can
+    # suppress matching amendment flags when deriving the stored status.
+    audit_path = output_dir / "audit.json"
+    _existing: Dict[str, Any] = {}
+    try:
+        if audit_path.exists():
+            import json as _json
+            _existing = _json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception:
+        pass  # non-fatal: old audit missing or corrupt
+
+    # ── Operator-override flag suppression ───────────────────────────────────
+    # If operator overrides cover all amendment flags, downgrade status from
+    # "blocked" to the level that would result without those flags.  This
+    # avoids an infinite block→override→block loop for checks like
+    # invoice_number_parse_warning where the engine always re-emits the flag.
+    # The raw amendment_flags list is preserved in the audit for transparency.
+    from .batch_state_normalizer import (
+        _OVERRIDE_FLAG_PREFIXES,
+        _STRUCTURAL_MISMATCH_CHECKS,
+        _REVIEW_NEEDED_PREFIX,
+        ALLOWED_OVERRIDE_TYPES,
+    )
+    _overrides = _existing.get("operator_overrides") or []
+    _overridden_checks: set = set()
+    for _ov in _overrides:
+        _chk = _ov.get("check", "")
+        if _chk in ALLOWED_OVERRIDE_TYPES and _ov.get("batch_id") == batch_id:
+            _overridden_checks.add(_chk)
+
+    _suppressed_prefixes: set = set()
+    for _chk in _overridden_checks:
+        for _pfx in _OVERRIDE_FLAG_PREFIXES.get(_chk, ()):
+            _suppressed_prefixes.add(_pfx)
+    _structural_in_failed = set(failed_checks) & _STRUCTURAL_MISMATCH_CHECKS
+    if _structural_in_failed and _structural_in_failed.issubset(_overridden_checks):
+        _suppressed_prefixes.add(_REVIEW_NEEDED_PREFIX)
+
+    _effective_amendment_flags = [
+        f for f in amendment_flags
+        if not any(f.startswith(p) for p in _suppressed_prefixes)
+    ]
+    # Also suppress verification False values that are fully overridden
+    _effective_ver_scalar = {
+        k: (v_val if k not in _overridden_checks else None)
+        for k, v_val in ver_scalar.items()
+    }
+
+    status = _derive_status(
+        _effective_ver_scalar if _suppressed_prefixes else v,
+        _effective_amendment_flags,
+        corrections,
+    )
 
     # Derive tracking_no from batch_id if not supplied explicitly
     if not tracking_no and batch_id.startswith("SHIPMENT_"):
@@ -658,19 +810,26 @@ def _write_audit(
     # Build structured checks (Global Jewellery / multi-source reconciliation)
     structured_checks = _build_structured_checks(result)
 
-    # Preserve pre-processing fields from the existing draft audit.json
-    # (timeline, dhl_precheck, clearance_status, carrier, etc.)
-    audit_path = output_dir / "audit.json"
-    _existing: Dict[str, Any] = {}
-    try:
-        if audit_path.exists():
-            import json as _json
-            _existing = _json.loads(audit_path.read_text(encoding="utf-8"))
-    except Exception:
-        pass  # non-fatal: old audit missing or corrupt
+    # ── File version metadata — single source of truth for clients ──────────
+    from .output_filenames import file_version_metadata, filenames_for_audit
+    _meta_seed = {
+        "batch_id":            batch_id,
+        "tracking_no":         tracking_no,
+        "customs_declaration": result.get("zc429") or {},
+        "inputs":              {"zc429_mrn": (result.get("zc429") or {}).get("mrn", "")},
+    }
+    file_metadata     = file_version_metadata(
+        _meta_seed,
+        row_schema_version = ROW_SCHEMA_VERSION,
+        generator_version  = _ENGINE_VERSION,
+    )
+    canonical_filenames = filenames_for_audit(_meta_seed)
 
     audit = {
         "correction_schema_version": "v2",    # guards UI against old batches
+        "row_schema_version":        ROW_SCHEMA_VERSION,  # stale-cache detector
+        "file_metadata":             file_metadata,        # batch_id, awb, mrn, clearance_date, generated_at, …
+        "canonical_filenames":       canonical_filenames,  # type → expected on-disk filename
         "timestamp":      time.strftime("%Y-%m-%dT%H:%M:%S"),
         "batch_id":       batch_id,
         "tracking_no":    tracking_no,
@@ -724,6 +883,15 @@ def _write_audit(
         # Preserve pre-processing timeline events (batch_created, invoice_uploaded, etc.)
         "timeline":         _existing.get("timeline", []),
     }
+
+    # ── Merge regenerated engine output with existing workflow overlay ─────
+    # Without this, every regen would clobber polish_desc_filename,
+    # dhl_reply_package, agency_reply_package, clearance_decision, email
+    # evidence, and operator overlays. See audit_merge.PRESERVED_KEYS for
+    # the full list of fields preserved across regenerations.
+    from .audit_merge import merge_regenerated_audit
+    audit = merge_regenerated_audit(_existing, audit)
+
     write_json_atomic(audit_path, audit)
     log.info("Audit log (atomic) → %s", audit_path)
     # Expose derived status on the result dict so callers can check it
@@ -735,7 +903,18 @@ def _build_zc429_from_xml_dict(xml_dict: Dict[str, Any]) -> Dict[str, Any]:
     Convert an audit.zc429 XML-parsed dict into the format that parse_zc429()
     returns, so the rest of the engine pipeline (distribute_duty, build_rows,
     verify_sad_invoice_match, etc.) works without modification.
+
+    If the dict is already in the final parse_zc429-compatible format
+    (has duty_pln but no goods_items / total_A00_duty_pln), return it
+    directly — this handles audit.zc429 populated from customs_xml_parser.
     """
+    if ("duty_pln" in xml_dict
+            and not xml_dict.get("goods_items")
+            and not xml_dict.get("total_A00_duty_pln")):
+        result = dict(xml_dict)
+        result["sad_qty_by_type"] = {}   # XML has HS-code→description, not type→count integers
+        return result
+
     items = xml_dict.get("goods_items") or []
 
     # Aggregate values
