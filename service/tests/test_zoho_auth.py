@@ -4,10 +4,11 @@ test_zoho_auth.py — Zoho Mail OAuth token management & auto-refresh.
 Verifies:
   - Refresh-token flow exchanges credentials at the accounts endpoint
   - Cached token is reused while valid
-  - Expired token triggers a refresh
+  - Expired token triggers a refresh (via invalidate AND via time-based expiry)
   - Refresh failure raises ZohoAuthError with a generic message (no token leakage)
   - Bootstrap mode (static token) works as a fallback
   - Tokens are NEVER logged in plaintext
+  - EU Zoho accounts endpoint (accounts.zoho.eu) is used — not .com
 """
 from __future__ import annotations
 
@@ -180,6 +181,86 @@ def test_no_creds_at_all_raises():
     with patch("app.services.zoho_auth.settings", s):
         with pytest.raises(zoho_auth.ZohoAuthError):
             zoho_auth.get_valid_access_token()
+
+
+# ── Time-based expiry (no manual invalidate call) ────────────────────────────
+
+def test_time_based_expiry_triggers_refresh_automatically():
+    """
+    Cache expiry must fire on the next call once the stored _cached_expires_at
+    is in the past — without the caller explicitly calling invalidate_cached_token().
+
+    Simulates token aging by writing a past timestamp directly into the module-
+    level _cached_expires_at after the first fetch, then verifying the second
+    fetch issues a new HTTP refresh rather than returning the stale token.
+    """
+    _reset_cache()
+    from app.services import zoho_auth
+
+    s = _make_settings(
+        zoho_client_id="cid", zoho_client_secret="csec",
+        zoho_mail_refresh_token="rt",
+    )
+    fake_client = MagicMock()
+    fake_client.__enter__ = MagicMock(return_value=fake_client)
+    fake_client.__exit__  = MagicMock(return_value=False)
+    fake_client.post.side_effect = [
+        _mock_refresh_response("first-tok",  expires_in=300),
+        _mock_refresh_response("second-tok", expires_in=3600),
+    ]
+
+    with patch("app.services.zoho_auth.settings", s), \
+         patch("httpx.Client", return_value=fake_client):
+        tok1 = zoho_auth.get_valid_access_token()
+        assert tok1 == "first-tok"
+        assert fake_client.post.call_count == 1
+
+        # Simulate the token aging past expiry + safety margin by back-dating
+        # _cached_expires_at directly. The cache lock protects it in production;
+        # here we set it without the lock (test-only) to avoid a deadlock.
+        zoho_auth._cached_expires_at = time.time() - 1  # expired 1 second ago
+
+        tok2 = zoho_auth.get_valid_access_token()
+
+    assert tok2 == "second-tok"
+    assert fake_client.post.call_count == 2, (
+        "Expected second HTTP refresh after time-based expiry"
+    )
+
+
+# ── Accounts endpoint routing ─────────────────────────────────────────────────
+
+def test_refresh_uses_configured_accounts_base():
+    """
+    The OAuth POST must hit {zoho_accounts_base}/oauth/v2/token — using the
+    domain from settings, not a hardcoded fallback.  For EU accounts
+    (zoho.eu) this is accounts.zoho.eu; the test verifies the configured
+    base is forwarded verbatim.
+    """
+    _reset_cache()
+    from app.services import zoho_auth
+
+    eu_base = "https://accounts.zoho.eu"
+    s = _make_settings(
+        zoho_client_id="cid", zoho_client_secret="csec",
+        zoho_mail_refresh_token="rt",
+        zoho_accounts_base=eu_base,
+    )
+    fake_client = MagicMock()
+    fake_client.__enter__ = MagicMock(return_value=fake_client)
+    fake_client.__exit__  = MagicMock(return_value=False)
+    fake_client.post.return_value = _mock_refresh_response("eu-tok", 3600)
+
+    with patch("app.services.zoho_auth.settings", s), \
+         patch("httpx.Client", return_value=fake_client):
+        tok = zoho_auth.get_valid_access_token()
+
+    assert tok == "eu-tok"
+    url_called = fake_client.post.call_args[0][0]
+    assert url_called.startswith(eu_base), (
+        f"Expected URL starting with {eu_base!r}, got {url_called!r}"
+    )
+    assert "/oauth/v2/token" in url_called
 
 
 # ── Token leakage guards ─────────────────────────────────────────────────────
