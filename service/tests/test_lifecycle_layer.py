@@ -211,6 +211,195 @@ def test_register_agency_documents_idempotent(tmp_path, monkeypatch):
     assert audit["agency_documents_received"] is True
 
 
+# ── Fix 1: no false receipt on all-invalid paths ─────────────────────────────
+
+def test_register_agency_docs_all_invalid_paths_does_not_set_received(tmp_path, monkeypatch):
+    """All-nonexistent paths must NOT write received=True to audit."""
+    from app.services import agency_sad_monitor as asm
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    s = _settings(tmp_path)
+    for mod in (asm, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    _seed_audit(tmp_path, "B_BAD")
+    out = asm.register_agency_documents("B_BAD", ["/nonexistent/SAD_12345.pdf"])
+    assert out["ok"] is False
+    assert out["error"] == "no_files_imported"
+    # Audit must NOT have received=True
+    audit = json.loads((tmp_path / "outputs" / "B_BAD" / "audit.json").read_text())
+    assert audit.get("agency_documents_received") is not True
+    state = audit.get("agency_documents_received_state") or {}
+    assert state.get("received") is not True
+
+
+def test_register_agency_docs_all_invalid_paths_returns_skipped(tmp_path, monkeypatch):
+    """All-invalid-paths response must include skipped list and ok:False."""
+    from app.services import agency_sad_monitor as asm
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    s = _settings(tmp_path)
+    for mod in (asm, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    _seed_audit(tmp_path, "B_SKIP2")
+    out = asm.register_agency_documents("B_SKIP2", [
+        "/nonexistent/a.pdf",
+        "/nonexistent/b.pdf",
+    ])
+    assert out["ok"] is False
+    assert out["error"] == "no_files_imported"
+    assert len(out["skipped"]) == 2
+    assert out["files_total"] == 0
+    assert out["imported"] == []
+
+
+def test_register_agency_docs_one_valid_sets_received(tmp_path, monkeypatch):
+    """One valid file path must set received=True and return ok:True."""
+    from app.services import agency_sad_monitor as asm
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    s = _settings(tmp_path)
+    for mod in (asm, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    _seed_audit(tmp_path, "B_VALID")
+    src = tmp_path / "SAD_001.pdf"; src.write_bytes(b"%PDF-1.4")
+    out = asm.register_agency_documents("B_VALID", [str(src)])
+    assert out["ok"] is True
+    assert len(out["imported"]) == 1
+    assert out["files_total"] == 1
+    audit = json.loads((tmp_path / "outputs" / "B_VALID" / "audit.json").read_text())
+    assert audit["agency_documents_received"] is True
+    assert audit["agency_documents_received_state"]["received"] is True
+    assert audit["agency_documents_received_state"]["files_count"] == 1
+
+
+def test_register_agency_docs_mixed_valid_invalid(tmp_path, monkeypatch):
+    """Mixed valid + invalid: valid file imported, invalid reported in skipped."""
+    from app.services import agency_sad_monitor as asm
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    s = _settings(tmp_path)
+    for mod in (asm, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    _seed_audit(tmp_path, "B_MIX")
+    good = tmp_path / "ZC429_abc.pdf"; good.write_bytes(b"data")
+    out = asm.register_agency_documents("B_MIX", [str(good), "/no/such/file.pdf"])
+    assert out["ok"] is True
+    assert len(out["imported"]) == 1
+    assert len(out["skipped"])  == 1
+    audit = json.loads((tmp_path / "outputs" / "B_MIX" / "audit.json").read_text())
+    assert audit["agency_documents_received"] is True
+
+
+# ── Fix 2: multipart upload endpoint ─────────────────────────────────────────
+
+def _make_app(tmp_path, monkeypatch):
+    """Return a TestClient wired to the real lifecycle router with patched settings."""
+    import importlib
+    from app.services import agency_sad_monitor as asm
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    from app.api   import routes_lifecycle as rl
+    from app.core  import security as sec
+    s = _settings(tmp_path)
+    for mod in (asm, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    # Disable auth for unit tests
+    monkeypatch.setattr(sec, "require_api_key", lambda: None)
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    # Reload to pick up patched auth dependency
+    importlib.reload(rl)
+    app = FastAPI()
+    app.include_router(rl.router)
+    return TestClient(app)
+
+
+def _make_upload_client(tmp_path, monkeypatch):
+    """Return a TestClient for the lifecycle router with auth bypassed."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api import routes_lifecycle as rl
+    from app.core.security import require_api_key
+    from app.services import agency_sad_monitor as asm
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    s = _settings(tmp_path)
+    for mod in (asm, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    app = FastAPI()
+    app.include_router(rl.router)
+    # Override auth dependency so tests don't need an API key
+    app.dependency_overrides[require_api_key] = lambda: None
+    return TestClient(app)
+
+
+def test_upload_agency_docs_saves_and_registers(tmp_path, monkeypatch):
+    """Multipart upload with one valid PDF must set received=True in audit."""
+    _seed_audit(tmp_path, "B_UP")
+    client = _make_upload_client(tmp_path, monkeypatch)
+
+    pdf_content = b"%PDF-1.4 test agency document"
+    resp = client.post(
+        "/api/v1/agency-documents/B_UP/upload",
+        files=[("files", ("SAD_001.pdf", pdf_content, "application/pdf"))],
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["files_total"] >= 1
+    audit = json.loads((tmp_path / "outputs" / "B_UP" / "audit.json").read_text())
+    assert audit["agency_documents_received"] is True
+
+
+def test_upload_agency_docs_rejects_no_files(tmp_path, monkeypatch):
+    """Upload with zero files must return 422."""
+    _seed_audit(tmp_path, "B_NOFILE")
+    client = _make_upload_client(tmp_path, monkeypatch)
+
+    resp = client.post("/api/v1/agency-documents/B_NOFILE/upload")
+    assert resp.status_code in (422, 400), resp.text
+
+
+def test_upload_agency_docs_rejects_invalid_extension(tmp_path, monkeypatch):
+    """Upload with .exe extension must return 400."""
+    _seed_audit(tmp_path, "B_EXT")
+    client = _make_upload_client(tmp_path, monkeypatch)
+
+    resp = client.post(
+        "/api/v1/agency-documents/B_EXT/upload",
+        files=[("files", ("malware.exe", b"MZ\x90\x00", "application/octet-stream"))],
+    )
+    assert resp.status_code == 400, resp.text
+
+
+# ── Safety: no fake paths in implementation ──────────────────────────────────
+
+def test_no_dev_null_in_agency_sad_monitor():
+    """/dev/null must not appear in agency_sad_monitor.py."""
+    src = Path(__file__).parent.parent / "app" / "services" / "agency_sad_monitor.py"
+    assert "/dev/null" not in src.read_text(encoding="utf-8")
+
+
+def test_no_dev_null_in_routes_lifecycle():
+    """/dev/null must not appear in routes_lifecycle.py."""
+    src = Path(__file__).parent.parent / "app" / "api" / "routes_lifecycle.py"
+    assert "/dev/null" not in src.read_text(encoding="utf-8")
+
+
+def test_no_placeholder_path_in_agency_upload_endpoint():
+    """The upload endpoint must not reference fake or placeholder file paths."""
+    src = Path(__file__).parent.parent / "app" / "api" / "routes_lifecycle.py"
+    content = src.read_text(encoding="utf-8")
+    # Find upload endpoint block
+    idx = content.find("upload_agency_docs_endpoint")
+    assert idx != -1
+    snippet = content[idx:idx + 2000]
+    # Only check for actual fake path patterns — not the English word "placeholder"
+    # which legitimately appears in the docstring ("Does not use placeholder paths.")
+    for bad in ("/dev/null", "fake_path", "manual_receipt"):
+        assert bad not in snippet, f"Forbidden fake path '{bad}' in upload endpoint"
+
+
 # ── Service invoice monitor ──────────────────────────────────────────────────
 
 def test_service_invoice_vendor_classification(tmp_path, monkeypatch):
@@ -284,6 +473,14 @@ def test_monitor_starts_agency_sla_after_forward_sent(tmp_path, monkeypatch):
     from app.services import ai_bridge as ab
     monkeypatch.setattr(m,  "settings", _settings(tmp_path))
     monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+    # scan_active_shipments runs an autonomous email ingestion step (Step 0)
+    # before processing any batches. That step calls get_valid_access_token()
+    # which opens a real TLS connection to Zoho. Stub it out so the test stays
+    # fully offline and exercises only the SLA-start logic it is named for.
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: {"ok": False, "error": "stubbed", "active_batches": 0, "shipments": []},
+    )
     _seed_audit(tmp_path, "B_FUSED",
                 clearance_status="awaiting_dhl_customs_email",
                 clearance_decision={"total_value_usd": 5000,
@@ -302,6 +499,11 @@ def test_monitor_closes_shipment_when_all_conditions_met(tmp_path, monkeypatch):
     from app.services import ai_bridge as ab
     monkeypatch.setattr(m,  "settings", _settings(tmp_path))
     monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+    # Same Step-0 stub — prevents TLS call to Zoho before the closure logic runs.
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: {"ok": False, "error": "stubbed", "active_batches": 0, "shipments": []},
+    )
     _seed_audit(tmp_path, "B_AUTOCLOSE",
                 clearance_status="awaiting_dhl_customs_email",
                 clearance_decision={"total_value_usd": 5000,
@@ -340,3 +542,300 @@ def test_no_financial_fields_modified_by_lifecycle_layer(tmp_path, monkeypatch):
     after = json.loads(p.read_text())
     assert after["invoice_totals"]["total_cif_usd"]       == 9999.99
     assert after["clearance_decision"]["total_value_usd"] == 9999.99
+
+
+# ── /closure/{batch_id}/check — live route ───────────────────────────────────
+
+def test_check_closure_endpoint_returns_200_and_is_read_only(tmp_path, monkeypatch):
+    """
+    GET /api/v1/closure/{batch_id}/check must return a structured response with
+    ready/checks/current_status/already_completed and must NOT write status=completed.
+    """
+    import json as _json
+    from app.api import routes_lifecycle as rl
+    from app.core.security import require_api_key
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    # Seed an audit where all closure checks pass
+    p = _seed_audit(
+        tmp_path, "B_CHECK_LIVE",
+        status="open",
+        customs_docs={"received": True},
+        pz_generated=True,
+        agency_invoice_received=True,
+        dhl_invoice_received=True,
+    )
+
+    s = _settings(tmp_path)
+    monkeypatch.setattr(rl, "settings", s)
+
+    app = FastAPI()
+    app.include_router(rl.router)
+    app.dependency_overrides[require_api_key] = lambda: None
+
+    client = TestClient(app)
+    resp = client.get("/api/v1/closure/B_CHECK_LIVE/check")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert "ready" in data,             "response must include 'ready'"
+    assert "checks" in data,            "response must include 'checks'"
+    assert "current_status" in data,    "response must include 'current_status'"
+    assert "already_completed" in data, "response must include 'already_completed'"
+    assert data["batch_id"] == "B_CHECK_LIVE"
+    assert data["ready"] is True
+    assert data["already_completed"] is False
+
+    # Audit must not be mutated — status stays "open"
+    after = _json.loads(p.read_text())
+    assert after.get("status") == "open", "check endpoint must not set status=completed"
+
+
+def test_check_closure_endpoint_returns_404_for_missing_batch(tmp_path, monkeypatch):
+    """GET /closure/{batch_id}/check must return 404 when batch audit does not exist."""
+    from app.api import routes_lifecycle as rl
+    from app.core.security import require_api_key
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    s = _settings(tmp_path)
+    monkeypatch.setattr(rl, "settings", s)
+
+    app = FastAPI()
+    app.include_router(rl.router)
+    app.dependency_overrides[require_api_key] = lambda: None
+
+    client = TestClient(app)
+    resp = client.get("/api/v1/closure/B_CHECK_MISSING/check")
+    assert resp.status_code == 404
+
+
+# ── Service invoice monitor — service layer ───────────────────────────────────
+
+def test_service_invoice_all_bad_paths_returns_ok_false(tmp_path, monkeypatch):
+    """All-missing paths must return ok=False / no_files_imported; audit flags must not be set."""
+    from app.services import service_invoice_monitor as sim
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    s = _settings(tmp_path)
+    for mod in (sim, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    _seed_audit(tmp_path, "B_SIM_ALLFAIL")
+
+    out = sim.register_service_invoices("B_SIM_ALLFAIL", ["/no/such/dhl.pdf", "/no/such/agency.pdf"])
+
+    assert out["ok"] is False, "all-bad paths must return ok=False"
+    assert out["error"] == "no_files_imported"
+    assert out["imported"] == []
+    assert len(out["skipped"]) == 2
+
+    # Audit must NOT have invoice flags set
+    audit = json.loads((tmp_path / "outputs" / "B_SIM_ALLFAIL" / "audit.json").read_text())
+    assert audit.get("dhl_invoice_received")    is not True
+    assert audit.get("agency_invoice_received") is not True
+
+
+def test_service_invoice_valid_dhl_sets_flag(tmp_path, monkeypatch):
+    """A valid DHL-named file must set dhl_invoice_received=True in audit."""
+    from app.services import service_invoice_monitor as sim
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    s = _settings(tmp_path)
+    for mod in (sim, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    _seed_audit(tmp_path, "B_SIM_DHL")
+    f = tmp_path / "DHL_Invoice_001.pdf"
+    f.write_bytes(b"dhl content")
+
+    out = sim.register_service_invoices("B_SIM_DHL", [str(f)])
+
+    assert out["ok"] is True
+    assert out["dhl_invoice_received"] is True
+    assert out["agency_invoice_received"] is False
+    audit = json.loads((tmp_path / "outputs" / "B_SIM_DHL" / "audit.json").read_text())
+    assert audit["dhl_invoice_received"] is True
+
+
+def test_service_invoice_valid_agency_sets_flag(tmp_path, monkeypatch):
+    """A valid Ganther-named file must set agency_invoice_received=True in audit."""
+    from app.services import service_invoice_monitor as sim
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    s = _settings(tmp_path)
+    for mod in (sim, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    _seed_audit(tmp_path, "B_SIM_AGENCY")
+    f = tmp_path / "Ganther_FV2026_002.pdf"
+    f.write_bytes(b"agency content")
+
+    out = sim.register_service_invoices("B_SIM_AGENCY", [str(f)])
+
+    assert out["ok"] is True
+    assert out["agency_invoice_received"] is True
+    assert out["dhl_invoice_received"] is False
+    audit = json.loads((tmp_path / "outputs" / "B_SIM_AGENCY" / "audit.json").read_text())
+    assert audit["agency_invoice_received"] is True
+
+
+def test_service_invoice_mixed_valid_bad(tmp_path, monkeypatch):
+    """Mixed paths: valid goes to imported, bad goes to skipped; ok=True."""
+    from app.services import service_invoice_monitor as sim
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    s = _settings(tmp_path)
+    for mod in (sim, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    _seed_audit(tmp_path, "B_SIM_MIX")
+    good = tmp_path / "DHL_Invoice_mix.pdf"
+    good.write_bytes(b"data")
+
+    out = sim.register_service_invoices("B_SIM_MIX", [str(good), "/no/such/file.pdf"])
+
+    assert out["ok"] is True
+    assert len(out["imported"]) == 1
+    assert len(out["skipped"])  == 1
+    assert out["dhl_invoice_received"] is True
+
+
+# ── Service invoice upload endpoint ──────────────────────────────────────────
+
+def _make_svc_invoice_upload_client(tmp_path, monkeypatch):
+    """TestClient for the lifecycle router with service-invoice modules patched."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api import routes_lifecycle as rl
+    from app.core.security import require_api_key
+    from app.services import service_invoice_monitor as sim
+    from app.services import shipment_folder_manager as fm
+    from app.services import workdrive_sync as ws
+    s = _settings(tmp_path)
+    for mod in (sim, fm, ws):
+        monkeypatch.setattr(mod, "settings", s)
+    app = FastAPI()
+    app.include_router(rl.router)
+    app.dependency_overrides[require_api_key] = lambda: None
+    return TestClient(app)
+
+
+def test_upload_service_invoice_accepts_valid_pdf(tmp_path, monkeypatch):
+    """Multipart upload with a valid DHL-named PDF must set dhl_invoice_received=True."""
+    _seed_audit(tmp_path, "B_SIMUP")
+    client = _make_svc_invoice_upload_client(tmp_path, monkeypatch)
+
+    resp = client.post(
+        "/api/v1/service-invoices/B_SIMUP/upload",
+        files=[("files", ("DHL_Invoice_B_SIMUP.pdf", b"%PDF-1.4 dhl invoice", "application/pdf"))],
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["dhl_invoice_received"] is True
+    audit = json.loads((tmp_path / "outputs" / "B_SIMUP" / "audit.json").read_text())
+    assert audit["dhl_invoice_received"] is True
+
+
+def test_upload_service_invoice_rejects_invalid_extension(tmp_path, monkeypatch):
+    """Upload with an unsupported extension must return 400."""
+    _seed_audit(tmp_path, "B_SIMUP_EXT")
+    client = _make_svc_invoice_upload_client(tmp_path, monkeypatch)
+
+    resp = client.post(
+        "/api/v1/service-invoices/B_SIMUP_EXT/upload",
+        files=[("files", ("invoice.exe", b"MZ\x90\x00", "application/octet-stream"))],
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_upload_service_invoice_rejects_empty_file(tmp_path, monkeypatch):
+    """Upload with a zero-byte file must return 400."""
+    _seed_audit(tmp_path, "B_SIMUP_EMPTY")
+    client = _make_svc_invoice_upload_client(tmp_path, monkeypatch)
+
+    resp = client.post(
+        "/api/v1/service-invoices/B_SIMUP_EMPTY/upload",
+        files=[("files", ("DHL_Invoice_empty.pdf", b"", "application/pdf"))],
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_upload_service_invoice_rejects_no_files(tmp_path, monkeypatch):
+    """Upload with no files at all must return 422."""
+    _seed_audit(tmp_path, "B_SIMUP_NOFILE")
+    client = _make_svc_invoice_upload_client(tmp_path, monkeypatch)
+
+    resp = client.post("/api/v1/service-invoices/B_SIMUP_NOFILE/upload")
+    assert resp.status_code in (422, 400), resp.text
+
+
+def test_upload_service_invoice_returns_422_when_all_files_fail(tmp_path, monkeypatch):
+    """Upload to an unknown batch (no audit) must return 422 — nothing was imported."""
+    # Deliberately do NOT seed an audit for this batch_id
+    client = _make_svc_invoice_upload_client(tmp_path, monkeypatch)
+
+    resp = client.post(
+        "/api/v1/service-invoices/B_SIMUP_NOFOUND/upload",
+        files=[("files", ("DHL_Invoice_fail.pdf", b"%PDF-1.4 data", "application/pdf"))],
+    )
+    assert resp.status_code == 422, resp.text
+
+
+# ── Safety: no fake paths in service invoice implementation ──────────────────
+
+def test_no_dev_null_in_service_invoice_monitor():
+    """/dev/null must not appear in service_invoice_monitor.py."""
+    src = Path(__file__).parent.parent / "app" / "services" / "service_invoice_monitor.py"
+    assert "/dev/null" not in src.read_text(encoding="utf-8")
+
+
+def test_no_fake_path_in_service_invoice_upload_endpoint():
+    """The service invoice upload endpoint must not reference fake or placeholder paths."""
+    src = Path(__file__).parent.parent / "app" / "api" / "routes_lifecycle.py"
+    content = src.read_text(encoding="utf-8")
+    idx = content.find("upload_service_invoices_endpoint")
+    assert idx != -1, "upload_service_invoices_endpoint not found in routes_lifecycle.py"
+    snippet = content[idx: idx + 2500]
+    for bad in ("/dev/null", "fake_path", "manual_receipt"):
+        assert bad not in snippet, f"Forbidden fake path {bad!r} in service invoice upload endpoint"
+
+# ── POST /closure/{batch_id}/evaluate → 410 Gone ─────────────────────────────
+
+def _make_simple_client():
+    """Minimal TestClient for the lifecycle router with auth bypassed."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api import routes_lifecycle as rl
+    from app.core.security import require_api_key
+    app = FastAPI()
+    app.include_router(rl.router)
+    app.dependency_overrides[require_api_key] = lambda: None
+    return TestClient(app)
+
+
+def test_closure_evaluate_post_returns_410():
+    """POST /api/v1/closure/{id}/evaluate must return 410 Gone (deprecated)."""
+    c = _make_simple_client()
+    resp = c.post("/api/v1/closure/B_ANY/evaluate")
+    assert resp.status_code == 410, (
+        f"Expected 410 from deprecated evaluate endpoint, got {resp.status_code}: {resp.text}"
+    )
+
+
+def test_closure_evaluate_post_body_points_to_new_path():
+    """410 response body must contain the correct replacement path."""
+    c = _make_simple_client()
+    resp = c.post("/api/v1/closure/B_ANY/evaluate")
+    body = resp.json()
+    assert body.get("ok") is False
+    assert "/api/v1/execute/closure_confirm" in body.get("message", ""), (
+        f"410 message must name the replacement endpoint, got: {body}"
+    )
+
+
+def test_closure_check_get_still_works_after_deprecation(tmp_path, monkeypatch):
+    """GET /closure/{batch_id}/check must still return 404 (not 410) for missing batch."""
+    c = _make_app(tmp_path, monkeypatch)
+    resp = c.get("/api/v1/closure/B_NO_SUCH_BATCH/check")
+    assert resp.status_code == 404, (
+        f"GET /check must still be live — got {resp.status_code}"
+    )
