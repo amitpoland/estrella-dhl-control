@@ -188,11 +188,14 @@ class TestScanAndIngest:
     def test_no_credentials_returns_error(self, tmp_path):
         from app.services.email_evidence_ingestor import scan_and_ingest
         ap, audit = _fake_audit_path(tmp_path)
-        result = scan_and_ingest(
-            "9999999999", "BATCH_TEST", ap, audit,
-            token_provider=None,
-            scan_fn=None,
-        )
+        # Explicitly simulate "no credentials" — mock has_zoho_credentials so
+        # the auto-detect branch returns False regardless of the local .env file.
+        with patch("app.services.zoho_auth.has_zoho_credentials", return_value=False):
+            result = scan_and_ingest(
+                "9999999999", "BATCH_TEST", ap, audit,
+                token_provider=None,
+                scan_fn=None,
+            )
         # With no creds and no scan_fn, it hits the auth check first
         assert result["ok"] is False
         assert result["ingested"] == 0
@@ -498,3 +501,326 @@ class TestScanAndIngestNewFields:
         ]
         result = self._run_ingest(tmp_path, emails, scan_method="rest_api_search")
         assert result["broad_fallback_used"] is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Email identity persistence and fallback search
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _run_ingest_with_scan(tmp_path, emails, scan_method="rest_api_search",
+                           audit_extra=None):
+    """Helper: run scan_and_ingest with a fake scan_fn and fake evidence store."""
+    from app.services.email_evidence_ingestor import scan_and_ingest
+    from unittest.mock import MagicMock, patch
+
+    ap, audit = _fake_audit_path(tmp_path)
+    if audit_extra:
+        data = json.loads(ap.read_text())
+        data.update(audit_extra)
+        ap.write_text(json.dumps(data))
+        audit = dict(audit, **audit_extra)
+
+    scan_result = {
+        "emails": emails,
+        "scanned": len(emails),
+        "query_used": f"searchKey=entire:9999999999",
+        "scan_method": scan_method,
+    }
+    fake_scan = MagicMock(return_value=scan_result)
+
+    store_doc = {"awb": "9999999999", "batch_ids": [], "threads": [], "summary": _summary()}
+
+    with (
+        patch("app.services.email_evidence_store.save_message",
+              return_value={"action": "inserted"}),
+        patch("app.services.email_evidence_store.get_by_awb", return_value=store_doc),
+        patch("app.services.email_evidence_store.link_batch"),
+        patch("app.services.email_evidence_store.update_scan_cursor"),
+        patch("app.services.email_thread_mapper.classify_sender_role",
+              side_effect=lambda s: "dhl" if "dhl" in s.lower() else
+                                    "agency" if "agencja" in s.lower() else "external"),
+    ):
+        result = scan_and_ingest(
+            "9999999999", "BATCH_TEST", ap, audit,
+            token_provider=lambda: "tok",
+            scan_fn=fake_scan,
+        )
+
+    return result, ap, fake_scan
+
+
+class TestEmailIdentityPersistence:
+
+    def test_identity_saved_on_ingest(self, tmp_path):
+        """DHL sender address must be written to audit.email_identities["dhl"]."""
+        emails = [
+            _make_email("msg001", sender="odprawacelna@dhl.com"),
+        ]
+        _, ap, _ = _run_ingest_with_scan(tmp_path, emails)
+        saved = json.loads(ap.read_text())
+        assert "email_identities" in saved, "audit.email_identities not written"
+        assert "odprawacelna@dhl.com" in saved["email_identities"]["dhl"]
+
+    def test_identity_agency_bucket(self, tmp_path):
+        """Agency sender must go to email_identities['agency'] bucket."""
+        emails = [
+            _make_email("msg001", sender="spedycja@agencja-celna.pl"),
+        ]
+        # Patch classify_sender_role to return "agency" for this address
+        from app.services.email_evidence_ingestor import scan_and_ingest
+        ap, audit = _fake_audit_path(tmp_path)
+        scan_result = {
+            "emails": emails, "scanned": 1,
+            "query_used": "searchKey=entire:9999999999",
+            "scan_method": "rest_api_search",
+        }
+        fake_scan = MagicMock(return_value=scan_result)
+        store_doc = {"awb": "9999999999", "batch_ids": [], "threads": [], "summary": _summary()}
+        with (
+            patch("app.services.email_evidence_store.save_message",
+                  return_value={"action": "inserted"}),
+            patch("app.services.email_evidence_store.get_by_awb", return_value=store_doc),
+            patch("app.services.email_evidence_store.link_batch"),
+            patch("app.services.email_evidence_store.update_scan_cursor"),
+            patch("app.services.email_thread_mapper.classify_sender_role",
+                  return_value="agency"),
+            patch("app.services.email_thread_mapper.classify_direction",
+                  return_value="inbound"),
+            patch("app.services.email_thread_mapper.classify_event_type",
+                  return_value="unknown"),
+            patch("app.services.email_thread_mapper.normalise_subject",
+                  return_value="subject"),
+        ):
+            scan_and_ingest(
+                "9999999999", "BATCH_TEST", ap, audit,
+                token_provider=lambda: "tok",
+                scan_fn=fake_scan,
+            )
+        saved = json.loads(ap.read_text())
+        assert "spedycja@agencja-celna.pl" in saved.get("email_identities", {}).get("agency", [])
+
+    def test_identity_deduplicated(self, tmp_path):
+        """Same sender address ingested twice must appear only once."""
+        emails = [
+            _make_email("msg001", sender="odprawacelna@dhl.com"),
+            _make_email("msg002", sender="odprawacelna@dhl.com"),
+        ]
+        _, ap, _ = _run_ingest_with_scan(tmp_path, emails)
+        saved = json.loads(ap.read_text())
+        dhl_list = saved.get("email_identities", {}).get("dhl", [])
+        assert dhl_list.count("odprawacelna@dhl.com") == 1, (
+            f"Expected exactly 1 occurrence, got {dhl_list.count('odprawacelna@dhl.com')}"
+        )
+
+    def test_identity_merge_on_second_ingest(self, tmp_path):
+        """Second ingest with a new address merges with existing, no overwrite."""
+        # Pre-seed audit with one identity
+        audit_extra = {"email_identities": {"dhl": ["first@dhl.com"], "agency": [], "internal": []}}
+        emails = [_make_email("msg001", sender="second@dhl.com")]
+        _, ap, _ = _run_ingest_with_scan(tmp_path, emails, audit_extra=audit_extra)
+        saved = json.loads(ap.read_text())
+        dhl_list = saved["email_identities"]["dhl"]
+        assert "first@dhl.com" in dhl_list, "Original address must be preserved"
+        assert "second@dhl.com" in dhl_list, "New address must be added"
+
+    def test_no_identity_write_when_no_emails(self, tmp_path):
+        """No email_identities key written when scan returns empty."""
+        _, ap, _ = _run_ingest_with_scan(tmp_path, [])
+        saved = json.loads(ap.read_text())
+        # email_identities should not be written (no senders to extract)
+        idents = saved.get("email_identities", {})
+        all_addrs = idents.get("dhl", []) + idents.get("agency", []) + idents.get("internal", [])
+        assert all_addrs == [], f"Expected no addresses, got {all_addrs}"
+
+
+class TestIdentityFallbackSearch:
+
+    def _run_with_identity_fallback(self, tmp_path, awb_emails, identity_emails_result,
+                                     identity_addr="odprawacelna@dhl.com",
+                                     awb="9999999999"):
+        """
+        Simulate AWB search → 0, then identity fallback → identity_emails_result.
+        Returns (result, scan_fn mock).
+        """
+        from app.services.email_evidence_ingestor import scan_and_ingest
+        ap, audit = _fake_audit_path(tmp_path)
+        # Pre-seed audit with identity address
+        audit_data = json.loads(ap.read_text())
+        audit_data["email_identities"] = {
+            "dhl": [identity_addr], "agency": [], "internal": []
+        }
+        ap.write_text(json.dumps(audit_data))
+        audit = audit_data
+
+        call_count = [0]
+
+        def fake_scan(**kwargs):
+            call_count[0] += 1
+            if kwargs.get("target_awb") == awb:
+                # First call: AWB search → empty
+                return {"emails": awb_emails, "scanned": 0,
+                        "query_used": f"searchKey=entire:{awb}",
+                        "scan_method": "rest_api_search"}
+            if kwargs.get("identity_emails"):
+                # Identity fallback call
+                return {"emails": identity_emails_result,
+                        "scanned": len(identity_emails_result),
+                        "query_used": f"searchKey=entire:{identity_addr}",
+                        "scan_method": "rest_api_identity"}
+            # Broad fallback call (target_awb=None, no identity_emails)
+            return {"emails": [], "scanned": 5,
+                    "query_used": "folder=...", "scan_method": "rest_api_recent"}
+
+        store_doc = {"awb": awb, "batch_ids": [], "threads": [], "summary": _summary()}
+        with (
+            patch("app.services.email_evidence_store.save_message",
+                  return_value={"action": "inserted"}),
+            patch("app.services.email_evidence_store.get_by_awb", return_value=store_doc),
+            patch("app.services.email_evidence_store.link_batch"),
+            patch("app.services.email_evidence_store.update_scan_cursor"),
+        ):
+            result = scan_and_ingest(
+                awb, "BATCH_TEST", ap, audit,
+                token_provider=lambda: "tok",
+                scan_fn=fake_scan,
+            )
+
+        return result, fake_scan, call_count[0]
+
+    def test_identity_fallback_used_when_awb_empty(self, tmp_path):
+        """When AWB search returns 0, identity fallback must be tried."""
+        identity_msg = {
+            "message_id": "id001",
+            "subject": f"DHL przesyłka 9999999999",
+            "from": "odprawacelna@dhl.com",
+            "received_at": "2026-04-29T02:00:00+00:00",
+            "body_snippet": "9999999999",
+            "body_text": "9999999999",
+            "attachments": [],
+            "awb": "9999999999",
+        }
+        result, _, calls = self._run_with_identity_fallback(
+            tmp_path,
+            awb_emails=[],                       # AWB search returns 0
+            identity_emails_result=[identity_msg],
+        )
+        assert result["ok"] is True
+        assert result["ingested"] >= 1, "Identity fallback email must be ingested"
+        assert result["scan_method"] == "identity_fallback"
+
+    def test_no_fallback_when_awb_found(self, tmp_path):
+        """If AWB search returns results, identity fallback must NOT be called."""
+        from app.services.email_evidence_ingestor import scan_and_ingest
+        ap, audit = _fake_audit_path(tmp_path)
+        audit_data = json.loads(ap.read_text())
+        audit_data["email_identities"] = {"dhl": ["odprawacelna@dhl.com"], "agency": [], "internal": []}
+        ap.write_text(json.dumps(audit_data))
+        audit = audit_data
+
+        identity_call_count = [0]
+
+        def fake_scan(**kwargs):
+            if kwargs.get("identity_emails"):
+                identity_call_count[0] += 1
+            return {
+                "emails": [_make_email("msg001")],   # AWB search SUCCEEDS
+                "scanned": 1,
+                "query_used": "searchKey=entire:9999999999",
+                "scan_method": "rest_api_search",
+            }
+
+        store_doc = {"awb": "9999999999", "batch_ids": [], "threads": [], "summary": _summary()}
+        with (
+            patch("app.services.email_evidence_store.save_message",
+                  return_value={"action": "inserted"}),
+            patch("app.services.email_evidence_store.get_by_awb", return_value=store_doc),
+            patch("app.services.email_evidence_store.link_batch"),
+            patch("app.services.email_evidence_store.update_scan_cursor"),
+        ):
+            result = scan_and_ingest(
+                "9999999999", "BATCH_TEST", ap, audit,
+                token_provider=lambda: "tok",
+                scan_fn=fake_scan,
+            )
+
+        assert result["ok"] is True
+        assert identity_call_count[0] == 0, "Identity search must NOT be called when AWB found results"
+
+    def test_no_fallback_when_no_identities(self, tmp_path):
+        """When audit has no email_identities, no extra API call is made."""
+        from app.services.email_evidence_ingestor import scan_and_ingest
+        ap, audit = _fake_audit_path(tmp_path)  # no email_identities key
+
+        call_count = [0]
+        def fake_scan(**kwargs):
+            call_count[0] += 1
+            if kwargs.get("identity_emails"):
+                pytest.fail("identity_emails scan called despite no identities in audit")
+            return {"emails": [], "scanned": 0, "query_used": "q", "scan_method": "rest_api_search"}
+
+        store_doc = {"awb": "9999999999", "batch_ids": [], "threads": [], "summary": _summary()}
+        with (
+            patch("app.services.email_evidence_store.save_message",
+                  return_value={"action": "inserted"}),
+            patch("app.services.email_evidence_store.get_by_awb", return_value=store_doc),
+            patch("app.services.email_evidence_store.link_batch"),
+            patch("app.services.email_evidence_store.update_scan_cursor"),
+        ):
+            result = scan_and_ingest(
+                "9999999999", "BATCH_TEST", ap, audit,
+                token_provider=lambda: "tok",
+                scan_fn=fake_scan,
+            )
+        assert result["ok"] is True
+        assert result["ingested"] == 0
+
+
+class TestIdentityAlreadyStoredPath:
+    """Identity accumulation must fire even for already-stored (duplicate) messages."""
+
+    def test_identity_persisted_when_all_duplicates(self, tmp_path):
+        """All emails are already in the store (ingested=0), but identities must still be saved."""
+        from app.services.email_evidence_ingestor import scan_and_ingest
+
+        ap, audit = _fake_audit_path(tmp_path)
+        emails = [
+            {"message_id": "existing-001", "from": "odprawacelna@dhl.com",
+             "subject": "AWB 9999999999", "body_text": "", "received_at": "2026-01-01T00:00:00Z"},
+            {"message_id": "existing-002", "from": "import@estrellajewels.eu",
+             "subject": "Re: AWB 9999999999", "body_text": "", "received_at": "2026-01-01T00:01:00Z"},
+        ]
+        scan_result = {
+            "emails": emails, "scanned": 2,
+            "query_used": "searchKey=entire:9999999999", "scan_method": "rest_api_search",
+        }
+        fake_scan = MagicMock(return_value=scan_result)
+
+        # Both message IDs are already in the store
+        existing_thread = {"messages": [
+            {"message_id": "existing-001"}, {"message_id": "existing-002"}
+        ]}
+        store_doc = {"awb": "9999999999", "batch_ids": [], "threads": [existing_thread], "summary": _summary()}
+
+        with (
+            patch("app.services.email_evidence_store.save_message",
+                  return_value={"action": "duplicate"}),
+            patch("app.services.email_evidence_store.get_by_awb", return_value=store_doc),
+            patch("app.services.email_evidence_store.link_batch"),
+            patch("app.services.email_evidence_store.update_scan_cursor"),
+            patch("app.services.email_thread_mapper.classify_sender_role",
+                  side_effect=lambda s: "dhl" if "dhl" in s.lower() else "internal"),
+        ):
+            result = scan_and_ingest(
+                "9999999999", "BATCH_TEST", ap, audit,
+                token_provider=lambda: "tok",
+                scan_fn=fake_scan,
+            )
+
+        assert result["ok"] is True
+        assert result["ingested"] == 0
+        assert result["already_stored"] == 2
+
+        saved = json.loads(ap.read_text())
+        idents = saved.get("email_identities") or {}
+        assert "odprawacelna@dhl.com" in (idents.get("dhl") or [])
+        assert "import@estrellajewels.eu" in (idents.get("internal") or [])

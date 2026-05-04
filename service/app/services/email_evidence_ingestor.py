@@ -218,6 +218,8 @@ def scan_and_ingest(
     query_used    = result.get("query_used", "")
     scan_method   = result.get("scan_method", "")
 
+    log.info("[ingest] awb=%s mode=awb results=%d", awb, len(emails))
+
     # ── Broad-scan fallback: Zoho keyword search can miss when emails are old,
     #    the AWB appears after a colon that wasn't indexed, or the API token
     #    only has inbox scope. If targeted search returned nothing, also run a
@@ -253,6 +255,56 @@ def scan_and_ingest(
         except Exception as _exc:
             log.debug("[ingest] broad fallback failed awb=%s: %s", awb, _exc)
 
+    # ── Identity-based fallback: when AWB search + broad scan both return 0,
+    #    use previously persisted sender addresses from audit.email_identities.
+    #    Searches entire:{email} for each known address; results are locally
+    #    filtered to keep only emails that contain this AWB in subject/body.
+    #    This adds zero API calls if AWB search already found results.
+    if not emails:
+        _saved_idents = audit.get("email_identities") or {}
+        _identity_emails: List[str] = []
+        for _bucket in ("dhl", "agency", "internal"):
+            _identity_emails.extend(_saved_idents.get(_bucket) or [])
+
+        if _identity_emails:
+            log.info(
+                "[ingest] awb=%s mode=identity_fallback identities=%d",
+                awb, len(_identity_emails),
+            )
+            for _addr in _identity_emails:
+                try:
+                    _id_result = scan_fn(
+                        target_awb=None,
+                        limit=min(limit, 200),
+                        api_base=api_base,
+                        token_provider=lambda _t=token: _t,
+                        identity_emails=[_addr],
+                    )
+                    _id_candidates = _id_result.get("emails") or []
+                    _id_matched = [
+                        _e for _e in _id_candidates
+                        if awb in re.sub(r"\D", "", _e.get("subject", "") +
+                                         _e.get("body_snippet", "") +
+                                         _e.get("body_text", ""))
+                           or _e.get("awb") == awb
+                    ]
+                    if _id_matched:
+                        emails        = _id_matched
+                        total_scanned += _id_result.get("scanned", 0)
+                        query_used    = f"identity_fallback:{_addr}"
+                        scan_method   = "identity_fallback"
+                        log.info(
+                            "[ingest] awb=%s identity_fallback addr=%r matched=%d",
+                            awb, _addr, len(_id_matched),
+                        )
+                        break
+                    total_scanned += _id_result.get("scanned", 0)
+                except Exception as _exc:
+                    log.debug("[ingest] identity fallback failed addr=%r: %s", _addr, _exc)
+
+        log.info("[ingest] awb=%s mode=%s results=%d",
+                 awb, scan_method if emails else "identity_fallback", len(emails))
+
     # ── 3. Store in evidence (idempotent) ────────────────────────────────────
     try:
         from .email_evidence_store import (
@@ -283,6 +335,9 @@ def scan_and_ingest(
     ingested_message_ids: List[str] = []
     broad_fallback_used: bool = (scan_method == "broad_fallback")
 
+    # Accumulate identities to persist after the loop
+    _new_identities: Dict[str, set] = {"dhl": set(), "agency": set(), "internal": set()}
+
     for e in emails:
         mid = e.get("message_id") or e.get("messageId") or e.get("id")
 
@@ -290,11 +345,23 @@ def scan_and_ingest(
         if not known_ticket and not new_ticket and e.get("dhl_ticket"):
             new_ticket = e["dhl_ticket"]
 
+        # Extract sender now so already-stored emails still populate identity pool.
+        sender = e.get("from") or e.get("sender") or ""
+
         if mid and mid in _existing_ids:
             already_stored += 1
+            # Still classify and accumulate identity even if duplicate
+            _s = sender.lower().strip()
+            if _s:
+                _r = _csr(_s)
+                if _r == "dhl":
+                    _new_identities["dhl"].add(_s)
+                elif _r in ("agency", "ganther"):
+                    _new_identities["agency"].add(_s)
+                elif _r == "internal":
+                    _new_identities["internal"].add(_s)
             continue
 
-        sender = e.get("from") or e.get("sender") or ""
         subj   = e.get("subject", "")
         body   = e.get("body_text") or e.get("body_snippet") or e.get("body", "") or ""
 
@@ -323,6 +390,16 @@ def scan_and_ingest(
 
         thread_id = "zoho:" + (_ns(subj) or "msg")[:80]
 
+        # Collect identity addresses for fallback search persistence
+        sender_lower = sender.lower().strip()
+        if sender_lower:
+            if role == "dhl":
+                _new_identities["dhl"].add(sender_lower)
+            elif role in ("agency", "ganther"):
+                _new_identities["agency"].add(sender_lower)
+            elif role == "internal":
+                _new_identities["internal"].add(sender_lower)
+
         try:
             action = save_message(awb, {
                 "message_id":          mid,
@@ -347,6 +424,34 @@ def scan_and_ingest(
                 already_stored += 1
         except Exception as exc:
             log.warning("[ingest] save_message failed mid=%s awb=%s: %s", mid, awb, exc)
+
+    # ── 3b. Persist email identities for future fallback searches ─────────────
+    # Merges discovered sender addresses into audit.email_identities so that
+    # future scans can use identity-based search as a fallback when AWB search
+    # returns 0.  Only writes when new addresses were collected; merge-safe.
+    if any(_new_identities[k] for k in _new_identities):
+        try:
+            from ..utils.io import write_json_atomic
+            _live = json.loads(audit_path.read_text(encoding="utf-8"))
+            _ident = _live.setdefault("email_identities", {"dhl": [], "agency": [], "internal": []})
+            changed = False
+            for bucket, addresses in _new_identities.items():
+                existing_set = set(_ident.get(bucket) or [])
+                new_addrs = addresses - existing_set
+                if new_addrs:
+                    _ident[bucket] = sorted(existing_set | new_addrs)
+                    changed = True
+            if changed:
+                write_json_atomic(audit_path, _live)
+                log.info(
+                    "[ingest] persisted email_identities for awb=%s dhl=%d agency=%d internal=%d",
+                    awb,
+                    len(_ident.get("dhl", [])),
+                    len(_ident.get("agency", [])),
+                    len(_ident.get("internal", [])),
+                )
+        except Exception as exc:
+            log.debug("[ingest] could not persist email_identities: %s", exc)
 
     # ── 4. Persist newly discovered ticket ───────────────────────────────────
     if new_ticket and not known_ticket:
