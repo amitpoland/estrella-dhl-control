@@ -515,10 +515,30 @@ def _ensure_agency_forward_after_dhl(audit_path: Path, audit: Dict[str, Any]) ->
     is_high  = cd.get("clearance_path") == "external_agency_clearance"
     dhl_recv = bool((audit.get("dhl_email") or {}).get("received"))
     docs     = audit.get("dhl_documents_received") or {}
-    has_docs = bool(docs.get("files"))
+    files    = docs.get("files") or []
+    has_docs_fallback = False
+    if not files:
+        try:
+            from .email_evidence_store import get_summary as _ev_sum
+            _awb_fwd = audit.get("awb") or audit.get("tracking_no")
+            _ev_summary = _ev_sum(_awb_fwd) if _awb_fwd else {}
+            has_docs_fallback = bool((_ev_summary or {}).get("dhl_documents_received"))
+        except Exception:
+            pass
+    has_docs = bool(files) or has_docs_fallback
     already  = bool((audit.get("agency_forward_after_dhl") or {}).get("sent"))
 
     if not (is_high and dhl_recv and has_docs and not already):
+        return out
+
+    # Hard-stop: block retries that slip past the outer `already` flag.
+    # Covers two cases:
+    #   1. sent=True + provider_message_id → confirmed delivered
+    #   2. email_id present → queued (SMTP pending or already processed)
+    _existing_fwd = audit.get("agency_forward_after_dhl") or {}
+    if _existing_fwd.get("sent") and _existing_fwd.get("provider_message_id"):
+        return out
+    if _existing_fwd.get("email_id"):
         return out
 
     try:
@@ -644,6 +664,36 @@ def _process_agency_sla(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, An
         record_agency_followup_sent, is_agency_followup_due,
     )
     out: Dict[str, Any] = {"started": False, "stopped": False}
+
+    # ── Mark agency_sla.started immediately when forward was sent ──────────
+    # This is a lightweight flag separate from the agency_sla_engine's audit["sla"]
+    # key, written idempotently so the dashboard can detect SLA start without
+    # waiting for the engine's first followup sweep.
+    _fwd_check = audit.get("agency_forward_after_dhl") or {}
+    if bool(_fwd_check.get("sent")) and not (audit.get("agency_sla") or {}).get("started"):
+        audit["agency_sla"] = {
+            "started":    True,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        write_json_atomic(audit_path, audit)
+        out["started"] = True
+
+    # ── Stop agency_sla when SAD is received ──────────────────────────────────
+    _asla = audit.get("agency_sla") or {}
+    if _asla.get("started") and not _asla.get("stopped"):
+        _awb_sla = str(audit.get("awb") or audit.get("tracking_no") or "")
+        _sad_received = False
+        if _awb_sla:
+            try:
+                from .email_evidence_store import get_summary as _ev_sum
+                _sad_received = bool((_ev_sum(_awb_sla) or {}).get("agency_sad_received"))
+            except Exception:
+                pass
+        if _sad_received:
+            audit["agency_sla"]["stopped"] = True
+            audit["agency_sla"]["stopped_at"] = datetime.now(timezone.utc).isoformat()
+            write_json_atomic(audit_path, audit)
+            return {"started": False, "stopped": True}
 
     fwd = audit.get("agency_forward_after_dhl") or {}
     forward_sent = bool(fwd.get("sent")) or bool(fwd.get("sent_at"))
@@ -1061,15 +1111,49 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
             action["agency_forward_after_dhl_error"] = str(exc)
 
         # 5e. Agency SLA — start 2h after agency forward sent; stop on docs received
+        # Guard: skip entirely only when SLA is fully complete (started AND stopped).
+        # Calling when started-but-not-stopped is required so the stop path can fire.
         try:
             audit_sla = json.loads(audit_path.read_text(encoding="utf-8"))
-            sla_result = _process_agency_sla(audit_path, audit_sla)
-            if sla_result.get("started") or sla_result.get("stopped"):
-                action["agency_sla"] = sla_result
+            _sla_state = audit_sla.get("agency_sla") or {}
+            if not (_sla_state.get("started") and _sla_state.get("stopped")):
+                sla_result = _process_agency_sla(audit_path, audit_sla)
+                if sla_result.get("started") or sla_result.get("stopped"):
+                    action["agency_sla"] = sla_result
         except Exception:
             pass
 
-        # 5f. Closure check — write completed status when all conditions met
+        # 5f. Agency SAD parse — read-only extraction after SLA stops
+        # Never writes to customs_declaration, never triggers PZ.
+        try:
+            _audit_for_sad = json.loads(audit_path.read_text(encoding="utf-8"))
+            if (_audit_for_sad.get("agency_sla") or {}).get("stopped"):
+                _sad_parse = _audit_for_sad.get("agency_sad_parse") or {}
+                if not _sad_parse or _sad_parse.get("status") != "parsed":
+                    from .agency_sad_parser import parse_agency_sad
+                    sad_result = parse_agency_sad(
+                        action["batch_id"], audit_path, _audit_for_sad
+                    )
+                    if sad_result.get("parsed") or sad_result.get("awaiting_file"):
+                        action["agency_sad_parse"] = sad_result
+        except Exception:
+            pass
+
+        # 5f2. Agency SAD decision — evaluate parse result against customs_declaration
+        # Pure evaluation; never writes financial fields, never triggers PZ.
+        try:
+            _audit_for_dec = json.loads(audit_path.read_text(encoding="utf-8"))
+            if (_audit_for_dec.get("agency_sad_parse") or {}).get("status"):
+                if not _audit_for_dec.get("agency_sad_decision"):
+                    from .agency_sad_decision import evaluate_agency_sad
+                    dec_result = evaluate_agency_sad(
+                        action["batch_id"], audit_path, _audit_for_dec
+                    )
+                    action["agency_sad_decision"] = dec_result
+        except Exception:
+            pass
+
+        # 5g. Closure check — write completed status when all conditions met
         try:
             from .shipment_closure import apply_closure
             cl = apply_closure(audit_path)
@@ -1078,7 +1162,7 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
         except Exception:
             pass
 
-        # 5g. Action proposal refresh — detect triggers, upsert/resolve proposals.
+        # 5h. Action proposal refresh — detect triggers, upsert/resolve proposals.
         #     Best-effort: never blocks the sweep. Re-reads audit so 5b–5f writes
         #     are included before trigger detection runs.
         try:
@@ -1092,7 +1176,7 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
             log.debug("[monitor] proposal refresh failed (non-fatal) for %s: %s",
                       action["batch_id"], _exc)
 
-        # 5h. Evidence gap-scan — if the email evidence timeline has gaps that
+        # 5i. Evidence gap-scan — if the email evidence timeline has gaps that
         #     Zoho Mail can fill (e.g. batch predates evidence store deployment,
         #     or previous scans ran before Zoho search was fixed), trigger a
         #     scan-and-ingest now. Respects a 48-hour recency window so it

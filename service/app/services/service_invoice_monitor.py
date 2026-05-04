@@ -81,6 +81,17 @@ def register_service_invoices(
         except Exception as exc:
             skipped.append({"file": src, "error": f"{type(exc).__name__}: {exc}"})
 
+    # If every supplied path failed, return an explicit error.
+    # Do NOT touch audit flags — nothing was stored.
+    if not imported and skipped:
+        return {
+            "ok":       False,
+            "error":    "no_files_imported",
+            "batch_id": batch_id,
+            "imported": imported,
+            "skipped":  skipped,
+        }
+
     # Vendor presence flags — used by the closure engine
     vendors_present = {x["vendor"] for x in invoices}
     audit["service_invoices"]              = invoices
