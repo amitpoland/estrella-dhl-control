@@ -108,6 +108,39 @@ def record_received_documents(batch_id: str, body: ReceivedReq) -> Dict[str, Any
     except Exception:
         pass
 
+    # ── Mirror into email evidence store so dashboard timeline reflects receipt ──
+    # Uses a deterministic message_id so repeated calls are no-ops (duplicate).
+    awb = str(audit.get("awb") or audit.get("tracking_no") or "")
+    if awb:
+        try:
+            from ..services import email_evidence_store as evs
+            evs.link_batch(awb, batch_id)
+            evs.save_message(awb, {
+                "message_id":  f"op_dhl_recv:{batch_id}",
+                "thread_id":   f"op_dhl_recv:{batch_id}",
+                "direction":   "incoming",
+                "sender":      "dhl@operator-receipt",
+                "to":          [],
+                "cc":          [],
+                "subject":     "Manual DHL documents received",
+                "body_text":   f"Operator registered {len(new_files)} DHL document(s) for batch {batch_id}.",
+                "timestamp":   now_iso,
+                "event_type":  "dhl_documents",
+                "matched_identifiers": {"awb": True},
+                "attachments": [
+                    {
+                        "filename":      f.get("name", ""),
+                        "document_type": (f.get("type") or "other").lower(),
+                        "size":          f.get("size"),
+                        "sha256":        None,
+                    }
+                    for f in new_files
+                ],
+                "source": "operator_receipt",
+            }, source="operator_receipt")
+        except Exception as _exc:
+            log.warning("[dhl_documents] evidence store write failed (non-fatal): %s", _exc)
+
     return {
         "ok":             True,
         "batch_id":       batch_id,
