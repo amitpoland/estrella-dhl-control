@@ -186,19 +186,36 @@ class TestScanAndIngest:
         return result, ap
 
     def test_no_credentials_returns_error(self, tmp_path):
+        import os as _os
         from app.services.email_evidence_ingestor import scan_and_ingest
         ap, audit = _fake_audit_path(tmp_path)
-        # Explicitly simulate "no credentials" — mock has_zoho_credentials so
-        # the auto-detect branch returns False regardless of the local .env file.
-        with patch("app.services.zoho_auth.has_zoho_credentials", return_value=False):
+
+        # scan_fn is a MagicMock so we can assert it was never reached.
+        # token_provider must be None — that is the gate that triggers the
+        # credential check; passing any non-None callable skips the check
+        # entirely, bypassing the auth block.
+        fake_scan_fn = MagicMock(name="scan_fn")
+
+        # Suppress both credential paths:
+        #   1. has_zoho_credentials() → False  (settings/refresh-token path)
+        #   2. ZOHO_MAIL_API_TOKEN = ""        (env-var daily-token fallback)
+        # Without both, a token from the environment (e.g. set by another test
+        # or an active refresh job) will satisfy path 2 and proceed to scan.
+        with patch("app.services.zoho_auth.has_zoho_credentials", return_value=False), \
+             patch.dict(_os.environ, {"ZOHO_MAIL_API_TOKEN": ""}):
             result = scan_and_ingest(
                 "9999999999", "BATCH_TEST", ap, audit,
-                token_provider=None,
-                scan_fn=None,
+                token_provider=None,     # None triggers the credential check
+                scan_fn=fake_scan_fn,
             )
-        # With no creds and no scan_fn, it hits the auth check first
+
         assert result["ok"] is False
+        assert result["error"] == "no_credentials"
         assert result["ingested"] == 0
+        # The function must return before reaching either token_provider() or
+        # scan_fn(). token_provider=None proves this implicitly (calling None
+        # raises TypeError); scan_fn mock confirms it explicitly.
+        fake_scan_fn.assert_not_called()
 
     def test_stores_new_emails(self, tmp_path):
         emails = [_make_email("msg001"), _make_email("msg002")]
