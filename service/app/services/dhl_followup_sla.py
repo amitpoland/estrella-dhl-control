@@ -108,10 +108,11 @@ def _now_poland() -> datetime:
 # ── State lifecycle ──────────────────────────────────────────────────────────
 
 # Stop reasons surfaced to audit / timeline / UI
-STOP_DHL_EMAIL_RECEIVED = "dhl_email_received"
-STOP_DSK_RECEIVED       = "dsk_received"
-STOP_MANUAL             = "manual_stop"
-STOP_TERMINAL           = "shipment_terminal"
+STOP_DHL_EMAIL_RECEIVED   = "dhl_email_received"
+STOP_DSK_RECEIVED         = "dsk_received"
+STOP_MANUAL               = "manual_stop"
+STOP_TERMINAL             = "shipment_terminal"
+STOP_CUSTOMS_DOCS_RECEIVED = "customs_docs_received"
 
 
 def should_start_followup(audit: Dict[str, Any]) -> Optional[Dict[str, str]]:

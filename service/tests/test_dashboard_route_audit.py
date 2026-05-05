@@ -9,7 +9,9 @@ paths_compatible, find_match) — no filesystem access, no FastAPI import needed
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -25,6 +27,25 @@ from app.tools.dashboard_route_audit import (
     find_match,
     paths_compatible,
 )
+
+
+# ── storage-root guard ────────────────────────────────────────────────────────
+# Importing app.tools.dashboard_route_audit pulls in app.core.config which
+# initialises settings.storage_root to the live path.  These tests are pure-
+# function and never touch storage, but conftest._guard_storage_root checks
+# settings after every test.
+#
+# Use a module-scoped patch via unittest.mock so it outlasts monkeypatch
+# teardown (which would restore the live root before the conftest guard runs).
+
+_tmp_storage_dir = tempfile.mkdtemp(prefix="audit_test_")
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _patch_storage_root_module():
+    from app.core.config import settings
+    with patch.object(settings, "storage_root", Path(_tmp_storage_dir)):
+        yield
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -262,3 +283,73 @@ class TestAudit:
         result = audit(html, backend)
         assert any(fc.path == "/api/v1/tracking/events/export/download"
                    for fc in result.stale)
+
+
+# ── Normaliser: query-string template variables ────────────────────────────────
+
+class TestNormaliseQueryStringVars:
+    """
+    ${qs} / ${params} appended directly to a path segment (no preceding /)
+    are query-string fragments, not path segments.  They must be stripped,
+    not converted to {param}.
+    """
+
+    def test_qs_var_at_segment_end_stripped(self):
+        # /api/v1/wfirma/customers${qs}  →  /api/v1/wfirma/customers
+        html = "apiFetch(`/api/v1/wfirma/customers${qs}`)"
+        calls = extract_frontend_calls(html)
+        assert len(calls) == 1
+        assert calls[0].path == "/api/v1/wfirma/customers"
+
+    def test_qs_var_does_not_create_fake_path_param(self):
+        # Must NOT end with {param} — that would match wrong backend routes
+        html = "apiFetch(`/api/v1/wfirma/products${qs}`)"
+        calls = extract_frontend_calls(html)
+        assert len(calls) == 1
+        assert not calls[0].path.endswith("{param}")
+        assert calls[0].path == "/api/v1/wfirma/products"
+
+    def test_path_segment_var_still_becomes_param(self):
+        # ${…} after "/" is a real path segment → must still become {param}
+        html = "apiFetch(`/api/v1/wfirma/customers/${encodeURIComponent(name)}`, { method: 'PUT' })"
+        calls = extract_frontend_calls(html)
+        assert len(calls) == 1
+        assert calls[0].path == "/api/v1/wfirma/customers/{param}"
+        assert calls[0].method == "PUT"
+
+    def test_mid_path_segment_var_becomes_param(self):
+        html = "apiFetch(`/api/v1/tracking/${encodeURIComponent(batchId)}/timeline`)"
+        calls = extract_frontend_calls(html)
+        assert calls[0].path == "/api/v1/tracking/{param}/timeline"
+
+    def test_qs_var_matches_correct_get_route_no_mismatch(self):
+        # GET /customers (no {param}) must match the GET list route, not the PUT upsert route
+        html = "apiFetch(`/api/v1/wfirma/customers${qs}`)"
+        backend = _be(
+            ("GET", "/api/v1/wfirma/customers"),
+            (["PUT"], "/api/v1/wfirma/customers/{client_name}"),
+        )
+        result = audit(html, backend)
+        assert len(result.stale) == 0
+        assert len(result.ok) == 1
+        matched_be = result.ok[0][1]
+        # Must have matched the GET route, not the PUT one
+        assert "GET" in matched_be.methods
+
+    def test_href_get_matches_get_route_without_mismatch(self):
+        # href always emits GET; if the backend is also GET, no method mismatch
+        html = '<a href="/api/v1/tracking/events/export/download">Download</a>'
+        backend = _be(("GET", "/api/v1/tracking/events/export/download"))
+        result = audit(html, backend)
+        assert len(result.stale) == 0
+        assert len(result.ok) == 1
+        fe, be = result.ok[0]
+        assert fe.method == "GET"
+        assert "GET" in be.methods   # no mismatch
+
+    def test_post_apifetch_method_still_detected(self):
+        # Confirm that explicit POST in apiFetch is not disturbed by normaliser changes
+        html = "apiFetch(`/api/v1/wfirma/customers/${encodeURIComponent(n)}`, { method: 'PUT' })"
+        calls = extract_frontend_calls(html)
+        assert calls[0].method == "PUT"
+        assert calls[0].path == "/api/v1/wfirma/customers/{param}"

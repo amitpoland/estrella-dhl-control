@@ -49,8 +49,10 @@ class AuditResult(NamedTuple):
 
 # ── HTML extraction ────────────────────────────────────────────────────────────
 
-# Template-literal variable: ${anything}
-_TVAR_RE = re.compile(r"\$\{[^}]+\}")
+# ${…} immediately following a "/" — a genuine path-segment variable
+_TVAR_PATH_RE = re.compile(r"(?<=/)\$\{[^}]+\}")
+# ${…} NOT following "/" — a query-string fragment or string-concatenated suffix
+_TVAR_NONPATH_RE = re.compile(r"\$\{[^}]+\}")
 
 # method: 'POST' or method: "DELETE" in nearby context
 _METHOD_RE = re.compile(r"""\bmethod\s*:\s*['"]([A-Z]+)['"]""", re.IGNORECASE)
@@ -60,8 +62,25 @@ _EXTERNAL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
 def _normalise(raw: str) -> str:
-    """Replace template vars with {param} and strip query string."""
-    return _TVAR_RE.sub("{param}", raw).split("?")[0]
+    """
+    Normalise a raw URL string extracted from dashboard source.
+
+    Rules (in order):
+    1. ${…} preceded by "/" is a path-segment variable → replace with {param}.
+    2. Remaining ${…} (appended to a segment, or inside a query string) is a
+       query-string fragment or string-concat suffix → strip entirely.
+    3. Strip query string (everything from "?" onward).
+
+    Examples
+    --------
+    /api/v1/wfirma/customers${qs}          → /api/v1/wfirma/customers
+    /api/v1/wfirma/customers/${name}       → /api/v1/wfirma/customers/{param}
+    /api/v1/tracking/${id}/timeline        → /api/v1/tracking/{param}/timeline
+    /api/v1/dhl/scan-inbox?x=${batchId}   → /api/v1/dhl/scan-inbox
+    """
+    path = _TVAR_PATH_RE.sub("{param}", raw)   # step 1: path-segment vars
+    path = _TVAR_NONPATH_RE.sub("", path)       # step 2: strip remaining vars
+    return path.split("?")[0]                   # step 3: strip query string
 
 
 def _infer_method(context_after: str) -> str:

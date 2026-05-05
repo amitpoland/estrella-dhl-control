@@ -92,6 +92,15 @@ def send_now_endpoint(batch_id: str, body: SendNowReq) -> Dict[str, Any]:
     if not state.get("active"):
         raise HTTPException(status_code=422, detail="dhl_followup is not active")
 
+    if (audit.get("customs_docs") or {}).get("received"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "guard": "customs_docs_received",
+                "error": "SAD already uploaded — DHL follow-up is no longer needed.",
+            },
+        )
+
     pkg = build_dhl_followup_email(audit, batch_id)
     email_id = queue_email(
         to=pkg["to"], subject=pkg["subject"],

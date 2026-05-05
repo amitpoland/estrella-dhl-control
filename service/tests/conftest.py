@@ -13,9 +13,7 @@ if str(_cli_root) not in sys.path:
 
 # ── Safety fixture: prevent tests from writing to live storage ───────────────
 
-# Paths that tests must NEVER use as storage_root.  If settings.storage_root
-# resolves to any of these (or a child of them), the fixture fails the test
-# immediately — before any I/O can happen.
+# Paths that tests must NEVER write new files into.
 _LIVE_ROOTS = {
     Path(__file__).parent.parent / "app" / "storage",          # default config.py
     Path(__file__).parent.parent / "storage",                  # legacy fallback
@@ -29,35 +27,36 @@ if _env_storage:
 
 @pytest.fixture(autouse=True)
 def _guard_storage_root():
-    """Fail fast if any module's settings.storage_root points at a live directory.
+    """Detect tests that write files into live storage roots.
 
-    This runs before every test.  It does NOT import settings eagerly — it
-    only checks when the settings singleton has already been created by the
-    test's own imports.
+    Snapshots live storage before the test runs, then checks for any new files
+    after the test completes. Fails only if a file was actually written to a
+    live directory.
 
-    Exception policy (strict):
-      ImportError  — settings module was never imported in this test; nothing
-                     to check.  Return silently.
-      Anything else — surfaces immediately.  A broad 'except Exception: pass'
-                     would hide bugs in the guard itself and mask real isolation
-                     failures; we do NOT use it here.
+    This approach is compatible with monkeypatch: checking settings.storage_root
+    in teardown is unreliable because monkeypatch restores the live-path default
+    before this fixture's teardown runs, causing false positives on every
+    correctly-patched test.
     """
-    yield  # let the test run, then check post-hoc
+    # Snapshot existing files in live-storage directories before the test
+    before: dict = {}
+    for lp in _LIVE_ROOTS:
+        resolved_lp = lp.resolve()
+        if resolved_lp.exists():
+            for f in resolved_lp.rglob("*"):
+                if f.is_file():
+                    before[str(f)] = f.stat().st_mtime
 
-    # ── Step 1: resolve settings — only skip if the module was never imported ──
-    try:
-        from app.core.config import settings
-    except ImportError:
-        return  # module not loaded in this test — nothing to check
+    yield  # run the test
 
-    # ── Step 2: check for live-storage leak (any error here is a real bug) ─────
-    resolved = settings.storage_root.resolve()
-    for live in _LIVE_ROOTS:
-        lr = live.resolve()
-        if resolved == lr or lr in resolved.parents:
-            pytest.fail(
-                f"STORAGE LEAK: settings.storage_root resolved to live path "
-                f"{resolved!r} (matches protected root {lr!r}).  "
-                f"Add monkeypatch.setattr(settings, 'storage_root', tmp_path) "
-                f"to the test or its autouse fixture."
-            )
+    # After the test: fail if any NEW file was written to live storage
+    for lp in _LIVE_ROOTS:
+        resolved_lp = lp.resolve()
+        if resolved_lp.exists():
+            for f in resolved_lp.rglob("*"):
+                if f.is_file() and str(f) not in before:
+                    pytest.fail(
+                        f"STORAGE LEAK: test wrote {f!r} into live storage root "
+                        f"{resolved_lp!r}.  Use tmp_path / monkeypatch to redirect "
+                        f"settings.storage_root in the test or its autouse fixture."
+                    )

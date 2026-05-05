@@ -740,6 +740,50 @@ def _process_agency_sla(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, An
     return out
 
 
+def _tracking_stage_allows_followup(
+    audit:           Dict[str, Any],
+    customs_trigger: Optional[Dict[str, Any]],
+) -> "tuple[bool, str]":
+    """
+    Guard: the shipment must have reached Poland/customs stage before the
+    DHL follow-up SLA is allowed to start.
+
+    Rules (first match wins):
+      1. customs_workflow_eligible=True          → allow
+      2. tracking_events present                 → allow only if latest
+         normalized_stage rank >= ARRIVED_DESTINATION_COUNTRY
+      3. no tracking_events, specific trigger    → allow
+      4. no tracking_events, generic trigger     → block (unverifiable)
+    """
+    from .tracking_normalizer import stage_rank
+
+    _SPECIFIC_PHRASES = (
+        "customs clearance",
+        "customs status updated",
+        "released by customs",
+    )
+    _MIN_STAGE = "ARRIVED_DESTINATION_COUNTRY"
+    _min_rank  = stage_rank(_MIN_STAGE)
+
+    # Rule 1 — explicit customs workflow flag already set
+    if audit.get("customs_workflow_eligible"):
+        return True, "customs_workflow_eligible"
+
+    # Rule 2 — normalized event store present
+    events = audit.get("tracking_events") or []
+    if events:
+        latest_stage = events[-1].get("normalized_stage", "")
+        if stage_rank(latest_stage) >= _min_rank:
+            return True, f"tracking_stage_ok:{latest_stage}"
+        return False, f"tracking_stage_too_early:{latest_stage}"
+
+    # Rule 3 / 4 — no normalized events; judge by trigger phrase specificity
+    trigger_desc = (customs_trigger or {}).get("description", "") or ""
+    if any(ph in trigger_desc.lower() for ph in _SPECIFIC_PHRASES):
+        return True, "specific_trigger_phrase"
+    return False, "tracking_stage_unverifiable"
+
+
 def _process_dhl_followup(
     audit_path:      Path,
     audit:           Dict[str, Any],
@@ -758,7 +802,7 @@ def _process_dhl_followup(
     """
     from .dhl_followup_sla import (
         start_followup, stop_followup, record_followup_sent, is_due,
-        STOP_DHL_EMAIL_RECEIVED, STOP_TERMINAL, _now_poland,
+        STOP_DHL_EMAIL_RECEIVED, STOP_TERMINAL, STOP_CUSTOMS_DOCS_RECEIVED, _now_poland,
     )
     out: Dict[str, Any] = {
         "started":     False,
@@ -769,7 +813,8 @@ def _process_dhl_followup(
     }
 
     state = audit.get("dhl_followup") or {}
-    dhl_received = bool((audit.get("dhl_email") or {}).get("received"))
+    dhl_received     = bool((audit.get("dhl_email") or {}).get("received"))
+    customs_received = bool((audit.get("customs_docs") or {}).get("received"))
 
     # ── Email Evidence V2 — local store overrides stale audit ────────────────
     # If local evidence already shows a DHL response (request, documents, or
@@ -800,6 +845,19 @@ def _process_dhl_followup(
             out["stopped"]     = True
             out["state_after"] = audit["dhl_followup"]
             return out
+        # SAD uploaded — DHL has responded with docs; no further chasing needed
+        if customs_received:
+            stop_followup(audit, STOP_CUSTOMS_DOCS_RECEIVED)
+            write_json_atomic(audit_path, audit)
+            try:
+                tl.log_event(audit_path, "dhl_followup_stopped", "monitor",
+                             "active_shipment_monitor",
+                             detail={"reason": STOP_CUSTOMS_DOCS_RECEIVED})
+            except Exception:
+                pass
+            out["stopped"]     = True
+            out["state_after"] = audit["dhl_followup"]
+            return out
         # Terminal status check
         cs = audit.get("clearance_status", "")
         tr = (audit.get("tracking") or {}).get("status", "")
@@ -817,7 +875,19 @@ def _process_dhl_followup(
             return out
 
     # ── Start conditions ─────────────────────────────────────────────────────
-    if not state.get("active") and not dhl_received and customs_trigger:
+    if not state.get("active") and not dhl_received and not customs_received and customs_trigger:
+        # Tracking-stage gate: do not start follow-up if shipment hasn't
+        # reached destination/customs stage yet.
+        _stage_ok, _stage_reason = _tracking_stage_allows_followup(audit, customs_trigger)
+        if not _stage_ok:
+            log.info(
+                "[monitor] followup start blocked by tracking-stage gate: "
+                "batch=%s reason=%s",
+                audit_path.parent.name, _stage_reason,
+            )
+            out["stage_gate_blocked"] = _stage_reason
+            return out
+
         # parse trigger time, fall back to now if missing
         trig_time_raw = customs_trigger.get("event_time") or _now_poland().isoformat()
         try:

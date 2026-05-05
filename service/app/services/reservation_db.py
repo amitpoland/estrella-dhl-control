@@ -1,0 +1,617 @@
+"""
+reservation_db.py — Reservation queue DB layer (new schema).
+
+Tables
+------
+product_master            design_no + product_code canonical registry
+design_product_mapping    design_no → product_code resolution
+wfirma_product_mapping    product_code → wFirma product_id sync state
+wfirma_customer_mapping   client_name → wFirma customer_id sync state
+reservation_queue         per-line queue rows (pending → ready → created)
+
+Design rules
+------------
+- All functions take db_path: Path and open their own connection (no globals).
+- row_factory = sqlite3.Row for dict-like access.
+- product_code is the ONLY bridge to wFirma goods — no name-only matching.
+- reservation_queue FK to product_master uses DEFERRABLE INITIALLY DEFERRED
+  so blocked rows (product_code='UNMAPPED') can be inserted without a master.
+- Old wfirma_db.py tables are untouched — this module is additive only.
+"""
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+_DDL = """
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+
+CREATE TABLE IF NOT EXISTS product_master (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_code TEXT NOT NULL UNIQUE,
+    design_no TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    metal TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    source_invoice_no TEXT NOT NULL DEFAULT '',
+    source_batch_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_product_master_product_code ON product_master(product_code);
+CREATE INDEX IF NOT EXISTS idx_product_master_design_no ON product_master(design_no);
+
+CREATE TABLE IF NOT EXISTS design_product_mapping (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    design_no TEXT NOT NULL,
+    product_code TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'locked',
+    source TEXT NOT NULL DEFAULT 'purchase_packing',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(design_no, product_code),
+    FOREIGN KEY(product_code) REFERENCES product_master(product_code)
+);
+CREATE INDEX IF NOT EXISTS idx_design_product_mapping_design_no ON design_product_mapping(design_no);
+
+CREATE TABLE IF NOT EXISTS wfirma_product_mapping (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_code TEXT NOT NULL UNIQUE,
+    wfirma_product_id TEXT NOT NULL DEFAULT '',
+    wfirma_code TEXT NOT NULL DEFAULT '',
+    wfirma_name TEXT NOT NULL DEFAULT '',
+    warehouse_id TEXT NOT NULL DEFAULT '',
+    sync_status TEXT NOT NULL DEFAULT 'pending',
+    last_checked_at TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(product_code) REFERENCES product_master(product_code)
+);
+CREATE INDEX IF NOT EXISTS idx_wfirma_product_mapping_status ON wfirma_product_mapping(sync_status);
+
+CREATE TABLE IF NOT EXISTS wfirma_customer_mapping (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_name TEXT NOT NULL UNIQUE,
+    wfirma_customer_id TEXT NOT NULL DEFAULT '',
+    vat_id TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT '',
+    match_status TEXT NOT NULL DEFAULT 'pending',
+    last_checked_at TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS reservation_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue_key TEXT NOT NULL UNIQUE,
+    batch_id TEXT NOT NULL,
+    client_name TEXT NOT NULL,
+    client_ref TEXT NOT NULL DEFAULT '',
+    sales_doc_no TEXT NOT NULL DEFAULT '',
+    design_no TEXT NOT NULL,
+    product_code TEXT NOT NULL,
+    qty REAL NOT NULL,
+    unit_price REAL NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    status TEXT NOT NULL DEFAULT 'pending',
+    wfirma_product_id TEXT NOT NULL DEFAULT '',
+    wfirma_customer_id TEXT NOT NULL DEFAULT '',
+    wfirma_reservation_id TEXT NOT NULL DEFAULT '',
+    blocking_reason TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ready_at TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT NOT NULL DEFAULT '',
+    completed_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(product_code) REFERENCES product_master(product_code)
+        DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS idx_reservation_queue_batch ON reservation_queue(batch_id);
+CREATE INDEX IF NOT EXISTS idx_reservation_queue_status ON reservation_queue(status);
+CREATE INDEX IF NOT EXISTS idx_reservation_queue_product_code ON reservation_queue(product_code);
+CREATE INDEX IF NOT EXISTS idx_reservation_queue_client ON reservation_queue(client_name);
+"""
+
+
+def _connect(db_path: Path) -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db_path), check_same_thread=False)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ── Init ───────────────────────────────────────────────────────────────────────
+
+def init_reservation_db(db_path: Path) -> None:
+    """Create all 5 reservation tables if they don't exist."""
+    with _connect(db_path) as con:
+        con.executescript(_DDL)
+
+
+# ── product_master ─────────────────────────────────────────────────────────────
+
+def upsert_product_master(
+    db_path: Path,
+    product_code: str,
+    design_no: str,
+    description: str = "",
+    metal: str = "",
+    category: str = "",
+    source_invoice_no: str = "",
+    source_batch_id: str = "",
+) -> int:
+    """Insert or update a product_master row. Returns the row id."""
+    now = _now()
+    with _connect(db_path) as con:
+        con.execute("PRAGMA foreign_keys=ON")
+        existing = con.execute(
+            "SELECT id FROM product_master WHERE product_code=?",
+            (product_code,),
+        ).fetchone()
+        if existing:
+            con.execute(
+                """UPDATE product_master
+                   SET design_no=?, description=?, metal=?, category=?,
+                       source_invoice_no=?, source_batch_id=?, updated_at=?
+                   WHERE product_code=?""",
+                (design_no, description, metal, category,
+                 source_invoice_no, source_batch_id, now, product_code),
+            )
+            return existing["id"]
+        cur = con.execute(
+            """INSERT INTO product_master
+               (product_code, design_no, description, metal, category,
+                source_invoice_no, source_batch_id, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (product_code, design_no, description, metal, category,
+             source_invoice_no, source_batch_id, now, now),
+        )
+        return cur.lastrowid
+
+
+def get_product_master(db_path: Path, product_code: str) -> Optional[Dict[str, Any]]:
+    with _connect(db_path) as con:
+        row = con.execute(
+            "SELECT * FROM product_master WHERE product_code=?",
+            (product_code,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_product_masters(
+    db_path: Path,
+    source_batch_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    with _connect(db_path) as con:
+        if source_batch_id is not None:
+            rows = con.execute(
+                "SELECT * FROM product_master WHERE source_batch_id=? ORDER BY product_code",
+                (source_batch_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM product_master ORDER BY product_code"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── design_product_mapping ────────────────────────────────────────────────────
+
+def upsert_design_mapping(
+    db_path: Path,
+    design_no: str,
+    product_code: str,
+    confidence: str = "locked",
+    source: str = "purchase_packing",
+) -> int:
+    """Insert or update a design → product_code mapping. Returns row id."""
+    now = _now()
+    with _connect(db_path) as con:
+        existing = con.execute(
+            "SELECT id FROM design_product_mapping WHERE design_no=? AND product_code=?",
+            (design_no, product_code),
+        ).fetchone()
+        if existing:
+            con.execute(
+                """UPDATE design_product_mapping
+                   SET confidence=?, source=?, updated_at=?
+                   WHERE design_no=? AND product_code=?""",
+                (confidence, source, now, design_no, product_code),
+            )
+            return existing["id"]
+        cur = con.execute(
+            """INSERT INTO design_product_mapping
+               (design_no, product_code, confidence, source, created_at, updated_at)
+               VALUES (?,?,?,?,?,?)""",
+            (design_no, product_code, confidence, source, now, now),
+        )
+        return cur.lastrowid
+
+
+def get_product_code_by_design_no(
+    db_path: Path,
+    design_no: str,
+) -> Optional[Dict[str, Any]]:
+    """Return the most recently updated mapping for design_no, or None."""
+    with _connect(db_path) as con:
+        row = con.execute(
+            """SELECT * FROM design_product_mapping
+               WHERE design_no=?
+               ORDER BY updated_at DESC LIMIT 1""",
+            (design_no,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# ── wfirma_product_mapping ────────────────────────────────────────────────────
+
+def upsert_wfirma_product_mapping(
+    db_path: Path,
+    product_code: str,
+    wfirma_product_id: str = "",
+    wfirma_code: str = "",
+    wfirma_name: str = "",
+    warehouse_id: str = "",
+    sync_status: str = "pending",
+    last_checked_at: str = "",
+    last_error: str = "",
+) -> int:
+    """Insert or update wFirma product sync state. Returns row id."""
+    now = _now()
+    with _connect(db_path) as con:
+        existing = con.execute(
+            "SELECT id FROM wfirma_product_mapping WHERE product_code=?",
+            (product_code,),
+        ).fetchone()
+        if existing:
+            con.execute(
+                """UPDATE wfirma_product_mapping
+                   SET wfirma_product_id=?, wfirma_code=?, wfirma_name=?,
+                       warehouse_id=?, sync_status=?, last_checked_at=?,
+                       last_error=?, updated_at=?
+                   WHERE product_code=?""",
+                (wfirma_product_id, wfirma_code, wfirma_name,
+                 warehouse_id, sync_status, last_checked_at,
+                 last_error, now, product_code),
+            )
+            return existing["id"]
+        cur = con.execute(
+            """INSERT INTO wfirma_product_mapping
+               (product_code, wfirma_product_id, wfirma_code, wfirma_name,
+                warehouse_id, sync_status, last_checked_at, last_error,
+                created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (product_code, wfirma_product_id, wfirma_code, wfirma_name,
+             warehouse_id, sync_status, last_checked_at, last_error,
+             now, now),
+        )
+        return cur.lastrowid
+
+
+def get_wfirma_product_mapping(
+    db_path: Path,
+    product_code: str,
+) -> Optional[Dict[str, Any]]:
+    with _connect(db_path) as con:
+        row = con.execute(
+            "SELECT * FROM wfirma_product_mapping WHERE product_code=?",
+            (product_code,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_wfirma_product_mappings(
+    db_path: Path,
+    sync_status: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    with _connect(db_path) as con:
+        if sync_status is not None:
+            rows = con.execute(
+                "SELECT * FROM wfirma_product_mapping WHERE sync_status=? ORDER BY product_code",
+                (sync_status,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM wfirma_product_mapping ORDER BY product_code"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── wfirma_customer_mapping ───────────────────────────────────────────────────
+
+def upsert_wfirma_customer_mapping(
+    db_path: Path,
+    client_name: str,
+    wfirma_customer_id: str = "",
+    vat_id: str = "",
+    country: str = "",
+    match_status: str = "pending",
+    last_checked_at: str = "",
+    last_error: str = "",
+) -> int:
+    """Insert or update wFirma customer sync state. Returns row id."""
+    now = _now()
+    with _connect(db_path) as con:
+        existing = con.execute(
+            "SELECT id FROM wfirma_customer_mapping WHERE client_name=?",
+            (client_name,),
+        ).fetchone()
+        if existing:
+            con.execute(
+                """UPDATE wfirma_customer_mapping
+                   SET wfirma_customer_id=?, vat_id=?, country=?,
+                       match_status=?, last_checked_at=?, last_error=?, updated_at=?
+                   WHERE client_name=?""",
+                (wfirma_customer_id, vat_id, country,
+                 match_status, last_checked_at, last_error, now,
+                 client_name),
+            )
+            return existing["id"]
+        cur = con.execute(
+            """INSERT INTO wfirma_customer_mapping
+               (client_name, wfirma_customer_id, vat_id, country,
+                match_status, last_checked_at, last_error, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (client_name, wfirma_customer_id, vat_id, country,
+             match_status, last_checked_at, last_error, now, now),
+        )
+        return cur.lastrowid
+
+
+def get_wfirma_customer_mapping(
+    db_path: Path,
+    client_name: str,
+) -> Optional[Dict[str, Any]]:
+    with _connect(db_path) as con:
+        row = con.execute(
+            "SELECT * FROM wfirma_customer_mapping WHERE client_name=?",
+            (client_name,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_wfirma_customer_mappings(
+    db_path: Path,
+    match_status: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    with _connect(db_path) as con:
+        if match_status is not None:
+            rows = con.execute(
+                "SELECT * FROM wfirma_customer_mapping WHERE match_status=? ORDER BY client_name",
+                (match_status,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM wfirma_customer_mapping ORDER BY client_name"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── reservation_queue ─────────────────────────────────────────────────────────
+
+def upsert_reservation_queue(
+    db_path: Path,
+    queue_key: str,
+    batch_id: str,
+    client_name: str,
+    client_ref: str = "",
+    sales_doc_no: str = "",
+    design_no: str = "",
+    product_code: str = "",
+    qty: float = 0.0,
+    unit_price: float = 0.0,
+    currency: str = "USD",
+    status: str = "pending",
+    blocking_reason: str = "",
+    wfirma_product_id: str = "",
+    wfirma_customer_id: str = "",
+) -> int:
+    """Insert or update a reservation queue row. Returns row id."""
+    now = _now()
+    with _connect(db_path) as con:
+        # Use PRAGMA deferred FK so UNMAPPED product_code rows can be inserted
+        con.execute("PRAGMA foreign_keys=OFF")
+        existing = con.execute(
+            "SELECT id FROM reservation_queue WHERE queue_key=?",
+            (queue_key,),
+        ).fetchone()
+        if existing:
+            con.execute(
+                """UPDATE reservation_queue
+                   SET batch_id=?, client_name=?, client_ref=?, sales_doc_no=?,
+                       design_no=?, product_code=?, qty=?, unit_price=?,
+                       currency=?, status=?, blocking_reason=?,
+                       wfirma_product_id=?, wfirma_customer_id=?, updated_at=?
+                   WHERE queue_key=?""",
+                (batch_id, client_name, client_ref, sales_doc_no,
+                 design_no, product_code, qty, unit_price,
+                 currency, status, blocking_reason,
+                 wfirma_product_id, wfirma_customer_id, now,
+                 queue_key),
+            )
+            return existing["id"]
+        cur = con.execute(
+            """INSERT INTO reservation_queue
+               (queue_key, batch_id, client_name, client_ref, sales_doc_no,
+                design_no, product_code, qty, unit_price, currency,
+                status, blocking_reason, wfirma_product_id, wfirma_customer_id,
+                created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (queue_key, batch_id, client_name, client_ref, sales_doc_no,
+             design_no, product_code, qty, unit_price, currency,
+             status, blocking_reason, wfirma_product_id, wfirma_customer_id,
+             now, now),
+        )
+        return cur.lastrowid
+
+
+def get_reservation_queue_row(
+    db_path: Path,
+    queue_id: int,
+) -> Optional[Dict[str, Any]]:
+    with _connect(db_path) as con:
+        row = con.execute(
+            "SELECT * FROM reservation_queue WHERE id=?",
+            (queue_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_reservation_queue(
+    db_path: Path,
+    status: Optional[str] = None,
+    batch_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    with _connect(db_path) as con:
+        if status and batch_id:
+            rows = con.execute(
+                """SELECT * FROM reservation_queue
+                   WHERE status=? AND batch_id=?
+                   ORDER BY id""",
+                (status, batch_id),
+            ).fetchall()
+        elif status:
+            rows = con.execute(
+                "SELECT * FROM reservation_queue WHERE status=? ORDER BY id",
+                (status,),
+            ).fetchall()
+        elif batch_id:
+            rows = con.execute(
+                "SELECT * FROM reservation_queue WHERE batch_id=? ORDER BY id",
+                (batch_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM reservation_queue ORDER BY id"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_queue_status(
+    db_path: Path,
+    row_id: int,
+    status: str,
+    blocking_reason: str = "",
+    last_error: str = "",
+    updated_at: str = "",
+) -> None:
+    now = updated_at or _now()
+    with _connect(db_path) as con:
+        con.execute(
+            """UPDATE reservation_queue
+               SET status=?, blocking_reason=?, last_error=?, updated_at=?
+               WHERE id=?""",
+            (status, blocking_reason, last_error, now, row_id),
+        )
+
+
+def update_queue_ready(
+    db_path: Path,
+    row_id: int,
+    wfirma_product_id: str,
+    wfirma_customer_id: str,
+    ready_at: str,
+    updated_at: str,
+) -> None:
+    with _connect(db_path) as con:
+        con.execute(
+            """UPDATE reservation_queue
+               SET status='ready', wfirma_product_id=?, wfirma_customer_id=?,
+                   ready_at=?, updated_at=?
+               WHERE id=?""",
+            (wfirma_product_id, wfirma_customer_id, ready_at, updated_at, row_id),
+        )
+
+
+def mark_queue_group_submitting(
+    db_path: Path,
+    batch_id: str,
+    client_name: str,
+    sales_doc_no: str,
+    updated_at: str,
+) -> bool:
+    """
+    Atomic transition ready → submitting for all rows in the group.
+    Returns True if at least one row was transitioned (caller may proceed).
+    Returns False if no ready rows found (concurrent worker already locked them).
+    """
+    with _connect(db_path) as con:
+        cur = con.execute(
+            """UPDATE reservation_queue
+               SET status='submitting', updated_at=?
+               WHERE batch_id=? AND client_name=? AND sales_doc_no=?
+               AND status='ready'""",
+            (updated_at, batch_id, client_name, sales_doc_no),
+        )
+        return cur.rowcount > 0
+
+
+def mark_queue_group_created(
+    db_path: Path,
+    batch_id: str,
+    client_name: str,
+    sales_doc_no: str,
+    wfirma_reservation_id: str,
+    completed_at: str,
+    updated_at: str,
+) -> None:
+    with _connect(db_path) as con:
+        con.execute(
+            """UPDATE reservation_queue
+               SET status='created', wfirma_reservation_id=?,
+                   completed_at=?, updated_at=?
+               WHERE batch_id=? AND client_name=? AND sales_doc_no=?
+               AND status='submitting'""",
+            (wfirma_reservation_id, completed_at, updated_at,
+             batch_id, client_name, sales_doc_no),
+        )
+
+
+def mark_queue_group_failed(
+    db_path: Path,
+    batch_id: str,
+    client_name: str,
+    sales_doc_no: str,
+    error: str,
+    updated_at: str,
+) -> None:
+    with _connect(db_path) as con:
+        con.execute(
+            """UPDATE reservation_queue
+               SET status='failed', last_error=?, updated_at=?
+               WHERE batch_id=? AND client_name=? AND sales_doc_no=?
+               AND status='submitting'""",
+            (error[:1000], updated_at, batch_id, client_name, sales_doc_no),
+        )
+
+
+def list_product_codes_from_queue(
+    db_path: Path,
+    status: Optional[str] = None,
+) -> List[str]:
+    """Return distinct non-empty product_codes from the queue."""
+    with _connect(db_path) as con:
+        if status is not None:
+            rows = con.execute(
+                """SELECT DISTINCT product_code FROM reservation_queue
+                   WHERE status=? AND product_code != '' AND product_code != 'UNMAPPED'
+                   ORDER BY product_code""",
+                (status,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """SELECT DISTINCT product_code FROM reservation_queue
+                   WHERE product_code != '' AND product_code != 'UNMAPPED'
+                   ORDER BY product_code"""
+            ).fetchall()
+    return [r["product_code"] for r in rows]

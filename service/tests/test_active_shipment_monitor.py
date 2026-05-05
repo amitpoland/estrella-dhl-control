@@ -195,3 +195,118 @@ def test_monitor_does_not_modify_financial_fields(tmp_path, monkeypatch):
     # Financial fields untouched
     assert audit_after["invoice_totals"]["total_cif_usd"] == 12345.67
     assert audit_after["clearance_decision"]["total_value_usd"] == 12345.67
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# _tracking_stage_allows_followup gate tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _normalized_event(stage: str, hours_ago: float = 1.0) -> dict:
+    ts = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+    return {
+        "normalized_stage": stage,
+        "event_time":       ts,
+        "raw_description":  stage.lower().replace("_", " "),
+        "source":           "dhl_api",
+    }
+
+
+def _customs_trigger(description: str = "Customs clearance status updated") -> dict:
+    return {
+        "trigger":     "DHL_CUSTOMS_EMAIL_CHECK_REQUIRED",
+        "description": description,
+        "event_time":  datetime.now(timezone.utc).isoformat(),
+        "reason":      "DHL tracking indicates customs process started",
+    }
+
+
+class TestTrackingStageGate:
+
+    def _gate(self, audit: dict, trigger=None):
+        from app.services.active_shipment_monitor import _tracking_stage_allows_followup
+        return _tracking_stage_allows_followup(audit, trigger or _customs_trigger())
+
+    def test_blocked_when_in_transit(self):
+        """Latest normalized stage IN_TRANSIT → gate blocks follow-up start."""
+        audit = {"tracking_events": [_normalized_event("IN_TRANSIT")]}
+        ok, reason = self._gate(audit)
+        assert ok is False
+        assert "tracking_stage_too_early" in reason
+        assert "IN_TRANSIT" in reason
+
+    def test_blocked_when_no_events_and_generic_on_hold_trigger(self):
+        """No normalized events + 'shipment is on hold' trigger → unverifiable."""
+        audit = {}  # no tracking_events
+        trigger = _customs_trigger("Shipment is on hold for customs review")
+        ok, reason = self._gate(audit, trigger)
+        assert ok is False
+        assert reason == "tracking_stage_unverifiable"
+
+    def test_allowed_when_arrived_destination_country(self):
+        """ARRIVED_DESTINATION_COUNTRY is the minimum floor — must allow."""
+        audit = {"tracking_events": [_normalized_event("ARRIVED_DESTINATION_COUNTRY")]}
+        ok, reason = self._gate(audit)
+        assert ok is True
+        assert "tracking_stage_ok" in reason
+
+    def test_allowed_when_customs_pending(self):
+        """CUSTOMS_PENDING is above ARRIVED_DESTINATION_COUNTRY — must allow."""
+        audit = {"tracking_events": [
+            _normalized_event("ARRIVED_DESTINATION_COUNTRY", hours_ago=3),
+            _normalized_event("CUSTOMS_PENDING", hours_ago=1),
+        ]}
+        ok, reason = self._gate(audit)
+        assert ok is True
+
+    def test_allowed_when_customs_workflow_eligible_without_events(self):
+        """customs_workflow_eligible=True bypasses event check entirely."""
+        audit = {"customs_workflow_eligible": True}  # no tracking_events
+        ok, reason = self._gate(audit)
+        assert ok is True
+        assert reason == "customs_workflow_eligible"
+
+    def test_allowed_by_specific_trigger_when_no_events(self):
+        """Specific trigger phrase 'customs clearance' allows start with no events."""
+        audit = {}
+        trigger = _customs_trigger("Customs clearance status updated")
+        ok, reason = self._gate(audit, trigger)
+        assert ok is True
+        assert reason == "specific_trigger_phrase"
+
+    def test_customs_docs_received_still_stops_active_followup(self, tmp_path):
+        """
+        Existing stop condition customs_docs.received must still fire even when
+        the tracking-stage gate would have blocked a start.
+        """
+        from app.services.active_shipment_monitor import _process_dhl_followup
+        from datetime import timezone
+
+        # Audit with an already-ACTIVE follow-up + SAD uploaded
+        now = datetime.now(timezone.utc).isoformat()
+        audit = {
+            "batch_id":    "SG_STOP",
+            "awb":         "9999999999",
+            "dhl_followup": {
+                "active":          True,
+                "trigger_time":    now,
+                "trigger_reason":  "test",
+                "first_followup_at": now,
+                "next_followup_at":  now,
+                "followup_count":  0,
+                "last_followup_at": None,
+                "stopped_at":      None,
+                "stop_reason":     None,
+            },
+            "customs_docs": {"received": True},
+            "tracking_events": [_normalized_event("IN_TRANSIT")],
+        }
+        audit_path = tmp_path / "outputs" / "SG_STOP" / "audit.json"
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        import json
+        audit_path.write_text(json.dumps(audit), encoding="utf-8")
+
+        result = _process_dhl_followup(audit_path, audit, customs_trigger=None)
+
+        assert result["stopped"] is True
+        assert audit["dhl_followup"]["active"] is False
+        assert audit["dhl_followup"]["stop_reason"] == "customs_docs_received"

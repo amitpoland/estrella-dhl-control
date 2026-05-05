@@ -237,3 +237,148 @@ def check_closure_endpoint(batch_id: str) -> Dict[str, Any]:
             result["already_completed"] = audit.get("status") == "completed"
             return result
     raise HTTPException(status_code=404, detail=f"batch {batch_id!r} not found")
+
+
+# ── Agency CN-mismatch follow-up ──────────────────────────────────────────────
+
+_AF_FORBIDDEN = ("..", "/", "\\")
+
+
+class AgencyFollowupReq(BaseModel):
+    batch_id: str
+    reason:   str = ""
+
+
+@router.post("/lifecycle/agency-followup", dependencies=[_auth])
+def agency_followup_endpoint(body: AgencyFollowupReq) -> Dict[str, Any]:
+    """
+    Queue an agency follow-up email for a CN-code mismatch.
+
+    Operator-triggered from the dashboard CN-mismatch card.  The email is
+    queued only — never sent directly.  Recipients come from email_routing /
+    audit.clearance_decision.agency_email, never from the request payload.
+
+    Guards
+    ------
+    - batch_id path-traversal check
+    - 404 if audit.json not found
+    - 409 if batch already completed
+    - skipped (200) if agency_cn_followup.queued_at already set
+    - audit written only after queue_email succeeds
+    """
+    import html as _html
+    import json as _json
+    from datetime import datetime, timezone
+
+    from ..core import timeline as tl
+    from ..services.action_email_builder import build_email_draft
+    from ..services.email_service import queue_email
+
+    batch_id = body.batch_id.strip()
+    reason   = (body.reason or "").strip()
+
+    # 1. Validate batch_id
+    if not batch_id:
+        raise HTTPException(status_code=400, detail="batch_id must not be empty")
+    for frag in _AF_FORBIDDEN:
+        if frag in batch_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"batch_id contains forbidden character: {frag!r}",
+            )
+
+    # 2. Load audit
+    audit: Optional[Dict[str, Any]] = None
+    audit_path: Optional[Path] = None
+    for sub in ("outputs", "working"):
+        p = settings.storage_root / sub / batch_id / "audit.json"
+        if p.exists():
+            try:
+                audit = _json.loads(p.read_text(encoding="utf-8"))
+                audit_path = p
+            except Exception as exc:
+                log.error("agency_followup: audit parse error batch=%s: %s", batch_id, exc)
+            break
+
+    if audit is None or audit_path is None:
+        raise HTTPException(status_code=404, detail=f"batch {batch_id!r} not found")
+
+    # 3. Completed gate
+    if audit.get("status") == "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot send agency follow-up: batch is already completed",
+        )
+
+    # 4. Idempotency — already queued
+    existing = audit.get("agency_cn_followup") or {}
+    if existing.get("queued_at"):
+        return {"ok": True, "status": "skipped", "reason": "already_queued"}
+
+    # 5. Build draft (recipients from email_routing, never from payload)
+    draft = build_email_draft("agency_followup", audit)
+
+    # 6. Append reason as plain text; rebuild HTML with escaping (never trust reason as HTML)
+    if reason:
+        body_with_reason = draft["body_text"] + f"\n\nReason: {reason}"
+        draft["body_text"] = body_with_reason
+        draft["body_html"] = (
+            f"<pre style='font-family:sans-serif'>"
+            f"{_html.escape(body_with_reason)}"
+            f"</pre>"
+        )
+
+    # 7. Queue email (never send directly)
+    try:
+        email_id = queue_email(
+            to           = draft["to"],
+            subject      = draft["subject"],
+            body_html    = draft["body_html"],
+            body_text    = draft["body_text"],
+            batch_id     = batch_id,
+            cc           = draft.get("cc", ""),
+            from_address = "import@estrellajewels.eu",
+            email_type   = "agency_followup",
+        )
+    except Exception as exc:
+        log.error("agency_followup: queue_email failed batch=%s: %s", batch_id, exc)
+        raise HTTPException(status_code=502, detail=f"email queue failed: {exc}")
+
+    # 8. Write audit (only after queue succeeds)
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        audit["agency_cn_followup"] = {
+            "queued_at": now,
+            "email_id":  email_id,
+            "reason":    reason,
+            "to":        draft["to"],
+        }
+        tmp = audit_path.with_suffix(".json.tmp")
+        tmp.write_text(_json.dumps(audit, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(audit_path)
+        log.info("agency_followup: audit written batch=%s email_id=%s", batch_id, email_id)
+    except Exception as exc:
+        log.error(
+            "agency_followup: audit write failed batch=%s (email already queued): %s",
+            batch_id, exc,
+        )
+
+    # 9. Timeline event
+    try:
+        tl.log_event(
+            audit_path,
+            tl.EV_AGENCY_FOLLOWUP_SENT,
+            trigger_source="lifecycle_endpoint",
+            actor="operator",
+            detail={"email_id": email_id, "to": draft["to"], "reason": reason},
+        )
+    except Exception as exc:
+        log.warning("agency_followup: timeline event failed (non-fatal): %s", exc)
+
+    return {
+        "ok":       True,
+        "queued":   True,
+        "email_id": email_id,
+        "to":       draft["to"],
+        "batch_id": batch_id,
+    }

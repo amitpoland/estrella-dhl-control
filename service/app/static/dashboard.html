@@ -2722,13 +2722,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                             cursor:  (closureEvalDisabled || !(closureCheck && closureCheck.ready && !closureCheck.already_completed)) && !closureConfirmBusy ? 'not-allowed' : 'pointer',
                           }}
                           onClick={async () => {
+                            const approvedBy = (prompt('Confirm closure — enter operator name:', 'operator') || '').trim() || 'operator';
                             setClosureConfirmBusy(true);
                             setClosureConfirmResult(null);
                             try {
                               const d = await apiFetch('/api/v1/execute/closure_confirm', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ batch_id: batchId, payload: {} }),
+                                body: JSON.stringify({ batch_id: batchId, payload: { approved_by: approvedBy } }),
                               });
                               setClosureConfirmResult(d);
                               if (d.ok) {

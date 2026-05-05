@@ -23,6 +23,17 @@ import pytest
 _SVC = Path(__file__).parent.parent
 sys.path.insert(0, str(_SVC))
 
+_INGEST_STUB = {"ok": True, "started_at": "2026-01-01T00:00:00Z",
+                "active_batches": 0, "shipments": []}
+
+@pytest.fixture(autouse=True)
+def _no_network_ingestion(monkeypatch):
+    """Prevent scan_active_shipments from making real Zoho API calls."""
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: _INGEST_STUB,
+    )
+
 
 def _settings(tmp_path: Path):
     class S:

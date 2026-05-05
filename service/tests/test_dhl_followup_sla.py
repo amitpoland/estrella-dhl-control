@@ -7,6 +7,7 @@ import json
 import sys
 from datetime import datetime, time, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -24,6 +25,17 @@ from app.services.dhl_followup_sla import (   # noqa: E402
     calculate_first_followup_at, calculate_next_followup_at,
     start_followup, stop_followup, record_followup_sent, is_due,
 )
+
+_INGEST_STUB = {"ok": True, "started_at": "2026-01-01T00:00:00Z",
+                "active_batches": 0, "shipments": []}
+
+@pytest.fixture(autouse=True)
+def _no_network_ingestion(monkeypatch):
+    """Prevent scan_active_shipments from making real Zoho API calls."""
+    monkeypatch.setattr(
+        "app.services.email_ingestion_worker.run_ingestion_cycle",
+        lambda **kw: _INGEST_STUB,
+    )
 
 
 def _pl(year=2026, month=4, day=29, hour=10, minute=0):
@@ -238,3 +250,60 @@ def test_no_financial_fields_modified(tmp_path, monkeypatch):
     after = json.loads((batch_dir / "audit.json").read_text())
     assert after["invoice_totals"]["total_cif_usd"] == 5000
     assert after["clearance_decision"]["total_value_usd"] == 5000
+
+
+# ── customs_docs_received stop condition ─────────────────────────────────────
+
+def test_followup_stops_when_customs_docs_received(tmp_path, monkeypatch):
+    """Active SLA is stopped the sweep after SAD is uploaded (customs_docs.received=True)."""
+    from app.services import active_shipment_monitor as m, ai_bridge as ab
+    monkeypatch.setattr(m,  "settings", _settings(tmp_path))
+    monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+
+    batch_dir = _seed_active_batch(tmp_path, "B_FU_SAD_STOP")
+    # Seed: active SLA already running, customs_docs not yet uploaded
+    audit = json.loads((batch_dir / "audit.json").read_text())
+    audit["dhl_followup"] = {
+        "active": True,
+        "trigger_reason": "customs_trigger",
+        "trigger_time": datetime.now(POLAND_TZ).isoformat(),
+        "first_followup_at": datetime.now(POLAND_TZ).isoformat(),
+        "next_followup_at": (datetime.now(POLAND_TZ)).isoformat(),
+        "followup_count": 1,
+        "last_followup_at": None,
+        "stopped_at": None,
+        "stop_reason": None,
+    }
+    (batch_dir / "audit.json").write_text(json.dumps(audit))
+    # First sweep: SLA active, no customs docs → should send
+    # (we're not testing the send here — we're testing the stop)
+
+    # Now upload SAD
+    audit = json.loads((batch_dir / "audit.json").read_text())
+    audit["customs_docs"] = {"received": True, "received_at": datetime.now(POLAND_TZ).isoformat()}
+    (batch_dir / "audit.json").write_text(json.dumps(audit))
+
+    out = m.scan_active_shipments()
+    a = next(a for a in out["actions"] if a["batch_id"] == "B_FU_SAD_STOP")
+    assert a.get("dhl_followup", {}).get("stopped") is True
+
+    audit_after = json.loads((batch_dir / "audit.json").read_text())
+    f = audit_after["dhl_followup"]
+    assert f["active"] is False
+    assert f["stop_reason"] == "customs_docs_received"
+
+
+def test_followup_does_not_start_when_customs_docs_received(tmp_path, monkeypatch):
+    """SLA must not start when customs_docs.received is already True at trigger time."""
+    from app.services import active_shipment_monitor as m, ai_bridge as ab
+    monkeypatch.setattr(m,  "settings", _settings(tmp_path))
+    monkeypatch.setattr(ab, "settings", _settings(tmp_path))
+
+    batch_dir = _seed_active_batch(tmp_path, "B_FU_SAD_NOSTART")
+    audit = json.loads((batch_dir / "audit.json").read_text())
+    audit["customs_docs"] = {"received": True, "received_at": datetime.now(POLAND_TZ).isoformat()}
+    (batch_dir / "audit.json").write_text(json.dumps(audit))
+
+    m.scan_active_shipments()
+    audit_after = json.loads((batch_dir / "audit.json").read_text())
+    assert not (audit_after.get("dhl_followup") or {}).get("active")

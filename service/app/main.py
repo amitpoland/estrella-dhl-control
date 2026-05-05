@@ -32,6 +32,16 @@ from .api.routes_dhl_followup import router as dhl_followup_router
 from .api.routes_dhl_documents import router as dhl_documents_router
 from .api.routes_lifecycle import router as lifecycle_router
 from .api.routes_intake import router as intake_router
+from .api.routes_execute import router as execute_router
+from .api.routes_system import router as system_router
+from .api.routes_agents import router as agents_router
+from .api.routes_packing import router as packing_router
+from .api.routes_sales import router as sales_router
+from .api.routes_warehouse_audit import router as warehouse_audit_router
+from .api.routes_wfirma_capabilities import router as wfirma_capabilities_router
+from .api.routes_wfirma_reservation import router as wfirma_reservation_router
+from .api.routes_dhl_readiness import router as dhl_readiness_router
+from .api.routes_tracking_db import router as tracking_db_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -158,6 +168,16 @@ app.include_router(dhl_followup_router)
 app.include_router(dhl_documents_router)
 app.include_router(lifecycle_router)
 app.include_router(intake_router)
+app.include_router(execute_router)
+app.include_router(system_router)
+app.include_router(agents_router)
+app.include_router(packing_router)
+app.include_router(sales_router)
+app.include_router(warehouse_audit_router)
+app.include_router(wfirma_capabilities_router)
+app.include_router(wfirma_reservation_router)
+app.include_router(dhl_readiness_router)
+app.include_router(tracking_db_router)  # /events/* before tracking_router's /{tracking_no}
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────

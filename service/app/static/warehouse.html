@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Warehouse Scanner — Estrella</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
+body { font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); color: var(--text); }
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+:root {
+  --bg: #F5F2EE; --bg-subtle: #FAF8F4; --card: #FFFFFF;
+  --border: #E4DDD0; --border-subtle: #EEE8DE;
+  --text: #1E2D4A; --text-2: #4A5A70; --text-3: #8A9AB0;
+  --shadow: rgba(30,45,74,0.06); --shadow-heavy: rgba(30,45,74,0.16);
+  --accent: #C9A456; --accent-light: #E0BC74; --accent-text: #1E2D4A;
+  --accent-subtle: #FBF5E4; --accent-border: #DCBE7A;
+  --sidebar-bg: #1E2D4A; --sidebar-text: #F0EAE0; --sidebar-text-muted: #6A7A96;
+  --badge-green-bg: #E8F5EE; --badge-green-text: #186838; --badge-green-border: #96CCA8;
+  --badge-amber-bg: #FBF5E0; --badge-amber-text: #805A00; --badge-amber-border: #DEC870;
+  --badge-red-bg: #FBE8E6; --badge-red-text: #902018; --badge-red-border: #E0A8A0;
+  --badge-blue-bg: #E8EFF8; --badge-blue-text: #1A4A90; --badge-blue-border: #AABEE0;
+  --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+}
+[data-theme="dark"] {
+  --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+  --border: #2C3C54; --border-subtle: #243050;
+  --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+  --shadow: rgba(0,0,0,0.3); --shadow-heavy: rgba(0,0,0,0.5);
+  --accent: #D4AA5C; --accent-subtle: #1E2808; --accent-border: #5A4A18;
+  --sidebar-bg: #0E1828; --sidebar-text: #EEE8DC; --sidebar-text-muted: #566478;
+  --badge-green-bg: #0E2018; --badge-green-text: #68CC88; --badge-green-border: #1A4830;
+  --badge-amber-bg: #20180A; --badge-amber-text: #E8C040; --badge-amber-border: #584010;
+  --badge-red-bg: #200E10; --badge-red-text: #EE8880; --badge-red-border: #581018;
+  --badge-blue-bg: #0E1E38; --badge-blue-text: #80AAEE; --badge-blue-border: #1E3A64;
+  --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+}
+
+/* Layout */
+.topbar {
+  background: var(--sidebar-bg);
+  padding: 0 24px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.topbar-brand {
+  font-family: 'DM Serif Display', serif;
+  color: var(--accent);
+  font-size: 17px;
+  letter-spacing: .3px;
+  white-space: nowrap;
+}
+.topbar-sep { flex: 1; }
+.topbar-link {
+  color: var(--sidebar-text-muted);
+  font-size: 13px;
+  text-decoration: none;
+  padding: 5px 10px;
+  border-radius: 6px;
+  transition: color .15s, background .15s;
+}
+.topbar-link:hover { color: var(--sidebar-text); background: rgba(255,255,255,.06); }
+.theme-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--sidebar-text-muted); padding: 5px; border-radius: 6px;
+  font-size: 16px; line-height: 1; transition: color .15s;
+}
+.theme-btn:hover { color: var(--sidebar-text); }
+
+.page { max-width: 1100px; margin: 0 auto; padding: 28px 20px 40px; }
+.page-footer {
+  max-width: 1100px; margin: 0 auto; padding: 10px 20px 18px;
+  text-align: right; font-size: 11px; color: var(--text-3);
+  font-family: 'Plus Jakarta Sans', monospace;
+  letter-spacing: .2px;
+  border-top: 1px solid var(--border-subtle);
+}
+.page-title { font-family: 'DM Serif Display', serif; font-size: 24px; color: var(--text); margin-bottom: 4px; }
+.page-sub { font-size: 13px; color: var(--text-3); margin-bottom: 28px; }
+
+/* Grid */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
+
+/* Card */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 22px;
+  box-shadow: 0 2px 8px var(--shadow);
+}
+.card-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .7px;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 16px;
+}
+
+/* Form elements */
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 12px; font-weight: 600; color: var(--text-2); margin-bottom: 5px; }
+.field input, .field select, .field textarea {
+  width: 100%; padding: 9px 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  transition: border-color .15s, box-shadow .15s;
+  outline: none;
+}
+.field input:focus, .field select:focus, .field textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(201,164,86,.15);
+}
+.field textarea { resize: vertical; min-height: 56px; }
+.field input.scan-input {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  padding: 11px 14px;
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background .15s, transform .08s, opacity .15s;
+}
+.btn:active { transform: scale(.97); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: var(--accent-text); width: 100%; justify-content: center; padding: 12px; margin-top: 4px; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-light); }
+
+/* Badges */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px; border-radius: 20px;
+  font-size: 11px; font-weight: 600; letter-spacing: .4px;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+.badge-green  { background: var(--badge-green-bg);  color: var(--badge-green-text);  border-color: var(--badge-green-border); }
+.badge-amber  { background: var(--badge-amber-bg);  color: var(--badge-amber-text);  border-color: var(--badge-amber-border); }
+.badge-blue   { background: var(--badge-blue-bg);   color: var(--badge-blue-text);   border-color: var(--badge-blue-border); }
+.badge-red    { background: var(--badge-red-bg);    color: var(--badge-red-text);    border-color: var(--badge-red-border); }
+.badge-neutral{ background: var(--badge-neutral-bg);color: var(--badge-neutral-text);border-color: var(--badge-neutral-border); }
+
+/* Warning banner */
+.warn-banner {
+  display: flex; align-items: flex-start; gap: 10px;
+  background: var(--badge-amber-bg);
+  border: 1px solid var(--badge-amber-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--badge-amber-text);
+  animation: fadeIn .2s ease;
+}
+.warn-icon { font-size: 16px; line-height: 1.3; flex-shrink: 0; }
+
+/* Result rows */
+.result-row { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--border-subtle); }
+.result-row:last-child { border-bottom: none; }
+.result-label { font-size: 12px; color: var(--text-3); font-weight: 600; letter-spacing: .4px; text-transform: uppercase; }
+.result-value { font-size: 14px; color: var(--text); font-weight: 500; text-align: right; max-width: 62%; word-break: break-all; }
+
+/* History table */
+.history-card { margin-top: 20px; }
+.history-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.history-table th {
+  text-align: left; padding: 7px 10px;
+  font-size: 11px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--text-3); border-bottom: 1px solid var(--border);
+}
+.history-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-subtle); color: var(--text-2); vertical-align: top; }
+.history-table tr:last-child td { border-bottom: none; }
+.history-table tr.latest td { color: var(--text); font-weight: 500; }
+.history-table .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+
+/* Empty / loading states */
+.empty { padding: 28px 0; text-align: center; color: var(--text-3); font-size: 13px; }
+.loading { animation: pulse 1.2s infinite; color: var(--text-3); font-size: 13px; padding: 16px 0; text-align: center; }
+
+/* Error */
+.err-banner {
+  background: var(--badge-red-bg); border: 1px solid var(--badge-red-border);
+  border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;
+  font-size: 13px; color: var(--badge-red-text); animation: fadeIn .2s ease;
+}
+
+/* Success flash */
+.ok-flash {
+  background: var(--badge-green-bg); border: 1px solid var(--badge-green-border);
+  border-radius: 8px; padding: 8px 14px; margin-bottom: 14px;
+  font-size: 13px; color: var(--badge-green-text); font-weight: 600;
+  animation: fadeIn .15s ease;
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── Constants ────────────────────────────────────────────────────────────────
+const ACTIONS = ['RECEIVE','MOVE','PICK','PACK','DISPATCH','RETURN'];
+
+const STATUS_BADGE = {
+  received:     'badge-blue',
+  in_warehouse: 'badge-neutral',
+  picked:       'badge-amber',
+  packed:       'badge-amber',
+  dispatched:   'badge-green',
+  returned:     'badge-red',
+};
+
+function statusBadge(status) {
+  const cls = STATUS_BADGE[status] || 'badge-neutral';
+  return <span className={`badge ${cls}`}>{status || '—'}</span>;
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
+  } catch { return iso; }
+}
+
+// ── API helper ───────────────────────────────────────────────────────────────
+function makeApi(apiKey) {
+  const headers = k => ({
+    'Content-Type': 'application/json',
+    ...(k ? { 'X-API-Key': k } : {}),
+  });
+  return {
+    scan: (body, key) =>
+      fetch('/api/v1/warehouse/scan', {
+        method: 'POST',
+        headers: headers(key),
+        credentials: 'include',
+        body: JSON.stringify(body),
+      }).then(r => r.json().then(d => ({ ok: r.ok, status: r.status, data: d }))),
+    inventory: (scanCode, key) =>
+      fetch(`/api/v1/warehouse/inventory/${encodeURIComponent(scanCode)}`, {
+        headers: headers(key),
+        credentials: 'include',
+      }).then(r => r.json().then(d => ({ ok: r.ok, data: d }))),
+    locations: (key) =>
+      fetch('/api/v1/warehouse/locations', {
+        headers: headers(key),
+        credentials: 'include',
+      }).then(r => r.json().then(d => ({ ok: r.ok, data: d }))),
+    config: () =>
+      fetch('/api/v1/warehouse/config', { credentials: 'include' })
+        .then(r => r.json()),
+  };
+}
+
+// ── ScanForm ─────────────────────────────────────────────────────────────────
+function ScanForm({ locations, onResult, busy, setBusy, apiKey }) {
+  const [form, setForm] = useState({
+    scan_code: '', action: 'RECEIVE', to_location: '', operator: '', note: ''
+  });
+  const [err, setErr] = useState('');
+  const scanRef = useRef(null);
+  const api = makeApi(apiKey);
+
+  // Autofocus scan_code on mount
+  useEffect(() => { scanRef.current?.focus(); }, []);
+
+  function set(k, v) { setForm(f => ({ ...f, [k]: v })); }
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!form.scan_code.trim()) { setErr('Scan code is required.'); return; }
+    setErr('');
+    setBusy(true);
+    try {
+      const { ok, data } = await api.scan({
+        scan_code:   form.scan_code.trim(),
+        action:      form.action,
+        to_location: form.to_location.trim(),
+        operator:    form.operator.trim(),
+        note:        form.note.trim(),
+      }, apiKey);
+      if (!ok) {
+        setErr(data?.detail || `Error ${data?.status}`);
+      } else {
+        onResult(data);
+        // Keep operator; clear transient fields
+        setForm(f => ({ ...f, scan_code: '', note: '' }));
+        setTimeout(() => scanRef.current?.focus(), 60);
+      }
+    } catch (ex) {
+      setErr('Network error — check service is running.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">Scan Item</div>
+      {err && <div className="err-banner">{err}</div>}
+      <form onSubmit={submit}>
+        <div className="field">
+          <label>Scan Code *</label>
+          <input
+            ref={scanRef}
+            className="scan-input"
+            value={form.scan_code}
+            onChange={e => set('scan_code', e.target.value)}
+            placeholder="EJL/26-27/015-6|sr14|JR06076"
+            autoComplete="off"
+            spellCheck="false"
+          />
+        </div>
+        <div className="field">
+          <label>Action *</label>
+          <select value={form.action} onChange={e => set('action', e.target.value)}>
+            {ACTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>To Location</label>
+          <input
+            list="locations-list"
+            value={form.to_location}
+            onChange={e => set('to_location', e.target.value)}
+            placeholder="MAIN/TRAY-A1"
+            autoComplete="off"
+          />
+          <datalist id="locations-list">
+            {locations.map(l => <option key={l.location_code} value={l.location_code} />)}
+          </datalist>
+        </div>
+        <div className="field">
+          <label>Operator</label>
+          <input
+            value={form.operator}
+            onChange={e => set('operator', e.target.value)}
+            placeholder="name"
+          />
+        </div>
+        <div className="field">
+          <label>Note (optional)</label>
+          <textarea
+            value={form.note}
+            onChange={e => set('note', e.target.value)}
+            placeholder="Transfer reason, condition note, …"
+            rows={2}
+          />
+        </div>
+        <button className="btn btn-primary" type="submit" disabled={busy}>
+          {busy ? '…' : '⚡ Record Scan'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ── ResultPanel ──────────────────────────────────────────────────────────────
+function ResultPanel({ result }) {
+  if (!result) {
+    return (
+      <div className="card">
+        <div className="card-title">Last Result</div>
+        <div className="empty">Scan an item to see its location and status.</div>
+      </div>
+    );
+  }
+
+  const inv = result.inventory || {};
+
+  return (
+    <div className="card" style={{ animation: 'fadeIn .2s ease' }}>
+      <div className="card-title">Last Result</div>
+
+      {result.unknown_location && (
+        <div className="warn-banner" id="unknown-location-warning">
+          <span className="warn-icon">⚠️</span>
+          <div>
+            <strong>Unknown location</strong>
+            {' — '}<code>{result.current_location}</code> is not declared in warehouse locations.
+            Scan recorded. Add this location via the Locations panel to suppress this warning.
+          </div>
+        </div>
+      )}
+
+      <div className="ok-flash">✓ {result.action} recorded — {result.event_count} event{result.event_count !== 1 ? 's' : ''}</div>
+
+      <div className="result-row">
+        <span className="result-label">Current Location</span>
+        <span className="result-value" style={{ fontFamily:'ui-monospace,monospace', fontSize:13 }}>
+          {result.current_location || '—'}
+        </span>
+      </div>
+      <div className="result-row">
+        <span className="result-label">Status</span>
+        <span className="result-value">{statusBadge(result.current_status)}</span>
+      </div>
+      <div className="result-row">
+        <span className="result-label">Design No</span>
+        <span className="result-value">{inv.design_no || '—'}</span>
+      </div>
+      <div className="result-row">
+        <span className="result-label">Product Code</span>
+        <span className="result-value" style={{ fontFamily:'ui-monospace,monospace', fontSize:13 }}>
+          {inv.product_code || '—'}
+        </span>
+      </div>
+      <div className="result-row">
+        <span className="result-label">Batch</span>
+        <span className="result-value">{inv.batch_id || '—'}</span>
+      </div>
+      <div className="result-row">
+        <span className="result-label">Updated</span>
+        <span className="result-value">{fmtTime(result.updated_at)}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── HistoryPanel ─────────────────────────────────────────────────────────────
+function HistoryPanel({ history, scanCode, loading }) {
+  if (!scanCode) return null;
+
+  return (
+    <div className="card history-card">
+      <div className="card-title">
+        Movement History
+        <span style={{ fontFamily:'ui-monospace,monospace', fontWeight:400, marginLeft:8, textTransform:'none', letterSpacing:0 }}>
+          {scanCode}
+        </span>
+      </div>
+      {loading && <div className="loading">Loading history…</div>}
+      {!loading && history.length === 0 && <div className="empty">No events yet.</div>}
+      {!loading && history.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="history-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Action</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Operator</th>
+                <th>Time</th>
+                <th>Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((ev, i) => (
+                <tr key={ev.id} className={i === history.length - 1 ? 'latest' : ''}>
+                  <td>{i + 1}</td>
+                  <td><span className="badge badge-neutral">{ev.action}</span></td>
+                  <td className="mono">{ev.from_location || '—'}</td>
+                  <td className="mono">{ev.to_location || '—'}</td>
+                  <td>{ev.operator || '—'}</td>
+                  <td style={{ whiteSpace:'nowrap' }}>{fmtTime(ev.event_time)}</td>
+                  <td style={{ maxWidth:220, fontSize:12, color:'var(--text-3)' }}>{ev.note || ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── App ──────────────────────────────────────────────────────────────────────
+function App() {
+  const [theme, setTheme] = useState(() =>
+    window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  );
+  const [apiKey,    setApiKey]    = useState('');
+  const [locations, setLocations] = useState([]);
+  const [result,    setResult]    = useState(null);
+  const [history,   setHistory]   = useState([]);
+  const [histSC,    setHistSC]    = useState('');
+  const [histLoad,  setHistLoad]  = useState(false);
+  const [busy,      setBusy]      = useState(false);
+  const [initErr,   setInitErr]   = useState('');
+  const [version,   setVersion]   = useState('');
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  // Load API key + locations + version on mount
+  useEffect(() => {
+    const api = makeApi('');
+    api.config()
+      .then(d => {
+        const key = d.api_key || '';
+        setApiKey(key);
+        return api.locations(key);
+      })
+      .then(({ ok, data }) => {
+        if (ok) setLocations(data.locations || []);
+      })
+      .catch(() => setInitErr('Could not reach the warehouse service. Check your session.'));
+
+    fetch('/api/v1/system/version')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setVersion(d.short || d.commit || ''); })
+      .catch(() => {});
+  }, []);
+
+  async function handleResult(data) {
+    setResult(data);
+    const sc = data.scan_code;
+    if (!sc) return;
+    setHistSC(sc);
+    setHistLoad(true);
+    try {
+      const api = makeApi(apiKey);
+      const { ok, data: inv } = await api.inventory(sc, apiKey);
+      if (ok) setHistory(inv.history || []);
+    } finally {
+      setHistLoad(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="topbar">
+        <span className="topbar-brand">Estrella · Warehouse</span>
+        <div className="topbar-sep" />
+        <a className="topbar-link" href="/dashboard">← Dashboard</a>
+        <button className="theme-btn" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
+          {theme === 'dark' ? '☀' : '◑'}
+        </button>
+      </div>
+
+      <div className="page">
+        <div className="page-title">Scanner</div>
+        <div className="page-sub">Record physical inventory movements. Scan or type a barcode to begin.</div>
+
+        {initErr && <div className="err-banner">{initErr}</div>}
+
+        <div className="grid-2">
+          <ScanForm
+            locations={locations}
+            onResult={handleResult}
+            busy={busy}
+            setBusy={setBusy}
+            apiKey={apiKey}
+          />
+          <ResultPanel result={result} />
+        </div>
+
+        <HistoryPanel
+          history={history}
+          scanCode={histSC}
+          loading={histLoad}
+        />
+      </div>
+      {version && (
+        <div className="page-footer">Version: {version}</div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

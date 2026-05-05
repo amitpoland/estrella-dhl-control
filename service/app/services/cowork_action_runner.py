@@ -45,6 +45,23 @@ _INTERNAL_STORAGE_DIRS = frozenset({
     "08_service_invoices", "service_invoices",
 })
 
+# ── Milestone-blocked actions (DHL follow-up emails only) ──────────────────
+# Evidence, agency forward, and SAD import must NOT be blocked.
+
+_MILESTONE_BLOCKED_COWORK_ACTIONS = frozenset({
+    "build_and_send_dhl_reply",
+    "build_and_send_dhl_self_clearance_reply",
+})
+
+# ── DHL-directed draft types — subject to milestone skip ───────────────────
+# Agency and service-invoice draft types must NOT be in this set.
+
+_DHL_DIRECTED_DRAFT_TYPES = frozenset({
+    "dhl_followup",
+    "dhl_dsk_request",
+    "missing_document_request",
+})
+
 # ── Action lock keys ────────────────────────────────────────────────────────
 
 _ACTION_LOCK_MAP = {
@@ -218,9 +235,10 @@ def run_actions(batch_id: str, actions: List[Dict[str, Any]]) -> Dict[str, Any]:
             task_id     = action_desc.get("task_id", "")
 
             # ── Idempotency lock check ──────────────────────────────────────
+            audit_for_checks: Dict[str, Any] = {}
             try:
-                audit_path, audit = _load_audit(batch_id)
-                if _is_action_locked(audit, action_type):
+                audit_path, audit_for_checks = _load_audit(batch_id)
+                if _is_action_locked(audit_for_checks, action_type):
                     skipped.append({
                         "action":  action_type,
                         "task_id": task_id,
@@ -231,6 +249,30 @@ def run_actions(batch_id: str, actions: List[Dict[str, Any]]) -> Dict[str, Any]:
                     continue
             except Exception:
                 pass  # If audit can't be loaded, let the handler fail naturally
+
+            # ── Milestone skip (DHL follow-up emails only) ──────────────────
+            if action_type in _MILESTONE_BLOCKED_COWORK_ACTIONS and audit_for_checks:
+                try:
+                    from .execution_engine import _should_block_followup
+                    _ms_blocked, _ms_reason = _should_block_followup(audit_for_checks)
+                    if _ms_blocked:
+                        log.info(
+                            "[cowork_runner] milestone_skip: action=%s batch=%s reason=%s",
+                            action_type, batch_id, _ms_reason,
+                        )
+                        skipped.append({
+                            "action":  action_type,
+                            "task_id": task_id,
+                            "reason":  f"milestone_skip:{_ms_reason}",
+                        })
+                        _log_action(batch_id, action_type, task_id, "skipped_milestone",
+                                    {"reason": _ms_reason})
+                        continue
+                except Exception as exc:
+                    log.warning(
+                        "[cowork_runner] milestone check failed: action=%s batch=%s: %s",
+                        action_type, batch_id, exc,
+                    )
 
             try:
                 result = _dispatch_action(batch_id, action_desc)
@@ -637,6 +679,23 @@ def _handle_email_draft(batch_id: str, action: Dict[str, Any]) -> Dict[str, Any]
     if any(d.get("type") == draft_type and d.get("status") == "queued"
            for d in draft_log):
         return {"skipped": True, "reason": f"draft type '{draft_type}' already queued"}
+
+    # Guard: milestone skip for DHL-directed drafts
+    if draft_type in _DHL_DIRECTED_DRAFT_TYPES:
+        try:
+            from .execution_engine import _should_block_followup
+            _blocked, _reason = _should_block_followup(audit)
+            if _blocked:
+                log.info(
+                    "[cowork_runner] draft milestone_skip: type=%s batch=%s reason=%s",
+                    draft_type, batch_id, _reason,
+                )
+                return {"skipped": True, "reason": f"milestone_skip:{_reason}"}
+        except Exception as exc:
+            log.warning(
+                "[cowork_runner] draft milestone check failed: type=%s batch=%s: %s",
+                draft_type, batch_id, exc,
+            )
 
     from ..config.email_routing import (
         DHL_TO, AGENCY_TO, AGENCY_CC, INTERNAL_CC,

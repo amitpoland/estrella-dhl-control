@@ -53,7 +53,7 @@ def evaluate_closure(audit: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def apply_closure(audit_path: Path) -> Dict[str, Any]:
+def apply_closure(audit_path: Path, approved_by: str = "operator") -> Dict[str, Any]:
     """
     Read audit, evaluate closure, and if ready, mark completed.
     Idempotent — once status=completed, no further writes.
@@ -74,6 +74,7 @@ def apply_closure(audit_path: Path) -> Dict[str, Any]:
     audit["closed_at"]             = now_iso
     audit["ready_for_accounting"]  = True
     audit["closure_checks"]        = decision["checks"]
+    audit["closure_approved_by"]   = approved_by
     write_json_atomic(audit_path, audit)
 
     try:
@@ -92,10 +93,10 @@ def apply_closure(audit_path: Path) -> Dict[str, Any]:
     }
 
 
-def closure_for_batch(batch_id: str) -> Dict[str, Any]:
+def closure_for_batch(batch_id: str, approved_by: str = "operator") -> Dict[str, Any]:
     """Convenience wrapper: locate batch audit + apply_closure."""
     for sub in ("outputs", "working"):
         p = settings.storage_root / sub / batch_id / "audit.json"
         if p.exists():
-            return apply_closure(p)
+            return apply_closure(p, approved_by=approved_by)
     return {"ok": False, "error": f"batch {batch_id} not found"}
