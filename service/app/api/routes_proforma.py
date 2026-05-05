@@ -369,9 +369,10 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
         source_lines_json = json.dumps(source_lines, ensure_ascii=False),
     )
 
-    # was_created=False would only happen on a TOCTOU race with another worker;
-    # both branches are valid responses. Surface the actual outcome.
-    return JSONResponse({
+    # was_created=False signals a concurrent caller won the INSERT race.
+    # Surface the existing draft's status so the response shape matches the
+    # pre-check skipped branch.
+    response = {
         "ok":                 True,
         "status":             "pending_local" if was_created else "skipped",
         "batch_id":           batch_id,
@@ -380,4 +381,7 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
         "currency":           draft.currency,
         "exchange_rate":      draft.exchange_rate,
         "wfirma_proforma_id": draft.wfirma_proforma_id,
-    })
+    }
+    if not was_created:
+        response["existing_status"] = draft.status
+    return JSONResponse(response)

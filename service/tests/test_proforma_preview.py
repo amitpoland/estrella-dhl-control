@@ -559,3 +559,114 @@ def test_create_blocked_does_not_persist_draft(client, storage):
                        headers=_auth()).json()
     assert body["status"] == "blocked"
     assert pildb.get_draft(storage / "proforma_links.db", BATCH, "ACME") is None
+
+
+# ── Idempotency under concurrency ────────────────────────────────────────────
+
+def test_concurrent_upsert_helper_no_duplicates(tmp_path):
+    """
+    Direct helper-level race: 8 threads call upsert_pending_draft with the
+    same (batch_id, client_name). Exactly one must win; all others observe
+    was_created=False; only one row may exist in the table.
+
+    Tests the helper, not the HTTP route — TestClient is single-threaded so
+    a true race needs sub-route invocation.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    db_path = tmp_path / "proforma_links.db"
+    pildb.init_db(db_path)
+
+    N = 8
+    barrier = threading.Barrier(N)
+
+    def fire():
+        barrier.wait()  # all threads block, then race the INSERT
+        return pildb.upsert_pending_draft(
+            db_path,
+            batch_id          = "B_RACE",
+            client_name       = "ACME",
+            currency          = "USD",
+            exchange_rate     = None,
+            source_lines_json = "[]",
+        )
+
+    with ThreadPoolExecutor(max_workers=N) as ex:
+        results = [f.result() for f in [ex.submit(fire) for _ in range(N)]]
+
+    creators = [r for r in results if r[1]]   # was_created == True
+    losers   = [r for r in results if not r[1]]
+    assert len(creators) == 1, f"expected 1 winner, got {len(creators)}"
+    assert len(losers)   == N - 1
+
+    # All winners and losers must reference the SAME row id
+    winning_id = creators[0][0].id
+    for draft, _ in losers:
+        assert draft.id == winning_id
+
+    # And only one row exists in the table
+    with sqlite3.connect(str(db_path)) as con:
+        n = con.execute(
+            "SELECT COUNT(*) FROM proforma_drafts "
+            "WHERE batch_id=? AND client_name=?",
+            ("B_RACE", "ACME"),
+        ).fetchone()[0]
+    assert n == 1
+
+
+def test_concurrent_upsert_no_integrity_error_leaks(tmp_path):
+    """No sqlite3.IntegrityError must escape the helper under contention."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    db_path = tmp_path / "proforma_links.db"
+    pildb.init_db(db_path)
+
+    N = 16
+    barrier = threading.Barrier(N)
+    exceptions: list = []
+
+    def fire():
+        try:
+            barrier.wait()
+            pildb.upsert_pending_draft(
+                db_path,
+                batch_id          = "B_NOERR",
+                client_name       = "ACME",
+                currency          = "USD",
+                exchange_rate     = None,
+                source_lines_json = "[]",
+            )
+        except Exception as exc:
+            exceptions.append(exc)
+
+    with ThreadPoolExecutor(max_workers=N) as ex:
+        for _ in range(N):
+            ex.submit(fire)
+
+    assert exceptions == [], f"helper leaked exceptions: {exceptions}"
+
+
+def test_create_post_race_response_shape(client, storage):
+    """
+    Two sequential create calls (TestClient is single-threaded) — the second
+    must return skipped with existing_status set.
+    """
+    _seed_purchase(design_no="JE906", product_code="EJL/RR-1")
+    _seed_sales("ACME", [{"sku": "JE906", "qty": 1.0}])
+    _seed_invoice_pricing("EJL/RR-1", 30.0, "USD")
+    _match_product("EJL/RR-1")
+    _match_customer("ACME")
+    _advance_state(_scan_code_for("JE906", "EJL/RR-1"),
+                   target=ise.WAREHOUSE_STOCK,
+                   product_code="EJL/RR-1", design_no="JE906")
+
+    r1 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                     headers=_auth()).json()
+    r2 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                     headers=_auth()).json()
+    assert r1["status"] == "pending_local"
+    assert r2["status"] == "skipped"
+    assert r2["existing_status"] == "pending_local"
+    assert r2["draft_id"] == r1["draft_id"]

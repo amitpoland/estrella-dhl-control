@@ -410,37 +410,51 @@ def upsert_pending_draft(
 
     Idempotent on (batch_id, client_name): if a draft already exists for
     that key (in any status), it is returned unchanged with was_created=False.
-    The caller decides whether to retry, surface, or escalate based on the
-    existing row's status.
+
+    Concurrency-safe: uses INSERT … ON CONFLICT DO NOTHING and detects
+    whether THIS connection performed the insert by inspecting changes().
+    Two concurrent callers cannot both observe was_created=True; the loser
+    re-fetches the winning row and returns was_created=False. Caller logic
+    is symmetric — no IntegrityError ever escapes the helper.
     """
     init_db(db_path)
-    with sqlite3.connect(str(db_path)) as conn:
+    with sqlite3.connect(str(db_path), isolation_level="DEFERRED") as conn:
         conn.row_factory = sqlite3.Row
         _ensure_drafts_table(conn)
-        existing = conn.execute(
-            "SELECT * FROM proforma_drafts WHERE batch_id=? AND client_name=? LIMIT 1",
-            (str(batch_id), str(client_name)),
-        ).fetchone()
-        if existing is not None:
-            return (_row_to_draft(existing), False)
 
         now = _now_utc_iso()
-        cur = conn.execute(
+        # Atomic insert-or-skip. SQLite returns rowcount=1 on insert,
+        # rowcount=0 when the UNIQUE row already exists.
+        conn.execute(
             """
             INSERT INTO proforma_drafts
                 (batch_id, client_name, status, currency, exchange_rate,
                  source_lines_json, wfirma_proforma_id, notes,
                  created_at, updated_at)
             VALUES (?, ?, 'pending_local', ?, ?, ?, NULL, NULL, ?, ?)
+            ON CONFLICT(batch_id, client_name) DO NOTHING
             """,
             (str(batch_id), str(client_name), str(currency or ""),
              exchange_rate, source_lines_json, now, now),
         )
+        # changes() reports the number of rows modified by the LAST statement
+        # on this connection — survives the race because each connection has
+        # its own counter.
+        was_created = bool(conn.execute("SELECT changes()").fetchone()[0])
         conn.commit()
+
         row = conn.execute(
-            "SELECT * FROM proforma_drafts WHERE id=?", (cur.lastrowid,),
+            "SELECT * FROM proforma_drafts WHERE batch_id=? AND client_name=? LIMIT 1",
+            (str(batch_id), str(client_name)),
         ).fetchone()
-        return (_row_to_draft(row), True)
+        if row is None:
+            # Should not happen — INSERT ON CONFLICT DO NOTHING guarantees a
+            # row exists post-call when the table accepts the operation.
+            raise RuntimeError(
+                f"upsert_pending_draft: no row for ({batch_id!r}, {client_name!r}) "
+                "after upsert — investigate concurrent delete or DB corruption"
+            )
+        return (_row_to_draft(row), was_created)
 
 
 def mark_draft_failed(db_path: Path, batch_id: str, client_name: str,
