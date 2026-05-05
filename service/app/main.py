@@ -37,6 +37,7 @@ from .api.routes_system import router as system_router
 from .api.routes_agents import router as agents_router
 from .api.routes_packing import router as packing_router
 from .api.routes_sales import router as sales_router
+from .api.routes_warehouse import router as warehouse_router
 from .api.routes_warehouse_audit import router as warehouse_audit_router
 from .api.routes_wfirma_capabilities import router as wfirma_capabilities_router
 from .api.routes_wfirma_reservation import router as wfirma_reservation_router
@@ -46,6 +47,9 @@ from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
 from .services.export_service import run_engine_health_check
+from .services.packing_db   import init_packing_db
+from .services.warehouse_db import init_warehouse_db
+from .services.document_db  import init_document_db
 from .auth.database import init_db
 from .auth.dependencies import check_session_or_redirect
 
@@ -71,6 +75,16 @@ async def lifespan(app: FastAPI):
     # Initialise auth DB
     init_db(_auth_db)
     log.info("Auth DB ready: %s", _auth_db)
+
+    # Initialise operational DBs (packing / warehouse / document).
+    # These back the packing-list, warehouse-scan, and document-store routes.
+    # Failures here are fatal — the routes 500 silently if these are skipped.
+    _root = settings.storage_root
+    _root.mkdir(parents=True, exist_ok=True)
+    init_packing_db(_root   / "packing.db")
+    init_warehouse_db(_root / "warehouse.db")
+    init_document_db(_root  / "documents.db")
+    log.info("Operational DBs ready under %s (packing / warehouse / documents)", _root)
 
     log.info("Starting Estrella PZ Service  [env=%s]", settings.environment)
     log.info("Engine dir: %s", settings.engine_dir)
@@ -173,6 +187,7 @@ app.include_router(system_router)
 app.include_router(agents_router)
 app.include_router(packing_router)
 app.include_router(sales_router)
+app.include_router(warehouse_router)
 app.include_router(warehouse_audit_router)
 app.include_router(wfirma_capabilities_router)
 app.include_router(wfirma_reservation_router)
