@@ -2160,6 +2160,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [decisionData, setDecisionData] = React.useState(null);
   const [decisionLoading, setDecisionLoading] = React.useState(false);
   const sadRef = React.useRef();
+  const dhlDocsRef = React.useRef();
+  const [dhlDocsBusy,   setDhlDocsBusy]   = React.useState(false);
+  const [dhlDocsResult, setDhlDocsResult] = React.useState(null);
+  const [dhlDocsError,  setDhlDocsError]  = React.useState('');
   const agencyDocsRef = React.useRef();
   const [agencyDocsBusy,   setAgencyDocsBusy]   = React.useState(false);
   const [agencyDocsResult, setAgencyDocsResult] = React.useState(null);
@@ -6581,11 +6585,61 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           )}
                         </div>
                       )}
-                      <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
-                        <div data-testid="dhl-docs-manual-receipt-note" style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic' }}>
-                          Manual DHL document receipt requires backend upload support.
-                        </div>
+                      <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label data-testid="dhl-docs-upload-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: dhlDocsBusy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: dhlDocsBusy ? 'var(--text-3)' : 'var(--text)', background: 'transparent', opacity: dhlDocsBusy ? 0.6 : 1, width: 'fit-content' }}>
+                          <input
+                            data-testid="dhl-docs-file-input"
+                            ref={dhlDocsRef}
+                            type="file"
+                            accept=".pdf,.xml,.html,.htm,.jpg,.jpeg,.png"
+                            multiple
+                            disabled={dhlDocsBusy}
+                            style={{ display: 'none' }}
+                            onChange={async (e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (!files.length) return;
+                              setDhlDocsBusy(true); setDhlDocsResult(null); setDhlDocsError('');
+                              try {
+                                const fd = new FormData();
+                                files.forEach(f => fd.append('files', f));
+                                const r = await fetch(`/api/v1/dhl-documents/${encodeURIComponent(batchId)}/upload`, {
+                                  method: 'POST',
+                                  body: fd,
+                                  credentials: 'include',
+                                });
+                                if (!r.ok) {
+                                  const msg = await r.text().catch(() => `HTTP ${r.status}`);
+                                  throw new Error(msg);
+                                }
+                                const result = await r.json();
+                                setDhlDocsResult(result);
+                                await Promise.all([load(), loadDhlReadiness(), loadBatchReadiness()]);
+                              } catch (ex) {
+                                setDhlDocsError(ex.message || 'Upload failed');
+                              } finally {
+                                setDhlDocsBusy(false);
+                                if (dhlDocsRef.current) dhlDocsRef.current.value = '';
+                              }
+                            }}
+                          />
+                          {dhlDocsBusy ? '⟳ Uploading…' : '⊞ Upload DHL documents'}
+                        </label>
+                        <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Accepted: .pdf, .xml, .html, .htm, .jpg, .jpeg, .png</div>
                       </div>
+
+                      {dhlDocsResult && (
+                        <div data-testid="dhl-docs-upload-success" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)' }}>
+                            ✓ {dhlDocsResult.files_count || 0} document(s) registered
+                          </div>
+                        </div>
+                      )}
+
+                      {dhlDocsError && (
+                        <div data-testid="dhl-docs-upload-error" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-red-text)' }}>Upload failed: {dhlDocsError}</div>
+                        </div>
+                      )}
                     </div>
                   </Card>
                 );

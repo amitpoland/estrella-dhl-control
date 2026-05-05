@@ -250,3 +250,109 @@ def test_event_type_is_dhl_documents(client, tmp_storage):
     assert op_msg is not None
     assert op_msg["event_type"] == "dhl_documents"
     assert op_msg["direction"] == "incoming"
+
+
+# ── Upload endpoint tests (POST /{batch_id}/upload) ───────────────────────────
+
+def test_upload_sets_dhl_documents_received(client, tmp_storage):
+    """Multipart upload sets audit.dhl_documents_received.received = True."""
+    batch_id = "UPLOAD_BATCH_001"
+    audit_path = _make_batch(tmp_storage, batch_id)
+
+    pdf_bytes = b"%PDF-1.4 fake"
+    r = client.post(
+        f"/api/v1/dhl-documents/{batch_id}/upload",
+        files=[("files", ("ZC429.pdf", pdf_bytes, "application/pdf"))],
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["received"] is True
+    assert body["files_count"] >= 1
+
+    audit = json.loads(audit_path.read_text())
+    assert audit["dhl_documents_received"]["received"] is True
+    assert audit["dhl_documents_received"]["files_count"] >= 1
+
+
+def test_upload_rejects_empty_file_list(client, tmp_storage):
+    """Upload with no files returns 422."""
+    batch_id = "UPLOAD_BATCH_002"
+    _make_batch(tmp_storage, batch_id)
+
+    r = client.post(f"/api/v1/dhl-documents/{batch_id}/upload", data={})
+    assert r.status_code == 422
+
+
+def test_upload_rejects_bad_extension(client, tmp_storage):
+    """Upload of a .exe file returns 400."""
+    batch_id = "UPLOAD_BATCH_003"
+    _make_batch(tmp_storage, batch_id)
+
+    r = client.post(
+        f"/api/v1/dhl-documents/{batch_id}/upload",
+        files=[("files", ("malware.exe", b"MZ", "application/octet-stream"))],
+    )
+    assert r.status_code == 400
+    assert "Unsupported file type" in r.text
+
+
+def test_upload_repeated_is_idempotent(client, tmp_storage):
+    """Second upload of the same filename does not duplicate the file record."""
+    batch_id = "UPLOAD_BATCH_004"
+    audit_path = _make_batch(tmp_storage, batch_id)
+
+    pdf_bytes = b"%PDF-1.4 fake"
+    client.post(
+        f"/api/v1/dhl-documents/{batch_id}/upload",
+        files=[("files", ("DSK.pdf", pdf_bytes, "application/pdf"))],
+    )
+    client.post(
+        f"/api/v1/dhl-documents/{batch_id}/upload",
+        files=[("files", ("DSK.pdf", pdf_bytes, "application/pdf"))],
+    )
+
+    audit = json.loads(audit_path.read_text())
+    # Same filename → same destination path → deduplicated
+    assert audit["dhl_documents_received"]["files_count"] == 1
+
+
+def test_upload_missing_batch_returns_404(client, tmp_storage):
+    """Upload to a non-existent batch_id returns 404."""
+    r = client.post(
+        "/api/v1/dhl-documents/NONEXISTENT_BATCH/upload",
+        files=[("files", ("doc.pdf", b"%PDF fake", "application/pdf"))],
+    )
+    assert r.status_code == 404
+
+
+def test_upload_saves_file_to_batch_folder(client, tmp_storage):
+    """Uploaded file is saved under outputs/{batch_id}/source/dhl_documents/."""
+    batch_id = "UPLOAD_BATCH_006"
+    _make_batch(tmp_storage, batch_id)
+
+    r = client.post(
+        f"/api/v1/dhl-documents/{batch_id}/upload",
+        files=[("files", ("customs.pdf", b"%PDF customs", "application/pdf"))],
+    )
+    assert r.status_code == 200
+
+    dest = tmp_storage / "outputs" / batch_id / "source" / "dhl_documents" / "customs.pdf"
+    assert dest.exists(), f"Expected file at {dest}"
+
+
+def test_upload_does_not_set_customs_docs_received(client, tmp_storage):
+    """DHL document upload must NOT set customs_docs.received — different milestone."""
+    batch_id = "UPLOAD_BATCH_007"
+    audit_path = _make_batch(tmp_storage, batch_id)
+
+    client.post(
+        f"/api/v1/dhl-documents/{batch_id}/upload",
+        files=[("files", ("ZC429.pdf", b"%PDF ZC429", "application/pdf"))],
+    )
+
+    audit = json.loads(audit_path.read_text())
+    customs = audit.get("customs_docs") or {}
+    assert not customs.get("received"), (
+        "customs_docs.received must not be set by DHL document upload"
+    )

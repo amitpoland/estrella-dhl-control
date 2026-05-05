@@ -2,18 +2,17 @@
 test_dashboard_dhl_documents_received_card.py — Source-grep tests for the
 DHL Documents Received card in the DHL / Customs tab.
 
-The card is read-only because the existing backend endpoint
-(POST /api/v1/dhl-documents/{batch_id}/received) requires real server-side
-file paths, not browser uploads.  Sending fake / placeholder paths such as
-/dev/null would create false audit evidence.
+The card has a multipart file upload button wired to
+POST /api/v1/dhl-documents/{batch_id}/upload, providing an operator fallback
+when email auto-detection does not capture DHL docs.
 
-The card therefore:
+The card:
   - displays DSK/cesja receipt status from the existing dhlReadiness state
-  - shows missing document types
-  - shows last received timestamp
+  - shows missing document types and last received timestamp
   - carries the explanation label
-  - shows a note that manual receipt requires backend upload support
-  - has no write button
+  - has an upload button (dhl-docs-upload-label) wired to the /upload endpoint
+  - shows success (dhl-docs-upload-success) and error (dhl-docs-upload-error) states
+  - does NOT send email, does NOT affect closure hard blockers
 
 Pattern: read dashboard.html as text and assert structural markers.
 No JSX execution.
@@ -67,50 +66,89 @@ def test_dhl_docs_received_card_in_dhl_tab():
     src = _src()
     dhl_start = src.find("activeTab === 'DHL / Customs' && (() => {")
     assert dhl_start != -1, "DHL / Customs IIFE panel block not found"
-    snippet = src[dhl_start:dhl_start + 12000]
+    snippet = src[dhl_start:dhl_start + 20000]
     assert 'dhl-docs-received-card' in snippet, (
         "dhl-docs-received-card testid not found inside DHL / Customs tab block"
     )
 
 
-# ── Read-only: button absent, note present ───────────────────────────────────
+# ── Upload button present; stale read-only note removed ─────────────────────
 
 def test_record_button_absent():
-    """The 'Record DHL documents received' write button must NOT be present
-    because the backend requires real server-side file paths."""
+    """The legacy 'dhl-docs-record-btn' testid must remain absent — replaced by upload-label."""
     src = _src()
     idx = src.find("dhl-docs-received-card")
     assert idx != -1
-    snippet = src[idx:idx + 3000]
+    snippet = src[idx:idx + 5000]
     assert 'data-testid="dhl-docs-record-btn"' not in snippet
     assert "data-testid='dhl-docs-record-btn'" not in snippet
 
 
-def test_backend_upload_support_note_present():
-    """The card must show the read-only note explaining why the button is absent."""
-    assert "Manual DHL document receipt requires backend upload support." in _src()
+def test_backend_upload_support_note_absent():
+    """The stale 'requires backend upload support' note must be gone — upload is now available."""
+    assert "Manual DHL document receipt requires backend upload support." not in _src()
 
 
-def test_backend_upload_note_testid():
-    """data-testid='dhl-docs-manual-receipt-note' must be present."""
+def test_backend_upload_note_testid_absent():
+    """data-testid='dhl-docs-manual-receipt-note' must be removed along with the stale note."""
     src = _src()
-    assert (
-        'data-testid="dhl-docs-manual-receipt-note"' in src
-        or "data-testid='dhl-docs-manual-receipt-note'" in src
-    )
+    assert 'data-testid="dhl-docs-manual-receipt-note"' not in src
+    assert "data-testid='dhl-docs-manual-receipt-note'" not in src
 
 
-# ── No write calls in card ───────────────────────────────────────────────────
+# ── Upload controls wired to /upload endpoint ─────────────────────────────────
 
-def test_no_post_to_dhl_documents_endpoint():
-    """The DHL docs card must not POST to /api/v1/dhl-documents/ because
-    there is no safe browser-driven upload path."""
+def test_dhl_docs_upload_button_present():
+    """data-testid='dhl-docs-upload-label' must be present in the DHL docs card."""
     src = _src()
     idx = src.find("dhl-docs-received-card")
     assert idx != -1
-    snippet = src[idx:idx + 3000]
-    assert "/api/v1/dhl-documents/" not in snippet, (
-        "Found POST call to dhl-documents endpoint — fake path must not be sent"
+    snippet = src[idx:idx + 5000]
+    assert 'data-testid="dhl-docs-upload-label"' in snippet, (
+        "dhl-docs-upload-label not found inside DHL docs card"
+    )
+
+
+def test_dhl_docs_upload_file_input_present():
+    """data-testid='dhl-docs-file-input' must be present in the DHL docs card."""
+    src = _src()
+    idx = src.find("dhl-docs-received-card")
+    assert idx != -1
+    snippet = src[idx:idx + 5000]
+    assert 'data-testid="dhl-docs-file-input"' in snippet, (
+        "dhl-docs-file-input not found inside DHL docs card"
+    )
+
+
+def test_dhl_docs_upload_posts_to_upload_endpoint():
+    """The upload handler must POST to /api/v1/dhl-documents/{batch_id}/upload."""
+    src = _src()
+    idx = src.find("dhl-docs-received-card")
+    assert idx != -1
+    snippet = src[idx:idx + 5000]
+    assert "/api/v1/dhl-documents/" in snippet, (
+        "/api/v1/dhl-documents/ endpoint not found inside DHL docs card"
+    )
+    assert "/upload" in snippet, (
+        "/upload suffix not found in DHL docs card upload handler"
+    )
+
+
+def test_dhl_docs_upload_success_testid():
+    """data-testid='dhl-docs-upload-success' must be present for the success state."""
+    src = _src()
+    assert (
+        'data-testid="dhl-docs-upload-success"' in src
+        or "data-testid='dhl-docs-upload-success'" in src
+    )
+
+
+def test_dhl_docs_upload_error_testid():
+    """data-testid='dhl-docs-upload-error' must be present for the error state."""
+    src = _src()
+    assert (
+        'data-testid="dhl-docs-upload-error"' in src
+        or "data-testid='dhl-docs-upload-error'" in src
     )
 
 
@@ -155,15 +193,15 @@ def test_dhl_docs_shows_missing_documents():
     assert "missingDocs" in src
 
 
-# ── Removed state hooks must not be present ─────────────────────────────────
+# ── State hooks ──────────────────────────────────────────────────────────────
 
-def test_dhl_docs_busy_state_hook_absent():
-    """dhlDocsBusy must be removed — it was only needed for the write button."""
-    assert "dhlDocsBusy" not in _src()
+def test_dhl_docs_busy_state_hook_present():
+    """dhlDocsBusy must be present — used to disable the upload button while uploading."""
+    assert "dhlDocsBusy" in _src()
 
 
 def test_dhl_docs_confirm_state_hook_absent():
-    """dhlDocsConfirm must be removed — it was only needed for the write button."""
+    """dhlDocsConfirm must remain absent — result state is dhlDocsResult, not dhlDocsConfirm."""
     assert "dhlDocsConfirm" not in _src()
 
 
