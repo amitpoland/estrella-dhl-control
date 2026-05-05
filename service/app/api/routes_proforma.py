@@ -31,6 +31,7 @@ from ..services import warehouse_db as wdb  # noqa: F401  (kept for cross-DB que
 from ..services import wfirma_db   as wfdb
 from ..services import inventory_state_engine as ise
 from ..services import proforma_invoice_link_db as pildb
+from ..services import wfirma_client
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/proforma", tags=["proforma"])
@@ -305,25 +306,55 @@ def _proforma_db_path():
     return settings.storage_root / "proforma_links.db"
 
 
+def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaRequest":
+    """
+    Build a wfirma_client.ProformaRequest from a ready preview dict.
+    Caller-supplied values are NOT used here — every field is derived from
+    server state (preview, packing_lines, wfirma_products / wfirma_customers).
+    """
+    lines = []
+    for ln in preview.get("lines", []):
+        lines.append(wfirma_client.ReservationLine(
+            product_code  = ln.get("product_code") or "",
+            wfirma_good_id= "",   # not used by proforma payload
+            product_name  = ln.get("design_no") or ln.get("product_code") or "",
+            qty           = float(ln.get("qty") or 0),
+            unit_price    = float(ln.get("unit_price") or 0),
+            unit          = "szt.",
+            currency      = (ln.get("currency") or preview.get("currency") or "PLN"),
+        ))
+    return wfirma_client.ProformaRequest(
+        client_name = preview.get("client_name") or "",
+        client_zip  = "",
+        client_city = "",
+        lines       = lines,
+        currency    = preview.get("currency") or "PLN",
+    )
+
+
 @router.post("/create/{batch_id}/{client_name:path}", dependencies=[_auth])
 def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
     """
-    Create-shell. Runs the read-only preview, enforces gates, persists a
-    local pending_local draft. NO live wFirma call yet.
+    Create a wFirma proforma when all gates are satisfied.
 
     Status values:
-      blocked        — preview not ready, no draft persisted
-      skipped        — existing draft for (batch_id, client_name)
-      pending_local  — new draft persisted; no wFirma call has been made
+      blocked        — preview not ready, OR settings gate is off
+                       (no draft persisted, no live call)
+      skipped        — existing draft is in pending_local or issued
+      issued         — live wFirma call succeeded; draft.status='issued',
+                       wfirma_proforma_id populated
+      failed         — live wFirma call returned an error; draft.status='failed',
+                       retryable
 
-    Idempotent on (batch_id, client_name).
+    Idempotent on (batch_id, client_name). Failed drafts ARE retryable;
+    pending_local and issued drafts short-circuit as skipped.
     """
     cn = _validate_args(batch_id, client_name)
     preview = _build_preview(batch_id, cn)
 
-    # ── Idempotency: existing draft short-circuits, regardless of status ──
+    # ── 1. Existing draft short-circuit (issued / pending_local) ────────────
     existing = pildb.get_draft(_proforma_db_path(), batch_id, cn)
-    if existing is not None:
+    if existing is not None and existing.status in ("issued", "pending_local"):
         return JSONResponse({
             "ok":                  True,
             "status":              "skipped",
@@ -336,7 +367,7 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
             "draft_id":            existing.id,
         })
 
-    # ── Gate: preview must be ready ────────────────────────────────────────
+    # ── 2. Preview must be ready (independent of settings gate) ─────────────
     if not preview.get("ready"):
         return JSONResponse({
             "ok":               False,
@@ -348,7 +379,20 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
             "exchange_rate":     preview.get("exchange_rate"),
         })
 
-    # ── Persist pending_local draft ────────────────────────────────────────
+    # ── 3. Settings gate — no live call when disabled ──────────────────────
+    if not settings.wfirma_create_proforma_allowed:
+        return JSONResponse({
+            "ok":               False,
+            "status":            "blocked",
+            "batch_id":          batch_id,
+            "client_name":       cn,
+            "blocking_reasons":  ["wfirma proforma create disabled "
+                                  "(WFIRMA_CREATE_PROFORMA_ALLOWED=false)"],
+            "currency":          preview.get("currency"),
+            "exchange_rate":     preview.get("exchange_rate"),
+        })
+
+    # ── 4. Lock or upsert the draft row (pending_local) ────────────────────
     source_lines = [
         {
             "product_code": ln.get("product_code"),
@@ -359,29 +403,68 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
         }
         for ln in preview.get("lines", [])
     ]
+    source_lines_json = json.dumps(source_lines, ensure_ascii=False)
 
-    draft, was_created = pildb.upsert_pending_draft(
-        _proforma_db_path(),
-        batch_id          = batch_id,
-        client_name       = cn,
-        currency          = preview.get("currency", ""),
-        exchange_rate     = preview.get("exchange_rate"),
-        source_lines_json = json.dumps(source_lines, ensure_ascii=False),
+    if existing is not None and existing.status == "failed":
+        # Retry path — keep the same row, just record fresh source_lines.
+        draft = existing
+    else:
+        draft, _ = pildb.upsert_pending_draft(
+            _proforma_db_path(),
+            batch_id          = batch_id,
+            client_name       = cn,
+            currency          = preview.get("currency", ""),
+            exchange_rate     = preview.get("exchange_rate"),
+            source_lines_json = source_lines_json,
+        )
+
+    # ── 5. Live wFirma call (only path with external write) ────────────────
+    req = _build_proforma_request(preview)
+    try:
+        result = wfirma_client.create_proforma_draft(req)
+    except Exception as exc:
+        # Treat any unexpected failure (NotImplementedError, network, parse)
+        # as a retryable failure. Mark draft and surface error.
+        pildb.mark_draft_failed(
+            _proforma_db_path(), batch_id, cn,
+            notes=f"{type(exc).__name__}: {exc}"[:500],
+        )
+        return JSONResponse({
+            "ok":          False,
+            "status":      "failed",
+            "batch_id":    batch_id,
+            "client_name": cn,
+            "draft_id":    draft.id,
+            "error":       f"{type(exc).__name__}: {exc}",
+        })
+
+    if not result.ok:
+        pildb.mark_draft_failed(
+            _proforma_db_path(), batch_id, cn,
+            notes=(result.error or "wfirma create_proforma_draft returned ok=false")[:500],
+        )
+        return JSONResponse({
+            "ok":          False,
+            "status":      "failed",
+            "batch_id":    batch_id,
+            "client_name": cn,
+            "draft_id":    draft.id,
+            "error":       result.error or "unknown",
+        })
+
+    # ── 6. Success: mark issued, persist wfirma_proforma_id ────────────────
+    pildb.mark_draft_issued(
+        _proforma_db_path(), batch_id, cn,
+        wfirma_proforma_id=result.wfirma_invoice_id or "",
     )
-
-    # was_created=False signals a concurrent caller won the INSERT race.
-    # Surface the existing draft's status so the response shape matches the
-    # pre-check skipped branch.
-    response = {
-        "ok":                 True,
-        "status":             "pending_local" if was_created else "skipped",
-        "batch_id":           batch_id,
-        "client_name":        cn,
-        "draft_id":           draft.id,
-        "currency":           draft.currency,
-        "exchange_rate":      draft.exchange_rate,
-        "wfirma_proforma_id": draft.wfirma_proforma_id,
-    }
-    if not was_created:
-        response["existing_status"] = draft.status
-    return JSONResponse(response)
+    final = pildb.get_draft(_proforma_db_path(), batch_id, cn)
+    return JSONResponse({
+        "ok":                  True,
+        "status":              "issued",
+        "batch_id":            batch_id,
+        "client_name":         cn,
+        "draft_id":            final.id if final else draft.id,
+        "wfirma_proforma_id":  result.wfirma_invoice_id,
+        "currency":            (final or draft).currency,
+        "exchange_rate":       (final or draft).exchange_rate,
+    })

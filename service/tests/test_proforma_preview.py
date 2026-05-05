@@ -460,87 +460,203 @@ def test_create_blocked_when_preview_not_ready(client, storage):
     assert pildb.get_draft(storage / "proforma_links.db", BATCH, "ACME") is None
 
 
-def test_create_ready_creates_pending_local(client, storage):
-    """Ready preview → pending_local draft persisted with source_lines_json."""
-    _seed_purchase(design_no="JE902", product_code="EJL/CC-1")
-    _seed_sales("ACME", [{"sku": "JE902", "qty": 2.0}])
-    _seed_invoice_pricing("EJL/CC-1", 100.0, "USD")
-    _match_product("EJL/CC-1")
+def _seed_ready(design: str, product_code: str, sku_qty: float = 1.0,
+                price: float = 100.0):
+    """Helper: full ready-preview prerequisites for ACME."""
+    _seed_purchase(design_no=design, product_code=product_code)
+    _seed_sales("ACME", [{"sku": design, "qty": sku_qty}])
+    _seed_invoice_pricing(product_code, price, "USD")
+    _match_product(product_code)
     _match_customer("ACME")
-    _advance_state(_scan_code_for("JE902", "EJL/CC-1"),
+    _advance_state(_scan_code_for(design, product_code),
                    target=ise.WAREHOUSE_STOCK,
-                   product_code="EJL/CC-1", design_no="JE902")
+                   product_code=product_code, design_no=design)
+
+
+def _gate_on():
+    from unittest.mock import patch as _p
+    return _p.object(settings, "wfirma_create_proforma_allowed", True)
+
+
+def test_create_gate_off_blocks_ready_preview_no_wfirma_call(client, storage):
+    """Gate off + ready preview → blocked with explicit reason; no wFirma call."""
+    _seed_ready("JE902", "EJL/CC-1", price=100.0, sku_qty=2.0)
 
     patches = _wfirma_client_calls_blocked()
     for p in patches: p.start()
     try:
+        # Default: settings.wfirma_create_proforma_allowed == False
         body = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
                            headers=_auth()).json()
     finally:
         for p in patches: p.stop()
 
-    assert body["ok"]    is True
-    assert body["status"] == "pending_local"
-    assert body["currency"] == "USD"
-    assert body["wfirma_proforma_id"] is None
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("WFIRMA_CREATE_PROFORMA_ALLOWED" in br
+               for br in body["blocking_reasons"])
+    # Gate-off path must not persist a draft either
+    assert pildb.get_draft(storage / "proforma_links.db", BATCH, "ACME") is None
+
+
+def test_create_gate_on_calls_create_proforma_draft_once(client, storage):
+    """Gate on + ready → exactly one wfirma_client.create_proforma_draft call."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_ready("JE903", "EJL/IDM-1", price=50.0)
+
+    fake_result = wc.ProformaResult(ok=True, wfirma_invoice_id="WF-99")
+    with _gate_on(), _p.object(wc, "create_proforma_draft",
+                                return_value=fake_result) as mock_call:
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                           headers=_auth()).json()
+    assert mock_call.call_count == 1
+    assert body["ok"] is True
+    assert body["status"] == "issued"
+    assert body["wfirma_proforma_id"] == "WF-99"
+    # caller-controlled fields surface only batch_id + client_name
+    req = mock_call.call_args.args[0]
+    assert req.client_name == "ACME"
+    assert req.currency    == "USD"
+
+
+def test_create_issued_draft_returns_skipped_no_call(client, storage):
+    """An already-issued draft short-circuits with skipped; no wFirma call."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_ready("JE903b", "EJL/IDS-1", price=50.0)
+    fake_ok = wc.ProformaResult(ok=True, wfirma_invoice_id="WF-100")
+
+    with _gate_on(), _p.object(wc, "create_proforma_draft", return_value=fake_ok) as mock1:
+        r1 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                         headers=_auth()).json()
+    assert r1["status"] == "issued"
+    assert mock1.call_count == 1
+
+    # Second call: should NOT invoke wfirma_client at all.
+    fake_should_not_fire = _p.object(
+        wc, "create_proforma_draft",
+        side_effect=AssertionError("must not be called when issued exists"),
+    )
+    with _gate_on(), fake_should_not_fire:
+        r2 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                         headers=_auth()).json()
+    assert r2["status"] == "skipped"
+    assert r2["existing_status"]    == "issued"
+    assert r2["wfirma_proforma_id"] == "WF-100"
+    assert r2["draft_id"]           == r1["draft_id"]
+
+
+def test_create_failure_marks_failed_and_is_retryable(client, storage):
+    """wFirma returns ok=false → draft.failed; second call retries successfully."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_ready("JE906", "EJL/RR-1", price=30.0)
+    fake_fail = wc.ProformaResult(ok=False, error="wFirma 502 transient")
+    fake_ok   = wc.ProformaResult(ok=True,  wfirma_invoice_id="WF-RTY-1")
+
+    with _gate_on(), _p.object(wc, "create_proforma_draft", return_value=fake_fail):
+        r1 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                         headers=_auth()).json()
+    assert r1["status"] == "failed"
+    assert r1["error"]
+    draft = pildb.get_draft(storage / "proforma_links.db", BATCH, "ACME")
+    assert draft.status == "failed"
+    assert draft.wfirma_proforma_id is None
+
+    # Retry: same path, same draft row, this time succeeds.
+    with _gate_on(), _p.object(wc, "create_proforma_draft", return_value=fake_ok):
+        r2 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                         headers=_auth()).json()
+    assert r2["status"] == "issued"
+    assert r2["wfirma_proforma_id"] == "WF-RTY-1"
+    assert r2["draft_id"] == r1["draft_id"]
+    final = pildb.get_draft(storage / "proforma_links.db", BATCH, "ACME")
+    assert final.status == "issued"
+    assert final.wfirma_proforma_id == "WF-RTY-1"
+
+
+def test_create_success_persists_id_and_source_lines_json(client, storage):
+    """Success path persists wfirma_proforma_id AND source_lines_json on draft."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_ready("JE904", "EJL/NC-1", price=70.0, sku_qty=2.0)
+    fake_ok = wc.ProformaResult(ok=True, wfirma_invoice_id="WF-PERSIST")
+
+    with _gate_on(), _p.object(wc, "create_proforma_draft", return_value=fake_ok):
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                           headers=_auth()).json()
+    assert body["status"] == "issued"
 
     draft = pildb.get_draft(storage / "proforma_links.db", BATCH, "ACME")
-    assert draft is not None
-    assert draft.status      == "pending_local"
-    assert draft.currency    == "USD"
+    assert draft.status == "issued"
+    assert draft.wfirma_proforma_id == "WF-PERSIST"
+    assert draft.currency == "USD"
     lines = _json.loads(draft.source_lines_json)
-    assert lines[0]["product_code"] == "EJL/CC-1"
-    assert lines[0]["design_no"]    == "JE902"
+    assert len(lines) == 1
+    assert lines[0]["product_code"] == "EJL/NC-1"
+    assert lines[0]["design_no"]    == "JE904"
     assert lines[0]["qty"]          == 2.0
-    assert lines[0]["unit_price"]   == 100.0
+    assert lines[0]["unit_price"]   == 70.0
     assert lines[0]["currency"]     == "USD"
 
 
-def test_create_idempotent_per_batch_client(client, storage):
-    """Second call returns skipped with the same draft_id."""
-    _seed_purchase(design_no="JE903", product_code="EJL/IDM-1")
-    _seed_sales("ACME", [{"sku": "JE903", "qty": 1.0}])
-    _seed_invoice_pricing("EJL/IDM-1", 50.0, "USD")
-    _match_product("EJL/IDM-1")
-    _match_customer("ACME")
-    _advance_state(_scan_code_for("JE903", "EJL/IDM-1"),
-                   target=ise.WAREHOUSE_STOCK,
-                   product_code="EJL/IDM-1", design_no="JE903")
+def test_create_caller_payload_cannot_override_lines_or_amounts(client, storage):
+    """A caller-supplied JSON body must be ignored — payload comes from preview."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
 
-    r1 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
-                     headers=_auth()).json()
-    r2 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
-                     headers=_auth()).json()
+    _seed_ready("JE907", "EJL/PC-1", price=42.0, sku_qty=1.0)
+    fake_ok = wc.ProformaResult(ok=True, wfirma_invoice_id="WF-PC-1")
 
-    assert r1["status"] == "pending_local"
-    assert r2["status"] == "skipped"
-    assert r2["draft_id"] == r1["draft_id"]
-    assert r2["existing_status"] == "pending_local"
+    malicious_body = {
+        "lines": [{"product_code": "ATTACKER", "qty": 9999, "unit_price": 0.01}],
+        "currency":     "PLN",
+        "client_name":  "EVIL",
+    }
+    with _gate_on(), _p.object(wc, "create_proforma_draft",
+                                return_value=fake_ok) as mock_call:
+        body = client.post(
+            f"/api/v1/proforma/create/{BATCH}/ACME",
+            headers=_auth(),
+            json=malicious_body,
+        ).json()
+    assert body["status"] == "issued"
+    req = mock_call.call_args.args[0]
+    # Server-derived values must override anything in the body
+    assert req.client_name      == "ACME"
+    assert req.currency         == "USD"
+    assert len(req.lines)        == 1
+    assert req.lines[0].product_code == "EJL/PC-1"
+    assert req.lines[0].qty           == 1.0
+    assert req.lines[0].unit_price    == 42.0
 
 
-def test_create_does_not_call_wfirma_client(client, storage):
-    """Strict: no wfirma_client primitive must fire on a successful create."""
-    _seed_purchase(design_no="JE904", product_code="EJL/NC-1")
-    _seed_sales("ACME", [{"sku": "JE904", "qty": 1.0}])
-    _seed_invoice_pricing("EJL/NC-1", 70.0, "USD")
-    _match_product("EJL/NC-1")
-    _match_customer("ACME")
-    _advance_state(_scan_code_for("JE904", "EJL/NC-1"),
-                   target=ise.WAREHOUSE_STOCK,
-                   product_code="EJL/NC-1", design_no="JE904")
+def test_create_failure_does_not_call_create_again_on_retry_with_locked_draft(
+    client, storage,
+):
+    """Sanity: a failed draft is retried via the same locked path — one call per attempt."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
 
-    from unittest.mock import patch as _p, MagicMock
-    fake = MagicMock(side_effect=AssertionError("must not be called"))
-    with (
-        _p("app.services.wfirma_client.create_proforma_draft", fake),
-        _p("app.services.wfirma_client.create_customer", fake),
-        _p("app.services.wfirma_client.create_product", fake),
-        _p("app.services.wfirma_client._http_request", fake),
-    ):
-        body = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
-                           headers=_auth()).json()
-    assert body["status"] == "pending_local"
-    assert fake.call_count == 0
+    _seed_ready("JE910", "EJL/LCK-1", price=12.0)
+    with _gate_on(), _p.object(
+        wc, "create_proforma_draft",
+        return_value=wc.ProformaResult(ok=False, error="boom"),
+    ) as mock_fail:
+        client.post(f"/api/v1/proforma/create/{BATCH}/ACME", headers=_auth())
+    assert mock_fail.call_count == 1
+
+    with _gate_on(), _p.object(
+        wc, "create_proforma_draft",
+        return_value=wc.ProformaResult(ok=True, wfirma_invoice_id="WF-OK"),
+    ) as mock_ok:
+        client.post(f"/api/v1/proforma/create/{BATCH}/ACME", headers=_auth())
+    assert mock_ok.call_count == 1
 
 
 def test_create_blocked_does_not_persist_draft(client, storage):
@@ -650,23 +766,27 @@ def test_concurrent_upsert_no_integrity_error_leaks(tmp_path):
 
 def test_create_post_race_response_shape(client, storage):
     """
-    Two sequential create calls (TestClient is single-threaded) — the second
-    must return skipped with existing_status set.
+    Sequential gate-on calls — first issues, second returns skipped with
+    existing_status='issued'.
     """
-    _seed_purchase(design_no="JE906", product_code="EJL/RR-1")
-    _seed_sales("ACME", [{"sku": "JE906", "qty": 1.0}])
-    _seed_invoice_pricing("EJL/RR-1", 30.0, "USD")
-    _match_product("EJL/RR-1")
-    _match_customer("ACME")
-    _advance_state(_scan_code_for("JE906", "EJL/RR-1"),
-                   target=ise.WAREHOUSE_STOCK,
-                   product_code="EJL/RR-1", design_no="JE906")
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
 
-    r1 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
-                     headers=_auth()).json()
-    r2 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
-                     headers=_auth()).json()
-    assert r1["status"] == "pending_local"
+    _seed_ready("JE906r", "EJL/RR-1", price=30.0)
+    fake_ok = wc.ProformaResult(ok=True, wfirma_invoice_id="WF-SHAPE")
+
+    with _gate_on(), _p.object(wc, "create_proforma_draft", return_value=fake_ok):
+        r1 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                         headers=_auth()).json()
+
+    fake_should_not_fire = _p.object(
+        wc, "create_proforma_draft",
+        side_effect=AssertionError("must not be called when issued exists"),
+    )
+    with _gate_on(), fake_should_not_fire:
+        r2 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                         headers=_auth()).json()
+    assert r1["status"] == "issued"
     assert r2["status"] == "skipped"
-    assert r2["existing_status"] == "pending_local"
+    assert r2["existing_status"] == "issued"
     assert r2["draft_id"] == r1["draft_id"]

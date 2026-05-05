@@ -159,6 +159,7 @@ class Settings(BaseSettings):
     wfirma_warehouse_module_enabled: bool = Field(default=False, env="WFIRMA_WAREHOUSE_MODULE_ENABLED")
     wfirma_create_product_allowed:  bool = Field(default=False, env="WFIRMA_CREATE_PRODUCT_ALLOWED")
     wfirma_create_customer_allowed: bool = Field(default=False, env="WFIRMA_CREATE_CUSTOMER_ALLOWED")
+    wfirma_create_proforma_allowed: bool = Field(default=False, env="WFIRMA_CREATE_PROFORMA_ALLOWED")
 
     # ── Cliq bot batch collection ─────────────────────────────────────────────
     # Expire an incomplete (missing files) session after N minutes of inactivity
