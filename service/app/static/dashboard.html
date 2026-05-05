@@ -6991,6 +6991,66 @@ function WfirmaExportPage({ batches, onViewShipment }) {
   const [modalBusy, setModalBusy] = React.useState(false);
   const [modalError, setModalError] = React.useState(null);
 
+  // Live-search state (read-only — does not auto-save)
+  const [searchBusy, setSearchBusy]     = React.useState(false);
+  const [searchInfo, setSearchInfo]     = React.useState(null);  // { kind: 'hit'|'miss'|'error', text }
+
+  const searchWfirmaCustomer = React.useCallback(async () => {
+    if (!editingCustomer || !editingCustomer.client_name?.trim()) return;
+    setSearchBusy(true); setSearchInfo(null);
+    try {
+      const params = new URLSearchParams({ name: editingCustomer.client_name.trim() });
+      if (editingCustomer.vat_id?.trim()) params.set('nip', editingCustomer.vat_id.trim());
+      const d = await apiFetch(`/api/v1/wfirma/contractors/search?${params}`);
+      if (d.found && d.result) {
+        setEditingCustomer(prev => ({
+          ...prev,
+          wfirma_customer_id: d.result.wfirma_id || prev.wfirma_customer_id,
+          vat_id:             d.result.nip      || prev.vat_id,
+          country:            d.result.country  || prev.country,
+          match_status:       'matched',
+        }));
+        setSearchInfo({ kind: 'hit', text: `wFirma id ${d.result.wfirma_id} — ${d.result.name} (${d.result.country || '?'}) — review and click Save.` });
+      } else {
+        setSearchInfo({ kind: 'miss', text: 'No matching wFirma contractor found. Create it in wFirma, then search again.' });
+      }
+    } catch (e) {
+      setSearchInfo({ kind: 'error', text: `Search failed: ${e.message}` });
+    } finally {
+      setSearchBusy(false);
+    }
+  }, [editingCustomer]);
+
+  const searchWfirmaProduct = React.useCallback(async () => {
+    if (!editingProduct || !editingProduct.product_code?.trim()) return;
+    setSearchBusy(true); setSearchInfo(null);
+    try {
+      const params = new URLSearchParams({ product_code: editingProduct.product_code.trim() });
+      const d = await apiFetch(`/api/v1/wfirma/goods/search?${params}`);
+      if (d.found && d.result) {
+        setEditingProduct(prev => ({
+          ...prev,
+          wfirma_product_id: d.result.wfirma_id || prev.wfirma_product_id,
+          product_name_pl:   d.result.name      || prev.product_name_pl,
+          unit:              d.result.unit      || prev.unit || 'szt.',
+          sync_status:       'matched',
+        }));
+        setSearchInfo({ kind: 'hit', text: `wFirma id ${d.result.wfirma_id} — ${d.result.name} (count ${d.result.count}, reserved ${d.result.reserved}) — review and click Save.` });
+      } else {
+        setSearchInfo({ kind: 'miss', text: 'No matching wFirma product found. Create it in wFirma, then search again.' });
+      }
+    } catch (e) {
+      setSearchInfo({ kind: 'error', text: `Search failed: ${e.message}` });
+    } finally {
+      setSearchBusy(false);
+    }
+  }, [editingProduct]);
+
+  // Reset search state whenever the modal opens/closes
+  React.useEffect(() => { setSearchInfo(null); setSearchBusy(false); },
+                   [editingCustomer?.client_name, editingProduct?.product_code,
+                    editingCustomer === null, editingProduct === null]);
+
   const loadCapabilities = React.useCallback(async () => {
     try {
       const d = await apiFetch('/api/v1/wfirma/capabilities');
@@ -7298,6 +7358,34 @@ function WfirmaExportPage({ batches, onViewShipment }) {
           <FormField label="wFirma Customer ID" hint="From wFirma — leave blank if not yet known">
             <Inp value={editingCustomer.wfirma_customer_id || ''} onChange={e => setEditingCustomer({ ...editingCustomer, wfirma_customer_id: e.target.value })} placeholder="e.g. 12345678" />
           </FormField>
+          <div data-testid="customer-search-row" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <Btn small variant="ghost"
+                 disabled={searchBusy || !editingCustomer.client_name?.trim()}
+                 onClick={searchWfirmaCustomer}
+                 data-testid="customer-search-btn">
+              {searchBusy ? 'Searching…' : 'Search wFirma'}
+            </Btn>
+            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Looks up the contractor in wFirma — read-only, does not save.</span>
+          </div>
+          {searchInfo && (
+            <div data-testid={`customer-search-${searchInfo.kind}`}
+                 style={{
+                   fontSize: 11, padding: '6px 10px', borderRadius: 6, marginBottom: 12,
+                   color:      searchInfo.kind === 'hit'  ? 'var(--badge-green-text)'
+                            :   searchInfo.kind === 'miss' ? 'var(--text-2)'
+                            :                                'var(--badge-red-text)',
+                   background: searchInfo.kind === 'hit'  ? 'var(--badge-green-bg)'
+                            :   searchInfo.kind === 'miss' ? 'var(--bg-subtle)'
+                            :                                'var(--badge-red-bg)',
+                   border: '1px solid ' + (
+                     searchInfo.kind === 'hit'  ? 'var(--badge-green-border)' :
+                     searchInfo.kind === 'miss' ? 'var(--border-1)' :
+                                                  'var(--badge-red-border)'
+                   ),
+                 }}>
+              {searchInfo.text}
+            </div>
+          )}
           <FormField label="VAT ID">
             <Inp value={editingCustomer.vat_id || ''} onChange={e => setEditingCustomer({ ...editingCustomer, vat_id: e.target.value })} placeholder="e.g. GB123456789" />
           </FormField>
@@ -7330,6 +7418,34 @@ function WfirmaExportPage({ batches, onViewShipment }) {
           <FormField label="wFirma Product ID" hint="From wFirma — leave blank if not yet known">
             <Inp value={editingProduct.wfirma_product_id || ''} onChange={e => setEditingProduct({ ...editingProduct, wfirma_product_id: e.target.value })} placeholder="e.g. 222111000" />
           </FormField>
+          <div data-testid="product-search-row" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <Btn small variant="ghost"
+                 disabled={searchBusy || !editingProduct.product_code?.trim()}
+                 onClick={searchWfirmaProduct}
+                 data-testid="product-search-btn">
+              {searchBusy ? 'Searching…' : 'Search wFirma'}
+            </Btn>
+            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Looks up the good in wFirma — read-only, does not save.</span>
+          </div>
+          {searchInfo && (
+            <div data-testid={`product-search-${searchInfo.kind}`}
+                 style={{
+                   fontSize: 11, padding: '6px 10px', borderRadius: 6, marginBottom: 12,
+                   color:      searchInfo.kind === 'hit'  ? 'var(--badge-green-text)'
+                            :   searchInfo.kind === 'miss' ? 'var(--text-2)'
+                            :                                'var(--badge-red-text)',
+                   background: searchInfo.kind === 'hit'  ? 'var(--badge-green-bg)'
+                            :   searchInfo.kind === 'miss' ? 'var(--bg-subtle)'
+                            :                                'var(--badge-red-bg)',
+                   border: '1px solid ' + (
+                     searchInfo.kind === 'hit'  ? 'var(--badge-green-border)' :
+                     searchInfo.kind === 'miss' ? 'var(--border-1)' :
+                                                  'var(--badge-red-border)'
+                   ),
+                 }}>
+              {searchInfo.text}
+            </div>
+          )}
           <FormField label="Polish Name">
             <Inp value={editingProduct.product_name_pl || ''} onChange={e => setEditingProduct({ ...editingProduct, product_name_pl: e.target.value })} placeholder="e.g. Pierścionek złoty" />
           </FormField>
