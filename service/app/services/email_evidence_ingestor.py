@@ -166,6 +166,8 @@ def _ingest_sad_attachments(
     audit_path: Path,
     batch_id: str,
     api_base: str,
+    *,
+    fetch_from_zoho: bool = False,
 ) -> List[str]:
     """
     Download valid SAD/customs attachments to {batch_dir}/source/sad/.
@@ -175,11 +177,12 @@ def _ingest_sad_attachments(
     - Skips files already present on disk (idempotent by filename).
     - Updates audit.agency_documents_received_state after each successful download.
     - Non-fatal: exceptions are caught per-file; returns list of downloaded paths.
-    """
-    valid = [a for a in attachments if _is_valid_agency_sad_attachment(a)]
-    if not valid:
-        return []
 
+    fetch_from_zoho=True: skip the client-supplied ``attachments`` list and
+    instead discover all attachments directly from the Zoho message-detail API.
+    Used by the catch-up path for messages stored before attachment metadata
+    was tracked — the scanner list API does not return attachment details.
+    """
     sad_dir = audit_path.parent / "source" / "sad"
     try:
         sad_dir.mkdir(parents=True, exist_ok=True)
@@ -195,6 +198,20 @@ def _ingest_sad_attachments(
         aid = str(za.get("attachmentId") or za.get("id") or "")
         if fn and aid:
             id_map[fn] = aid
+
+    if fetch_from_zoho:
+        # Build a synthetic attachment list from the Zoho API response so the
+        # filter below can validate by filename/type.
+        source_atts = [
+            {"filename": fn, "document_type": "other"}
+            for fn in id_map
+        ]
+    else:
+        source_atts = attachments
+
+    valid = [a for a in source_atts if _is_valid_agency_sad_attachment(a)]
+    if not valid:
+        return []
 
     downloaded: List[str] = []
     for a in valid:
@@ -620,13 +637,26 @@ def scan_and_ingest(
                 #    stored before the download path was deployed.  Does NOT
                 #    re-save the message or touch the evidence store — only
                 #    downloads files that are missing from source/sad/.
-                if attachments and token and account_id and any(
-                    _is_valid_agency_sad_attachment(a) for a in attachments
+                #
+                # Two triggers:
+                #  A) attachment metadata present in the scan result — use it
+                #     directly (fast, no extra Zoho API call).
+                #  B) no attachment metadata but ev_type signals an agency SAD
+                #     email — ask Zoho for the attachment list (fetch_from_zoho).
+                #     Covers messages stored before attachment tracking existed.
+                _is_agency_sad_ev = ev_type in (
+                    "agency_sad_reply", "agency_documents_received",
+                )
+                if token and account_id and mid and (
+                    (attachments and any(
+                        _is_valid_agency_sad_attachment(a) for a in attachments))
+                    or (_is_agency_sad_ev and not attachments)
                 ):
                     try:
                         _ingest_sad_attachments(
-                            token, account_id, str(mid or ""),
+                            token, account_id, str(mid),
                             attachments, audit_path, batch_id, api_base,
+                            fetch_from_zoho=(_is_agency_sad_ev and not attachments),
                         )
                     except Exception as _dl_exc:
                         log.warning("[ingest] sad catch-up download failed mid=%s: %s",
