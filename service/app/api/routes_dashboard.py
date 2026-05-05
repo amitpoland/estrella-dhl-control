@@ -426,10 +426,13 @@ def _build_files_detail(batch_id: str) -> Dict[str, Any]:
         return {"name": canon_name or legacy, "url": "", "exists": False, "stale": False}
 
     def _find_pdf() -> Dict[str, Any]:
-        """PZ PDF: pz_output block first, then canonical name, then directory scan."""
-        po_name = pz_output_block.get("pdf") or ""
-        if po_name and (batch_dir / po_name).is_file():
-            return {"name": po_name, "url": _url(po_name), "exists": True, "stale": False}
+        """PZ PDF: if pz_output block present use it exclusively (no scan fallback).
+        Without pz_output fall back to canonical name then directory scan."""
+        if pz_output_block:
+            po_name = pz_output_block.get("pdf") or ""
+            if po_name and (batch_dir / po_name).is_file():
+                return {"name": po_name, "url": _url(po_name), "exists": True, "stale": False}
+            return {"name": po_name, "url": "", "exists": False, "stale": False}
         canon_name = canon.get("pz_pdf") or ""
         if canon_name and (batch_dir / canon_name).is_file():
             return {"name": canon_name, "url": _url(canon_name), "exists": True, "stale": False}
@@ -437,13 +440,16 @@ def _build_files_detail(batch_id: str) -> Dict[str, Any]:
             for f in sorted(batch_dir.iterdir()):
                 if f.suffix.lower() == ".pdf" and f.name not in _AUDIT_ONLY_PDFS:
                     return {"name": f.name, "url": _url(f.name), "exists": True, "stale": True}
-        return {"name": po_name or canon_name, "url": "", "exists": False, "stale": False}
+        return {"name": canon_name, "url": "", "exists": False, "stale": False}
 
     def _find_xlsx() -> Dict[str, Any]:
-        """Calc XLSX: pz_output block first, then canonical name, then directory scan."""
-        po_name = pz_output_block.get("xlsx") or ""
-        if po_name and (batch_dir / po_name).is_file():
-            return {"name": po_name, "url": _url(po_name), "exists": True, "stale": False}
+        """Calc XLSX: if pz_output block present use it exclusively (no scan fallback).
+        Without pz_output fall back to canonical name then directory scan."""
+        if pz_output_block:
+            po_name = pz_output_block.get("xlsx") or ""
+            if po_name and (batch_dir / po_name).is_file():
+                return {"name": po_name, "url": _url(po_name), "exists": True, "stale": False}
+            return {"name": po_name, "url": "", "exists": False, "stale": False}
         canon_name = canon.get("calc_xlsx") or ""
         if canon_name and (batch_dir / canon_name).is_file():
             return {"name": canon_name, "url": _url(canon_name), "exists": True, "stale": False}
@@ -451,7 +457,7 @@ def _build_files_detail(batch_id: str) -> Dict[str, Any]:
             for f in sorted(batch_dir.iterdir()):
                 if f.suffix.lower() == ".xlsx":
                     return {"name": f.name, "url": _url(f.name), "exists": True, "stale": True}
-        return {"name": po_name or canon_name, "url": "", "exists": False, "stale": False}
+        return {"name": canon_name, "url": "", "exists": False, "stale": False}
 
     def _find_corrections() -> Dict[str, Any]:
         canon_name = canon.get("corrections") or ""
