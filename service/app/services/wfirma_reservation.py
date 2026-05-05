@@ -39,7 +39,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..core.config import settings
 from ..core.logging import get_logger
@@ -159,23 +159,25 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
     for spl in all_spl:
         spl_by_doc[spl["sales_document_id"]].append(spl)
 
-    # ── 3. Build SKU → invoice product_code index from packing_lines ─────────
-    #       norm(packing.design_no) → packing.product_code (invoice ref)
+    # ── 3. Sales → wFirma product_code resolution ────────────────────────────
+    # Pulled from the read-only v_sales_to_wfirma view (document_db).
+    # Keyed by (sales_document_id, normalized sales_design_no).
+    # Replaces the previous in-memory dn_to_inv_pc rebuild.
+    sales_to_pc: Dict[Tuple[str, str], Optional[str]] = {}
+    for v in ddb.query_sales_to_wfirma(batch_id):
+        sales_to_pc[(
+            v["sales_document_id"],
+            _norm(v["sales_design_no"] or ""),
+        )] = v["wfirma_product_code"]
+
+    # inv_pc → scan_codes index is still needed for warehouse stock checks.
     packing_rows = pdb.get_packing_lines_for_batch(batch_id)
-    dn_to_inv_pc: Dict[str, str]           = {}
-    inv_pc_designs: Dict[str, List[str]]   = defaultdict(list)
     inv_pc_scan_codes: Dict[str, List[str]] = defaultdict(list)
     for pl in packing_rows:
-        dn     = _norm(pl.get("design_no") or "")
         inv_pc = pl.get("product_code") or ""
         sc     = pl.get("scan_code") or wdb.scan_code_for_packing_line(pl)
-        if dn and inv_pc:
-            dn_to_inv_pc.setdefault(dn, inv_pc)
-        if inv_pc:
-            if dn and dn not in [_norm(d) for d in inv_pc_designs[inv_pc]]:
-                inv_pc_designs[inv_pc].append(pl.get("design_no") or dn)
-            if sc and sc not in inv_pc_scan_codes[inv_pc]:
-                inv_pc_scan_codes[inv_pc].append(sc)
+        if inv_pc and sc and sc not in inv_pc_scan_codes[inv_pc]:
+            inv_pc_scan_codes[inv_pc].append(sc)
 
     # ── 4. Invoice lines: price + currency per invoice product_code ───────────
     inv_lines = ddb.get_invoice_lines_for_batch(batch_id)
@@ -264,7 +266,7 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         doc_spl = spl_by_doc.get(doc_id, [])
         for spl_row in doc_spl:
             sku    = _norm(spl_row.get("product_code") or "")
-            inv_pc = dn_to_inv_pc.get(sku) or ""
+            inv_pc = sales_to_pc.get((doc_id, sku)) or ""
             qty    = float(spl_row.get("quantity") or 0)
             dn_raw = spl_row.get("design_no") or spl_row.get("product_code") or ""
 

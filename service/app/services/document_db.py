@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..core.logging import get_logger
+from . import packing_db as _pdb
 
 log      = get_logger(__name__)
 _lock    = threading.Lock()
@@ -279,9 +280,49 @@ def init_document_db(db_path: Path) -> None:
                 pass  # column already exists
 
 
+_V_SALES_TO_WFIRMA_DDL = """
+CREATE TEMP VIEW IF NOT EXISTS v_sales_to_wfirma AS
+SELECT
+    spl.batch_id                AS batch_id,
+    spl.sales_document_id       AS sales_document_id,
+    sd.sales_doc_no             AS sales_doc_no,
+    spl.client_name             AS client_name,
+    spl.client_ref              AS client_ref,
+    spl.design_no               AS sales_design_no,
+    pl.product_code             AS wfirma_product_code,
+    pl.design_no                AS purchase_design_no,
+    SUM(spl.quantity)           AS qty
+FROM sales_packing_lines spl
+LEFT JOIN sales_documents sd
+       ON sd.id = spl.sales_document_id
+LEFT JOIN packing.packing_lines pl
+       ON pl.batch_id = spl.batch_id
+      AND UPPER(TRIM(pl.design_no)) =
+          UPPER(TRIM(COALESCE(NULLIF(spl.product_code, ''), spl.design_no)))
+GROUP BY spl.batch_id, spl.sales_document_id, sd.sales_doc_no,
+         spl.client_name, spl.client_ref, spl.design_no,
+         pl.product_code, pl.design_no
+"""
+
+
 def _connect() -> sqlite3.Connection:
     con = sqlite3.connect(str(_db_path), check_same_thread=False)
     con.row_factory = sqlite3.Row
+    # SQLite forbids persistent views from referencing attached schemas.
+    # We attach the packing DB (when initialised) and recreate the view as
+    # TEMP per-connection. The view is read-only and adds no documents.db
+    # schema bloat.
+    if _pdb._db_path is not None:
+        try:
+            con.execute(f"ATTACH DATABASE '{_pdb._db_path}' AS packing")
+        except sqlite3.OperationalError:
+            # Already attached on this connection (idempotent).
+            pass
+        try:
+            con.executescript(_V_SALES_TO_WFIRMA_DDL)
+        except sqlite3.OperationalError:
+            # Best-effort: if attach failed (e.g. concurrent), skip view.
+            pass
     return con
 
 
@@ -1081,6 +1122,27 @@ def get_sales_packing_lines(batch_id: str) -> List[Dict[str, Any]]:
     with _connect() as con:
         rows = con.execute(
             "SELECT * FROM sales_packing_lines WHERE batch_id=? ORDER BY created_at",
+            (batch_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def query_sales_to_wfirma(batch_id: str) -> List[Dict[str, Any]]:
+    """
+    Read-only resolution: every sales_packing_lines row for *batch_id*,
+    annotated with the matched wFirma `product_code` from packing_lines.
+    Unmatched sales designs come back with wfirma_product_code=None.
+
+    Returned columns:
+      batch_id, sales_document_id, sales_doc_no, client_name, client_ref,
+      sales_design_no, wfirma_product_code, purchase_design_no, qty
+    """
+    if _db_path is None or not batch_id:
+        return []
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT * FROM v_sales_to_wfirma WHERE batch_id=? "
+            "ORDER BY sales_document_id, sales_design_no",
             (batch_id,),
         ).fetchall()
     return [dict(r) for r in rows]
