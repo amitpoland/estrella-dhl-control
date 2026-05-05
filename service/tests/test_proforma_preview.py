@@ -414,3 +414,148 @@ def test_warehouse_dispatch_no_longer_required(client):
     assert body["ready"] is True
     assert body["lines"][0]["stock_ok"]     is True
     assert body["lines"][0]["stock_status"] == "warehouse_stock"
+
+
+# ── /create endpoint shell ───────────────────────────────────────────────────
+
+import json as _json
+
+from app.services import proforma_invoice_link_db as pildb
+
+
+def _wfirma_client_calls_blocked():
+    """
+    Patch wfirma_client primitives so any accidental live call fails the test.
+    Returns the patcher list so tests can assert call counts.
+    """
+    from unittest.mock import patch as _p
+    return [
+        _p("app.services.wfirma_client.create_proforma_draft",
+           side_effect=AssertionError("wfirma_client.create_proforma_draft must NOT be called")),
+        _p("app.services.wfirma_client.create_customer",
+           side_effect=AssertionError("wfirma_client.create_customer must NOT be called")),
+        _p("app.services.wfirma_client.create_product",
+           side_effect=AssertionError("wfirma_client.create_product must NOT be called")),
+    ]
+
+
+def test_create_blocked_when_preview_not_ready(client, storage):
+    """If preview not ready → status=blocked, no draft row written."""
+    _seed_purchase(design_no="JE901", product_code="EJL/CB-1")
+    _seed_sales("ACME", [{"sku": "JE901", "qty": 1.0}])
+    # No invoice pricing, no product match, no customer match → not ready
+
+    patches = _wfirma_client_calls_blocked()
+    for p in patches: p.start()
+    try:
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                           headers=_auth()).json()
+    finally:
+        for p in patches: p.stop()
+
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert body["blocking_reasons"]
+    # Nothing persisted
+    assert pildb.get_draft(storage / "proforma_links.db", BATCH, "ACME") is None
+
+
+def test_create_ready_creates_pending_local(client, storage):
+    """Ready preview → pending_local draft persisted with source_lines_json."""
+    _seed_purchase(design_no="JE902", product_code="EJL/CC-1")
+    _seed_sales("ACME", [{"sku": "JE902", "qty": 2.0}])
+    _seed_invoice_pricing("EJL/CC-1", 100.0, "USD")
+    _match_product("EJL/CC-1")
+    _match_customer("ACME")
+    _advance_state(_scan_code_for("JE902", "EJL/CC-1"),
+                   target=ise.WAREHOUSE_STOCK,
+                   product_code="EJL/CC-1", design_no="JE902")
+
+    patches = _wfirma_client_calls_blocked()
+    for p in patches: p.start()
+    try:
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                           headers=_auth()).json()
+    finally:
+        for p in patches: p.stop()
+
+    assert body["ok"]    is True
+    assert body["status"] == "pending_local"
+    assert body["currency"] == "USD"
+    assert body["wfirma_proforma_id"] is None
+
+    draft = pildb.get_draft(storage / "proforma_links.db", BATCH, "ACME")
+    assert draft is not None
+    assert draft.status      == "pending_local"
+    assert draft.currency    == "USD"
+    lines = _json.loads(draft.source_lines_json)
+    assert lines[0]["product_code"] == "EJL/CC-1"
+    assert lines[0]["design_no"]    == "JE902"
+    assert lines[0]["qty"]          == 2.0
+    assert lines[0]["unit_price"]   == 100.0
+    assert lines[0]["currency"]     == "USD"
+
+
+def test_create_idempotent_per_batch_client(client, storage):
+    """Second call returns skipped with the same draft_id."""
+    _seed_purchase(design_no="JE903", product_code="EJL/IDM-1")
+    _seed_sales("ACME", [{"sku": "JE903", "qty": 1.0}])
+    _seed_invoice_pricing("EJL/IDM-1", 50.0, "USD")
+    _match_product("EJL/IDM-1")
+    _match_customer("ACME")
+    _advance_state(_scan_code_for("JE903", "EJL/IDM-1"),
+                   target=ise.WAREHOUSE_STOCK,
+                   product_code="EJL/IDM-1", design_no="JE903")
+
+    r1 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                     headers=_auth()).json()
+    r2 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                     headers=_auth()).json()
+
+    assert r1["status"] == "pending_local"
+    assert r2["status"] == "skipped"
+    assert r2["draft_id"] == r1["draft_id"]
+    assert r2["existing_status"] == "pending_local"
+
+
+def test_create_does_not_call_wfirma_client(client, storage):
+    """Strict: no wfirma_client primitive must fire on a successful create."""
+    _seed_purchase(design_no="JE904", product_code="EJL/NC-1")
+    _seed_sales("ACME", [{"sku": "JE904", "qty": 1.0}])
+    _seed_invoice_pricing("EJL/NC-1", 70.0, "USD")
+    _match_product("EJL/NC-1")
+    _match_customer("ACME")
+    _advance_state(_scan_code_for("JE904", "EJL/NC-1"),
+                   target=ise.WAREHOUSE_STOCK,
+                   product_code="EJL/NC-1", design_no="JE904")
+
+    from unittest.mock import patch as _p, MagicMock
+    fake = MagicMock(side_effect=AssertionError("must not be called"))
+    with (
+        _p("app.services.wfirma_client.create_proforma_draft", fake),
+        _p("app.services.wfirma_client.create_customer", fake),
+        _p("app.services.wfirma_client.create_product", fake),
+        _p("app.services.wfirma_client._http_request", fake),
+    ):
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                           headers=_auth()).json()
+    assert body["status"] == "pending_local"
+    assert fake.call_count == 0
+
+
+def test_create_blocked_does_not_persist_draft(client, storage):
+    """Even when preview is partially valid, blocked status writes nothing."""
+    # Stock is at PURCHASE_TRANSIT — readiness blocked, no draft expected
+    _seed_purchase(design_no="JE905", product_code="EJL/BD-1")
+    _seed_sales("ACME", [{"sku": "JE905", "qty": 1.0}])
+    _seed_invoice_pricing("EJL/BD-1", 25.0, "USD")
+    _match_product("EJL/BD-1")
+    _match_customer("ACME")
+    _advance_state(_scan_code_for("JE905", "EJL/BD-1"),
+                   target=ise.PURCHASE_TRANSIT,
+                   product_code="EJL/BD-1", design_no="JE905")
+
+    body = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                       headers=_auth()).json()
+    assert body["status"] == "blocked"
+    assert pildb.get_draft(storage / "proforma_links.db", BATCH, "ACME") is None

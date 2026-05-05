@@ -310,6 +310,172 @@ def list_links(db_path: Path,
         return [_row_to_link(r) for r in cur.fetchall()]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Proforma drafts — pre-create staging keyed by (batch_id, client_name)
+# ─────────────────────────────────────────────────────────────────────────────
+# `proforma_invoice_links` (above) is keyed by the WFIRMA proforma_id and is
+# only useful AFTER a proforma exists in wFirma. The drafts table below
+# captures the BEFORE state: a local idempotency record built from the
+# read-only preview, before any live wFirma call. Once a live call succeeds
+# (in a future task) the matching drafts row is promoted to status='issued'
+# with `wfirma_proforma_id` populated, and a parallel `proforma_invoice_links`
+# row is created for the eventual final-invoice conversion.
+
+DRAFT_STATUSES = ("pending_local", "issued", "failed")
+
+
+@dataclass(frozen=True)
+class ProformaDraft:
+    """One row in proforma_drafts."""
+    batch_id:           str
+    client_name:        str
+    status:             str            # one of DRAFT_STATUSES
+    currency:           str            = ""
+    exchange_rate:      Optional[float] = None
+    source_lines_json:  str            = "[]"
+    wfirma_proforma_id: Optional[str]  = None
+    notes:              Optional[str]  = None
+    created_at:         Optional[str]  = None
+    updated_at:         Optional[str]  = None
+    id:                 Optional[int]  = None
+
+
+def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS proforma_drafts (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id            TEXT NOT NULL,
+            client_name         TEXT NOT NULL,
+            status              TEXT NOT NULL,
+            currency            TEXT NOT NULL DEFAULT '',
+            exchange_rate       REAL,
+            source_lines_json   TEXT NOT NULL DEFAULT '[]',
+            wfirma_proforma_id  TEXT,
+            notes               TEXT,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL,
+            UNIQUE(batch_id, client_name)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pd_status ON proforma_drafts(status)"
+    )
+
+
+def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
+    return ProformaDraft(
+        id                 = row["id"],
+        batch_id           = row["batch_id"],
+        client_name        = row["client_name"],
+        status             = row["status"],
+        currency           = row["currency"] or "",
+        exchange_rate      = row["exchange_rate"],
+        source_lines_json  = row["source_lines_json"] or "[]",
+        wfirma_proforma_id = row["wfirma_proforma_id"],
+        notes              = row["notes"],
+        created_at         = row["created_at"],
+        updated_at         = row["updated_at"],
+    )
+
+
+def get_draft(
+    db_path:     Path,
+    batch_id:    str,
+    client_name: str,
+) -> Optional[ProformaDraft]:
+    if not Path(db_path).exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+        cur = conn.execute(
+            "SELECT * FROM proforma_drafts WHERE batch_id=? AND client_name=? LIMIT 1",
+            (str(batch_id), str(client_name)),
+        )
+        row = cur.fetchone()
+        return _row_to_draft(row) if row else None
+
+
+def upsert_pending_draft(
+    db_path:           Path,
+    *,
+    batch_id:          str,
+    client_name:       str,
+    currency:          str,
+    exchange_rate:     Optional[float],
+    source_lines_json: str,
+) -> tuple:
+    """
+    Return (ProformaDraft, was_created).
+
+    Idempotent on (batch_id, client_name): if a draft already exists for
+    that key (in any status), it is returned unchanged with was_created=False.
+    The caller decides whether to retry, surface, or escalate based on the
+    existing row's status.
+    """
+    init_db(db_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+        existing = conn.execute(
+            "SELECT * FROM proforma_drafts WHERE batch_id=? AND client_name=? LIMIT 1",
+            (str(batch_id), str(client_name)),
+        ).fetchone()
+        if existing is not None:
+            return (_row_to_draft(existing), False)
+
+        now = _now_utc_iso()
+        cur = conn.execute(
+            """
+            INSERT INTO proforma_drafts
+                (batch_id, client_name, status, currency, exchange_rate,
+                 source_lines_json, wfirma_proforma_id, notes,
+                 created_at, updated_at)
+            VALUES (?, ?, 'pending_local', ?, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (str(batch_id), str(client_name), str(currency or ""),
+             exchange_rate, source_lines_json, now, now),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM proforma_drafts WHERE id=?", (cur.lastrowid,),
+        ).fetchone()
+        return (_row_to_draft(row), True)
+
+
+def mark_draft_failed(db_path: Path, batch_id: str, client_name: str,
+                      *, notes: str) -> None:
+    if not (notes or "").strip():
+        raise ValueError("notes is required when marking failed")
+    with sqlite3.connect(str(db_path)) as conn:
+        _ensure_drafts_table(conn)
+        cur = conn.execute(
+            "UPDATE proforma_drafts SET status='failed', notes=?, updated_at=? "
+            "WHERE batch_id=? AND client_name=?",
+            (notes, _now_utc_iso(), str(batch_id), str(client_name)),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise KeyError(f"no draft for ({batch_id!r}, {client_name!r})")
+
+
+def mark_draft_issued(db_path: Path, batch_id: str, client_name: str,
+                      *, wfirma_proforma_id: str) -> None:
+    if not (wfirma_proforma_id or "").strip():
+        raise ValueError("wfirma_proforma_id is required to mark issued")
+    with sqlite3.connect(str(db_path)) as conn:
+        _ensure_drafts_table(conn)
+        cur = conn.execute(
+            "UPDATE proforma_drafts SET status='issued', wfirma_proforma_id=?, "
+            "updated_at=? WHERE batch_id=? AND client_name=?",
+            (str(wfirma_proforma_id), _now_utc_iso(),
+             str(batch_id), str(client_name)),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise KeyError(f"no draft for ({batch_id!r}, {client_name!r})")
+
+
 __all__ = [
     "ProformaInvoiceLink",
     "ProformaAlreadyConverted",
@@ -322,4 +488,11 @@ __all__ = [
     "get_link_by_proforma",
     "get_link_by_invoice",
     "list_links",
+    # ── Proforma drafts (pre-create staging) ──
+    "ProformaDraft",
+    "DRAFT_STATUSES",
+    "upsert_pending_draft",
+    "get_draft",
+    "mark_draft_failed",
+    "mark_draft_issued",
 ]

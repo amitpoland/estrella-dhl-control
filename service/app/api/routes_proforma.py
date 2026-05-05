@@ -1,18 +1,20 @@
 """
-routes_proforma.py — Read-only wFirma proforma preview.
+routes_proforma.py — wFirma proforma preview + create-shell endpoints.
 
-Exposes a single endpoint that resolves the proforma staging shape from local
-data only:
-  - sales_packing_lines + sales_documents  (client + qty + design_no)
-  - v_sales_to_wfirma view                 (design_no → wfirma product_code)
-  - invoice_lines                          (currency + unit_price + FX rate)
-  - wfirma_products                        (product_match)
-  - warehouse inventory                    (stock_ok)
+  POST /api/v1/proforma/preview/{batch_id}/{client_name}
+        Read-only resolution: design_no → wfirma product_code, currency, FX,
+        per-line stock_status, readiness gates. No writes, no live wFirma
+        calls.
 
-NO writes. NO live wFirma API calls. NO reservation/proforma row creation.
+  POST /api/v1/proforma/create/{batch_id}/{client_name}
+        Create-shell. Runs the same preview, enforces readiness gates,
+        persists a local pending_local draft (idempotent on
+        (batch_id, client_name)). Does NOT yet call wFirma — the live
+        create wiring is deferred.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import Counter
 from typing import Any, Dict, List, Optional
@@ -20,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
+from ..core.config import settings
 from ..core.security import require_api_key
 from ..core.logging import get_logger
 from ..services import document_db as ddb
@@ -27,6 +30,7 @@ from ..services import packing_db  as pdb
 from ..services import warehouse_db as wdb  # noqa: F401  (kept for cross-DB queries)
 from ..services import wfirma_db   as wfdb
 from ..services import inventory_state_engine as ise
+from ..services import proforma_invoice_link_db as pildb
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/proforma", tags=["proforma"])
@@ -75,23 +79,24 @@ def _state_codes(batch_id: str) -> Dict[str, List[str]]:
     return out
 
 
-# ── Endpoint ─────────────────────────────────────────────────────────────────
+# ── Preview core (callable from both /preview and /create) ──────────────────
 
-@router.post("/preview/{batch_id}/{client_name:path}", dependencies=[_auth])
-def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
-    """
-    Build a read-only proforma preview for one (batch_id, client_name).
-
-    Returns the canonical staging shape so the operator can validate currency,
-    product_code mapping, and design_no traceability before a live proforma
-    is created in wFirma.
-    """
+def _validate_args(batch_id: str, client_name: str) -> str:
+    """Common path-arg validation. Returns the trimmed client_name."""
     if "/" in batch_id or ".." in batch_id:
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
-    client_name = (client_name or "").strip()
-    if not client_name:
+    cn = (client_name or "").strip()
+    if not cn:
         raise HTTPException(status_code=400, detail="client_name is required.")
+    return cn
 
+
+def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
+    """
+    Pure read-only resolution. Returns the canonical preview dict.
+    Identical body shape to what /preview emits over HTTP — used directly
+    by the /create endpoint to share the exact same gating logic.
+    """
     blocking_reasons: List[str] = []
 
     # ── 1. Resolution rows (sales → wFirma product_code) ────────────────────
@@ -100,7 +105,7 @@ def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
         if (r.get("client_name") or "").strip() == client_name
     ]
     if not resolution_rows:
-        return JSONResponse({
+        return {
             "ok":               False,
             "batch_id":         batch_id,
             "client_name":      client_name,
@@ -109,7 +114,7 @@ def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
             "ready":            False,
             "blocking_reasons": [f"no sales rows for client {client_name!r}"],
             "lines":            [],
-        })
+        }
 
     # ── 2. Invoice pricing index: product_code → (unit_price, currency, fx) ─
     inv_lines = ddb.get_invoice_lines_for_batch(batch_id)
@@ -273,7 +278,7 @@ def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
 
     ready = not blocking_reasons
 
-    return JSONResponse({
+    return {
         "ok":               True,
         "batch_id":         batch_id,
         "client_name":      client_name,
@@ -282,4 +287,97 @@ def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
         "ready":            ready,
         "blocking_reasons": blocking_reasons,
         "lines":            lines,
+    }
+
+
+# ── HTTP endpoints ──────────────────────────────────────────────────────────
+
+@router.post("/preview/{batch_id}/{client_name:path}", dependencies=[_auth])
+def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
+    """Read-only proforma preview — same shape as _build_preview."""
+    cn = _validate_args(batch_id, client_name)
+    return JSONResponse(_build_preview(batch_id, cn))
+
+
+# ── Local DB path for proforma drafts/links ─────────────────────────────────
+
+def _proforma_db_path():
+    return settings.storage_root / "proforma_links.db"
+
+
+@router.post("/create/{batch_id}/{client_name:path}", dependencies=[_auth])
+def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
+    """
+    Create-shell. Runs the read-only preview, enforces gates, persists a
+    local pending_local draft. NO live wFirma call yet.
+
+    Status values:
+      blocked        — preview not ready, no draft persisted
+      skipped        — existing draft for (batch_id, client_name)
+      pending_local  — new draft persisted; no wFirma call has been made
+
+    Idempotent on (batch_id, client_name).
+    """
+    cn = _validate_args(batch_id, client_name)
+    preview = _build_preview(batch_id, cn)
+
+    # ── Idempotency: existing draft short-circuits, regardless of status ──
+    existing = pildb.get_draft(_proforma_db_path(), batch_id, cn)
+    if existing is not None:
+        return JSONResponse({
+            "ok":                  True,
+            "status":              "skipped",
+            "existing_status":     existing.status,
+            "batch_id":            batch_id,
+            "client_name":         cn,
+            "wfirma_proforma_id":  existing.wfirma_proforma_id,
+            "currency":            existing.currency,
+            "exchange_rate":       existing.exchange_rate,
+            "draft_id":            existing.id,
+        })
+
+    # ── Gate: preview must be ready ────────────────────────────────────────
+    if not preview.get("ready"):
+        return JSONResponse({
+            "ok":               False,
+            "status":            "blocked",
+            "batch_id":          batch_id,
+            "client_name":       cn,
+            "blocking_reasons":  preview.get("blocking_reasons", []),
+            "currency":          preview.get("currency"),
+            "exchange_rate":     preview.get("exchange_rate"),
+        })
+
+    # ── Persist pending_local draft ────────────────────────────────────────
+    source_lines = [
+        {
+            "product_code": ln.get("product_code"),
+            "design_no":    ln.get("design_no"),
+            "qty":          ln.get("qty"),
+            "unit_price":   ln.get("unit_price"),
+            "currency":     ln.get("currency"),
+        }
+        for ln in preview.get("lines", [])
+    ]
+
+    draft, was_created = pildb.upsert_pending_draft(
+        _proforma_db_path(),
+        batch_id          = batch_id,
+        client_name       = cn,
+        currency          = preview.get("currency", ""),
+        exchange_rate     = preview.get("exchange_rate"),
+        source_lines_json = json.dumps(source_lines, ensure_ascii=False),
+    )
+
+    # was_created=False would only happen on a TOCTOU race with another worker;
+    # both branches are valid responses. Surface the actual outcome.
+    return JSONResponse({
+        "ok":                 True,
+        "status":             "pending_local" if was_created else "skipped",
+        "batch_id":           batch_id,
+        "client_name":        cn,
+        "draft_id":           draft.id,
+        "currency":           draft.currency,
+        "exchange_rate":      draft.exchange_rate,
+        "wfirma_proforma_id": draft.wfirma_proforma_id,
     })
