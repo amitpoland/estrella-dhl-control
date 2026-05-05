@@ -442,6 +442,26 @@ def process_shipment(
 
 # ── Audit log ─────────────────────────────────────────────────────────────────
 
+def _build_pz_output(
+    pdf_path:    Path,
+    xlsx_path:   Path,
+    result:      Dict[str, Any],
+    tracking_no: str,
+    existing:    Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Build the pz_output audit block.  Paths are relative (filename only).
+    A slot is set to None when the file does not exist on disk.
+    """
+    return {
+        "pdf":          pdf_path.name  if pdf_path.exists()  else None,
+        "xlsx":         xlsx_path.name if xlsx_path.exists() else None,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "mrn":          (result.get("zc429") or {}).get("mrn"),
+        "awb":          tracking_no or existing.get("tracking_no") or existing.get("awb"),
+    }
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -464,6 +484,9 @@ ROW_SCHEMA_VERSION = "v2"
 
 
 def _derive_status(v: dict, amendment_flags: list, corrections_log: list) -> str:
+    # Both medium and high cn_risk_level produce blocked status.
+    # The dashboard reads cn_risk_level to decide whether to show the override
+    # decision panel (medium) or a hard-stop message (high).
     if amendment_flags or any(
         val is False for val in v.values() if not isinstance(val, (list, dict))
     ):
@@ -862,6 +885,7 @@ def _write_audit(
             "pdf":  {"name": pdf_path.name,  "sha256": _sha256(pdf_path)},
             "xlsx": {"name": xlsx_path.name, "sha256": _sha256(xlsx_path)},
         },
+        "pz_output": _build_pz_output(pdf_path, xlsx_path, result, tracking_no, _existing),
         "customs_declaration": _build_customs_declaration(result),
         "invoice_totals":      result.get("invoice_totals", {}),
         "settlement_mode":     result.get("settlement_mode", "standard"),

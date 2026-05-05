@@ -4080,6 +4080,95 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     </div>
                   )}
 
+                  {/* ── CN Mismatch Decision Panel ────────────────────────────────────────
+                      Shown when the ONLY reason for blocked status is cn_match failure.
+                      Medium risk (same HS chapter) → operator chooses one of 3 paths.
+                      High risk (different HS chapter) → hard-stop message only.
+                      The "Accept SAD CN" path calls the existing operator-override endpoint. */}
+                  {(() => {
+                    const failedChecks = audit.failed_checks || [];
+                    const cnBlocked = status === 'blocked' && failedChecks.includes('cn_match');
+                    if (!cnBlocked) return null;
+                    const cnRisk = ver.cn_risk_level || (ver.cn_status === 'failed_parent_mismatch' ? 'medium' : 'high');
+                    const sadCn = ver.sad_cn_code || ver.cn_code || '—';
+                    const invHsn = (ver.invoice_hsn_codes || []).join(', ') || '—';
+                    const isHard = cnRisk === 'high';
+                    const onlyBlocker = failedChecks.length === 1 && failedChecks[0] === 'cn_match';
+
+                    const acceptSadCn = async () => {
+                      const reason = window.prompt(
+                        `Accepting SAD CN code ${sadCn} as correct for this shipment.\n\nEnter justification (min 20 characters):`,
+                        `SAD CN ${sadCn} confirmed correct for this shipment after review`
+                      );
+                      if (!reason || reason.trim().length < 20) { alert('Reason must be at least 20 characters.'); return; }
+                      await doAction('cnOverride', 'Accept SAD CN + Run PZ', async () => {
+                        // Step 1: record the override
+                        const r = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/operator-override`, {
+                          method: 'POST', credentials: 'include',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ check: 'cn_match', reason: reason.trim() }),
+                        });
+                        if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`HTTP ${r.status}: ${t.slice(0, 200)}`); }
+                        // Step 2: immediately trigger PZ run — override makes the batch effectively_unblocked
+                        const r2 = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/process`, {
+                          method: 'POST', credentials: 'include',
+                        });
+                        if (r2.status === 409) { const t = await r2.text().catch(() => ''); throw new Error(`PZ blocked (409): ${t.slice(0, 200)}`); }
+                        if (!r2.ok) { const t = await r2.text().catch(() => ''); throw new Error(`PZ run failed (${r2.status}): ${t.slice(0, 200)}`); }
+                        return r2.headers.get('content-type')?.includes('json') ? r2.json() : r2.text();
+                      });
+                    };
+
+                    return (
+                      <div style={{ marginBottom: 16, padding: 16, border: `2px solid ${isHard ? 'var(--badge-red-border, #fca5a5)' : 'var(--badge-amber-border, #fcd34d)'}`, borderRadius: 8, background: isHard ? 'var(--badge-red-bg, #fef2f2)' : 'var(--badge-amber-bg, #fffbeb)' }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: isHard ? 'var(--badge-red-text, #991b1b)' : 'var(--badge-amber-text, #92400e)' }}>
+                          {isHard ? '⛔ CN Code Mismatch — Hard Block' : '⚠ CN Code Mismatch — Decision Required'}
+                        </div>
+                        <div style={{ fontSize: 12, marginBottom: 12, color: 'var(--text-2, #555)', lineHeight: 1.5 }}>
+                          <div><strong>SAD CN code:</strong> {sadCn}</div>
+                          <div><strong>Invoice HSN codes:</strong> {invHsn}</div>
+                          <div style={{ marginTop: 6 }}>
+                            {isHard
+                              ? 'These goods belong to different HS chapters. This indicates a classification error or incorrect customs declaration. Contact the clearing agent to obtain a corrected SAD before proceeding.'
+                              : 'Same HS chapter, different subheading. This may be a SAD aggregation or a minor classification difference. Choose how to proceed:'}
+                          </div>
+                        </div>
+                        {!isHard && onlyBlocker && (
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            <Btn variant="gold" disabled={!!busy.cnOverride} onClick={acceptSadCn}>
+                              {busy.cnOverride ? '⟳ Saving…' : '✓ Accept SAD CN — run PZ'}
+                            </Btn>
+                            <Btn variant="outline" disabled={!!busy.cnOverride} onClick={() => {
+                              alert('Mark batch for internal CN correction in the classification log. Override the CN code in the invoice line items before reprocessing.');
+                            }}>
+                              ✎ Correct internally
+                            </Btn>
+                            <Btn variant="outline" disabled={!!busy.cnOverride} onClick={async () => {
+                              const confirm = window.confirm(`Send a classification query back to the clearing agent for batch ${batchId}?\n\nThis will queue an agency follow-up email.`);
+                              if (!confirm) return;
+                              await doAction('cnAgencyFollowup', 'Agency CN query', async () => {
+                                const r = await fetch(`/api/v1/lifecycle/agency-followup`, {
+                                  method: 'POST', credentials: 'include',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ batch_id: batchId, reason: `CN code mismatch: SAD has ${sadCn}, invoices show ${invHsn}` }),
+                                });
+                                if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`HTTP ${r.status}: ${t.slice(0, 200)}`); }
+                                return r.json();
+                              });
+                            }}>
+                              ✉ Send back to agent
+                            </Btn>
+                          </div>
+                        )}
+                        {!isHard && !onlyBlocker && (
+                          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                            Additional blocked checks must be resolved first: {failedChecks.filter(c => c !== 'cn_match').join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   {!v2Active && (() => {
                     const sadDecision = (audit && audit.agency_sad_decision) || {};
                     const sadDecisionPresent = sadDecision.safe_to_run_pz !== undefined;

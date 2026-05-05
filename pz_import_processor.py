@@ -1985,6 +1985,50 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
     else:
         _exporter_label = "Parsed with variance"
 
+    # ── 6. CN parent/child code validation ───────────────────────────────────
+    # SAD may declare a 6-digit parent CN while invoice items carry 8-digit children.
+    # Risk classification drives the dashboard decision model:
+    #   same chapter (first 2 digits match) → "medium" risk → operator-overridable
+    #   different chapter                   → "high"   risk → hard block
+    sad_cn = (zc429.get("cn_code") or "").strip().replace(" ", "")
+    inv_hsn_codes = [
+        str(item.get("hsn", "") or "").strip().replace(" ", "")
+        for inv in invoices
+        for item in inv.get("items", [])
+        if item.get("hsn")
+    ]
+
+    if not sad_cn:
+        cn_match = None
+        cn_status = "sad_cn_not_parsed"
+        cn_risk_level = None
+    elif not inv_hsn_codes:
+        cn_match = None
+        cn_status = "invoice_hsn_not_parsed"
+        cn_risk_level = None
+    else:
+        # Build a 6-char parent prefix: strip trailing zeros but keep ≥ 4 chars.
+        _sad_parent = sad_cn.rstrip("0")
+        if len(_sad_parent) < 4:
+            _sad_parent = sad_cn[:4]  # minimum 4-char prefix
+
+        _all_child = all(hsn.startswith(_sad_parent) for hsn in inv_hsn_codes)
+        if _all_child:
+            cn_match = True
+            cn_status = "verified_parent_aggregated"
+            cn_risk_level = "low"
+        else:
+            _sad_chapter = sad_cn[:2]
+            _inv_chapters = {hsn[:2] for hsn in inv_hsn_codes if len(hsn) >= 2}
+            if _sad_chapter in _inv_chapters:
+                # Same chapter — taxonomy mismatch but same goods family
+                cn_risk_level = "medium"
+            else:
+                # Completely different chapter — structural fraud/error risk
+                cn_risk_level = "high"
+            cn_match = False
+            cn_status = "failed_parent_mismatch"
+
     return {
         # Invoice number reconciliation
         "invoice_refs_match":        inv_refs_match,    # True/False/None
@@ -2017,6 +2061,12 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
         "exporter_source":       exporter_source,       # "invoice_and_sad"|"invoice_only"|"sad_only"|"neither"
         "invoice_exporter_name": inv_exporter,
         "sad_exporter_name":     sad_exporter,
+        # CN code validation
+        "cn_match":             cn_match,               # True/False/None
+        "cn_status":            cn_status,              # "verified_parent_aggregated"|"failed_parent_mismatch"|...
+        "cn_risk_level":        cn_risk_level,          # "low"|"medium"|"high"|None
+        "sad_cn_code":          sad_cn,
+        "invoice_hsn_codes":    inv_hsn_codes,
         # Currency
         "nbp_rate_used":        0.0,    # filled by process_batch after NBP fetch
         "sad_customs_rate":     customs_rate,
