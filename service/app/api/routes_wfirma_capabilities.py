@@ -21,13 +21,15 @@ Endpoints
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from dataclasses import asdict, is_dataclass
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 
 from ..core.security import require_api_key
 from ..services import wfirma_capabilities as wfc
+from ..services import wfirma_client
 from ..services import wfirma_db as wfdb
 
 router = APIRouter(prefix="/api/v1/wfirma", tags=["wfirma"])
@@ -108,3 +110,79 @@ def upsert_product(product_code: str, req: ProductMappingRequest) -> JSONRespons
         sync_status=req.sync_status,
     )
     return JSONResponse({"ok": True, "id": row_id, "product_code": product_code})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Read-only live search — operator-approved customer/product mapping helper.
+# Wraps wfirma_client.search_customer / get_product_by_code.
+# Pure read: no local DB writes, no upsert side-effects, never calls
+# wfirma_client.create_customer or create_product.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _to_jsonable(obj: Any) -> Any:
+    """Convert dataclass results to plain dicts for JSON serialisation."""
+    if obj is None:
+        return None
+    if is_dataclass(obj):
+        return asdict(obj)
+    return obj
+
+
+@router.get("/contractors/search", dependencies=[_auth])
+def search_contractor(
+    name: str         = Query(..., min_length=1),
+    nip:  Optional[str] = Query(default=None),
+) -> JSONResponse:
+    """
+    Live wFirma contractor lookup. Returns one match or null.
+
+    Read-only: never writes to wfirma_customers, never calls create_customer.
+    The operator uses the response to confirm a mapping via PUT /customers/{name}.
+    """
+    try:
+        result = wfirma_client.search_customer(name, nip)
+    except Exception as exc:
+        # search_customer raises RuntimeError on wFirma error and ConnectionError
+        # on network failure. Either is upstream-fatal; surface as 502 so the
+        # operator sees it as "wFirma upstream issue", not a client mistake.
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "ok":    False,
+                "found": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+    return JSONResponse({
+        "ok":     True,
+        "found":  result is not None,
+        "result": _to_jsonable(result),
+    })
+
+
+@router.get("/goods/search", dependencies=[_auth])
+def search_good(
+    product_code: str = Query(..., min_length=1),
+) -> JSONResponse:
+    """
+    Live wFirma goods lookup by product code. Returns one match or null.
+
+    Read-only: never writes to wfirma_products, never calls create_product.
+    The operator uses the response to confirm a mapping via PUT /products/{code}.
+    """
+    try:
+        result = wfirma_client.get_product_by_code(product_code)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "ok":    False,
+                "found": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+    return JSONResponse({
+        "ok":     True,
+        "found":  result is not None,
+        "result": _to_jsonable(result),
+    })

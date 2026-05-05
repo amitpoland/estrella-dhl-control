@@ -371,3 +371,196 @@ def test_get_products_endpoint(client):
     body = r.json()
     assert "products" in body
     assert "count" in body
+
+
+# ── Live search endpoints (operator-approved mapping) ──────────────────────
+
+from app.services import wfirma_client as _wc
+
+
+def _no_create_patches():
+    """Patch create_customer and create_product so any accidental call fails."""
+    return [
+        patch.object(_wc, "create_customer",
+                     side_effect=AssertionError("create_customer must not be called")),
+        patch.object(_wc, "create_product",
+                     side_effect=AssertionError("create_product must not be called")),
+    ]
+
+
+def _draft_count(db_path):
+    import sqlite3
+    with sqlite3.connect(str(db_path / "wfirma.db")) as con:
+        c = con.execute("SELECT COUNT(*) FROM wfirma_customers").fetchone()[0]
+        p = con.execute("SELECT COUNT(*) FROM wfirma_products").fetchone()[0]
+    return (c, p)
+
+
+# ── Customer search ────────────────────────────────────────────────────────
+
+def test_contractor_search_hit(client, db):
+    fake = _wc.WFirmaContractor(
+        wfirma_id="C-99", name="Juliany EOOD", nip="BG123456789",
+        country="BG", zip="1000", city="Sofia",
+    )
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "search_customer", return_value=fake) as mock:
+            r = client.get(
+                "/api/v1/wfirma/contractors/search?name=Juliany%20EOOD",
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {
+        "ok":     True,
+        "found":  True,
+        "result": {
+            "wfirma_id": "C-99", "name": "Juliany EOOD", "nip": "BG123456789",
+            "country": "BG", "zip": "1000", "city": "Sofia",
+        },
+    }
+    mock.assert_called_once_with("Juliany EOOD", None)
+
+
+def test_contractor_search_miss(client, db):
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "search_customer", return_value=None):
+            r = client.get(
+                "/api/v1/wfirma/contractors/search?name=GhostCorp",
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    body = r.json()
+    assert body == {"ok": True, "found": False, "result": None}
+
+
+def test_contractor_search_error_returns_502(client, db):
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "search_customer",
+                          side_effect=RuntimeError("upstream 503")):
+            r = client.get(
+                "/api/v1/wfirma/contractors/search?name=BoomCorp",
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert detail["ok"] is False and detail["found"] is False
+    assert "RuntimeError" in detail["error"]
+
+
+def test_contractor_search_does_not_write_local_db(client, db):
+    before = _draft_count(db)
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "search_customer", return_value=None):
+            client.get("/api/v1/wfirma/contractors/search?name=NoOp",
+                       headers=_auth())
+    finally:
+        for p in blockers: p.stop()
+    after = _draft_count(db)
+    assert before == after
+
+
+# ── Product search ─────────────────────────────────────────────────────────
+
+def test_goods_search_hit(client, db):
+    fake = _wc.WFirmaProduct(
+        wfirma_id="G-42", name="Ring 18kt", code="EJL/26-27/100-1",
+        unit="szt.", count=1.0, reserved=0.0,
+    )
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "get_product_by_code", return_value=fake) as mock:
+            r = client.get(
+                "/api/v1/wfirma/goods/search?product_code=EJL/26-27/100-1",
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    body = r.json()
+    assert body["ok"] is True
+    assert body["found"] is True
+    assert body["result"]["wfirma_id"] == "G-42"
+    assert body["result"]["code"]      == "EJL/26-27/100-1"
+    mock.assert_called_once_with("EJL/26-27/100-1")
+
+
+def test_goods_search_miss(client, db):
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "get_product_by_code", return_value=None):
+            r = client.get(
+                "/api/v1/wfirma/goods/search?product_code=GHOST",
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    assert r.json() == {"ok": True, "found": False, "result": None}
+
+
+def test_goods_search_error_returns_502(client, db):
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "get_product_by_code",
+                          side_effect=ConnectionError("DNS timeout")):
+            r = client.get(
+                "/api/v1/wfirma/goods/search?product_code=BOOM",
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert detail["ok"] is False
+    assert "ConnectionError" in detail["error"]
+
+
+def test_goods_search_does_not_write_local_db(client, db):
+    before = _draft_count(db)
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "get_product_by_code", return_value=None):
+            client.get("/api/v1/wfirma/goods/search?product_code=NOOP",
+                       headers=_auth())
+    finally:
+        for p in blockers: p.stop()
+    after = _draft_count(db)
+    assert before == after
+
+
+def test_search_endpoints_never_call_create_primitives(client, db):
+    """Belt-and-suspenders: even hits and misses never reach create_*."""
+    fake_c = _wc.WFirmaContractor(wfirma_id="C-1", name="X", nip="", country="",
+                                   zip="", city="")
+    fake_p = _wc.WFirmaProduct(wfirma_id="G-1", name="P", code="X",
+                                unit="szt.", count=1.0, reserved=0.0)
+    with (
+        patch.object(_wc, "search_customer", return_value=fake_c),
+        patch.object(_wc, "get_product_by_code", return_value=fake_p),
+        patch.object(_wc, "create_customer",
+                     side_effect=AssertionError("never")),
+        patch.object(_wc, "create_product",
+                     side_effect=AssertionError("never")),
+    ):
+        r1 = client.get("/api/v1/wfirma/contractors/search?name=X",
+                        headers=_auth())
+        r2 = client.get("/api/v1/wfirma/goods/search?product_code=X",
+                        headers=_auth())
+    assert r1.status_code == 200
+    assert r2.status_code == 200
