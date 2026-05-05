@@ -25,7 +25,7 @@ from dataclasses import asdict, is_dataclass
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from ..core.security import require_api_key
 from ..services import wfirma_capabilities as wfc
@@ -185,4 +185,80 @@ def search_good(
         "ok":     True,
         "found":  result is not None,
         "result": _to_jsonable(result),
+    })
+
+
+# ── Bulk goods search (read-only triage) ────────────────────────────────────
+
+class BulkGoodsSearchRequest(BaseModel):
+    product_codes: List[str]
+
+
+@router.post("/goods/search-bulk", dependencies=[_auth])
+def search_goods_bulk(req: BulkGoodsSearchRequest) -> JSONResponse:
+    """
+    Look up many product_codes in one call. Per-code result with
+    `found` and `result` (or `error` on per-code failure). One bad
+    lookup does not abort the batch.
+
+    Read-only: never writes to wfirma_products, never calls
+    create_product. Designed for operators triaging missing-mapping
+    blockers from the proforma preview.
+    """
+    if not req.product_codes:
+        raise HTTPException(
+            status_code=422, detail="product_codes must be a non-empty list",
+        )
+
+    # Preserve input order; collapse exact duplicates so we don't hit wFirma
+    # twice for the same code, but keep the input position for the caller's
+    # readability.
+    seen_index: dict = {}
+    for i, raw in enumerate(req.product_codes):
+        pc = (raw or "").strip()
+        if pc and pc not in seen_index:
+            seen_index[pc] = i
+
+    looked_up: dict = {}
+    for pc in seen_index:
+        try:
+            result = wfirma_client.get_product_by_code(pc)
+            looked_up[pc] = {
+                "product_code": pc,
+                "found":        result is not None,
+                "result":       _to_jsonable(result),
+            }
+        except Exception as exc:
+            looked_up[pc] = {
+                "product_code": pc,
+                "found":        False,
+                "result":       None,
+                "error":        f"{type(exc).__name__}: {exc}",
+            }
+
+    # Emit results in input order; for duplicates, repeat the cached row
+    # so the caller can map 1:1 with their submitted list.
+    results: List[dict] = []
+    for raw in req.product_codes:
+        pc = (raw or "").strip()
+        if not pc:
+            results.append({
+                "product_code": raw,
+                "found":        False,
+                "result":       None,
+                "error":        "empty product_code",
+            })
+            continue
+        results.append(looked_up[pc])
+
+    found_count   = sum(1 for r in results if r.get("found"))
+    missing_count = sum(1 for r in results if not r.get("found") and "error" not in r)
+    error_count   = sum(1 for r in results if "error" in r)
+    return JSONResponse({
+        "ok":            True,
+        "count":         len(results),
+        "found_count":   found_count,
+        "missing_count": missing_count,
+        "error_count":   error_count,
+        "results":       results,
     })

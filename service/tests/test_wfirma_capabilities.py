@@ -564,3 +564,160 @@ def test_search_endpoints_never_call_create_primitives(client, db):
                         headers=_auth())
     assert r1.status_code == 200
     assert r2.status_code == 200
+
+
+# ── Bulk goods search ───────────────────────────────────────────────────────
+
+def _bulk_payload(codes):
+    return {"product_codes": codes}
+
+
+def test_goods_bulk_search_all_found(client, db):
+    def by_code(pc):
+        return _wc.WFirmaProduct(
+            wfirma_id=f"G-{pc[-1]}", name=f"P-{pc}", code=pc,
+            unit="szt.", count=1.0, reserved=0.0,
+        )
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "get_product_by_code", side_effect=by_code):
+            r = client.post(
+                "/api/v1/wfirma/goods/search-bulk",
+                json=_bulk_payload(["EJL/26-27/100-1", "EJL/26-27/100-2"]),
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    body = r.json()
+    assert body["ok"] is True
+    assert body["count"]         == 2
+    assert body["found_count"]   == 2
+    assert body["missing_count"] == 0
+    assert body["error_count"]   == 0
+    assert [x["product_code"] for x in body["results"]] == \
+           ["EJL/26-27/100-1", "EJL/26-27/100-2"]
+    assert all(x["found"] for x in body["results"])
+
+
+def test_goods_bulk_search_mixed_found_missing(client, db):
+    def by_code(pc):
+        if pc == "EJL/26-27/100-1":
+            return _wc.WFirmaProduct(wfirma_id="G-1", name="P", code=pc,
+                                     unit="szt.", count=1, reserved=0)
+        return None
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "get_product_by_code", side_effect=by_code):
+            r = client.post(
+                "/api/v1/wfirma/goods/search-bulk",
+                json=_bulk_payload(["EJL/26-27/100-1", "EJL/26-27/100-2"]),
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    body = r.json()
+    assert body["found_count"]   == 1
+    assert body["missing_count"] == 1
+    assert body["error_count"]   == 0
+    rs = body["results"]
+    assert rs[0]["found"] is True  and rs[0]["result"]["wfirma_id"] == "G-1"
+    assert rs[1]["found"] is False and rs[1]["result"] is None
+
+
+def test_goods_bulk_search_lookup_error_captured_per_code(client, db):
+    def by_code(pc):
+        if pc == "BOOM":
+            raise RuntimeError("upstream 503")
+        return _wc.WFirmaProduct(wfirma_id="G-OK", name="ok", code=pc,
+                                 unit="szt.", count=1, reserved=0)
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "get_product_by_code", side_effect=by_code):
+            r = client.post(
+                "/api/v1/wfirma/goods/search-bulk",
+                json=_bulk_payload(["GOOD-1", "BOOM", "GOOD-2"]),
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    assert r.status_code == 200
+    body = r.json()
+    assert body["found_count"] == 2
+    assert body["error_count"] == 1
+    rs = body["results"]
+    assert rs[0]["found"] is True
+    assert rs[1]["found"] is False and "RuntimeError" in rs[1]["error"]
+    assert rs[2]["found"] is True
+
+
+def test_goods_bulk_search_input_order_preserved(client, db):
+    """Output must mirror input order even when duplicate codes are present."""
+    def by_code(pc):
+        return _wc.WFirmaProduct(wfirma_id=f"G-{pc}", name="x", code=pc,
+                                 unit="szt.", count=1, reserved=0)
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "get_product_by_code",
+                          side_effect=by_code) as mock:
+            r = client.post(
+                "/api/v1/wfirma/goods/search-bulk",
+                json=_bulk_payload(["A", "B", "A", "C"]),
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    body = r.json()
+    assert [x["product_code"] for x in body["results"]] == ["A", "B", "A", "C"]
+    # Dedupe: only 3 distinct lookups
+    assert mock.call_count == 3
+    # Same row repeated for "A"
+    assert body["results"][0]["result"]["wfirma_id"] == \
+           body["results"][2]["result"]["wfirma_id"]
+
+
+def test_goods_bulk_search_empty_payload_422(client, db):
+    r = client.post(
+        "/api/v1/wfirma/goods/search-bulk",
+        json=_bulk_payload([]),
+        headers=_auth(),
+    )
+    assert r.status_code == 422
+
+
+def test_goods_bulk_search_does_not_write_local_db(client, db):
+    before = _draft_count(db)
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "get_product_by_code", return_value=None):
+            client.post(
+                "/api/v1/wfirma/goods/search-bulk",
+                json=_bulk_payload(["X1", "X2", "X3"]),
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    after = _draft_count(db)
+    assert before == after
+
+
+def test_goods_bulk_search_never_calls_create_product(client, db):
+    """Strict: even hits never reach create_product."""
+    def by_code(pc):
+        return _wc.WFirmaProduct(wfirma_id="G", name="x", code=pc,
+                                 unit="szt.", count=1, reserved=0)
+    with (
+        patch.object(_wc, "get_product_by_code", side_effect=by_code),
+        patch.object(_wc, "create_product",
+                     side_effect=AssertionError("never")),
+    ):
+        r = client.post(
+            "/api/v1/wfirma/goods/search-bulk",
+            json=_bulk_payload(["A", "B"]),
+            headers=_auth(),
+        )
+    assert r.status_code == 200
