@@ -933,6 +933,45 @@ async def _run_pipeline(
     tl.log_event(output_dir / "audit.json", _ev, "dashboard", "dashboard_user",
                  detail={"status": _r_status, "doc_no": doc_no})
 
+    # ── Inventory state promotion: PURCHASE_TRANSIT → WAREHOUSE_STOCK ────────
+    # Only on success/partial. Idempotent: skip lines not in PURCHASE_TRANSIT.
+    # Best-effort — must never break the PZ flow.
+    if _r_status in ("success", "partial"):
+        _promote_to_warehouse_stock(batch_id)
+
+
+def _promote_to_warehouse_stock(batch_id: str) -> int:
+    """
+    Move every packing line for *batch_id* that is currently in
+    PURCHASE_TRANSIT into WAREHOUSE_STOCK. Lines not yet seeded, or already at
+    WAREHOUSE_STOCK or beyond, are skipped.
+
+    Returns the number of lines promoted (0 on any failure).
+    """
+    promoted = 0
+    try:
+        from ..services import packing_db as _pdb
+        from ..services import inventory_state_engine as _ise
+
+        lines = _pdb.get_packing_lines_for_batch(batch_id)
+        for line in lines:
+            try:
+                sc = line.get("scan_code") or _pdb._compute_scan_code(line)
+                if not sc:
+                    continue
+                st = _ise.get_state(sc)
+                if st is None or st.get("state") != _ise.PURCHASE_TRANSIT:
+                    continue
+                _ise.transition(scan_code=sc, to_state=_ise.WAREHOUSE_STOCK)
+                promoted += 1
+            except Exception as _row_exc:
+                log.warning("[%s] WAREHOUSE_STOCK promote skipped for one line: %s",
+                            batch_id, _row_exc)
+    except Exception as _outer:
+        log.warning("[%s] WAREHOUSE_STOCK promote best-effort failure: %s",
+                    batch_id, _outer)
+    return promoted
+
 
 def _stamp_sad_imported(output_dir: Path, sad_name: str) -> None:
     """

@@ -549,3 +549,56 @@ def print_barcode_labels(
         "port":         printer_port,
         "bytes_sent":   len(payload),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dev-only producer trigger
+# ─────────────────────────────────────────────────────────────────────────────
+# Reads existing packing_lines for *batch_id* and runs the same producer that
+# fires after a real upload (seed_purchase_transit). Does NOT mutate
+# packing_lines. Returns the count seeded into PURCHASE_TRANSIT.
+#
+# Gated by settings.environment == "dev" — returns 404 in prod. No auth so
+# validation harnesses can hit it without a session. Should be removed (or
+# kept disabled) before any non-dev deployment.
+
+from pydantic import BaseModel  # noqa: E402  (kept local to dev router)
+
+dev_router = APIRouter(prefix="/api/v1/dev/packing", tags=["dev"])
+
+
+class _DevTriggerBody(BaseModel):
+    batch_id: str
+
+
+@dev_router.post("/trigger")
+def dev_trigger_packing_seeding(body: _DevTriggerBody) -> Dict[str, Any]:
+    """
+    Run seed_purchase_transit() against existing packing_lines for *batch_id*.
+
+    Read-only against packing.db; only writes to inventory_state /
+    inventory_state_events via the engine's idempotent transition path.
+    """
+    if settings.environment != "dev":
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    batch_id = (body.batch_id or "").strip()
+    if not batch_id or "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    try:
+        lines = pdb.get_packing_lines_for_batch(batch_id)
+        processed = seed_purchase_transit(batch_id, lines)
+        return {
+            "ok":        True,
+            "batch_id":  batch_id,
+            "lines":     len(lines),
+            "processed": processed,
+        }
+    except Exception as exc:
+        log.warning("[%s] dev trigger failed: %s", batch_id, exc)
+        return {
+            "ok":        False,
+            "batch_id":  batch_id,
+            "error":     str(exc),
+        }
