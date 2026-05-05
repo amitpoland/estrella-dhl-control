@@ -371,11 +371,56 @@ def test_wfirma_skip_testid_present():
     ), "wfirma-skip-msg testid not found"
 
 
-def test_skip_checks_milestone_skip_prefix():
-    """Skip messages must check reason.startsWith('milestone_skip:'), not just status==='skipped'."""
+def test_skip_checks_stage_field():
+    """Skip messages must check stage === 'milestone_skip' (engine's primary field)."""
+    src = _src()
+    assert "stage === 'milestone_skip'" in src or 'stage === "milestone_skip"' in src, (
+        "stage === 'milestone_skip' check not found — engine returns stage, not reason prefix"
+    )
+
+
+def test_skip_also_accepts_legacy_reason_prefix():
+    """Skip messages must still accept legacy reason.startsWith('milestone_skip:') format."""
     src = _src()
     assert "milestone_skip:" in src, (
-        "milestone_skip: prefix check not found in dashboard"
+        "Legacy milestone_skip: prefix fallback not found in dashboard"
+    )
+
+
+def test_skip_condition_uses_or_between_stage_and_reason():
+    """stage check and reason prefix must be OR-combined, not AND."""
+    src = _src()
+    # Both must appear in the same expression — verified by OR presence near both
+    assert "stage === 'milestone_skip'" in src or 'stage === "milestone_skip"' in src
+    assert "milestone_skip:" in src
+    # The two checks must be separated by || in the source (not just both present)
+    # Find the wfirma block as a representative sample
+    idx = src.find("wfirma-skip-msg")
+    snippet = src[max(0, idx - 300):idx + 50]
+    assert "||" in snippet, (
+        "stage check and reason prefix must be OR-combined in wfirma skip block"
+    )
+
+
+def test_non_milestone_skip_does_not_show_skip_message():
+    """status=skipped with reason=already_executed must NOT trigger skip message.
+
+    The skip message must only fire when stage==='milestone_skip' or the reason
+    starts with 'milestone_skip:' — not on any skipped response.
+    """
+    src = _src()
+    # The DHL reply skip block must include stage/reason guard, not just status==='skipped'
+    idx = src.find("dhl-reply-skip-msg")
+    assert idx != -1
+    # Look backward to find the wrapping condition
+    snippet = src[max(0, idx - 400):idx + 50]
+    # Must NOT be a bare status==='skipped' check without a stage/reason guard
+    assert (
+        "stage === 'milestone_skip'" in snippet
+        or 'stage === "milestone_skip"' in snippet
+        or "milestone_skip:" in snippet
+    ), (
+        "dhl-reply-skip-msg must be gated on stage or reason, not bare status==='skipped'"
     )
 
 
