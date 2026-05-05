@@ -147,6 +147,19 @@ class Settings(BaseSettings):
     # MCP send refuses (PDFs too heavy via tool-call args). Default 200KB.
     mcp_send_max_attachment_bytes: int = Field(default=200_000, env="MCP_SEND_MAX_ATTACHMENT_BYTES")
 
+    # ── wFirma API (3-header key auth — Basic Auth deprecated 2023-07-02) ───────
+    # Source: wFirma → Ustawienia → Bezpieczeństwo → Aplikacje → Klucze API
+    # All fields default to "" so the app starts safely without wFirma configured.
+    # wfirma_capabilities.get_capabilities() reports api_configured=False when empty.
+    wfirma_access_key:              str  = Field(default="",    env="WFIRMA_ACCESS_KEY")
+    wfirma_secret_key:              str  = Field(default="",    env="WFIRMA_SECRET_KEY")
+    wfirma_app_key:                 str  = Field(default="",    env="WFIRMA_APP_KEY")
+    wfirma_company_id:              str  = Field(default="",    env="WFIRMA_COMPANY_ID")
+    wfirma_warehouse_id:            str  = Field(default="",    env="WFIRMA_WAREHOUSE_ID")
+    wfirma_warehouse_module_enabled: bool = Field(default=False, env="WFIRMA_WAREHOUSE_MODULE_ENABLED")
+    wfirma_create_product_allowed:  bool = Field(default=False, env="WFIRMA_CREATE_PRODUCT_ALLOWED")
+    wfirma_create_customer_allowed: bool = Field(default=False, env="WFIRMA_CREATE_CUSTOMER_ALLOWED")
+
     # ── Cliq bot batch collection ─────────────────────────────────────────────
     # Expire an incomplete (missing files) session after N minutes of inactivity
     batch_session_timeout_minutes: int = 30
