@@ -41,6 +41,7 @@ from ..core.security import require_api_key
 from ..core import timeline as tl
 from ..services import document_db as ddb
 from ..services import packing_db as pdb
+from .routes_packing import seed_purchase_transit
 from ..services.awb_parser import parse_awb_pdf
 from ..services.batch_service import get_output_dir
 from ..services.invoice_intake_parser import parse_invoice_pdf
@@ -424,6 +425,7 @@ async def shipment_intake(
             ]
             if line_records:
                 pdb.upsert_packing_lines(line_records)
+                seed_purchase_transit(batch_id, line_records)
             pack_summary = {
                 "file":   name,
                 "status": "extracted",
@@ -706,7 +708,8 @@ async def add_packing_list(
                 }
                 for r in rows
             ]
-            pdb.upsert_packing_lines(doc_id_pdb, batch_id, line_records)
+            pdb.upsert_packing_lines(line_records)
+            seed_purchase_transit(batch_id, line_records)
         result_summary = {
             "status":               "extracted",
             "rows":                 len(rows),

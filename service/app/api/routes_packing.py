@@ -29,7 +29,45 @@ from ..core.logging import get_logger
 from ..services.batch_service import get_output_dir
 from ..services import packing_db as pdb
 from ..services import document_db as ddb
+from ..services import inventory_state_engine as ise
 from ..services.invoice_packing_extractor import process_packing_upload
+
+
+def seed_purchase_transit(batch_id: str, line_records: List[Dict[str, Any]]) -> int:
+    """
+    Best-effort: ensure every freshly inserted/updated packing line has its
+    inventory state initialised to PURCHASE_TRANSIT.
+
+    Idempotent: a scan_code that already has any state is skipped, so re-uploads
+    do not duplicate state events. Failures are logged and swallowed — they
+    must never break the packing-upload flow.
+
+    Returns the number of lines transitioned (0 on any failure).
+    """
+    seeded = 0
+    try:
+        for line in line_records:
+            try:
+                sc = pdb._compute_scan_code(line) or ""
+                if not sc:
+                    continue
+                if ise.get_state(sc) is not None:
+                    continue
+                ise.transition(
+                    scan_code    = sc,
+                    to_state     = ise.PURCHASE_TRANSIT,
+                    product_code = str(line.get("product_code") or ""),
+                    design_no    = str(line.get("design_no") or ""),
+                    batch_id     = batch_id,
+                )
+                seeded += 1
+            except Exception as _row_exc:
+                log.warning("[%s] inventory_state seed skipped for one line: %s",
+                            batch_id, _row_exc)
+    except Exception as _outer:
+        log.warning("[%s] inventory_state seed best-effort failure: %s",
+                    batch_id, _outer)
+    return seeded
 
 log = get_logger(__name__)
 
@@ -281,6 +319,10 @@ async def upload_packing_list(
         })
 
     inserted = pdb.upsert_packing_lines(line_records, force_reextract=force_reextract)
+
+    # Seed inventory state → PURCHASE_TRANSIT for every line with a scan_code.
+    # Idempotent on re-upload; failures must not break this route.
+    seed_purchase_transit(batch_id, line_records)
 
     # Register packing file in unified document registry (non-blocking)
     try:

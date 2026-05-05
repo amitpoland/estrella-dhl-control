@@ -128,6 +128,44 @@ def init_warehouse_db(db_path: Path) -> None:
                 ON inventory_movement_events (scan_code, event_time);
             CREATE INDEX IF NOT EXISTS idx_ime_batch
                 ON inventory_movement_events (batch_id);
+
+            -- ── Lifecycle state per inventory item (one row per scan_code) ──
+            -- Independent from physical movement above. Tracks the commercial
+            -- lifecycle: PURCHASE_TRANSIT → WAREHOUSE_STOCK → SALES_TRANSIT → CLOSED.
+            -- Enforced single-state-per-item via UNIQUE(scan_code).
+            CREATE TABLE IF NOT EXISTS inventory_state (
+                id              TEXT PRIMARY KEY,
+                scan_code       TEXT NOT NULL UNIQUE,
+                product_code    TEXT NOT NULL DEFAULT '',
+                design_no       TEXT NOT NULL DEFAULT '',
+                batch_id        TEXT NOT NULL DEFAULT '',
+                state           TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                updated_by      TEXT NOT NULL DEFAULT '',
+                note            TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_invstate_state
+                ON inventory_state (state);
+            CREATE INDEX IF NOT EXISTS idx_invstate_batch
+                ON inventory_state (batch_id);
+            CREATE INDEX IF NOT EXISTS idx_invstate_product
+                ON inventory_state (product_code);
+
+            -- Append-only audit trail of every state transition.
+            CREATE TABLE IF NOT EXISTS inventory_state_events (
+                id              TEXT PRIMARY KEY,
+                scan_code       TEXT NOT NULL,
+                from_state      TEXT NOT NULL DEFAULT '',
+                to_state        TEXT NOT NULL,
+                trigger         TEXT NOT NULL,
+                occurred_at     TEXT NOT NULL,
+                operator        TEXT NOT NULL DEFAULT '',
+                note            TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_invstate_events_scan
+                ON inventory_state_events (scan_code, occurred_at);
         """)
 
 

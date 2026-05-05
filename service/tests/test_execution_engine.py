@@ -449,25 +449,24 @@ def test_evaluate_closure_is_read_only():
     assert result["ready"] is True
     assert "checks" in result
     assert "missing" in result
+    assert "accounting_checks" in result
+    assert "invoice_status" in result
 
 
 # ── 8g. closure_confirm blocked when audit fields not ready (Gate 2) ─────────
 
-def test_closure_blocked_when_audit_fields_not_ready(engine, tmp_storage):
+def test_closure_blocked_when_audit_hard_fields_not_ready(engine, tmp_storage):
     """
     batch_readiness passes (Gate 1 clears) but evaluate_closure fails (Gate 2).
-    closure_confirm must return blocked with missing audit fields.
+    Missing customs_docs blocks closure; missing invoices do NOT.
     """
     batch_id = "B_CLOSE_AUDIT_BLOCK"
-    # Audit missing agency_invoice_received and dhl_invoice_received
     d = tmp_storage / "outputs" / batch_id
     d.mkdir(parents=True, exist_ok=True)
     (d / "audit.json").write_text(json.dumps({
         "batch_id":   batch_id,
         "status":     "open",
-        "customs_docs": {"received": True},
-        "pz_generated": True,
-        # agency_invoice_received and dhl_invoice_received absent → not ready
+        # customs_docs absent → hard blocker; invoices absent → only accounting signal
     }), encoding="utf-8")
 
     batch_ready = {"overall": {"ready_for_closure": True, "blocked_domains": [], "next_step": None}}
@@ -480,8 +479,44 @@ def test_closure_blocked_when_audit_fields_not_ready(engine, tmp_storage):
 
     assert result["ok"] is False
     assert result["error"] == "blocked"
-    assert "agency_invoice_received" in result.get("reason", "")
-    assert "dhl_invoice_received"    in result.get("reason", "")
+    assert "customs_docs_received" in result.get("reason", "")
+    # invoices must NOT appear in the block reason
+    assert "agency_invoice_received" not in result.get("reason", "")
+    assert "dhl_invoice_received"    not in result.get("reason", "")
+
+
+def test_closure_confirm_succeeds_with_invoices_missing(engine, tmp_storage):
+    """
+    closure_confirm must execute when customs+PZ are present but invoices absent.
+    Result must include accounting_followup_required=True.
+    """
+    batch_id = "B_CLOSE_NO_INV"
+    audit_path = tmp_storage / "outputs" / batch_id / "audit.json"
+    (tmp_storage / "outputs" / batch_id).mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(json.dumps({
+        "batch_id":     batch_id,
+        "status":       "open",
+        "customs_docs": {"received": True},
+        "pz_generated": True,
+        # no agency_invoice_received, no dhl_invoice_received
+    }), encoding="utf-8")
+
+    batch_ready = {"overall": {"ready_for_closure": True, "blocked_domains": [], "next_step": None}}
+    with (
+        patch("app.services.batch_readiness.get_batch_readiness", return_value=batch_ready),
+        patch("app.services.dhl_readiness.get_dhl_readiness",     return_value=_make_dhl_other()),
+        patch("app.services.wfirma_reservation.get_reservation_preview", return_value=_make_wfirma_ready()),
+        patch("app.services.shipment_closure.tl.log_event"),
+    ):
+        result = engine.execute_action("closure_confirm", batch_id)
+
+    assert result["ok"] is True
+    assert result["status"] == "completed"
+    assert result["accounting_followup_required"] is True
+    assert result["invoice_status"] == "pending_accounting"
+    audit_after = json.loads(audit_path.read_text())
+    assert audit_after["status"]                       == "completed"
+    assert audit_after["accounting_followup_required"] is True
 
 
 # ── 8h. closure_confirm approved_by written to audit ─────────────────────────
@@ -1145,3 +1180,42 @@ def test_load_log_returns_empty_on_corrupt_file(tmp_storage, caplog):
     assert entries == []
     assert any("execution_log read error" in r.message for r in caplog.records), \
         "expected ERROR log for corrupt execution_log"
+
+
+# ── Regression: warehouse_module_enabled=False blocks live wFirma write ──────
+
+def test_wfirma_create_blocked_when_warehouse_module_flag_false(engine, tmp_storage):
+    """
+    Regression: setting wfirma_warehouse_module_enabled=False must block
+    execute_action('wfirma_create', ...) and prevent the create write path
+    from being reached.
+
+    Locks in default-safe behavior — the warehouse module flag is the master
+    gate for live reservation writes. If a future refactor stops honoring it
+    in get_reservation_preview / capabilities, this test fails.
+    """
+    from app.core.config import settings
+    batch_id = "B_FLAG_OFF"
+
+    with (
+        patch.object(settings, "wfirma_warehouse_module_enabled", False),
+        patch.object(settings, "wfirma_access_key", "k"),
+        patch.object(settings, "wfirma_secret_key", "s"),
+        patch.object(settings, "wfirma_app_key",    "a"),
+        patch.object(settings, "wfirma_company_id", "1"),
+        patch.object(settings, "wfirma_warehouse_id", "1"),
+        patch("app.services.batch_readiness.get_batch_readiness",
+              return_value=_make_batch_ready()),
+        patch("app.services.dhl_readiness.get_dhl_readiness",
+              return_value=_make_dhl_other()),
+        patch("app.services.execution_engine._call_wfirma_create") as mock_create,
+        patch("app.services.wfirma_client.create_reservation") as mock_http,
+    ):
+        result = engine.execute_action(
+            "wfirma_create", batch_id, {"client_name": "Acme"}
+        )
+
+    assert result["ok"] is False, result
+    assert result["error"] == "blocked", result
+    mock_create.assert_not_called()
+    mock_http.assert_not_called()
