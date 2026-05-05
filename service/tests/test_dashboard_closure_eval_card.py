@@ -121,7 +121,7 @@ def test_closure_check_endpoint_in_dashboard():
     """Dashboard must call /api/v1/closure/.../check (not /evaluate)."""
     src = _src()
     idx = src.find("closure-eval-card")
-    snippet = src[idx:idx + 6000]
+    snippet = src[idx:idx + 7000]
     assert "/closure/" in snippet, "closure endpoint path not found in card"
     assert "/check" in snippet, "/check not found in closure eval card"
 
@@ -211,7 +211,7 @@ def test_refresh_batch_readiness_after_eval():
     """Card must call loadBatchReadiness() after evaluation."""
     src = _src()
     idx = src.find("closure-eval-card")
-    snippet = src[idx:idx + 6000]
+    snippet = src[idx:idx + 7000]
     assert "loadBatchReadiness" in snippet, (
         "loadBatchReadiness() not called after closure evaluation"
     )
@@ -334,13 +334,162 @@ def test_confirm_refreshes_after_success():
     src = _src()
     card_idx = src.find("closure-confirm-section")
     assert card_idx != -1
-    # Use a 4 000-char window — the Promise.all refresh calls sit ~3 300 chars in
-    snippet = src[card_idx:card_idx + 4000]
+    # Use a 5 500-char window — the Promise.all refresh calls sit ~4 800 chars in
+    snippet = src[card_idx:card_idx + 5500]
     assert "loadBatchReadiness" in snippet, (
         "closure confirm must call loadBatchReadiness() on success"
     )
     assert "load()" in snippet or "load(" in snippet, (
         "closure confirm must call load() to refresh the audit card on success"
+    )
+
+
+# ── Milestone-skip inline messages ───────────────────────────────────────────
+
+def test_dhl_reply_skip_testid_present():
+    """data-testid='dhl-reply-skip-msg' must exist in dashboard source."""
+    src = _src()
+    assert (
+        'data-testid="dhl-reply-skip-msg"' in src
+        or "data-testid='dhl-reply-skip-msg'" in src
+    ), "dhl-reply-skip-msg testid not found"
+
+
+def test_dhl_reply_skip_message_text():
+    """Dashboard must render 'Skipped: already progressed' for milestone_skip."""
+    assert "Skipped: already progressed" in _src(), (
+        "Milestone-skip text not found in dashboard"
+    )
+
+
+def test_wfirma_skip_testid_present():
+    """data-testid='wfirma-skip-msg' must exist in dashboard source."""
+    src = _src()
+    assert (
+        'data-testid="wfirma-skip-msg"' in src
+        or "data-testid='wfirma-skip-msg'" in src
+    ), "wfirma-skip-msg testid not found"
+
+
+def test_skip_checks_milestone_skip_prefix():
+    """Skip messages must check reason.startsWith('milestone_skip:'), not just status==='skipped'."""
+    src = _src()
+    assert "milestone_skip:" in src, (
+        "milestone_skip: prefix check not found in dashboard"
+    )
+
+
+# ── Log-write-failed inline warnings ─────────────────────────────────────────
+
+def test_dhl_reply_log_warn_testid_present():
+    """data-testid='dhl-reply-log-warn' must exist in dashboard source."""
+    src = _src()
+    assert (
+        'data-testid="dhl-reply-log-warn"' in src
+        or "data-testid='dhl-reply-log-warn'" in src
+    ), "dhl-reply-log-warn testid not found"
+
+
+def test_closure_confirm_log_warn_testid_present():
+    """data-testid='closure-confirm-log-warn' must exist in dashboard source."""
+    src = _src()
+    assert (
+        'data-testid="closure-confirm-log-warn"' in src
+        or "data-testid='closure-confirm-log-warn'" in src
+    ), "closure-confirm-log-warn testid not found"
+
+
+def test_wfirma_log_warn_testid_present():
+    """data-testid='wfirma-log-warn' must exist in dashboard source."""
+    src = _src()
+    assert (
+        'data-testid="wfirma-log-warn"' in src
+        or "data-testid='wfirma-log-warn'" in src
+    ), "wfirma-log-warn testid not found"
+
+
+def test_log_warn_checks_log_write_failed_field():
+    """Log-write warnings must gate on log_write_failed field, not a hardcoded flag."""
+    src = _src()
+    assert "log_write_failed" in src, (
+        "log_write_failed field check not found in dashboard"
+    )
+
+
+def test_log_warn_message_text():
+    """Dashboard must render 'log write failed' in warning text."""
+    src = _src()
+    assert "log write failed" in src, (
+        "'log write failed' text not found in dashboard"
+    )
+
+
+# ── Closure metadata display ──────────────────────────────────────────────────
+
+def test_closure_metadata_testid_in_already_completed_banner():
+    """data-testid='closure-metadata' must exist inside the already-completed banner."""
+    src = _src()
+    assert (
+        'data-testid="closure-metadata"' in src
+        or "data-testid='closure-metadata'" in src
+    ), "closure-metadata testid not found"
+
+
+def test_closure_confirm_metadata_testid_present():
+    """data-testid='closure-confirm-metadata' must exist in the confirm-result area."""
+    src = _src()
+    assert (
+        'data-testid="closure-confirm-metadata"' in src
+        or "data-testid='closure-confirm-metadata'" in src
+    ), "closure-confirm-metadata testid not found"
+
+
+def test_closure_metadata_shows_approved_by():
+    """Closure metadata must render closure_approved_by from audit."""
+    src = _src()
+    assert "closure_approved_by" in src, (
+        "closure_approved_by not referenced in dashboard metadata display"
+    )
+    assert "Approved by:" in src or "approved_by" in src, (
+        "'Approved by:' label or approved_by reference not found in closure metadata"
+    )
+
+
+def test_closure_metadata_shows_closed_at():
+    """Closure metadata must render closed_at timestamp."""
+    src = _src()
+    assert "closed_at" in src, (
+        "closed_at field not referenced in dashboard metadata display"
+    )
+    assert "Closed:" in src, (
+        "'Closed:' label not found in closure metadata"
+    )
+
+
+def test_closure_metadata_in_already_completed_banner_uses_audit_fields():
+    """Already-completed banner must read closure_approved_by and closed_at from audit state."""
+    src = _src()
+    # Find the already-completed banner
+    idx = src.find("closure-eval-already-completed")
+    assert idx != -1, "closure-eval-already-completed testid not found"
+    snippet = src[idx:idx + 1000]
+    assert "closure_approved_by" in snippet, (
+        "closure_approved_by not displayed inside already-completed banner"
+    )
+    assert "closed_at" in snippet, (
+        "closed_at not displayed inside already-completed banner"
+    )
+
+
+def test_closure_confirm_metadata_uses_audit_for_approved_by():
+    """Post-confirm metadata must read closure_approved_by from audit (not closureConfirmResult)."""
+    src = _src()
+    idx = src.find("closure-confirm-metadata")
+    assert idx != -1, "closure-confirm-metadata testid not found"
+    # Look backward 800 chars for the condition using audit.closure_approved_by
+    snippet = src[max(0, idx - 800):idx + 400]
+    assert "audit" in snippet and "closure_approved_by" in snippet, (
+        "closure-confirm-metadata must read closure_approved_by from audit state"
     )
 
 

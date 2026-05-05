@@ -2173,6 +2173,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [closureCheckError,   setClosureCheckError]   = React.useState('');
   const [closureConfirmBusy,  setClosureConfirmBusy]  = React.useState(false);
   const [closureConfirmResult, setClosureConfirmResult] = React.useState(null);
+  const [dhlSendReplyResult,  setDhlSendReplyResult]  = React.useState(null);
 
   const setBusyKey = (k, v) => setBusy(p => ({ ...p, [k]: v }));
 
@@ -2647,6 +2648,13 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     {cc && alreadyDone && (
                       <div data-testid="closure-eval-already-completed" style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
                         <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-green-text)' }}>✓ Shipment is already marked as completed.</div>
+                        {audit && (audit.closure_approved_by || audit.closed_at) && (
+                          <div data-testid="closure-metadata" style={{ marginTop: 4, fontSize: 10, color: 'var(--badge-green-text)', opacity: 0.85 }}>
+                            {audit.closure_approved_by && <span>Approved by: {audit.closure_approved_by}</span>}
+                            {audit.closure_approved_by && audit.closed_at && <span> · </span>}
+                            {audit.closed_at && <span>Closed: {new Date(audit.closed_at).toLocaleString()}</span>}
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -2697,19 +2705,35 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       {/* ── Confirm Closure — execution engine write path ── */}
                       <div data-testid="closure-confirm-section" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--border-subtle)' }}>
                         {closureConfirmResult && (
-                          <div
-                            data-testid="closure-confirm-result"
-                            style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
-                              background: closureConfirmResult.ok ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
-                              color:      closureConfirmResult.ok ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
-                              border:     '1px solid ' + (closureConfirmResult.ok ? 'var(--badge-green-border)' : 'var(--badge-amber-border)'),
-                            }}
-                          >
-                            {closureConfirmResult.ok
-                              ? (closureConfirmResult.status === 'skipped'
-                                  ? '✓ Shipment was already completed (no change)'
-                                  : '✓ Shipment closure confirmed successfully')
-                              : ('⚠ Closure blocked: ' + (closureConfirmResult.reason || closureConfirmResult.error || 'not ready'))}
+                          <div style={{ marginBottom: 8 }}>
+                            <div
+                              data-testid="closure-confirm-result"
+                              style={{ padding: '6px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                background: closureConfirmResult.ok ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                                color:      closureConfirmResult.ok ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+                                border:     '1px solid ' + (closureConfirmResult.ok ? 'var(--badge-green-border)' : 'var(--badge-amber-border)'),
+                              }}
+                            >
+                              {closureConfirmResult.ok
+                                ? (closureConfirmResult.reason && closureConfirmResult.reason.startsWith('milestone_skip:')
+                                    ? 'Skipped: already progressed (SAD/PZ/Completed)'
+                                    : closureConfirmResult.status === 'skipped'
+                                      ? '✓ Shipment was already completed (no change)'
+                                      : '✓ Shipment closure confirmed successfully')
+                                : ('⚠ Closure blocked: ' + (closureConfirmResult.reason || closureConfirmResult.error || 'not ready'))}
+                            </div>
+                            {closureConfirmResult.log_write_failed && (
+                              <div data-testid="closure-confirm-log-warn" style={{ marginTop: 4, fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                                ⚠ Action completed but log write failed
+                              </div>
+                            )}
+                            {closureConfirmResult.ok && !closureConfirmResult.reason?.startsWith('milestone_skip:') && closureConfirmResult.status !== 'skipped' && (audit && (audit.closure_approved_by || closureConfirmResult.closed_at)) && (
+                              <div data-testid="closure-confirm-metadata" style={{ marginTop: 4, fontSize: 10, color: 'var(--badge-green-text)' }}>
+                                {audit.closure_approved_by && <span>Approved by: {audit.closure_approved_by}</span>}
+                                {audit.closure_approved_by && closureConfirmResult.closed_at && <span> · </span>}
+                                {closureConfirmResult.closed_at && <span>Closed: {new Date(closureConfirmResult.closed_at).toLocaleString()}</span>}
+                              </div>
+                            )}
                           </div>
                         )}
                         <Btn
@@ -4722,7 +4746,15 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                             <div style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 0, flex: 1 }}>
                               {alreadyCreated && (
-                                <span style={pillStyle('ok')}>✓ Created — wFirma ID: {result.wfirma_reservation_id}</span>
+                                <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 4 }}>
+                                  {result.reason && result.reason.startsWith('milestone_skip:')
+                                    ? <span data-testid="wfirma-skip-msg" style={pillStyle('ok')}>Skipped: already progressed (SAD/PZ/Completed)</span>
+                                    : <span style={pillStyle('ok')}>✓ Created — wFirma ID: {result.wfirma_reservation_id}</span>
+                                  }
+                                  {result.log_write_failed && (
+                                    <span data-testid="wfirma-log-warn" style={{ fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 600 }}>⚠ Action completed but log write failed</span>
+                                  )}
+                                </span>
                               )}
                               {result && !result.ok && (
                                 <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 4 }}>
@@ -5595,7 +5627,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       ) : _drpBuilt ? (
                         <Btn variant="gold" disabled={!!busy.sendReply}
                           onClick={async () => {
-                            setBusyKey('sendReply', true);
+                            setBusyKey('sendReply', true); setDhlSendReplyResult(null);
                             onToast('Running: Queue Reply to DHL…', 'info');
                             try {
                               const d = await apiFetch('/api/v1/execute/dhl_send_reply', {
@@ -5603,6 +5635,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ batch_id: batchId, payload: {} }),
                               });
+                              setDhlSendReplyResult(d);
                               if (!d.ok) {
                                 const reason = d.reason || d.error || 'blocked';
                                 onToast(`Queue Reply to DHL blocked: ${reason}`, 'error');
@@ -5654,6 +5687,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         </>
                       )}
                     </div>
+                    {dhlSendReplyResult && dhlSendReplyResult.status === 'skipped' && dhlSendReplyResult.reason && dhlSendReplyResult.reason.startsWith('milestone_skip:') && (
+                      <div data-testid="dhl-reply-skip-msg" style={{ marginTop: 6, fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                        Skipped: already progressed (SAD/PZ/Completed)
+                      </div>
+                    )}
+                    {dhlSendReplyResult && dhlSendReplyResult.log_write_failed && (
+                      <div data-testid="dhl-reply-log-warn" style={{ marginTop: 4, fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                        ⚠ Action completed but log write failed
+                      </div>
+                    )}
 
                     {/* D. Manual fallback — collapsed by default */}
                     {(_drpQueued || (_isAgency && _arpQueued)) && (
