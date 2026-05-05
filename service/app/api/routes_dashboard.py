@@ -402,13 +402,19 @@ def _build_files_detail(batch_id: str) -> Dict[str, Any]:
         return f"/api/v1/files/{quote(batch_id)}/{quote(name)}"
 
     # Try to read canonical filenames stamped on the audit.json by the engine.
+    # Also read pz_output — it is the single source of truth for PDF/XLSX names
+    # when present (populated by _build_pz_output in export_service after each run).
     canon: Dict[str, str] = {}
+    pz_output_block: Dict[str, Any] = {}
     try:
         ap = batch_dir / "audit.json"
         if ap.is_file():
-            canon = (_json.loads(ap.read_text(encoding="utf-8")) or {}).get("canonical_filenames") or {}
+            _audit_raw = _json.loads(ap.read_text(encoding="utf-8")) or {}
+            canon = _audit_raw.get("canonical_filenames") or {}
+            pz_output_block = _audit_raw.get("pz_output") or {}
     except Exception:
         canon = {}
+        pz_output_block = {}
 
     def _resolve(key: str, legacy: str) -> Dict[str, Any]:
         """Prefer canonical filename if it exists on disk; fall back to legacy."""
@@ -420,7 +426,10 @@ def _build_files_detail(batch_id: str) -> Dict[str, Any]:
         return {"name": canon_name or legacy, "url": "", "exists": False, "stale": False}
 
     def _find_pdf() -> Dict[str, Any]:
-        """PZ PDF: prefer canonical AWB+MRN+date name, else first *.pdf not in audit-only list."""
+        """PZ PDF: pz_output block first, then canonical name, then directory scan."""
+        po_name = pz_output_block.get("pdf") or ""
+        if po_name and (batch_dir / po_name).is_file():
+            return {"name": po_name, "url": _url(po_name), "exists": True, "stale": False}
         canon_name = canon.get("pz_pdf") or ""
         if canon_name and (batch_dir / canon_name).is_file():
             return {"name": canon_name, "url": _url(canon_name), "exists": True, "stale": False}
@@ -428,9 +437,13 @@ def _build_files_detail(batch_id: str) -> Dict[str, Any]:
             for f in sorted(batch_dir.iterdir()):
                 if f.suffix.lower() == ".pdf" and f.name not in _AUDIT_ONLY_PDFS:
                     return {"name": f.name, "url": _url(f.name), "exists": True, "stale": True}
-        return {"name": canon_name, "url": "", "exists": False, "stale": False}
+        return {"name": po_name or canon_name, "url": "", "exists": False, "stale": False}
 
     def _find_xlsx() -> Dict[str, Any]:
+        """Calc XLSX: pz_output block first, then canonical name, then directory scan."""
+        po_name = pz_output_block.get("xlsx") or ""
+        if po_name and (batch_dir / po_name).is_file():
+            return {"name": po_name, "url": _url(po_name), "exists": True, "stale": False}
         canon_name = canon.get("calc_xlsx") or ""
         if canon_name and (batch_dir / canon_name).is_file():
             return {"name": canon_name, "url": _url(canon_name), "exists": True, "stale": False}
@@ -438,7 +451,7 @@ def _build_files_detail(batch_id: str) -> Dict[str, Any]:
             for f in sorted(batch_dir.iterdir()):
                 if f.suffix.lower() == ".xlsx":
                     return {"name": f.name, "url": _url(f.name), "exists": True, "stale": True}
-        return {"name": canon_name, "url": "", "exists": False, "stale": False}
+        return {"name": po_name or canon_name, "url": "", "exists": False, "stale": False}
 
     def _find_corrections() -> Dict[str, Any]:
         canon_name = canon.get("corrections") or ""
