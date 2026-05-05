@@ -564,14 +564,17 @@ def print_barcode_labels(
 
 from pydantic import BaseModel  # noqa: E402  (kept local to dev router)
 
-dev_router = APIRouter(prefix="/api/v1/dev/packing", tags=["dev"])
+# Single dev router carries both packing trigger and inventory-state seeder.
+# Mounted by main.py as packing_dev_router. Prefix is /api/v1/dev so
+# sub-paths can name their domain explicitly.
+dev_router = APIRouter(prefix="/api/v1/dev", tags=["dev"])
 
 
 class _DevTriggerBody(BaseModel):
     batch_id: str
 
 
-@dev_router.post("/trigger")
+@dev_router.post("/packing/trigger")
 def dev_trigger_packing_seeding(body: _DevTriggerBody) -> Dict[str, Any]:
     """
     Run seed_purchase_transit() against existing packing_lines for *batch_id*.
@@ -602,3 +605,143 @@ def dev_trigger_packing_seeding(body: _DevTriggerBody) -> Dict[str, Any]:
             "batch_id":  batch_id,
             "error":     str(exc),
         }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dev-only batch inventory_state seeder for legacy purchase packing lines
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-batch, operator-triggered. Reads packing_lines + audit.json, walks
+# each scan_code through legal transitions to a target state. Idempotent;
+# never demotes; never touches sales_packing_lines, audit, warehouse scans,
+# or proforma drafts.
+
+_VALID_TARGETS = {"auto", ise.PURCHASE_TRANSIT, ise.WAREHOUSE_STOCK}
+
+
+class _SeedBatchBody(BaseModel):
+    batch_id:     str
+    target_state: str  = "auto"
+    dry_run:      bool = False
+
+
+def _load_audit(batch_id: str) -> Dict[str, Any]:
+    """Read audit.json from outputs/ or working/. Raises HTTPException(400) on miss."""
+    for sub in ("outputs", "working"):
+        p = settings.storage_root / sub / batch_id / "audit.json"
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"audit.json for {batch_id} unreadable: {exc}",
+                )
+    raise HTTPException(
+        status_code=400,
+        detail=f"No audit.json found for {batch_id} — refusing to guess state.",
+    )
+
+
+def _pz_done(audit: Dict[str, Any]) -> bool:
+    """Mirror of the inferred PZ-done logic used elsewhere in the app."""
+    return (
+        audit.get("pz_generated") is True
+        or bool(audit.get("pz_pdf_filename"))
+        or bool(audit.get("pz_generated_at"))
+        or audit.get("status") in ("success", "partial")
+    )
+
+
+@dev_router.post("/inventory-state/seed-batch")
+def dev_seed_inventory_state(body: _SeedBatchBody) -> Dict[str, Any]:
+    """
+    Seed inventory_state for one legacy batch.
+
+    No global backfill. Operator-triggered, batch-scoped, idempotent.
+    Walks each scan_code through legal transitions only — never demotes,
+    never overwrites a state row that's already at or beyond the target.
+    """
+    if settings.environment != "dev":
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    batch_id = (body.batch_id or "").strip()
+    if not batch_id or "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    requested = body.target_state or "auto"
+    if requested not in _VALID_TARGETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"target_state must be one of {sorted(_VALID_TARGETS)}; "
+                   f"SALES_TRANSIT/CLOSED are not valid backfill targets.",
+        )
+
+    audit = _load_audit(batch_id)
+    decided_target = (
+        (ise.WAREHOUSE_STOCK if _pz_done(audit) else ise.PURCHASE_TRANSIT)
+        if requested == "auto" else requested
+    )
+
+    lines = pdb.get_packing_lines_for_batch(batch_id)
+    considered  = 0
+    planned     = 0
+    transitioned = 0
+    skipped     = 0
+    errors: List[Dict[str, Any]] = []
+
+    for line in lines:
+        considered += 1
+        try:
+            sc = line.get("scan_code") or pdb._compute_scan_code(line)
+            if not sc:
+                skipped += 1
+                continue
+
+            cur = ise.get_state(sc)
+            cur_state = cur["state"] if cur else None
+
+            # Plan the chain from cur_state to decided_target (legal hops only).
+            chain = []
+            if cur_state is None:
+                chain.append(ise.PURCHASE_TRANSIT)
+            if (decided_target == ise.WAREHOUSE_STOCK
+                    and (cur_state == ise.PURCHASE_TRANSIT
+                         or ise.PURCHASE_TRANSIT in chain)):
+                chain.append(ise.WAREHOUSE_STOCK)
+
+            if not chain:
+                # Already at target or beyond — never demote.
+                skipped += 1
+                continue
+
+            planned += len(chain)
+            if body.dry_run:
+                continue
+
+            for next_state in chain:
+                ise.transition(
+                    scan_code    = sc,
+                    to_state     = next_state,
+                    product_code = str(line.get("product_code") or ""),
+                    design_no    = str(line.get("design_no") or ""),
+                    batch_id     = batch_id,
+                )
+                transitioned += 1
+        except Exception as exc:
+            errors.append({
+                "scan_code": (line.get("scan_code") or "").strip(),
+                "error":     f"{type(exc).__name__}: {exc}",
+            })
+
+    return {
+        "ok":             True,
+        "batch_id":       batch_id,
+        "decided_target": decided_target,
+        "requested_target": requested,
+        "dry_run":        body.dry_run,
+        "considered":     considered,
+        "planned":        planned,
+        "transitioned":   transitioned,
+        "skipped":        skipped,
+        "errors":         errors,
+    }
