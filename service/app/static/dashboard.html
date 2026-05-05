@@ -2578,22 +2578,21 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
             {/* ── Closure Evaluation ── */}
             {(() => {
               const CHECK_LABELS = {
-                customs_docs_received:    'Customs documents received',
-                pz_generated:             'PZ generated',
-                agency_invoice_received:  'Agency invoice received',
-                dhl_invoice_received:     'DHL invoice received',
+                customs_docs_received: 'Customs documents received',
+                pz_generated:          'PZ generated',
               };
               const NEXT_STEP_MAP = {
-                customs_docs_received:    'Upload SAD/PZC from the customs agency (DHL / Customs tab)',
-                pz_generated:             'Generate PZ document (PZ / wFirma tab)',
-                agency_invoice_received:  'Register agency service invoice',
-                dhl_invoice_received:     'Register DHL service invoice',
+                customs_docs_received: 'Upload SAD/PZC from the customs agency (DHL / Customs tab)',
+                pz_generated:          'Generate PZ document (PZ / wFirma tab)',
               };
               const cc = closureCheck;
               const alreadyDone = cc && cc.already_completed;
               const isReady = cc && cc.ready && !alreadyDone;
               const missing = (cc && cc.missing) || [];
               const checks  = (cc && cc.checks)  || {};
+              const accountingChecks   = (cc && cc.accounting_checks) || {};
+              const accountingFollowup = !!(cc && cc.accounting_followup_required);
+              const invoiceStatus      = (cc && cc.invoice_status) || null;
               // Readiness gate: PZ must exist before closure evaluation is meaningful
               const pzGenerated = !!(audit && (audit.pz_pdf_filename || audit.pz_generated_at));
               const batchCompletedStatus = !!(audit && audit.status === 'completed');
@@ -2615,7 +2614,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       )}
                     </div>
                     <div data-testid="closure-eval-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
-                      Checks whether all conditions are met for shipment closure: customs docs, PZ, agency invoice, DHL invoice.
+                      Checks hard blockers for closure: customs documents received and PZ generated.
+                      Service invoices are accounting signals only — not closure blockers.
                       Evaluation only — does not close the shipment.
                     </div>
 
@@ -2627,6 +2627,22 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                             <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                               <span style={{ fontSize: 13, color: done ? 'var(--badge-green-text)' : 'var(--badge-amber-text)', width: 18 }}>{done ? '✓' : '○'}</span>
                               <span style={{ fontSize: 11, color: done ? 'var(--text)' : 'var(--text-3)', fontWeight: done ? 400 : 400 }}>{label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {cc && (
+                      <div data-testid="closure-accounting-signals" style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', marginBottom: 4 }}>Service invoices (accounting)</div>
+                        {[['agency_invoice_received','Agency invoice'],['dhl_invoice_received','DHL invoice']].map(([key, label]) => {
+                          const done = accountingChecks[key];
+                          return (
+                            <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                              <span style={{ fontSize: 13, color: done ? 'var(--badge-green-text)' : 'var(--badge-amber-text)', width: 18 }}>{done ? '✓' : '○'}</span>
+                              <span style={{ fontSize: 11, color: done ? 'var(--text)' : 'var(--text-3)' }}>{label}</span>
+                              {!done && <span data-testid="closure-invoice-pending-label" style={{ fontSize: 10, color: 'var(--badge-amber-text)' }}>pending accounting</span>}
                             </div>
                           );
                         })}
@@ -2662,6 +2678,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       <div data-testid="closure-eval-next-step" style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-green-text)', textTransform: 'uppercase', marginBottom: 2 }}>Next step</div>
                         <div style={{ fontSize: 11, color: 'var(--badge-green-text)' }}>All conditions met. Shipment is ready for final closure.</div>
+                      </div>
+                    )}
+
+                    {cc && isReady && accountingFollowup && (
+                      <div data-testid="closure-accounting-followup-notice" style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)' }}>
+                        <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>Service invoices pending — accounting follow-up required after closure.</div>
                       </div>
                     )}
 
@@ -2732,6 +2754,11 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                 {audit.closure_approved_by && <span>Approved by: {audit.closure_approved_by}</span>}
                                 {audit.closure_approved_by && closureConfirmResult.closed_at && <span> · </span>}
                                 {closureConfirmResult.closed_at && <span>Closed: {new Date(closureConfirmResult.closed_at).toLocaleString()}</span>}
+                              </div>
+                            )}
+                            {closureConfirmResult.ok && closureConfirmResult.accounting_followup_required && (
+                              <div data-testid="closure-confirm-accounting-notice" style={{ marginTop: 4, fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                                Closed with accounting follow-up: service invoices pending.
                               </div>
                             )}
                           </div>

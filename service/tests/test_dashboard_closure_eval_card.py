@@ -121,7 +121,7 @@ def test_closure_check_endpoint_in_dashboard():
     """Dashboard must call /api/v1/closure/.../check (not /evaluate)."""
     src = _src()
     idx = src.find("closure-eval-card")
-    snippet = src[idx:idx + 7000]
+    snippet = src[idx:idx + 8500]  # expanded: accounting-signals section pushes endpoint to ~8000 chars
     assert "/closure/" in snippet, "closure endpoint path not found in card"
     assert "/check" in snippet, "/check not found in closure eval card"
 
@@ -211,7 +211,7 @@ def test_refresh_batch_readiness_after_eval():
     """Card must call loadBatchReadiness() after evaluation."""
     src = _src()
     idx = src.find("closure-eval-card")
-    snippet = src[idx:idx + 7000]
+    snippet = src[idx:idx + 8500]  # expanded: accounting-signals section pushes button to ~8133 chars
     assert "loadBatchReadiness" in snippet, (
         "loadBatchReadiness() not called after closure evaluation"
     )
@@ -535,6 +535,108 @@ def test_closure_confirm_metadata_uses_audit_for_approved_by():
     snippet = src[max(0, idx - 800):idx + 400]
     assert "audit" in snippet and "closure_approved_by" in snippet, (
         "closure-confirm-metadata must read closure_approved_by from audit state"
+    )
+
+
+# ── Accounting follow-up display ─────────────────────────────────────────────
+
+def test_accounting_followup_notice_testid_present():
+    """closure-accounting-followup-notice testid must exist in dashboard source."""
+    assert "closure-accounting-followup-notice" in _src(), (
+        "closure-accounting-followup-notice testid missing"
+    )
+
+
+def test_accounting_followup_notice_renders_on_accounting_followup_required():
+    """Notice must be guarded by accountingFollowup (cc.accounting_followup_required)."""
+    src = _src()
+    idx = src.find("closure-accounting-followup-notice")
+    assert idx != -1, "closure-accounting-followup-notice testid not found"
+    snippet = src[max(0, idx - 300):idx + 100]
+    assert "accountingFollowup" in snippet, (
+        "closure-accounting-followup-notice must be conditional on accountingFollowup"
+    )
+
+
+def test_accounting_signals_section_testid_present():
+    """closure-accounting-signals testid must exist."""
+    assert "closure-accounting-signals" in _src(), (
+        "closure-accounting-signals testid missing"
+    )
+
+
+def test_accounting_signals_reads_accounting_checks():
+    """Invoice status section must read from accountingChecks."""
+    src = _src()
+    idx = src.find("closure-accounting-signals")
+    assert idx != -1
+    snippet = src[idx:idx + 600]
+    assert "accountingChecks" in snippet, (
+        "closure-accounting-signals must read from accountingChecks"
+    )
+
+
+def test_invoice_pending_label_present():
+    """'pending accounting' label must appear and have its testid."""
+    src = _src()
+    assert "pending accounting" in src, "'pending accounting' label missing"
+    assert "closure-invoice-pending-label" in src, "closure-invoice-pending-label testid missing"
+
+
+def test_closure_confirm_accounting_notice_testid_present():
+    """closure-confirm-accounting-notice testid must exist in confirm result area."""
+    assert "closure-confirm-accounting-notice" in _src(), (
+        "closure-confirm-accounting-notice testid missing"
+    )
+
+
+def test_closure_confirm_accounting_notice_checks_accounting_followup_required():
+    """Post-confirm accounting notice must be gated on accounting_followup_required."""
+    src = _src()
+    idx = src.find("closure-confirm-accounting-notice")
+    assert idx != -1
+    snippet = src[max(0, idx - 300):idx + 100]
+    assert "accounting_followup_required" in snippet, (
+        "closure-confirm-accounting-notice must check accounting_followup_required"
+    )
+
+
+def test_service_invoice_missing_does_not_disable_confirm_btn():
+    """Confirm button disabled logic must not reference invoice keys."""
+    src = _src()
+    idx = src.find("closure-confirm-btn")
+    assert idx != -1
+    snippet = src[idx:idx + 600]
+    assert "agency_invoice_received" not in snippet, (
+        "Confirm button must not be disabled by agency_invoice_received"
+    )
+    assert "dhl_invoice_received" not in snippet, (
+        "Confirm button must not be disabled by dhl_invoice_received"
+    )
+
+
+def test_missing_array_does_not_include_invoice_keys():
+    """CHECK_LABELS must not include invoice keys — they are not hard blockers."""
+    src = _src()
+    idx = src.find("CHECK_LABELS")
+    assert idx != -1, "CHECK_LABELS not found"
+    snippet = src[idx:idx + 400]
+    assert "agency_invoice_received" not in snippet, (
+        "agency_invoice_received must not be in CHECK_LABELS"
+    )
+    assert "dhl_invoice_received" not in snippet, (
+        "dhl_invoice_received must not be in CHECK_LABELS"
+    )
+
+
+def test_confirm_btn_enabled_when_ready_regardless_of_invoices():
+    """Confirm button must be enabled when closureCheck.ready is true."""
+    src = _src()
+    idx = src.find("closure-confirm-btn")
+    assert idx != -1
+    snippet = src[idx:idx + 600]
+    assert "closureCheck.ready" in snippet or "closureCheck && closureCheck.ready" in snippet, (
+        "Confirm button must gate on closureCheck.ready"
     )
 
 
