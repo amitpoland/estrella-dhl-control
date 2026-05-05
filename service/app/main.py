@@ -51,6 +51,7 @@ from .services.export_service import run_engine_health_check
 from .services.packing_db   import init_packing_db
 from .services.warehouse_db import init_warehouse_db
 from .services.document_db  import init_document_db
+from .services.wfirma_db    import init_wfirma_db
 from .auth.database import init_db
 from .auth.dependencies import check_session_or_redirect
 
@@ -77,15 +78,18 @@ async def lifespan(app: FastAPI):
     init_db(_auth_db)
     log.info("Auth DB ready: %s", _auth_db)
 
-    # Initialise operational DBs (packing / warehouse / document).
-    # These back the packing-list, warehouse-scan, and document-store routes.
-    # Failures here are fatal — the routes 500 silently if these are skipped.
+    # Initialise operational DBs (packing / warehouse / document / wfirma).
+    # These back the packing-list, warehouse-scan, document-store, and wFirma
+    # mapping routes. Failures here are fatal — the routes silently no-op if
+    # any of these are skipped (wfirma_db.upsert_* returns "" when _db_path
+    # is None, masking writes).
     _root = settings.storage_root
     _root.mkdir(parents=True, exist_ok=True)
     init_packing_db(_root   / "packing.db")
     init_warehouse_db(_root / "warehouse.db")
     init_document_db(_root  / "documents.db")
-    log.info("Operational DBs ready under %s (packing / warehouse / documents)", _root)
+    init_wfirma_db(_root    / "wfirma.db")
+    log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma)", _root)
 
     log.info("Starting Estrella PZ Service  [env=%s]", settings.environment)
     log.info("Engine dir: %s", settings.engine_dir)
