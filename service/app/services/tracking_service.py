@@ -332,6 +332,56 @@ def _infer_from_audit(cache_dir: Path) -> Dict[str, Any]:
 
 # ── DHL pending fallback ──────────────────────────────────────────────────────
 
+def _resolve_dhl_credentials() -> tuple:
+    """Return (api_key, api_secret) treating canonical + alias env names equally.
+
+    Canonical: DHL_TRACKING_API_KEY / DHL_TRACKING_API_SECRET (Settings fields).
+    Aliases:   DHL_CLIENT_ID / DHL_CLIENT_SECRET (read directly from os.environ
+               so existing operator .env files using OAuth-style names work
+               without renaming).
+    Legacy:    DHL_API_KEY (single legacy header credential).
+
+    No values are returned to callers — only used internally to compute mode.
+    """
+    import os
+    canonical_key = (settings.dhl_tracking_api_key or "").strip()
+    canonical_sec = (settings.dhl_tracking_api_secret or "").strip()
+    alias_key     = (os.environ.get("DHL_CLIENT_ID")     or "").strip()
+    alias_sec     = (os.environ.get("DHL_CLIENT_SECRET") or "").strip()
+    legacy_key    = (settings.dhl_api_key or "").strip()
+    api_key    = canonical_key or alias_key or legacy_key
+    api_secret = canonical_sec or alias_sec
+    return api_key, api_secret
+
+
+def get_tracking_mode() -> str:
+    """Return the canonical DHL tracking mode for the dashboard.
+
+    Modes:
+        ``disabled`` — credentials missing AND/OR status not "active".
+        ``failed``   — last live call errored (status was active but request raised).
+        ``active``   — credentials present + status flagged active.
+
+    Credential aliases supported:
+        DHL_TRACKING_API_KEY / DHL_TRACKING_API_SECRET   (canonical)
+        DHL_CLIENT_ID / DHL_CLIENT_SECRET                (OAuth-style alias)
+        DHL_API_KEY                                       (legacy header-only)
+
+    The function reads only ``settings`` + ``os.environ`` (no I/O) so the
+    dashboard can call it on every render without rate concerns.
+    """
+    status = (settings.dhl_tracking_api_status or "").strip().lower()
+    api_key, _ = _resolve_dhl_credentials()
+    if not api_key or status == "disabled":
+        return "disabled"
+    if status == "failed":
+        return "failed"
+    if status == "active":
+        return "active"
+    # Anything else (e.g. legacy "pending") is treated as disabled.
+    return "disabled"
+
+
 def _dhl_pending_fallback(tracking_no: str, cache_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
     Standard fallback returned whenever dhl_tracking_api_status != 'active'.
@@ -360,15 +410,21 @@ def _dhl_pending_fallback(tracking_no: str, cache_dir: Optional[Path] = None) ->
         "customs":   "In Customs",
         "transit":   "In Transit",
     }
-    _source = "email_inferred" if inferred else "api_pending"
+    _mode = get_tracking_mode()        # 'disabled' | 'failed' | 'active'
+    _source = "email_inferred" if inferred else f"api_{_mode}"
+    _reason_map = {
+        "disabled": "DHL API disabled — no credentials. Use fallback / manual.",
+        "failed":   "DHL API failed — retry or use manual.",
+        "active":   "DHL API active.",
+    }
 
     return {
         "tracking_no":   tracking_no,
         "carrier":       "DHL",
         "provider":      "dhl_unified_tracking",
         "available":     False,
-        "api_status":    settings.dhl_tracking_api_status,
-        "reason":        "DHL API not active (pending approval)",
+        "api_status":    _mode,
+        "reason":        _reason_map.get(_mode, "DHL API unavailable."),
         "status":        _inferred_status if inferred else "unknown",
         "status_label":  _status_label_map.get(_inferred_status, "Pending"),
         "last_update":   inferred.get("customs_completed") or inferred.get("arrival_poland"),
@@ -831,11 +887,53 @@ def get_tracking_status(
             log.warning("[tracking] API call failed for %s/%s: %s", carrier, tracking_no, exc)
             result = {
                 **base,
+                # Surface the live-call failure as the canonical "failed" mode
+                # so the dashboard can render the retry/manual prompt.
+                "api_status": "failed",
                 "source":    "error",
                 "available": False,
                 "cached_at": cached_at,
                 "error":     exc_str,
             }
+
+    # ── Normalize and persist events to audit.tracking_events ────────────────
+    # Best-effort: never fails the response if audit write is unavailable.
+    if result.get("available") and result.get("events"):
+        try:
+            from .tracking_normalizer import (
+                normalize_dhl_events_batch, append_tracking_events,
+                apply_workflow_progression,
+            )
+            # Resolve audit.json — typically in cache_dir or its parent
+            _audit_path = None
+            for _p in (cache_dir / "audit.json", cache_dir.parent / "audit.json"):
+                if _p.exists():
+                    _audit_path = _p
+                    break
+            if _audit_path is not None:
+                try:
+                    _audit = json.loads(_audit_path.read_text(encoding="utf-8"))
+                except Exception:
+                    _audit = None
+                if _audit is not None:
+                    _awb = _audit.get("awb") or _audit.get("tracking_no") or tracking_no
+                    _bid = _audit_path.parent.name
+                    _norm = normalize_dhl_events_batch(
+                        result["events"], awb=_awb, batch_id=_bid,
+                    )
+                    _audit, _added = append_tracking_events(_audit, _norm)
+                    if _added:
+                        _audit = apply_workflow_progression(_audit)
+                        from ..utils.io import write_json_atomic
+                        write_json_atomic(_audit_path, _audit)
+                        # Also write to tracking DB
+                        try:
+                            from . import tracking_db as tdb
+                            tdb.record_events_batch(_norm)
+                        except Exception as _db_exc:
+                            log.debug("[tracking] DB write failed: %s", _db_exc)
+        except Exception as _exc:
+            log.debug("[tracking] event normalization failed: %s", _exc)
 
     # ── Attach tracking intelligence (advisory; does not mutate audit) ───────
     try:

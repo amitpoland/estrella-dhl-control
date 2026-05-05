@@ -111,7 +111,9 @@ class TestDhlPendingFallback:
 
     def test_get_tracking_status_returns_fallback_when_pending(self, tmp_path):
         """get_tracking_status hard-blocks and returns cowork fallback when pending."""
-        with patch("app.core.config.settings") as mock_settings:
+        # Patch on tracking_service module directly — it holds a module-level reference
+        # to settings, so patching app.core.config.settings alone doesn't reach it.
+        with patch("app.services.tracking_service.settings") as mock_settings:
             mock_settings.dhl_tracking_api_status = "pending"
             mock_settings.dhl_api_key = None
             mock_settings.dhl_tracking_api_key = None

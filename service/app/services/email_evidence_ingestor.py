@@ -616,6 +616,21 @@ def scan_and_ingest(
                                     mid, _dl_exc)
             else:
                 already_stored += 1
+                # ── Catch-up: download SAD attachments for messages that were
+                #    stored before the download path was deployed.  Does NOT
+                #    re-save the message or touch the evidence store — only
+                #    downloads files that are missing from source/sad/.
+                if attachments and token and account_id and any(
+                    _is_valid_agency_sad_attachment(a) for a in attachments
+                ):
+                    try:
+                        _ingest_sad_attachments(
+                            token, account_id, str(mid or ""),
+                            attachments, audit_path, batch_id, api_base,
+                        )
+                    except Exception as _dl_exc:
+                        log.warning("[ingest] sad catch-up download failed mid=%s: %s",
+                                    mid, _dl_exc)
         except Exception as exc:
             log.warning("[ingest] save_message failed mid=%s awb=%s: %s", mid, awb, exc)
 

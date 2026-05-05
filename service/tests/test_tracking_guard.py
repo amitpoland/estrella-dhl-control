@@ -58,13 +58,13 @@ def _call(tracking_no: str = "1234567890", carrier: str = "DHL",
 # ── Case 1: status=pending, no credentials ────────────────────────────────────
 
 def test_pending_status_returns_fallback_no_http():
-    """DHL_TRACKING_API_STATUS=pending → available=False, no HTTP call made."""
+    """Legacy ``pending`` is now collapsed to ``disabled`` — no HTTP call."""
     with patch("httpx.Client") as mock_http:
         result = _call(dhl_tracking_api_status="pending")
 
     assert result["available"] is False
-    assert result["source"] == "api_pending"
-    assert result["api_status"] == "pending"
+    assert result["source"] == "api_disabled"        # was: api_pending
+    assert result["api_status"] == "disabled"        # was: pending
     assert "tracking-id=1234567890" in result["tracking_url"]
     # No HTTP connection opened
     mock_http.assert_not_called()
@@ -73,7 +73,7 @@ def test_pending_status_returns_fallback_no_http():
 # ── Case 2: no credentials ────────────────────────────────────────────────────
 
 def test_no_credentials_returns_fallback():
-    """All credential fields empty → available=False (pending fallback)."""
+    """All credential fields empty → available=False, mode=disabled."""
     with patch("httpx.Client") as mock_http:
         result = _call(
             dhl_tracking_api_status="pending",
@@ -83,14 +83,14 @@ def test_no_credentials_returns_fallback():
         )
 
     assert result["available"] is False
-    assert result["source"] == "api_pending"
+    assert result["source"] == "api_disabled"        # was: api_pending
     mock_http.assert_not_called()
 
 
 # ── Case 3: credentials present, status still pending ────────────────────────
 
 def test_credentials_present_but_pending_still_blocked():
-    """Credentials set but DHL_TRACKING_API_STATUS=pending → still blocked."""
+    """Credentials set but status=pending → collapses to disabled, blocked."""
     with patch("httpx.Client") as mock_http:
         result = _call(
             dhl_tracking_api_status="pending",
@@ -99,7 +99,7 @@ def test_credentials_present_but_pending_still_blocked():
         )
 
     assert result["available"] is False
-    assert result["source"] == "api_pending"
+    assert result["source"] == "api_disabled"        # was: api_pending
     mock_http.assert_not_called()
 
 
@@ -144,7 +144,9 @@ def test_active_status_attempts_api_call():
 # ── Case 5: pending fallback shape is complete ────────────────────────────────
 
 def test_pending_fallback_has_required_fields():
-    """Fallback response contains all fields the UI expects."""
+    """Fallback response contains all fields the UI expects.
+    Reason text now reflects the explicit mode (disabled / failed / active)
+    rather than the legacy 'pending approval' phrasing."""
     result = _call(dhl_tracking_api_status="pending")
 
     required = ["available", "provider", "api_status", "reason",
@@ -153,7 +155,10 @@ def test_pending_fallback_has_required_fields():
         assert field in result, f"Missing field: {field}"
 
     assert result["provider"] == "dhl_unified_tracking"
-    assert result["reason"]   == "DHL API not active (pending approval)"
+    assert "disabled" in result["reason"].lower()
+    # Stuck "pending" string is gone from both api_status and source
+    assert result["api_status"] != "pending"
+    assert result["source"]    != "api_pending"
 
 
 # ── Case 6: no tracking number ───────────────────────────────────────────────
