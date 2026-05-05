@@ -26,6 +26,7 @@ from app.services import packing_db   as pdb
 from app.services import warehouse_db as wdb
 from app.services import document_db  as ddb
 from app.services import wfirma_db    as wfdb
+from app.services import inventory_state_engine as ise
 
 
 BATCH = "BATCH_PFP_TEST"
@@ -272,19 +273,144 @@ def test_no_sales_rows_returns_blocked(client):
                for br in body["blocking_reasons"])
 
 
-# ── 8. Stock not dispatched is reported but doesn't write ───────────────────
+# ── 8. Stock readiness via inventory_state ──────────────────────────────────
 
-def test_stock_not_dispatched_blocks_but_does_not_write(client):
+def _advance_state(scan_code: str, *, target: str, batch_id: str = BATCH,
+                   product_code: str = "", design_no: str = "") -> None:
+    """Walk the lifecycle from start to *target*."""
+    chain = [ise.PURCHASE_TRANSIT, ise.WAREHOUSE_STOCK,
+             ise.SALES_TRANSIT, ise.CLOSED]
+    for step in chain:
+        ise.transition(scan_code=scan_code, to_state=step,
+                       batch_id=batch_id, product_code=product_code,
+                       design_no=design_no)
+        if step == target:
+            return
+
+
+def _scan_code_for(design_no: str, product_code: str) -> str:
+    return f"{product_code}|sr1|{design_no}"
+
+
+def test_warehouse_stock_makes_stock_ok_true(client):
+    """A line whose scan_code is at WAREHOUSE_STOCK is sellable."""
     _seed_purchase(design_no="JE400", product_code="EJL/SK-1")
     _seed_sales("ACME", [{"sku": "JE400", "qty": 1.0}])
     _seed_invoice_pricing("EJL/SK-1", 20.0, "USD")
     _match_product("EJL/SK-1")
     _match_customer("ACME")
+    _advance_state(_scan_code_for("JE400", "EJL/SK-1"),
+                   target=ise.WAREHOUSE_STOCK,
+                   product_code="EJL/SK-1", design_no="JE400")
 
     body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
                        headers=_auth()).json()
-    # Stock is NOT dispatched (no warehouse scan happened)
+    assert body["lines"][0]["stock_ok"]     is True
+    assert body["lines"][0]["stock_status"] == "warehouse_stock"
+    assert body["ready"] is True
+
+
+def test_purchase_transit_blocks(client):
+    _seed_purchase(design_no="JE401", product_code="EJL/PT-1")
+    _seed_sales("ACME", [{"sku": "JE401", "qty": 1.0}])
+    _seed_invoice_pricing("EJL/PT-1", 20.0, "USD")
+    _match_product("EJL/PT-1")
+    _match_customer("ACME")
+    _advance_state(_scan_code_for("JE401", "EJL/PT-1"),
+                   target=ise.PURCHASE_TRANSIT,
+                   product_code="EJL/PT-1", design_no="JE401")
+
+    body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
+                       headers=_auth()).json()
     assert body["ready"] is False
-    assert body["lines"][0]["stock_ok"] is False
-    assert any("not yet dispatched from warehouse" in br
-               for br in body["blocking_reasons"])
+    assert body["lines"][0]["stock_ok"]     is False
+    assert body["lines"][0]["stock_status"] == "purchase_transit"
+    assert any("PURCHASE_TRANSIT" in br for br in body["blocking_reasons"])
+
+
+def test_sales_transit_blocks(client):
+    _seed_purchase(design_no="JE402", product_code="EJL/ST-1")
+    _seed_sales("ACME", [{"sku": "JE402", "qty": 1.0}])
+    _seed_invoice_pricing("EJL/ST-1", 20.0, "USD")
+    _match_product("EJL/ST-1")
+    _match_customer("ACME")
+    _advance_state(_scan_code_for("JE402", "EJL/ST-1"),
+                   target=ise.SALES_TRANSIT,
+                   product_code="EJL/ST-1", design_no="JE402")
+
+    body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
+                       headers=_auth()).json()
+    assert body["ready"] is False
+    assert body["lines"][0]["stock_status"] == "sales_transit"
+    assert any("SALES_TRANSIT" in br for br in body["blocking_reasons"])
+
+
+def test_closed_state_blocks(client):
+    _seed_purchase(design_no="JE403", product_code="EJL/CL-1")
+    _seed_sales("ACME", [{"sku": "JE403", "qty": 1.0}])
+    _seed_invoice_pricing("EJL/CL-1", 20.0, "USD")
+    _match_product("EJL/CL-1")
+    _match_customer("ACME")
+    _advance_state(_scan_code_for("JE403", "EJL/CL-1"),
+                   target=ise.CLOSED,
+                   product_code="EJL/CL-1", design_no="JE403")
+
+    body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
+                       headers=_auth()).json()
+    assert body["ready"] is False
+    assert body["lines"][0]["stock_status"] == "closed"
+    assert any("CLOSED" in br for br in body["blocking_reasons"])
+
+
+def test_missing_inventory_state_blocks(client):
+    """Packing lines exist with scan_codes but were never seeded — must block."""
+    _seed_purchase(design_no="JE404", product_code="EJL/MS-1")
+    _seed_sales("ACME", [{"sku": "JE404", "qty": 1.0}])
+    _seed_invoice_pricing("EJL/MS-1", 20.0, "USD")
+    _match_product("EJL/MS-1")
+    _match_customer("ACME")
+    # NO seed_purchase_transit — inventory_state empty for this scan_code
+
+    body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
+                       headers=_auth()).json()
+    assert body["ready"] is False
+    assert body["lines"][0]["stock_ok"]     is False
+    assert body["lines"][0]["stock_status"] == "missing_state"
+
+
+def test_warehouse_dispatch_no_longer_required(client):
+    """
+    Regression: under the old logic, items at WAREHOUSE_STOCK without a
+    DISPATCH scan would still report stock_ok=False.  After the fix,
+    WAREHOUSE_STOCK alone makes stock_ok=True even when the warehouse
+    inventory_current_location row says 'received', not 'dispatched'.
+    """
+    _seed_purchase(design_no="JE405", product_code="EJL/ND-1")
+    _seed_sales("ACME", [{"sku": "JE405", "qty": 1.0}])
+    _seed_invoice_pricing("EJL/ND-1", 20.0, "USD")
+    _match_product("EJL/ND-1")
+    _match_customer("ACME")
+    sc = _scan_code_for("JE405", "EJL/ND-1")
+    _advance_state(sc, target=ise.WAREHOUSE_STOCK,
+                   product_code="EJL/ND-1", design_no="JE405")
+
+    # Simulate a warehouse row that's only RECEIVED (not dispatched). The
+    # legacy DISPATCH gate would have blocked here; the new state gate must
+    # allow it.
+    import sqlite3
+    with sqlite3.connect(str(wdb._db_path)) as con:
+        con.execute(
+            """INSERT INTO inventory_current_location
+               (id, batch_id, product_code, design_no, bag_id, pack_sr,
+                scan_code, current_location, current_status, updated_at, updated_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            ("dummy-id", BATCH, "EJL/ND-1", "JE405", "", 1.0,
+             sc, "MAIN/RECV-01", "received",
+             "2026-05-06T00:00:00+00:00", "test"),
+        )
+
+    body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
+                       headers=_auth()).json()
+    assert body["ready"] is True
+    assert body["lines"][0]["stock_ok"]     is True
+    assert body["lines"][0]["stock_status"] == "warehouse_stock"

@@ -23,9 +23,10 @@ from fastapi.responses import JSONResponse
 from ..core.security import require_api_key
 from ..core.logging import get_logger
 from ..services import document_db as ddb
-from ..services import packing_db  as pdb  # noqa: F401  (kept for future stock callers)
-from ..services import warehouse_db as wdb
+from ..services import packing_db  as pdb
+from ..services import warehouse_db as wdb  # noqa: F401  (kept for cross-DB queries)
 from ..services import wfirma_db   as wfdb
+from ..services import inventory_state_engine as ise
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/proforma", tags=["proforma"])
@@ -37,18 +38,9 @@ def _norm(s: str) -> str:
 
 
 # ── Stock helpers (read-only, no writes) ─────────────────────────────────────
-
-def _dispatched_codes(batch_id: str) -> set:
-    if wdb._db_path is None:
-        return set()
-    with sqlite3.connect(str(wdb._db_path), check_same_thread=False) as con:
-        con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT scan_code, current_status FROM inventory_current_location WHERE batch_id=?",
-            (batch_id,),
-        ).fetchall()
-    return {r["scan_code"] for r in rows if r["current_status"] == "dispatched"}
-
+# Proforma readiness uses the lifecycle state model, not the physical
+# DISPATCH scan: a proforma can be issued for goods that are present in
+# WAREHOUSE_STOCK but have not yet shipped.
 
 def _scan_codes_per_product(batch_id: str) -> Dict[str, List[str]]:
     """{ wfirma_product_code: [scan_code, ...] } from packing_lines."""
@@ -67,6 +59,19 @@ def _scan_codes_per_product(batch_id: str) -> Dict[str, List[str]]:
         sc = r["scan_code"]    or ""
         if pc and sc:
             out.setdefault(pc, []).append(sc)
+    return out
+
+
+def _state_codes(batch_id: str) -> Dict[str, List[str]]:
+    """{ inventory_state: [scan_code, ...] } for this batch."""
+    out: Dict[str, List[str]] = {}
+    for s in ise.STATES:
+        try:
+            for row in ise.list_by_state(s, batch_id=batch_id):
+                out.setdefault(s, []).append(row["scan_code"])
+        except Exception:
+            # Engine unavailable — leave empty; downstream stock_ok=False.
+            pass
     return out
 
 
@@ -125,20 +130,41 @@ def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
         except (TypeError, ValueError):
             inv_fx[pc] = None
 
-    # ── 3. Stock dispatch index per product_code ────────────────────────────
-    dispatched     = _dispatched_codes(batch_id)
-    sc_per_product = _scan_codes_per_product(batch_id)
+    # ── 3. Stock readiness via inventory_state (NOT warehouse DISPATCH) ─────
+    # A proforma may be issued when items are in WAREHOUSE_STOCK.
+    # PURCHASE_TRANSIT (not yet received), SALES_TRANSIT (already promised
+    # on another proforma/invoice), and CLOSED (delivered) all block
+    # availability for a NEW proforma.
+    sc_per_product   = _scan_codes_per_product(batch_id)
+    state_codes      = _state_codes(batch_id)
+    in_warehouse     = set(state_codes.get(ise.WAREHOUSE_STOCK,  []))
+    in_purchase      = set(state_codes.get(ise.PURCHASE_TRANSIT, []))
+    in_sales_transit = set(state_codes.get(ise.SALES_TRANSIT,    []))
+    in_closed        = set(state_codes.get(ise.CLOSED,           []))
+
+    def _stock_status(pc: str) -> str:
+        scs = sc_per_product.get(pc, [])
+        if not scs:
+            return "no_scan_codes"
+        if all(sc in in_warehouse for sc in scs):
+            return "warehouse_stock"
+        if any(sc in in_purchase for sc in scs):
+            return "purchase_transit"
+        if any(sc in in_sales_transit for sc in scs):
+            return "sales_transit"
+        if any(sc in in_closed for sc in scs):
+            return "closed"
+        return "missing_state"
 
     def _stock_ok(pc: str) -> bool:
-        scs = sc_per_product.get(pc, [])
-        return bool(scs) and all(sc in dispatched for sc in scs)
+        return _stock_status(pc) == "warehouse_stock"
 
     # ── 4. Build per-line response ──────────────────────────────────────────
     lines: List[Dict[str, Any]] = []
     unmatched_count    = 0
     missing_price      = 0
     missing_product    = 0
-    not_dispatched     = 0
+    stock_blocked: Counter = Counter()  # stock_status (excluding warehouse_stock)
     line_currencies: List[str] = []
     line_fx:            List[float] = []
 
@@ -183,9 +209,10 @@ def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
         if not product_match:
             missing_product += 1
 
-        s_ok = _stock_ok(product_code)
+        st = _stock_status(product_code)
+        s_ok = (st == "warehouse_stock")
         if not s_ok:
-            not_dispatched += 1
+            stock_blocked[st] += 1
 
         lines.append({
             "product_code":  product_code,
@@ -196,6 +223,7 @@ def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
             "exchange_rate": fx,
             "line_value":    line_value,
             "stock_ok":      s_ok,
+            "stock_status":  st,
             "product_match": product_match,
         })
 
@@ -219,11 +247,17 @@ def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
         blocking_reasons.append(
             f"{missing_product} product(s) not matched in wfirma_products"
         )
-    if not_dispatched:
-        # Stock is reported, never written; remains a blocking signal.
-        blocking_reasons.append(
-            f"{not_dispatched} product(s) not yet dispatched from warehouse"
-        )
+    # Stock is reported per state; never written.
+    _STATE_BLURB = {
+        "purchase_transit": "still in PURCHASE_TRANSIT (not yet received in warehouse)",
+        "sales_transit":    "already in SALES_TRANSIT (committed to another proforma/invoice)",
+        "closed":           "in CLOSED state (already delivered)",
+        "missing_state":    "have no inventory_state record (not seeded)",
+        "no_scan_codes":    "have no scan_codes in packing_lines",
+    }
+    for state, count in stock_blocked.items():
+        blurb = _STATE_BLURB.get(state, f"in unexpected state {state!r}")
+        blocking_reasons.append(f"{count} product(s) {blurb}")
 
     # Customer match — local lookup only
     cust = wfdb.get_customer(client_name) if wfdb._db_path is not None else None
