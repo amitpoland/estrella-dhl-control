@@ -348,11 +348,16 @@ def create_good_from_product_code(
         description_en = req.description_en,
     )
 
-    # Strict master-data name per docs/wfirma.skill.md §5:
-    #   name = "<name_pl> (<product_code>)"  — short, identifiable
-    # The long bilingual line belongs in <description>, never in <name>.
-    name_pl  = (block.get("name_pl") or "").strip()
-    wf_name  = f"{name_pl} ({pc})" if name_pl else pc
+    # Master-data name per docs/wfirma.skill.md §5 (revised after live
+    # wFirma review): the wFirma <code> field already holds the product_code
+    # — repeating it in <name> is noise. The visible product name uses the
+    # locked Polish-first / English-after-slash description_line.
+    # Fallback chain: description_line → name_pl → product_code.
+    wf_name = (
+        (block.get("description_line") or "").strip()
+        or (block.get("name_pl") or "").strip()
+        or pc
+    )
 
     try:
         result = wfirma_client.create_product(

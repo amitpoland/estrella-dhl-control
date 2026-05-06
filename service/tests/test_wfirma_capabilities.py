@@ -820,14 +820,21 @@ def test_create_from_code_missing_creates_when_flag_on(client, db):
     assert "Co to za towar / What is this" in call.kwargs["description"]
     # Polish-first / English-after-slash composed line in description body
     assert "Diamond Ring" in call.kwargs["description"]
-    # Master-data name rule: "<name_pl> (<product_code>)" — short, identifiable
-    assert call.kwargs["name"] == "Pierścionek (EJL/26-27/100-3)"
+    # Master-data name = locked description_line (Polish-first / English after slash)
+    assert call.kwargs["name"] == "Biżuteria — pierścionek / Diamond Ring"
+    # product_code must NOT be appended in parens — the wFirma <code> field
+    # already carries it.
+    assert "(EJL/26-27/100-3)" not in call.kwargs["name"]
 
 
 # ── Strict master-data name rule (docs/wfirma.skill.md §5) ─────────────────
 
-def test_create_from_code_name_is_short_polish_with_code(client, db):
-    """name = '<name_pl> (<product_code>)' — never the long composed line."""
+def test_create_from_code_name_is_locked_description_line(client, db):
+    """
+    name = description_line (Polish-first / English-after-slash). The
+    wFirma <code> field already carries the product_code — appending it
+    to <name> is noise. Slash IS allowed in name (Polish/English separator).
+    """
     created = _wc.WFirmaProduct(wfirma_id="G-NAME-1", name="x", code="EJL/N-1",
                                 unit="szt.", count=0, reserved=0)
     with (
@@ -843,14 +850,15 @@ def test_create_from_code_name_is_short_polish_with_code(client, db):
             headers=_auth(),
         )
     name = mock_create.call_args.kwargs["name"]
-    # Strict format: "<name_pl> (<product_code>)"
-    assert name == "Pierścionek (EJL/N-1)"
-    # No Polish/English slash composition in name (the " / " separator,
-    # not the product_code's own embedded "/").
-    assert " / " not in name
-    # No long English description text in name
-    assert "Lab Grown" not in name
-    # No "Co to za towar" labels in name
+    # Description line content present
+    assert "Biżuteria — pierścionek" in name
+    assert "Lab Grown Diamond 14KT Gold Ring" in name
+    # Polish/English slash separator (the description-line semantic)
+    assert " / " in name
+    # product_code MUST NOT be wrapped in parens at the end — the <code>
+    # field carries it; repeating in <name> is noise.
+    assert "(EJL/N-1)" not in name
+    # No structural description-block labels leak into name
     assert "Co to za towar" not in name
 
 
@@ -881,23 +889,26 @@ def test_create_from_code_description_keeps_full_bilingual_block(client, db):
     assert " / " in description
 
 
-def test_create_from_code_name_falls_back_to_product_code_when_name_pl_missing(
-    client, db,
-):
-    """If name_pl is empty (unknown item_type), name falls back to <product_code>."""
-    created = _wc.WFirmaProduct(wfirma_id="G-FB-1", name="x", code="EJL/FB-1",
-                                unit="szt.", count=0, reserved=0)
-    # BOGUS_TYPE → DEFAULT_TRANSLATION → name_pl="Biżuteria" (always set);
-    # to truly hit the empty-name_pl branch, set a manual override with empty name.
+def test_create_from_code_name_falls_back_when_block_empty(client, db):
+    """
+    Fallback chain: description_line → name_pl → product_code.
+    If both description_line and name_pl are empty (operator manual
+    override with empty fields), name falls back to bare product_code.
+    """
     from app.services import description_engine as deng
+    # Manual override with empty name_pl AND empty description_pl/en →
+    # build_description_line returns "" → description_line empty.
     deng.set_manual_block(
         product_code   = "EJL/FB-EMPTY",
         item_type      = "RING",
-        name_pl        = "",  # explicit empty
-        description_pl = "x",
+        name_pl        = "",
+        description_pl = "",
         material_pl    = "x",
         purpose_pl     = "x",
+        description_en = "",
     )
+    created = _wc.WFirmaProduct(wfirma_id="G-FB-1", name="x", code="EJL/FB-EMPTY",
+                                unit="szt.", count=0, reserved=0)
     with (
         _gate_create_on(),
         patch.object(_wc, "get_product_by_code", return_value=None),
@@ -906,12 +917,11 @@ def test_create_from_code_name_falls_back_to_product_code_when_name_pl_missing(
     ):
         client.post(
             CREATE_URL + "EJL/FB-EMPTY",
-            json={"item_type": "RING", "description_en": "x"},
+            json={"item_type": "RING", "description_en": ""},
             headers=_auth(),
         )
     name = mock_create.call_args.kwargs["name"]
     assert name == "EJL/FB-EMPTY"
-    assert "(" not in name and ")" not in name
 
 
 def test_create_from_code_caller_cannot_change_unit_vat_type(client, db):
