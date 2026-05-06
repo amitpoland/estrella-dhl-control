@@ -284,15 +284,27 @@ _PROBE_XML: Dict[str, str] = {
 }
 
 
-def _http_request(method: str, module: str, action: str, body_xml: str = "") -> tuple[int, str]:
+def _http_request(method: str, module: str, action: str, body_xml: str = "",
+                  id_suffix: Optional[str] = None) -> tuple[int, str]:
     """
     Make a synchronous HTTP request to the wFirma API.
 
     Returns (http_status_code, response_text).
     Raises ConnectionError on network failure.
     Raises ValueError if credentials are missing (from _headers_for_module).
+
+    *id_suffix* (optional): when provided, appended to the URL path BEFORE
+    the query string — used by goods/edit which expects
+    `/goods/edit/{wfirma_product_id}` rather than the row id in the body.
+    Other actions (find, add, get, delete) leave id_suffix=None.
     """
-    url = _url(module, action)
+    base = _url(module, action)
+    if id_suffix:
+        # Insert /{id_suffix} between path and query string.
+        path, _, query = base.partition("?")
+        url = f"{path}/{_esc(id_suffix)}" + (f"?{query}" if query else "")
+    else:
+        url = base
     headers = _headers_for_module(module)
     try:
         resp = _requests.request(
@@ -649,18 +661,22 @@ def edit_product(
     if not fields:
         raise ValueError("at least one of name/description must be non-empty")
 
+    # wFirma goods/edit requires the target id in the URL path, NOT in the
+    # body. id-in-body returns NOT_FOUND (verified live: wFirma treats body
+    # <id> as a search condition, finds zero rows, refuses to mutate).
     inner = "\n          ".join(fields)
     body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <api>
   <goods>
     <good>
-      <id>{_esc(wfirma_product_id)}</id>
           {inner}
     </good>
   </goods>
 </api>"""
 
-    http_status, response_text = _http_request("POST", "goods", "edit", body)
+    http_status, response_text = _http_request(
+        "POST", "goods", "edit", body, id_suffix=wfirma_product_id,
+    )
     if http_status >= 400:
         raise RuntimeError(
             f"goods/edit HTTP {http_status}: {response_text[:200]}"

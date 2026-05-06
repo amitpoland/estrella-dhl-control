@@ -955,10 +955,14 @@ def _ok_good_edit_response(wfirma_id: str = "G-EDIT-1",
 
 
 def test_edit_product_minimal_payload(monkeypatch):
-    """Body contains id + name + description ONLY. No accounting fields."""
+    """
+    URL contains /goods/edit/{wfirma_product_id} (id in path, NOT body).
+    Body contains <name>/<description> only — no <id>, no accounting fields.
+    """
     captured = {}
-    def fake_http(method, module, action, body):
-        captured.update(method=method, module=module, action=action, body=body)
+    def fake_http(method, module, action, body, id_suffix=None):
+        captured.update(method=method, module=module, action=action,
+                        body=body, id_suffix=id_suffix)
         return 200, _ok_good_edit_response("48611875", "new name")
     monkeypatch.setattr(_wc, "_http_request", fake_http)
 
@@ -967,20 +971,44 @@ def test_edit_product_minimal_payload(monkeypatch):
         name        = "Pierścionek z platyny / Diamond Ring",
         description = "Co to za towar / What is this: ...",
     )
-    assert captured["method"] == "POST"
-    assert captured["module"] == "goods"
-    assert captured["action"] == "edit"
+    assert captured["method"]    == "POST"
+    assert captured["module"]    == "goods"
+    assert captured["action"]    == "edit"
+    assert captured["id_suffix"] == "48611875"     # id in URL path
     body = captured["body"]
-    # Required: id, name, description
-    assert "<id>48611875</id>" in body
+    # Required body fields
     assert "Pierścionek z platyny / Diamond Ring" in body
     assert "<description>Co to za towar / What is this: ...</description>" in body
+    # CRITICAL: id MUST NOT appear in the body — wFirma rejects with
+    # NOT_FOUND if id is in body (live diagnostic confirmed).
+    assert "<id>" not in body, "id must be in URL, not body"
     # Forbidden: must NOT mutate accounting/identity fields
     for forbidden in ("<code>", "<price>", "<vat>", "<unit>",
                       "<count>", "<reserved>", "<type>", "<warehouse_type>"):
         assert forbidden not in body, f"forbidden field {forbidden} in payload"
     # Result shape
     assert out["wfirma_id"] == "48611875"
+
+
+def test_http_request_appends_id_suffix_to_url():
+    """_http_request id_suffix kwarg is inserted into URL path before query."""
+    from unittest.mock import patch as _p
+    captured = {}
+    class _R:
+        def __init__(self): self.status_code = 200; self.text = "<api/>"
+    def fake_request(method, url, headers=None, data=None, timeout=None):
+        captured["url"] = url
+        return _R()
+    with (
+        _p.object(_wc, "_requests") as mock_req,
+        _p.object(settings, "wfirma_company_id", "99999"),
+    ):
+        mock_req.request = fake_request
+        mock_req.exceptions.RequestException = Exception
+        _wc._http_request("POST", "goods", "edit", "<api/>",
+                           id_suffix="48611875")
+    assert "/goods/edit/48611875?" in captured["url"]
+    assert "company_id=99999" in captured["url"]
 
 
 def test_edit_product_raises_on_empty_id():
@@ -996,7 +1024,7 @@ def test_edit_product_raises_when_no_fields_to_update():
 def test_edit_product_omits_blank_field_from_payload(monkeypatch):
     """Only non-blank fields are serialised into the body."""
     captured = {}
-    def fake_http(method, module, action, body):
+    def fake_http(method, module, action, body, id_suffix=None):
         captured["body"] = body
         return 200, _ok_good_edit_response()
     monkeypatch.setattr(_wc, "_http_request", fake_http)
