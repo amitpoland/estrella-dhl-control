@@ -2115,8 +2115,11 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [busy, setBusy] = React.useState({});
   const [pzNumber, setPzNumber] = React.useState('');
   const [confirmingPz, setConfirmingPz] = React.useState(false);
-  const [wfirmaPreview, setWfirmaPreview] = React.useState(null);   // {rows, clipboard} or null
-  const [wfirmaCopied, setWfirmaCopied] = React.useState(false);     // timestamp of last copy
+  const [pzPreview, setPzPreview] = React.useState(null);           // BatchBuildResult from pz_preview
+  const [pzPreviewLoading, setPzPreviewLoading] = React.useState(false);
+  const [pzCreateBusy, setPzCreateBusy] = React.useState(false);
+  const [pzCreateResult, setPzCreateResult] = React.useState(null); // {status, wfirma_pz_doc_id, ...}
+  const [pzCreateConfirm, setPzCreateConfirm] = React.useState(false);
   const [scanResult, setScanResult] = React.useState(null);          // DHL inbox scan response
   const [confirmingMarkRec, setConfirmingMarkRec] = React.useState(false);
   const _markRecDefaults = { sender: 'odprawacelna@dhl.com', subject: '', ticket: '', request_type: 'unknown', note: '' };
@@ -2268,6 +2271,42 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     setReservationPreviewLoading(false);
   }, [batchId]);
 
+  const loadPzPreview = React.useCallback(async () => {
+    setPzPreviewLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_preview`);
+      setPzPreview(d);
+    } catch (e) { setPzPreview({ error: e.message }); }
+    setPzPreviewLoading(false);
+  }, [batchId]);
+
+  const resolveProducts = React.useCallback(async () => {
+    setBusyKey('pzResolve', true);
+    try {
+      await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/products/resolve`, { method: 'POST' });
+      onToast('Products resolved — refreshing preview…', 'success');
+      await loadPzPreview();
+    } catch (e) { onToast('Resolve failed: ' + e.message, 'error'); }
+    setBusyKey('pzResolve', false);
+  }, [batchId, onToast, loadPzPreview]);
+
+  const submitPzCreate = React.useCallback(async () => {
+    setPzCreateBusy(true);
+    setPzCreateConfirm(false);
+    try {
+      const d = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_create`, { method: 'POST' });
+      setPzCreateResult(d);
+      onToast(`wFirma PZ created: ${d.wfirma_pz_doc_id}`, 'success');
+      await loadPzPreview();
+    } catch (e) {
+      let body = { status: 'failed', error: e.message };
+      try { body = JSON.parse((e.message || '').split(': ').slice(1).join(': ')) || body; } catch {}
+      setPzCreateResult(body);
+      onToast('PZ create failed: ' + (body.error || e.message), 'error');
+    }
+    setPzCreateBusy(false);
+  }, [batchId, onToast, loadPzPreview]);
+
   const submitReservation = React.useCallback(async (clientName) => {
     setCreateBusy(true);
     try {
@@ -2372,8 +2411,13 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   React.useEffect(() => { if (activeTab === 'Warehouse' && !warehouseAudit) loadWarehouseAudit(); }, [activeTab]);
   // Fetch sales linkage when tab is activated
   React.useEffect(() => { if (activeTab === 'Sales' && !salesLinkage) loadSalesLinkage(); }, [activeTab]);
-  // Fetch wFirma reservation preview when tab is activated
-  React.useEffect(() => { if (activeTab === 'PZ / wFirma' && !reservationPreview) loadReservationPreview(); }, [activeTab]);
+  // Fetch wFirma reservation preview and PZ preview when tab is activated
+  React.useEffect(() => {
+    if (activeTab === 'PZ / wFirma') {
+      if (!reservationPreview) loadReservationPreview();
+      if (!pzPreview) loadPzPreview();
+    }
+  }, [activeTab]);
   // Fetch document registry when Documents tab is activated
   React.useEffect(() => { if (activeTab === 'Documents' && !docRegistry) loadDocRegistry(); }, [activeTab]);
   // Fetch packing info when Documents tab is activated
@@ -4309,142 +4353,162 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               )}
             </Card>
 
-            {/* ── wFirma Export Card ── */}
+            {/* ── wFirma Warehouse Card ── */}
             <Card>
-              <SectionHeader icon="↗" title="wFirma Export"
-                subtitle="Transfer PZ data to wFirma accounting"
-                status={!hasSad ? 'Locked' : !pzGenerated ? 'Locked' : (wfirmaCopied ? 'Exported' : 'Ready')} />
+              <SectionHeader icon="🏭" title="wFirma Warehouse"
+                subtitle="Import PZ — create warehouse receipt in wFirma"
+                status={
+                  pzPreview?.wfirma_pz_doc_id ? 'Created'
+                  : !hasSad ? 'Locked'
+                  : !pzGenerated ? 'Locked'
+                  : pzPreview?.ready ? 'Ready'
+                  : pzPreview ? 'Not ready'
+                  : 'Loading'
+                } />
 
               {(!hasSad || !pzGenerated) ? (
                 <div style={{ padding: '20px 24px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
                     <span style={{ fontSize: 20 }}>🔒</span>
                     <div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>wFirma export locked — PZ not generated</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{!hasSad ? 'Upload SAD/ZC429 and run PZ first.' : 'Run PZ processing to unlock wFirma export.'}</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>wFirma warehouse locked — PZ not generated</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{!hasSad ? 'Upload SAD/ZC429 and run PZ first.' : 'Run PZ processing to unlock wFirma warehouse.'}</div>
                     </div>
-                  </div>
-                  {/* Disabled placeholder chip so the expected download is
-                      always visible, never silently hidden by the lock. */}
-                  <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <Btn variant="ghost" disabled
-                         title={!hasSad
-                           ? 'File not generated yet — upload SAD/ZC429 and run PZ first.'
-                           : 'File not generated yet — run PZ processing first.'}>
-                      ↓ Download PZ_READY.json
-                    </Btn>
                   </div>
                 </div>
               ) : (
                 <div style={{ padding: '20px 24px' }}>
-                  {wfirmaCopied && (
-                    <div style={{ marginBottom: 14, padding: '8px 12px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 14 }}>✓</span>
-                      <div style={{ fontSize: 11, color: 'var(--badge-green-text)', fontWeight: 600 }}>
-                        Clipboard exported {wfirmaCopied}
-                        <span style={{ fontWeight: 400, marginLeft: 4 }}>— paste into wFirma PZ table</span>
+
+                  {/* Already created banner */}
+                  {pzPreview?.wfirma_pz_doc_id && (
+                    <div data-testid="pz-already-created-banner" style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: 16 }}>✓</span>
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-green-text)' }}>wFirma PZ created</div>
+                        <div style={{ fontSize: 11, color: 'var(--badge-green-text)', opacity: 0.85, fontFamily: 'monospace' }}>{pzPreview.wfirma_pz_doc_id}</div>
                       </div>
                     </div>
                   )}
 
-                  {!v2Active && (
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: wfirmaPreview ? 16 : 0 }}>
-                    <Btn variant="gold" disabled={!!busy.wfirmaPreview} onClick={async () => {
-                      setBusyKey('wfirmaPreview', true);
-                      try {
-                        const data = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/clipboard`, { method: 'POST' });
-                        setWfirmaPreview(data);
-                      } catch (e) {
-                        onToast('Preview failed: ' + e.message, 'error');
-                      } finally { setBusyKey('wfirmaPreview', false); }
-                    }}>
-                      {busy.wfirmaPreview ? '⟳ Loading…' : '⊞ Preview wFirma Rows'}
-                    </Btn>
-
-                    <Btn variant="outline" disabled={!!busy.wfirmaClip} onClick={async () => {
-                      setBusyKey('wfirmaClip', true);
-                      try {
-                        const data = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/clipboard`, { method: 'POST' });
-                        await navigator.clipboard.writeText(data.clipboard);
-                        setWfirmaCopied(new Date().toLocaleTimeString());
-                        onToast(`wFirma clipboard copied (${data.row_count} rows). Paste into wFirma PZ table.`, 'success');
-                      } catch (e) {
-                        onToast('Copy failed: ' + e.message + ' — try Preview first', 'error');
-                      } finally { setBusyKey('wfirmaClip', false); }
-                    }}>
-                      {busy.wfirmaClip ? '⟳ Copying…' : '📋 Copy wFirma PZ'}
-                    </Btn>
-
-                    <a href={`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/json`} download target="_blank" rel="noreferrer">
-                      <Btn variant="outline">↓ Download PZ_READY.json</Btn>
-                    </a>
-
-                    <a href="/chrome_wfirma_autofill/README.md" target="_blank" rel="noreferrer">
-                      <Btn variant="ghost">⚙ Chrome AutoFill Guide</Btn>
-                    </a>
-
-                    <Btn variant="ghost" style={{ opacity: 0.5, cursor: 'not-allowed' }} title="API export not enabled — endpoint verification required">
-                      ⛔ API: Disabled
-                    </Btn>
-                  </div>
+                  {/* After-create result banner (session only) */}
+                  {pzCreateResult && pzCreateResult.status === 'created' && !pzPreview?.wfirma_pz_doc_id && (
+                    <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 6 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-green-text)' }}>Created: {pzCreateResult.wfirma_pz_doc_id}</div>
+                    </div>
                   )}
 
-                  {/* Preview table */}
-                  {wfirmaPreview && wfirmaPreview.rows && (
-                    <div style={{ marginTop: 16, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-                      <div style={{ padding: '10px 16px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>wFirma Rows Preview — {wfirmaPreview.row_count} rows</span>
-                        <Btn small variant="ghost" onClick={() => setWfirmaPreview(null)}>✕ Close</Btn>
+                  {/* Error banner */}
+                  {pzPreview?.error && (
+                    <div style={{ marginBottom: 16, padding: '8px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-red-text)' }}>
+                      Preview error: {pzPreview.error}
+                    </div>
+                  )}
+
+                  {/* Metadata row */}
+                  {pzPreview && !pzPreview.error && (
+                    <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 16, fontSize: 11, color: 'var(--text-2)' }}>
+                      <div><span style={{ color: 'var(--text-3)' }}>MRN: </span><span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{pzPreview.mrn || '—'}</span></div>
+                      <div><span style={{ color: 'var(--text-3)' }}>Clearance: </span><span style={{ color: 'var(--text)' }}>{pzPreview.clearance_date || '—'}</span></div>
+                      <div><span style={{ color: 'var(--text-3)' }}>Lines: </span><span style={{ color: 'var(--text)', fontWeight: 600 }}>{pzPreview.line_count ?? '—'}</span></div>
+                      {(pzPreview.unresolved_count > 0) && (
+                        <div style={{ color: 'var(--badge-red-text)' }}><span>⚠ Unresolved: </span><strong>{pzPreview.unresolved_count}</strong></div>
+                      )}
+                      {(pzPreview.conflict_count > 0) && (
+                        <div style={{ color: 'var(--badge-red-text)' }}><span>⚠ Price conflicts: </span><strong>{pzPreview.conflict_count}</strong></div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Unresolved products list */}
+                  {pzPreview?.unresolved_product_codes?.length > 0 && (
+                    <div style={{ marginBottom: 14, padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)', marginBottom: 4 }}>Unresolved product codes ({pzPreview.unresolved_product_codes.length})</div>
+                      <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', fontFamily: 'monospace', lineHeight: 1.7 }}>
+                        {pzPreview.unresolved_product_codes.join(', ')}
                       </div>
-                      <div style={{ overflowX: 'auto', maxHeight: 340, overflowY: 'auto' }}>
+                    </div>
+                  )}
+
+                  {/* Planned lines table */}
+                  {pzPreview?.planned_lines?.length > 0 && (
+                    <div style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                      <div style={{ padding: '8px 14px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Planned lines — {pzPreview.planned_lines.length}</span>
+                      </div>
+                      <div style={{ overflowX: 'auto' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                           <thead>
                             <tr style={{ background: 'var(--sidebar-bg)' }}>
-                              {['Nazwa towaru','Ilość','J.m.','Cena netto','Wartość netto','Wartość brutto','Uwagi'].map(h => (
-                                <th key={h} style={{ padding: '7px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'white', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>{h}</th>
+                              {['Product code','Good ID','Qty','Price PLN','Status'].map(h => (
+                                <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'white', whiteSpace: 'nowrap' }}>{h}</th>
                               ))}
                             </tr>
                           </thead>
                           <tbody>
-                            {wfirmaPreview.rows.map((r, i) => (
+                            {pzPreview.planned_lines.map((pl, i) => (
                               <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)', background: i % 2 === 0 ? 'white' : 'var(--bg-subtle)' }}>
-                                <td style={{ padding: '7px 10px', color: 'var(--text)', maxWidth: 200, wordBreak: 'break-word' }}>{r.nazwa_towaru}</td>
-                                <td style={{ padding: '7px 10px', color: 'var(--text)', textAlign: 'right' }}>{r.ilosc}</td>
-                                <td style={{ padding: '7px 10px', color: 'var(--text-2)' }}>{r.jm}</td>
-                                <td style={{ padding: '7px 10px', color: 'var(--text)', textAlign: 'right', fontFamily: 'monospace' }}>{r.cena_netto?.toLocaleString('pl-PL', {minimumFractionDigits:2})}</td>
-                                <td style={{ padding: '7px 10px', color: 'var(--text)', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{r.wartosc_netto?.toLocaleString('pl-PL', {minimumFractionDigits:2})}</td>
-                                <td style={{ padding: '7px 10px', color: 'var(--text-2)', textAlign: 'right', fontFamily: 'monospace' }}>{r.wartosc_brutto?.toLocaleString('pl-PL', {minimumFractionDigits:2})}</td>
-                                <td style={{ padding: '7px 10px', color: 'var(--text-3)', fontSize: 10, maxWidth: 280 }}>{r.uwagi}</td>
+                                <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text)', fontSize: 10 }}>{pl.product_code}</td>
+                                <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10 }}>{pl.good_id || '—'}</td>
+                                <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)' }}>{pl.count}</td>
+                                <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)', fontFamily: 'monospace' }}>{pl.price_pln?.toLocaleString('pl-PL', {minimumFractionDigits:2})}</td>
+                                <td style={{ padding: '6px 10px' }}>
+                                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10,
+                                    background: pl.resolved ? 'var(--badge-green-bg)' : 'var(--badge-red-bg)',
+                                    color: pl.resolved ? 'var(--badge-green-text)' : 'var(--badge-red-text)',
+                                    border: `1px solid ${pl.resolved ? 'var(--badge-green-border)' : 'var(--badge-red-border)'}`,
+                                  }}>{pl.resolved ? '✓' : '✗ unresolved'}</span>
+                                </td>
                               </tr>
                             ))}
                           </tbody>
                         </table>
                       </div>
-                      <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border)', background: 'var(--accent-subtle)', display: 'flex', gap: 6 }}>
-                        <Btn small variant="gold" onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(wfirmaPreview.clipboard);
-                            setWfirmaCopied(new Date().toLocaleTimeString());
-                            onToast(`Copied ${wfirmaPreview.row_count} rows to clipboard. Paste into wFirma PZ table.`, 'success');
-                          } catch (e) {
-                            onToast('Clipboard write failed: ' + e.message, 'error');
-                          }
-                        }}>📋 Copy to Clipboard</Btn>
-                        <a href={`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/json`} download target="_blank" rel="noreferrer">
-                          <Btn small variant="outline">↓ PZ_READY.json</Btn>
-                        </a>
-                      </div>
                     </div>
                   )}
 
-                  {/* API Mode 3 placeholder */}
-                  <div style={{ marginTop: 16, padding: '10px 14px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 6 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', marginBottom: 2 }}>API Export — Mode 3</div>
-                    <div style={{ fontSize: 10, color: 'var(--text-3)' }}>
-                      Direct wFirma API export is not enabled. Endpoint verification and sandbox testing required before activation.
-                      See <code>wfirma_api_payload.json</code> for the planned payload structure.
-                    </div>
+                  {/* Action buttons */}
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <Btn variant="outline" disabled={pzPreviewLoading} onClick={loadPzPreview}
+                        data-testid="btn-pz-refresh">
+                      {pzPreviewLoading ? '⟳ Loading…' : '↻ Refresh PZ Preview'}
+                    </Btn>
+
+                    <Btn variant="outline" disabled={!!busy.pzResolve} onClick={resolveProducts}
+                        data-testid="btn-pz-resolve"
+                        title={pzPreview?.unresolved_count > 0 ? 'Match unresolved product codes to wFirma goods' : 'Re-run product resolution'}>
+                      {busy.pzResolve ? '⟳ Resolving…' : '⚙ Resolve Products'}
+                    </Btn>
+
+                    {!pzCreateConfirm ? (
+                      <Btn variant="gold"
+                          data-testid="btn-pz-create"
+                          disabled={
+                            !pzPreview?.ready ||
+                            !!(pzPreview?.unresolved_count > 0) ||
+                            !!(pzPreview?.conflict_count > 0) ||
+                            !!pzPreview?.wfirma_pz_doc_id ||
+                            pzCreateBusy
+                          }
+                          title={
+                            !pzPreview?.ready ? 'Preview not ready — resolve all products first'
+                            : pzPreview?.wfirma_pz_doc_id ? 'Already created'
+                            : 'Create warehouse PZ in wFirma'
+                          }
+                          onClick={() => setPzCreateConfirm(true)}>
+                        {pzCreateBusy ? '⟳ Creating…' : '✦ Create wFirma PZ'}
+                      </Btn>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+                        <span style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>Create one wFirma PZ for this batch?</span>
+                        <Btn small variant="gold" disabled={pzCreateBusy} onClick={submitPzCreate}
+                            data-testid="btn-pz-create-confirm">
+                          {pzCreateBusy ? '⟳…' : 'Confirm'}
+                        </Btn>
+                        <Btn small variant="ghost" onClick={() => setPzCreateConfirm(false)}>Cancel</Btn>
+                      </div>
+                    )}
                   </div>
+
                 </div>
               )}
             </Card>
@@ -7174,15 +7238,11 @@ function WfirmaExportPage({ batches, onViewShipment }) {
 
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 20px', marginBottom: 20 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <span style={{ fontSize: 14 }}>↗</span>
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>How wFirma export works</span>
+            <span style={{ fontSize: 14 }}>🏭</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>How wFirma warehouse PZ works</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.55 }}>
-            1. Open a shipment with PZ generated → 2. In the <b>wFirma Export</b> section, copy the rows or download <code>PZ_READY.json</code> → 3. Use the Chrome AutoFill script on wFirma's <i>Nowe PZ</i> page → 4. Review every value, click <b>Zapisz</b> manually. The script never submits.
-          </div>
-          <div style={{ marginTop: 10, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <a href="/chrome_wfirma_autofill/README.md" target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none', padding: '6px 12px', border: '1px solid var(--accent-border)', borderRadius: 6 }}>⚙ Chrome AutoFill Guide</a>
-            <a href="/chrome_wfirma_autofill/autofill_pz.js" target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--text-2)', textDecoration: 'none', padding: '6px 12px', border: '1px solid var(--border)', borderRadius: 6 }}>↓ autofill_pz.js</a>
+            1. Open a shipment with PZ generated → 2. Go to the <b>PZ / wFirma</b> tab → 3. In the <b>wFirma Warehouse</b> card, run <b>Resolve Products</b> until all codes are mapped → 4. Click <b>Create wFirma PZ</b> and confirm → 5. The document ID is saved to the audit automatically.
           </div>
         </div>
 
