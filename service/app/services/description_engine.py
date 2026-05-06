@@ -70,6 +70,74 @@ def build_description_block(*,
 
 _TRANSLATIONS_CACHE: Optional[Dict[str, Dict[str, str]]] = None
 _DEFAULT_CACHE:       Optional[Dict[str, str]]            = None
+_CUSTOMS_ENGINE_CACHE = None  # lazy-imported customs_description_engine
+
+
+def _load_customs_engine():
+    """
+    Lazily import customs_description_engine for rich per-line Polish
+    customs phrasing (e.g. "Pierścionek ze złota próby 585 z diamentami
+    laboratoryjnymi") rather than the generic ITEM_TRANSLATIONS default
+    ("Biżuteria — pierścionek"). Returns None if the engine module isn't
+    importable — caller falls back to ITEM_TRANSLATIONS.
+    """
+    global _CUSTOMS_ENGINE_CACHE
+    if _CUSTOMS_ENGINE_CACHE is not None:
+        return _CUSTOMS_ENGINE_CACHE if _CUSTOMS_ENGINE_CACHE is not False else None
+
+    engine = str(settings.engine_dir)
+    if engine not in sys.path:
+        sys.path.insert(0, engine)
+    try:
+        import customs_description_engine as _cde  # type: ignore
+        _CUSTOMS_ENGINE_CACHE = _cde
+        return _cde
+    except Exception as exc:
+        log.warning("description_engine: customs_description_engine import "
+                    "failed (%s) — falling back to ITEM_TRANSLATIONS", exc)
+        _CUSTOMS_ENGINE_CACHE = False
+        return None
+
+
+def _customs_grade_translation(item_type: str,
+                                description_en: str
+                                ) -> Optional[Dict[str, str]]:
+    """
+    Try to derive a customs-grade Polish translation from the invoice's
+    English description. Returns a dict shaped like ITEM_TRANSLATIONS
+    (name_pl, description_pl, material_pl, purpose_pl) when successful,
+    None otherwise. Never raises.
+
+    Matches the format used by the customs/PZ description PDF — both
+    consumers must show identical wording (docs/wfirma.skill.md §3).
+    """
+    if not (description_en or "").strip():
+        return None
+    cde = _load_customs_engine()
+    if cde is None:
+        return None
+    try:
+        norm = cde.normalize_item_description(
+            description_en,
+            item_type=_normalise_item_type(item_type),
+            hsn_from_invoice="",
+        )
+    except Exception as exc:
+        log.warning("description_engine: normalize_item_description failed "
+                    "for item_type=%r: %s", item_type, exc)
+        return None
+    desc_pl = (norm.get("polish_customs_description") or "").strip()
+    if not desc_pl:
+        return None
+    return {
+        "name_pl":        (norm.get("item_type_pl") or "").strip()
+                          or "Wyrób jubilerski",
+        "description_pl": desc_pl,
+        "material_pl":    (norm.get("material_pl")  or "").strip()
+                          or "metal szlachetny",
+        "purpose_pl":     (norm.get("purpose_pl")   or "").strip()
+                          or "Ozdoba — biżuteria do noszenia.",
+    }
 
 
 def _load_translations() -> tuple:
@@ -161,12 +229,23 @@ def get_description_block(
     if existing is not None:
         return existing
 
-    trans = _resolve_translation(item_type)
-    eff_name_pl    = (name_pl        or trans["name_pl"]).strip()
-    eff_desc_pl    = (description_pl or trans["description_pl"]).strip()
-    eff_material   = (material_pl    or trans["material_pl"]).strip()
-    eff_purpose    = (purpose_pl     or trans["purpose_pl"]).strip()
-    eff_desc_en    = (description_en or "").strip()
+    eff_desc_en = (description_en or "").strip()
+
+    # Customs-grade Polish text takes priority over the generic
+    # ITEM_TRANSLATIONS default — but only when the caller hasn't passed
+    # description_pl explicitly AND we have an English source to feed
+    # normalize_item_description. This keeps the wFirma product master
+    # name visually identical to the customs/PZ description PDF for the
+    # same product (docs/wfirma.skill.md §3).
+    customs_trans: Optional[Dict[str, str]] = None
+    if description_pl is None and eff_desc_en:
+        customs_trans = _customs_grade_translation(item_type, eff_desc_en)
+
+    base = customs_trans or _resolve_translation(item_type)
+    eff_name_pl    = (name_pl        or base["name_pl"]).strip()
+    eff_desc_pl    = (description_pl or base["description_pl"]).strip()
+    eff_material   = (material_pl    or base["material_pl"]).strip()
+    eff_purpose    = (purpose_pl     or base["purpose_pl"]).strip()
 
     block = build_description_block(
         description_pl = eff_desc_pl,

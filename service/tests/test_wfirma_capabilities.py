@@ -820,8 +820,13 @@ def test_create_from_code_missing_creates_when_flag_on(client, db):
     assert "Co to za towar / What is this" in call.kwargs["description"]
     # Polish-first / English-after-slash composed line in description body
     assert "Diamond Ring" in call.kwargs["description"]
-    # Master-data name = locked description_line (Polish-first / English after slash)
-    assert call.kwargs["name"] == "Biżuteria — pierścionek / Diamond Ring"
+    # Master-data name = locked description_line (Polish-first / English after slash).
+    # Polish half is customs-grade (derived from English seed), not the generic
+    # ITEM_TRANSLATIONS "Biżuteria — pierścionek".
+    assert call.kwargs["name"].startswith("Pierścionek")
+    assert call.kwargs["name"].endswith("Diamond Ring")
+    assert " / " in call.kwargs["name"]
+    assert not call.kwargs["name"].startswith("Biżuteria —")
     # product_code must NOT be appended in parens — the wFirma <code> field
     # already carries it.
     assert "(EJL/26-27/100-3)" not in call.kwargs["name"]
@@ -850,8 +855,8 @@ def test_create_from_code_name_is_locked_description_line(client, db):
             headers=_auth(),
         )
     name = mock_create.call_args.kwargs["name"]
-    # Description line content present
-    assert "Biżuteria — pierścionek" in name
+    # Customs-grade Polish half (NOT the generic Biżuteria — pierścionek)
+    assert name.startswith("Pierścionek")
     assert "Lab Grown Diamond 14KT Gold Ring" in name
     # Polish/English slash separator (the description-line semantic)
     assert " / " in name
@@ -860,6 +865,8 @@ def test_create_from_code_name_is_locked_description_line(client, db):
     assert "(EJL/N-1)" not in name
     # No structural description-block labels leak into name
     assert "Co to za towar" not in name
+    # Generic ITEM_TRANSLATIONS Polish must NOT appear
+    assert "Biżuteria —" not in name
 
 
 def test_create_from_code_description_keeps_full_bilingual_block(client, db):

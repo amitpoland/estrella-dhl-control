@@ -145,16 +145,24 @@ Concrete example (real wFirma output):
 
 ```
 code:        EJL/25-26/1274-3
-name:        pierścionek ze złota próby 585 z diamentami laboratoryjnymi /
+name:        Pierścionek ze złota próby 585 z diamentami laboratoryjnymi /
              Lab Grown Diamond Studded 14KT Gold Jewellery RING
 description: <full three-section bilingual block>
 ```
+
+The Polish half is **customs-grade** — same wording as the customs/PZ
+description PDF, derived by `customs_description_engine.normalize_item_description(description_en, item_type)` whenever an English invoice description is available. It is NOT the generic `Biżuteria — pierścionek` ITEM_TRANSLATIONS default; that default exists only as the last-resort fallback when no English text is supplied to seed the customs normaliser.
 
 Rationale: the wFirma `<code>` field already holds the product_code —
 appending it to `<name>` is noise. The visible product name shown on
 proformas, invoices, and operator screens is the locked
 Polish-first/English-after-slash composed line straight from
-`description_engine`.
+`description_engine`, identical to what the customs PDF prints.
+
+Fallback chain when generating a fresh block:
+  `customs_description_engine.normalize_item_description (rich)`
+    → `ITEM_TRANSLATIONS[item_type]` (generic)
+    → `DEFAULT_TRANSLATION` (last resort)
 
 Fallback chain when `description_line` is empty (operator manual
 override with empty fields): `description_line → name_pl → product_code`.
