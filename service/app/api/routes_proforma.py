@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import xml.etree.ElementTree as ET
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
@@ -514,4 +515,273 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
         "wfirma_proforma_id":  result.wfirma_invoice_id,
         "currency":            (final or draft).currency,
         "exchange_rate":       (final or draft).exchange_rate,
+    })
+
+
+# ── Refresh proforma line names from locked description blocks ──────────────
+#
+# Operator-approved per-call. wFirma freezes invoicecontent <name> at issue
+# time; the only way to bring an existing proforma's line names in sync with
+# the current product master description_line is to POST a full-line restate
+# to /invoices/edit/{invoice_id}. Live diagnostic 2026-05-06 confirmed:
+#   - partial line edits are rejected (NOT_FOUND)
+#   - header edits succeed
+#   - full-line restate (only <name> changed) succeeds
+#
+# This route never deletes/reissues the proforma, never touches contractor /
+# currency / quantity / price / VAT, never updates local DB rows, and never
+# converts the proforma to a final invoice.
+
+def _build_wfirma_id_to_code_map() -> Dict[str, str]:
+    """{wfirma_product_id → product_code} from wfirma_products."""
+    out: Dict[str, str] = {}
+    if wfdb._db_path is None:
+        return out
+    for row in wfdb.list_products():
+        wid = (row.get("wfirma_product_id") or "").strip()
+        pc  = (row.get("product_code")      or "").strip()
+        if wid and pc:
+            out[wid] = pc
+    return out
+
+
+def _resolve_correct_line_name(product_code: str) -> Optional[str]:
+    """Return the locked description_line for a product_code, or None."""
+    if not product_code or ddb._db_path is None:
+        return None
+    row = ddb.get_product_description(product_code)
+    if not row:
+        return None
+    return (row.get("description_line") or "").strip() or None
+
+
+@router.post("/{wfirma_id}/refresh-line-names", dependencies=[_auth])
+def proforma_refresh_line_names(wfirma_id: str) -> JSONResponse:
+    """
+    Refresh existing wFirma proforma line names from the locked product
+    descriptions. Operator-approved per call. One proforma id per call.
+
+    Status values:
+      blocked  — settings gate off, OR id is not a proforma, OR a required
+                 product mapping is missing for some line (refusal to start
+                 a partial refresh)
+      ok       — all stale lines were updated successfully
+      partial  — some line edits failed at wFirma (per-line errors reported)
+    """
+    if not (wfirma_id or "").strip():
+        raise HTTPException(status_code=400, detail="wfirma_id is required")
+
+    # Settings gate — no live call when disabled.
+    if not settings.wfirma_edit_invoice_allowed:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "wfirma_id":        wfirma_id,
+            "blocking_reasons": ["wfirma invoice edit disabled "
+                                 "(WFIRMA_EDIT_INVOICE_ALLOWED=false)"],
+        })
+
+    # Fetch + verify type=proforma BEFORE any edit.
+    try:
+        invoice_xml = wfirma_client.fetch_invoice_xml(wfirma_id)
+    except (RuntimeError, ValueError, ConnectionError) as exc:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "wfirma_id":        wfirma_id,
+            "blocking_reasons": [f"fetch failed: {type(exc).__name__}: {exc}"],
+        })
+
+    root = ET.fromstring(invoice_xml)
+    invoice = root.find(".//invoice")
+    if invoice is None:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "wfirma_id":        wfirma_id,
+            "blocking_reasons": ["invoices/find returned no <invoice>"],
+        })
+
+    invoice_type = (invoice.findtext("type") or "").strip().lower()
+    if invoice_type != "proforma":
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "wfirma_id":        wfirma_id,
+            "blocking_reasons": [f"invoice type={invoice_type!r} — refusing "
+                                 "edits on non-proforma documents"],
+        })
+
+    contents = invoice.find("invoicecontents")
+    lines = list(contents.findall("invoicecontent")) if contents is not None else []
+    if not lines:
+        return JSONResponse({
+            "ok":        True,
+            "status":    "ok",
+            "wfirma_id": wfirma_id,
+            "checked":   0,
+            "updated":   0,
+            "skipped":   0,
+            "errors":    [],
+            "lines":     [],
+        })
+
+    # ── Resolve all mappings BEFORE any edit. Refuse to start if any
+    #    line lacks a good/id or product_code mapping (avoids partial drift).
+    id_to_code = _build_wfirma_id_to_code_map()
+
+    plan: List[Dict[str, Any]] = []
+    setup_errors: List[Dict[str, Any]] = []
+    for ic in lines:
+        line_id      = (ic.findtext("id") or "").strip()
+        current_name = (ic.findtext("name") or "").strip()
+        good_id      = ""
+        good_node    = ic.find("good")
+        if good_node is not None:
+            good_id = (good_node.findtext("id") or "").strip()
+
+        if not line_id:
+            setup_errors.append({"line_id": line_id, "error": "missing invoicecontent <id>"})
+            continue
+        if not good_id:
+            setup_errors.append({
+                "line_id": line_id, "good_id": "", "current_name": current_name,
+                "error":   "missing <good><id> on invoicecontent — cannot resolve product",
+            })
+            continue
+        product_code = id_to_code.get(good_id, "")
+        if not product_code:
+            setup_errors.append({
+                "line_id": line_id, "good_id": good_id, "current_name": current_name,
+                "error": (
+                    f"no wfirma_products row maps wfirma_product_id={good_id!r} "
+                    "to a local product_code"
+                ),
+            })
+            continue
+        correct_name = _resolve_correct_line_name(product_code)
+        if not correct_name:
+            setup_errors.append({
+                "line_id": line_id, "good_id": good_id, "product_code": product_code,
+                "current_name": current_name,
+                "error": (
+                    f"no product_descriptions row with description_line for "
+                    f"product_code={product_code!r}"
+                ),
+            })
+            continue
+        plan.append({
+            "line_id":       line_id,
+            "good_id":       good_id,
+            "product_code":  product_code,
+            "current_name":  current_name,
+            "correct_name":  correct_name,
+            "ic_xml":        ET.tostring(ic, encoding="unicode"),
+        })
+
+    if setup_errors:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "wfirma_id":        wfirma_id,
+            "blocking_reasons": [
+                f"{len(setup_errors)} line(s) missing required mappings — "
+                "refusing partial refresh"
+            ],
+            "errors": setup_errors,
+        })
+
+    # ── Execute edits. Skip lines already at the correct name. ──────────────
+    checked = len(plan)
+    updated = 0
+    skipped = 0
+    line_results: List[Dict[str, Any]] = []
+    edit_errors: List[Dict[str, Any]]  = []
+
+    for entry in plan:
+        if entry["current_name"] == entry["correct_name"]:
+            skipped += 1
+            line_results.append({
+                "line_id":      entry["line_id"],
+                "product_code": entry["product_code"],
+                "status":       "already_correct",
+                "name":         entry["current_name"],
+            })
+            continue
+        try:
+            wfirma_client.edit_invoice_line_name(
+                wfirma_id, entry["ic_xml"], entry["correct_name"],
+            )
+            updated += 1
+            line_results.append({
+                "line_id":      entry["line_id"],
+                "product_code": entry["product_code"],
+                "status":       "updated",
+                "old_name":     entry["current_name"],
+                "new_name":     entry["correct_name"],
+            })
+        except Exception as exc:
+            edit_errors.append({
+                "line_id":      entry["line_id"],
+                "product_code": entry["product_code"],
+                "current_name": entry["current_name"],
+                "correct_name": entry["correct_name"],
+                "error":        f"{type(exc).__name__}: {exc}",
+            })
+            line_results.append({
+                "line_id":      entry["line_id"],
+                "product_code": entry["product_code"],
+                "status":       "failed",
+                "error":        f"{type(exc).__name__}: {exc}",
+            })
+
+    # ── Verify-after-edit: re-fetch and confirm each updated line ──────────
+    # wFirma returned status=OK on each edit, but a final re-fetch closes
+    # the loop — if any persisted name does not match what we sent, the
+    # edit silently no-op'd and the route must surface that as a hard
+    # failed_verification rather than green status=ok.
+    verify_errors: List[Dict[str, Any]] = []
+    if updated > 0 and not edit_errors:
+        try:
+            verify_xml  = wfirma_client.fetch_invoice_xml(wfirma_id)
+            verify_root = ET.fromstring(verify_xml)
+            actual_by_id: Dict[str, str] = {}
+            for ic in verify_root.iter("invoicecontent"):
+                lid = (ic.findtext("id") or "").strip()
+                if lid:
+                    actual_by_id[lid] = (ic.findtext("name") or "").strip()
+            for entry in plan:
+                if entry["current_name"] == entry["correct_name"]:
+                    continue  # not edited; skipped above
+                actual = actual_by_id.get(entry["line_id"], "")
+                if actual != entry["correct_name"]:
+                    verify_errors.append({
+                        "line_id":      entry["line_id"],
+                        "product_code": entry["product_code"],
+                        "expected":     entry["correct_name"],
+                        "actual":       actual,
+                    })
+        except Exception as exc:
+            verify_errors.append({
+                "line_id":  "",
+                "error":    f"verify fetch failed: {type(exc).__name__}: {exc}",
+            })
+
+    if edit_errors:
+        overall_status = "partial"
+    elif verify_errors:
+        overall_status = "failed_verification"
+    else:
+        overall_status = "ok"
+
+    return JSONResponse({
+        "ok":             not edit_errors and not verify_errors,
+        "status":         overall_status,
+        "wfirma_id":      wfirma_id,
+        "checked":        checked,
+        "updated":        updated,
+        "skipped":        skipped,
+        "errors":         edit_errors,
+        "verify_errors":  verify_errors,
+        "lines":          line_results,
     })

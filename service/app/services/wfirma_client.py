@@ -975,6 +975,121 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
 </api>"""
 
 
+# ── invoices/find + invoices/edit helpers (line-name refresh path) ──────────
+
+def fetch_invoice_xml(invoice_id: str) -> str:
+    """
+    Read a single invoice (or proforma) by id.
+
+    Returns the full XML response text (so callers can extract the
+    <invoicecontents> verbatim for round-trip restate edits).
+    Raises RuntimeError on non-OK status / HTTP ≥ 400 / no <invoice>.
+    Raises ConnectionError on network failure.
+    """
+    if not (invoice_id or "").strip():
+        raise ValueError("invoice_id is required")
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <invoices>
+    <parameters>
+      <conditions>
+        <condition><field>id</field><operator>eq</operator><value>{_esc(invoice_id)}</value></condition>
+      </conditions>
+    </parameters>
+  </invoices>
+</api>"""
+    http_status, response_text = _http_request("GET", "invoices", "find", body)
+    if http_status >= 400:
+        raise RuntimeError(f"invoices/find HTTP {http_status}: {response_text[:200]}")
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"invoices/find wFirma status={code}: {desc}")
+    root = ET.fromstring(response_text)
+    if root.find(".//invoice") is None:
+        raise RuntimeError(f"invoices/find: no <invoice> in response for id={invoice_id}")
+    return response_text
+
+
+def edit_invoice_line_name(invoice_id: str,
+                            invoicecontent_xml: str,
+                            new_name: str) -> Dict[str, Any]:
+    """
+    Edit a single proforma line's <name> via full-line restate.
+
+    wFirma rejects partial invoicecontent edits (just <id>+<name> returns
+    NOT_FOUND). The full row must be restated; only <name> may differ.
+    Live diagnostic 2026-05-06 confirmed this shape on POST
+    /invoices/edit/{invoice_id}.
+
+    Args:
+      invoice_id          — wFirma invoice id (in URL path).
+      invoicecontent_xml  — full <invoicecontent>...</invoicecontent> element
+                            extracted verbatim from invoices/find.
+      new_name            — replacement value for <name>. Must be non-empty.
+
+    The function:
+      - parses the provided element
+      - replaces ONLY the <name> text (creates the node if missing)
+      - preserves every other child sub-element exactly
+      - posts the restated <invoicecontent> inside <invoice><invoicecontents>
+      - fails loudly on non-OK status or HTTP ≥ 400
+
+    Returns dict with line id + new name as confirmed by request.
+    """
+    if not (invoice_id or "").strip():
+        raise ValueError("invoice_id is required")
+    if not (invoicecontent_xml or "").strip():
+        raise ValueError("invoicecontent_xml is required")
+    if not (new_name or "").strip():
+        raise ValueError("new_name is required (non-empty)")
+
+    try:
+        ic = ET.fromstring(invoicecontent_xml)
+    except ET.ParseError as exc:
+        raise ValueError(f"invoicecontent_xml is not well-formed: {exc}") from exc
+    if ic.tag != "invoicecontent":
+        raise ValueError(
+            f"invoicecontent_xml root must be <invoicecontent>, got <{ic.tag}>"
+        )
+
+    name_node = ic.find("name")
+    if name_node is None:
+        name_node = ET.SubElement(ic, "name")
+    name_node.text = new_name
+
+    line_id = (ic.findtext("id") or "").strip()
+    restated_line_xml = ET.tostring(ic, encoding="unicode")
+
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <invoices>
+    <invoice>
+      <invoicecontents>
+        {restated_line_xml}
+      </invoicecontents>
+    </invoice>
+  </invoices>
+</api>"""
+
+    http_status, response_text = _http_request(
+        "POST", "invoices", "edit", body, id_suffix=invoice_id,
+    )
+    if http_status >= 400:
+        raise RuntimeError(
+            f"invoices/edit HTTP {http_status}: {response_text[:200]}"
+        )
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"invoices/edit wFirma status={code}: {desc}")
+
+    return {
+        "invoice_id":         invoice_id,
+        "invoicecontent_id":  line_id,
+        "new_name":           new_name,
+        "raw_response":       response_text,
+    }
+
+
 # ── Internal utility ──────────────────────────────────────────────────────────
 
 def _esc(value: Any) -> str:

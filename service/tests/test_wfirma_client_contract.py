@@ -1116,3 +1116,175 @@ def test_build_proforma_xml_raises_on_missing_good_id():
     )
     with pytest.raises(ValueError, match="wfirma_good_id is required"):
         _wc._build_proforma_xml(req)
+
+
+# ── invoices/find + invoices/edit (line-name refresh) ──────────────────────
+
+_OK_INVOICE_FIND_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <invoices>
+    <invoice>
+      <id>465611619</id>
+      <type>proforma</type>
+      <invoicecontents>
+        <invoicecontent>
+          <id>1495642083</id>
+          <name>Pierścionek (EJL/25-26/1274-3)</name>
+          <count>1.0000</count>
+          <unit_count>1.0000</unit_count>
+          <price>173.00</price>
+          <discount>1</discount>
+          <discount_percent>0.00</discount_percent>
+          <unit>szt.</unit>
+          <good><id>48611875</id></good>
+          <vat_code><id>222</id></vat_code>
+        </invoicecontent>
+      </invoicecontents>
+    </invoice>
+  </invoices>
+  <status><code>OK</code></status>
+</api>"""
+
+
+def test_fetch_invoice_xml_get_invoices_find(monkeypatch):
+    captured = {}
+    def fake_http(method, module, action, body, id_suffix=None):
+        captured.update(method=method, module=module, action=action,
+                        body=body, id_suffix=id_suffix)
+        return 200, _OK_INVOICE_FIND_XML
+    monkeypatch.setattr(_wc, "_http_request", fake_http)
+
+    text = _wc.fetch_invoice_xml("465611619")
+    assert captured["method"] == "GET"
+    assert captured["module"] == "invoices"
+    assert captured["action"] == "find"
+    assert captured["id_suffix"] is None
+    assert "<field>id</field>" in captured["body"]
+    assert "<value>465611619</value>" in captured["body"]
+    assert "<id>465611619</id>" in text
+    assert "<type>proforma</type>" in text
+
+
+def test_fetch_invoice_xml_raises_on_empty_id():
+    with pytest.raises(ValueError, match="invoice_id is required"):
+        _wc.fetch_invoice_xml("")
+
+
+def test_fetch_invoice_xml_raises_on_non_ok(monkeypatch):
+    monkeypatch.setattr(_wc, "_http_request",
+                        lambda *a, **k: (200, _err_invoice_response("ERROR", "boom")))
+    with pytest.raises(RuntimeError, match="ERROR"):
+        _wc.fetch_invoice_xml("465611619")
+
+
+def test_fetch_invoice_xml_raises_when_no_invoice(monkeypatch):
+    no_inv = """<?xml version="1.0" encoding="UTF-8"?>
+<api><invoices/><status><code>OK</code></status></api>"""
+    monkeypatch.setattr(_wc, "_http_request", lambda *a, **k: (200, no_inv))
+    with pytest.raises(RuntimeError, match="no <invoice>"):
+        _wc.fetch_invoice_xml("465611619")
+
+
+_LINE_XML = """<invoicecontent>
+          <id>1495642083</id>
+          <name>Pierścionek (EJL/25-26/1274-3)</name>
+          <count>1.0000</count>
+          <unit_count>1.0000</unit_count>
+          <price>173.00</price>
+          <discount>1</discount>
+          <discount_percent>0.00</discount_percent>
+          <unit>szt.</unit>
+          <good><id>48611875</id></good>
+          <vat_code><id>222</id></vat_code>
+        </invoicecontent>"""
+
+
+def test_edit_invoice_line_name_full_restate(monkeypatch):
+    """
+    URL = /invoices/edit/{invoice_id}; body restates full invoicecontent
+    with only <name> swapped. wFirma rejects partial line edits
+    (NOT_FOUND), so every other child element must round-trip.
+    """
+    captured = {}
+    def fake_http(method, module, action, body, id_suffix=None):
+        captured.update(method=method, module=module, action=action,
+                        body=body, id_suffix=id_suffix)
+        return 200, _OK_INVOICE_FIND_XML  # OK status echo
+    monkeypatch.setattr(_wc, "_http_request", fake_http)
+
+    out = _wc.edit_invoice_line_name(
+        "465611619", _LINE_XML,
+        "pierścionek ze złota próby 585 / Lab Grown Diamond Studded 14KT Gold Ring",
+    )
+    assert captured["method"]    == "POST"
+    assert captured["module"]    == "invoices"
+    assert captured["action"]    == "edit"
+    assert captured["id_suffix"] == "465611619"     # id in URL path
+    body = captured["body"]
+    # Required preserved fields
+    assert "<id>1495642083</id>" in body
+    assert "<good><id>48611875</id></good>" in body
+    assert "<vat_code><id>222</id></vat_code>" in body
+    assert "<count>1.0000</count>" in body
+    assert "<price>173.00</price>" in body
+    assert "<discount>1</discount>" in body
+    assert "<unit>szt.</unit>" in body
+    # The new name is present, the old name is GONE.
+    assert "Lab Grown Diamond Studded 14KT Gold Ring" in body
+    assert "Pierścionek (EJL/25-26/1274-3)" not in body
+    # Result shape
+    assert out["invoice_id"]        == "465611619"
+    assert out["invoicecontent_id"] == "1495642083"
+
+
+def test_edit_invoice_line_name_only_changes_name(monkeypatch):
+    """Diff between input <invoicecontent> and emitted XML is exclusively <name>."""
+    captured = {}
+    def fake_http(method, module, action, body, id_suffix=None):
+        captured["body"] = body
+        return 200, _OK_INVOICE_FIND_XML
+    monkeypatch.setattr(_wc, "_http_request", fake_http)
+    _wc.edit_invoice_line_name("465611619", _LINE_XML, "NEW NAME")
+    import xml.etree.ElementTree as _ET
+    src = _ET.fromstring(_LINE_XML)
+    # Locate the emitted invoicecontent inside the <api> body.
+    emitted_root = _ET.fromstring(captured["body"])
+    emitted = emitted_root.find(".//invoicecontent")
+    assert emitted is not None
+    src_children = {c.tag for c in src}
+    emitted_children = {c.tag for c in emitted}
+    assert src_children == emitted_children, "no fields added or dropped"
+    for tag in src_children:
+        if tag == "name":
+            assert (emitted.findtext("name") or "").strip() == "NEW NAME"
+        else:
+            # Same text and same shallow XML for every other tag.
+            assert (_ET.tostring(src.find(tag), encoding="unicode").strip()
+                    == _ET.tostring(emitted.find(tag), encoding="unicode").strip()), \
+                f"field <{tag}> differs between source and emitted"
+
+
+def test_edit_invoice_line_name_raises_on_non_ok(monkeypatch):
+    monkeypatch.setattr(_wc, "_http_request",
+        lambda *a, **k: (200, _err_invoice_response("ERROR", "boom")))
+    with pytest.raises(RuntimeError, match="ERROR"):
+        _wc.edit_invoice_line_name("465611619", _LINE_XML, "X")
+
+
+def test_edit_invoice_line_name_raises_on_http_4xx(monkeypatch):
+    monkeypatch.setattr(_wc, "_http_request", lambda *a, **k: (500, "boom"))
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        _wc.edit_invoice_line_name("465611619", _LINE_XML, "X")
+
+
+def test_edit_invoice_line_name_validates_args():
+    with pytest.raises(ValueError, match="invoice_id is required"):
+        _wc.edit_invoice_line_name("", _LINE_XML, "X")
+    with pytest.raises(ValueError, match="invoicecontent_xml is required"):
+        _wc.edit_invoice_line_name("465611619", "", "X")
+    with pytest.raises(ValueError, match="new_name is required"):
+        _wc.edit_invoice_line_name("465611619", _LINE_XML, "")
+    with pytest.raises(ValueError, match="not well-formed"):
+        _wc.edit_invoice_line_name("465611619", "<not xml", "X")
+    with pytest.raises(ValueError, match="must be <invoicecontent>"):
+        _wc.edit_invoice_line_name("465611619", "<wrong/>", "X")

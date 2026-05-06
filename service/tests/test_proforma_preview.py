@@ -871,3 +871,337 @@ def test_create_post_race_response_shape(client, storage):
     assert r2["status"] == "skipped"
     assert r2["existing_status"] == "issued"
     assert r2["draft_id"] == r1["draft_id"]
+
+
+# ── /refresh-line-names endpoint ─────────────────────────────────────────────
+
+_PROFORMA_FIXTURE = """<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <invoices>
+    <invoice>
+      <id>465611619</id>
+      <type>proforma</type>
+      <invoicecontents>
+        <invoicecontent>
+          <id>1495642083</id>
+          <name>Pierścionek (EJL/25-26/1274-3)</name>
+          <count>1.0000</count>
+          <price>173.00</price>
+          <unit>szt.</unit>
+          <good><id>48611875</id></good>
+          <vat_code><id>222</id></vat_code>
+        </invoicecontent>
+      </invoicecontents>
+    </invoice>
+  </invoices>
+  <status><code>OK</code></status>
+</api>"""
+
+_FINAL_INVOICE_FIXTURE = _PROFORMA_FIXTURE.replace(
+    "<type>proforma</type>", "<type>normal</type>"
+)
+
+
+def _seed_master_for_refresh(product_code: str, wfirma_id: str,
+                             description_line: str):
+    wfdb.upsert_product(
+        product_code=product_code,
+        wfirma_product_id=wfirma_id,
+        sync_status="matched",
+    )
+    ddb.upsert_product_description(
+        product_code      = product_code,
+        item_type         = "RING",
+        name_pl           = "Pierścionek",
+        description_pl    = description_line.split(" / ")[0],
+        description_en    = description_line.split(" / ")[-1],
+        material_pl       = "metal szlachetny",
+        purpose_pl        = "Ozdoba",
+        description_block = description_line,
+        description_line  = description_line,
+        source            = "auto",
+    )
+
+
+def _refresh_gate_on():
+    from unittest.mock import patch as _p
+    return _p.object(settings, "wfirma_edit_invoice_allowed", True)
+
+
+def test_refresh_blocked_when_flag_off(client, storage):
+    """Flag off → blocked, no wFirma call (fetch never invoked)."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    fetch = _p.object(wc, "fetch_invoice_xml",
+                      side_effect=AssertionError("must not be called when flag off"))
+    edit  = _p.object(wc, "edit_invoice_line_name",
+                      side_effect=AssertionError("must not edit when flag off"))
+    with fetch, edit:
+        body = client.post("/api/v1/proforma/465611619/refresh-line-names",
+                           headers=_auth()).json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("WFIRMA_EDIT_INVOICE_ALLOWED" in br for br in body["blocking_reasons"])
+
+
+def test_refresh_blocked_when_invoice_is_not_proforma(client, storage):
+    """type != proforma → blocked before any edit; no edits attempted."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    edit = _p.object(wc, "edit_invoice_line_name",
+                     side_effect=AssertionError("must not edit non-proforma"))
+    with _refresh_gate_on(), \
+         _p.object(wc, "fetch_invoice_xml", return_value=_FINAL_INVOICE_FIXTURE), \
+         edit:
+        body = client.post("/api/v1/proforma/465611619/refresh-line-names",
+                           headers=_auth()).json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("normal" in br for br in body["blocking_reasons"])
+
+
+def test_refresh_blocked_when_product_mapping_missing(client, storage):
+    """No wfirma_products row for good_id → blocked, no edits attempted."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    edit = _p.object(wc, "edit_invoice_line_name",
+                     side_effect=AssertionError("must not edit when mapping missing"))
+    with _refresh_gate_on(), \
+         _p.object(wc, "fetch_invoice_xml", return_value=_PROFORMA_FIXTURE), \
+         edit:
+        body = client.post("/api/v1/proforma/465611619/refresh-line-names",
+                           headers=_auth()).json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert body["errors"]
+    assert any("48611875" in (e.get("error") or "") for e in body["errors"])
+
+
+def test_refresh_blocked_when_description_block_missing(client, storage):
+    """wfirma_products mapped but no product_descriptions row → blocked."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    wfdb.upsert_product(
+        product_code="EJL/25-26/1274-3",
+        wfirma_product_id="48611875",
+        sync_status="matched",
+    )
+    edit = _p.object(wc, "edit_invoice_line_name",
+                     side_effect=AssertionError("must not edit when block missing"))
+    with _refresh_gate_on(), \
+         _p.object(wc, "fetch_invoice_xml", return_value=_PROFORMA_FIXTURE), \
+         edit:
+        body = client.post("/api/v1/proforma/465611619/refresh-line-names",
+                           headers=_auth()).json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("product_descriptions" in (e.get("error") or "")
+               for e in body["errors"])
+
+
+def test_refresh_updates_one_stale_line(client, storage):
+    """Single stale line → one edit_invoice_line_name call, status=ok, updated=1."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    correct = ("pierścionek ze złota próby 585 z diamentami laboratoryjnymi / "
+               "Lab Grown Diamond Studded 14KT Gold Jewellery RING")
+    _seed_master_for_refresh("EJL/25-26/1274-3", "48611875", correct)
+
+    edits: list = []
+    def fake_edit(invoice_id, ic_xml, new_name):
+        edits.append((invoice_id, ic_xml, new_name))
+        return {"invoice_id": invoice_id, "invoicecontent_id": "1495642083",
+                "new_name": new_name, "raw_response": ""}
+
+    # Verify-after-edit: 1st fetch returns the stale fixture, 2nd fetch
+    # returns the post-edit XML with the new name.
+    after_xml = _PROFORMA_FIXTURE.replace(
+        "<name>Pierścionek (EJL/25-26/1274-3)</name>",
+        f"<name>{correct}</name>",
+    )
+    fetch_calls = {"n": 0}
+    def fake_fetch(invoice_id):
+        fetch_calls["n"] += 1
+        return _PROFORMA_FIXTURE if fetch_calls["n"] == 1 else after_xml
+
+    with _refresh_gate_on(), \
+         _p.object(wc, "fetch_invoice_xml", side_effect=fake_fetch), \
+         _p.object(wc, "edit_invoice_line_name", side_effect=fake_edit):
+        body = client.post("/api/v1/proforma/465611619/refresh-line-names",
+                           headers=_auth()).json()
+    assert body["ok"] is True
+    assert body["status"] == "ok"
+    assert body["checked"] == 1
+    assert body["updated"] == 1
+    assert body["skipped"] == 0
+    assert body["errors"]         == []
+    assert body["verify_errors"]  == []
+    assert fetch_calls["n"] == 2, "verify-after-edit must re-fetch the proforma"
+    assert len(edits) == 1
+    inv_id, ic_xml, new_name = edits[0]
+    assert inv_id == "465611619"
+    assert new_name == correct
+    # The XML passed to edit must include the full line restated.
+    assert "<id>1495642083</id>" in ic_xml
+    assert "<good><id>48611875</id></good>" in ic_xml
+    assert "<vat_code><id>222</id></vat_code>" in ic_xml
+
+
+def test_refresh_skips_already_correct_line(client, storage):
+    """If current name == correct name → no edit call, skipped=1."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_master_for_refresh(
+        "EJL/25-26/1274-3", "48611875",
+        "Pierścionek (EJL/25-26/1274-3)",          # matches the fixture <name>
+    )
+    edit = _p.object(wc, "edit_invoice_line_name",
+                     side_effect=AssertionError("must not edit when already correct"))
+    with _refresh_gate_on(), \
+         _p.object(wc, "fetch_invoice_xml", return_value=_PROFORMA_FIXTURE), \
+         edit:
+        body = client.post("/api/v1/proforma/465611619/refresh-line-names",
+                           headers=_auth()).json()
+    assert body["ok"] is True
+    assert body["status"] == "ok"
+    assert body["checked"] == 1
+    assert body["updated"] == 0
+    assert body["skipped"] == 1
+
+
+def test_refresh_does_not_call_proforma_to_invoice(client, storage):
+    """Conversion path must NEVER be invoked from refresh."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    correct = "X / Y"
+    _seed_master_for_refresh("EJL/25-26/1274-3", "48611875", correct)
+    after_xml = _PROFORMA_FIXTURE.replace(
+        "<name>Pierścionek (EJL/25-26/1274-3)</name>",
+        f"<name>{correct}</name>",
+    )
+    seq = iter([_PROFORMA_FIXTURE, after_xml])
+
+    # If proforma_to_invoice exists in this codebase, ensure refresh never
+    # imports/uses it. Patch the module's primary entrypoint defensively.
+    try:
+        from app.services import proforma_to_invoice as _p2i  # noqa: F401
+        guard = _p.object(_p2i, "build_final_invoice_xml",
+                          side_effect=AssertionError("must not convert"))
+    except Exception:
+        guard = None
+
+    with _refresh_gate_on(), \
+         _p.object(wc, "fetch_invoice_xml", side_effect=lambda _id: next(seq)), \
+         _p.object(wc, "edit_invoice_line_name",
+                   return_value={"invoice_id": "465611619",
+                                 "invoicecontent_id": "1495642083",
+                                 "new_name": correct, "raw_response": ""}):
+        if guard is not None:
+            with guard:
+                body = client.post("/api/v1/proforma/465611619/refresh-line-names",
+                                   headers=_auth()).json()
+        else:
+            body = client.post("/api/v1/proforma/465611619/refresh-line-names",
+                               headers=_auth()).json()
+    assert body["status"] == "ok"
+
+
+def test_refresh_does_not_mutate_local_proforma_drafts(client, storage):
+    """Refresh route must not touch proforma_drafts rows."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    correct = "x / y"
+    _seed_master_for_refresh("EJL/25-26/1274-3", "48611875", correct)
+    after_xml = _PROFORMA_FIXTURE.replace(
+        "<name>Pierścionek (EJL/25-26/1274-3)</name>",
+        f"<name>{correct}</name>",
+    )
+    seq = iter([_PROFORMA_FIXTURE, after_xml])
+
+    proforma_db = storage / "proforma_links.db"
+    before = pildb.get_draft(proforma_db, "no-such-batch", "no-such-client")
+    assert before is None
+
+    with _refresh_gate_on(), \
+         _p.object(wc, "fetch_invoice_xml", side_effect=lambda _id: next(seq)), \
+         _p.object(wc, "edit_invoice_line_name",
+                   return_value={"invoice_id": "465611619",
+                                 "invoicecontent_id": "1495642083",
+                                 "new_name": correct, "raw_response": ""}):
+        client.post("/api/v1/proforma/465611619/refresh-line-names",
+                    headers=_auth()).json()
+    after = pildb.get_draft(proforma_db, "no-such-batch", "no-such-client")
+    assert after is None
+
+
+def test_refresh_failed_verification_when_persisted_name_does_not_match(client, storage):
+    """
+    edit_invoice_line_name returns OK, but the post-edit re-fetch shows
+    the line name was NOT actually updated. Route must surface this as
+    failed_verification and report expected vs actual.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    correct = "CORRECT NAME / Lab"
+    _seed_master_for_refresh("EJL/25-26/1274-3", "48611875", correct)
+
+    # 1st fetch: stale fixture. 2nd fetch (verify): same stale name —
+    # simulating wFirma silently no-op'ing the edit.
+    seq = iter([_PROFORMA_FIXTURE, _PROFORMA_FIXTURE])
+
+    with _refresh_gate_on(), \
+         _p.object(wc, "fetch_invoice_xml", side_effect=lambda _id: next(seq)), \
+         _p.object(wc, "edit_invoice_line_name",
+                   return_value={"invoice_id": "465611619",
+                                 "invoicecontent_id": "1495642083",
+                                 "new_name": correct, "raw_response": ""}):
+        body = client.post("/api/v1/proforma/465611619/refresh-line-names",
+                           headers=_auth()).json()
+    assert body["ok"] is False
+    assert body["status"] == "failed_verification"
+    assert body["updated"] == 1
+    assert len(body["verify_errors"]) == 1
+    ve = body["verify_errors"][0]
+    assert ve["line_id"]      == "1495642083"
+    assert ve["expected"]     == correct
+    assert ve["actual"]       == "Pierścionek (EJL/25-26/1274-3)"
+
+
+def test_refresh_skipped_only_does_not_call_verify_fetch(client, storage):
+    """
+    All lines already correct → updated=0; verify-after-edit must NOT
+    re-fetch (no edits to verify). Total fetch_invoice_xml calls = 1.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_master_for_refresh(
+        "EJL/25-26/1274-3", "48611875",
+        "Pierścionek (EJL/25-26/1274-3)",
+    )
+    fetch_calls = {"n": 0}
+    def fake_fetch(_id):
+        fetch_calls["n"] += 1
+        return _PROFORMA_FIXTURE
+
+    with _refresh_gate_on(), \
+         _p.object(wc, "fetch_invoice_xml", side_effect=fake_fetch), \
+         _p.object(wc, "edit_invoice_line_name",
+                   side_effect=AssertionError("no edits expected")):
+        body = client.post("/api/v1/proforma/465611619/refresh-line-names",
+                           headers=_auth()).json()
+    assert body["ok"] is True
+    assert body["status"]  == "ok"
+    assert body["checked"] == 1
+    assert body["updated"] == 0
+    assert body["skipped"] == 1
+    assert fetch_calls["n"] == 1, "no verify re-fetch when nothing was edited"
