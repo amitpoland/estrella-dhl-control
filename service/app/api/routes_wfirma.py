@@ -37,10 +37,15 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
+from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
 from ..core import timeline as tl
 from ..services.batch_service import get_output_dir
+from ..services.import_pz_builder import BatchRow, build_pz_request_from_batch
+from ..services import description_engine as deng
+from ..services import wfirma_client
+from ..services import wfirma_db
 from ..utils.io import write_json_atomic
 
 log    = get_logger(__name__)
@@ -322,6 +327,9 @@ def _build_wfirma_rows(rows: List[dict], audit: dict) -> List[dict]:
             "_description_en": row.get("description_en", ""),
             "_pl_desc":       row.get("pl_desc", "") or row.get("description_en", ""),
             "_allocated_duty_pln": row.get("allocated_duty_pln", 0),
+            "_product_code":  row.get("product_code", ""),
+            "_item_type":     row.get("item_type", ""),
+            "_unit_netto_pln": row.get("unit_netto_pln", 0),
         })
     return out
 
@@ -512,6 +520,7 @@ async def wfirma_json(batch_id: str) -> FileResponse:
                 "original_description": r["_description_en"],
                 "polish_description":   r["_pl_desc"],
                 "notes":            r["uwagi"],
+                "product_code":     r["_product_code"],
             }
             for r in wfirma_rows
         ],
@@ -543,3 +552,325 @@ async def wfirma_json(batch_id: str) -> FileResponse:
         media_type="application/json",
         filename=f"PZ_READY_{batch_id}.json",
     )
+
+
+@router.get("/shipment/{batch_id}/wfirma/pz_preview", dependencies=[_auth])
+async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
+    """
+    Preview — wFirma PZ creation from internal PZ app output.
+
+    Returns what a wFirma PZ would look like if created directly from the PZ
+    engine calculation, instead of from a sales proforma.  Read-only: never
+    calls create_warehouse_pz.
+
+    Guard: SAD must exist + PZ must be generated (same as clipboard/json).
+
+    Response fields
+    ---------------
+    already_created        true if audit.wfirma_export.wfirma_pz_doc_id is set
+    wfirma_pz_doc_id       existing wFirma PZ doc id (if already_created)
+    would_create_pz        true only when ready=true and not already_created
+    ready                  true when all product_codes are mapped and no price conflicts
+    unresolved_product_codes  product_codes missing from wfirma_products table
+    price_conflicts        product_codes with inconsistent unit_netto_pln
+    supplier_wfirma_id     import supplier contractor id (from settings or resolved)
+    warehouse_id           wFirma warehouse id
+    mrn                    customs MRN (dedup key)
+    clearance_date         SAD clearance date (PZ document date)
+    planned_lines          per-line preview: product_code, good_id, count, price_pln
+    description            PZ description that would be written (batch_id + MRN)
+    risk_flags             supplier resolution warnings
+    """
+    output_dir = get_output_dir(batch_id)
+    audit      = _read_audit(output_dir)
+    _guard_wfirma_export(audit)
+
+    # ── Duplicate guard — check if wFirma PZ already exists ──────────────────
+    wfirma_export = audit.get("wfirma_export") or {}
+    existing_pz_doc_id = wfirma_export.get("wfirma_pz_doc_id") or ""
+    if existing_pz_doc_id:
+        return JSONResponse({
+            "batch_id":             batch_id,
+            "already_created":      True,
+            "wfirma_pz_doc_id":     existing_pz_doc_id,
+            "would_create_pz":      False,
+            "ready":                False,
+            "unresolved_product_codes": [],
+            "price_conflicts":      [],
+        })
+
+    # ── Load rows ─────────────────────────────────────────────────────────────
+    rows_raw = _build_rows(output_dir, audit)
+
+    cd             = audit.get("customs_declaration") or {}
+    mrn            = cd.get("mrn", "") or audit.get("inputs", {}).get("zc429_mrn", "") or ""
+    clearance_date = cd.get("clearance_date", "") or audit.get("timestamp", "")[:10]
+
+    # ── Resolve supplier contractor ───────────────────────────────────────────
+    supplier_wfirma_id = (settings.wfirma_supplier_contractor_id or "").strip()
+    supplier, supplier_source, risk_flags = _resolve_supplier(audit)
+    if not supplier_wfirma_id:
+        risk_flags.append("WFIRMA_SUPPLIER_CONTRACTOR_ID not configured — set in .env")
+
+    warehouse_id = (settings.wfirma_warehouse_id or "").strip()
+
+    # ── Load product_code → wfirma_good_id mapping ───────────────────────────
+    product_map: Dict[str, str] = {}
+    all_products = wfirma_db.list_products()
+    for p in all_products:
+        pid  = (p.get("wfirma_product_id") or "").strip()
+        code = (p.get("product_code") or "").strip()
+        if pid and code:
+            product_map[code] = pid
+
+    # ── Convert raw rows to BatchRow ──────────────────────────────────────────
+    batch_rows = [
+        BatchRow(
+            product_code   = str(r.get("invoice_no", "") or "") + "-" + str(i + 1)
+                             if not r.get("product_code")
+                             else str(r.get("product_code", "") or ""),
+            quantity       = float(r.get("quantity", 1) or 1),
+            unit_netto_pln = float(r.get("unit_netto_pln", 0) or 0),
+            invoice_no     = str(r.get("invoice_no", "") or ""),
+            description_en = str(r.get("description_en", "") or r.get("_description_en", "") or ""),
+            pl_desc        = str(r.get("pl_desc", "") or r.get("_pl_desc", "") or ""),
+            item_type      = str(r.get("item_type", "") or ""),
+            unit           = str(r.get("unit", "szt.") or "szt."),
+        )
+        for i, r in enumerate(rows_raw)
+    ]
+
+    # ── Build preview ─────────────────────────────────────────────────────────
+    result = build_pz_request_from_batch(
+        rows           = batch_rows,
+        contractor_id  = supplier_wfirma_id,
+        warehouse_id   = warehouse_id,
+        product_map    = product_map,
+        batch_id       = batch_id,
+        clearance_date = clearance_date,
+        mrn            = mrn,
+    )
+
+    planned = [
+        {
+            "product_code": pl.product_code,
+            "good_id":      pl.good_id,
+            "count":        pl.count,
+            "price_pln":    round(pl.price_pln, 4),
+            "description":  pl.description,
+            "resolved":     pl.resolved,
+        }
+        for pl in result.planned_lines
+    ]
+
+    mrn_part    = f" | MRN {mrn}" if mrn else ""
+    description = f"batch={batch_id}{mrn_part}"
+
+    log.info(
+        "[%s] wFirma PZ preview: ready=%s unresolved=%d conflicts=%d",
+        batch_id, result.ready, len(result.unresolved_codes), len(result.price_conflicts),
+    )
+
+    return JSONResponse({
+        "batch_id":                 batch_id,
+        "already_created":          False,
+        "wfirma_pz_doc_id":         None,
+        "would_create_pz":          result.ready and bool(supplier_wfirma_id) and bool(warehouse_id),
+        "ready":                    result.ready,
+        "unresolved_product_codes": result.unresolved_codes,
+        "price_conflicts":          result.price_conflicts,
+        "supplier_wfirma_id":       supplier_wfirma_id,
+        "supplier_name":            supplier,
+        "supplier_source":          supplier_source,
+        "warehouse_id":             warehouse_id,
+        "mrn":                      mrn,
+        "clearance_date":           clearance_date,
+        "description":              description,
+        "planned_lines":            planned,
+        "risk_flags":               risk_flags,
+    })
+
+
+@router.post("/shipment/{batch_id}/wfirma/products/resolve", dependencies=[_auth])
+async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
+    """
+    Batch product resolve — map every product_code in this PZ batch to a
+    wFirma good_id, so that the batch is ready for PZ creation.
+
+    For each product_code:
+      1. Already in wfirma_products with wfirma_product_id → already_mapped
+      2. Not in local table → call goods/find by code (read-only)
+         a. Found in wFirma → save mapping, count as found_and_mapped
+         b. Missing + WFIRMA_CREATE_PRODUCT_ALLOWED=false → missing (no write)
+         c. Missing + WFIRMA_CREATE_PRODUCT_ALLOWED=true → create via goods/add,
+            save mapping on confirmed success, count as created
+      3. goods/find or goods/add error → failed (no fake mapping written)
+
+    Idempotent: re-running after partial resolve skips already_mapped codes.
+    Never calls create_warehouse_pz.
+
+    Response
+    --------
+    batch_id, considered, already_mapped, found_and_mapped,
+    created, missing, failed, ready_for_pz, details
+    """
+    output_dir = get_output_dir(batch_id)
+    audit      = _read_audit(output_dir)
+    _guard_wfirma_export(audit)
+
+    rows_raw = _build_rows(output_dir, audit)
+
+    # ── Collect unique (product_code, item_type, description_en) per code ────
+    # Use first occurrence of each code for description/item_type (they are
+    # per-row metadata used only for the create path).
+    seen: Dict[str, dict] = {}
+    for i, r in enumerate(rows_raw):
+        pc = (r.get("product_code") or "").strip()
+        if not pc:
+            continue
+        if pc not in seen:
+            seen[pc] = {
+                "item_type":      str(r.get("item_type", "") or ""),
+                "description_en": str(r.get("description_en", "") or r.get("_description_en", "") or ""),
+                "pl_desc":        str(r.get("pl_desc", "") or r.get("_pl_desc", "") or ""),
+                "unit_netto_pln": float(r.get("unit_netto_pln", 0) or 0),
+                "quantity":       float(r.get("quantity", 1) or 1),
+            }
+
+    considered      = len(seen)
+    already_mapped  = 0
+    found_and_mapped = 0
+    created         = 0
+    missing_codes: List[str]  = []
+    failed_details: List[dict] = []
+
+    for pc, meta in seen.items():
+        # ── 1. Check local table first ────────────────────────────────────────
+        local = wfirma_db.get_product(pc)
+        if local and (local.get("wfirma_product_id") or "").strip():
+            already_mapped += 1
+            continue
+
+        # ── 2. Live goods/find ────────────────────────────────────────────────
+        try:
+            found = wfirma_client.get_product_by_code(pc)
+        except Exception as exc:
+            failed_details.append({"product_code": pc, "error": f"goods/find: {exc}"})
+            continue
+
+        if found is not None:
+            wfirma_db.upsert_product(
+                product_code      = pc,
+                wfirma_product_id = found.wfirma_id,
+                product_name_pl   = found.name or "",
+                product_name      = found.name or "",
+                unit              = found.unit or "szt.",
+                sync_status       = "matched",
+            )
+            found_and_mapped += 1
+            continue
+
+        # ── 3a. Missing + gate off ────────────────────────────────────────────
+        if not settings.wfirma_create_product_allowed:
+            missing_codes.append(pc)
+            continue
+
+        # ── 3b. Missing + gate on → create via description_engine ────────────
+        try:
+            block = deng.get_description_block(
+                product_code   = pc,
+                item_type      = meta["item_type"],
+                description_en = meta["description_en"],
+            )
+            wf_name = (
+                (block.get("description_line") or "").strip()
+                or (block.get("name_pl") or "").strip()
+                or pc
+            )
+            result_product = wfirma_client.create_product(
+                product_code = pc,
+                name         = wf_name,
+                unit         = "szt.",
+                netto        = 0.0,
+                vat_code_id  = wfirma_client.find_vat_code_id(23),
+                description  = block.get("description_block") or "",
+            )
+        except Exception as exc:
+            log.warning("[%s] products/resolve: goods/add failed for %r: %s", batch_id, pc, exc)
+            failed_details.append({"product_code": pc, "error": f"goods/add: {exc}"})
+            continue
+
+        if not result_product.wfirma_id:
+            failed_details.append({"product_code": pc, "error": "goods/add returned no wfirma_id"})
+            continue
+
+        wfirma_db.upsert_product(
+            product_code      = pc,
+            wfirma_product_id = result_product.wfirma_id,
+            product_name_pl   = block.get("name_pl") or "",
+            product_name      = wf_name,
+            description_block = block.get("description_block") or "",
+            unit              = "szt.",
+            sync_status       = "matched",
+        )
+        created += 1
+
+    # ── Compute ready_for_pz via pz_preview builder ───────────────────────────
+    product_map: Dict[str, str] = {}
+    for p in wfirma_db.list_products():
+        pid  = (p.get("wfirma_product_id") or "").strip()
+        code = (p.get("product_code") or "").strip()
+        if pid and code:
+            product_map[code] = pid
+
+    cd             = audit.get("customs_declaration") or {}
+    mrn            = cd.get("mrn", "") or audit.get("inputs", {}).get("zc429_mrn", "") or ""
+    clearance_date = cd.get("clearance_date", "") or audit.get("timestamp", "")[:10]
+    supplier_id    = (settings.wfirma_supplier_contractor_id or "").strip()
+    warehouse_id   = (settings.wfirma_warehouse_id or "").strip()
+
+    batch_rows = [
+        BatchRow(
+            product_code   = (r.get("product_code") or "").strip(),
+            quantity       = float(r.get("quantity", 1) or 1),
+            unit_netto_pln = float(r.get("unit_netto_pln", 0) or 0),
+            invoice_no     = str(r.get("invoice_no", "") or ""),
+            description_en = str(r.get("description_en", "") or ""),
+            pl_desc        = str(r.get("pl_desc", "") or ""),
+            item_type      = str(r.get("item_type", "") or ""),
+        )
+        for r in rows_raw
+        if (r.get("product_code") or "").strip()
+    ]
+
+    preview = build_pz_request_from_batch(
+        rows           = batch_rows,
+        contractor_id  = supplier_id,
+        warehouse_id   = warehouse_id,
+        product_map    = product_map,
+        batch_id       = batch_id,
+        clearance_date = clearance_date,
+        mrn            = mrn,
+    )
+
+    log.info(
+        "[%s] products/resolve: considered=%d already_mapped=%d found=%d "
+        "created=%d missing=%d failed=%d ready=%s",
+        batch_id, considered, already_mapped, found_and_mapped,
+        created, len(missing_codes), len(failed_details), preview.ready,
+    )
+
+    return JSONResponse({
+        "batch_id":          batch_id,
+        "considered":        considered,
+        "already_mapped":    already_mapped,
+        "found_and_mapped":  found_and_mapped,
+        "created":           created,
+        "missing":           len(missing_codes),
+        "failed":            len(failed_details),
+        "missing_codes":     missing_codes,
+        "failed_details":    failed_details,
+        "ready_for_pz":      preview.ready,
+        "unresolved_product_codes": preview.unresolved_codes,
+        "price_conflicts":   preview.price_conflicts,
+    })

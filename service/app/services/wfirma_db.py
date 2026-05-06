@@ -129,6 +129,14 @@ def init_wfirma_db(db_path: Path) -> None:
             ("last_error",            "TEXT NOT NULL DEFAULT ''"),
         ],
     )
+    _add_columns_if_missing(
+        db_path,
+        "wfirma_products",
+        [
+            ("product_name",    "TEXT NOT NULL DEFAULT ''"),
+            ("description_block", "TEXT NOT NULL DEFAULT ''"),
+        ],
+    )
 
 
 def _add_columns_if_missing(
@@ -234,38 +242,50 @@ def upsert_product(
     *,
     wfirma_product_id: Optional[str] = None,
     product_name_pl:   str = "",
+    product_name:      Optional[str] = None,
+    description_block: Optional[str] = None,
     unit:              str = "szt.",
     vat_rate:          str = "23",
     warehouse_id:      str = "",
     sync_status:       str = "pending",
 ) -> str:
-    """Insert or update a product mapping. Returns local id."""
+    """Insert or update a product mapping. Returns local id.
+
+    product_name and description_block use never-erase semantics: a None or empty
+    incoming value never overwrites an existing non-empty stored value.
+    """
     if _db_path is None or not product_code:
         return ""
     now = _now()
     with _lock, _connect() as con:
         existing = con.execute(
-            "SELECT id FROM wfirma_products WHERE product_code=?",
+            "SELECT id, product_name, description_block FROM wfirma_products WHERE product_code=?",
             (product_code,),
         ).fetchone()
         if existing:
+            eff_pname  = (product_name or "").strip() or (existing["product_name"] or "")
+            eff_dblock = (description_block or "").strip() or (existing["description_block"] or "")
             con.execute(
                 """UPDATE wfirma_products
-                   SET wfirma_product_id=?, product_name_pl=?, unit=?,
+                   SET wfirma_product_id=?, product_name_pl=?, product_name=?,
+                       description_block=?, unit=?,
                        vat_rate=?, warehouse_id=?, sync_status=?, updated_at=?
                    WHERE id=?""",
-                (wfirma_product_id, product_name_pl, unit, vat_rate,
-                 warehouse_id, sync_status, now, existing["id"]),
+                (wfirma_product_id, product_name_pl, eff_pname, eff_dblock,
+                 unit, vat_rate, warehouse_id, sync_status, now, existing["id"]),
             )
             return existing["id"]
+        eff_pname  = (product_name or "").strip()
+        eff_dblock = (description_block or "").strip()
         row_id = str(uuid.uuid4())
         con.execute(
             """INSERT INTO wfirma_products
-               (id, product_code, wfirma_product_id, product_name_pl,
-                unit, vat_rate, warehouse_id, sync_status, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (row_id, product_code, wfirma_product_id, product_name_pl,
-             unit, vat_rate, warehouse_id, sync_status, now, now),
+               (id, product_code, wfirma_product_id, product_name_pl, product_name,
+                description_block, unit, vat_rate, warehouse_id, sync_status,
+                created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (row_id, product_code, wfirma_product_id, product_name_pl, eff_pname,
+             eff_dblock, unit, vat_rate, warehouse_id, sync_status, now, now),
         )
         return row_id
 
