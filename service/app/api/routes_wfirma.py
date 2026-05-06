@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1304,4 +1305,149 @@ async def wfirma_pz_adopt(batch_id: str, body: _PZAdoptBody) -> JSONResponse:
         "wfirma_pz_doc_id": resolved_doc_id,
         "pz_number":       resolved_number,
         "pz_source":       "adopted_existing",
+    })
+
+
+# ── PZ Document (read-only view) ──────────────────────────────────────────────
+
+def _parse_pz_doc_from_xml(xml_text: str) -> dict:
+    """
+    Parse a wFirma warehouse_document_p_z find response into a structured dict.
+
+    Returns fields: date, contractor_id, warehouse_id, description, lines.
+    Lines contain: good_id, good_name, count, price_netto.
+    Any field that cannot be parsed is returned as "" or [].
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return {}
+
+    wd = root.find(".//warehouse_document")
+    if wd is None:
+        return {}
+
+    def _txt(*path):
+        node = wd
+        for tag in path:
+            if node is None:
+                return ""
+            node = node.find(tag)
+        return (node.text or "").strip() if node is not None else ""
+
+    contractor_id = _txt("contractor", "id") or _txt("contractor_id")
+    warehouse_id  = _txt("warehouse", "id") or _txt("warehouse_id")
+    date          = _txt("date") or _txt("document_date")
+    description   = _txt("description") or _txt("number") or ""
+    pz_number     = _txt("full_number") or _txt("number") or ""
+
+    lines: List[dict] = []
+    for content in root.findall(".//warehouse_document_content"):
+        def _ctxt(*path):
+            node = content
+            for tag in path:
+                if node is None:
+                    return ""
+                node = node.find(tag)
+            return (node.text or "").strip() if node is not None else ""
+
+        good_id   = _ctxt("good", "id") or _ctxt("good_id") or ""
+        good_name = _ctxt("good", "name") or _ctxt("name") or ""
+        try:
+            count = float(_ctxt("count") or 0)
+        except (TypeError, ValueError):
+            count = 0.0
+        try:
+            price = float(_ctxt("price") or _ctxt("price_netto") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+
+        lines.append({
+            "good_id":     good_id,
+            "name":        good_name,
+            "count":       count,
+            "price_netto": price,
+        })
+
+    return {
+        "pz_number":     pz_number,
+        "date":          date,
+        "contractor_id": contractor_id,
+        "warehouse_id":  warehouse_id,
+        "description":   description,
+        "lines":         lines,
+    }
+
+
+@router.get("/shipment/{batch_id}/wfirma/pz_document", dependencies=[_auth])
+async def wfirma_pz_document(batch_id: str) -> JSONResponse:
+    """
+    Read-only view of the linked wFirma PZ document.
+
+    Reads the wfirma_pz_doc_id from audit.json, fetches the document from
+    wFirma, and returns structured JSON with header fields and line items.
+
+    No writes are performed.
+
+    Response fields
+    ---------------
+    pz_doc_id       wFirma internal numeric ID
+    pz_number       human-readable document number (full_number)
+    date            document date from wFirma
+    contractor_id   wFirma contractor (supplier) ID
+    warehouse_id    wFirma warehouse ID
+    description     document description / notes
+    line_count      number of line items
+    lines           list of {good_id, name, count, price_netto}
+    pz_source       how the PZ was linked (created / adopted_existing)
+    raw_xml         raw wFirma XML response (for diagnostics)
+    """
+    output_dir = get_output_dir(batch_id)
+    audit      = _read_audit(output_dir)
+
+    wfirma_export = audit.get("wfirma_export") or {}
+    pz_doc_id     = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
+
+    if not pz_doc_id:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "No wFirma PZ linked to this shipment.",
+                "code":  "PZ_NOT_LINKED",
+                "batch_id": batch_id,
+            },
+        )
+
+    fetch = wfirma_client.fetch_warehouse_pz(pz_doc_id)
+    if not fetch.ok:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error":  f"wFirma fetch failed: {fetch.error}",
+                "code":   "PZ_FETCH_FAILED",
+                "batch_id": batch_id,
+                "pz_doc_id": pz_doc_id,
+            },
+        )
+
+    parsed = _parse_pz_doc_from_xml(fetch.raw_response or "")
+    pz_source = (wfirma_export.get("pz_source") or "created").strip()
+
+    log.info(
+        "[%s] pz_document: fetched PZ %s (%d lines)",
+        batch_id, pz_doc_id, len(parsed.get("lines", [])),
+    )
+
+    return JSONResponse({
+        "batch_id":     batch_id,
+        "pz_doc_id":    pz_doc_id,
+        "pz_number":    parsed.get("pz_number") or fetch.pz_number or "",
+        "date":         parsed.get("date", ""),
+        "contractor_id": parsed.get("contractor_id", ""),
+        "warehouse_id": parsed.get("warehouse_id", ""),
+        "description":  parsed.get("description", ""),
+        "line_count":   len(parsed.get("lines", [])),
+        "lines":        parsed.get("lines", []),
+        "pz_source":    pz_source,
+        "raw_xml":      fetch.raw_response or "",
     })

@@ -1195,3 +1195,182 @@ def proforma_refresh_line_names(wfirma_id: str) -> JSONResponse:
         "verify_errors":  verify_errors,
         "lines":          line_results,
     })
+
+
+# ── Proforma Document (read-only view) ────────────────────────────────────────
+
+def _parse_proforma_from_xml(xml_text: str) -> dict:
+    """
+    Parse a wFirma invoices/find response into a structured proforma summary.
+
+    Returns: invoice_type, full_number, date, contractor_id, currency, lines.
+    Lines: name, quantity, unit_price, total_net, vat_rate.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return {}
+
+    inv = root.find(".//invoice")
+    if inv is None:
+        return {}
+
+    def _txt(*path):
+        node = inv
+        for tag in path:
+            if node is None:
+                return ""
+            node = node.find(tag)
+        return (node.text or "").strip() if node is not None else ""
+
+    invoice_type  = _txt("type") or _txt("invoice_type") or ""
+    full_number   = _txt("full_number") or _txt("number") or ""
+    date          = _txt("date") or _txt("invoice_date") or ""
+    contractor_id = _txt("contractor", "id") or _txt("contractor_id") or ""
+    currency      = _txt("currency") or "PLN"
+    status        = _txt("status") or ""
+
+    lines: List[dict] = []
+    for ic in root.findall(".//invoicecontent"):
+        def _ctxt(*path):
+            node = ic
+            for tag in path:
+                if node is None:
+                    return ""
+                node = node.find(tag)
+            return (node.text or "").strip() if node is not None else ""
+
+        name = _ctxt("name") or ""
+        try:
+            qty = float(_ctxt("count") or _ctxt("quantity") or 1)
+        except (TypeError, ValueError):
+            qty = 1.0
+        try:
+            unit_price = float(_ctxt("price_netto") or _ctxt("unit_price") or 0)
+        except (TypeError, ValueError):
+            unit_price = 0.0
+        try:
+            total_net = float(_ctxt("netto") or _ctxt("total_netto") or 0)
+        except (TypeError, ValueError):
+            total_net = 0.0
+        vat_rate = _ctxt("vat", "code") or _ctxt("vat_code") or ""
+
+        lines.append({
+            "name":       name,
+            "quantity":   qty,
+            "unit_price": unit_price,
+            "total_net":  total_net,
+            "vat_rate":   vat_rate,
+        })
+
+    return {
+        "invoice_type":  invoice_type,
+        "full_number":   full_number,
+        "date":          date,
+        "contractor_id": contractor_id,
+        "currency":      currency,
+        "status":        status,
+        "lines":         lines,
+    }
+
+
+@router.get("/{batch_id}/{client_name:path}/document", dependencies=[_auth])
+async def proforma_document(batch_id: str, client_name: str) -> JSONResponse:
+    """
+    Read-only view of the linked wFirma proforma invoice.
+
+    Reads the wfirma_proforma_id from the proforma_drafts table, fetches the
+    invoice XML from wFirma, and returns structured JSON with header + lines.
+
+    Blocks if invoice_type is not 'proforma' (safety guard against viewing
+    regular invoices via this endpoint).
+
+    No writes are performed.
+
+    Response fields
+    ---------------
+    batch_id          echoed
+    client_name       echoed
+    wfirma_proforma_id  wFirma invoice ID
+    invoice_type      must be 'proforma'
+    full_number       human-readable invoice number
+    date              invoice date
+    contractor_id     wFirma contractor (customer) ID
+    currency          invoice currency
+    status            wFirma document status
+    line_count        number of invoice lines
+    lines             list of {name, quantity, unit_price, total_net, vat_rate}
+    raw_xml           raw wFirma XML response (for diagnostics)
+    """
+    cn = (client_name or "").strip()
+    if not cn:
+        raise HTTPException(status_code=400, detail="client_name is required")
+
+    db_path = _proforma_db_path()
+    draft   = pildb.get_draft(db_path, batch_id, cn)
+
+    if draft is None or not (draft.wfirma_proforma_id or "").strip():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error":      "No proforma linked to this shipment/client.",
+                "code":       "PROFORMA_NOT_LINKED",
+                "batch_id":   batch_id,
+                "client_name": cn,
+            },
+        )
+
+    wfirma_id = draft.wfirma_proforma_id.strip()
+
+    try:
+        xml_text = wfirma_client.fetch_invoice_xml(wfirma_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error":    f"wFirma fetch failed: {exc}",
+                "code":     "PROFORMA_FETCH_FAILED",
+                "batch_id": batch_id,
+                "wfirma_proforma_id": wfirma_id,
+            },
+        )
+
+    parsed = _parse_proforma_from_xml(xml_text)
+
+    # Safety: reject if wFirma says this is not a proforma
+    invoice_type = (parsed.get("invoice_type") or "").lower()
+    if invoice_type and invoice_type != "proforma":
+        log.warning(
+            "[%s/%s] proforma_document: wFirma id %s is type=%r, not proforma",
+            batch_id, cn, wfirma_id, invoice_type,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error":        f"Document {wfirma_id!r} is type {invoice_type!r}, not proforma.",
+                "code":         "NOT_A_PROFORMA",
+                "batch_id":     batch_id,
+                "wfirma_id":    wfirma_id,
+                "invoice_type": invoice_type,
+            },
+        )
+
+    log.info(
+        "[%s/%s] proforma_document: fetched proforma %s (%d lines)",
+        batch_id, cn, wfirma_id, len(parsed.get("lines", [])),
+    )
+
+    return JSONResponse({
+        "batch_id":           batch_id,
+        "client_name":        cn,
+        "wfirma_proforma_id": wfirma_id,
+        "invoice_type":       parsed.get("invoice_type", ""),
+        "full_number":        parsed.get("full_number", ""),
+        "date":               parsed.get("date", ""),
+        "contractor_id":      parsed.get("contractor_id", ""),
+        "currency":           parsed.get("currency", "PLN"),
+        "status":             parsed.get("status", ""),
+        "line_count":         len(parsed.get("lines", [])),
+        "lines":              parsed.get("lines", []),
+        "raw_xml":            xml_text,
+    })

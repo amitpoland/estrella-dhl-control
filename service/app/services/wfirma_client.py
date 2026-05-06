@@ -1157,7 +1157,8 @@ def fetch_warehouse_pz(pz_doc_id: str) -> "PZFetchResult":
         or _find_text(wd_node, "number")
         or ""
     )
-    return PZFetchResult(ok=True, pz_doc_id=fetched_id, pz_number=pz_number)
+    return PZFetchResult(ok=True, pz_doc_id=fetched_id, pz_number=pz_number,
+                         raw_response=response_text)
 
 
 def find_warehouse_pz_by_number(pz_number: str) -> "PZFetchResult":
@@ -1220,7 +1221,8 @@ def find_warehouse_pz_by_number(pz_number: str) -> "PZFetchResult":
         or _find_text(wd_node, "number")
         or pz_number
     )
-    return PZFetchResult(ok=True, pz_doc_id=fetched_id, pz_number=fetched_number)
+    return PZFetchResult(ok=True, pz_doc_id=fetched_id, pz_number=fetched_number,
+                         raw_response=response_text)
 
 
 def create_warehouse_pz(req: PZRequest) -> PZResult:

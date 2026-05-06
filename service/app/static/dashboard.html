@@ -2124,6 +2124,11 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [pzAdoptBusy, setPzAdoptBusy] = React.useState(false);
   const [pzAdoptResult, setPzAdoptResult] = React.useState(null);   // {status, wfirma_pz_doc_id, ...}
   const [pzAdoptOpen, setPzAdoptOpen] = React.useState(false);      // toggle adopt panel
+  const [pzDocumentData, setPzDocumentData] = React.useState(null); // null | fetched PZ doc
+  const [pzDocumentLoading, setPzDocumentLoading] = React.useState(false);
+  const [pzDocumentOpen, setPzDocumentOpen] = React.useState(false);
+  // per-client proforma doc state: { [client_name]: { data, loading, open } }
+  const [proformaDocState, setProformaDocState] = React.useState({});
   const [scanResult, setScanResult] = React.useState(null);          // DHL inbox scan response
   const [confirmingMarkRec, setConfirmingMarkRec] = React.useState(false);
   const _markRecDefaults = { sender: 'odprawacelna@dhl.com', subject: '', ticket: '', request_type: 'unknown', note: '' };
@@ -2337,6 +2342,29 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     }
     setPzAdoptBusy(false);
   }, [batchId, pzAdoptInput, onToast, loadPzPreview]);
+
+  const loadPzDocument = React.useCallback(async () => {
+    setPzDocumentLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_document`);
+      setPzDocumentData(d);
+      setPzDocumentOpen(true);
+    } catch (e) {
+      onToast('PZ document fetch failed: ' + e.message, 'error');
+    }
+    setPzDocumentLoading(false);
+  }, [batchId, onToast]);
+
+  const loadProformaDocument = React.useCallback(async (clientName) => {
+    setProformaDocState(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), loading: true } }));
+    try {
+      const d = await apiFetch(`/api/v1/proforma/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}/document`);
+      setProformaDocState(prev => ({ ...prev, [clientName]: { data: d, loading: false, open: true } }));
+    } catch (e) {
+      setProformaDocState(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), loading: false } }));
+      onToast(`Proforma fetch failed for ${clientName}: ` + e.message, 'error');
+    }
+  }, [batchId, onToast]);
 
   const submitReservation = React.useCallback(async (clientName) => {
     setCreateBusy(true);
@@ -4412,12 +4440,63 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
                   {/* Already created banner */}
                   {pzPreview?.wfirma_pz_doc_id && (
-                    <div data-testid="pz-already-created-banner" style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <span style={{ fontSize: 16 }}>✓</span>
-                      <div>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-green-text)' }}>wFirma PZ created</div>
-                        <div style={{ fontSize: 11, color: 'var(--badge-green-text)', opacity: 0.85, fontFamily: 'monospace' }}>{pzPreview.wfirma_pz_doc_id}</div>
+                    <div data-testid="pz-already-created-banner" style={{ marginBottom: 8, padding: '10px 14px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ fontSize: 16 }}>✓</span>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-green-text)' }}>wFirma PZ created</div>
+                          <div style={{ fontSize: 11, color: 'var(--badge-green-text)', opacity: 0.85, fontFamily: 'monospace' }}>{pzPreview.wfirma_pz_doc_id}</div>
+                        </div>
                       </div>
+                      <Btn small variant="outline"
+                          data-testid="btn-view-pz"
+                          disabled={pzDocumentLoading}
+                          onClick={() => pzDocumentOpen ? setPzDocumentOpen(false) : loadPzDocument()}>
+                        {pzDocumentLoading ? '⟳ Loading…' : pzDocumentOpen ? '▲ Hide PZ' : '▼ View PZ'}
+                      </Btn>
+                    </div>
+                  )}
+
+                  {/* PZ Document inline panel */}
+                  {pzDocumentOpen && pzDocumentData && (
+                    <div data-testid="pz-document-panel" style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', fontSize: 11 }}>
+                      <div style={{ padding: '8px 14px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: 10 }}>wFirma PZ — {pzDocumentData.pz_number || pzDocumentData.pz_doc_id}</span>
+                        <Btn small variant="ghost" onClick={() => setPzDocumentOpen(false)}>✕</Btn>
+                      </div>
+                      <div style={{ padding: '10px 14px', display: 'flex', gap: 20, flexWrap: 'wrap', color: 'var(--text-2)', borderBottom: pzDocumentData.lines?.length ? '1px solid var(--border-subtle)' : 'none' }}>
+                        <div><span style={{ color: 'var(--text-3)' }}>Date: </span><b style={{ color: 'var(--text)' }}>{pzDocumentData.date || '—'}</b></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Contractor ID: </span><span style={{ fontFamily: 'monospace' }}>{pzDocumentData.contractor_id || '—'}</span></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Warehouse ID: </span><span style={{ fontFamily: 'monospace' }}>{pzDocumentData.warehouse_id || '—'}</span></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Lines: </span><b>{pzDocumentData.line_count ?? pzDocumentData.lines?.length ?? '—'}</b></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Source: </span><span>{pzDocumentData.pz_source || '—'}</span></div>
+                      </div>
+                      {pzDocumentData.lines?.length > 0 && (
+                        <div style={{ overflowX: 'auto' }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                            <thead>
+                              <tr style={{ background: 'var(--sidebar-bg)' }}>
+                                {['Good ID','Name','Qty','Price netto (PLN)'].map(h => (
+                                  <th key={h} style={{ padding: '5px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'white', whiteSpace: 'nowrap' }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pzDocumentData.lines.map((ln, i) => (
+                                <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)', background: i % 2 === 0 ? 'white' : 'var(--bg-subtle)' }}>
+                                  <td style={{ padding: '5px 10px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10 }}>{ln.good_id || '—'}</td>
+                                  <td style={{ padding: '5px 10px', color: 'var(--text)' }}>{ln.name || '—'}</td>
+                                  <td style={{ padding: '5px 10px', textAlign: 'right' }}>{ln.count}</td>
+                                  <td style={{ padding: '5px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{ln.price_netto?.toLocaleString('pl-PL', { minimumFractionDigits: 2 })}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      {!pzDocumentData.lines?.length && (
+                        <div style={{ padding: '10px 14px', color: 'var(--text-3)', fontSize: 11 }}>No line items returned (wFirma may require warehouse_document_contents fetch).</div>
+                      )}
                     </div>
                   )}
 
@@ -4904,7 +4983,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           || (!rp.wfirma_configured ? 'wFirma not configured'
                             : !rp.reservation_supported ? 'Reservation not supported'
                             : (d.blocking_reasons || [])[0] || 'Document not ready');
-                        return (
+                        return (<>
                           <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                             <div style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 0, flex: 1 }}>
                               {alreadyCreated && (
@@ -4945,8 +5024,76 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                               style={{ opacity: isDisabled ? 0.45 : 1, cursor: isDisabled ? 'not-allowed' : 'pointer', outline: wfirmaPrimary && !isDisabled ? '2px solid var(--badge-green-border)' : undefined }}>
                               {alreadyCreated ? 'Already created' : 'Create Reservation'}
                             </Btn>
+                            {/* View Proforma button — shown when proforma was issued for this client */}
+                            {(() => {
+                              const proDoc = proformaDocState[d.client_name] || {};
+                              const proOpen = proDoc.open;
+                              const proLoading = proDoc.loading;
+                              // Show button only if reservation was already created (wfirma_reservation_id present) or proforma might exist
+                              return (
+                                <Btn small variant="outline"
+                                    data-testid={`btn-view-proforma-${d.client_name}`}
+                                    disabled={proLoading}
+                                    onClick={() => proOpen
+                                      ? setProformaDocState(prev => ({ ...prev, [d.client_name]: { ...proDoc, open: false } }))
+                                      : loadProformaDocument(d.client_name)
+                                    }>
+                                  {proLoading ? '⟳ Loading…' : proOpen ? '▲ Hide Proforma' : '▼ View Proforma'}
+                                </Btn>
+                              );
+                            })()}
                           </div>
-                        );
+                          {/* Proforma document inline panel */}
+                          {(() => {
+                            const proDoc = proformaDocState[d.client_name] || {};
+                            if (!proDoc.open || !proDoc.data) return null;
+                            const pd = proDoc.data;
+                            return (
+                              <div data-testid={`proforma-document-panel-${d.client_name}`} style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', fontSize: 11 }}>
+                                <div style={{ padding: '7px 12px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <span style={{ fontWeight: 700, color: 'var(--text-2)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                    Proforma — {pd.full_number || pd.wfirma_proforma_id}
+                                  </span>
+                                  <Btn small variant="ghost" onClick={() => setProformaDocState(prev => ({ ...prev, [d.client_name]: { ...proDoc, open: false } }))}>✕</Btn>
+                                </div>
+                                <div style={{ padding: '8px 12px', display: 'flex', gap: 16, flexWrap: 'wrap', color: 'var(--text-2)', borderBottom: pd.lines?.length ? '1px solid var(--border-subtle)' : 'none' }}>
+                                  <div><span style={{ color: 'var(--text-3)' }}>Date: </span><b style={{ color: 'var(--text)' }}>{pd.date || '—'}</b></div>
+                                  <div><span style={{ color: 'var(--text-3)' }}>Currency: </span>{pd.currency || '—'}</div>
+                                  <div><span style={{ color: 'var(--text-3)' }}>Contractor ID: </span><span style={{ fontFamily: 'monospace' }}>{pd.contractor_id || '—'}</span></div>
+                                  <div><span style={{ color: 'var(--text-3)' }}>Lines: </span><b>{pd.line_count ?? pd.lines?.length ?? '—'}</b></div>
+                                  <div><span style={{ color: 'var(--text-3)' }}>Status: </span>{pd.status || '—'}</div>
+                                </div>
+                                {pd.lines?.length > 0 && (
+                                  <div style={{ overflowX: 'auto' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                                      <thead>
+                                        <tr style={{ background: 'var(--sidebar-bg)' }}>
+                                          {['Name','Qty','Unit price','Total net','VAT'].map(h => (
+                                            <th key={h} style={{ padding: '5px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'white', whiteSpace: 'nowrap' }}>{h}</th>
+                                          ))}
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {pd.lines.map((ln, i) => (
+                                          <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)', background: i % 2 === 0 ? 'white' : 'var(--bg-subtle)' }}>
+                                            <td style={{ padding: '5px 10px', color: 'var(--text)' }}>{ln.name || '—'}</td>
+                                            <td style={{ padding: '5px 10px', textAlign: 'right' }}>{ln.quantity}</td>
+                                            <td style={{ padding: '5px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{ln.unit_price?.toLocaleString('pl-PL', { minimumFractionDigits: 2 })}</td>
+                                            <td style={{ padding: '5px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{ln.total_net?.toLocaleString('pl-PL', { minimumFractionDigits: 2 })}</td>
+                                            <td style={{ padding: '5px 10px' }}>{ln.vat_rate || '—'}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                                {!pd.lines?.length && (
+                                  <div style={{ padding: '8px 12px', color: 'var(--text-3)' }}>No line items returned.</div>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </>);
                       })()}
                     </Card>
                   ))}
