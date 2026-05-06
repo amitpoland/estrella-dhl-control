@@ -545,13 +545,26 @@ def list_contractors_page(start: int, limit: int) -> List[WFirmaContractor]:
         raise RuntimeError(f"contractors/find wFirma status={code}: {desc}")
     root = ET.fromstring(response_text)
     out: List[WFirmaContractor] = []
-    for node in root.iter("contractor"):
-        wid = _find_text(node, "id") or ""
-        if not wid:
+    # wFirma's contractors/find serialises some nested address/contact
+    # records as additional <contractor> elements deep in the tree. They
+    # carry blank <name> and either id="0" or a duplicate of the parent
+    # contractor's id. iter() would scoop them up; we restrict to the
+    # direct children of the top-level <contractors> collection and
+    # additionally skip any node missing a non-zero id and a non-blank
+    # name (live wFirma data 2026-05-06: 40 raw nodes → 20 real rows).
+    contractors = root.find("contractors")
+    if contractors is None:
+        return out
+    for node in contractors.findall("contractor"):
+        wid = (_find_text(node, "id") or "").strip()
+        if not wid or wid == "0":
+            continue
+        name = (_find_text(node, "name") or "").strip()
+        if not name:
             continue
         out.append(WFirmaContractor(
             wfirma_id = wid,
-            name      = _find_text(node, "name") or "",
+            name      = name,
             nip       = _find_text(node, "nip") or "",
             country   = _find_text(node, "country") or "",
             zip       = _find_text(node, "zip") or "",

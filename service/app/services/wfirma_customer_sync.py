@@ -164,11 +164,16 @@ def plan_sync(*, page_size: int = PAGE_SIZE,
     the iterator length.
     """
     # Fetch remote first; tally normalised-name duplicates.
+    # Belt-and-braces filter: even if list_contractors_page lets a bad
+    # row through (blank name, id="0", id missing), skip it here so a
+    # parser regression cannot result in junk inserts.
     remote_all: List[RemoteRow] = []
+    skipped_invalid = 0
     name_seen: Dict[str, int] = {}
     for c in _iter_all_contractors(page_size=page_size):
         r = RemoteRow.from_contractor(c)
-        if not r.wfirma_id:
+        if not r.wfirma_id or r.wfirma_id == "0" or not r.name:
+            skipped_invalid += 1
             continue
         remote_all.append(r)
         nk = normalise_client_name(r.name)
@@ -245,12 +250,13 @@ def plan_sync(*, page_size: int = PAGE_SIZE,
                     else len(remote_all))
 
     return {
-        "total_remote":   total_remote,
-        "insert":         insert,
-        "update_fill":    update_fill,
-        "update_match":   update_match,
-        "conflict":       conflict,
-        "skip_count":     skip_count,
+        "total_remote":     total_remote,
+        "insert":           insert,
+        "update_fill":      update_fill,
+        "update_match":     update_match,
+        "conflict":         conflict,
+        "skip_count":       skip_count,
+        "skipped_invalid":  skipped_invalid,
     }
 
 

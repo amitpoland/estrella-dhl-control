@@ -360,3 +360,85 @@ def test_route_fetch_failure_returns_502(client, storage, monkeypatch):
     monkeypatch.setattr(wc, "list_contractors_page", raiser)
     r = client.get("/api/v1/wfirma/customers/sync-preview", headers=_auth())
     assert r.status_code == 502
+
+
+# ── Parser hardening: nested / shadow contractor nodes ──────────────────────
+
+_REAL_NESTED_FIXTURE = """<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <contractors>
+    <contractor>
+      <id>1001</id><name>ACME Corp</name>
+      <country>PL</country><nip>1111111111</nip>
+      <addresses>
+        <!-- wFirma sometimes nests address records as inner <contractor>
+             elements. Our parser must NOT treat these as separate rows. -->
+        <contractor><id>0</id><name></name></contractor>
+        <contractor><id>1001</id><name></name></contractor>
+      </addresses>
+    </contractor>
+    <contractor>
+      <id>1002</id><name>BAR Sp. z o.o.</name>
+      <country>PL</country><nip>2222222222</nip>
+    </contractor>
+    <!-- Top-level shadow with no name and id=0: must also be skipped. -->
+    <contractor><id>0</id><name></name></contractor>
+    <!-- Top-level row missing the id node: must be skipped. -->
+    <contractor><name>NO-ID Corp</name><country>PL</country></contractor>
+  </contractors>
+  <status><code>OK</code></status>
+</api>"""
+
+
+def test_list_contractors_page_skips_nested_and_shadow_nodes(monkeypatch):
+    """Only top-level <contractor> rows with id and name pass through."""
+    def fake_http(method, module, action, body, id_suffix=None):
+        return 200, _REAL_NESTED_FIXTURE
+    monkeypatch.setattr(wc, "_http_request", fake_http)
+    rows = wc.list_contractors_page(start=0, limit=50)
+    ids = [r.wfirma_id for r in rows]
+    names = [r.name for r in rows]
+    assert ids   == ["1001", "1002"]
+    assert names == ["ACME Corp", "BAR Sp. z o.o."]
+
+
+def test_list_contractors_page_skips_id_zero(monkeypatch):
+    only_zero = """<?xml version="1.0" encoding="UTF-8"?>
+<api><contractors>
+  <contractor><id>0</id><name>Bad</name></contractor>
+</contractors><status><code>OK</code></status></api>"""
+    monkeypatch.setattr(wc, "_http_request",
+                        lambda *a, **k: (200, only_zero))
+    assert wc.list_contractors_page(start=0, limit=10) == []
+
+
+def test_list_contractors_page_skips_blank_name(monkeypatch):
+    blank_name = """<?xml version="1.0" encoding="UTF-8"?>
+<api><contractors>
+  <contractor><id>9999</id><name></name></contractor>
+</contractors><status><code>OK</code></status></api>"""
+    monkeypatch.setattr(wc, "_http_request",
+                        lambda *a, **k: (200, blank_name))
+    assert wc.list_contractors_page(start=0, limit=10) == []
+
+
+def test_plan_sync_belt_and_braces_skips_invalid(storage, monkeypatch):
+    """
+    Even if list_contractors_page regressed and let bad rows through,
+    plan_sync must not classify them as inserts.
+    """
+    def fake_page(start, limit):
+        bads = [
+            wc.WFirmaContractor(wfirma_id="",   name="ghost",   country="PL"),
+            wc.WFirmaContractor(wfirma_id="0",  name="zero",    country="PL"),
+            wc.WFirmaContractor(wfirma_id="42", name="",        country="PL"),
+        ]
+        good = [_wf("W1", "Real Co")]
+        return (bads + good)[start:start + limit]
+    monkeypatch.setattr(wc, "list_contractors_page", fake_page)
+
+    plan = wfsync.plan_sync(page_size=50)
+    assert plan["total_remote"]    == 1
+    assert plan["skipped_invalid"] == 3
+    assert len(plan["insert"]) == 1
+    assert plan["insert"][0]["client_name"] == "Real Co"
