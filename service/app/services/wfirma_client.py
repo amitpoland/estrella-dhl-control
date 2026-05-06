@@ -542,20 +542,66 @@ def create_product(
     netto: float = 0.0,
     vat_code_id: Optional[str] = None,
     warehouse_type: str = "simple",
+    description: str = "",
 ) -> WFirmaProduct:
     """
     Create a new good in wFirma.
 
     Returns the created WFirmaProduct with the assigned wFirma ID.
-    Raises NotImplementedError — live calls not yet enabled.
+    Raises RuntimeError when wFirma rejects the create (non-OK status,
+    HTTP error, etc.).
+    Raises ConnectionError on network failure.
 
     API: POST goods/add
     Auth: API Key headers
     Payload: XML with <name>, <code>, <unit>, <netto>, <type>good</type>,
-             <vat_code><id>...</id></vat_code>, <warehouse_type>
+             <vat_code><id>...</id></vat_code>, <warehouse_type>, <description>
     """
-    raise NotImplementedError(
-        "create_product: live wFirma API calls not yet enabled."
+    if not product_code:
+        raise ValueError("product_code is required")
+    if not name:
+        raise ValueError("name is required")
+
+    vat_xml = (
+        f"<vat_code><id>{_esc(vat_code_id)}</id></vat_code>"
+        if vat_code_id else ""
+    )
+    desc_xml = (
+        f"<description>{_esc(description)}</description>"
+        if description else ""
+    )
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <goods>
+    <good>
+      <name>{_esc(name)}</name>
+      <code>{_esc(product_code)}</code>
+      <unit>{_esc(unit)}</unit>
+      <netto>{netto:.2f}</netto>
+      <type>good</type>
+      <warehouse_type>{_esc(warehouse_type)}</warehouse_type>
+      {vat_xml}
+      {desc_xml}
+    </good>
+  </goods>
+</api>"""
+    http_status, response_text = _http_request("POST", "goods", "add", body)
+    if http_status >= 400:
+        raise RuntimeError(f"goods/add HTTP {http_status}: {response_text[:200]}")
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"goods/add wFirma status={code}: {desc}")
+    root = ET.fromstring(response_text)
+    node = root.find(".//good")
+    if node is None:
+        raise RuntimeError("goods/add: no <good> in response")
+    return WFirmaProduct(
+        wfirma_id = _find_text(node, "id"),
+        name      = _find_text(node, "name") or name,
+        code      = _find_text(node, "code") or product_code,
+        unit      = _find_text(node, "unit") or unit,
+        count     = 0.0,
+        reserved  = 0.0,
     )
 
 

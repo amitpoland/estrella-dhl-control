@@ -721,3 +721,180 @@ def test_goods_bulk_search_never_calls_create_product(client, db):
             headers=_auth(),
         )
     assert r.status_code == 200
+
+
+# ── create-from-product-code endpoint ──────────────────────────────────────
+
+CREATE_URL = "/api/v1/wfirma/goods/create-from-product-code/"
+
+
+def _gate_create_on():
+    return patch.object(settings, "wfirma_create_product_allowed", True)
+
+
+def _gate_create_off():
+    return patch.object(settings, "wfirma_create_product_allowed", False)
+
+
+def test_create_from_code_existing_maps_without_create(client, db):
+    """Existing product in wFirma → status=existing_mapped, create not called."""
+    found = _wc.WFirmaProduct(wfirma_id="G-EXIST", name="Pierścionek złoty",
+                              code="EJL/26-27/100-1", unit="szt.",
+                              count=5.0, reserved=0.0)
+    with (
+        _gate_create_on(),
+        patch.object(_wc, "get_product_by_code", return_value=found) as mock_search,
+        patch.object(_wc, "create_product",
+                     side_effect=AssertionError("must not be called when existing found")),
+    ):
+        r = client.post(
+            CREATE_URL + "EJL/26-27/100-1",
+            json={"item_type": "RING", "description_en": "Gold Ring"},
+            headers=_auth(),
+        )
+    body = r.json()
+    assert body["ok"] is True
+    assert body["status"] == "existing_mapped"
+    assert body["wfirma_product_id"] == "G-EXIST"
+    mock_search.assert_called_once_with("EJL/26-27/100-1")
+    # Local mapping persisted
+    saved = wfdb.get_product("EJL/26-27/100-1")
+    assert saved is not None
+    assert saved["wfirma_product_id"] == "G-EXIST"
+    assert saved["sync_status"]       == "matched"
+
+
+def test_create_from_code_missing_blocked_when_flag_off(client, db):
+    """Missing in wFirma + flag false → status=blocked, no create call."""
+    with (
+        _gate_create_off(),
+        patch.object(_wc, "get_product_by_code", return_value=None),
+        patch.object(_wc, "create_product",
+                     side_effect=AssertionError("must not be called when blocked")),
+    ):
+        r = client.post(
+            CREATE_URL + "EJL/26-27/100-2",
+            json={"item_type": "RING", "description_en": "Ring"},
+            headers=_auth(),
+        )
+    body = r.json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("WFIRMA_CREATE_PRODUCT_ALLOWED" in br
+               for br in body["blocking_reasons"])
+    # No local mapping persisted
+    assert wfdb.get_product("EJL/26-27/100-2") is None
+
+
+def test_create_from_code_missing_creates_when_flag_on(client, db):
+    """Missing + flag true → calls create_product once → status=created."""
+    created = _wc.WFirmaProduct(wfirma_id="G-NEW-1", name="Pierścionek",
+                                code="EJL/26-27/100-3", unit="szt.",
+                                count=0.0, reserved=0.0)
+    with (
+        _gate_create_on(),
+        patch.object(_wc, "get_product_by_code", return_value=None) as mock_search,
+        patch.object(_wc, "find_vat_code_id", return_value="VAT23"),
+        patch.object(_wc, "create_product", return_value=created) as mock_create,
+    ):
+        r = client.post(
+            CREATE_URL + "EJL/26-27/100-3",
+            json={"item_type": "RING",
+                  "description_en": "Diamond Ring"},
+            headers=_auth(),
+        )
+    body = r.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["wfirma_product_id"] == "G-NEW-1"
+
+    # Search must have happened before create
+    mock_search.assert_called_once_with("EJL/26-27/100-3")
+    mock_create.assert_called_once()
+
+    # Caller-uncontrollable fields must be the locked defaults
+    call = mock_create.call_args
+    assert call.kwargs["unit"]        == "szt."
+    assert call.kwargs["vat_code_id"] == "VAT23"
+    # description must be the locked block content from description_engine
+    assert "Co to za towar / What is this" in call.kwargs["description"]
+    # Polish-first / English-after-slash composed line in description body
+    assert "Diamond Ring" in call.kwargs["description"]
+
+    saved = wfdb.get_product("EJL/26-27/100-3")
+    assert saved["wfirma_product_id"] == "G-NEW-1"
+    assert saved["sync_status"]       == "matched"
+
+
+def test_create_from_code_search_called_before_create(client, db):
+    """Verify ordering: search runs before any create attempt."""
+    call_order = []
+    def search_side(pc):
+        call_order.append("search")
+        return None
+    def create_side(**kwargs):
+        call_order.append("create")
+        return _wc.WFirmaProduct(wfirma_id="G-X", name="x", code=kwargs["product_code"],
+                                  unit="szt.", count=0, reserved=0)
+    with (
+        _gate_create_on(),
+        patch.object(_wc, "get_product_by_code", side_effect=search_side),
+        patch.object(_wc, "find_vat_code_id", return_value="VAT23"),
+        patch.object(_wc, "create_product", side_effect=create_side),
+    ):
+        client.post(CREATE_URL + "EJL/26-27/100-4",
+                    json={"item_type": "RING", "description_en": "x"},
+                    headers=_auth())
+    assert call_order == ["search", "create"]
+
+
+def test_create_from_code_create_failure_no_fake_mapping(client, db):
+    """create_product raises → status=failed; no local mapping written."""
+    with (
+        _gate_create_on(),
+        patch.object(_wc, "get_product_by_code", return_value=None),
+        patch.object(_wc, "find_vat_code_id", return_value="VAT23"),
+        patch.object(_wc, "create_product",
+                     side_effect=RuntimeError("wFirma 503")),
+    ):
+        r = client.post(CREATE_URL + "EJL/26-27/100-5",
+                        json={"item_type": "RING", "description_en": "x"},
+                        headers=_auth())
+    body = r.json()
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert "RuntimeError" in body["error"]
+    assert wfdb.get_product("EJL/26-27/100-5") is None
+
+
+def test_create_from_code_empty_wfirma_id_no_fake_mapping(client, db):
+    """create returns blank wfirma_id → refuse to save fake mapping."""
+    no_id = _wc.WFirmaProduct(wfirma_id="", name="x", code="EJL/26-27/100-6",
+                              unit="szt.", count=0, reserved=0)
+    with (
+        _gate_create_on(),
+        patch.object(_wc, "get_product_by_code", return_value=None),
+        patch.object(_wc, "find_vat_code_id", return_value="VAT23"),
+        patch.object(_wc, "create_product", return_value=no_id),
+    ):
+        r = client.post(CREATE_URL + "EJL/26-27/100-6",
+                        json={"item_type": "RING", "description_en": "x"},
+                        headers=_auth())
+    body = r.json()
+    assert body["status"] == "failed"
+    assert wfdb.get_product("EJL/26-27/100-6") is None
+
+
+def test_create_from_code_search_error_returns_502(client, db):
+    """Search upstream error → 502, no create call."""
+    with (
+        _gate_create_on(),
+        patch.object(_wc, "get_product_by_code",
+                     side_effect=ConnectionError("DNS")),
+        patch.object(_wc, "create_product",
+                     side_effect=AssertionError("must not be called")),
+    ):
+        r = client.post(CREATE_URL + "EJL/26-27/100-7",
+                        json={"item_type": "RING", "description_en": "x"},
+                        headers=_auth())
+    assert r.status_code == 502

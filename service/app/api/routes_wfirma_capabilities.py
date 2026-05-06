@@ -27,10 +27,15 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Any, List, Optional
 
+from ..core.config import settings
+from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..services import description_engine as deng
 from ..services import wfirma_capabilities as wfc
 from ..services import wfirma_client
 from ..services import wfirma_db as wfdb
+
+log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/wfirma", tags=["wfirma"])
 _auth  = Depends(require_api_key)
@@ -261,4 +266,130 @@ def search_goods_bulk(req: BulkGoodsSearchRequest) -> JSONResponse:
         "missing_count": missing_count,
         "error_count":   error_count,
         "results":       results,
+    })
+
+
+# ── Operator-approved product create (search-first, locked block) ──────────
+
+class CreateFromCodeRequest(BaseModel):
+    item_type:      str
+    description_en: str = ""
+
+
+@router.post("/goods/create-from-product-code/{product_code:path}",
+             dependencies=[_auth])
+def create_good_from_product_code(
+    product_code: str,
+    req:          CreateFromCodeRequest,
+) -> JSONResponse:
+    """
+    Operator-approved product create.
+
+    Always search wFirma first. If found, persist the local mapping and
+    return existing_mapped. If missing AND wfirma_create_product_allowed
+    is true, build the payload from the locked description_block and call
+    goods/add. Caller cannot override unit / vat_rate / type / code.
+
+    Status values:
+      existing_mapped — product already in wFirma; local mapping saved
+      blocked         — missing in wFirma AND create flag is off
+      created         — created via goods/add; local mapping + description saved
+      failed          — goods/add returned an error; no local mapping written
+    """
+    if not (product_code or "").strip():
+        raise HTTPException(status_code=400, detail="product_code is required")
+    pc = product_code.strip()
+
+    # ── 1. Search wFirma first (read-only) ─────────────────────────────────
+    try:
+        existing = wfirma_client.get_product_by_code(pc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "search_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    if existing is not None:
+        # Persist mapping locally; do NOT call create_product.
+        wfdb.upsert_product(
+            product_code      = pc,
+            wfirma_product_id = existing.wfirma_id,
+            product_name_pl   = existing.name or "",
+            unit              = existing.unit or "szt.",
+            vat_rate          = "23",
+            sync_status       = "matched",
+        )
+        return JSONResponse({
+            "ok":                True,
+            "status":            "existing_mapped",
+            "product_code":      pc,
+            "wfirma_product_id": existing.wfirma_id,
+            "name":              existing.name,
+            "unit":              existing.unit,
+        })
+
+    # ── 2. Missing — gate on settings flag ─────────────────────────────────
+    if not settings.wfirma_create_product_allowed:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "product_code":     pc,
+            "blocking_reasons": [
+                "wfirma_create_product_allowed is false — "
+                "operator must enable WFIRMA_CREATE_PRODUCT_ALLOWED to create",
+            ],
+        })
+
+    # ── 3. Create via goods/add using the locked description_block ─────────
+    block = deng.get_description_block(
+        product_code   = pc,
+        item_type      = req.item_type,
+        description_en = req.description_en,
+    )
+
+    try:
+        result = wfirma_client.create_product(
+            product_code = pc,
+            name         = block.get("description_line") or block.get("name_pl") or pc,
+            unit         = "szt.",
+            netto        = 0.0,
+            vat_code_id  = wfirma_client.find_vat_code_id(23),
+            description  = block.get("description_block") or "",
+        )
+    except Exception as exc:
+        log.warning("[%s] goods/add failed: %s", pc, exc)
+        return JSONResponse({
+            "ok":          False,
+            "status":      "failed",
+            "product_code": pc,
+            "error":       f"{type(exc).__name__}: {exc}",
+        })
+
+    # ── 4. Persist mapping locally only on confirmed success ───────────────
+    if not result.wfirma_id:
+        return JSONResponse({
+            "ok":           False,
+            "status":       "failed",
+            "product_code": pc,
+            "error":        "goods/add returned no wfirma_id — refusing fake mapping",
+        })
+
+    wfdb.upsert_product(
+        product_code      = pc,
+        wfirma_product_id = result.wfirma_id,
+        product_name_pl   = block.get("name_pl") or "",
+        unit              = "szt.",
+        vat_rate          = "23",
+        sync_status       = "matched",
+    )
+
+    return JSONResponse({
+        "ok":                True,
+        "status":            "created",
+        "product_code":      pc,
+        "wfirma_product_id": result.wfirma_id,
+        "name":              result.name,
+        "unit":              result.unit,
+        "description_used":  block.get("description_line"),
     })
