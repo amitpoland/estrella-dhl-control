@@ -132,8 +132,11 @@ def test_already_adopted_same_id_returns_idempotent():
 def test_different_existing_pz_blocks_adopt():
     """
     Audit already contains a DIFFERENT wfirma_pz_doc_id.
-    Expect: status=blocked, blocking_reasons mentions the conflict.
+    Idempotency hardening: now raises HTTPException(409, code=PZ_ALREADY_LINKED)
+    so the wFirma audit can never be silently overwritten.
     """
+    from fastapi import HTTPException
+
     with (
         patch("app.api.routes_wfirma.get_output_dir"),
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT_WITH_DIFFERENT),
@@ -142,12 +145,12 @@ def test_different_existing_pz_blocks_adopt():
         patch("app.api.routes_wfirma._find_pz_owner_batch", return_value=None),
         patch("app.api.routes_wfirma._patch_pz_adopted") as mock_patch,
     ):
-        result = _run()
-        body = json.loads(result.body)
-
-    assert body["status"] == "blocked", body
-    reasons = body.get("blocking_reasons", [])
-    assert any("already has" in r for r in reasons), reasons
+        with pytest.raises(HTTPException) as exc:
+            _run()
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] in ("PZ_ALREADY_LINKED",
+                                         "PZ_ALREADY_CREATED",
+                                         "PZ_ALREADY_ADOPTED")
     mock_patch.assert_not_called()
 
 

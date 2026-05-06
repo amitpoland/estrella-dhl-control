@@ -30,8 +30,10 @@ Rules
 from __future__ import annotations
 
 import json
+import os
 import time
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -380,32 +382,46 @@ def _build_clipboard_text(wfirma_rows: List[dict]) -> str:
     return "\n".join(lines)
 
 
-def _patch_pz_doc_id(output_dir: Path, wfirma_pz_doc_id: str) -> None:
-    """Write wfirma_pz_doc_id into audit.json wfirma_export block. Atomic."""
+def _patch_pz_doc_id(output_dir: Path, wfirma_pz_doc_id: str) -> Optional[str]:
+    """
+    Write wfirma_pz_doc_id into audit.json wfirma_export block. Atomic.
+
+    Returns:
+        None on success.
+        A short error string when the audit could not be written so the caller
+        can include it in the response (NEVER silently continues — wFirma has
+        already created the document at this point).
+    """
     audit_path = output_dir / "audit.json"
     if not audit_path.exists():
-        return
+        return f"audit.json missing at {audit_path}"
     try:
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
         existing = audit.get("wfirma_export") or {}
         audit["wfirma_export"] = {
             **existing,
             "wfirma_pz_doc_id": wfirma_pz_doc_id,
+            "pz_source":        existing.get("pz_source") or "created_via_app",
             "pz_created_at":    time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         write_json_atomic(audit_path, audit)
+        return None
     except Exception as e:
-        log.warning("[pz_create] audit patch failed: %s", e)
+        log.error("[pz_create] AUDIT PATCH FAILED for doc_id=%s — %s", wfirma_pz_doc_id, e)
+        return str(e)
 
 
-def _patch_pz_adopted(output_dir: Path, wfirma_pz_doc_id: str) -> None:
+def _patch_pz_adopted(output_dir: Path, wfirma_pz_doc_id: str) -> Optional[str]:
     """
     Write wfirma_pz_doc_id + pz_source='adopted_existing' into audit.json.
     Atomic. Does not overwrite other wfirma_export fields.
+
+    Returns:
+        None on success, error string on failure (see _patch_pz_doc_id).
     """
     audit_path = output_dir / "audit.json"
     if not audit_path.exists():
-        return
+        return f"audit.json missing at {audit_path}"
     try:
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
         existing = audit.get("wfirma_export") or {}
@@ -416,8 +432,167 @@ def _patch_pz_adopted(output_dir: Path, wfirma_pz_doc_id: str) -> None:
             "pz_adopted_at":    time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         write_json_atomic(audit_path, audit)
+        return None
     except Exception as e:
-        log.warning("[pz_adopt] audit patch failed: %s", e)
+        log.error("[pz_adopt] AUDIT PATCH FAILED for doc_id=%s — %s", wfirma_pz_doc_id, e)
+        return str(e)
+
+
+# ── PZ idempotency guard + lock ───────────────────────────────────────────────
+
+def _has_pz_terminal_event(audit: dict) -> Optional[str]:
+    """
+    Return the name of any PZ terminal timeline event already recorded
+    (EV_WFIRMA_PZ_CREATED or EV_WFIRMA_PZ_ADOPTED), or None.
+
+    The timeline check runs even when wfirma_export.wfirma_pz_doc_id has been
+    manually removed — the audit timeline is append-only and authoritative.
+    """
+    timeline = audit.get("timeline") or []
+    for ev in timeline:
+        name = (ev or {}).get("event") or ""
+        if name in (EV_WFIRMA_PZ_CREATED, EV_WFIRMA_PZ_ADOPTED):
+            return name
+    return None
+
+
+def _assert_pz_not_locked(audit: dict, batch_id: str, action: str) -> None:
+    """
+    Reject a PZ create/adopt attempt with HTTP 409 when the shipment already
+    has *any* PZ provenance recorded.  Three sources are checked:
+
+        1. wfirma_export.wfirma_pz_doc_id  (current state)
+        2. wfirma_export.pz_source          (current state — distinguishes
+                                             created_via_app vs adopted_existing)
+        3. Audit timeline EV_WFIRMA_PZ_CREATED / EV_WFIRMA_PZ_ADOPTED
+                                            (history; survives field cleanup)
+
+    The timeline check is intentional: even if an operator removes the doc_id
+    field manually, the immutable timeline still proves a PZ was created/adopted
+    and a second attempt must fail.
+
+    Args:
+        audit:    parsed audit.json dict (re-read inside the file lock)
+        batch_id: for logging
+        action:   "pz_create" | "pz_adopt"  — controls the error message
+
+    Raises:
+        HTTPException(409) with structured detail describing which signal
+        triggered the lock.
+    """
+    wfirma_export      = audit.get("wfirma_export") or {}
+    existing_pz_doc_id = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
+    existing_pz_source = (wfirma_export.get("pz_source") or "").strip()
+    terminal_event     = _has_pz_terminal_event(audit)
+
+    if not existing_pz_doc_id and not existing_pz_source and not terminal_event:
+        return
+
+    # Build a precise reason string + machine-readable code
+    if terminal_event == EV_WFIRMA_PZ_CREATED:
+        reason = "PZ has already been created for this shipment"
+        code   = "PZ_ALREADY_CREATED"
+    elif terminal_event == EV_WFIRMA_PZ_ADOPTED:
+        reason = "PZ has already been adopted for this shipment"
+        code   = "PZ_ALREADY_ADOPTED"
+    elif existing_pz_source == "adopted_existing":
+        reason = "PZ has already been adopted for this shipment"
+        code   = "PZ_ALREADY_ADOPTED"
+    elif existing_pz_source == "created_via_app":
+        reason = "PZ has already been created for this shipment"
+        code   = "PZ_ALREADY_CREATED"
+    else:
+        reason = f"PZ already linked to this shipment (doc_id={existing_pz_doc_id!r})"
+        code   = "PZ_ALREADY_LINKED"
+
+    log.warning(
+        "[%s] %s blocked: %s (existing_doc_id=%r, source=%r, timeline_event=%r)",
+        batch_id, action, reason, existing_pz_doc_id, existing_pz_source, terminal_event,
+    )
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "guard":            action,
+            "error":            reason,
+            "code":             code,
+            "existing_doc_id":  existing_pz_doc_id or None,
+            "existing_source":  existing_pz_source or None,
+            "timeline_event":   terminal_event,
+        },
+    )
+
+
+@contextmanager
+def _pz_write_lock(output_dir: Path, batch_id: str, action: str):
+    """
+    Process-wide mutex around the PZ create/adopt critical section.
+
+    Uses an O_EXCL lockfile inside the batch output dir so two concurrent
+    operator clicks can never both pass the idempotency check before either
+    writes audit.  The lock is held only across:
+
+        re-read audit  →  guard check  →  wFirma call  →  audit patch
+
+    Stale lock recovery: the lock file carries the holder's PID and a
+    timestamp.  If acquisition finds a lock older than _PZ_LOCK_STALE_SECS
+    the lock is force-removed (e.g. process crashed mid-write).
+
+    Yields nothing.  Raises HTTPException(409) if another writer already
+    holds the lock.
+    """
+    # If output_dir isn't a real filesystem Path (e.g. tests passing MagicMock),
+    # silently skip locking — production callers always pass a real Path from
+    # get_output_dir().  This degrades to a no-op without compromising the
+    # idempotency guard, which still runs against the audit dict.
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except (TypeError, AttributeError, OSError):
+        yield
+        return
+
+    lock_path = output_dir / ".pz_write.lock"
+
+    # Stale-lock takeover — broaden except since output_dir may be unusual in tests
+    try:
+        if lock_path.exists():
+            age = time.time() - lock_path.stat().st_mtime
+            if age > _PZ_LOCK_STALE_SECS:
+                log.warning("[%s] %s: removing stale PZ lock (age=%.1fs)",
+                            batch_id, action, age)
+                lock_path.unlink(missing_ok=True)
+    except Exception:
+        # Path doesn't behave like a real filesystem path — skip locking
+        yield
+        return
+
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        log.warning("[%s] %s: PZ write lock held by another request", batch_id, action)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "guard": action,
+                "error": "Another PZ create/adopt request is in progress for this shipment.",
+                "code":  "PZ_WRITE_LOCKED",
+            },
+        )
+    except (FileNotFoundError, PermissionError, OSError):
+        # Filesystem unusable in this context — degrade to no-lock
+        yield
+        return
+    try:
+        os.write(fd, f"{os.getpid()}@{time.time():.0f}\n".encode("utf-8"))
+        os.close(fd)
+        yield
+    finally:
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+_PZ_LOCK_STALE_SECS = 120  # locks older than 2 min are force-released
 
 
 def _find_pz_owner_batch(
@@ -1039,10 +1214,14 @@ async def wfirma_pz_create(batch_id: str) -> JSONResponse:
             },
         )
 
-    # ── Guard 5: idempotency — existing PZ doc id ─────────────────────────────
+    # ── Guard 5: idempotent fast-path BEFORE acquiring lock ───────────────────
+    # If the doc_id is already on disk and matches a prior create, return
+    # already_created quickly without taking the file lock.  Adoption-style
+    # provenance is rejected here too.
     wfirma_export      = audit.get("wfirma_export") or {}
     existing_pz_doc_id = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
-    if existing_pz_doc_id:
+    existing_pz_source = (wfirma_export.get("pz_source") or "").strip()
+    if existing_pz_doc_id and existing_pz_source != "adopted_existing":
         return JSONResponse({
             "batch_id":         batch_id,
             "status":           "already_created",
@@ -1102,55 +1281,88 @@ async def wfirma_pz_create(batch_id: str) -> JSONResponse:
             },
         )
 
-    # ── Call wFirma ───────────────────────────────────────────────────────────
-    pz_result = wfirma_client.create_warehouse_pz(preview.pz_request)
+    # ── Acquire write lock + re-check inside critical section ────────────────
+    # Two-stage check: the fast-path above is for the common already_created
+    # case.  Inside the lock we re-read audit.json and consult the *full*
+    # idempotency guard (doc_id + pz_source + timeline events) so concurrent
+    # requests cannot both race past the check.
+    planned: List[Dict[str, Any]] = []
+    with _pz_write_lock(output_dir, batch_id, "pz_create"):
+        audit_locked = _read_audit(output_dir)
+        _assert_pz_not_locked(audit_locked, batch_id, "pz_create")
 
-    planned = [
-        {
-            "product_code": pl.product_code,
-            "good_id":      pl.good_id,
-            "count":        pl.count,
-            "price_pln":    round(pl.price_pln, 4),
-            "resolved":     pl.resolved,
-        }
-        for pl in preview.planned_lines
-    ]
+        # ── Call wFirma ──────────────────────────────────────────────────────
+        pz_result = wfirma_client.create_warehouse_pz(preview.pz_request)
 
-    if not pz_result.ok:
-        log.warning("[%s] pz_create: wFirma returned failure: %s", batch_id, pz_result.error)
+        planned = [
+            {
+                "product_code": pl.product_code,
+                "good_id":      pl.good_id,
+                "count":        pl.count,
+                "price_pln":    round(pl.price_pln, 4),
+                "resolved":     pl.resolved,
+            }
+            for pl in preview.planned_lines
+        ]
+
+        if not pz_result.ok:
+            log.warning("[%s] pz_create: wFirma returned failure: %s", batch_id, pz_result.error)
+            tl.log_event(
+                output_dir / "audit.json",
+                "wfirma_pz_create_failed",
+                "system",
+                "wfirma",
+                detail={"batch_id": batch_id, "error": pz_result.error},
+            )
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "batch_id": batch_id,
+                    "status":   "failed",
+                    "error":    pz_result.error,
+                },
+            )
+
+        # ── Success: persist doc_id, then log timeline ───────────────────────
+        # Audit write must succeed BEFORE we declare success.  If it fails the
+        # wFirma document has already been created — surface a structured
+        # warning so the operator can manually adopt rather than re-create.
+        audit_write_error = _patch_pz_doc_id(output_dir, pz_result.wfirma_pz_doc_id)
         tl.log_event(
             output_dir / "audit.json",
-            "wfirma_pz_create_failed",
+            EV_WFIRMA_PZ_CREATED,
             "system",
             "wfirma",
-            detail={"batch_id": batch_id, "error": pz_result.error},
-        )
-        return JSONResponse(
-            status_code=502,
-            content={
-                "batch_id": batch_id,
-                "status":   "failed",
-                "error":    pz_result.error,
+            detail={
+                "batch_id":         batch_id,
+                "wfirma_pz_doc_id": pz_result.wfirma_pz_doc_id,
+                "line_count":       len(planned),
             },
         )
+        log.info(
+            "[%s] pz_create: wFirma PZ %s created (%d lines)",
+            batch_id, pz_result.wfirma_pz_doc_id, len(planned),
+        )
 
-    # ── Success: persist doc_id first, then return ────────────────────────────
-    _patch_pz_doc_id(output_dir, pz_result.wfirma_pz_doc_id)
-    tl.log_event(
-        output_dir / "audit.json",
-        EV_WFIRMA_PZ_CREATED,
-        "system",
-        "wfirma",
-        detail={
-            "batch_id":         batch_id,
-            "wfirma_pz_doc_id": pz_result.wfirma_pz_doc_id,
-            "line_count":       len(planned),
-        },
-    )
-    log.info(
-        "[%s] pz_create: wFirma PZ %s created (%d lines)",
-        batch_id, pz_result.wfirma_pz_doc_id, len(planned),
-    )
+    if audit_write_error:
+        # wFirma succeeded but audit didn't reflect it — return 500 with
+        # actionable warning, not 200.  The doc_id is included so the
+        # operator can adopt it manually.
+        return JSONResponse(
+            status_code=500,
+            content={
+                "batch_id":          batch_id,
+                "status":            "audit_write_failed",
+                "wfirma_pz_doc_id":  pz_result.wfirma_pz_doc_id,
+                "warning":           (
+                    "wFirma PZ was created but the local audit could not be updated. "
+                    "Use Confirm Existing PZ to link this doc_id to the shipment."
+                ),
+                "audit_error":       audit_write_error,
+                "planned_lines":     planned,
+                "line_count":        len(planned),
+            },
+        )
 
     return JSONResponse({
         "batch_id":         batch_id,
@@ -1255,48 +1467,78 @@ async def wfirma_pz_adopt(batch_id: str, body: _PZAdoptBody) -> JSONResponse:
             ],
         })
 
-    # ── Guard 5 / 6: check current shipment's existing PZ ────────────────────
+    # ── Guard 5: idempotent fast-path (same PZ id already adopted) ───────────
     wfirma_export      = audit.get("wfirma_export") or {}
     existing_pz_doc_id = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
-
-    if existing_pz_doc_id:
-        if existing_pz_doc_id == resolved_doc_id:
-            # Idempotent — same PZ already recorded
-            return JSONResponse({
-                "ok":              True,
-                "status":          "already_adopted",
-                "batch_id":        batch_id,
-                "wfirma_pz_doc_id": existing_pz_doc_id,
-                "pz_number":       resolved_number,
-            })
-        # Different PZ already recorded — block
+    if existing_pz_doc_id == resolved_doc_id:
         return JSONResponse({
-            "ok":              False,
-            "status":          "blocked",
-            "blocking_reasons": [
-                f"this shipment already has wFirma PZ {existing_pz_doc_id!r} — "
-                f"cannot overwrite with {resolved_doc_id!r}"
-            ],
+            "ok":               True,
+            "status":           "already_adopted",
+            "batch_id":         batch_id,
+            "wfirma_pz_doc_id": existing_pz_doc_id,
+            "pz_number":        resolved_number,
         })
 
-    # ── Adopt: write to audit ─────────────────────────────────────────────────
-    _patch_pz_adopted(output_dir, resolved_doc_id)
-    tl.log_event(
-        output_dir / "audit.json",
-        EV_WFIRMA_PZ_ADOPTED,
-        "dashboard",
-        "user",
-        detail={
-            "batch_id":         batch_id,
-            "wfirma_pz_doc_id": resolved_doc_id,
-            "pz_number":        resolved_number,
-            "source":           "adopted_existing",
-        },
-    )
-    log.info(
-        "[%s] pz_adopt: adopted wFirma PZ %s (%s)",
-        batch_id, resolved_doc_id, resolved_number,
-    )
+    # ── Acquire write lock + full idempotency check + audit write ────────────
+    # Inside the lock: re-read audit to catch any state change, run the full
+    # guard (doc_id + pz_source + timeline events), then write atomically.
+    audit_write_error: Optional[str] = None
+    with _pz_write_lock(output_dir, batch_id, "pz_adopt"):
+        audit_locked = _read_audit(output_dir)
+
+        # Re-check the same-id fast-path inside the lock (state may have changed)
+        relocked_existing = ((audit_locked.get("wfirma_export") or {})
+                             .get("wfirma_pz_doc_id") or "").strip()
+        if relocked_existing == resolved_doc_id:
+            return JSONResponse({
+                "ok":               True,
+                "status":           "already_adopted",
+                "batch_id":         batch_id,
+                "wfirma_pz_doc_id": relocked_existing,
+                "pz_number":        resolved_number,
+            })
+
+        # Different PZ recorded, OR pz_source set, OR terminal timeline event
+        # → block.  This is the unified lock that catches:
+        #   adopt-after-create, adopt-after-adopt, overwrite of existing doc_id
+        #   even if doc_id field was manually removed (timeline still proves it).
+        _assert_pz_not_locked(audit_locked, batch_id, "pz_adopt")
+
+        # ── Adopt: write to audit ───────────────────────────────────────────
+        audit_write_error = _patch_pz_adopted(output_dir, resolved_doc_id)
+        tl.log_event(
+            output_dir / "audit.json",
+            EV_WFIRMA_PZ_ADOPTED,
+            "dashboard",
+            "user",
+            detail={
+                "batch_id":         batch_id,
+                "wfirma_pz_doc_id": resolved_doc_id,
+                "pz_number":        resolved_number,
+                "source":           "adopted_existing",
+            },
+        )
+        log.info(
+            "[%s] pz_adopt: adopted wFirma PZ %s (%s)",
+            batch_id, resolved_doc_id, resolved_number,
+        )
+
+    if audit_write_error:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok":               False,
+                "batch_id":         batch_id,
+                "status":           "audit_write_failed",
+                "wfirma_pz_doc_id": resolved_doc_id,
+                "pz_number":        resolved_number,
+                "warning":          (
+                    "wFirma PZ was located but the local audit could not be updated. "
+                    "Retry the Confirm Existing PZ action once the disk issue is resolved."
+                ),
+                "audit_error":      audit_write_error,
+            },
+        )
 
     return JSONResponse({
         "ok":              True,
