@@ -1652,6 +1652,7 @@ function BrokerReplyAnalyzerPanel() {
             small
             variant="primary"
             disabled={busy || !text.trim()}
+            title={busy ? 'Analyzing reply…' : !text.trim() ? 'Paste broker reply text above first' : 'Analyze the pasted broker reply'}
             style={{ opacity: (busy || !text.trim()) ? 0.45 : 1, cursor: (busy || !text.trim()) ? 'not-allowed' : 'pointer' }}
             onClick={analyze}
           >
@@ -1662,6 +1663,7 @@ function BrokerReplyAnalyzerPanel() {
             small
             variant="outline"
             disabled={busy || (!text && !result && !error)}
+            title={busy ? 'Analyze in progress — wait to clear' : (!text && !result && !error) ? 'Nothing to clear' : 'Clear the reply text and result'}
             onClick={clear}
           >
             Clear
@@ -2231,7 +2233,17 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
       const td = await apiFetch(url, { method });
       setTrackingData(td);
     } catch (e) {
-      setTrackingData({ available: false, source: 'error', error: e.message, tracking_url: '' });
+      // Normalize network-level failures into the same envelope shape used by the backend.
+      const _msg = String(e && e.message || e || 'Network error');
+      const _src = e && e.type === 'auth' ? 'unauthorized' : 'network_error';
+      setTrackingData({
+        available: false, ok: false, source: _src, status: _src,
+        fallback_available: true,
+        message: _src === 'unauthorized'
+          ? 'Session expired or DHL API credential issue.'
+          : 'Could not reach the tracking service.',
+        error: _msg, tracking_url: '',
+      });
     } finally { setTrackingBusy(false); }
   }, [batchId, audit]);
 
@@ -2806,6 +2818,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         small
                         variant="outline"
                         disabled={closureEvalDisabled}
+                        title={closureEvalDisabled ? (closureEvalDisabledReason || 'Closure evaluation not yet available — finish prior steps first.') : 'Run a read-only check of all closure prerequisites.'}
                         style={{ opacity: closureEvalDisabled && !closureCheckLoading ? 0.45 : 1, cursor: closureEvalDisabled && !closureCheckLoading ? 'not-allowed' : 'pointer' }}
                         onClick={async () => {
                           setClosureCheckLoading(true); setClosureCheckError('');
@@ -2875,6 +2888,17 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           small
                           variant="primary"
                           disabled={closureEvalDisabled || closureConfirmBusy || !(closureCheck && closureCheck.ready && !closureCheck.already_completed)}
+                          title={
+                            closureEvalDisabled
+                              ? (closureEvalDisabledReason || 'Closure not yet available — earlier pipeline steps incomplete.')
+                              : !closureCheck
+                                ? 'Run "Evaluate Closure Readiness" first — closure requires all checks to pass.'
+                                : closureCheck.already_completed
+                                  ? 'Shipment is already closed — no further action needed.'
+                                  : !closureCheck.ready
+                                    ? ('Closure not ready: ' + (closureCheck.next_step || closureCheck.reason || 'prerequisites missing'))
+                                    : 'Apply final closure for this shipment.'
+                          }
                           style={{
                             opacity: (closureEvalDisabled || !(closureCheck && closureCheck.ready && !closureCheck.already_completed)) && !closureConfirmBusy ? 0.45 : 1,
                             cursor:  (closureEvalDisabled || !(closureCheck && closureCheck.ready && !closureCheck.already_completed)) && !closureConfirmBusy ? 'not-allowed' : 'pointer',
@@ -4600,8 +4624,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                             pzCreateBusy
                           }
                           title={
-                            !pzPreview?.ready ? 'Preview not ready — resolve all products first'
-                            : pzPreview?.wfirma_pz_doc_id ? 'Already created'
+                            !pzPreview                            ? 'Loading PZ preview…'
+                            : pzPreview?.wfirma_pz_doc_id         ? `Already created in wFirma (id ${pzPreview.wfirma_pz_doc_id})`
+                            : pzPreview?.unresolved_count > 0     ? `Unresolved products: ${pzPreview.unresolved_count} — click Resolve Products first`
+                            : pzPreview?.conflict_count > 0       ? `Product mapping conflicts: ${pzPreview.conflict_count} — review before creating`
+                            : !pzPreview?.ready                   ? 'Preview not ready — earlier pipeline steps incomplete'
+                            : pzCreateBusy                         ? 'Creating PZ in wFirma…'
                             : 'Create warehouse PZ in wFirma'
                           }
                           onClick={() => setPzCreateConfirm(true)}>
@@ -5148,7 +5176,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       || td.source === 'api_pending' || td.source === 'no_credentials'
                       || (td.available === false && (_apiMode === 'pending' || _apiMode === 'no_credentials'))
                     );
-                    const isError    = td && !td.available && td.source === 'error';
+                    // Structured error envelope: source ∈ { unauthorized, rate_limited,
+                    // carrier_error, network_error, config_error, error }. Treat any
+                    // non-pending failure with a status-code-bearing source as a
+                    // config/credential issue so the user sees actionable text.
+                    const _ERR_SOURCES = new Set(['error', 'unauthorized', 'rate_limited',
+                                                  'carrier_error', 'network_error', 'config_error']);
+                    const isError    = td && !td.available && _ERR_SOURCES.has(td.source);
+                    const isAuthErr  = td && (td.source === 'unauthorized' || td.status === 'unauthorized');
                     const isLive     = td && td.available === true;
                     const needsCoworkLookup = td && td.cowork_tracking_required && !td.cowork_result_received;
                     const coworkResultReceived = td && td.cowork_result_received;
@@ -5282,15 +5317,36 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           </div>
                         )}
 
-                        {/* ── ERROR STATE ── */}
+                        {/* ── ERROR STATE — structured config/auth/network errors ── */}
                         {isError && (
                           <div>
-                            <div style={{ fontSize: 11, color: 'var(--badge-red-text)', marginBottom: 4 }}>
-                              ✗ Tracking error: {td.error}
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 8px',
+                              background: isAuthErr ? 'var(--badge-amber-bg)' : 'var(--badge-red-bg)',
+                              border: `1px solid ${isAuthErr ? 'var(--badge-amber-border)' : 'var(--badge-red-border)'}`,
+                              borderRadius: 4, marginBottom: 6 }}>
+                              <span style={{ fontSize: 12 }}>{isAuthErr ? '⚙' : '✗'}</span>
+                              <span style={{ fontSize: 11, fontWeight: 700,
+                                color: isAuthErr ? 'var(--badge-amber-text)' : 'var(--badge-red-text)' }}>
+                                {isAuthErr        ? 'DHL API — Configuration Issue'
+                                 : td.source === 'rate_limited'  ? 'DHL API — Rate Limited'
+                                 : td.source === 'carrier_error' ? 'DHL API — Upstream Error'
+                                 : td.source === 'network_error' ? 'DHL API — Network Error'
+                                 :                                 'Tracking Error'}
+                              </span>
                             </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 6 }}>
+                              {td.message || td.error || 'Tracking unavailable.'}
+                            </div>
+                            {isAuthErr && (
+                              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 8 }}>
+                                Stored timeline and email evidence still display below — only the live API call is unavailable.
+                              </div>
+                            )}
                             {td.tracking_url && (
                               <a href={td.tracking_url} target="_blank" rel="noopener noreferrer"
-                                style={{ fontSize: 11, color: 'var(--badge-blue-text)', textDecoration: 'none' }}>
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
+                                  color: 'var(--badge-blue-text)', textDecoration: 'none', padding: '4px 10px',
+                                  border: '1px solid var(--badge-blue-border)', borderRadius: 4, background: 'var(--badge-blue-bg)' }}>
                                 ↗ Open Public Tracking
                               </a>
                             )}

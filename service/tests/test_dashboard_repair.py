@@ -219,6 +219,120 @@ def test_closure_check_route_registered(client):
 # 6. DHL scan-inbox — returns structured JSON (bridge path when no credentials)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. Email evidence — resolves audit from outputs/ AND working/
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_email_evidence_resolves_working_directory(client, tmp_path, monkeypatch):
+    """
+    Email Evidence Timeline used to 404 on batches that lived under working/
+    because the route hardcoded outputs/.  Verify both folders resolve.
+    """
+    import json as _json
+    from app.core.config import settings as _settings
+    from app.api import routes_dashboard as rd
+
+    storage = tmp_path / "storage"
+    (storage / "outputs").mkdir(parents=True)
+    (storage / "working" / "EE_WORKING_001").mkdir(parents=True)
+    audit = {"batch_id": "EE_WORKING_001", "awb": "1234567890"}
+    (storage / "working" / "EE_WORKING_001" / "audit.json").write_text(
+        _json.dumps(audit), encoding="utf-8")
+
+    monkeypatch.setattr(rd, "_OUTPUTS", storage / "outputs")
+    monkeypatch.setattr(rd, "_WORKING", storage / "working")
+
+    # Stub the evidence store so we don't need a real DB
+    class _Stub:
+        @staticmethod
+        def get_by_awb(awb):
+            return {"summary": {}, "threads": [], "last_scan_at": None,
+                    "last_message_at": None, "batch_ids": []}
+        @staticmethod
+        def attachment_path(s):
+            return None
+        @staticmethod
+        def link_batch(awb, b): pass
+        @staticmethod
+        def save_message(*a, **kw): pass
+
+    monkeypatch.setattr("app.services.email_evidence_store.get_by_awb",
+                        _Stub.get_by_awb)
+
+    resp = client.get("/dashboard/batches/EE_WORKING_001/email-evidence",
+                      headers=_headers())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["awb"] == "1234567890"
+    assert "stages" in body
+
+
+def test_email_evidence_returns_404_for_unknown_batch(client):
+    """Unknown batches still 404 — proper not-found, not auth/route mismatch."""
+    resp = client.get("/dashboard/batches/COMPLETELY_BOGUS_BATCH_999/email-evidence",
+                      headers=_headers())
+    assert resp.status_code == 404
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. DHL tracking — 401 / config errors return structured envelope
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("err_msg, expected_status", [
+    ("Client error '401 Unauthorized' for url 'https://api-eu.dhl.com/...'", "unauthorized"),
+    ("Client error '403 Forbidden' for url '...'",                          "unauthorized"),
+    ("Client error '429 Too Many Requests' for url '...'",                  "rate_limited"),
+    ("Server error '503 Service Unavailable' for url '...'",                "carrier_error"),
+    ("[Errno -2] Name or service not known",                                "network_error"),
+    ("Connection timeout after 10s",                                        "network_error"),
+    ("Some random unexpected error",                                        "error"),
+])
+def test_classify_tracking_error(err_msg, expected_status):
+    """The classifier converts raw exception messages into stable status codes."""
+    from app.api.routes_tracking import _classify_tracking_error
+    info = _classify_tracking_error(RuntimeError(err_msg))
+    assert info["status"] == expected_status
+    assert info["fallback_available"] is True
+    assert info["message"]
+    assert info["raw"]
+
+
+def test_get_tracking_builds_structured_envelope_on_failure(monkeypatch):
+    """
+    The tracking route's exception path must produce the new structured
+    envelope (status/message/fallback_available) — not a raw "401 Unauthorized".
+
+    Tested by calling the function directly with the dependency-injection
+    layer bypassed; the auth dependency itself is verified elsewhere.
+    """
+    from app.api.routes_tracking import get_tracking, _build_error_envelope
+
+    # Direct call to the error builder for the exact 401 case
+    env = _build_error_envelope(
+        "1234567890", "DHL",
+        RuntimeError("Client error '401 Unauthorized' for url 'https://api-eu.dhl.com/track/...'"),
+    )
+    assert env["available"]          is False
+    assert env["status"]             == "unauthorized"
+    assert env["source"]             == "unauthorized"
+    assert env["fallback_available"] is True
+    assert "credential" in env["message"].lower() or "invalid" in env["message"].lower()
+    assert env["tracking_no"]        == "1234567890"
+    assert env["carrier"]            == "DHL"
+
+    # Also verify the route function returns the same envelope when downstream raises
+    def _boom(*a, **kw):
+        raise RuntimeError("Client error '401 Unauthorized' for url '...'")
+    monkeypatch.setattr("app.api.routes_tracking.get_tracking_status", _boom)
+    out = get_tracking("1234567890", carrier="DHL", batch_id="", refresh=False)
+    assert out["status"]            == "unauthorized"
+    assert out["fallback_available"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. (kept for compatibility) AI-bridge scan-inbox path
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def test_scan_inbox_returns_structured_json(client):
     """
     GET /api/v1/dhl/scan-inbox — must return structured JSON.

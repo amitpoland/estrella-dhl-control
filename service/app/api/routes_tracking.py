@@ -54,6 +54,87 @@ def _auto_carrier(tracking_no: str) -> str:
     return "Unknown"
 
 
+def _classify_tracking_error(exc: Exception) -> Dict[str, Any]:
+    """
+    Convert a downstream tracking exception into a structured, actionable
+    error envelope.  The dashboard uses ``status`` to render a config banner
+    (instead of a generic crash message) when credentials are bad/missing.
+
+    Status values:
+      - "unauthorized"  → 401/403 from carrier API (bad credential)
+      - "config_error"  → known credential/config problem
+      - "rate_limited"  → 429
+      - "carrier_error" → 5xx from carrier
+      - "network_error" → connect/timeout/DNS
+      - "error"         → anything else
+    """
+    msg = str(exc) or repr(exc)
+    low = msg.lower()
+    # httpx.HTTPStatusError includes the status code in the message
+    if "401" in msg or "unauthorized" in low or "invalid api key" in low:
+        return {
+            "status":   "unauthorized",
+            "fallback_available": True,
+            "message":  "DHL API credential invalid or missing. Stored timeline will still display.",
+            "raw":      msg[:200],
+        }
+    if "403" in msg or "forbidden" in low:
+        return {
+            "status":   "unauthorized",
+            "fallback_available": True,
+            "message":  "DHL API access forbidden. Check credential scope.",
+            "raw":      msg[:200],
+        }
+    if "429" in msg or "rate limit" in low or "too many" in low:
+        return {
+            "status":   "rate_limited",
+            "fallback_available": True,
+            "message":  "DHL API rate limit reached. Stored timeline will still display.",
+            "raw":      msg[:200],
+        }
+    if any(c in msg for c in ("500", "502", "503", "504")):
+        return {
+            "status":   "carrier_error",
+            "fallback_available": True,
+            "message":  "DHL API upstream error. Try again shortly.",
+            "raw":      msg[:200],
+        }
+    if any(t in low for t in ("timeout", "connect", "dns", "name or service", "ssl")):
+        return {
+            "status":   "network_error",
+            "fallback_available": True,
+            "message":  "Could not reach DHL API. Stored timeline will still display.",
+            "raw":      msg[:200],
+        }
+    return {
+        "status":   "error",
+        "fallback_available": True,
+        "message":  msg[:200],
+        "raw":      msg[:200],
+    }
+
+
+def _build_error_envelope(
+    tracking_no: str,
+    carrier: str,
+    exc: Exception,
+) -> Dict[str, Any]:
+    """Build the structured error envelope returned on tracking failures."""
+    info = _classify_tracking_error(exc)
+    return {
+        "tracking_no":         tracking_no,
+        "carrier":             carrier or "Unknown",
+        "available":           False,
+        "ok":                  False,
+        "source":              info["status"],   # back-compat: 'source' was 'error'
+        "status":              info["status"],
+        "fallback_available":  info["fallback_available"],
+        "message":             info["message"],
+        "error":               info["raw"],
+        "tracking_url":        "",
+    }
+
+
 # ── GET /api/v1/tracking/{tracking_no} ───────────────────────────────────────
 
 @router.get("/{tracking_no}", dependencies=[_auth])
@@ -72,14 +153,7 @@ def get_tracking(
         cache_dir         = _resolve_cache_dir(batch_id)
         return get_tracking_status(tracking_no, effective_carrier, cache_dir, refresh=refresh)
     except Exception as exc:
-        return {
-            "tracking_no": tracking_no,
-            "carrier":     carrier or "Unknown",
-            "available":   False,
-            "source":      "error",
-            "error":       str(exc),
-            "tracking_url": "",
-        }
+        return _build_error_envelope(tracking_no, carrier, exc)
 
 
 # ── POST /api/v1/tracking/{tracking_no}/refresh ───────────────────────────────
@@ -101,14 +175,7 @@ def refresh_tracking(
             tracking_no, effective_carrier, cache_dir, refresh=True
         )
     except Exception as exc:
-        return {
-            "tracking_no": tracking_no,
-            "carrier":     carrier or "Unknown",
-            "available":   False,
-            "source":      "error",
-            "error":       str(exc),
-            "tracking_url": "",
-        }
+        return _build_error_envelope(tracking_no, carrier, exc)
 
     # Patch audit.json if batch_id is given
     if batch_id:

@@ -33,9 +33,26 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 _auth  = Depends(require_api_key)
 
 _OUTPUTS  = settings.storage_root / "outputs"
+_WORKING  = settings.storage_root / "working"
 _ARCHIVED = settings.storage_root / "archived"        # reversible, 14-day retention
 # Note: storage/permanently_deleted/ used for expired/admin-deleted batches (inline in endpoints)
 _MAX_LIST = 300  # read more before dedup
+
+
+def _resolve_audit_path(batch_id: str):
+    """
+    Return the first existing audit.json path across (outputs/, working/).
+
+    Active batches live under working/; finalized ones under outputs/.  The
+    older email-evidence / actions endpoints only checked outputs/, which 404'd
+    for batches that hadn't been finalized yet.  Returns None if neither has
+    the batch.
+    """
+    for sub in (_OUTPUTS, _WORKING):
+        p = sub / batch_id / "audit.json"
+        if p.exists():
+            return p
+    return None
 
 
 # ── Carrier detection ─────────────────────────────────────────────────────────
@@ -1426,8 +1443,8 @@ def action_diagnostics(batch_id: str) -> Dict[str, Any]:
     Read-only — no mutations, no secrets, no financial data.
     """
     _validate_batch_id(batch_id)
-    audit_path = _OUTPUTS / batch_id / "audit.json"
-    if not audit_path.exists():
+    audit_path = _resolve_audit_path(batch_id)
+    if audit_path is None:
         raise HTTPException(status_code=404, detail="Batch not found.")
     try:
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
@@ -1639,8 +1656,8 @@ def email_evidence_for_batch(batch_id: str) -> Dict[str, Any]:
     """Return local email evidence summary + 9-stage timeline for the AWB on this batch."""
     from ..services import email_evidence_store as evs
     _validate_batch_id(batch_id)
-    audit_path = _OUTPUTS / batch_id / "audit.json"
-    if not audit_path.exists():
+    audit_path = _resolve_audit_path(batch_id)
+    if audit_path is None:
         raise HTTPException(status_code=404, detail="Batch not found.")
     try:
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
@@ -1724,8 +1741,8 @@ def email_evidence_for_batch(batch_id: str) -> Dict[str, Any]:
 def email_evidence_rescan(batch_id: str) -> Dict[str, Any]:
     """Scan Zoho Mail for this AWB and store any new messages in the evidence store."""
     _validate_batch_id(batch_id)
-    audit_path = _OUTPUTS / batch_id / "audit.json"
-    if not audit_path.exists():
+    audit_path = _resolve_audit_path(batch_id)
+    if audit_path is None:
         raise HTTPException(status_code=404, detail="Batch not found.")
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     awb = str(audit.get("awb") or audit.get("tracking_no") or "")
@@ -1744,8 +1761,8 @@ def email_evidence_rescan(batch_id: str) -> Dict[str, Any]:
 def email_evidence_process(batch_id: str) -> Dict[str, Any]:
     """Run the evidence processor against stored evidence (no Zoho call)."""
     _validate_batch_id(batch_id)
-    audit_path = _OUTPUTS / batch_id / "audit.json"
-    if not audit_path.exists():
+    audit_path = _resolve_audit_path(batch_id)
+    if audit_path is None:
         raise HTTPException(status_code=404, detail="Batch not found.")
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     awb = str(audit.get("awb") or audit.get("tracking_no") or "")
@@ -1790,8 +1807,8 @@ def actions_v2(batch_id: str, request: Request) -> Dict[str, Any]:
     from ..services.route_contract_validator import validate_endpoints
 
     _validate_batch_id(batch_id)
-    audit_path = _OUTPUTS / batch_id / "audit.json"
-    if not audit_path.exists():
+    audit_path = _resolve_audit_path(batch_id)
+    if audit_path is None:
         raise HTTPException(status_code=404, detail="Batch not found.")
     try:
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
