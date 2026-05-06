@@ -595,6 +595,108 @@ def _pz_write_lock(output_dir: Path, batch_id: str, action: str):
 _PZ_LOCK_STALE_SECS = 120  # locks older than 2 min are force-released
 
 
+# ── Read-only PZ lock-status snapshot (for dashboard) ────────────────────────
+
+def _compute_pz_lock_status(
+    audit: Dict[str, Any],
+    *,
+    preview_ready: bool = False,
+    supplier_configured: bool = False,
+    warehouse_configured: bool = False,
+) -> Dict[str, Any]:
+    """
+    Build a read-only summary of why PZ create/adopt is or isn't allowed.
+
+    This is the dashboard-facing companion of ``_assert_pz_not_locked``.  It
+    inspects the same three signals (doc_id field, pz_source field, timeline
+    terminal events) and returns a structured envelope so the UI can show a
+    precise banner instead of a generic "ready" / "not ready" boolean.
+
+    Audit-write recovery
+    --------------------
+    A rare half-state: timeline records EV_WFIRMA_PZ_CREATED but
+    wfirma_export.wfirma_pz_doc_id is empty (audit-patch failed after the
+    wFirma call succeeded — see _patch_pz_doc_id error path).  In that case
+    we still report ``locked=True`` but flag ``recovery_required=True`` so
+    the dashboard can prompt the operator to use Confirm Existing PZ.
+
+    Args:
+        audit:                parsed audit.json dict (same one already loaded
+                              by the caller — never re-reads disk).
+        preview_ready:        result.ready from build_pz_request_from_batch.
+        supplier_configured:  bool — supplier contractor id is set.
+        warehouse_configured: bool — warehouse id is set.
+
+    Returns:
+        dict — see schema in the docstring of wfirma_pz_preview.
+    """
+    wfirma_export = audit.get("wfirma_export") or {}
+    doc_id        = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
+    raw_source    = (wfirma_export.get("pz_source") or "").strip()
+    terminal_ev   = _has_pz_terminal_event(audit)
+
+    # Normalize pz_source for the dashboard:
+    #   "created_via_app" → "created_by_system"  (UX-friendly label)
+    #   "adopted_existing" → "adopted_existing"
+    pz_source: Optional[str]
+    if raw_source == "created_via_app":
+        pz_source = "created_by_system"
+    elif raw_source == "adopted_existing":
+        pz_source = "adopted_existing"
+    elif raw_source:
+        pz_source = raw_source
+    else:
+        pz_source = None
+
+    locked              = bool(doc_id or pz_source or terminal_ev)
+    recovery_required   = bool(terminal_ev) and not doc_id
+    reason: str
+    code: str
+
+    if not locked:
+        reason = "no_pz_linked"
+        code   = "NO_PZ_LINKED"
+    elif recovery_required and terminal_ev == EV_WFIRMA_PZ_CREATED:
+        reason = "audit_write_recovery_required"
+        code   = "PZ_AUDIT_RECOVERY_NEEDED"
+    elif recovery_required and terminal_ev == EV_WFIRMA_PZ_ADOPTED:
+        reason = "audit_write_recovery_required"
+        code   = "PZ_AUDIT_RECOVERY_NEEDED"
+    elif pz_source == "created_by_system" or terminal_ev == EV_WFIRMA_PZ_CREATED:
+        reason = "pz_created_by_system"
+        code   = "PZ_ALREADY_CREATED"
+    elif pz_source == "adopted_existing" or terminal_ev == EV_WFIRMA_PZ_ADOPTED:
+        reason = "pz_adopted_existing"
+        code   = "PZ_ALREADY_ADOPTED"
+    else:
+        reason = "pz_doc_id_set"
+        code   = "PZ_ALREADY_LINKED"
+
+    # Action gates
+    # - can_create: false whenever locked, OR preview not ready, OR config missing
+    # - can_adopt:  false when locked (idempotent same-id adopt is handled by
+    #               the route itself, not exposed as a separate button); true
+    #               in the recovery_required case so the operator can adopt
+    #               the live wFirma doc_id manually.
+    can_create = (not locked) and preview_ready and supplier_configured and warehouse_configured
+    if recovery_required:
+        can_adopt = True   # let operator link the live doc_id back into audit
+    else:
+        can_adopt = not locked
+
+    return {
+        "locked":             locked,
+        "reason":             reason,
+        "code":               code,
+        "wfirma_pz_doc_id":   doc_id or None,
+        "pz_source":          pz_source,
+        "terminal_event":     terminal_ev,
+        "recovery_required":  recovery_required,
+        "can_create":         can_create,
+        "can_adopt":          can_adopt,
+    }
+
+
 def _find_pz_owner_batch(
     wfirma_pz_doc_id: str,
     exclude_batch_id: str,
@@ -847,6 +949,12 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
     wfirma_export = audit.get("wfirma_export") or {}
     existing_pz_doc_id = wfirma_export.get("wfirma_pz_doc_id") or ""
     if existing_pz_doc_id:
+        lock_status = _compute_pz_lock_status(
+            audit,
+            preview_ready=False,            # already created — preview is moot
+            supplier_configured=bool((settings.wfirma_supplier_contractor_id or "").strip()),
+            warehouse_configured=bool((settings.wfirma_warehouse_id or "").strip()),
+        )
         return JSONResponse({
             "batch_id":             batch_id,
             "already_created":      True,
@@ -855,6 +963,7 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
             "ready":                False,
             "unresolved_product_codes": [],
             "price_conflicts":      [],
+            "pz_lock_status":       lock_status,
         })
 
     # ── Load rows ─────────────────────────────────────────────────────────────
@@ -928,6 +1037,13 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         batch_id, result.ready, len(result.unresolved_codes), len(result.price_conflicts),
     )
 
+    lock_status = _compute_pz_lock_status(
+        audit,
+        preview_ready=result.ready,
+        supplier_configured=bool(supplier_wfirma_id),
+        warehouse_configured=bool(warehouse_id),
+    )
+
     return JSONResponse({
         "batch_id":                 batch_id,
         "already_created":          False,
@@ -945,6 +1061,7 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         "description":              description,
         "planned_lines":            planned,
         "risk_flags":               risk_flags,
+        "pz_lock_status":           lock_status,
     })
 
 

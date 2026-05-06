@@ -4524,6 +4524,105 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     </div>
                   )}
 
+                  {/* PZ Lock-Status Banner — read-only summary from pz_preview.pz_lock_status */}
+                  {pzPreview?.pz_lock_status && (() => {
+                    const ls = pzPreview.pz_lock_status;
+                    // Tone selection drives banner color + icon
+                    const tone =
+                      ls.recovery_required                    ? 'red'    :
+                      ls.locked                                ? 'green'  :
+                      (pzPreview.unresolved_count > 0
+                        || pzPreview.conflict_count > 0
+                        || (pzPreview.unresolved_product_codes || []).length > 0
+                        || (pzPreview.price_conflicts || []).length > 0)  ? 'amber'  :
+                      ls.can_create                            ? 'neutral':
+                                                                  'amber';
+                    const _bg = {
+                      green:   'var(--badge-green-bg)',
+                      amber:   'var(--badge-amber-bg)',
+                      red:     'var(--badge-red-bg)',
+                      neutral: 'var(--bg-subtle)',
+                    }[tone];
+                    const _bd = {
+                      green:   'var(--badge-green-border)',
+                      amber:   'var(--badge-amber-border)',
+                      red:     'var(--badge-red-border)',
+                      neutral: 'var(--border)',
+                    }[tone];
+                    const _fg = {
+                      green:   'var(--badge-green-text)',
+                      amber:   'var(--badge-amber-text)',
+                      red:     'var(--badge-red-text)',
+                      neutral: 'var(--text-2)',
+                    }[tone];
+                    const _icon = tone === 'green' ? '✓' : tone === 'red' ? '✗' : tone === 'amber' ? '⚠' : '○';
+
+                    // Headline + subtitle for each known reason
+                    let headline, subtitle;
+                    if (ls.reason === 'pz_created_by_system') {
+                      headline = 'PZ created by system';
+                      subtitle = 'wFirma PZ was generated from this shipment.';
+                    } else if (ls.reason === 'pz_adopted_existing') {
+                      headline = 'Existing wFirma PZ adopted';
+                      subtitle = 'A pre-existing wFirma PZ was linked to this shipment.';
+                    } else if (ls.reason === 'audit_write_recovery_required') {
+                      headline = 'PZ audit write recovery required';
+                      subtitle = ls.terminal_event === 'wfirma_pz_created'
+                        ? 'The timeline shows a PZ was created in wFirma but the local audit was not updated. Use Confirm Existing PZ with the live wFirma doc id to recover.'
+                        : 'The timeline shows a PZ was adopted but the local audit was not updated. Use Confirm Existing PZ to recover.';
+                    } else if (ls.reason === 'pz_doc_id_set') {
+                      headline = 'PZ already linked';
+                      subtitle = 'A wFirma PZ doc id is already on this shipment.';
+                    } else if (pzPreview.unresolved_count > 0
+                        || (pzPreview.unresolved_product_codes || []).length > 0) {
+                      headline = 'PZ not ready — unresolved products';
+                      subtitle = `${pzPreview.unresolved_count || (pzPreview.unresolved_product_codes || []).length} product code(s) need mapping. Click Resolve Products.`;
+                    } else if (pzPreview.conflict_count > 0
+                        || (pzPreview.price_conflicts || []).length > 0) {
+                      headline = 'PZ not ready — price conflicts';
+                      subtitle = 'Different unit prices for the same product code. Review the planned lines.';
+                    } else if (ls.can_create) {
+                      headline = 'Ready to create wFirma PZ';
+                      subtitle = 'All product codes resolved. Click Create wFirma PZ to proceed.';
+                    } else {
+                      headline = 'No PZ linked yet';
+                      subtitle = 'Earlier pipeline steps must finish before PZ can be created or adopted.';
+                    }
+
+                    return (
+                      <div data-testid="pz-lock-status-banner"
+                           data-reason={ls.reason}
+                           data-can-create={String(!!ls.can_create)}
+                           data-can-adopt={String(!!ls.can_adopt)}
+                           style={{ marginBottom: 12, padding: '10px 14px', background: _bg, border: `1px solid ${_bd}`, borderRadius: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 14, color: _fg }}>{_icon}</span>
+                          <div style={{ flex: 1, minWidth: 200 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: _fg }}>{headline}</div>
+                            <div style={{ fontSize: 11, color: _fg, opacity: 0.85, marginTop: 2 }}>{subtitle}</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 12, fontSize: 10, color: _fg, opacity: 0.85, flexWrap: 'wrap' }}>
+                            {ls.wfirma_pz_doc_id && (
+                              <span data-testid="pz-lock-doc-id">
+                                doc id: <code style={{ fontFamily: 'monospace' }}>{ls.wfirma_pz_doc_id}</code>
+                              </span>
+                            )}
+                            {ls.pz_source && (
+                              <span data-testid="pz-lock-source">
+                                source: <code style={{ fontFamily: 'monospace' }}>{ls.pz_source}</code>
+                              </span>
+                            )}
+                            {ls.terminal_event && (
+                              <span data-testid="pz-lock-event">
+                                event: <code style={{ fontFamily: 'monospace' }}>{ls.terminal_event}</code>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* After-create result banner (session only) */}
                   {pzCreateResult && pzCreateResult.status === 'created' && !pzPreview?.wfirma_pz_doc_id && (
                     <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 6 }}>
@@ -4617,21 +4716,32 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       <Btn variant="gold"
                           data-testid="btn-pz-create"
                           disabled={
-                            !pzPreview?.ready ||
-                            !!(pzPreview?.unresolved_count > 0) ||
-                            !!(pzPreview?.conflict_count > 0) ||
-                            !!pzPreview?.wfirma_pz_doc_id ||
-                            pzCreateBusy
+                            // pz_lock_status.can_create is the authoritative gate.
+                            // Fallback to the legacy ad-hoc checks when lock_status
+                            // isn't yet present (older preview responses).
+                            (pzPreview?.pz_lock_status
+                              ? !pzPreview.pz_lock_status.can_create
+                              : (
+                                  !pzPreview?.ready ||
+                                  !!(pzPreview?.unresolved_count > 0) ||
+                                  !!(pzPreview?.conflict_count > 0) ||
+                                  !!pzPreview?.wfirma_pz_doc_id
+                                )
+                            ) || pzCreateBusy
                           }
-                          title={
-                            !pzPreview                            ? 'Loading PZ preview…'
-                            : pzPreview?.wfirma_pz_doc_id         ? `Already created in wFirma (id ${pzPreview.wfirma_pz_doc_id})`
-                            : pzPreview?.unresolved_count > 0     ? `Unresolved products: ${pzPreview.unresolved_count} — click Resolve Products first`
-                            : pzPreview?.conflict_count > 0       ? `Product mapping conflicts: ${pzPreview.conflict_count} — review before creating`
-                            : !pzPreview?.ready                   ? 'Preview not ready — earlier pipeline steps incomplete'
-                            : pzCreateBusy                         ? 'Creating PZ in wFirma…'
-                            : 'Create warehouse PZ in wFirma'
-                          }
+                          title={(() => {
+                            const ls = pzPreview?.pz_lock_status;
+                            if (!pzPreview) return 'Loading PZ preview…';
+                            if (pzCreateBusy) return 'Creating PZ in wFirma…';
+                            if (ls?.recovery_required)            return 'Audit write recovery required — use Confirm Existing PZ.';
+                            if (ls?.reason === 'pz_created_by_system')  return `Already created in wFirma (id ${ls.wfirma_pz_doc_id || pzPreview?.wfirma_pz_doc_id || '—'})`;
+                            if (ls?.reason === 'pz_adopted_existing')   return `Already adopted (id ${ls.wfirma_pz_doc_id || pzPreview?.wfirma_pz_doc_id || '—'})`;
+                            if (ls?.reason === 'pz_doc_id_set')         return `Already linked (id ${ls.wfirma_pz_doc_id || pzPreview?.wfirma_pz_doc_id || '—'})`;
+                            if (pzPreview?.unresolved_count > 0)        return `Unresolved products: ${pzPreview.unresolved_count} — click Resolve Products first`;
+                            if (pzPreview?.conflict_count > 0)          return `Product mapping conflicts: ${pzPreview.conflict_count} — review before creating`;
+                            if (!pzPreview?.ready)                       return 'Preview not ready — earlier pipeline steps incomplete';
+                            return 'Create warehouse PZ in wFirma';
+                          })()}
                           onClick={() => setPzCreateConfirm(true)}>
                         {pzCreateBusy ? '⟳ Creating…' : '✦ Create wFirma PZ'}
                       </Btn>
@@ -4650,12 +4760,24 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     {!pzAdoptOpen ? (
                       <Btn variant="outline"
                           data-testid="btn-pz-adopt-open"
-                          disabled={!!pzPreview?.wfirma_pz_doc_id || pzAdoptBusy}
-                          title={
-                            pzPreview?.wfirma_pz_doc_id
-                              ? 'PZ already linked to this shipment'
-                              : 'Attach an existing wFirma PZ to this shipment'
+                          disabled={
+                            // pz_lock_status.can_adopt is the authoritative gate.
+                            // Recovery case (timeline event without doc_id) keeps
+                            // can_adopt=true so the operator can manually link the
+                            // live wFirma PZ back into audit.
+                            (pzPreview?.pz_lock_status
+                              ? !pzPreview.pz_lock_status.can_adopt
+                              : !!pzPreview?.wfirma_pz_doc_id
+                            ) || pzAdoptBusy
                           }
+                          title={(() => {
+                            const ls = pzPreview?.pz_lock_status;
+                            if (ls?.recovery_required)                  return 'Use this to link the live wFirma PZ back into audit (recovery).';
+                            if (ls?.reason === 'pz_created_by_system')  return 'PZ was already created by the system — adoption not needed.';
+                            if (ls?.reason === 'pz_adopted_existing')   return 'PZ has already been adopted for this shipment.';
+                            if (ls?.reason === 'pz_doc_id_set')         return 'PZ doc id already set on this shipment.';
+                            return 'Attach an existing wFirma PZ to this shipment';
+                          })()}
                           onClick={() => { setPzAdoptOpen(true); setPzAdoptResult(null); }}>
                         ✔ Confirm Existing PZ
                       </Btn>
