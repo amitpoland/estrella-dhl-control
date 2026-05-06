@@ -820,6 +820,129 @@ def test_create_from_code_missing_creates_when_flag_on(client, db):
     assert "Co to za towar / What is this" in call.kwargs["description"]
     # Polish-first / English-after-slash composed line in description body
     assert "Diamond Ring" in call.kwargs["description"]
+    # Master-data name rule: "<name_pl> (<product_code>)" — short, identifiable
+    assert call.kwargs["name"] == "Pierścionek (EJL/26-27/100-3)"
+
+
+# ── Strict master-data name rule (docs/wfirma.skill.md §5) ─────────────────
+
+def test_create_from_code_name_is_short_polish_with_code(client, db):
+    """name = '<name_pl> (<product_code>)' — never the long composed line."""
+    created = _wc.WFirmaProduct(wfirma_id="G-NAME-1", name="x", code="EJL/N-1",
+                                unit="szt.", count=0, reserved=0)
+    with (
+        _gate_create_on(),
+        patch.object(_wc, "get_product_by_code", return_value=None),
+        patch.object(_wc, "find_vat_code_id", return_value="VAT23"),
+        patch.object(_wc, "create_product", return_value=created) as mock_create,
+    ):
+        client.post(
+            CREATE_URL + "EJL/N-1",
+            json={"item_type": "RING",
+                  "description_en": "Lab Grown Diamond 14KT Gold Ring"},
+            headers=_auth(),
+        )
+    name = mock_create.call_args.kwargs["name"]
+    # Strict format: "<name_pl> (<product_code>)"
+    assert name == "Pierścionek (EJL/N-1)"
+    # No Polish/English slash composition in name (the " / " separator,
+    # not the product_code's own embedded "/").
+    assert " / " not in name
+    # No long English description text in name
+    assert "Lab Grown" not in name
+    # No "Co to za towar" labels in name
+    assert "Co to za towar" not in name
+
+
+def test_create_from_code_description_keeps_full_bilingual_block(client, db):
+    """description still carries the full block + Polish/English slash."""
+    created = _wc.WFirmaProduct(wfirma_id="G-DESC-1", name="x", code="EJL/D-1",
+                                unit="szt.", count=0, reserved=0)
+    with (
+        _gate_create_on(),
+        patch.object(_wc, "get_product_by_code", return_value=None),
+        patch.object(_wc, "find_vat_code_id", return_value="VAT23"),
+        patch.object(_wc, "create_product", return_value=created) as mock_create,
+    ):
+        client.post(
+            CREATE_URL + "EJL/D-1",
+            json={"item_type": "EARRINGS",
+                  "description_en": "Diamond Stud Earrings"},
+            headers=_auth(),
+        )
+    description = mock_create.call_args.kwargs["description"]
+    # Three-section bilingual labels present
+    assert "Co to za towar / What is this" in description
+    assert "Z jakiego materiału / Material" in description
+    assert "Do czego służy / Purpose" in description
+    # English half present (under the "Co to za towar" content row)
+    assert "Diamond Stud Earrings" in description
+    # Slash between Polish and English
+    assert " / " in description
+
+
+def test_create_from_code_name_falls_back_to_product_code_when_name_pl_missing(
+    client, db,
+):
+    """If name_pl is empty (unknown item_type), name falls back to <product_code>."""
+    created = _wc.WFirmaProduct(wfirma_id="G-FB-1", name="x", code="EJL/FB-1",
+                                unit="szt.", count=0, reserved=0)
+    # BOGUS_TYPE → DEFAULT_TRANSLATION → name_pl="Biżuteria" (always set);
+    # to truly hit the empty-name_pl branch, set a manual override with empty name.
+    from app.services import description_engine as deng
+    deng.set_manual_block(
+        product_code   = "EJL/FB-EMPTY",
+        item_type      = "RING",
+        name_pl        = "",  # explicit empty
+        description_pl = "x",
+        material_pl    = "x",
+        purpose_pl     = "x",
+    )
+    with (
+        _gate_create_on(),
+        patch.object(_wc, "get_product_by_code", return_value=None),
+        patch.object(_wc, "find_vat_code_id", return_value="VAT23"),
+        patch.object(_wc, "create_product", return_value=created) as mock_create,
+    ):
+        client.post(
+            CREATE_URL + "EJL/FB-EMPTY",
+            json={"item_type": "RING", "description_en": "x"},
+            headers=_auth(),
+        )
+    name = mock_create.call_args.kwargs["name"]
+    assert name == "EJL/FB-EMPTY"
+    assert "(" not in name and ")" not in name
+
+
+def test_create_from_code_caller_cannot_change_unit_vat_type(client, db):
+    """Server-controlled fields ignore caller body shape."""
+    created = _wc.WFirmaProduct(wfirma_id="G-CC-1", name="x", code="EJL/CC-1",
+                                unit="szt.", count=0, reserved=0)
+    with (
+        _gate_create_on(),
+        patch.object(_wc, "get_product_by_code", return_value=None),
+        patch.object(_wc, "find_vat_code_id", return_value="VAT23"),
+        patch.object(_wc, "create_product", return_value=created) as mock_create,
+    ):
+        # malicious body trying to override
+        client.post(
+            CREATE_URL + "EJL/CC-1",
+            json={
+                "item_type":      "RING",
+                "description_en": "x",
+                "unit":           "kg",      # ignored
+                "vat_rate":       "0",       # ignored
+                "type":           "service", # ignored
+                "code":           "ATTACKER",# ignored
+                "name":           "ATTACKER NAME", # ignored
+            },
+            headers=_auth(),
+        )
+    call = mock_create.call_args
+    assert call.kwargs["unit"]         == "szt."
+    assert call.kwargs["vat_code_id"]  == "VAT23"
+    assert call.kwargs["product_code"] == "EJL/CC-1"
+    assert "ATTACKER" not in call.kwargs["name"]
 
     saved = wfdb.get_product("EJL/26-27/100-3")
     assert saved["wfirma_product_id"] == "G-NEW-1"

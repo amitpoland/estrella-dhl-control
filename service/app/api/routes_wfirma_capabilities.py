@@ -348,10 +348,16 @@ def create_good_from_product_code(
         description_en = req.description_en,
     )
 
+    # Strict master-data name per docs/wfirma.skill.md §5:
+    #   name = "<name_pl> (<product_code>)"  — short, identifiable
+    # The long bilingual line belongs in <description>, never in <name>.
+    name_pl  = (block.get("name_pl") or "").strip()
+    wf_name  = f"{name_pl} ({pc})" if name_pl else pc
+
     try:
         result = wfirma_client.create_product(
             product_code = pc,
-            name         = block.get("description_line") or block.get("name_pl") or pc,
+            name         = wf_name,
             unit         = "szt.",
             netto        = 0.0,
             vat_code_id  = wfirma_client.find_vat_code_id(23),
