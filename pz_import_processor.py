@@ -311,8 +311,30 @@ def build_pl_name(item: dict) -> str:
 
 
 def get_full_nazwa(item: dict) -> str:
-    """Combined wFirma name: 'English natural name (Polish natural name)'."""
-    return f"{build_en_name(item)} ({build_pl_name(item)})"
+    """Combined wFirma name: 'Polish / English' — Polish first for wFirma display."""
+    return f"{build_pl_name(item)} / {build_en_name(item)}"
+
+
+def canonical_item_sort_key(item: dict, original_index: int) -> tuple:
+    """
+    Stable sort key for invoice line items — ensures product_code assignment
+    is independent of parser output order.
+
+    Tier 1 — item type (primary physical category)
+    Tier 2 — full English description (family + karat already embedded)
+    Tier 3 — HS code
+    Tier 4 — unit price (ascending) — distinguishes same-type, same-desc, diff-price
+    Tier 5 — quantity (ascending)
+    Tier 6 — original_index — tiebreaker only; preserves stability when all else equal
+    """
+    return (
+        (item.get("item_type") or "").strip().lower(),
+        (item.get("description_en") or "").strip().lower(),
+        (item.get("hsn") or "").strip(),
+        float(item.get("unit_price_usd") or 0),
+        float(item.get("quantity") or 0),
+        original_index,
+    )
 
 
 # ── NBP rate ──────────────────────────────────────────────────────────────────
@@ -2208,8 +2230,30 @@ def calculate_landed(invoices: list, zc429: dict, nbp: dict, corrections_log: li
                 f"Negative freight rate {freight_rate_pct:.4%} for {inv['invoice_no']}"
             )
 
-        for idx, item in enumerate(inv["items"]):
-            product_code     = inv["invoice_no"] if idx == 0 else f"{inv['invoice_no']} -{idx}"
+        # Sort items by canonical key so product_code -N is stable across
+        # re-parses regardless of PDF item order.
+        indexed_items = sorted(
+            enumerate(inv["items"]),
+            key=lambda t: canonical_item_sort_key(t[1], t[0]),
+        )
+
+        # Warn if two items share an identical canonical key (excluding the
+        # original_index tiebreaker). Duplicate codes are prevented by the
+        # tiebreaker; this surfaces ambiguity to the operator.
+        seen_keys: dict = {}
+        for orig_idx, item in indexed_items:
+            ck = canonical_item_sort_key(item, 0)  # 0 strips tiebreaker for comparison
+            if ck in seen_keys:
+                corrections_log.append(
+                    f"[WARN] {inv['invoice_no']}: items at original positions "
+                    f"{seen_keys[ck]} and {orig_idx} share identical canonical "
+                    f"sort key — product_code order stabilised by original index"
+                )
+            else:
+                seen_keys[ck] = orig_idx
+
+        for line_position, (_orig_idx, item) in enumerate(indexed_items, start=1):
+            product_code     = f"{inv['invoice_no']}-{line_position}"
             line_usd         = item["total_usd"]
             qty              = item["quantity"]
 
@@ -2224,6 +2268,10 @@ def calculate_landed(invoices: list, zc429: dict, nbp: dict, corrections_log: li
                 "invoice_no":          inv["invoice_no"],
                 "invoice_date":        inv["invoice_date"],
                 "product_code":        product_code,
+                "line_position":       line_position,
+                "nazwa_pl":            build_pl_name(item),
+                "nazwa_en":            build_en_name(item),
+                "nazwa":               f"{build_pl_name(item)} / {build_en_name(item)}",
                 "usd_pln":             usd_pln,
                 # ── explicit cost fields ──────────────────────────────────
                 "freight_rate_pct":    freight_rate_pct,
