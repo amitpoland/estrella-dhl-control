@@ -81,6 +81,91 @@ def _state_codes(batch_id: str) -> Dict[str, List[str]]:
     return out
 
 
+# ── Warehouse readiness gate ─────────────────────────────────────────────────
+
+def _check_warehouse_readiness(batch_id: str) -> List[str]:
+    """
+    Batch-level warehouse gate for proforma creation.
+
+    Returns [] when audit.json is absent (graceful pass-through for test
+    environments that don't seed a processed batch).
+
+    Checks (in order):
+      1. wfirma_export.wfirma_pz_doc_id is present in audit.json
+      2. All product_codes in pz_rows.json are resolved in wfirma_products
+         (wfirma_product_id set + sync_status == "matched")
+      3. No price conflicts — same product_code must not carry two different
+         unit_netto_pln values in pz_rows.json
+    """
+    output_dir = settings.storage_root / "outputs" / batch_id
+    audit_path = output_dir / "audit.json"
+
+    if not audit_path.exists():
+        return []
+
+    try:
+        with audit_path.open() as f:
+            audit = json.load(f)
+    except Exception:
+        return ["warehouse readiness check failed: could not read audit.json"]
+
+    reasons: List[str] = []
+
+    # 1. wfirma_pz_doc_id must exist
+    wfirma_export = audit.get("wfirma_export") or {}
+    pz_doc_id = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
+    if not pz_doc_id:
+        reasons.append(
+            "warehouse PZ not yet created — run wFirma PZ create before issuing a proforma"
+        )
+
+    # 2+3. Inspect pz_rows.json for unresolved codes and price conflicts
+    pz_rows_path = output_dir / "pz_rows.json"
+    if not pz_rows_path.exists():
+        return reasons
+
+    try:
+        with pz_rows_path.open() as f:
+            pz_rows: List[Dict[str, Any]] = json.load(f)
+    except Exception:
+        reasons.append("warehouse readiness check failed: could not read pz_rows.json")
+        return reasons
+
+    # 2. Unresolved product_codes
+    if wfdb._db_path is not None:
+        all_codes = sorted({
+            (r.get("product_code") or "").strip()
+            for r in pz_rows
+            if (r.get("product_code") or "").strip()
+        })
+        unresolved = []
+        for code in all_codes:
+            prod = wfdb.get_product(code)
+            if not (prod and prod.get("wfirma_product_id") and prod.get("sync_status") == "matched"):
+                unresolved.append(code)
+        if unresolved:
+            sample = ", ".join(unresolved[:3]) + ("…" if len(unresolved) > 3 else "")
+            reasons.append(
+                f"{len(unresolved)} product_code(s) unresolved in wfirma_products: {sample}"
+            )
+
+    # 3. Price conflicts
+    prices_by_code: Dict[str, set] = {}
+    for r in pz_rows:
+        code = (r.get("product_code") or "").strip()
+        price = r.get("unit_netto_pln")
+        if code and price is not None:
+            prices_by_code.setdefault(code, set()).add(round(float(price), 4))
+    conflicts = sorted(code for code, prices in prices_by_code.items() if len(prices) > 1)
+    if conflicts:
+        sample = ", ".join(conflicts[:3]) + ("…" if len(conflicts) > 3 else "")
+        reasons.append(
+            f"{len(conflicts)} product_code(s) have price conflicts in pz_rows: {sample}"
+        )
+
+    return reasons
+
+
 # ── Preview core (callable from both /preview and /create) ──────────────────
 
 def _validate_args(batch_id: str, client_name: str) -> str:
@@ -100,6 +185,9 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     by the /create endpoint to share the exact same gating logic.
     """
     blocking_reasons: List[str] = []
+
+    # ── 0. Warehouse readiness gate ───────────────────────────────────────────
+    blocking_reasons.extend(_check_warehouse_readiness(batch_id))
 
     # ── 1. Resolution rows (sales → wFirma product_code) ────────────────────
     resolution_rows = [

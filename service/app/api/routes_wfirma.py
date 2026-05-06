@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
 from ..core.config import settings
 from ..core.logging import get_logger
@@ -66,6 +67,7 @@ def _build_product_code(invoice_no: str, position: int) -> str:
 EV_WFIRMA_CLIPBOARD  = "wfirma_clipboard_generated"
 EV_WFIRMA_JSON       = "wfirma_json_generated"
 EV_WFIRMA_PZ_CREATED = "wfirma_pz_created"
+EV_WFIRMA_PZ_ADOPTED = "wfirma_pz_adopted"
 
 # PZ statuses that indicate a completed run
 _PZ_DONE = {"success", "partial"}
@@ -393,6 +395,57 @@ def _patch_pz_doc_id(output_dir: Path, wfirma_pz_doc_id: str) -> None:
         write_json_atomic(audit_path, audit)
     except Exception as e:
         log.warning("[pz_create] audit patch failed: %s", e)
+
+
+def _patch_pz_adopted(output_dir: Path, wfirma_pz_doc_id: str) -> None:
+    """
+    Write wfirma_pz_doc_id + pz_source='adopted_existing' into audit.json.
+    Atomic. Does not overwrite other wfirma_export fields.
+    """
+    audit_path = output_dir / "audit.json"
+    if not audit_path.exists():
+        return
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        existing = audit.get("wfirma_export") or {}
+        audit["wfirma_export"] = {
+            **existing,
+            "wfirma_pz_doc_id": wfirma_pz_doc_id,
+            "pz_source":        "adopted_existing",
+            "pz_adopted_at":    time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        write_json_atomic(audit_path, audit)
+    except Exception as e:
+        log.warning("[pz_adopt] audit patch failed: %s", e)
+
+
+def _find_pz_owner_batch(
+    wfirma_pz_doc_id: str,
+    exclude_batch_id: str,
+) -> Optional[str]:
+    """
+    Scan all outputs/*/audit.json files and return the first batch_id whose
+    audit already holds the given wfirma_pz_doc_id, excluding the caller's own
+    batch.  Returns None if no other shipment owns it.
+
+    Used as the cross-shipment duplicate guard in pz_adopt.
+    """
+    outputs_dir = settings.storage_root / "outputs"
+    if not outputs_dir.is_dir():
+        return None
+    target = wfirma_pz_doc_id.strip()
+    for audit_path in outputs_dir.glob("*/audit.json"):
+        batch = audit_path.parent.name
+        if batch == exclude_batch_id:
+            continue
+        try:
+            a       = json.loads(audit_path.read_text(encoding="utf-8"))
+            existing = ((a.get("wfirma_export") or {}).get("wfirma_pz_doc_id") or "").strip()
+            if existing == target:
+                return batch
+        except Exception:
+            continue
+    return None
 
 
 def _patch_audit_wfirma(output_dir: Path, mode: str, row_count: int) -> None:
@@ -1104,4 +1157,151 @@ async def wfirma_pz_create(batch_id: str) -> JSONResponse:
         "wfirma_pz_doc_id": pz_result.wfirma_pz_doc_id,
         "planned_lines":    planned,
         "line_count":       len(planned),
+    })
+
+
+# ── PZ Adopt ──────────────────────────────────────────────────────────────────
+
+class _PZAdoptBody(BaseModel):
+    """
+    Request body for POST .../wfirma/pz_adopt.
+
+    At least one of pz_doc_id (preferred) or pz_number must be supplied.
+    pz_doc_id is the canonical wFirma internal numeric ID.
+    pz_number is the human-readable document number (e.g. "PZ 1/5/2026") used
+    only when the internal ID is not known.
+    """
+    pz_doc_id: Optional[str] = None
+    pz_number: Optional[str] = None
+
+
+@router.post("/shipment/{batch_id}/wfirma/pz_adopt", dependencies=[_auth])
+async def wfirma_pz_adopt(batch_id: str, body: _PZAdoptBody) -> JSONResponse:
+    """
+    Attach an already-existing wFirma PZ document to this shipment without
+    creating a new one (adoption flow for manual / historical PZ documents).
+
+    Guard order
+    -----------
+    1. At least one of pz_doc_id / pz_number provided
+    2. Batch audit exists (batch must exist on disk)
+    3. wFirma document resolves and exists (via fetch or search)
+    4. Cross-shipment duplicate guard — no other batch may own the same PZ id
+    5. This shipment already holds the SAME PZ id → return already_adopted
+    6. This shipment already holds a DIFFERENT PZ id → blocked
+
+    On success:  writes wfirma_pz_doc_id + pz_source='adopted_existing' to audit
+                 atomically, returns status=adopted.
+    Idempotent:  returns status=already_adopted when called again with same id.
+
+    Response
+    --------
+    status           adopted | already_adopted | blocked
+    wfirma_pz_doc_id wFirma PZ internal id confirmed on adoption
+    pz_number        human-readable document number (from wFirma response)
+    batch_id         echoed
+    blocking_reasons list[str] — present only when status=blocked
+    """
+    pz_doc_id_raw = (body.pz_doc_id or "").strip()
+    pz_number_raw = (body.pz_number or "").strip()
+
+    # ── Guard 1: at least one identifier ─────────────────────────────────────
+    if not pz_doc_id_raw and not pz_number_raw:
+        return JSONResponse({
+            "ok":              False,
+            "status":          "blocked",
+            "blocking_reasons": ["pz_doc_id or pz_number is required"],
+        })
+
+    # ── Guard 2: batch audit must exist ──────────────────────────────────────
+    output_dir = get_output_dir(batch_id)
+    audit      = _read_audit(output_dir)   # raises HTTPException 404 if missing
+
+    # ── Guard 3: resolve the PZ document in wFirma ───────────────────────────
+    if pz_doc_id_raw:
+        fetch_result = wfirma_client.fetch_warehouse_pz(pz_doc_id_raw)
+    else:
+        fetch_result = wfirma_client.find_warehouse_pz_by_number(pz_number_raw)
+
+    if not fetch_result.ok:
+        log.warning(
+            "[%s] pz_adopt: wFirma lookup failed: %s", batch_id, fetch_result.error,
+        )
+        return JSONResponse({
+            "ok":              False,
+            "status":          "blocked",
+            "blocking_reasons": [
+                f"wFirma document not found or unreachable: {fetch_result.error}"
+            ],
+        })
+
+    resolved_doc_id = fetch_result.pz_doc_id
+    resolved_number = fetch_result.pz_number
+
+    # ── Guard 4: cross-shipment duplicate guard ───────────────────────────────
+    owner_batch = _find_pz_owner_batch(resolved_doc_id, exclude_batch_id=batch_id)
+    if owner_batch:
+        log.warning(
+            "[%s] pz_adopt: PZ %s already owned by batch %s",
+            batch_id, resolved_doc_id, owner_batch,
+        )
+        return JSONResponse({
+            "ok":              False,
+            "status":          "blocked",
+            "blocking_reasons": [
+                f"wFirma PZ {resolved_doc_id!r} is already linked to shipment "
+                f"{owner_batch!r} — cannot adopt the same PZ for two shipments"
+            ],
+        })
+
+    # ── Guard 5 / 6: check current shipment's existing PZ ────────────────────
+    wfirma_export      = audit.get("wfirma_export") or {}
+    existing_pz_doc_id = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
+
+    if existing_pz_doc_id:
+        if existing_pz_doc_id == resolved_doc_id:
+            # Idempotent — same PZ already recorded
+            return JSONResponse({
+                "ok":              True,
+                "status":          "already_adopted",
+                "batch_id":        batch_id,
+                "wfirma_pz_doc_id": existing_pz_doc_id,
+                "pz_number":       resolved_number,
+            })
+        # Different PZ already recorded — block
+        return JSONResponse({
+            "ok":              False,
+            "status":          "blocked",
+            "blocking_reasons": [
+                f"this shipment already has wFirma PZ {existing_pz_doc_id!r} — "
+                f"cannot overwrite with {resolved_doc_id!r}"
+            ],
+        })
+
+    # ── Adopt: write to audit ─────────────────────────────────────────────────
+    _patch_pz_adopted(output_dir, resolved_doc_id)
+    tl.log_event(
+        output_dir / "audit.json",
+        EV_WFIRMA_PZ_ADOPTED,
+        "dashboard",
+        "user",
+        detail={
+            "batch_id":         batch_id,
+            "wfirma_pz_doc_id": resolved_doc_id,
+            "pz_number":        resolved_number,
+            "source":           "adopted_existing",
+        },
+    )
+    log.info(
+        "[%s] pz_adopt: adopted wFirma PZ %s (%s)",
+        batch_id, resolved_doc_id, resolved_number,
+    )
+
+    return JSONResponse({
+        "ok":              True,
+        "status":          "adopted",
+        "batch_id":        batch_id,
+        "wfirma_pz_doc_id": resolved_doc_id,
+        "pz_number":       resolved_number,
+        "pz_source":       "adopted_existing",
     })

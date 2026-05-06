@@ -138,6 +138,43 @@ class ProformaResult:
     raw_response: Optional[str] = None
 
 
+@dataclass
+class PZLine:
+    """One goods line in a PZ (Przyjęcie Zewnętrzne) document."""
+    good_id: str
+    count: float
+    price: float
+
+
+@dataclass
+class PZRequest:
+    """Input for create_warehouse_pz()."""
+    contractor_id: str
+    warehouse_id: str
+    date: str                   # YYYY-MM-DD
+    description: str
+    lines: List[PZLine] = field(default_factory=list)
+
+
+@dataclass
+class PZResult:
+    """Output from create_warehouse_pz()."""
+    ok: bool
+    wfirma_pz_doc_id: str = ""
+    error: Optional[str] = None
+    raw_response: Optional[str] = None
+
+
+@dataclass
+class PZFetchResult:
+    """Result of a wFirma warehouse PZ document lookup (fetch or search)."""
+    ok: bool
+    pz_doc_id: str = ""
+    pz_number: str = ""
+    error: Optional[str] = None
+    raw_response: Optional[str] = None
+
+
 # ── Config check ──────────────────────────────────────────────────────────────
 
 def check_config() -> Dict[str, Any]:
@@ -1023,6 +1060,225 @@ def _build_reservation_xml(req: ReservationRequest) -> str:
     </warehouse_document>
   </warehouse_documents>
 </api>"""
+
+
+# ── PZ (Przyjęcie Zewnętrzne) — goods receipt ────────────────────────────────
+
+def _build_pz_xml(req: PZRequest) -> str:
+    """Build the XML payload for warehouse_document_p_z/add. Pure, no HTTP."""
+    lines_xml = ""
+    for line in req.lines:
+        lines_xml += f"""
+        <warehouse_document_content>
+          <unit_count>{line.count:.4f}</unit_count>
+          <price>{line.price:.2f}</price>
+          <good>
+            <id>{_esc(line.good_id)}</id>
+          </good>
+        </warehouse_document_content>"""
+
+    desc_xml = f"<description>{_esc(req.description)}</description>" if req.description else ""
+
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <warehouse_documents>
+    <warehouse_document>
+      <type>PZ</type>
+      <date>{req.date}</date>
+      <contractor>
+        <id>{_esc(req.contractor_id)}</id>
+      </contractor>
+      <warehouse>
+        <id>{_esc(req.warehouse_id)}</id>
+      </warehouse>
+      <price_type>netto</price_type>
+      {desc_xml}
+      <warehouse_document_contents>{lines_xml}
+      </warehouse_document_contents>
+    </warehouse_document>
+  </warehouse_documents>
+</api>"""
+
+
+def fetch_warehouse_pz(pz_doc_id: str) -> "PZFetchResult":
+    """
+    Fetch a single warehouse PZ document by its wFirma numeric ID.
+
+    Uses warehouse_document_p_z/find with an id-eq condition so that only
+    PZ-type documents are searched (the module name IS the type filter).
+
+    Returns PZFetchResult(ok=True, pz_doc_id=..., pz_number=...) on success.
+    Returns PZFetchResult(ok=False, error=...) if the document is not found,
+    the API returns an error, or a network/parse error occurs.  Never raises.
+    """
+    if not (pz_doc_id or "").strip():
+        return PZFetchResult(ok=False, error="pz_doc_id is required")
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <warehouse_document_p_z>
+    <parameters>
+      <conditions>
+        <condition><field>id</field><operator>eq</operator><value>{_esc(pz_doc_id)}</value></condition>
+      </conditions>
+    </parameters>
+  </warehouse_document_p_z>
+</api>"""
+    try:
+        http_status, response_text = _http_request(
+            "GET", "warehouse_document_p_z", "find", body,
+        )
+    except (ConnectionError, ValueError) as exc:
+        return PZFetchResult(ok=False, error=f"connection: {exc}")
+    if http_status >= 400:
+        return PZFetchResult(
+            ok=False, error=f"HTTP {http_status}", raw_response=response_text,
+        )
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        return PZFetchResult(
+            ok=False, error=f"{code}: {desc}" if desc else code,
+            raw_response=response_text,
+        )
+    try:
+        root = ET.fromstring(response_text)
+    except ET.ParseError as exc:
+        return PZFetchResult(
+            ok=False, error=f"XML parse error: {exc}", raw_response=response_text,
+        )
+    wd_node = root.find(".//warehouse_document")
+    if wd_node is None:
+        return PZFetchResult(
+            ok=False, error=f"PZ document {pz_doc_id!r} not found",
+            raw_response=response_text,
+        )
+    fetched_id = _find_text(wd_node, "id") or pz_doc_id
+    pz_number  = (
+        _find_text(wd_node, "full_number")
+        or _find_text(wd_node, "number")
+        or ""
+    )
+    return PZFetchResult(ok=True, pz_doc_id=fetched_id, pz_number=pz_number)
+
+
+def find_warehouse_pz_by_number(pz_number: str) -> "PZFetchResult":
+    """
+    Search for a warehouse PZ by its document number (full_number field).
+
+    Uses warehouse_document_p_z/find with a full_number-eq condition.
+    Returns the first matching PZ document, or PZFetchResult(ok=False) if none.
+    Never raises.
+    """
+    if not (pz_number or "").strip():
+        return PZFetchResult(ok=False, error="pz_number is required")
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <warehouse_document_p_z>
+    <parameters>
+      <conditions>
+        <condition>
+          <field>full_number</field>
+          <operator>eq</operator>
+          <value>{_esc(pz_number)}</value>
+        </condition>
+      </conditions>
+      <page><start>0</start><limit>1</limit></page>
+    </parameters>
+  </warehouse_document_p_z>
+</api>"""
+    try:
+        http_status, response_text = _http_request(
+            "GET", "warehouse_document_p_z", "find", body,
+        )
+    except (ConnectionError, ValueError) as exc:
+        return PZFetchResult(ok=False, error=f"connection: {exc}")
+    if http_status >= 400:
+        return PZFetchResult(
+            ok=False, error=f"HTTP {http_status}", raw_response=response_text,
+        )
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        return PZFetchResult(
+            ok=False, error=f"{code}: {desc}" if desc else code,
+            raw_response=response_text,
+        )
+    try:
+        root = ET.fromstring(response_text)
+    except ET.ParseError as exc:
+        return PZFetchResult(
+            ok=False, error=f"XML parse error: {exc}", raw_response=response_text,
+        )
+    wd_node = root.find(".//warehouse_document")
+    if wd_node is None:
+        return PZFetchResult(
+            ok=False,
+            error=f"no PZ document found with number {pz_number!r}",
+            raw_response=response_text,
+        )
+    fetched_id     = _find_text(wd_node, "id") or ""
+    fetched_number = (
+        _find_text(wd_node, "full_number")
+        or _find_text(wd_node, "number")
+        or pz_number
+    )
+    return PZFetchResult(ok=True, pz_doc_id=fetched_id, pz_number=fetched_number)
+
+
+def create_warehouse_pz(req: PZRequest) -> PZResult:
+    """
+    Create a PZ (goods receipt) document in wFirma.
+
+    Pre-conditions (caller must verify before calling):
+    - settings.wfirma_create_pz_allowed is True
+    - req.contractor_id is a valid wFirma contractor ID
+    - Every line.good_id is a valid wFirma good ID
+    - req.warehouse_id matches the configured wFirma warehouse
+
+    Returns PZResult(ok=True, wfirma_pz_doc_id=...) on success.
+    Returns PZResult(ok=False, error=...) on HTTP error, wFirma ERROR status,
+    connection failure, or missing document id in response. Never raises.
+
+    API: POST warehouse_document_p_z/add
+    Auth: API Key headers (Basic Auth deprecated by wFirma 2023-07-02)
+    """
+    if not getattr(settings, "wfirma_create_pz_allowed", False):
+        return PZResult(ok=False, error="WFIRMA_CREATE_PZ_ALLOWED is not enabled")
+
+    if not req.contractor_id or not req.lines:
+        return PZResult(ok=False, error="invalid request: contractor_id and lines required")
+
+    body_xml = _build_pz_xml(req)
+    try:
+        http_status, response_text = _http_request(
+            "POST", "warehouse_document_p_z", "add", body_xml,
+        )
+    except (ConnectionError, ValueError) as exc:
+        return PZResult(ok=False, error=f"connection: {exc}")
+
+    if http_status >= 400:
+        return PZResult(ok=False, error=f"HTTP {http_status}", raw_response=response_text)
+
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        return PZResult(
+            ok=False,
+            error=f"{code}: {desc}" if desc else code,
+            raw_response=response_text,
+        )
+
+    try:
+        root = ET.fromstring(response_text)
+    except ET.ParseError as exc:
+        return PZResult(ok=False, error=f"parse_error: {exc}", raw_response=response_text)
+
+    wd_node = root.find(".//warehouse_document")
+    wfirma_id = _find_text(wd_node, "id") if wd_node is not None else ""
+    if not wfirma_id:
+        return PZResult(
+            ok=False,
+            error="no warehouse_document.id in response",
+            raw_response=response_text,
+        )
+    return PZResult(ok=True, wfirma_pz_doc_id=wfirma_id, raw_response=response_text)
 
 
 # ── Proforma invoice (fallback) ───────────────────────────────────────────────

@@ -2120,6 +2120,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [pzCreateBusy, setPzCreateBusy] = React.useState(false);
   const [pzCreateResult, setPzCreateResult] = React.useState(null); // {status, wfirma_pz_doc_id, ...}
   const [pzCreateConfirm, setPzCreateConfirm] = React.useState(false);
+  const [pzAdoptInput, setPzAdoptInput] = React.useState('');       // doc id or number typed by user
+  const [pzAdoptBusy, setPzAdoptBusy] = React.useState(false);
+  const [pzAdoptResult, setPzAdoptResult] = React.useState(null);   // {status, wfirma_pz_doc_id, ...}
+  const [pzAdoptOpen, setPzAdoptOpen] = React.useState(false);      // toggle adopt panel
   const [scanResult, setScanResult] = React.useState(null);          // DHL inbox scan response
   const [confirmingMarkRec, setConfirmingMarkRec] = React.useState(false);
   const _markRecDefaults = { sender: 'odprawacelna@dhl.com', subject: '', ticket: '', request_type: 'unknown', note: '' };
@@ -2306,6 +2310,33 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     }
     setPzCreateBusy(false);
   }, [batchId, onToast, loadPzPreview]);
+
+  const submitPzAdopt = React.useCallback(async () => {
+    const val = pzAdoptInput.trim();
+    if (!val) { onToast('Enter a PZ doc ID or document number first', 'error'); return; }
+    // Heuristic: if it looks like all digits → pz_doc_id, otherwise pz_number
+    const isNumericId = /^\d+$/.test(val);
+    const payload = isNumericId ? { pz_doc_id: val } : { pz_number: val };
+    setPzAdoptBusy(true);
+    try {
+      const d = await apiFetch(
+        `/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_adopt`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+      );
+      setPzAdoptResult(d);
+      if (d.status === 'adopted' || d.status === 'already_adopted') {
+        onToast(`PZ adopted: ${d.wfirma_pz_doc_id}`, 'success');
+        setPzAdoptOpen(false);
+        await loadPzPreview();
+      } else {
+        const reason = (d.blocking_reasons || []).join('; ') || d.error || 'blocked';
+        onToast('PZ adopt blocked: ' + reason, 'error');
+      }
+    } catch (e) {
+      onToast('PZ adopt error: ' + e.message, 'error');
+    }
+    setPzAdoptBusy(false);
+  }, [batchId, pzAdoptInput, onToast, loadPzPreview]);
 
   const submitReservation = React.useCallback(async (clientName) => {
     setCreateBusy(true);
@@ -4505,6 +4536,42 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           {pzCreateBusy ? '⟳…' : 'Confirm'}
                         </Btn>
                         <Btn small variant="ghost" onClick={() => setPzCreateConfirm(false)}>Cancel</Btn>
+                      </div>
+                    )}
+
+                    {/* Confirm Existing PZ — adopt a manually-created or historical PZ */}
+                    {!pzAdoptOpen ? (
+                      <Btn variant="outline"
+                          data-testid="btn-pz-adopt-open"
+                          disabled={!!pzPreview?.wfirma_pz_doc_id || pzAdoptBusy}
+                          title={
+                            pzPreview?.wfirma_pz_doc_id
+                              ? 'PZ already linked to this shipment'
+                              : 'Attach an existing wFirma PZ to this shipment'
+                          }
+                          onClick={() => { setPzAdoptOpen(true); setPzAdoptResult(null); }}>
+                        ✔ Confirm Existing PZ
+                      </Btn>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', background: 'var(--badge-blue-bg, #eff6ff)', border: '1px solid var(--badge-blue-border, #bfdbfe)', borderRadius: 6 }}>
+                        <input
+                          data-testid="input-pz-adopt"
+                          value={pzAdoptInput}
+                          onChange={e => setPzAdoptInput(e.target.value)}
+                          placeholder="PZ doc ID or number (e.g. 183167843)"
+                          style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #cbd5e1', width: 220 }}
+                        />
+                        <Btn small variant="gold" disabled={pzAdoptBusy || !pzAdoptInput.trim()}
+                            data-testid="btn-pz-adopt-confirm"
+                            onClick={submitPzAdopt}>
+                          {pzAdoptBusy ? '⟳…' : 'Adopt'}
+                        </Btn>
+                        <Btn small variant="ghost" onClick={() => { setPzAdoptOpen(false); setPzAdoptInput(''); }}>Cancel</Btn>
+                        {pzAdoptResult && pzAdoptResult.status === 'blocked' && (
+                          <span style={{ fontSize: 11, color: 'var(--badge-red-text, #b91c1c)' }}>
+                            {(pzAdoptResult.blocking_reasons || [pzAdoptResult.error || 'blocked'])[0]}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
