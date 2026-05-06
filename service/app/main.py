@@ -43,6 +43,7 @@ from .api.routes_warehouse_audit import router as warehouse_audit_router
 from .api.routes_wfirma_capabilities import router as wfirma_capabilities_router
 from .api.routes_wfirma_reservation import router as wfirma_reservation_router
 from .api.routes_dhl_readiness import router as dhl_readiness_router
+from .api.routes_batch_readiness import router as batch_readiness_router
 from .api.routes_tracking_db import router as tracking_db_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
@@ -199,6 +200,7 @@ app.include_router(warehouse_audit_router)
 app.include_router(wfirma_capabilities_router)
 app.include_router(wfirma_reservation_router)
 app.include_router(dhl_readiness_router)
+app.include_router(batch_readiness_router)
 app.include_router(tracking_db_router)  # /events/* before tracking_router's /{tracking_no}
 
 
