@@ -416,8 +416,7 @@ def test_proforma_xml_valid():
         client_zip="SW1A 1AA",
         client_city="London",
         lines=_sample_lines(2),
-        wfirma_contractor_id="999",
-    )
+        wfirma_contractor_id="999", vat_code_id="222")
     xml_str = _build_proforma_xml(req)
     root = ET.fromstring(xml_str)
     assert root.tag == "api"
@@ -426,8 +425,7 @@ def test_proforma_xml_valid():
 def test_proforma_xml_type_is_proforma():
     req = ProformaRequest(
         client_name="X", client_zip="00-001", client_city="Warsaw",
-        lines=_sample_lines(1), wfirma_contractor_id="999",
-    )
+        lines=_sample_lines(1), wfirma_contractor_id="999", vat_code_id="222")
     root = _parse_proforma_xml(req)
     invoice = root.find(".//invoice")
     assert _find_text(invoice, "type") == "proforma"
@@ -440,8 +438,7 @@ def test_proforma_xml_contractor_id_reference():
         client_zip="SW1A 1AA",
         client_city="London",
         lines=_sample_lines(1),
-        wfirma_contractor_id="42",
-    )
+        wfirma_contractor_id="42", vat_code_id="222")
     root = _parse_proforma_xml(req)
     invoice = root.find(".//invoice")
     assert _find_text(invoice, "contractor", "id") == "42"
@@ -454,8 +451,7 @@ def test_proforma_xml_contractor_id_reference():
 def test_proforma_xml_line_count():
     req = ProformaRequest(
         client_name="X", client_zip="", client_city="",
-        lines=_sample_lines(4), wfirma_contractor_id="999",
-    )
+        lines=_sample_lines(4), wfirma_contractor_id="999", vat_code_id="222")
     root = _parse_proforma_xml(req)
     lines = root.findall(".//invoicecontent")
     assert len(lines) == 4
@@ -472,8 +468,7 @@ def test_proforma_xml_line_fields():
     )
     req = ProformaRequest(
         client_name="X", client_zip="", client_city="", lines=[line],
-        wfirma_contractor_id="999",
-    )
+        wfirma_contractor_id="999", vat_code_id="222")
     root = _parse_proforma_xml(req)
     content = root.find(".//invoicecontent")
     assert _find_text(content, "count") == "3.0000"
@@ -514,8 +509,7 @@ def test_create_proforma_validates_required_args():
     """create_proforma_draft is now implemented; arg validation lives in client."""
     req = ProformaRequest(
         client_name="", client_zip="", client_city="",
-        lines=_sample_lines(1),
-    )
+        lines=_sample_lines(1), vat_code_id="222")
     with pytest.raises(ValueError, match="client_name"):
         create_proforma_draft(req)
 
@@ -878,13 +872,16 @@ def _proforma_request(currency: str = "USD"):
         lines                = [line],
         currency             = currency,
         wfirma_contractor_id = "176578339",  # required by validated wFirma shape
+        vat_code_id          = "228",        # WDT (Juliany is BG → EU non-PL)
     )
 
 
-def _verify_find_response(wfirma_id: str, good_ids):
+def _verify_find_response(wfirma_id: str, good_ids, vat_code_id=None):
     """Synthesise an invoices/find response with one <invoicecontent> per id."""
+    vat_xml = (f"<vat_code><id>{vat_code_id}</id></vat_code>"
+               if vat_code_id else "")
     rows = "".join(
-        f"<invoicecontent><id>L{i}</id><good><id>{gid}</id></good></invoicecontent>"
+        f"<invoicecontent><id>L{i}</id><good><id>{gid}</id></good>{vat_xml}</invoicecontent>"
         for i, gid in enumerate(good_ids)
     )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -918,7 +915,7 @@ def test_create_proforma_draft_posts_invoices_add_and_verifies(monkeypatch):
     """add → verify-fetch → success when persisted line count matches."""
     fake = _http_seq(
         (200, _ok_invoice_response("99887766")),
-        (200, _verify_find_response("99887766", ["48611875"])),
+        (200, _verify_find_response("99887766", ["48611875"], vat_code_id="228")),
     )
     monkeypatch.setattr(_wc, "_http_request", fake)
 
@@ -952,11 +949,10 @@ def test_create_proforma_draft_raises_on_partial_persistence(monkeypatch):
     req = _wc.ProformaRequest(
         client_name="Juliany EOOD", client_zip="", client_city="",
         lines=[line("G1"), line("G2"), line("G3")],
-        currency="USD", wfirma_contractor_id="C1",
-    )
+        currency="USD", wfirma_contractor_id="C1", vat_code_id="222")
     fake = _http_seq(
         (200, _ok_invoice_response("465611619")),
-        (200, _verify_find_response("465611619", ["G1"])),  # only 1 of 3
+        (200, _verify_find_response("465611619", ["G1"], vat_code_id="222")),  # only 1 of 3
     )
     monkeypatch.setattr(_wc, "_http_request", fake)
     with pytest.raises(RuntimeError) as excinfo:
@@ -1026,8 +1022,7 @@ def test_build_proforma_xml_does_not_collapse_duplicate_good_ids():
         client_name="C", client_zip="", client_city="",
         lines=[line("G7", 1), line("G7", 1), line("G7", 1), line("G7", 1),
                line("G4", 1), line("G4", 1)],
-        currency="USD", wfirma_contractor_id="C1",
-    )
+        currency="USD", wfirma_contractor_id="C1", vat_code_id="222")
     body = _wc._build_proforma_xml(req)
     # 6 distinct invoicecontent blocks even though only 2 unique good_ids.
     assert body.count("<invoicecontent>") == 6
@@ -1038,8 +1033,7 @@ def test_build_proforma_xml_does_not_collapse_duplicate_good_ids():
 def test_create_proforma_draft_raises_on_empty_lines():
     req = _wc.ProformaRequest(
         client_name="Juliany EOOD", client_zip="", client_city="",
-        lines=[], currency="USD",
-    )
+        lines=[], currency="USD", vat_code_id="222")
     with pytest.raises(ValueError, match="at least one line"):
         _wc.create_proforma_draft(req)
 
@@ -1051,8 +1045,7 @@ def test_create_proforma_draft_raises_on_empty_client_name():
     )
     req = _wc.ProformaRequest(
         client_name="", client_zip="", client_city="",
-        lines=[line], currency="USD",
-    )
+        lines=[line], currency="USD", vat_code_id="222")
     with pytest.raises(ValueError, match="client_name"):
         _wc.create_proforma_draft(req)
 
@@ -1185,8 +1178,7 @@ def test_build_proforma_xml_omits_currency_when_blank():
     )
     req = _wc.ProformaRequest(
         client_name="C", client_zip="", client_city="",
-        lines=[line], currency="", wfirma_contractor_id="CID-1",
-    )
+        lines=[line], currency="", wfirma_contractor_id="CID-1", vat_code_id="222")
     xml = _wc._build_proforma_xml(req)
     assert "<currency>" not in xml
 
@@ -1220,8 +1212,7 @@ def test_build_proforma_xml_raises_on_missing_contractor_id():
     )
     req = _wc.ProformaRequest(
         client_name="C", client_zip="", client_city="",
-        lines=[line], currency="USD", wfirma_contractor_id="",
-    )
+        lines=[line], currency="USD", wfirma_contractor_id="", vat_code_id="222")
     with pytest.raises(ValueError, match="wfirma_contractor_id is required"):
         _wc._build_proforma_xml(req)
 
@@ -1233,8 +1224,7 @@ def test_build_proforma_xml_raises_on_missing_good_id():
     )
     req = _wc.ProformaRequest(
         client_name="C", client_zip="", client_city="",
-        lines=[line], currency="USD", wfirma_contractor_id="CID-1",
-    )
+        lines=[line], currency="USD", wfirma_contractor_id="CID-1", vat_code_id="222")
     with pytest.raises(ValueError, match="wfirma_good_id is required"):
         _wc._build_proforma_xml(req)
 
@@ -1424,8 +1414,7 @@ def _proforma_req(*good_ids):
     return _wc.ProformaRequest(
         client_name="Juliany EOOD", client_zip="", client_city="",
         lines=[_line(g) for g in good_ids],
-        currency="USD", wfirma_contractor_id="C-1",
-    )
+        currency="USD", wfirma_contractor_id="C-1", vat_code_id="222")
 
 
 def test_proforma_xml_emits_discount_fields_per_line():
@@ -1441,52 +1430,111 @@ def test_proforma_xml_emits_vat_code_id_per_line():
     assert body.count("<vat_code><id>222</id></vat_code>") == 2
 
 
-def test_proforma_xml_resolves_vat_code_once_per_process(monkeypatch):
-    """A multi-line request should trigger at most one VAT lookup."""
-    # Drop the autouse cache priming so we can observe the lookup.
-    _wfirma_client_mod._VAT_CODE_ID_CACHE.pop(23, None)
-    calls = {"n": 0}
-    def fake_lookup(rate=23):
-        calls["n"] += 1
-        return "222"
-    monkeypatch.setattr(_wc, "find_vat_code_id_live", fake_lookup)
-
-    _wc._build_proforma_xml(_proforma_req("G1", "G2", "G3", "G4", "G5"))
-    assert calls["n"] == 1, "vat_code lookup must run exactly once for multi-line"
-
-    # Subsequent build re-uses cache → still no extra call.
-    _wc._build_proforma_xml(_proforma_req("G6", "G7"))
-    assert calls["n"] == 1, "vat_code lookup must be cached process-wide"
+def test_proforma_xml_uses_supplied_vat_code_id_no_lookup(monkeypatch):
+    """
+    _build_proforma_xml is now offline: it consumes req.vat_code_id
+    verbatim (decided + resolved by the route layer). No find_vat_code_*
+    call may be made during build. Multi-line requests apply the same
+    id to every line.
+    """
+    monkeypatch.setattr(_wc, "find_vat_code_id_live",
+                        lambda *a, **k: pytest.fail("no live VAT lookup permitted"))
+    monkeypatch.setattr(_wc, "find_vat_code_id_by_code",
+                        lambda *a, **k: pytest.fail("no live VAT lookup permitted"))
+    body = _wc._build_proforma_xml(_proforma_req("G1", "G2", "G3"))
+    # _proforma_req sets vat_code_id="222"; every line uses it.
+    assert body.count("<vat_code><id>222</id></vat_code>") == 3
 
 
-def test_proforma_xml_raises_when_vat_lookup_returns_none(monkeypatch):
-    """If wFirma has no vat_code for the requested rate, refuse to build."""
-    _wfirma_client_mod._VAT_CODE_ID_CACHE.pop(23, None)
-    monkeypatch.setattr(_wc, "find_vat_code_id_live", lambda rate=23: None)
-    with pytest.raises(RuntimeError, match="no vat_code for rate=23"):
-        _wc._build_proforma_xml(_proforma_req("G1"))
+def test_proforma_xml_raises_when_vat_code_id_missing():
+    """Empty vat_code_id on the request → hard ValueError, no XML emitted."""
+    line = _wc.ReservationLine(
+        product_code="EJL/X", wfirma_good_id="G1", product_name="x",
+        qty=1, unit_price=1, currency="USD",
+    )
+    req = _wc.ProformaRequest(
+        client_name="C", client_zip="", client_city="",
+        lines=[line], currency="USD",
+        wfirma_contractor_id="C1", vat_code_id="",
+    )
+    with pytest.raises(ValueError, match="vat_code_id is required"):
+        _wc._build_proforma_xml(req)
 
 
-def test_proforma_xml_validates_lines_before_vat_lookup(monkeypatch):
-    """A bad request (missing wfirma_good_id) must NOT trigger a network call."""
-    _wfirma_client_mod._VAT_CODE_ID_CACHE.pop(23, None)
-    called = {"n": 0}
-    def fake_lookup(rate=23):
-        called["n"] += 1
-        return "222"
-    monkeypatch.setattr(_wc, "find_vat_code_id_live", fake_lookup)
-
+def test_proforma_xml_validates_lines_before_vat_check():
+    """
+    Per-line validation precedes the vat_code_id check so a request
+    with both problems surfaces the structural one first.
+    """
     bad = _wc.ReservationLine(
         product_code="EJL/X", wfirma_good_id="", product_name="x",
         qty=1, unit_price=1, currency="USD",
     )
     req = _wc.ProformaRequest(
         client_name="C", client_zip="", client_city="",
-        lines=[bad], currency="USD", wfirma_contractor_id="C1",
+        lines=[bad], currency="USD",
+        wfirma_contractor_id="C1", vat_code_id="",
     )
     with pytest.raises(ValueError, match="wfirma_good_id is required"):
         _wc._build_proforma_xml(req)
-    assert called["n"] == 0, "VAT lookup must not run when validation fails"
+
+
+# ── decide_proforma_vat_context truth table ────────────────────────────────
+
+def test_vat_context_pl_domestic():
+    d = _wc.decide_proforma_vat_context("PL", "")
+    assert d["context"] == "domestic"
+    assert d["vat_code"] == "23"
+
+
+def test_vat_context_eu_with_vat_id_is_wdt():
+    # Juliany EOOD case: BG + BG121281167.
+    d = _wc.decide_proforma_vat_context("BG", "BG121281167")
+    assert d["context"] == "wdt"
+    assert d["vat_code"] == "WDT"
+
+
+def test_vat_context_eu_lowercase_country_normalised():
+    d = _wc.decide_proforma_vat_context("bg", "BG12345")
+    assert d["context"] == "wdt"
+
+
+def test_vat_context_eu_without_vat_id_blocks():
+    d = _wc.decide_proforma_vat_context("DE", "")
+    assert d["context"] == "blocked"
+    assert d["vat_code"] is None
+    assert "no VAT id" in d["reason"]
+
+
+def test_vat_context_non_eu_is_export():
+    d = _wc.decide_proforma_vat_context("US", "")
+    assert d["context"] == "export"
+    assert d["vat_code"] == "EXP"
+
+
+def test_vat_context_country_missing_blocks():
+    d = _wc.decide_proforma_vat_context("", "anything")
+    assert d["context"] == "blocked"
+    assert d["vat_code"] is None
+    assert "country missing" in d["reason"]
+
+
+# ── resolve_vat_code_id_for_context contract ───────────────────────────────
+
+def test_resolve_vat_code_id_for_context_uses_cache():
+    """Cache primed by the autouse fixture short-circuits the lookup."""
+    _wfirma_client_mod._VAT_CODE_ID_CACHE["WDT"] = "228"
+    try:
+        assert _wc.resolve_vat_code_id_for_context("WDT") == "228"
+    finally:
+        _wfirma_client_mod._VAT_CODE_ID_CACHE.pop("WDT", None)
+
+
+def test_resolve_vat_code_id_for_context_raises_on_unknown(monkeypatch):
+    _wfirma_client_mod._VAT_CODE_ID_CACHE.pop("XX", None)
+    monkeypatch.setattr(_wc, "find_vat_code_id_by_code", lambda c: None)
+    with pytest.raises(RuntimeError, match="no vat_code with code='XX'"):
+        _wc.resolve_vat_code_id_for_context("XX")
 
 
 def test_proforma_xml_juliany_12line_still_emits_12_blocks():
@@ -1506,3 +1554,92 @@ def test_proforma_xml_juliany_12line_still_emits_12_blocks():
     assert body.count("<vat_code><id>222</id></vat_code>") == 12
     assert body.count("<discount>1</discount>") == 12
     assert body.count("<price_modified>1</price_modified>") == 12
+
+
+# ---------------------------------------------------------------------------
+# Verify-after-create: VAT code parity checks
+# ---------------------------------------------------------------------------
+
+def test_create_proforma_draft_raises_on_vat_code_mismatch(monkeypatch):
+    """
+    wFirma returned OK + correct line count, but persisted every line with
+    vat_code_id=222 (PL 23%) instead of the requested 228 (WDT 0%).
+    Must raise RuntimeError — never report ok=True on a VAT rewrite.
+    Mirrors PROF 92/2026 vat_code gap identified in SECURITY audit.
+    """
+    fake = _http_seq(
+        (200, _ok_invoice_response("99887766")),
+        (200, _verify_find_response("99887766", ["48611875"], vat_code_id="222")),
+    )
+    monkeypatch.setattr(_wc, "_http_request", fake)
+    with pytest.raises(RuntimeError) as excinfo:
+        _wc.create_proforma_draft(_proforma_request())  # req.vat_code_id="228"
+    msg = str(excinfo.value)
+    assert "vat_code mismatch" in msg
+    assert "wfirma_invoice_id=99887766" in msg
+    assert "expected_vat_code_id='228'" in msg
+    assert "222" in msg
+
+
+def test_create_proforma_draft_raises_on_vat_code_mismatch_partial_lines(monkeypatch):
+    """
+    Multi-line request where only some lines have the wrong persisted VAT.
+    Gate must still raise — any mismatch is a vat_code mismatch.
+    """
+    line = lambda gid: _wc.ReservationLine(
+        product_code=f"EJL/{gid}", wfirma_good_id=gid, product_name="x",
+        qty=1, unit_price=10, currency="USD",
+    )
+    req = _wc.ProformaRequest(
+        client_name="Juliany EOOD", client_zip="", client_city="",
+        lines=[line("G1"), line("G2"), line("G3")],
+        currency="USD", wfirma_contractor_id="C1", vat_code_id="228")
+    # Build a verify response where G1 has correct VAT but G2 and G3 have 222.
+    vat_xml_ok = "<vat_code><id>228</id></vat_code>"
+    vat_xml_bad = "<vat_code><id>222</id></vat_code>"
+    rows = (
+        f"<invoicecontent><id>L0</id><good><id>G1</id></good>{vat_xml_ok}</invoicecontent>"
+        f"<invoicecontent><id>L1</id><good><id>G2</id></good>{vat_xml_bad}</invoicecontent>"
+        f"<invoicecontent><id>L2</id><good><id>G3</id></good>{vat_xml_bad}</invoicecontent>"
+    )
+    verify_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <invoices><invoice>
+    <id>777111</id><type>proforma</type>
+    <invoicecontents>{rows}</invoicecontents>
+  </invoice></invoices>
+  <status><code>OK</code></status>
+</api>"""
+    fake = _http_seq(
+        (200, _ok_invoice_response("777111")),
+        (200, verify_xml),
+    )
+    monkeypatch.setattr(_wc, "_http_request", fake)
+    with pytest.raises(RuntimeError) as excinfo:
+        _wc.create_proforma_draft(req)
+    msg = str(excinfo.value)
+    assert "vat_code mismatch" in msg
+    assert "expected_vat_code_id='228'" in msg
+
+
+def test_create_proforma_draft_vat_check_passes_on_correct_vat_code(monkeypatch):
+    """
+    Multi-line request where every persisted line carries the expected
+    vat_code_id.  Gate must return ok=True — no false positive.
+    """
+    line = lambda gid: _wc.ReservationLine(
+        product_code=f"EJL/{gid}", wfirma_good_id=gid, product_name="x",
+        qty=1, unit_price=10, currency="USD",
+    )
+    req = _wc.ProformaRequest(
+        client_name="Juliany EOOD", client_zip="", client_city="",
+        lines=[line("G1"), line("G2"), line("G3")],
+        currency="USD", wfirma_contractor_id="C1", vat_code_id="228")
+    fake = _http_seq(
+        (200, _ok_invoice_response("888222")),
+        (200, _verify_find_response("888222", ["G1", "G2", "G3"], vat_code_id="228")),
+    )
+    monkeypatch.setattr(_wc, "_http_request", fake)
+    res = _wc.create_proforma_draft(req)
+    assert res.ok is True
+    assert res.wfirma_invoice_id == "888222"

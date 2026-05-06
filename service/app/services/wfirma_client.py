@@ -122,6 +122,11 @@ class ProformaRequest:
     lines:                 List[ReservationLine] = field(default_factory=list)
     currency:              str = "PLN"
     wfirma_contractor_id:  str = ""
+    # Per-line VAT code id resolved from wFirma vat_codes lookup (field
+    # <code> matches one of "23", "WDT", "EXP", etc.). Required: a
+    # caller that hasn't decided the VAT context yet has no business
+    # building a proforma payload — see decide_proforma_vat_context().
+    vat_code_id:           str = ""
 
 
 @dataclass
@@ -513,24 +518,32 @@ def count_contractors() -> int:
         return 0
 
 
-def list_contractors_page(start: int, limit: int) -> List[WFirmaContractor]:
+def list_contractors_page(page: int, limit: int) -> List[WFirmaContractor]:
     """
     Read one page of wFirma contractors (no conditions — full master list).
 
-    API: GET contractors/find with <page><start>{start}</start>
-                                       <limit>{limit}</limit></page>.
+    API: GET contractors/find with <page>N</page><limit>K</limit> as
+    SIBLINGS at the <parameters> root. The legacy nested
+    <page><start>...</start><limit>...</limit></page> shape is ignored
+    by wFirma — it always returns the first page (live diagnostic
+    2026-05-06: Shape S1/S7/S8 all returned ids 38142296..44980520
+    regardless of <start> or <limit>; Shape S2/S3 with sibling
+    <page>N</page><limit>K</limit> advanced the cursor).
 
-    Returns a list of WFirmaContractor (possibly empty for an over-the-end
-    page). Raises RuntimeError on non-OK status / HTTP ≥ 400.
+    *page* is 1-indexed (page=1 is the first page).
+
+    Returns a list of WFirmaContractor (possibly empty when *page*
+    exceeds the total). Raises RuntimeError on non-OK status / HTTP ≥ 400.
     """
-    if start < 0 or limit <= 0:
-        raise ValueError("start must be >=0 and limit must be >0")
+    if page < 1 or limit <= 0:
+        raise ValueError("page must be >=1 and limit must be >0")
     body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <api>
   <contractors>
     <parameters>
       <conditions/>
-      <page><start>{int(start)}</start><limit>{int(limit)}</limit></page>
+      <page>{int(page)}</page>
+      <limit>{int(limit)}</limit>
     </parameters>
   </contractors>
 </api>"""
@@ -1084,6 +1097,31 @@ def create_proforma_draft(req: ProformaRequest) -> ProformaResult:
             "but lines were silently dropped; do NOT mark as success"
         )
 
+    # VAT code parity — reuses persisted_lines, no additional HTTP call.
+    # wFirma can silently rewrite per-line vat_code on persist; treat a
+    # missing <vat_code>/<id> element as actual_vat_code_id="" (mismatch).
+    expected_vat = (req.vat_code_id or "").strip()
+    vat_mismatches = []
+    for ln in persisted_lines:
+        good_node = ln.find("good")
+        gid = (good_node.findtext("id") or "").strip() if good_node is not None else ""
+        vc_node = ln.find("vat_code")
+        actual_vat = (vc_node.findtext("id") or "").strip() if vc_node is not None else ""
+        if actual_vat != expected_vat:
+            vat_mismatches.append({
+                "good_id": gid,
+                "expected_vat_code_id": expected_vat,
+                "actual_vat_code_id": actual_vat,
+            })
+    if vat_mismatches:
+        raise RuntimeError(
+            f"invoices/add vat_code mismatch: wfirma_invoice_id={wfirma_id} "
+            f"expected_count={expected_count} actual_count={actual_count} "
+            f"expected_vat_code_id={expected_vat!r} "
+            f"mismatched_vat_codes={vat_mismatches[:10]} — "
+            "wFirma silently rewrote per-line VAT; do NOT mark as success"
+        )
+
     return ProformaResult(
         ok                = True,
         wfirma_invoice_id = wfirma_id,
@@ -1092,7 +1130,116 @@ def create_proforma_draft(req: ProformaRequest) -> ProformaResult:
     )
 
 
-_VAT_CODE_ID_CACHE: Dict[int, str] = {}
+# wFirma's vat_codes carry a stable <code> field (e.g. "23", "WDT",
+# "EXP"). VAT ids vary across deployments but the <code> values are
+# semantic — we resolve by code rather than rate so the same lookup
+# table works for PL standard, WDT, export, NP, ZW, etc.
+
+# EU member states (ISO 3166-1 alpha-2). Used to decide whether a
+# non-PL customer qualifies for WDT (intra-community supply, 0% VAT)
+# vs. true export.
+_EU_COUNTRIES: frozenset = frozenset({
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+    "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+})
+
+
+def decide_proforma_vat_context(customer_country: str,
+                                 customer_vat_id: str = "") -> Dict[str, Any]:
+    """
+    Pure-data decision: which VAT regime applies to a proforma for a
+    given customer? Returns:
+
+      {"context": "domestic" | "wdt" | "export" | "blocked",
+       "vat_code": "23" | "WDT" | "EXP" | None,
+       "reason":   <human readable>}
+
+    Rules (Polish accounting):
+      - PL                   → 23%             (domestic)
+      - EU non-PL + valid VAT → WDT 0%          (intra-community supply)
+      - EU non-PL + no VAT    → BLOCKED         (cannot apply WDT
+                                                  without a VAT number)
+      - non-EU                → EXP 0%          (export)
+      - country missing       → BLOCKED         (unknown VAT status)
+
+    No country/region mapping fallbacks; missing data must surface as
+    a hard block so the operator decides explicitly.
+    """
+    cc  = (customer_country or "").strip().upper()
+    vat = (customer_vat_id  or "").strip().upper()
+    if not cc:
+        return {"context": "blocked", "vat_code": None,
+                "reason": "customer_country missing — cannot determine "
+                          "VAT treatment"}
+    if cc == "PL":
+        return {"context": "domestic", "vat_code": "23",
+                "reason": "PL domestic — standard 23% VAT"}
+    if cc in _EU_COUNTRIES:
+        if not vat:
+            return {"context": "blocked", "vat_code": None,
+                    "reason": (f"EU customer country={cc} has no VAT id — "
+                               "cannot apply WDT 0% without a VAT number")}
+        return {"context": "wdt", "vat_code": "WDT",
+                "reason": f"EU intra-community supply (country={cc})"}
+    return {"context": "export", "vat_code": "EXP",
+            "reason": f"non-EU export (country={cc})"}
+
+
+def find_vat_code_id_by_code(code: str) -> Optional[str]:
+    """
+    Look up a wFirma vat_code's id by its <code> field value
+    (e.g. "23", "WDT", "EXP", "NP", "ZW"). Returns the id or None.
+    Read-only. Cached via the same dict as _resolve_vat_code_id.
+    """
+    code_norm = (code or "").strip().upper()
+    if not code_norm:
+        return None
+    cached = _VAT_CODE_ID_CACHE.get(code_norm)
+    if cached:
+        return cached
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <vat_codes>
+    <parameters>
+      <conditions>
+        <condition><field>code</field><operator>eq</operator><value>{_esc(code_norm)}</value></condition>
+      </conditions>
+    </parameters>
+  </vat_codes>
+</api>"""
+    http_status, response_text = _http_request("GET", "vat_codes", "find", body)
+    if http_status >= 400:
+        raise RuntimeError(f"vat_codes/find HTTP {http_status}")
+    status, desc = _parse_status(response_text)
+    if status != "OK":
+        raise RuntimeError(f"vat_codes/find wFirma status={status}: {desc}")
+    root = ET.fromstring(response_text)
+    node = root.find(".//vat_code")
+    if node is None:
+        return None
+    vid = (_find_text(node, "id") or "").strip() or None
+    if vid:
+        _VAT_CODE_ID_CACHE[code_norm] = vid
+    return vid
+
+
+def resolve_vat_code_id_for_context(vat_code: str) -> str:
+    """
+    Resolve the wFirma vat_code id for a context-determined code
+    ("23" | "WDT" | "EXP" | …). Raises RuntimeError if unresolvable
+    — callers must surface as blocked, never silently fall back.
+    """
+    vid = find_vat_code_id_by_code(vat_code)
+    if not vid:
+        raise RuntimeError(
+            f"resolve_vat_code_id_for_context: wFirma has no vat_code "
+            f"with code={vat_code!r} — cannot build proforma payload"
+        )
+    return vid
+
+
+_VAT_CODE_ID_CACHE: Dict[Any, str] = {}
 
 
 def _resolve_vat_code_id(rate: int = 23) -> str:
@@ -1163,7 +1310,17 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
                 "the proforma payload"
             )
 
-    vat_code_id = _resolve_vat_code_id(23)  # standard PL rate, cached
+    # VAT code id MUST be supplied by the caller (decided per customer
+    # context — domestic / WDT / export — see decide_proforma_vat_context).
+    # Refusing to default to 23% here is critical: silent 23% on an EU
+    # WDT customer would produce a tax-mistake invoice.
+    vat_code_id = (req.vat_code_id or "").strip()
+    if not vat_code_id:
+        raise ValueError(
+            "vat_code_id is required on ProformaRequest — caller must "
+            "decide via decide_proforma_vat_context() and resolve via "
+            "resolve_vat_code_id_for_context() before building the payload"
+        )
 
     lines_xml = ""
     for line in req.lines:
