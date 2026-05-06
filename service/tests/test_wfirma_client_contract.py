@@ -43,9 +43,22 @@ from app.services.wfirma_client import (
     search_customer,
 )
 from app.core.config import settings
+from app.services import wfirma_client as _wfirma_client_mod
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _prime_vat_code_cache():
+    """
+    _build_proforma_xml now resolves a per-line vat_code id via a live
+    helper. Tests must not hit the network; pre-populate the cache so
+    the helper short-circuits, then clear it after the test so we don't
+    cross-pollute negative tests that need to exercise the lookup.
+    """
+    _wfirma_client_mod._VAT_CODE_ID_CACHE[23] = "222"
+    yield
+    _wfirma_client_mod._VAT_CODE_ID_CACHE.pop(23, None)
 
 def _full_settings(**overrides):
     """Patch settings with all required wFirma credentials."""
@@ -868,23 +881,107 @@ def _proforma_request(currency: str = "USD"):
     )
 
 
-def test_create_proforma_draft_posts_invoices_add(monkeypatch):
-    captured = {}
-    def fake_http(method, module, action, body):
-        captured.update(method=method, module=module, action=action, body=body)
-        return 200, _ok_invoice_response("99887766")
-    monkeypatch.setattr(_wc, "_http_request", fake_http)
+def _verify_find_response(wfirma_id: str, good_ids):
+    """Synthesise an invoices/find response with one <invoicecontent> per id."""
+    rows = "".join(
+        f"<invoicecontent><id>L{i}</id><good><id>{gid}</id></good></invoicecontent>"
+        for i, gid in enumerate(good_ids)
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <invoices>
+    <invoice>
+      <id>{wfirma_id}</id>
+      <type>proforma</type>
+      <invoicecontents>{rows}</invoicecontents>
+    </invoice>
+  </invoices>
+  <status><code>OK</code></status>
+</api>"""
+
+
+def _http_seq(*responses):
+    """Build a fake _http_request that pops responses in order."""
+    seq = list(responses)
+    captured = []
+    def fake(method, module, action, body, id_suffix=None):
+        captured.append({"method": method, "module": module, "action": action,
+                         "body": body, "id_suffix": id_suffix})
+        if not seq:
+            raise AssertionError("unexpected extra _http_request call")
+        return seq.pop(0)
+    fake.captured = captured
+    return fake
+
+
+def test_create_proforma_draft_posts_invoices_add_and_verifies(monkeypatch):
+    """add → verify-fetch → success when persisted line count matches."""
+    fake = _http_seq(
+        (200, _ok_invoice_response("99887766")),
+        (200, _verify_find_response("99887766", ["48611875"])),
+    )
+    monkeypatch.setattr(_wc, "_http_request", fake)
 
     res = _wc.create_proforma_draft(_proforma_request())
-    assert captured["method"] == "POST"
-    assert captured["module"] == "invoices"
-    assert captured["action"] == "add"
-    assert "<type>proforma</type>" in captured["body"]
-    # Currency preserved in request XML
-    assert "<currency>USD</currency>" in captured["body"]
-    # Result shape
+    assert fake.captured[0]["method"] == "POST"
+    assert fake.captured[0]["module"] == "invoices"
+    assert fake.captured[0]["action"] == "add"
+    assert "<type>proforma</type>" in fake.captured[0]["body"]
+    assert "<currency>USD</currency>" in fake.captured[0]["body"]
+    # Verify-after-create fetch happens immediately.
+    assert fake.captured[1]["method"] == "GET"
+    assert fake.captured[1]["module"] == "invoices"
+    assert fake.captured[1]["action"] == "find"
+    assert "<value>99887766</value>" in fake.captured[1]["body"]
     assert res.ok is True
     assert res.wfirma_invoice_id == "99887766"
+
+
+def test_create_proforma_draft_raises_on_partial_persistence(monkeypatch):
+    """
+    wFirma returned OK + valid id, but only N of the M submitted lines
+    were persisted. Must raise RuntimeError with expected/actual counts
+    and the missing good_ids — never silently report success.
+    Mirrors live incident on PROF 92/2026 (2026-05-06).
+    """
+    # Build a 3-line request and have wFirma "persist" only 1.
+    line = lambda gid: _wc.ReservationLine(
+        product_code=f"EJL/{gid}", wfirma_good_id=gid, product_name="x",
+        qty=1, unit_price=10, currency="USD",
+    )
+    req = _wc.ProformaRequest(
+        client_name="Juliany EOOD", client_zip="", client_city="",
+        lines=[line("G1"), line("G2"), line("G3")],
+        currency="USD", wfirma_contractor_id="C1",
+    )
+    fake = _http_seq(
+        (200, _ok_invoice_response("465611619")),
+        (200, _verify_find_response("465611619", ["G1"])),  # only 1 of 3
+    )
+    monkeypatch.setattr(_wc, "_http_request", fake)
+    with pytest.raises(RuntimeError) as excinfo:
+        _wc.create_proforma_draft(req)
+    msg = str(excinfo.value)
+    assert "partial persistence" in msg
+    assert "expected_count=3" in msg
+    assert "actual_count=1" in msg
+    assert "G2" in msg and "G3" in msg
+    assert "wfirma_invoice_id=465611619" in msg
+
+
+def test_create_proforma_draft_raises_when_verify_fetch_fails(monkeypatch):
+    """
+    add succeeded but the immediate verify-fetch errored. Must raise
+    so the caller doesn't mark the draft 'issued' against an unverified
+    invoice id.
+    """
+    fake = _http_seq(
+        (200, _ok_invoice_response("465611619")),
+        (502, "boom"),
+    )
+    monkeypatch.setattr(_wc, "_http_request", fake)
+    with pytest.raises(RuntimeError, match="verify-fetch failed"):
+        _wc.create_proforma_draft(_proforma_request())
 
 
 def test_create_proforma_draft_raises_on_non_ok_status(monkeypatch):
@@ -912,6 +1009,30 @@ def test_create_proforma_draft_raises_when_id_missing(monkeypatch):
     monkeypatch.setattr(_wc, "_http_request", lambda *a, **k: (200, no_id))
     with pytest.raises(RuntimeError, match="no <id>"):
         _wc.create_proforma_draft(_proforma_request())
+
+
+def test_build_proforma_xml_does_not_collapse_duplicate_good_ids():
+    """
+    Local builder must emit one <invoicecontent> per request line, even
+    when several lines share the same wfirma_good_id (live data: Juliany
+    1274-7 appears 4×). Collapsing pre-submission would mask the wFirma
+    bug entirely.
+    """
+    line = lambda gid, qty: _wc.ReservationLine(
+        product_code="EJL/X", wfirma_good_id=gid, product_name="x",
+        qty=qty, unit_price=10, currency="USD",
+    )
+    req = _wc.ProformaRequest(
+        client_name="C", client_zip="", client_city="",
+        lines=[line("G7", 1), line("G7", 1), line("G7", 1), line("G7", 1),
+               line("G4", 1), line("G4", 1)],
+        currency="USD", wfirma_contractor_id="C1",
+    )
+    body = _wc._build_proforma_xml(req)
+    # 6 distinct invoicecontent blocks even though only 2 unique good_ids.
+    assert body.count("<invoicecontent>") == 6
+    assert body.count("<good><id>G7</id></good>") == 4
+    assert body.count("<good><id>G4</id></good>") == 2
 
 
 def test_create_proforma_draft_raises_on_empty_lines():
@@ -1288,3 +1409,100 @@ def test_edit_invoice_line_name_validates_args():
         _wc.edit_invoice_line_name("465611619", "<not xml", "X")
     with pytest.raises(ValueError, match="must be <invoicecontent>"):
         _wc.edit_invoice_line_name("465611619", "<wrong/>", "X")
+
+
+# ── Per-line shape: missing-fields fix for PROF 92/2026 partial persistence ──
+
+def _line(gid, qty=1.0, price=10.0):
+    return _wc.ReservationLine(
+        product_code=f"EJL/{gid}", wfirma_good_id=gid, product_name="x",
+        qty=qty, unit_price=price, currency="USD",
+    )
+
+
+def _proforma_req(*good_ids):
+    return _wc.ProformaRequest(
+        client_name="Juliany EOOD", client_zip="", client_city="",
+        lines=[_line(g) for g in good_ids],
+        currency="USD", wfirma_contractor_id="C-1",
+    )
+
+
+def test_proforma_xml_emits_discount_fields_per_line():
+    body = _wc._build_proforma_xml(_proforma_req("G1", "G2", "G3"))
+    # one occurrence per line
+    assert body.count("<discount>1</discount>") == 3
+    assert body.count("<discount_percent>0.00</discount_percent>") == 3
+    assert body.count("<price_modified>1</price_modified>") == 3
+
+
+def test_proforma_xml_emits_vat_code_id_per_line():
+    body = _wc._build_proforma_xml(_proforma_req("G1", "G2"))
+    assert body.count("<vat_code><id>222</id></vat_code>") == 2
+
+
+def test_proforma_xml_resolves_vat_code_once_per_process(monkeypatch):
+    """A multi-line request should trigger at most one VAT lookup."""
+    # Drop the autouse cache priming so we can observe the lookup.
+    _wfirma_client_mod._VAT_CODE_ID_CACHE.pop(23, None)
+    calls = {"n": 0}
+    def fake_lookup(rate=23):
+        calls["n"] += 1
+        return "222"
+    monkeypatch.setattr(_wc, "find_vat_code_id_live", fake_lookup)
+
+    _wc._build_proforma_xml(_proforma_req("G1", "G2", "G3", "G4", "G5"))
+    assert calls["n"] == 1, "vat_code lookup must run exactly once for multi-line"
+
+    # Subsequent build re-uses cache → still no extra call.
+    _wc._build_proforma_xml(_proforma_req("G6", "G7"))
+    assert calls["n"] == 1, "vat_code lookup must be cached process-wide"
+
+
+def test_proforma_xml_raises_when_vat_lookup_returns_none(monkeypatch):
+    """If wFirma has no vat_code for the requested rate, refuse to build."""
+    _wfirma_client_mod._VAT_CODE_ID_CACHE.pop(23, None)
+    monkeypatch.setattr(_wc, "find_vat_code_id_live", lambda rate=23: None)
+    with pytest.raises(RuntimeError, match="no vat_code for rate=23"):
+        _wc._build_proforma_xml(_proforma_req("G1"))
+
+
+def test_proforma_xml_validates_lines_before_vat_lookup(monkeypatch):
+    """A bad request (missing wfirma_good_id) must NOT trigger a network call."""
+    _wfirma_client_mod._VAT_CODE_ID_CACHE.pop(23, None)
+    called = {"n": 0}
+    def fake_lookup(rate=23):
+        called["n"] += 1
+        return "222"
+    monkeypatch.setattr(_wc, "find_vat_code_id_live", fake_lookup)
+
+    bad = _wc.ReservationLine(
+        product_code="EJL/X", wfirma_good_id="", product_name="x",
+        qty=1, unit_price=1, currency="USD",
+    )
+    req = _wc.ProformaRequest(
+        client_name="C", client_zip="", client_city="",
+        lines=[bad], currency="USD", wfirma_contractor_id="C1",
+    )
+    with pytest.raises(ValueError, match="wfirma_good_id is required"):
+        _wc._build_proforma_xml(req)
+    assert called["n"] == 0, "VAT lookup must not run when validation fails"
+
+
+def test_proforma_xml_juliany_12line_still_emits_12_blocks():
+    """Regression for PROF 92/2026: 12 lines, 7 unique good_ids, no collapse."""
+    juliany_pattern = (
+        ["G7"] * 4 + ["G4"] * 2 + ["G5"] * 2 +
+        ["G3", "G6", "G1", "G2"]   # one each
+    )
+    body = _wc._build_proforma_xml(_proforma_req(*juliany_pattern))
+    assert body.count("<invoicecontent>") == 12
+    assert body.count("<good><id>G7</id></good>") == 4
+    assert body.count("<good><id>G4</id></good>") == 2
+    assert body.count("<good><id>G5</id></good>") == 2
+    for one in ("G1", "G2", "G3", "G6"):
+        assert body.count(f"<good><id>{one}</id></good>") == 1
+    # Per-line shape applies uniformly.
+    assert body.count("<vat_code><id>222</id></vat_code>") == 12
+    assert body.count("<discount>1</discount>") == 12
+    assert body.count("<price_modified>1</price_modified>") == 12

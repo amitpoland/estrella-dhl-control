@@ -910,6 +910,39 @@ def create_proforma_draft(req: ProformaRequest) -> ProformaResult:
     if not wfirma_id:
         raise RuntimeError("invoices/add: response had no <id> — refusing blank")
 
+    # Verify-after-create: wFirma can return status=OK + a valid invoice id
+    # while silently persisting only a subset of the submitted lines (live
+    # incident 2026-05-06: 12 lines submitted, 1 persisted — see
+    # docs/wfirma.skill.md and scripts/diag_proforma_line_count.py).
+    # Fetch the new proforma immediately and compare the persisted
+    # invoicecontent count against the expected request line count.
+    expected_count = len(req.lines)
+    try:
+        verify_xml = fetch_invoice_xml(wfirma_id)
+    except Exception as exc:
+        raise RuntimeError(
+            f"invoices/add succeeded (id={wfirma_id}) but verify-fetch "
+            f"failed: {type(exc).__name__}: {exc} — proforma may be in "
+            "unknown persisted state, do NOT retry without manual review"
+        ) from exc
+
+    verify_root = ET.fromstring(verify_xml)
+    persisted_lines = verify_root.findall(".//invoicecontent")
+    actual_count = len(persisted_lines)
+    if actual_count != expected_count:
+        persisted_good_ids = [
+            (ln.find("good").findtext("id") if ln.find("good") is not None else "")
+            for ln in persisted_lines
+        ]
+        expected_good_ids = [ln.wfirma_good_id for ln in req.lines]
+        missing = [g for g in expected_good_ids if g not in persisted_good_ids]
+        raise RuntimeError(
+            f"invoices/add partial persistence: wfirma_invoice_id={wfirma_id} "
+            f"expected_count={expected_count} actual_count={actual_count} "
+            f"missing_good_ids={missing[:10]} — proforma EXISTS in wFirma "
+            "but lines were silently dropped; do NOT mark as success"
+        )
+
     return ProformaResult(
         ok                = True,
         wfirma_invoice_id = wfirma_id,
@@ -918,16 +951,55 @@ def create_proforma_draft(req: ProformaRequest) -> ProformaResult:
     )
 
 
+_VAT_CODE_ID_CACHE: Dict[int, str] = {}
+
+
+def _resolve_vat_code_id(rate: int = 23) -> str:
+    """
+    Resolve the wFirma internal vat_code id for *rate* (default 23 = standard
+    PL VAT). Cached process-wide because vat_codes are read-only / stable.
+
+    Raises RuntimeError if wFirma returns no vat_code for the requested rate
+    — never silently default. Required by _build_proforma_xml since live
+    incident 2026-05-06 (PROF 92/2026) confirmed wFirma silently drops
+    invoicecontent rows that omit <vat_code><id>...</id></vat_code>.
+    """
+    cached = _VAT_CODE_ID_CACHE.get(int(rate))
+    if cached:
+        return cached
+    vid = find_vat_code_id_live(rate)
+    if not vid:
+        raise RuntimeError(
+            f"_resolve_vat_code_id: wFirma returned no vat_code for rate={rate} "
+            "— cannot build proforma payload without per-line VAT id"
+        )
+    _VAT_CODE_ID_CACHE[int(rate)] = vid
+    return vid
+
+
 def _build_proforma_xml(req: ProformaRequest) -> str:
     """
     Build the XML payload for invoices/add with type=proforma.
 
-    Per validated wFirma shape (docs/WFIRMA_ENDPOINT_MAP.md):
+    Per validated wFirma shape (docs/WFIRMA_ENDPOINT_MAP.md) and the
+    field set observed on the persisted line of PROF 92/2026:
       <contractor><id>{wfirma_contractor_id}</id></contractor>
-      <invoicecontent><good><id>{wfirma_good_id}</id></good>...</invoicecontent>
+      <invoicecontent>
+        <good><id>{wfirma_good_id}</id></good>
+        <count>…</count><unit_count>…</unit_count>
+        <price>…</price><unit>…</unit>
+        <vat_code><id>{vat_code_id}</id></vat_code>
+        <discount>1</discount>          <!-- discount profile = none -->
+        <discount_percent>0.00</discount_percent>
+        <price_modified>1</price_modified> <!-- price overrides product master -->
+      </invoicecontent>
 
-    Does NOT make any network call. Safe to call in tests.
-    Returns a well-formed XML string.
+    Live incident 2026-05-06: omitting these per-line fields caused
+    wFirma to silently persist only the first invoicecontent of a
+    12-line submission while still returning OK at invoice level.
+
+    Does NOT make a network call EXCEPT once per process to resolve
+    the vat_code id (cached). Raises if VAT id cannot be resolved.
 
     Validation:
       - wfirma_contractor_id must be non-empty.
@@ -940,7 +1012,8 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
             "before building the proforma payload"
         )
 
-    lines_xml = ""
+    # Validate every line BEFORE any live VAT lookup so a bad request
+    # doesn't waste a network call.
     for idx, line in enumerate(req.lines):
         if not (line.wfirma_good_id or "").strip():
             raise ValueError(
@@ -948,6 +1021,11 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
                 "required — resolve via wfdb.get_product before building "
                 "the proforma payload"
             )
+
+    vat_code_id = _resolve_vat_code_id(23)  # standard PL rate, cached
+
+    lines_xml = ""
+    for line in req.lines:
         lines_xml += f"""
         <invoicecontent>
           <good><id>{_esc(line.wfirma_good_id)}</id></good>
@@ -955,6 +1033,10 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
           <unit_count>{line.qty:.4f}</unit_count>
           <price>{line.unit_price:.2f}</price>
           <unit>{_esc(line.unit)}</unit>
+          <vat_code><id>{_esc(vat_code_id)}</id></vat_code>
+          <discount>1</discount>
+          <discount_percent>0.00</discount_percent>
+          <price_modified>1</price_modified>
         </invoicecontent>"""
 
     currency_xml = (
