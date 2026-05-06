@@ -478,6 +478,88 @@ def search_customer(name: str, nip: Optional[str] = None) -> Optional[WFirmaCont
     )
 
 
+def count_contractors() -> int:
+    """
+    Total number of contractors in the configured wFirma company.
+
+    API: GET contractors/count. Read-only. Used as a pre-flight
+    before paginated list_contractors_page() loops so the caller can
+    pre-allocate / bound the loop.
+
+    Raises RuntimeError on non-OK status / HTTP ≥ 400.
+    """
+    body = """<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <contractors>
+    <parameters>
+      <conditions/>
+    </parameters>
+  </contractors>
+</api>"""
+    http_status, response_text = _http_request("GET", "contractors", "count", body)
+    if http_status >= 400:
+        raise RuntimeError(f"contractors/count HTTP {http_status}")
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"contractors/count wFirma status={code}: {desc}")
+    root = ET.fromstring(response_text)
+    # wFirma returns <total>N</total> on count actions.
+    total_node = root.find(".//total")
+    if total_node is None or not (total_node.text or "").strip():
+        return 0
+    try:
+        return int(total_node.text.strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def list_contractors_page(start: int, limit: int) -> List[WFirmaContractor]:
+    """
+    Read one page of wFirma contractors (no conditions — full master list).
+
+    API: GET contractors/find with <page><start>{start}</start>
+                                       <limit>{limit}</limit></page>.
+
+    Returns a list of WFirmaContractor (possibly empty for an over-the-end
+    page). Raises RuntimeError on non-OK status / HTTP ≥ 400.
+    """
+    if start < 0 or limit <= 0:
+        raise ValueError("start must be >=0 and limit must be >0")
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <contractors>
+    <parameters>
+      <conditions/>
+      <page><start>{int(start)}</start><limit>{int(limit)}</limit></page>
+    </parameters>
+  </contractors>
+</api>"""
+    http_status, response_text = _http_request("GET", "contractors", "find", body)
+    if http_status >= 400:
+        raise RuntimeError(f"contractors/find HTTP {http_status}")
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        # Empty page — wFirma returns NOT_FOUND when start exceeds total.
+        if code == "NOT FOUND" or "OUT_OF_BOUNDS" in (desc or "").upper():
+            return []
+        raise RuntimeError(f"contractors/find wFirma status={code}: {desc}")
+    root = ET.fromstring(response_text)
+    out: List[WFirmaContractor] = []
+    for node in root.iter("contractor"):
+        wid = _find_text(node, "id") or ""
+        if not wid:
+            continue
+        out.append(WFirmaContractor(
+            wfirma_id = wid,
+            name      = _find_text(node, "name") or "",
+            nip       = _find_text(node, "nip") or "",
+            country   = _find_text(node, "country") or "",
+            zip       = _find_text(node, "zip") or "",
+            city      = _find_text(node, "city") or "",
+        ))
+    return out
+
+
 def create_customer(
     name: str,
     nip: str = "",

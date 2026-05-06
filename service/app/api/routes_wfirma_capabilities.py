@@ -629,3 +629,88 @@ def create_internal_test_customer() -> JSONResponse:
         "city":                _INTERNAL_TEST_CITY,
         "zip":                 _INTERNAL_TEST_ZIP,
     })
+
+
+# ── Customer sync from wFirma (read-only by default) ─────────────────────────
+
+from ..services import wfirma_customer_sync as wfsync   # noqa: E402
+
+
+@router.get("/customers/sync-preview", dependencies=[_auth])
+def sync_customers_preview() -> JSONResponse:
+    """
+    Read-only sync plan. Pulls all wFirma contractors and classifies them
+    against local wfirma_customers without writing. Always safe to call.
+    """
+    try:
+        plan = wfsync.plan_sync()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "fetch_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+    return JSONResponse({
+        "ok":             True,
+        "mode":           "preview",
+        "total_remote":   plan["total_remote"],
+        "insert":         plan["insert"],
+        "update_fill":    plan["update_fill"],
+        "update_match":   plan["update_match"],
+        "conflict":       plan["conflict"],
+        "skip_count":     plan["skip_count"],
+        "applied_count":  0,
+        "conflicts":      plan["conflict"],
+    })
+
+
+@router.post("/customers/sync", dependencies=[_auth])
+def sync_customers(write: bool = False) -> JSONResponse:
+    """
+    Sync wFirma contractors into local wfirma_customers.
+
+    Default (write=false): same shape as sync-preview, no writes.
+    write=true requires settings.wfirma_sync_customers_allowed; only
+    insert / update_fill / update_match rows are applied. Conflicts
+    are returned but never auto-resolved.
+    """
+    try:
+        plan = wfsync.plan_sync()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "fetch_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    response = {
+        "ok":             True,
+        "mode":           "preview" if not write else "write",
+        "total_remote":   plan["total_remote"],
+        "insert":         plan["insert"],
+        "update_fill":    plan["update_fill"],
+        "update_match":   plan["update_match"],
+        "conflict":       plan["conflict"],
+        "skip_count":     plan["skip_count"],
+        "applied_count":  0,
+        "conflicts":      plan["conflict"],
+    }
+
+    if not write:
+        return JSONResponse(response)
+
+    if not settings.wfirma_sync_customers_allowed:
+        return JSONResponse({
+            **response,
+            "ok":               False,
+            "mode":             "blocked",
+            "blocking_reasons": [
+                "wfirma_sync_customers_allowed is false — operator must "
+                "enable WFIRMA_SYNC_CUSTOMERS_ALLOWED to apply",
+            ],
+        })
+
+    apply_result = wfsync.apply_plan(plan)
+    response["applied_count"] = apply_result["applied_count"]
+    response["rejected_blank"] = apply_result["rejected_blank"]
+    return JSONResponse(response)
