@@ -21,10 +21,33 @@ import hashlib
 import json
 import os
 import re
+import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+
+# ── Service-side description engine (single source of truth) ─────────────────
+# When the service path is reachable AND document_db is initialised, we read
+# locked description blocks from description_engine. The engine persists the
+# Polish-first / English-after-slash composed line per product_code (or per
+# item_type when no real product code is supplied) and honors operator
+# overrides. If unreachable, callers fall back to inline composition so the
+# generator still produces a valid PDF.
+
+def _try_load_description_engine():
+    _svc = os.path.join(os.path.dirname(__file__), "service")
+    if _svc not in sys.path:
+        sys.path.insert(0, _svc)
+    try:
+        from app.services import description_engine as _eng  # type: ignore
+        return _eng
+    except Exception:
+        return None
+
+
+_DESCRIPTION_ENGINE = _try_load_description_engine()
 
 # ── Normalization dictionaries ─────────────────────────────────────────────────
 
@@ -533,6 +556,7 @@ def process_batch_items(batch: dict) -> list[dict]:
             lines.append({
                 "line_order":                     order,
                 "invoice_number":                 str(inv_number),
+                "product_code":                   str(item.get("product_code") or ""),
                 "original_description":           desc,
                 "normalized_english_description": norm["normalized_english"],
                 "polish_customs_description":     norm["polish_customs_description"],
@@ -1060,13 +1084,47 @@ def _generate_pdf(
                 f"Pozycja {item_idx} / Item {item_idx}:", ITEM_NUM
             ))
 
+            # ── Description content: Polish first / English after slash ────
+            # Pull the locked composed line from description_engine when it
+            # is reachable AND document_db has been initialised. Engine key
+            # prefers the real product_code; falls back to item_type so the
+            # type-default still resolves when product_code is not present
+            # on the upstream item dict. If the engine returns nothing, use
+            # inline composition with the same separator / order.
+            polish = ln.get("polish_customs_description", "")
+            english = ln.get("original_description", "")
+            description_line = None
+            if _DESCRIPTION_ENGINE is not None:
+                try:
+                    block = _DESCRIPTION_ENGINE.get_description_block(
+                        product_code   = ln.get("product_code") or ln.get("item_type", ""),
+                        item_type      = ln.get("item_type", ""),
+                        description_en = english,
+                        # Pass the customs engine's richer per-line Polish
+                        # so the engine's first-write captures the rich
+                        # phrasing (e.g. "Pierścionek z diamentami i
+                        # kamieniami szlachetnymi") rather than the
+                        # ITEM_TRANSLATIONS type-default.
+                        description_pl = polish,
+                        material_pl    = ln.get("material") or "",
+                        purpose_pl     = ln.get("purpose")  or "",
+                        name_pl        = ln.get("item_type_pl") or "",
+                    )
+                    description_line = (block or {}).get("description_line")
+                except Exception:
+                    description_line = None
+            if not description_line:
+                if polish and english:
+                    description_line = f"{polish} / {english}"
+                else:
+                    description_line = polish or english
+
             fields = [
-                ("What is this: /\nCo to za towar:",
-                 "{} — {}".format(ln["original_description"], ln["polish_customs_description"])),
-                ("Material: /\nZ jakiego materiału:", material),
-                ("Purpose: /\nDo czego służy:",       purpose),
-                ("Quantity: /\nIlość:",                "{} {}".format(qty_disp, uom)),
-                ("Value: /\nWartość:",                 val_disp),
+                ("Co to za towar / What is this:",     description_line),
+                ("Z jakiego materiału / Material:",    material),
+                ("Do czego służy / Purpose:",          purpose),
+                ("Ilość / Quantity:",                  "{} {}".format(qty_disp, uom)),
+                ("Wartość / Value:",                   val_disp),
             ]
 
             field_data = [
