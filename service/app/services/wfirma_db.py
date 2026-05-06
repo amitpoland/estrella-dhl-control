@@ -205,7 +205,7 @@ def get_customer(client_name: str) -> Optional[Dict[str, Any]]:
         return None
     with _connect() as con:
         row = con.execute(
-            "SELECT * FROM wfirma_customers WHERE client_name=?",
+            "SELECT * FROM wfirma_customers WHERE UPPER(client_name)=UPPER(?)",
             (client_name,),
         ).fetchone()
     return dict(row) if row else None
