@@ -1031,3 +1031,202 @@ def test_create_from_code_search_error_returns_502(client, db):
                         json={"item_type": "RING", "description_en": "x"},
                         headers=_auth())
     assert r.status_code == 502
+
+
+# ── refresh-name-from-block (goods/edit) endpoint ──────────────────────────
+
+REFRESH_URL = "/api/v1/wfirma/goods/refresh-name-from-block/"
+
+
+def _gate_edit_on():
+    return patch.object(settings, "wfirma_edit_product_allowed", True)
+
+
+def _seed_local_mapping(product_code: str, wfirma_product_id: str = "G-EXIST"):
+    wfdb.upsert_product(
+        product_code      = product_code,
+        wfirma_product_id = wfirma_product_id,
+        product_name_pl   = "Pierścionek",
+        unit              = "szt.",
+        vat_rate          = "23",
+        sync_status       = "matched",
+    )
+
+
+def _seed_locked_block(product_code: str, item_type: str = "RING",
+                       description_en: str = "Lab Grown Diamond Ring"):
+    """Use description_engine to write a locked auto block."""
+    from app.services import description_engine as deng
+    deng.get_description_block(product_code, item_type,
+                                description_en=description_en)
+
+
+def test_refresh_blocked_when_flag_off(client, db):
+    """Default flag is False → status=blocked, no wFirma call, no local change."""
+    pc = "EJL/REF/1"
+    _seed_local_mapping(pc, "G-001")
+    _seed_locked_block(pc)
+    with (
+        patch.object(_wc, "edit_product",
+                     side_effect=AssertionError("must not be called when flag off")),
+    ):
+        r = client.post(REFRESH_URL + pc, headers=_auth())
+    body = r.json()
+    assert body["status"] == "blocked"
+    assert any("WFIRMA_EDIT_PRODUCT_ALLOWED" in br
+               for br in body["blocking_reasons"])
+
+
+def test_refresh_blocked_when_local_mapping_missing(client, db):
+    """No local row → blocked, no wFirma call."""
+    with (
+        _gate_edit_on(),
+        patch.object(_wc, "edit_product",
+                     side_effect=AssertionError("must not be called")),
+    ):
+        r = client.post(REFRESH_URL + "EJL/NOMAP-1", headers=_auth())
+    body = r.json()
+    assert body["status"] == "blocked"
+    assert any("wfirma_product_id" in br for br in body["blocking_reasons"])
+
+
+def test_refresh_blocked_when_local_wfirma_id_empty(client, db):
+    """Local row exists but wfirma_product_id is empty → blocked."""
+    pc = "EJL/REF/EMPTY"
+    wfdb.upsert_product(product_code=pc, wfirma_product_id="",
+                        sync_status="matched")
+    _seed_locked_block(pc)
+    with (
+        _gate_edit_on(),
+        patch.object(_wc, "edit_product",
+                     side_effect=AssertionError("must not be called")),
+    ):
+        r = client.post(REFRESH_URL + pc, headers=_auth())
+    assert r.json()["status"] == "blocked"
+
+
+def test_refresh_blocked_when_locked_block_missing_or_empty(client, db):
+    """description_engine returns a block with empty line/block → blocked."""
+    from app.services import description_engine as deng
+    pc = "EJL/REF/EMPTYBLK"
+    _seed_local_mapping(pc, "G-EBL")
+    # Manual override with empty fields → description_line/block both empty
+    deng.set_manual_block(
+        product_code   = pc,
+        item_type      = "RING",
+        name_pl        = "",
+        description_pl = "",
+        material_pl    = "",
+        purpose_pl     = "",
+        description_en = "",
+    )
+    with (
+        _gate_edit_on(),
+        patch.object(_wc, "edit_product",
+                     side_effect=AssertionError("must not be called")),
+    ):
+        r = client.post(REFRESH_URL + pc, headers=_auth())
+    body = r.json()
+    assert body["status"] == "blocked"
+    assert any("description_engine" in br for br in body["blocking_reasons"])
+
+
+def test_refresh_calls_edit_once_with_locked_payload(client, db):
+    """Gate on + mapping + locked block → edit_product called once with
+    wfirma_product_id + description_line + description_block."""
+    pc = "EJL/REF/OK"
+    _seed_local_mapping(pc, "G-OK-1")
+    _seed_locked_block(pc, item_type="RING",
+                       description_en="Lab Grown Diamond Ring")
+
+    with (
+        _gate_edit_on(),
+        patch.object(_wc, "edit_product",
+                     return_value={"wfirma_id": "G-OK-1", "name": "x",
+                                    "code": pc, "unit": "szt."}) as mock_edit,
+    ):
+        body = client.post(REFRESH_URL + pc, headers=_auth()).json()
+
+    assert body["ok"] is True
+    assert body["status"] == "updated"
+    assert body["wfirma_product_id"] == "G-OK-1"
+    mock_edit.assert_called_once()
+    call = mock_edit.call_args
+    assert call.kwargs["wfirma_product_id"] == "G-OK-1"
+    # Polish-first / English-after-slash composed name
+    assert "Lab Grown Diamond Ring" in call.kwargs["name"]
+    assert " / " in call.kwargs["name"]
+    # Full bilingual block in description
+    assert "Co to za towar / What is this" in call.kwargs["description"]
+
+
+def test_refresh_does_not_pass_caller_body_overrides(client, db):
+    """Caller body must be ignored — endpoint takes only the path arg."""
+    pc = "EJL/REF/NOOV"
+    _seed_local_mapping(pc, "G-NOOV-1")
+    _seed_locked_block(pc, item_type="RING")
+    with (
+        _gate_edit_on(),
+        patch.object(_wc, "edit_product",
+                     return_value={"wfirma_id": "G-NOOV-1",
+                                    "name": "x", "code": pc, "unit": "szt."}
+                     ) as mock_edit,
+    ):
+        # Send a malicious body trying to inject name/description/id overrides
+        client.post(REFRESH_URL + pc, headers=_auth(),
+                    json={"name": "ATTACKER NAME",
+                          "description": "ATTACKER DESC",
+                          "wfirma_product_id": "999"})
+    call = mock_edit.call_args
+    assert call.kwargs["wfirma_product_id"] == "G-NOOV-1"
+    assert "ATTACKER" not in call.kwargs["name"]
+    assert "ATTACKER" not in call.kwargs["description"]
+
+
+def test_refresh_failure_does_not_update_local_mapping(client, db):
+    """edit_product raises → status=failed; local row UNCHANGED."""
+    pc = "EJL/REF/FAIL"
+    _seed_local_mapping(pc, "G-FAIL-1")
+    _seed_locked_block(pc)
+    before = wfdb.get_product(pc)
+    assert before["product_name_pl"] == "Pierścionek"  # baseline name
+
+    with (
+        _gate_edit_on(),
+        patch.object(_wc, "edit_product",
+                     side_effect=RuntimeError("wFirma 503")),
+    ):
+        body = client.post(REFRESH_URL + pc, headers=_auth()).json()
+
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert "RuntimeError" in body["error"]
+    after = wfdb.get_product(pc)
+    # Local row preserved exactly — same id, same updated_at not bumped is
+    # implementation-defined; the field we promise NOT to touch on failure
+    # is wfirma_product_id, which must remain mapped.
+    assert after["wfirma_product_id"] == before["wfirma_product_id"]
+
+
+def test_refresh_success_updates_local_product_name_pl(client, db):
+    """On success, local product_name_pl is refreshed to new short name_pl."""
+    pc = "EJL/REF/UPD"
+    # Seed with a stale local name distinct from what description_engine returns
+    wfdb.upsert_product(
+        product_code      = pc,
+        wfirma_product_id = "G-UPD-1",
+        product_name_pl   = "STALE_NAME_BEFORE",
+        sync_status       = "matched",
+    )
+    _seed_locked_block(pc, item_type="RING")
+    with (
+        _gate_edit_on(),
+        patch.object(_wc, "edit_product",
+                     return_value={"wfirma_id": "G-UPD-1",
+                                    "name": "x", "code": pc, "unit": "szt."}),
+    ):
+        client.post(REFRESH_URL + pc, headers=_auth())
+    after = wfdb.get_product(pc)
+    # name_pl came from description_engine for RING → "Pierścionek"
+    assert after["product_name_pl"] == "Pierścionek"
+    assert after["wfirma_product_id"] == "G-UPD-1"

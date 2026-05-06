@@ -404,3 +404,112 @@ def create_good_from_product_code(
         "unit":              result.unit,
         "description_used":  block.get("description_line"),
     })
+
+
+# ── Operator-approved goods/edit refresh from locked block ─────────────────
+
+@router.post("/goods/refresh-name-from-block/{product_code:path}",
+             dependencies=[_auth])
+def refresh_good_name_from_block(product_code: str) -> JSONResponse:
+    """
+    Refresh an EXISTING wFirma product's name + description in place,
+    sourced from the locked description_engine block.
+
+    Operator-approved only. Per-product per call. No bulk endpoint.
+
+    Status values:
+      blocked  — gate off (WFIRMA_EDIT_PRODUCT_ALLOWED=false), or local
+                 mapping missing/empty wfirma_product_id, or
+                 description_engine has no usable block for this code.
+      updated  — goods/edit succeeded; local product_name_pl refreshed.
+      failed   — wFirma returned an error or refused; no local update.
+    """
+    if not (product_code or "").strip():
+        raise HTTPException(status_code=400, detail="product_code is required")
+    pc = product_code.strip()
+
+    # ── 1. Settings gate ──────────────────────────────────────────────────
+    if not settings.wfirma_edit_product_allowed:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "product_code":     pc,
+            "blocking_reasons": [
+                "wfirma_edit_product_allowed is false — operator must enable "
+                "WFIRMA_EDIT_PRODUCT_ALLOWED to edit",
+            ],
+        })
+
+    # ── 2. Local mapping must exist with non-empty wfirma_product_id ──────
+    local = wfdb.get_product(pc)
+    wfirma_product_id = (local or {}).get("wfirma_product_id") or ""
+    if not local or not wfirma_product_id:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "product_code":     pc,
+            "blocking_reasons": [
+                f"wfirma_products has no wfirma_product_id for {pc!r} — "
+                "register the mapping first",
+            ],
+        })
+
+    # ── 3. Locked block must exist with usable line + block ───────────────
+    block = deng.get_description_block(
+        product_code = pc,
+        item_type    = (local or {}).get("product_name_pl") or "",
+    )
+    description_line  = (block.get("description_line")  or "").strip()
+    description_block = (block.get("description_block") or "").strip()
+    if not description_line or not description_block:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "product_code":     pc,
+            "blocking_reasons": [
+                f"description_engine has no locked block for {pc!r} — "
+                "generate one before refreshing the wFirma name",
+            ],
+        })
+
+    # ── 4. Live wFirma edit (only path with external write) ───────────────
+    try:
+        result = wfirma_client.edit_product(
+            wfirma_product_id = wfirma_product_id,
+            name              = description_line,
+            description       = description_block,
+        )
+    except Exception as exc:
+        log.warning("[%s] goods/edit failed: %s", pc, exc)
+        return JSONResponse({
+            "ok":          False,
+            "status":      "failed",
+            "product_code": pc,
+            "wfirma_product_id": wfirma_product_id,
+            "error":       f"{type(exc).__name__}: {exc}",
+        })
+
+    # ── 5. Refresh local mapping only on confirmed success ────────────────
+    # Local product_name_pl carries the SHORT polish name (matches what
+    # description_engine.name_pl returns). The full description_line stays
+    # reconstructible via description_engine — no need to cache it locally.
+    name_pl = (block.get("name_pl") or "").strip()
+    wfdb.upsert_product(
+        product_code      = pc,
+        wfirma_product_id = wfirma_product_id,
+        product_name_pl   = name_pl,
+        unit              = (local or {}).get("unit") or "szt.",
+        vat_rate          = (local or {}).get("vat_rate") or "23",
+        warehouse_id      = (local or {}).get("warehouse_id") or "",
+        sync_status       = "matched",
+    )
+
+    return JSONResponse({
+        "ok":                True,
+        "status":            "updated",
+        "product_code":      pc,
+        "wfirma_product_id": wfirma_product_id,
+        "wfirma_name":       result.get("name"),
+        "name_used":         description_line,
+        "description_used":  description_block,
+    })

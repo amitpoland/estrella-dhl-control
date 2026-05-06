@@ -936,6 +936,99 @@ def test_create_proforma_draft_raises_on_empty_client_name():
         _wc.create_proforma_draft(req)
 
 
+# ── edit_product (goods/edit) wrapper ──────────────────────────────────────
+
+def _ok_good_edit_response(wfirma_id: str = "G-EDIT-1",
+                            name: str = "new name") -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <goods>
+    <good>
+      <id>{wfirma_id}</id>
+      <name>{name}</name>
+      <code>EJL/X</code>
+      <unit>szt.</unit>
+    </good>
+  </goods>
+  <status><code>OK</code></status>
+</api>"""
+
+
+def test_edit_product_minimal_payload(monkeypatch):
+    """Body contains id + name + description ONLY. No accounting fields."""
+    captured = {}
+    def fake_http(method, module, action, body):
+        captured.update(method=method, module=module, action=action, body=body)
+        return 200, _ok_good_edit_response("48611875", "new name")
+    monkeypatch.setattr(_wc, "_http_request", fake_http)
+
+    out = _wc.edit_product(
+        "48611875",
+        name        = "Pierścionek z platyny / Diamond Ring",
+        description = "Co to za towar / What is this: ...",
+    )
+    assert captured["method"] == "POST"
+    assert captured["module"] == "goods"
+    assert captured["action"] == "edit"
+    body = captured["body"]
+    # Required: id, name, description
+    assert "<id>48611875</id>" in body
+    assert "Pierścionek z platyny / Diamond Ring" in body
+    assert "<description>Co to za towar / What is this: ...</description>" in body
+    # Forbidden: must NOT mutate accounting/identity fields
+    for forbidden in ("<code>", "<price>", "<vat>", "<unit>",
+                      "<count>", "<reserved>", "<type>", "<warehouse_type>"):
+        assert forbidden not in body, f"forbidden field {forbidden} in payload"
+    # Result shape
+    assert out["wfirma_id"] == "48611875"
+
+
+def test_edit_product_raises_on_empty_id():
+    with pytest.raises(ValueError, match="wfirma_product_id is required"):
+        _wc.edit_product("", name="x")
+
+
+def test_edit_product_raises_when_no_fields_to_update():
+    with pytest.raises(ValueError, match="at least one of name/description"):
+        _wc.edit_product("48611875")
+
+
+def test_edit_product_omits_blank_field_from_payload(monkeypatch):
+    """Only non-blank fields are serialised into the body."""
+    captured = {}
+    def fake_http(method, module, action, body):
+        captured["body"] = body
+        return 200, _ok_good_edit_response()
+    monkeypatch.setattr(_wc, "_http_request", fake_http)
+    _wc.edit_product("48611875", name="just a name update", description="")
+    assert "<name>just a name update</name>" in captured["body"]
+    assert "<description>" not in captured["body"]
+
+
+def test_edit_product_raises_on_non_ok_status(monkeypatch):
+    monkeypatch.setattr(
+        _wc, "_http_request",
+        lambda *a, **k: (200, _err_invoice_response("DENIED", "reason")),
+    )
+    with pytest.raises(RuntimeError, match="DENIED"):
+        _wc.edit_product("48611875", name="x")
+
+
+def test_edit_product_raises_on_http_4xx(monkeypatch):
+    monkeypatch.setattr(_wc, "_http_request",
+                        lambda *a, **k: (404, "not found"))
+    with pytest.raises(RuntimeError, match="HTTP 404"):
+        _wc.edit_product("48611875", name="x")
+
+
+def test_edit_product_raises_when_response_id_missing(monkeypatch):
+    no_id = """<?xml version="1.0" encoding="UTF-8"?>
+<api><goods><good><name>x</name></good></goods><status><code>OK</code></status></api>"""
+    monkeypatch.setattr(_wc, "_http_request", lambda *a, **k: (200, no_id))
+    with pytest.raises(RuntimeError, match="no <id>"):
+        _wc.edit_product("48611875", name="x")
+
+
 def test_build_proforma_xml_omits_currency_when_blank():
     line = _wc.ReservationLine(
         product_code="X", wfirma_good_id="GID-1", product_name="x",

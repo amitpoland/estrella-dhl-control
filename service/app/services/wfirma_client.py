@@ -616,6 +616,74 @@ def create_product(
     )
 
 
+def edit_product(
+    wfirma_product_id: str,
+    *,
+    name:        Optional[str] = None,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Edit selected fields of an existing wFirma good identified by id.
+
+    Minimal partial update: only fields passed (non-None, non-empty) are
+    serialised into the payload — wFirma leaves omitted fields untouched.
+    code / price / vat / unit / count / reserved / type / warehouse_type
+    are NEVER in the body and therefore can never be mutated by this call.
+
+    API: POST goods/edit
+    Auth: API Key headers
+    Returns: dict with the parsed <good> response (id, name, code, unit).
+    Raises ValueError on missing id or no fields to update.
+    Raises RuntimeError on non-OK wFirma status / HTTP ≥ 400 / missing id
+    in response.
+    Raises ConnectionError on network failure (propagated from _http_request).
+    """
+    if not (wfirma_product_id or "").strip():
+        raise ValueError("wfirma_product_id is required")
+
+    fields: List[str] = []
+    if name is not None and (name or "").strip():
+        fields.append(f"<name>{_esc(name)}</name>")
+    if description is not None and (description or "").strip():
+        fields.append(f"<description>{_esc(description)}</description>")
+    if not fields:
+        raise ValueError("at least one of name/description must be non-empty")
+
+    inner = "\n          ".join(fields)
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <goods>
+    <good>
+      <id>{_esc(wfirma_product_id)}</id>
+          {inner}
+    </good>
+  </goods>
+</api>"""
+
+    http_status, response_text = _http_request("POST", "goods", "edit", body)
+    if http_status >= 400:
+        raise RuntimeError(
+            f"goods/edit HTTP {http_status}: {response_text[:200]}"
+        )
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"goods/edit wFirma status={code}: {desc}")
+
+    root = ET.fromstring(response_text)
+    node = root.find(".//good")
+    if node is None:
+        raise RuntimeError("goods/edit: no <good> in response")
+    out_id = _find_text(node, "id") or ""
+    if not out_id:
+        raise RuntimeError("goods/edit: response had no <id> — refusing to confirm")
+    return {
+        "wfirma_id": out_id,
+        "name":      _find_text(node, "name"),
+        "code":      _find_text(node, "code"),
+        "unit":      _find_text(node, "unit"),
+    }
+
+
 def get_stock(wfirma_good_id: str) -> Dict[str, float]:
     """
     Get current stock and reserved quantities for a good.
