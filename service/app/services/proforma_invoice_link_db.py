@@ -473,6 +473,46 @@ def mark_draft_failed(db_path: Path, batch_id: str, client_name: str,
             raise KeyError(f"no draft for ({batch_id!r}, {client_name!r})")
 
 
+def mark_draft_cancelled_for_reissue(
+    db_path:           Path,
+    batch_id:          str,
+    client_name:       str,
+    *,
+    deleted_wfirma_id: str,
+    reason:            str,
+) -> None:
+    """
+    Reset an issued draft to failed/retryable after a confirmed wFirma
+    delete. Must only be called AFTER delete_invoice returned OK.
+
+    Sets status='failed', clears wfirma_proforma_id (it no longer exists
+    in wFirma), and writes the deleted id + reason to notes so the operator
+    has a full audit trail. The create route treats failed as retryable —
+    a subsequent POST /create will issue a fresh proforma.
+
+    Raises KeyError if no issued draft for (batch_id, client_name) is found.
+    """
+    notes = (
+        f"cancelled_for_reissue: deleted_wfirma_id={deleted_wfirma_id} "
+        f"reason={reason}"
+    )
+    with sqlite3.connect(str(db_path)) as conn:
+        _ensure_drafts_table(conn)
+        cur = conn.execute(
+            "UPDATE proforma_drafts "
+            "SET status='failed', wfirma_proforma_id=NULL, notes=?, "
+            "    updated_at=? "
+            "WHERE batch_id=? AND client_name=? AND status='issued'",
+            (notes, _now_utc_iso(), str(batch_id), str(client_name)),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise KeyError(
+                f"no issued draft for ({batch_id!r}, {client_name!r}) — "
+                "draft may already be cancelled or was never issued"
+            )
+
+
 def mark_draft_issued(db_path: Path, batch_id: str, client_name: str,
                       *, wfirma_proforma_id: str) -> None:
     if not (wfirma_proforma_id or "").strip():
@@ -509,4 +549,5 @@ __all__ = [
     "get_draft",
     "mark_draft_failed",
     "mark_draft_issued",
+    "mark_draft_cancelled_for_reissue",
 ]

@@ -1355,6 +1355,41 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
 </api>"""
 
 
+# ── invoices/delete ─────────────────────────────────────────────────────────
+
+def delete_invoice(invoice_id: str) -> Dict[str, Any]:
+    """
+    Delete a wFirma invoice (or proforma) by id.
+
+    Intended for cancel+reissue of wrong-payload proformas (e.g.
+    partial-line or wrong-VAT). A proforma that has been fiscalised or
+    converted to a final invoice cannot be deleted via this path —
+    wFirma will return non-OK status.
+
+    Returns {"ok": True, "wfirma_invoice_id": invoice_id} on success.
+    Raises RuntimeError on non-OK wFirma status or HTTP >= 400.
+    Raises ConnectionError on network failure.
+
+    API: POST invoices/delete/{invoice_id}  (id in URL, empty body)
+    """
+    if not (invoice_id or "").strip():
+        raise ValueError("invoice_id is required")
+    http_status, response_text = _http_request(
+        "POST", "invoices", "delete", "", id_suffix=invoice_id,
+    )
+    if http_status >= 400:
+        raise RuntimeError(
+            f"invoices/delete HTTP {http_status} for id={invoice_id}: "
+            f"{response_text[:200]}"
+        )
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(
+            f"invoices/delete wFirma status={code} for id={invoice_id}: {desc}"
+        )
+    return {"ok": True, "wfirma_invoice_id": invoice_id}
+
+
 # ── invoices/find + invoices/edit helpers (line-name refresh path) ──────────
 
 def fetch_invoice_xml(invoice_id: str) -> str:

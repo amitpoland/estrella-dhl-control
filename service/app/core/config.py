@@ -163,6 +163,7 @@ class Settings(BaseSettings):
     wfirma_edit_product_allowed:    bool = Field(default=False, env="WFIRMA_EDIT_PRODUCT_ALLOWED")
     wfirma_edit_invoice_allowed:    bool = Field(default=False, env="WFIRMA_EDIT_INVOICE_ALLOWED")
     wfirma_sync_customers_allowed:  bool = Field(default=False, env="WFIRMA_SYNC_CUSTOMERS_ALLOWED")
+    wfirma_delete_invoice_allowed:  bool = Field(default=False, env="WFIRMA_DELETE_INVOICE_ALLOWED")
 
     # ── Cliq bot batch collection ─────────────────────────────────────────────
     # Expire an incomplete (missing files) session after N minutes of inactivity

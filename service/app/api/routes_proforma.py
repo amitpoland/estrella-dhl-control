@@ -328,6 +328,42 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
             "register the customer mapping before creating a proforma"
         )
 
+    # ── Decide VAT context per customer (domestic / WDT / export) ──────────
+    customer_country = ((cust or {}).get("country") or "").strip()
+    customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
+    if not customer_country or (customer_country.upper() != "PL"
+                                 and not customer_vat_id):
+        # Local row is missing data — try a one-off live lookup against
+        # wFirma's master to fill the decision (no DB write here; the
+        # mapping refresh is a separate operator action).
+        try:
+            live = wfirma_client.search_customer(client_name)
+        except Exception:
+            live = None
+        if live is not None:
+            customer_country = customer_country or (live.country or "").strip()
+            customer_vat_id  = customer_vat_id  or (live.nip     or "").strip()
+
+    decision = wfirma_client.decide_proforma_vat_context(
+        customer_country = customer_country,
+        customer_vat_id  = customer_vat_id,
+    )
+    if decision["context"] == "blocked":
+        raise ValueError(
+            f"vat decision blocked for {client_name!r} "
+            f"(country={customer_country!r}, vat_id={customer_vat_id!r}): "
+            f"{decision['reason']}"
+        )
+    try:
+        vat_code_id = wfirma_client.resolve_vat_code_id_for_context(
+            decision["vat_code"]
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"vat_code resolution failed for {decision['vat_code']!r} "
+            f"({decision['reason']}): {exc}"
+        )
+
     lines = []
     missing_products: List[str] = []
     for ln in preview.get("lines", []):
@@ -360,6 +396,7 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
         lines                = lines,
         currency             = preview.get("currency") or "PLN",
         wfirma_contractor_id = contractor_id,
+        vat_code_id          = vat_code_id,
     )
 
 
@@ -515,6 +552,144 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
         "wfirma_proforma_id":  result.wfirma_invoice_id,
         "currency":            (final or draft).currency,
         "exchange_rate":       (final or draft).exchange_rate,
+    })
+
+
+# ── Cancel-issued-for-reissue ───────────────────────────────────────────────
+#
+# Deletes a wrong-payload proforma from wFirma and resets the local draft
+# to failed/retryable so the create route can issue a corrected payload.
+# The wFirma delete MUST succeed before the local row is changed — if the
+# delete fails the local draft remains 'issued' so no data is lost.
+
+@router.post("/cancel-issued-for-reissue/{batch_id}/{client_name:path}",
+             dependencies=[_auth])
+def cancel_issued_proforma_for_reissue(
+    batch_id:    str,
+    client_name: str,
+    confirm:     str = "",
+) -> JSONResponse:
+    """
+    Cancel an issued wFirma proforma and reset the local draft to
+    failed/retryable. Intended for cancel+reissue of wrong-payload or
+    partial-line proformas (e.g. PROF 92/2026 — 1 line instead of 12,
+    wrong vat_code).
+
+    Guards (in order):
+      1. WFIRMA_DELETE_INVOICE_ALLOWED=true
+      2. confirm == "YES_DELETE_AND_REISSUE_ONE_PROFORMA"
+      3. Local draft status must be "issued"
+      4. wfirma_proforma_id must be present on the draft
+      5. wFirma delete must return OK before the local row is changed
+    """
+    cn = _norm(client_name)
+
+    # ── 1. Settings gate ───────────────────────────────────────────────────
+    if not settings.wfirma_delete_invoice_allowed:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": ["WFIRMA_DELETE_INVOICE_ALLOWED=false — "
+                                 "enable to proceed"],
+        })
+
+    # ── 2. Explicit confirmation string ────────────────────────────────────
+    if confirm != "YES_DELETE_AND_REISSUE_ONE_PROFORMA":
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": ["confirm string missing or wrong — "
+                                 "must be YES_DELETE_AND_REISSUE_ONE_PROFORMA"],
+        })
+
+    # ── 3 + 4. Local draft state ────────────────────────────────────────────
+    existing = pildb.get_draft(_proforma_db_path(), batch_id, cn)
+    if existing is None:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": ["no local draft found for this batch/client"],
+        })
+    if existing.status != "issued":
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": [
+                f"draft status is {existing.status!r} — must be 'issued' "
+                "to cancel"
+            ],
+        })
+    wfirma_id = (existing.wfirma_proforma_id or "").strip()
+    if not wfirma_id:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": ["wfirma_proforma_id is missing on draft — "
+                                 "cannot identify which invoice to delete"],
+        })
+
+    # ── 5. wFirma delete — local row untouched until this returns OK ────────
+    try:
+        wfirma_client.delete_invoice(wfirma_id)
+    except Exception as exc:
+        return JSONResponse({
+            "ok":                 False,
+            "status":             "failed",
+            "batch_id":           batch_id,
+            "client_name":        cn,
+            "wfirma_proforma_id": wfirma_id,
+            "error": (
+                f"wFirma delete failed — local draft unchanged: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        })
+
+    # Confirmed delete — now reset local row.
+    try:
+        pildb.mark_draft_cancelled_for_reissue(
+            _proforma_db_path(), batch_id, cn,
+            deleted_wfirma_id=wfirma_id,
+            reason="cancel-issued-for-reissue endpoint",
+        )
+    except Exception as exc:
+        log.error(
+            "delete_invoice ok but local reset failed batch=%s client=%s "
+            "wfirma_id=%s err=%s", batch_id, cn, wfirma_id, exc,
+        )
+        return JSONResponse({
+            "ok":                 False,
+            "status":             "failed",
+            "batch_id":           batch_id,
+            "client_name":        cn,
+            "wfirma_proforma_id": wfirma_id,
+            "error": (
+                f"wFirma delete succeeded (id={wfirma_id}) but local reset "
+                f"failed: {type(exc).__name__}: {exc} — "
+                "proforma is gone from wFirma; create can be retried manually"
+            ),
+        })
+
+    return JSONResponse({
+        "ok":                True,
+        "status":            "cancelled_for_reissue",
+        "batch_id":          batch_id,
+        "client_name":       cn,
+        "deleted_wfirma_id": wfirma_id,
+        "local_status":      "failed",
+        "next_step":         (
+            f"POST /api/v1/proforma/create/{batch_id}/{client_name} "
+            "to reissue with corrected payload"
+        ),
     })
 
 

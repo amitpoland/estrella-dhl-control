@@ -1643,3 +1643,58 @@ def test_create_proforma_draft_vat_check_passes_on_correct_vat_code(monkeypatch)
     res = _wc.create_proforma_draft(req)
     assert res.ok is True
     assert res.wfirma_invoice_id == "888222"
+
+
+# ---------------------------------------------------------------------------
+# delete_invoice
+# ---------------------------------------------------------------------------
+
+_OK_DELETE_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
+<api><status><code>OK</code></status></api>"""
+
+
+def test_delete_invoice_posts_to_correct_url(monkeypatch):
+    """delete_invoice uses POST invoices/delete/{id} (id via id_suffix)."""
+    captured = []
+
+    def fake(method, module, action, body, id_suffix=None):
+        captured.append({
+            "method": method, "module": module, "action": action,
+            "body": body, "id_suffix": id_suffix,
+        })
+        return (200, _OK_DELETE_RESPONSE)
+
+    monkeypatch.setattr(_wc, "_http_request", fake)
+    result = _wc.delete_invoice("465611619")
+    assert captured[0]["method"]    == "POST"
+    assert captured[0]["module"]    == "invoices"
+    assert captured[0]["action"]    == "delete"
+    assert captured[0]["id_suffix"] == "465611619"
+    assert result == {"ok": True, "wfirma_invoice_id": "465611619"}
+
+
+def test_delete_invoice_raises_on_non_ok_status(monkeypatch):
+    """Non-OK wFirma status raises RuntimeError with code in message."""
+    monkeypatch.setattr(
+        _wc, "_http_request",
+        lambda *a, **k: (200, """<?xml version="1.0" encoding="UTF-8"?>
+<api><status><code>AUTH_FAILED</code><message>no</message></status></api>"""),
+    )
+    with pytest.raises(RuntimeError, match="AUTH_FAILED"):
+        _wc.delete_invoice("465611619")
+
+
+def test_delete_invoice_raises_on_http_4xx(monkeypatch):
+    """HTTP >= 400 raises RuntimeError with status code in message."""
+    monkeypatch.setattr(
+        _wc, "_http_request",
+        lambda *a, **k: (404, "not found"),
+    )
+    with pytest.raises(RuntimeError, match="HTTP 404"):
+        _wc.delete_invoice("465611619")
+
+
+def test_delete_invoice_raises_on_blank_id():
+    """Blank invoice_id raises ValueError before any HTTP call."""
+    with pytest.raises(ValueError):
+        _wc.delete_invoice("")

@@ -22,6 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.services import wfirma_client as _wc
 from app.services import packing_db   as pdb
 from app.services import warehouse_db as wdb
 from app.services import document_db  as ddb
@@ -30,6 +31,22 @@ from app.services import inventory_state_engine as ise
 
 
 BATCH = "BATCH_PFP_TEST"
+
+
+@pytest.fixture(autouse=True)
+def _prime_vat_code_cache():
+    """
+    Proforma build path now resolves vat_code_id by code ("23"/"WDT"/
+    "EXP") via a live helper. Pre-populate the cache so tests stay
+    offline. Cleared after each test so negative tests can exercise
+    the live lookup if they need to.
+    """
+    _wc._VAT_CODE_ID_CACHE["23"]  = "222"
+    _wc._VAT_CODE_ID_CACHE["WDT"] = "228"
+    _wc._VAT_CODE_ID_CACHE["EXP"] = "229"
+    yield
+    for k in ("23", "WDT", "EXP"):
+        _wc._VAT_CODE_ID_CACHE.pop(k, None)
 
 
 @pytest.fixture()
@@ -124,10 +141,17 @@ def _match_product(product_code: str):
     )
 
 
-def _match_customer(client_name: str):
+def _match_customer(client_name: str, country: str = "PL", vat_id: str = ""):
+    """
+    Default to a PL domestic customer so the proforma create flow can
+    decide VAT 23% without a live wFirma fallback. Tests that need EU
+    WDT or non-EU export pass explicit country/vat_id.
+    """
     wfdb.upsert_customer(
         client_name=client_name,
         wfirma_customer_id="9",
+        country=country,
+        vat_id=vat_id,
         match_status="matched",
     )
 
@@ -699,6 +723,7 @@ def test_create_blocked_when_local_product_id_missing(client, storage):
     from app.api import routes_proforma as rp
 
     wfdb.upsert_customer(client_name="ACME", wfirma_customer_id="CID-1",
+                         country="PL",
                          match_status="matched")
     # Product mapping with EMPTY wfirma_product_id
     wfdb.upsert_product(product_code="EJL/X-1", wfirma_product_id="",
@@ -1205,3 +1230,314 @@ def test_refresh_skipped_only_does_not_call_verify_fetch(client, storage):
     assert body["updated"] == 0
     assert body["skipped"] == 1
     assert fetch_calls["n"] == 1, "no verify re-fetch when nothing was edited"
+
+
+# ── VAT context selection in _build_proforma_request ────────────────────────
+
+def _seed_ready_pl(design="JE_VAT_PL", product_code="EJL/VAT-PL"):
+    _seed_purchase(design_no=design, product_code=product_code)
+    _seed_sales("PL Customer", [{"sku": design, "qty": 1.0}])
+    _seed_invoice_pricing(product_code, 100.0, "USD")
+    _match_product(product_code)
+    _match_customer("PL Customer", country="PL")
+    _advance_state(_scan_code_for(design, product_code),
+                   target=ise.WAREHOUSE_STOCK,
+                   product_code=product_code, design_no=design)
+
+
+def _seed_ready_eu(design="JE_VAT_EU", product_code="EJL/VAT-EU"):
+    _seed_purchase(design_no=design, product_code=product_code)
+    _seed_sales("Juliany EOOD", [{"sku": design, "qty": 1.0}])
+    _seed_invoice_pricing(product_code, 100.0, "USD")
+    _match_product(product_code)
+    _match_customer("Juliany EOOD", country="BG", vat_id="BG121281167")
+    _advance_state(_scan_code_for(design, product_code),
+                   target=ise.WAREHOUSE_STOCK,
+                   product_code=product_code, design_no=design)
+
+
+def _seed_ready_eu_no_vat(design="JE_VAT_EU2", product_code="EJL/VAT-EU2"):
+    _seed_purchase(design_no=design, product_code=product_code)
+    _seed_sales("DE Customer", [{"sku": design, "qty": 1.0}])
+    _seed_invoice_pricing(product_code, 100.0, "USD")
+    _match_product(product_code)
+    _match_customer("DE Customer", country="DE", vat_id="")
+    _advance_state(_scan_code_for(design, product_code),
+                   target=ise.WAREHOUSE_STOCK,
+                   product_code=product_code, design_no=design)
+
+
+def test_create_pl_customer_uses_vat_23(client, storage):
+    """PL domestic customer → vat_code_id resolved to '23' → '222'."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    _seed_ready_pl()
+    fake_ok = wc.ProformaResult(ok=True, wfirma_invoice_id="WF-PL")
+    with _gate_on(), _p.object(wc, "create_proforma_draft",
+                                return_value=fake_ok) as mock_call:
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/PL%20Customer",
+                           headers=_auth()).json()
+    assert body["status"] == "issued"
+    req = mock_call.call_args.args[0]
+    assert req.vat_code_id == "222"   # PL 23%
+
+
+def test_create_eu_customer_with_vat_uses_wdt(client, storage):
+    """EU non-PL with VAT id → vat_code_id='228' (WDT)."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    _seed_ready_eu()
+    fake_ok = wc.ProformaResult(ok=True, wfirma_invoice_id="WF-EU")
+    with _gate_on(), _p.object(wc, "create_proforma_draft",
+                                return_value=fake_ok) as mock_call:
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/Juliany%20EOOD",
+                           headers=_auth()).json()
+    assert body["status"] == "issued"
+    req = mock_call.call_args.args[0]
+    assert req.vat_code_id == "228"   # WDT
+    # AND the customer's country/vat actually drove the decision.
+    assert req.client_name == "Juliany EOOD"
+
+
+def test_create_eu_customer_without_vat_blocked(client, storage):
+    """EU non-PL without VAT id must surface as blocked, not silently 23%."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    _seed_ready_eu_no_vat()
+    # Also stub search_customer fallback so the route can't recover the
+    # missing VAT id from wFirma master and slip through to issued.
+    with _gate_on(), \
+         _p.object(wc, "search_customer", return_value=None), \
+         _p.object(wc, "create_proforma_draft",
+                   side_effect=AssertionError("must not call create when blocked")):
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/DE%20Customer",
+                           headers=_auth()).json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("vat decision blocked" in br or "no VAT id" in br
+               for br in body["blocking_reasons"])
+
+
+# ---------------------------------------------------------------------------
+# cancel-issued-for-reissue route
+# ---------------------------------------------------------------------------
+
+_CANCEL_CONFIRM = "YES_DELETE_AND_REISSUE_ONE_PROFORMA"
+_CANCEL_BATCH   = "BATCH_CANCEL_TEST"
+_CANCEL_CLIENT  = "ACME"
+
+
+def _gate_delete_on():
+    from unittest.mock import patch as _p
+    return _p.object(settings, "wfirma_delete_invoice_allowed", True)
+
+
+def _seed_issued_draft(storage, wfirma_id: str = "465611619") -> None:
+    """Write an issued proforma_drafts row directly."""
+    db = storage / "proforma_links.db"
+    pildb.init_db(db)
+    pildb.upsert_pending_draft(
+        db,
+        batch_id          = _CANCEL_BATCH,
+        client_name       = _CANCEL_CLIENT,
+        currency          = "USD",
+        exchange_rate     = None,
+        source_lines_json = "[]",
+    )
+    pildb.mark_draft_issued(db, _CANCEL_BATCH, _CANCEL_CLIENT,
+                            wfirma_proforma_id=wfirma_id)
+
+
+def _cancel_url(batch: str = _CANCEL_BATCH,
+                client: str = _CANCEL_CLIENT) -> str:
+    return f"/api/v1/proforma/cancel-issued-for-reissue/{batch}/{client}"
+
+
+def test_cancel_blocked_when_flag_off(client, storage):
+    """WFIRMA_DELETE_INVOICE_ALLOWED=false → blocked before any wFirma call."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_issued_draft(storage)
+    with _p.object(wc, "delete_invoice",
+                   side_effect=AssertionError("must not call delete when flag off")):
+        body = client.post(
+            _cancel_url(),
+            params={"confirm": _CANCEL_CONFIRM},
+            headers=_auth(),
+        ).json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("WFIRMA_DELETE_INVOICE_ALLOWED" in br
+               for br in body["blocking_reasons"])
+
+
+def test_cancel_blocked_wrong_confirm(client, storage):
+    """Wrong confirm string → blocked; no wFirma call."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_issued_draft(storage)
+    with _gate_delete_on(), \
+         _p.object(wc, "delete_invoice",
+                   side_effect=AssertionError("must not call delete on bad confirm")):
+        body = client.post(
+            _cancel_url(),
+            params={"confirm": "WRONG_STRING"},
+            headers=_auth(),
+        ).json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("confirm" in br.lower() for br in body["blocking_reasons"])
+
+
+def test_cancel_blocked_no_draft(client, storage):
+    """No local draft for batch/client → blocked."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    with _gate_delete_on(), \
+         _p.object(wc, "delete_invoice",
+                   side_effect=AssertionError("must not call delete — no draft")):
+        body = client.post(
+            _cancel_url(),
+            params={"confirm": _CANCEL_CONFIRM},
+            headers=_auth(),
+        ).json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("no local draft" in br for br in body["blocking_reasons"])
+
+
+def test_cancel_blocked_non_issued_status(client, storage):
+    """Draft exists but status != issued → blocked."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    db = storage / "proforma_links.db"
+    pildb.init_db(db)
+    pildb.upsert_pending_draft(
+        db,
+        batch_id=_CANCEL_BATCH, client_name=_CANCEL_CLIENT,
+        currency="USD", exchange_rate=None, source_lines_json="[]",
+    )
+    # status is pending_local (not issued)
+    with _gate_delete_on(), \
+         _p.object(wc, "delete_invoice",
+                   side_effect=AssertionError("must not delete non-issued")):
+        body = client.post(
+            _cancel_url(),
+            params={"confirm": _CANCEL_CONFIRM},
+            headers=_auth(),
+        ).json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("pending_local" in br or "issued" in br
+               for br in body["blocking_reasons"])
+
+
+def test_cancel_delete_failure_leaves_local_issued(client, storage):
+    """
+    wFirma delete raises → local draft must remain 'issued'.
+    The draft is not touched when the remote call fails.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_issued_draft(storage, wfirma_id="465611619")
+    db = storage / "proforma_links.db"
+
+    with _gate_delete_on(), \
+         _p.object(wc, "delete_invoice",
+                   side_effect=RuntimeError("wFirma returned NOT_FOUND")):
+        body = client.post(
+            _cancel_url(),
+            params={"confirm": _CANCEL_CONFIRM},
+            headers=_auth(),
+        ).json()
+
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert "local draft unchanged" in body["error"]
+    # Local row must still be issued.
+    draft = pildb.get_draft(db, _CANCEL_BATCH, _CANCEL_CLIENT)
+    assert draft is not None
+    assert draft.status == "issued"
+    assert draft.wfirma_proforma_id == "465611619"
+
+
+def test_cancel_success_marks_draft_failed_retryable(client, storage):
+    """
+    Happy path: delete succeeds → response is cancelled_for_reissue,
+    local draft status becomes 'failed' (retryable), wfirma_proforma_id
+    cleared, notes record the deleted id.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_issued_draft(storage, wfirma_id="465611619")
+    db = storage / "proforma_links.db"
+
+    with _gate_delete_on(), \
+         _p.object(wc, "delete_invoice",
+                   return_value={"ok": True, "wfirma_invoice_id": "465611619"}):
+        body = client.post(
+            _cancel_url(),
+            params={"confirm": _CANCEL_CONFIRM},
+            headers=_auth(),
+        ).json()
+
+    assert body["ok"] is True
+    assert body["status"] == "cancelled_for_reissue"
+    assert body["deleted_wfirma_id"] == "465611619"
+    assert body["local_status"] == "failed"
+
+    draft = pildb.get_draft(db, _CANCEL_BATCH, _CANCEL_CLIENT)
+    assert draft is not None
+    assert draft.status == "failed"
+    assert draft.wfirma_proforma_id is None
+    assert "465611619" in (draft.notes or "")
+
+
+def test_cancel_then_create_reissue_path(client, storage):
+    """
+    After cancel, a POST /create on the same batch/client is accepted
+    (failed draft is retryable) and issues a new proforma id.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    _seed_ready("JE_REISSUE", "EJL/RI-1", price=200.0)
+    db = storage / "proforma_links.db"
+
+    # Step 1: issue first proforma.
+    fake_ok_1 = wc.ProformaResult(ok=True, wfirma_invoice_id="OLD-001")
+    with _gate_on(), _p.object(wc, "create_proforma_draft",
+                                return_value=fake_ok_1):
+        r1 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                         headers=_auth()).json()
+    assert r1["status"] == "issued"
+    assert r1["wfirma_proforma_id"] == "OLD-001"
+
+    # Step 2: cancel it.
+    with _gate_delete_on(), \
+         _p.object(wc, "delete_invoice",
+                   return_value={"ok": True, "wfirma_invoice_id": "OLD-001"}):
+        rc = client.post(
+            f"/api/v1/proforma/cancel-issued-for-reissue/{BATCH}/ACME",
+            params={"confirm": _CANCEL_CONFIRM},
+            headers=_auth(),
+        ).json()
+    assert rc["ok"] is True
+    assert rc["deleted_wfirma_id"] == "OLD-001"
+
+    # Step 3: reissue.
+    fake_ok_2 = wc.ProformaResult(ok=True, wfirma_invoice_id="NEW-002")
+    with _gate_on(), _p.object(wc, "create_proforma_draft",
+                                return_value=fake_ok_2):
+        r2 = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                         headers=_auth()).json()
+    assert r2["status"] == "issued"
+    assert r2["wfirma_proforma_id"] == "NEW-002"
+    draft = pildb.get_draft(db, BATCH, "ACME")
+    assert draft.wfirma_proforma_id == "NEW-002"
