@@ -636,6 +636,87 @@ def test_create_caller_payload_cannot_override_lines_or_amounts(client, storage)
     assert req.lines[0].unit_price    == 42.0
 
 
+def _ready_preview_dict(client_name="ACME", product_code="EJL/X-1",
+                         design_no="X1", currency="USD", unit_price=10.0):
+    """Synthetic preview dict that says ready=true. Used to bypass the
+    preview's own gate so defensive checks downstream can be exercised."""
+    return {
+        "ok":               True,
+        "batch_id":         BATCH,
+        "client_name":      client_name,
+        "currency":         currency,
+        "exchange_rate":    None,
+        "ready":            True,
+        "blocking_reasons": [],
+        "lines": [{
+            "product_code":  product_code,
+            "design_no":     design_no,
+            "qty":           1.0,
+            "unit_price":    unit_price,
+            "currency":      currency,
+            "exchange_rate": None,
+            "line_value":    unit_price,
+            "stock_ok":      True,
+            "stock_status":  "warehouse_stock",
+            "product_match": True,
+        }],
+    }
+
+
+def test_create_blocked_when_local_customer_id_missing(client, storage):
+    """
+    Defensive: if preview reports ready=true but the local mapping row has
+    no wfirma_customer_id, _build_proforma_request must refuse and the route
+    must surface 'blocked' — not a 500 — and must NOT call wfirma_client.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    from app.api import routes_proforma as rp
+
+    # Mapping row with EMPTY wfirma_customer_id; product mapping fine.
+    wfdb.upsert_customer(client_name="ACME", wfirma_customer_id="",
+                         match_status="matched")
+    wfdb.upsert_product(product_code="EJL/X-1", wfirma_product_id="GID-1",
+                        sync_status="matched")
+
+    fake_preview = _ready_preview_dict()
+    with (
+        _gate_on(),
+        _p.object(rp, "_build_preview", return_value=fake_preview),
+        _p.object(wc, "create_proforma_draft",
+                  side_effect=AssertionError("must not be called")),
+    ):
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                           headers=_auth()).json()
+    assert body["status"] == "blocked"
+    assert any("wfirma_customer_id" in br for br in body["blocking_reasons"])
+
+
+def test_create_blocked_when_local_product_id_missing(client, storage):
+    """Defensive: any line missing wfirma_product_id → blocked, no live call."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    from app.api import routes_proforma as rp
+
+    wfdb.upsert_customer(client_name="ACME", wfirma_customer_id="CID-1",
+                         match_status="matched")
+    # Product mapping with EMPTY wfirma_product_id
+    wfdb.upsert_product(product_code="EJL/X-1", wfirma_product_id="",
+                        sync_status="matched")
+
+    fake_preview = _ready_preview_dict()
+    with (
+        _gate_on(),
+        _p.object(rp, "_build_preview", return_value=fake_preview),
+        _p.object(wc, "create_proforma_draft",
+                  side_effect=AssertionError("must not be called")),
+    ):
+        body = client.post(f"/api/v1/proforma/create/{BATCH}/ACME",
+                           headers=_auth()).json()
+    assert body["status"] == "blocked"
+    assert any("wfirma_product_id" in br for br in body["blocking_reasons"])
+
+
 def test_create_failure_does_not_call_create_again_on_retry_with_locked_draft(
     client, storage,
 ):

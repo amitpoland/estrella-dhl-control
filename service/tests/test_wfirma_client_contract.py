@@ -403,6 +403,7 @@ def test_proforma_xml_valid():
         client_zip="SW1A 1AA",
         client_city="London",
         lines=_sample_lines(2),
+        wfirma_contractor_id="999",
     )
     xml_str = _build_proforma_xml(req)
     root = ET.fromstring(xml_str)
@@ -412,31 +413,35 @@ def test_proforma_xml_valid():
 def test_proforma_xml_type_is_proforma():
     req = ProformaRequest(
         client_name="X", client_zip="00-001", client_city="Warsaw",
-        lines=_sample_lines(1),
+        lines=_sample_lines(1), wfirma_contractor_id="999",
     )
     root = _parse_proforma_xml(req)
     invoice = root.find(".//invoice")
     assert _find_text(invoice, "type") == "proforma"
 
 
-def test_proforma_xml_contractor_inline():
+def test_proforma_xml_contractor_id_reference():
+    """Contractor is referenced by <id>, not by inline name fields."""
     req = ProformaRequest(
         client_name="Dream Rings Ltd",
         client_zip="SW1A 1AA",
         client_city="London",
         lines=_sample_lines(1),
+        wfirma_contractor_id="42",
     )
     root = _parse_proforma_xml(req)
     invoice = root.find(".//invoice")
-    assert _find_text(invoice, "contractor", "name") == "Dream Rings Ltd"
-    assert _find_text(invoice, "contractor", "zip") == "SW1A 1AA"
-    assert _find_text(invoice, "contractor", "city") == "London"
+    assert _find_text(invoice, "contractor", "id") == "42"
+    # Inline name/zip/city fields must NOT be serialised
+    assert invoice.find("contractor/name") is None
+    assert invoice.find("contractor/zip")  is None
+    assert invoice.find("contractor/city") is None
 
 
 def test_proforma_xml_line_count():
     req = ProformaRequest(
         client_name="X", client_zip="", client_city="",
-        lines=_sample_lines(4),
+        lines=_sample_lines(4), wfirma_contractor_id="999",
     )
     root = _parse_proforma_xml(req)
     lines = root.findall(".//invoicecontent")
@@ -446,7 +451,7 @@ def test_proforma_xml_line_count():
 def test_proforma_xml_line_fields():
     line = ReservationLine(
         product_code="EJL/26-27/015-6",
-        wfirma_good_id="",
+        wfirma_good_id="GD-678",
         product_name="Pierścionek złoty",
         qty=3.0,
         unit_price=200.0,
@@ -454,6 +459,7 @@ def test_proforma_xml_line_fields():
     )
     req = ProformaRequest(
         client_name="X", client_zip="", client_city="", lines=[line],
+        wfirma_contractor_id="999",
     )
     root = _parse_proforma_xml(req)
     content = root.find(".//invoicecontent")
@@ -461,8 +467,9 @@ def test_proforma_xml_line_fields():
     assert _find_text(content, "unit_count") == "3.0000"
     assert _find_text(content, "price") == "200.00"
     assert _find_text(content, "unit") == "szt."
-    name_text = _find_text(content, "name")
-    assert "EJL/26-27/015-6" in name_text
+    # Identity is the good id reference, not an inline name
+    assert _find_text(content, "good", "id") == "GD-678"
+    assert content.find("name") is None
 
 
 # ── Tests: write methods still gated (only customers/products/proforma) ──────
@@ -476,10 +483,13 @@ def test_create_customer_raises():
         create_customer("Dream Rings")
 
 
-def test_create_product_raises():
+def test_create_product_validates_required_args():
+    """create_product is now implemented; bare-minimum arg validation only."""
     from app.services.wfirma_client import create_product
-    with pytest.raises(NotImplementedError):
-        create_product("EJL/X", "Test")
+    with pytest.raises(ValueError, match="product_code is required"):
+        create_product("", "Test")
+    with pytest.raises(ValueError, match="name is required"):
+        create_product("EJL/X", "")
 
 
 def test_get_stock_raises():
@@ -487,12 +497,13 @@ def test_get_stock_raises():
         get_stock("GD-001")
 
 
-def test_create_proforma_raises():
+def test_create_proforma_validates_required_args():
+    """create_proforma_draft is now implemented; arg validation lives in client."""
     req = ProformaRequest(
-        client_name="X", client_zip="", client_city="",
+        client_name="", client_zip="", client_city="",
         lines=_sample_lines(1),
     )
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError, match="client_name"):
         create_proforma_draft(req)
 
 
@@ -810,3 +821,177 @@ def test_product_available_over_reserved_clamps_to_zero():
     # Edge: reserved > count (data inconsistency) — should not return negative
     p = WFirmaProduct(wfirma_id="1", name="X", code="EJL/1", count=3.0, reserved=5.0)
     assert p.available == 0.0
+
+
+# ── create_proforma_draft live wrapper ─────────────────────────────────────
+
+from app.services import wfirma_client as _wc
+
+
+def _ok_invoice_response(wfirma_id: str = "55512345") -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <invoices>
+    <invoice>
+      <id>{wfirma_id}</id>
+      <fullnumber>FP 5/2026</fullnumber>
+    </invoice>
+  </invoices>
+  <status><code>OK</code></status>
+</api>"""
+
+
+def _err_invoice_response(code: str = "ERROR", desc: str = "boom") -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <status><code>{code}</code><message>{desc}</message></status>
+</api>"""
+
+
+def _proforma_request(currency: str = "USD"):
+    line = _wc.ReservationLine(
+        product_code   = "EJL/25-26/1274-3",
+        wfirma_good_id = "48611875",          # required by validated wFirma shape
+        product_name   = "Pierścionek",
+        qty            = 1.0,
+        unit_price     = 173.0,
+        unit           = "szt.",
+        currency       = currency,
+    )
+    return _wc.ProformaRequest(
+        client_name          = "Juliany EOOD",
+        client_zip           = "1000",
+        client_city          = "Sofia",
+        lines                = [line],
+        currency             = currency,
+        wfirma_contractor_id = "176578339",  # required by validated wFirma shape
+    )
+
+
+def test_create_proforma_draft_posts_invoices_add(monkeypatch):
+    captured = {}
+    def fake_http(method, module, action, body):
+        captured.update(method=method, module=module, action=action, body=body)
+        return 200, _ok_invoice_response("99887766")
+    monkeypatch.setattr(_wc, "_http_request", fake_http)
+
+    res = _wc.create_proforma_draft(_proforma_request())
+    assert captured["method"] == "POST"
+    assert captured["module"] == "invoices"
+    assert captured["action"] == "add"
+    assert "<type>proforma</type>" in captured["body"]
+    # Currency preserved in request XML
+    assert "<currency>USD</currency>" in captured["body"]
+    # Result shape
+    assert res.ok is True
+    assert res.wfirma_invoice_id == "99887766"
+
+
+def test_create_proforma_draft_raises_on_non_ok_status(monkeypatch):
+    monkeypatch.setattr(
+        _wc, "_http_request",
+        lambda *a, **k: (200, _err_invoice_response("DENIED", "no money")),
+    )
+    with pytest.raises(RuntimeError, match="DENIED"):
+        _wc.create_proforma_draft(_proforma_request())
+
+
+def test_create_proforma_draft_raises_on_http_4xx(monkeypatch):
+    monkeypatch.setattr(_wc, "_http_request",
+                        lambda *a, **k: (502, "<api/>"))
+    with pytest.raises(RuntimeError, match="HTTP 502"):
+        _wc.create_proforma_draft(_proforma_request())
+
+
+def test_create_proforma_draft_raises_when_id_missing(monkeypatch):
+    no_id = """<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <invoices><invoice><fullnumber>FP 1/2026</fullnumber></invoice></invoices>
+  <status><code>OK</code></status>
+</api>"""
+    monkeypatch.setattr(_wc, "_http_request", lambda *a, **k: (200, no_id))
+    with pytest.raises(RuntimeError, match="no <id>"):
+        _wc.create_proforma_draft(_proforma_request())
+
+
+def test_create_proforma_draft_raises_on_empty_lines():
+    req = _wc.ProformaRequest(
+        client_name="Juliany EOOD", client_zip="", client_city="",
+        lines=[], currency="USD",
+    )
+    with pytest.raises(ValueError, match="at least one line"):
+        _wc.create_proforma_draft(req)
+
+
+def test_create_proforma_draft_raises_on_empty_client_name():
+    line = _wc.ReservationLine(
+        product_code="X", wfirma_good_id="", product_name="x",
+        qty=1, unit_price=1, currency="USD",
+    )
+    req = _wc.ProformaRequest(
+        client_name="", client_zip="", client_city="",
+        lines=[line], currency="USD",
+    )
+    with pytest.raises(ValueError, match="client_name"):
+        _wc.create_proforma_draft(req)
+
+
+def test_build_proforma_xml_omits_currency_when_blank():
+    line = _wc.ReservationLine(
+        product_code="X", wfirma_good_id="GID-1", product_name="x",
+        qty=1, unit_price=1, currency="",
+    )
+    req = _wc.ProformaRequest(
+        client_name="C", client_zip="", client_city="",
+        lines=[line], currency="", wfirma_contractor_id="CID-1",
+    )
+    xml = _wc._build_proforma_xml(req)
+    assert "<currency>" not in xml
+
+
+# ── XML shape: contractor/id and good/id references ────────────────────────
+
+def test_build_proforma_xml_uses_contractor_id_reference():
+    """Validated wFirma shape: <contractor><id>...</id></contractor>."""
+    xml = _wc._build_proforma_xml(_proforma_request())
+    assert "<contractor><id>176578339</id></contractor>" in xml
+    # No inline contractor name/address fields
+    assert "<contractor><name>" not in xml
+    assert "<zip>"  not in xml
+    assert "<city>" not in xml
+
+
+def test_build_proforma_xml_uses_good_id_reference_per_line():
+    """Validated wFirma shape: <invoicecontent><good><id>...</id></good>...]"""
+    xml = _wc._build_proforma_xml(_proforma_request())
+    assert "<good><id>48611875</id></good>" in xml
+    # The line block must NOT carry product_code/product_name as identity —
+    # identity is the good_id only.
+    assert "EJL/25-26/1274-3" not in xml
+    assert "Pierścionek"      not in xml
+
+
+def test_build_proforma_xml_raises_on_missing_contractor_id():
+    line = _wc.ReservationLine(
+        product_code="X", wfirma_good_id="GID-1", product_name="x",
+        qty=1, unit_price=1, currency="USD",
+    )
+    req = _wc.ProformaRequest(
+        client_name="C", client_zip="", client_city="",
+        lines=[line], currency="USD", wfirma_contractor_id="",
+    )
+    with pytest.raises(ValueError, match="wfirma_contractor_id is required"):
+        _wc._build_proforma_xml(req)
+
+
+def test_build_proforma_xml_raises_on_missing_good_id():
+    line = _wc.ReservationLine(
+        product_code="X", wfirma_good_id="", product_name="x",
+        qty=1, unit_price=1, currency="USD",
+    )
+    req = _wc.ProformaRequest(
+        client_name="C", client_zip="", client_city="",
+        lines=[line], currency="USD", wfirma_contractor_id="CID-1",
+    )
+    with pytest.raises(ValueError, match="wfirma_good_id is required"):
+        _wc._build_proforma_xml(req)

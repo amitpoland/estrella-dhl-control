@@ -311,24 +311,54 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
     Build a wfirma_client.ProformaRequest from a ready preview dict.
     Caller-supplied values are NOT used here — every field is derived from
     server state (preview, packing_lines, wfirma_products / wfirma_customers).
+
+    Resolves wFirma master IDs from the local mapping tables:
+      - wfirma_customer_id from wfirma_customers (by client_name)
+      - wfirma_product_id  from wfirma_products  (per product_code)
+    Raises ValueError naming the missing mapping(s) if any required ID is
+    absent. Caller must surface this as a blocked status — never as a 500.
     """
+    client_name = (preview.get("client_name") or "").strip()
+    cust = wfdb.get_customer(client_name) if wfdb._db_path is not None else None
+    contractor_id = (cust or {}).get("wfirma_customer_id") or ""
+    if not contractor_id:
+        raise ValueError(
+            f"wfirma_customers has no wfirma_customer_id for {client_name!r} — "
+            "register the customer mapping before creating a proforma"
+        )
+
     lines = []
+    missing_products: List[str] = []
     for ln in preview.get("lines", []):
+        pc = ln.get("product_code") or ""
+        prod = wfdb.get_product(pc) if (pc and wfdb._db_path is not None) else None
+        good_id = (prod or {}).get("wfirma_product_id") or ""
+        if not good_id:
+            missing_products.append(pc or "<unknown>")
+            continue
         lines.append(wfirma_client.ReservationLine(
-            product_code  = ln.get("product_code") or "",
-            wfirma_good_id= "",   # not used by proforma payload
-            product_name  = ln.get("design_no") or ln.get("product_code") or "",
-            qty           = float(ln.get("qty") or 0),
-            unit_price    = float(ln.get("unit_price") or 0),
-            unit          = "szt.",
-            currency      = (ln.get("currency") or preview.get("currency") or "PLN"),
+            product_code   = pc,
+            wfirma_good_id = good_id,
+            product_name   = ln.get("design_no") or pc,
+            qty            = float(ln.get("qty") or 0),
+            unit_price     = float(ln.get("unit_price") or 0),
+            unit           = "szt.",
+            currency       = (ln.get("currency") or preview.get("currency") or "PLN"),
         ))
+    if missing_products:
+        raise ValueError(
+            "wfirma_products missing wfirma_product_id for: "
+            + ", ".join(missing_products[:5])
+            + ("…" if len(missing_products) > 5 else "")
+        )
+
     return wfirma_client.ProformaRequest(
-        client_name = preview.get("client_name") or "",
-        client_zip  = "",
-        client_city = "",
-        lines       = lines,
-        currency    = preview.get("currency") or "PLN",
+        client_name          = client_name,
+        client_zip           = "",
+        client_city          = "",
+        lines                = lines,
+        currency             = preview.get("currency") or "PLN",
+        wfirma_contractor_id = contractor_id,
     )
 
 
@@ -419,7 +449,24 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
         )
 
     # ── 5. Live wFirma call (only path with external write) ────────────────
-    req = _build_proforma_request(preview)
+    # _build_proforma_request resolves wfirma_customer_id + per-line
+    # wfirma_product_id from local mappings. Missing mappings = blocked,
+    # not failed — this is a configuration gate, not an external write
+    # failure. Refusing to build avoids any chance of submitting a payload
+    # that wFirma would reject or, worse, accept by creating a duplicate
+    # contractor inline.
+    try:
+        req = _build_proforma_request(preview)
+    except ValueError as exc:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "draft_id":         draft.id,
+            "blocking_reasons": [str(exc)],
+        })
+
     try:
         result = wfirma_client.create_proforma_draft(req)
     except Exception as exc:

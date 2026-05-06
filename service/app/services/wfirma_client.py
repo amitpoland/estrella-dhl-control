@@ -105,12 +105,23 @@ class ReservationResult:
 
 @dataclass
 class ProformaRequest:
-    """Input for create_proforma_draft()."""
-    client_name: str
-    client_zip: str
-    client_city: str
-    lines: List[ReservationLine] = field(default_factory=list)
-    currency: str = "PLN"
+    """
+    Input for create_proforma_draft().
+
+    Per validated wFirma invoices/add shape, contractor and goods are
+    referenced BY ID — not by inline name fields. The wfirma_contractor_id
+    must be a non-empty wFirma id resolved from wfirma_customers by the
+    caller (route layer); each line's wfirma_good_id must be resolved from
+    wfirma_products. The client_name / zip / city are kept for logging and
+    operator-facing display only — they are NOT serialised into the XML
+    payload.
+    """
+    client_name:           str
+    client_zip:            str
+    client_city:           str
+    lines:                 List[ReservationLine] = field(default_factory=list)
+    currency:              str = "PLN"
+    wfirma_contractor_id:  str = ""
 
 
 @dataclass
@@ -782,42 +793,44 @@ def create_proforma_draft(req: ProformaRequest) -> ProformaResult:
     """
     Create a proforma invoice in wFirma (type=proforma).
 
-    Used as fallback when:
-    - Warehouse module is not enabled, OR
-    - Reservation API is unavailable for a specific line item
-
-    Does NOT block stock — it is a financial document only.
+    Returns ProformaResult with wfirma_invoice_id (and best-effort number /
+    currency) on success.
+    Raises RuntimeError on non-OK wFirma status, missing id in response, or
+    HTTP ≥ 400.
+    Raises ConnectionError on network failure (propagated from _http_request).
+    Mirrors the pattern of create_product.
 
     API: POST invoices/add
-    Auth: API Key headers
-    Payload shape:
-        <api>
-          <invoices>
-            <invoice>
-              <contractor>
-                <name>...</name>
-                <zip>...</zip>
-                <city>...</city>
-              </contractor>
-              <type>proforma</type>
-              <invoicecontents>
-                <invoicecontent>
-                  <name>...</name>
-                  <count>...</count>
-                  <unit_count>...</unit_count>
-                  <price>...</price>
-                  <unit>...</unit>
-                </invoicecontent>
-              </invoicecontents>
-            </invoice>
-          </invoices>
-        </api>
-
-    Returns ProformaResult with wfirma_invoice_id on success.
-    Raises NotImplementedError — live calls not yet enabled.
+    Payload built by _build_proforma_xml(req).
     """
-    raise NotImplementedError(
-        "create_proforma_draft: live wFirma API calls not yet enabled."
+    if not req.client_name:
+        raise ValueError("client_name is required")
+    if not req.lines:
+        raise ValueError("at least one line is required")
+
+    body = _build_proforma_xml(req)
+    http_status, response_text = _http_request("POST", "invoices", "add", body)
+    if http_status >= 400:
+        raise RuntimeError(
+            f"invoices/add HTTP {http_status}: {response_text[:200]}"
+        )
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"invoices/add wFirma status={code}: {desc}")
+
+    root = ET.fromstring(response_text)
+    node = root.find(".//invoice")
+    if node is None:
+        raise RuntimeError("invoices/add: no <invoice> in response")
+    wfirma_id = _find_text(node, "id") or ""
+    if not wfirma_id:
+        raise RuntimeError("invoices/add: response had no <id> — refusing blank")
+
+    return ProformaResult(
+        ok                = True,
+        wfirma_invoice_id = wfirma_id,
+        error             = None,
+        raw_response      = response_text,
     )
 
 
@@ -825,30 +838,52 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
     """
     Build the XML payload for invoices/add with type=proforma.
 
+    Per validated wFirma shape (docs/WFIRMA_ENDPOINT_MAP.md):
+      <contractor><id>{wfirma_contractor_id}</id></contractor>
+      <invoicecontent><good><id>{wfirma_good_id}</id></good>...</invoicecontent>
+
     Does NOT make any network call. Safe to call in tests.
     Returns a well-formed XML string.
+
+    Validation:
+      - wfirma_contractor_id must be non-empty.
+      - Every line's wfirma_good_id must be non-empty.
+    Raises ValueError on either miss — callers MUST resolve IDs first.
     """
+    if not (req.wfirma_contractor_id or "").strip():
+        raise ValueError(
+            "wfirma_contractor_id is required — resolve via wfdb.get_customer "
+            "before building the proforma payload"
+        )
+
     lines_xml = ""
-    for line in req.lines:
+    for idx, line in enumerate(req.lines):
+        if not (line.wfirma_good_id or "").strip():
+            raise ValueError(
+                f"line {idx} ({line.product_code!r}): wfirma_good_id is "
+                "required — resolve via wfdb.get_product before building "
+                "the proforma payload"
+            )
         lines_xml += f"""
         <invoicecontent>
-          <name>{_esc(line.product_name)} {_esc(line.product_code)}</name>
+          <good><id>{_esc(line.wfirma_good_id)}</id></good>
           <count>{line.qty:.4f}</count>
           <unit_count>{line.qty:.4f}</unit_count>
           <price>{line.unit_price:.2f}</price>
           <unit>{_esc(line.unit)}</unit>
         </invoicecontent>"""
 
+    currency_xml = (
+        f"<currency>{_esc(req.currency)}</currency>"
+        if (req.currency or "").strip() else ""
+    )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <api>
   <invoices>
     <invoice>
-      <contractor>
-        <name>{_esc(req.client_name)}</name>
-        <zip>{_esc(req.client_zip)}</zip>
-        <city>{_esc(req.client_city)}</city>
-      </contractor>
+      <contractor><id>{_esc(req.wfirma_contractor_id)}</id></contractor>
       <type>proforma</type>
+      {currency_xml}
       <invoicecontents>{lines_xml}
       </invoicecontents>
     </invoice>
