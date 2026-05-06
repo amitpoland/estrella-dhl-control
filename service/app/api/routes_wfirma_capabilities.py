@@ -513,3 +513,119 @@ def refresh_good_name_from_block(product_code: str) -> JSONResponse:
         "name_used":         description_line,
         "description_used":  description_block,
     })
+
+
+# ── Internal-test contractor (locked-name, narrow-scope create) ─────────────
+#
+# This endpoint is the ONLY backdoor for live contractors/add. It exists
+# solely to spawn a single ESTRELLA INTERNAL TEST contractor used as the
+# safe target for wFirma write diagnostics (12-line proforma persistence
+# probe, etc.). It does NOT expose generic customer creation:
+#   - name/country/city/zip/nip are HARD-CODED here, not request-derived
+#   - the only customer name accepted is "ESTRELLA INTERNAL TEST"
+#   - search-first; if the contractor already exists, just save the local
+#     mapping and return existing_mapped (no goods/add call)
+#   - settings gate WFIRMA_CREATE_CUSTOMER_ALLOWED must be true to create
+#   - on create failure, no local mapping is written
+
+_INTERNAL_TEST_NAME    = "ESTRELLA INTERNAL TEST"
+_INTERNAL_TEST_COUNTRY = "PL"
+_INTERNAL_TEST_CITY    = "Warszawa"
+_INTERNAL_TEST_ZIP     = "00-001"
+_INTERNAL_TEST_NIP     = ""   # blank — wFirma allows non-VAT contractors
+
+
+@router.post("/customers/create-internal-test", dependencies=[_auth])
+def create_internal_test_customer() -> JSONResponse:
+    """
+    Create or register the internal-test contractor for wFirma diagnostics.
+
+    Status values:
+      existing_mapped — contractor already in wFirma; local mapping saved
+      blocked         — missing in wFirma AND create flag is off
+      created         — created via contractors/add; local mapping saved
+      failed          — contractors/add returned an error; no local mapping
+    """
+    name = _INTERNAL_TEST_NAME
+
+    # ── 1. Search wFirma first (read-only) ─────────────────────────────────
+    try:
+        existing = wfirma_client.search_customer(name)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "search_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    if existing is not None and (existing.wfirma_id or "").strip():
+        wfdb.upsert_customer(
+            client_name        = name,
+            wfirma_customer_id = existing.wfirma_id,
+            country            = existing.country or _INTERNAL_TEST_COUNTRY,
+            match_status       = "matched",
+        )
+        return JSONResponse({
+            "ok":                  True,
+            "status":              "existing_mapped",
+            "client_name":         name,
+            "wfirma_customer_id":  existing.wfirma_id,
+            "country":             existing.country,
+            "city":                existing.city,
+            "zip":                 existing.zip,
+        })
+
+    # ── 2. Missing — gate on settings flag ─────────────────────────────────
+    if not settings.wfirma_create_customer_allowed:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "client_name":      name,
+            "blocking_reasons": [
+                "wfirma_create_customer_allowed is false — operator must "
+                "enable WFIRMA_CREATE_CUSTOMER_ALLOWED to create",
+            ],
+        })
+
+    # ── 3. Create via contractors/add (locked field set) ────────────────────
+    try:
+        created = wfirma_client.create_customer(
+            name     = _INTERNAL_TEST_NAME,
+            nip      = _INTERNAL_TEST_NIP,
+            country  = _INTERNAL_TEST_COUNTRY,
+            zip_code = _INTERNAL_TEST_ZIP,
+            city     = _INTERNAL_TEST_CITY,
+        )
+    except Exception as exc:
+        log.warning("contractors/add internal-test failed: %s", exc)
+        return JSONResponse({
+            "ok":          False,
+            "status":      "failed",
+            "client_name": name,
+            "error":       f"{type(exc).__name__}: {exc}",
+        })
+
+    if not (created.wfirma_id or "").strip():
+        return JSONResponse({
+            "ok":          False,
+            "status":      "failed",
+            "client_name": name,
+            "error":       "contractors/add returned no wfirma_id — refusing fake mapping",
+        })
+
+    wfdb.upsert_customer(
+        client_name        = name,
+        wfirma_customer_id = created.wfirma_id,
+        country            = _INTERNAL_TEST_COUNTRY,
+        match_status       = "matched",
+    )
+
+    return JSONResponse({
+        "ok":                  True,
+        "status":              "created",
+        "client_name":         name,
+        "wfirma_customer_id":  created.wfirma_id,
+        "country":             _INTERNAL_TEST_COUNTRY,
+        "city":                _INTERNAL_TEST_CITY,
+        "zip":                 _INTERNAL_TEST_ZIP,
+    })

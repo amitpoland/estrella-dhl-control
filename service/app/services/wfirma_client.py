@@ -495,8 +495,54 @@ def create_customer(
     Auth: API Key headers
     Payload: XML with <name>, <nip>, <country>, <zip>, <city>
     """
-    raise NotImplementedError(
-        "create_customer: live wFirma API calls not yet enabled."
+    if not (name or "").strip():
+        raise ValueError("name is required")
+
+    fields = [f"<name>{_esc(name)}</name>"]
+    if (nip or "").strip():
+        fields.append(f"<nip>{_esc(nip)}</nip>")
+    if (country or "").strip():
+        fields.append(f"<country>{_esc(country)}</country>")
+    if (zip_code or "").strip():
+        fields.append(f"<zip>{_esc(zip_code)}</zip>")
+    if (city or "").strip():
+        fields.append(f"<city>{_esc(city)}</city>")
+    inner = "\n      ".join(fields)
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <contractors>
+    <contractor>
+      {inner}
+    </contractor>
+  </contractors>
+</api>"""
+
+    http_status, response_text = _http_request(
+        "POST", "contractors", "add", body,
+    )
+    if http_status >= 400:
+        raise RuntimeError(
+            f"contractors/add HTTP {http_status}: {response_text[:200]}"
+        )
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"contractors/add wFirma status={code}: {desc}")
+    root = ET.fromstring(response_text)
+    node = root.find(".//contractor")
+    if node is None:
+        raise RuntimeError("contractors/add: no <contractor> in response")
+    new_id = _find_text(node, "id") or ""
+    if not new_id:
+        raise RuntimeError(
+            "contractors/add: response had no <id> — refusing blank id"
+        )
+    return WFirmaContractor(
+        wfirma_id = new_id,
+        name      = _find_text(node, "name") or name,
+        nip       = _find_text(node, "nip")  or (nip or ""),
+        country   = _find_text(node, "country") or country,
+        zip       = _find_text(node, "zip")  or zip_code,
+        city      = _find_text(node, "city") or city,
     )
 
 

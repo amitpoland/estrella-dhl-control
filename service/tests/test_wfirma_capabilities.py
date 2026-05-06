@@ -1237,3 +1237,235 @@ def test_refresh_success_updates_local_product_name_pl(client, db):
     # name_pl came from description_engine for RING → "Pierścionek"
     assert after["product_name_pl"] == "Pierścionek"
     assert after["wfirma_product_id"] == "G-UPD-1"
+
+
+# ── Internal-test contractor endpoint ─────────────────────────────────────────
+#
+# Locked-name, narrow-scope create — the only path to live contractors/add.
+
+_INTERNAL_TEST_NAME = "ESTRELLA INTERNAL TEST"
+
+
+def _existing_contractor(wid="555000"):
+    from app.services.wfirma_client import WFirmaContractor
+    return WFirmaContractor(
+        wfirma_id=wid, name=_INTERNAL_TEST_NAME,
+        country="PL", city="Warszawa", zip="00-001",
+    )
+
+
+def _created_contractor(wid="555111"):
+    from app.services.wfirma_client import WFirmaContractor
+    return WFirmaContractor(
+        wfirma_id=wid, name=_INTERNAL_TEST_NAME,
+        country="PL", city="Warszawa", zip="00-001",
+    )
+
+
+def test_internal_test_existing_maps_without_create(client, db):
+    """If contractor already exists in wFirma, save mapping; never call create."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    with _p.object(wc, "search_customer", return_value=_existing_contractor("555000")), \
+         _p.object(wc, "create_customer",
+                   side_effect=AssertionError("must not call create when found")):
+        r = client.post("/api/v1/wfirma/customers/create-internal-test", headers=_auth())
+    body = r.json()
+    assert body["ok"] is True
+    assert body["status"] == "existing_mapped"
+    assert body["wfirma_customer_id"] == "555000"
+    row = wfdb.get_customer(_INTERNAL_TEST_NAME)
+    assert row is not None
+    assert row["wfirma_customer_id"] == "555000"
+    assert row["match_status"] == "matched"
+
+
+def test_internal_test_missing_blocked_when_flag_off(client, db):
+    """Missing in wFirma + flag off → blocked, no create call, no local row."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    # Clear any prior mapping from earlier tests in the module-scope fixture.
+    wfdb.upsert_customer(_INTERNAL_TEST_NAME,
+                         wfirma_customer_id=None, match_status="pending")
+    with _p.object(wc, "search_customer", return_value=None), \
+         _p.object(wc, "create_customer",
+                   side_effect=AssertionError("must not call create when flag off")), \
+         _p.object(settings, "wfirma_create_customer_allowed", False):
+        r = client.post("/api/v1/wfirma/customers/create-internal-test", headers=_auth())
+    body = r.json()
+    assert body["ok"] is False
+    assert body["status"] == "blocked"
+    assert any("WFIRMA_CREATE_CUSTOMER_ALLOWED" in br
+               for br in body["blocking_reasons"])
+    row = wfdb.get_customer(_INTERNAL_TEST_NAME)
+    # Either no row, or row exists with no wfirma_customer_id (from prior test).
+    assert row is None or not row.get("wfirma_customer_id")
+
+
+def test_internal_test_missing_creates_when_flag_on(client, db):
+    """Missing + flag on → contractors/add called once; local mapping saved."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    create_calls = []
+    def fake_create(name, nip="", country="", zip_code="", city=""):
+        create_calls.append({"name": name, "nip": nip, "country": country,
+                             "zip_code": zip_code, "city": city})
+        return _created_contractor("555111")
+    with _p.object(wc, "search_customer", return_value=None), \
+         _p.object(wc, "create_customer", side_effect=fake_create), \
+         _p.object(settings, "wfirma_create_customer_allowed", True):
+        r = client.post("/api/v1/wfirma/customers/create-internal-test", headers=_auth())
+    body = r.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["wfirma_customer_id"] == "555111"
+    assert len(create_calls) == 1
+    assert create_calls[0]["name"]    == _INTERNAL_TEST_NAME
+    assert create_calls[0]["country"] == "PL"
+    assert create_calls[0]["city"]    == "Warszawa"
+    assert create_calls[0]["zip_code"] == "00-001"
+    assert create_calls[0]["nip"]     == ""
+    row = wfdb.get_customer(_INTERNAL_TEST_NAME)
+    assert row["wfirma_customer_id"] == "555111"
+    assert row["match_status"] == "matched"
+
+
+def test_internal_test_caller_payload_cannot_override(client, db):
+    """Caller-supplied JSON body is ignored — name/country are hard-coded."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    captured = []
+    def fake_create(name, nip="", country="", zip_code="", city=""):
+        captured.append((name, nip, country, zip_code, city))
+        return _created_contractor("555222")
+    with _p.object(wc, "search_customer", return_value=None), \
+         _p.object(wc, "create_customer", side_effect=fake_create), \
+         _p.object(settings, "wfirma_create_customer_allowed", True):
+        r = client.post(
+            "/api/v1/wfirma/customers/create-internal-test",
+            headers=_auth(),
+            json={"name": "ATTACKER", "country": "XX", "city": "EVIL",
+                  "zip": "99-999", "nip": "9999999999"},
+        )
+    assert r.json()["status"] == "created"
+    name, nip, country, zip_code, city = captured[0]
+    assert name == "ESTRELLA INTERNAL TEST"
+    assert country == "PL"
+    assert city == "Warszawa"
+    assert zip_code == "00-001"
+    assert nip == ""
+
+
+def test_internal_test_create_failure_writes_no_mapping(client, db):
+    """contractors/add raises → status=failed; no local mapping written."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    # Wipe any prior row so we can assert no new mapping is created.
+    wfdb.upsert_customer(_INTERNAL_TEST_NAME,
+                         wfirma_customer_id=None, match_status="pending")
+    with _p.object(wc, "search_customer", return_value=None), \
+         _p.object(wc, "create_customer",
+                   side_effect=RuntimeError("contractors/add wFirma status=ERROR: boom")), \
+         _p.object(settings, "wfirma_create_customer_allowed", True):
+        r = client.post("/api/v1/wfirma/customers/create-internal-test", headers=_auth())
+    body = r.json()
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert "boom" in body["error"]
+    row = wfdb.get_customer(_INTERNAL_TEST_NAME)
+    assert row is None or not row.get("wfirma_customer_id"), \
+        "no mapping must be saved on create failure"
+
+
+def test_internal_test_blank_id_rejected(client, db):
+    """contractors/add returned no wfirma_id → failed; no local mapping."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    from app.services.wfirma_client import WFirmaContractor
+    wfdb.upsert_customer(_INTERNAL_TEST_NAME,
+                         wfirma_customer_id=None, match_status="pending")
+    blank = WFirmaContractor(wfirma_id="", name=_INTERNAL_TEST_NAME, country="PL")
+    with _p.object(wc, "search_customer", return_value=None), \
+         _p.object(wc, "create_customer", return_value=blank), \
+         _p.object(settings, "wfirma_create_customer_allowed", True):
+        r = client.post("/api/v1/wfirma/customers/create-internal-test", headers=_auth())
+    body = r.json()
+    assert body["ok"] is False
+    assert body["status"] == "failed"
+    assert "no wfirma_id" in body["error"]
+    row = wfdb.get_customer(_INTERNAL_TEST_NAME)
+    assert row is None or not row.get("wfirma_customer_id")
+
+
+def test_internal_test_search_error_returns_502(client, db):
+    """search_customer raising → HTTP 502 (no create attempted, no mapping)."""
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+    with _p.object(wc, "search_customer",
+                   side_effect=RuntimeError("contractors/find wFirma status=ERROR")), \
+         _p.object(wc, "create_customer",
+                   side_effect=AssertionError("must not call create on search error")), \
+         _p.object(settings, "wfirma_create_customer_allowed", True):
+        r = client.post("/api/v1/wfirma/customers/create-internal-test", headers=_auth())
+    assert r.status_code == 502
+
+
+# ── client wrapper tests (XML body shape) ────────────────────────────────────
+
+def test_create_customer_xml_uses_expected_fields_only(monkeypatch):
+    """contractors/add body carries only declared fields, in <contractor> root."""
+    from app.services import wfirma_client as wc
+    captured = {}
+    OK = """<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <contractors><contractor>
+    <id>9001</id><name>ESTRELLA INTERNAL TEST</name>
+    <country>PL</country><city>Warszawa</city><zip>00-001</zip>
+  </contractor></contractors>
+  <status><code>OK</code></status>
+</api>"""
+    def fake_http(method, module, action, body, id_suffix=None):
+        captured.update(method=method, module=module, action=action,
+                        body=body, id_suffix=id_suffix)
+        return 200, OK
+    monkeypatch.setattr(wc, "_http_request", fake_http)
+    out = wc.create_customer(
+        name="ESTRELLA INTERNAL TEST", country="PL",
+        city="Warszawa", zip_code="00-001", nip="",
+    )
+    assert captured["method"]    == "POST"
+    assert captured["module"]    == "contractors"
+    assert captured["action"]    == "add"
+    assert captured["id_suffix"] is None
+    body = captured["body"]
+    assert "<contractor>" in body
+    assert "<name>ESTRELLA INTERNAL TEST</name>" in body
+    assert "<country>PL</country>"  in body
+    assert "<city>Warszawa</city>"  in body
+    assert "<zip>00-001</zip>"      in body
+    # Blank NIP must be omitted entirely.
+    assert "<nip>" not in body
+    # Not allowed to leak unrelated tags.
+    for forbidden in ("<email>", "<phone>", "<vat_id>", "<id>"):
+        assert forbidden not in body
+    assert out.wfirma_id == "9001"
+    assert out.name      == "ESTRELLA INTERNAL TEST"
+
+
+def test_create_customer_raises_on_blank_id(monkeypatch):
+    from app.services import wfirma_client as wc
+    no_id = """<?xml version="1.0" encoding="UTF-8"?>
+<api><contractors><contractor><name>X</name></contractor></contractors>
+<status><code>OK</code></status></api>"""
+    monkeypatch.setattr(wc, "_http_request", lambda *a, **k: (200, no_id))
+    with pytest.raises(RuntimeError, match="no <id>"):
+        wc.create_customer(name="ESTRELLA INTERNAL TEST", country="PL")
+
+
+def test_create_customer_raises_on_non_ok_status(monkeypatch):
+    from app.services import wfirma_client as wc
+    err = """<?xml version="1.0" encoding="UTF-8"?>
+<api><status><code>ERROR</code><message>boom</message></status></api>"""
+    monkeypatch.setattr(wc, "_http_request", lambda *a, **k: (200, err))
+    with pytest.raises(RuntimeError, match="ERROR"):
+        wc.create_customer(name="ESTRELLA INTERNAL TEST", country="PL")

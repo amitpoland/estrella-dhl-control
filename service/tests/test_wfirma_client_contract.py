@@ -491,9 +491,9 @@ def test_proforma_xml_line_fields():
 # create_reservation. The remaining write methods (create_customer,
 # create_product, get_stock, create_proforma_draft) stay as NotImplementedError.
 
-def test_create_customer_raises():
-    with pytest.raises(NotImplementedError):
-        create_customer("Dream Rings")
+def test_create_customer_validates_name():
+    with pytest.raises(ValueError, match="name is required"):
+        create_customer("")
 
 
 def test_create_product_validates_required_args():
