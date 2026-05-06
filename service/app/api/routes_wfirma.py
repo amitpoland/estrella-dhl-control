@@ -52,9 +52,20 @@ log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/upload", tags=["wfirma"])
 _auth  = Depends(require_api_key)
 
+
+def _build_product_code(invoice_no: str, position: int) -> str:
+    """Delegate to the engine helper; guarantees ``invoice_no-N`` with no space."""
+    try:
+        from pz_import_processor import build_product_code  # noqa: PLC0415
+        return build_product_code(invoice_no, position)
+    except ImportError:
+        return f"{invoice_no}-{position}"
+
+
 # ── Timeline events ───────────────────────────────────────────────────────────
-EV_WFIRMA_CLIPBOARD = "wfirma_clipboard_generated"
-EV_WFIRMA_JSON      = "wfirma_json_generated"
+EV_WFIRMA_CLIPBOARD  = "wfirma_clipboard_generated"
+EV_WFIRMA_JSON       = "wfirma_json_generated"
+EV_WFIRMA_PZ_CREATED = "wfirma_pz_created"
 
 # PZ statuses that indicate a completed run
 _PZ_DONE = {"success", "partial"}
@@ -366,6 +377,24 @@ def _build_clipboard_text(wfirma_rows: List[dict]) -> str:
     return "\n".join(lines)
 
 
+def _patch_pz_doc_id(output_dir: Path, wfirma_pz_doc_id: str) -> None:
+    """Write wfirma_pz_doc_id into audit.json wfirma_export block. Atomic."""
+    audit_path = output_dir / "audit.json"
+    if not audit_path.exists():
+        return
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        existing = audit.get("wfirma_export") or {}
+        audit["wfirma_export"] = {
+            **existing,
+            "wfirma_pz_doc_id": wfirma_pz_doc_id,
+            "pz_created_at":    time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        write_json_atomic(audit_path, audit)
+    except Exception as e:
+        log.warning("[pz_create] audit patch failed: %s", e)
+
+
 def _patch_audit_wfirma(output_dir: Path, mode: str, row_count: int) -> None:
     """Write wfirma_export block into audit.json."""
     audit_path = output_dir / "audit.json"
@@ -626,9 +655,8 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
     # ── Convert raw rows to BatchRow ──────────────────────────────────────────
     batch_rows = [
         BatchRow(
-            product_code   = str(r.get("invoice_no", "") or "") + "-" + str(i + 1)
-                             if not r.get("product_code")
-                             else str(r.get("product_code", "") or ""),
+            product_code   = (str(r.get("product_code", "") or "").strip()
+                              or _build_product_code(str(r.get("invoice_no", "") or ""), i + 1)),
             quantity       = float(r.get("quantity", 1) or 1),
             unit_netto_pln = float(r.get("unit_netto_pln", 0) or 0),
             invoice_no     = str(r.get("invoice_no", "") or ""),
@@ -873,4 +901,207 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
         "ready_for_pz":      preview.ready,
         "unresolved_product_codes": preview.unresolved_codes,
         "price_conflicts":   preview.price_conflicts,
+    })
+
+
+@router.post("/shipment/{batch_id}/wfirma/pz_create", dependencies=[_auth])
+async def wfirma_pz_create(batch_id: str) -> JSONResponse:
+    """
+    Create a wFirma warehouse PZ directly from the internal PZ app batch output.
+
+    This is the normal import path: PZ app output → resolved goods → wFirma PZ.
+    It does NOT call build_pz_request_from_proforma_snapshot (recovery workaround).
+    It does NOT create products, trigger proforma creation, or convert to invoice.
+
+    Guard order
+    -----------
+    1. WFIRMA_CREATE_PZ_ALLOWED must be true
+    2. Batch/audit exists, SAD present, PZ generated (_guard_wfirma_export)
+    3. MRN present (customs dedup key)
+    4. WFIRMA_SUPPLIER_CONTRACTOR_ID and WFIRMA_WAREHOUSE_ID configured
+    5. No existing wfirma_pz_doc_id in audit (idempotency)
+    6. pz_preview ready=True — all product_codes resolved, no price conflicts
+
+    On success:  writes wfirma_pz_doc_id to audit atomically, returns status=created.
+    On failure:  writes nothing, returns status=failed with wFirma error.
+    Idempotent:  returns status=already_created when PZ already exists for batch.
+
+    Response
+    --------
+    status            created | already_created | failed | not_ready
+    wfirma_pz_doc_id  wFirma warehouse_document id (on created/already_created)
+    planned_lines     per-line preview with good_id and price_pln (on created)
+    line_count        number of lines submitted (on created)
+    error             wFirma error message (on failed)
+    """
+    # ── Guard 1: feature gate ─────────────────────────────────────────────────
+    if not getattr(settings, "wfirma_create_pz_allowed", False):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "guard": "pz_create",
+                "error": "WFIRMA_CREATE_PZ_ALLOWED is not enabled.",
+                "code":  "PZ_CREATE_GATE_OFF",
+            },
+        )
+
+    # ── Guard 2: batch + SAD + PZ status ─────────────────────────────────────
+    output_dir = get_output_dir(batch_id)
+    audit      = _read_audit(output_dir)
+    _guard_wfirma_export(audit)
+
+    # ── Guard 3: MRN ─────────────────────────────────────────────────────────
+    cd  = audit.get("customs_declaration") or {}
+    mrn = cd.get("mrn", "") or audit.get("inputs", {}).get("zc429_mrn", "") or ""
+    if not mrn:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard": "pz_create",
+                "error": "MRN required for PZ creation.",
+                "code":  "PZ_CREATE_NO_MRN",
+            },
+        )
+
+    # ── Guard 4: supplier + warehouse configured ──────────────────────────────
+    supplier_wfirma_id = (getattr(settings, "wfirma_supplier_contractor_id", None) or "").strip()
+    warehouse_id       = (getattr(settings, "wfirma_warehouse_id", None) or "").strip()
+    if not supplier_wfirma_id:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard": "pz_create",
+                "error": "WFIRMA_SUPPLIER_CONTRACTOR_ID not configured.",
+                "code":  "PZ_CREATE_NO_SUPPLIER",
+            },
+        )
+    if not warehouse_id:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard": "pz_create",
+                "error": "WFIRMA_WAREHOUSE_ID not configured.",
+                "code":  "PZ_CREATE_NO_WAREHOUSE",
+            },
+        )
+
+    # ── Guard 5: idempotency — existing PZ doc id ─────────────────────────────
+    wfirma_export      = audit.get("wfirma_export") or {}
+    existing_pz_doc_id = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
+    if existing_pz_doc_id:
+        return JSONResponse({
+            "batch_id":         batch_id,
+            "status":           "already_created",
+            "wfirma_pz_doc_id": existing_pz_doc_id,
+        })
+
+    # ── Build rows + product map ──────────────────────────────────────────────
+    clearance_date = cd.get("clearance_date", "") or audit.get("timestamp", "")[:10]
+    rows_raw       = _build_rows(output_dir, audit)
+
+    product_map: Dict[str, str] = {}
+    for p in wfirma_db.list_products():
+        pid  = (p.get("wfirma_product_id") or "").strip()
+        code = (p.get("product_code") or "").strip()
+        if pid and code:
+            product_map[code] = pid
+
+    batch_rows = [
+        BatchRow(
+            product_code   = (str(r.get("product_code", "") or "").strip()
+                              or _build_product_code(str(r.get("invoice_no", "") or ""), i + 1)),
+            quantity       = float(r.get("quantity", 1) or 1),
+            unit_netto_pln = float(r.get("unit_netto_pln", 0) or 0),
+            invoice_no     = str(r.get("invoice_no", "") or ""),
+            description_en = str(r.get("description_en", "") or
+                                 r.get("_description_en", "") or ""),
+            pl_desc        = str(r.get("pl_desc", "") or r.get("_pl_desc", "") or ""),
+            item_type      = str(r.get("item_type", "") or ""),
+            unit           = str(r.get("unit", "szt.") or "szt."),
+        )
+        for i, r in enumerate(rows_raw)
+    ]
+
+    # ── Guard 6: preview must be ready ───────────────────────────────────────
+    preview = build_pz_request_from_batch(
+        rows           = batch_rows,
+        contractor_id  = supplier_wfirma_id,
+        warehouse_id   = warehouse_id,
+        product_map    = product_map,
+        batch_id       = batch_id,
+        clearance_date = clearance_date,
+        mrn            = mrn,
+    )
+
+    if not preview.ready:
+        log.warning(
+            "[%s] pz_create blocked: unresolved=%s conflicts=%s",
+            batch_id, preview.unresolved_codes, preview.price_conflicts,
+        )
+        return JSONResponse(
+            status_code=422,
+            content={
+                "batch_id":                 batch_id,
+                "status":                   "not_ready",
+                "unresolved_product_codes": preview.unresolved_codes,
+                "price_conflicts":          preview.price_conflicts,
+            },
+        )
+
+    # ── Call wFirma ───────────────────────────────────────────────────────────
+    pz_result = wfirma_client.create_warehouse_pz(preview.pz_request)
+
+    planned = [
+        {
+            "product_code": pl.product_code,
+            "good_id":      pl.good_id,
+            "count":        pl.count,
+            "price_pln":    round(pl.price_pln, 4),
+            "resolved":     pl.resolved,
+        }
+        for pl in preview.planned_lines
+    ]
+
+    if not pz_result.ok:
+        log.warning("[%s] pz_create: wFirma returned failure: %s", batch_id, pz_result.error)
+        tl.log_event(
+            output_dir / "audit.json",
+            "wfirma_pz_create_failed",
+            "system",
+            "wfirma",
+            detail={"batch_id": batch_id, "error": pz_result.error},
+        )
+        return JSONResponse(
+            status_code=502,
+            content={
+                "batch_id": batch_id,
+                "status":   "failed",
+                "error":    pz_result.error,
+            },
+        )
+
+    # ── Success: persist doc_id first, then return ────────────────────────────
+    _patch_pz_doc_id(output_dir, pz_result.wfirma_pz_doc_id)
+    tl.log_event(
+        output_dir / "audit.json",
+        EV_WFIRMA_PZ_CREATED,
+        "system",
+        "wfirma",
+        detail={
+            "batch_id":         batch_id,
+            "wfirma_pz_doc_id": pz_result.wfirma_pz_doc_id,
+            "line_count":       len(planned),
+        },
+    )
+    log.info(
+        "[%s] pz_create: wFirma PZ %s created (%d lines)",
+        batch_id, pz_result.wfirma_pz_doc_id, len(planned),
+    )
+
+    return JSONResponse({
+        "batch_id":         batch_id,
+        "status":           "created",
+        "wfirma_pz_doc_id": pz_result.wfirma_pz_doc_id,
+        "planned_lines":    planned,
+        "line_count":       len(planned),
     })

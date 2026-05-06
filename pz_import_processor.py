@@ -315,6 +315,17 @@ def get_full_nazwa(item: dict) -> str:
     return f"{build_pl_name(item)} / {build_en_name(item)}"
 
 
+def build_product_code(invoice_no: str, position: int) -> str:
+    """
+    Canonical product_code format: ``invoice_no-N`` (1-indexed, no space).
+
+    Single source of truth for suffix formatting — use this everywhere instead
+    of inline f-strings to guarantee the format never drifts back to the old
+    ``invoice_no -N`` (space before hyphen) pattern.
+    """
+    return f"{invoice_no}-{position}"
+
+
 def canonical_item_sort_key(item: dict, original_index: int) -> tuple:
     """
     Stable sort key for invoice line items — ensures product_code assignment
@@ -2253,7 +2264,7 @@ def calculate_landed(invoices: list, zc429: dict, nbp: dict, corrections_log: li
                 seen_keys[ck] = orig_idx
 
         for line_position, (_orig_idx, item) in enumerate(indexed_items, start=1):
-            product_code     = f"{inv['invoice_no']}-{line_position}"
+            product_code     = build_product_code(inv["invoice_no"], line_position)
             line_usd         = item["total_usd"]
             qty              = item["quantity"]
 

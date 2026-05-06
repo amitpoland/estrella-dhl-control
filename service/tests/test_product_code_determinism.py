@@ -25,7 +25,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from pz_import_processor import (
-    build_en_name, build_pl_name, calculate_landed, canonical_item_sort_key,
+    build_en_name, build_pl_name, build_product_code, calculate_landed,
+    canonical_item_sort_key,
 )
 
 
@@ -210,3 +211,35 @@ def test_golden_totals_unchanged():
 
     assert net_orig    == net_shuffle,   "Total netto changed after shuffle"
     assert gross_orig  == gross_shuffle, "Total brutto changed after shuffle"
+
+
+def test_no_space_hyphen_in_any_generated_code():
+    """No generated product_code may contain ' -' (space before hyphen).
+    Covers both canonical-sort output and any shuffled permutation."""
+    rows = _run(_FOUR_ITEMS)
+    for r in rows:
+        assert " -" not in r["product_code"], (
+            f"Space-before-hyphen found in product_code: {r['product_code']!r}"
+        )
+
+    # Also check all 20 shuffled runs
+    rng = random.Random(99)
+    for _ in range(20):
+        shuffled = _FOUR_ITEMS[:]
+        rng.shuffle(shuffled)
+        for r in _run(shuffled):
+            assert " -" not in r["product_code"], (
+                f"Space-before-hyphen found after shuffle: {r['product_code']!r}"
+            )
+
+
+def test_build_product_code_helper():
+    """build_product_code is the single source of truth for suffix format."""
+    assert build_product_code("EJL/25-26/1043", 1)  == "EJL/25-26/1043-1"
+    assert build_product_code("EJL/25-26/1043", 2)  == "EJL/25-26/1043-2"
+    assert build_product_code("EJL/25-26/1043", 10) == "EJL/25-26/1043-10"
+    # No space, no double-hyphen
+    for pos in range(1, 8):
+        code = build_product_code("EJL/TEST", pos)
+        assert " -" not in code, f"Space-before-hyphen in {code!r}"
+        assert code == f"EJL/TEST-{pos}"
