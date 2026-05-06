@@ -513,6 +513,101 @@ def mark_draft_cancelled_for_reissue(
             )
 
 
+def adopt_issued_draft(
+    db_path:            Path,
+    batch_id:           str,
+    client_name:        str,
+    *,
+    wfirma_proforma_id: str,
+    reason:             str,
+    source_lines_json:  Optional[str] = None,
+) -> tuple:
+    """
+    Register an existing wFirma proforma that predates local draft tracking.
+
+    Four cases:
+      1. No row exists              → INSERT status='issued'
+      2. Row exists, status='issued', same wfirma_proforma_id → idempotent (no-op)
+      3. Row exists, status='issued', different wfirma_proforma_id
+                                    → raise ValueError (caller blocks)
+      4. Row exists, status='failed'|'pending_local'
+                                    → UPDATE to issued with new notes
+
+    Returns (ProformaDraft, was_created: bool).
+    No wFirma writes ever happen here.
+    """
+    if not (wfirma_proforma_id or "").strip():
+        raise ValueError("wfirma_proforma_id is required")
+    if not (reason or "").strip():
+        raise ValueError("reason is required")
+
+    notes = f"adopted: wfirma_proforma_id={wfirma_proforma_id} reason={reason}"
+    now   = _now_utc_iso()
+
+    init_db(db_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+
+        existing = conn.execute(
+            "SELECT * FROM proforma_drafts WHERE batch_id=? AND client_name=? LIMIT 1",
+            (str(batch_id), str(client_name)),
+        ).fetchone()
+
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO proforma_drafts
+                    (batch_id, client_name, status, currency, exchange_rate,
+                     source_lines_json, wfirma_proforma_id, notes,
+                     created_at, updated_at)
+                VALUES (?, ?, 'issued', '', NULL, ?, ?, ?, ?, ?)
+                """,
+                (str(batch_id), str(client_name),
+                 source_lines_json or "[]",
+                 str(wfirma_proforma_id), notes, now, now),
+            )
+            conn.commit()
+            was_created = True
+        else:
+            existing_wfirma_id = (existing["wfirma_proforma_id"] or "").strip()
+            existing_status    = (existing["status"] or "").strip()
+
+            if existing_status == "issued" and existing_wfirma_id == str(wfirma_proforma_id).strip():
+                # Case 2 — idempotent
+                row = conn.execute(
+                    "SELECT * FROM proforma_drafts WHERE batch_id=? AND client_name=? LIMIT 1",
+                    (str(batch_id), str(client_name)),
+                ).fetchone()
+                return (_row_to_draft(row), False)
+
+            if existing_status == "issued" and existing_wfirma_id != str(wfirma_proforma_id).strip():
+                # Case 3 — collision with different issued proforma
+                raise ValueError(
+                    f"adopt_issued_draft conflict: ({batch_id!r}, {client_name!r}) "
+                    f"already has issued wfirma_proforma_id={existing_wfirma_id!r}; "
+                    f"cannot adopt different id={wfirma_proforma_id!r} — "
+                    "cancel the existing issued draft first"
+                )
+
+            # Case 4 — failed or pending_local → update to issued
+            conn.execute(
+                "UPDATE proforma_drafts "
+                "SET status='issued', wfirma_proforma_id=?, notes=?, updated_at=? "
+                "WHERE batch_id=? AND client_name=?",
+                (str(wfirma_proforma_id), notes, now,
+                 str(batch_id), str(client_name)),
+            )
+            conn.commit()
+            was_created = False
+
+        row = conn.execute(
+            "SELECT * FROM proforma_drafts WHERE batch_id=? AND client_name=? LIMIT 1",
+            (str(batch_id), str(client_name)),
+        ).fetchone()
+        return (_row_to_draft(row), was_created)
+
+
 def mark_draft_issued(db_path: Path, batch_id: str, client_name: str,
                       *, wfirma_proforma_id: str) -> None:
     if not (wfirma_proforma_id or "").strip():
@@ -550,4 +645,5 @@ __all__ = [
     "mark_draft_failed",
     "mark_draft_issued",
     "mark_draft_cancelled_for_reissue",
+    "adopt_issued_draft",
 ]

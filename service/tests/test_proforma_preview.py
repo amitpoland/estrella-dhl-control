@@ -1541,3 +1541,232 @@ def test_cancel_then_create_reissue_path(client, storage):
     assert r2["wfirma_proforma_id"] == "NEW-002"
     draft = pildb.get_draft(db, BATCH, "ACME")
     assert draft.wfirma_proforma_id == "NEW-002"
+
+
+# ---------------------------------------------------------------------------
+# adopt-issued route
+# ---------------------------------------------------------------------------
+
+_ADOPT_BATCH  = "BATCH_ADOPT_TEST"
+_ADOPT_CLIENT = "ACME"
+_ADOPT_WF_ID  = "465611619"
+
+# Proforma XML returned by wFirma for adopt tests — includes contractor node
+_ADOPT_PROFORMA_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <invoices>
+    <invoice>
+      <id>465611619</id>
+      <type>proforma</type>
+      <contractor><id>189309475</id></contractor>
+      <invoicecontents>
+        <invoicecontent>
+          <id>1495642083</id>
+          <name>Pierścionek (EJL/25-26/1274-3)</name>
+          <count>1.0000</count>
+          <price>173.00</price>
+          <good><id>48611875</id></good>
+          <vat_code><id>222</id></vat_code>
+        </invoicecontent>
+      </invoicecontents>
+    </invoice>
+  </invoices>
+  <status><code>OK</code></status>
+</api>"""
+
+_ADOPT_NON_PROFORMA_XML = _ADOPT_PROFORMA_XML.replace(
+    "<type>proforma</type>", "<type>normal</type>"
+)
+
+
+def _adopt_url(batch: str = _ADOPT_BATCH, client: str = _ADOPT_CLIENT) -> str:
+    return f"/api/v1/proforma/adopt-issued/{batch}/{client}"
+
+
+def test_adopt_happy_path_creates_issued_draft(client, storage):
+    """
+    Happy path: valid proforma XML, no local draft → created with status=issued.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    db = storage / "proforma_links.db"
+
+    with _p.object(wc, "fetch_invoice_xml", return_value=_ADOPT_PROFORMA_XML):
+        body = client.post(
+            _adopt_url(),
+            json={"wfirma_proforma_id": _ADOPT_WF_ID, "reason": "pre-tracking adoption"},
+            headers=_auth(),
+        ).json()
+
+    assert body["ok"] is True, body
+    assert body["status"] == "adopted"
+    assert body["was_created"] is True
+    assert body["wfirma_proforma_id"] == _ADOPT_WF_ID
+
+    draft = pildb.get_draft(db, _ADOPT_BATCH, _ADOPT_CLIENT)
+    assert draft is not None
+    assert draft.status == "issued"
+    assert draft.wfirma_proforma_id == _ADOPT_WF_ID
+
+
+def test_adopt_idempotent_same_wfirma_id(client, storage):
+    """
+    Second call with same wfirma_proforma_id is a no-op (already_adopted).
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    db = storage / "proforma_links.db"
+
+    with _p.object(wc, "fetch_invoice_xml", return_value=_ADOPT_PROFORMA_XML):
+        r1 = client.post(
+            _adopt_url(),
+            json={"wfirma_proforma_id": _ADOPT_WF_ID, "reason": "first call"},
+            headers=_auth(),
+        ).json()
+        r2 = client.post(
+            _adopt_url(),
+            json={"wfirma_proforma_id": _ADOPT_WF_ID, "reason": "duplicate call"},
+            headers=_auth(),
+        ).json()
+
+    assert r1["ok"] is True
+    assert r1["status"] == "adopted"
+    assert r2["ok"] is True
+    assert r2["status"] == "already_adopted"
+    assert r2["was_created"] is False
+
+    # Only one row
+    draft = pildb.get_draft(db, _ADOPT_BATCH, _ADOPT_CLIENT)
+    assert draft.wfirma_proforma_id == _ADOPT_WF_ID
+
+
+def test_adopt_blocked_non_proforma_type(client, storage):
+    """
+    If wFirma returns type=normal (not proforma), the route blocks.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    with _p.object(wc, "fetch_invoice_xml", return_value=_ADOPT_NON_PROFORMA_XML):
+        body = client.post(
+            _adopt_url(),
+            json={"wfirma_proforma_id": _ADOPT_WF_ID, "reason": "type test"},
+            headers=_auth(),
+        ).json()
+
+    assert body["ok"] is False
+    assert "normal" in body["error"] or "type" in body["error"]
+
+
+def test_adopt_blocked_id_mismatch(client, storage):
+    """
+    If fetched XML has a different id than what was requested, the route blocks.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    mismatch_xml = _ADOPT_PROFORMA_XML.replace("<id>465611619</id>", "<id>999999999</id>", 1)
+
+    with _p.object(wc, "fetch_invoice_xml", return_value=mismatch_xml):
+        body = client.post(
+            _adopt_url(),
+            json={"wfirma_proforma_id": _ADOPT_WF_ID, "reason": "id mismatch test"},
+            headers=_auth(),
+        ).json()
+
+    assert body["ok"] is False
+    assert "mismatch" in body["error"].lower() or "999999999" in body["error"]
+
+
+def test_adopt_blocked_fetch_failure(client, storage):
+    """
+    If wFirma XML fetch raises, the route returns blocked with the error.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    with _p.object(wc, "fetch_invoice_xml",
+                   side_effect=RuntimeError("invoices/get HTTP 500")):
+        body = client.post(
+            _adopt_url(),
+            json={"wfirma_proforma_id": _ADOPT_WF_ID, "reason": "fetch fail test"},
+            headers=_auth(),
+        ).json()
+
+    assert body["ok"] is False
+    assert "500" in body["error"] or "fetch" in body["error"].lower()
+
+
+def test_adopt_blocked_different_issued_already_exists(client, storage):
+    """
+    If a different wfirma_proforma_id is already issued locally, the route
+    blocks with a collision error.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    db = storage / "proforma_links.db"
+    # Seed a different issued id
+    pildb.init_db(db)
+    pildb.upsert_pending_draft(
+        db,
+        batch_id=_ADOPT_BATCH,
+        client_name=_ADOPT_CLIENT,
+        currency="USD",
+        exchange_rate=None,
+        source_lines_json="[]",
+    )
+    pildb.mark_draft_issued(db, _ADOPT_BATCH, _ADOPT_CLIENT,
+                            wfirma_proforma_id="DIFFERENT-111")
+
+    different_xml = _ADOPT_PROFORMA_XML.replace("465611619", "DIFFERENT-111")
+    with _p.object(wc, "fetch_invoice_xml", return_value=different_xml):
+        body = client.post(
+            _adopt_url(),
+            json={"wfirma_proforma_id": "DIFFERENT-111-NEW", "reason": "collision test"},
+            headers=_auth(),
+        ).json()
+
+    # The XML has id DIFFERENT-111 but body requests DIFFERENT-111-NEW — id mismatch
+    # caught first (or adopt itself raises ValueError). Either way: ok=False.
+    assert body["ok"] is False
+
+
+def test_adopt_then_cancel_full_path(client, storage):
+    """
+    Full path: adopt existing wFirma proforma → cancel → route returns
+    cancelled_for_reissue, local draft is failed/retryable.
+    """
+    from unittest.mock import patch as _p
+    from app.services import wfirma_client as wc
+
+    db = storage / "proforma_links.db"
+
+    # Step 1: adopt
+    with _p.object(wc, "fetch_invoice_xml", return_value=_ADOPT_PROFORMA_XML):
+        ra = client.post(
+            _adopt_url(),
+            json={"wfirma_proforma_id": _ADOPT_WF_ID, "reason": "legacy adoption"},
+            headers=_auth(),
+        ).json()
+    assert ra["ok"] is True
+
+    # Step 2: cancel
+    with _gate_delete_on(), \
+         _p.object(wc, "delete_invoice",
+                   return_value={"ok": True, "wfirma_invoice_id": _ADOPT_WF_ID}):
+        rc = client.post(
+            f"/api/v1/proforma/cancel-issued-for-reissue/{_ADOPT_BATCH}/{_ADOPT_CLIENT}",
+            params={"confirm": _CANCEL_CONFIRM},
+            headers=_auth(),
+        ).json()
+
+    assert rc["ok"] is True
+    assert rc["status"] == "cancelled_for_reissue"
+    assert rc["deleted_wfirma_id"] == _ADOPT_WF_ID
+
+    draft = pildb.get_draft(db, _ADOPT_BATCH, _ADOPT_CLIENT)
+    assert draft.status == "failed"
+    assert draft.wfirma_proforma_id is None

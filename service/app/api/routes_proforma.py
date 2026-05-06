@@ -693,6 +693,153 @@ def cancel_issued_proforma_for_reissue(
     })
 
 
+# ── Adopt an existing wFirma proforma into local draft tracking ──────────────
+#
+# Used when an old proforma was issued before local draft tracking was added.
+# Registers the wFirma id locally as status='issued' so cancel-issued-for-
+# reissue can run against it. Does NOT make any wFirma writes.
+
+from pydantic import BaseModel as _BaseModel  # noqa: E402 — localised import
+
+
+class _AdoptIssuedBody(_BaseModel):
+    wfirma_proforma_id: str
+    reason: str
+
+
+@router.post("/adopt-issued/{batch_id}/{client_name:path}", dependencies=[_auth])
+def adopt_issued_proforma(
+    batch_id:    str,
+    client_name: str,
+    body:        _AdoptIssuedBody,
+) -> JSONResponse:
+    """
+    Register an existing wFirma proforma that predates local draft tracking.
+
+    Behaviour:
+      • Fetches the invoice XML to confirm type=proforma and id match.
+      • Optionally verifies contractor id against local wfirma_customers mapping
+        (warns if no mapping found; blocks if mapping present but contractor
+        id mismatches).
+      • Idempotent if called twice with the same wfirma_proforma_id.
+      • Blocks if a different issued proforma is already registered locally.
+      • No wFirma writes, no financial field changes.
+    """
+    cn              = _norm(client_name)
+    wfirma_id_body  = (body.wfirma_proforma_id or "").strip()
+    reason          = (body.reason or "").strip()
+
+    if not wfirma_id_body:
+        return JSONResponse({"ok": False, "status": "blocked",
+                             "blocking_reasons": ["wfirma_proforma_id is required"]})
+    if not reason:
+        return JSONResponse({"ok": False, "status": "blocked",
+                             "blocking_reasons": ["reason is required"]})
+
+    # ── Fetch invoice XML ─────────────────────────────────────────────────────
+    try:
+        invoice_xml = wfirma_client.fetch_invoice_xml(wfirma_id_body)
+    except Exception as exc:
+        return JSONResponse({
+            "ok":     False,
+            "status": "blocked",
+            "error":  f"wFirma XML fetch failed: {type(exc).__name__}: {exc}",
+        })
+
+    # ── Verify type=proforma ──────────────────────────────────────────────────
+    try:
+        root = ET.fromstring(invoice_xml)
+    except ET.ParseError as exc:
+        return JSONResponse({
+            "ok":     False,
+            "status": "blocked",
+            "error":  f"wFirma returned invalid XML: {exc}",
+        })
+
+    invoice_node = root.find(".//invoice")
+    if invoice_node is None:
+        return JSONResponse({
+            "ok":     False,
+            "status": "blocked",
+            "error":  "wFirma XML has no <invoice> element",
+        })
+    invoice_type = (invoice_node.findtext("type") or "").strip().lower()
+    if invoice_type != "proforma":
+        return JSONResponse({
+            "ok":     False,
+            "status": "blocked",
+            "error":  f"wFirma document type is {invoice_type!r}, expected 'proforma'",
+        })
+
+    # ── Verify id matches body ────────────────────────────────────────────────
+    fetched_id = (invoice_node.findtext("id") or "").strip()
+    if fetched_id and fetched_id != wfirma_id_body:
+        return JSONResponse({
+            "ok":     False,
+            "status": "blocked",
+            "error":  (
+                f"wFirma returned invoice id={fetched_id!r} but body "
+                f"wfirma_proforma_id={wfirma_id_body!r} — id mismatch"
+            ),
+        })
+
+    # ── Contractor verification ───────────────────────────────────────────────
+    contractor_warn = None
+    cust = wfdb.get_customer(cn) if wfdb._db_path is not None else None
+    if cust and cust.get("wfirma_customer_id"):
+        expected_contractor_id = str(cust["wfirma_customer_id"]).strip()
+        contractor_node        = invoice_node.find(".//contractor")
+        fetched_contractor_id  = ""
+        if contractor_node is not None:
+            fetched_contractor_id = (contractor_node.findtext("id") or "").strip()
+        if fetched_contractor_id and fetched_contractor_id != expected_contractor_id:
+            return JSONResponse({
+                "ok":     False,
+                "status": "blocked",
+                "error":  (
+                    f"contractor id mismatch: wFirma returned {fetched_contractor_id!r}, "
+                    f"local mapping expects {expected_contractor_id!r} for {cn!r}"
+                ),
+            })
+        if not fetched_contractor_id:
+            contractor_warn = "contractor id absent in XML — could not verify"
+    else:
+        contractor_warn = (
+            f"no wfirma_customers mapping for {cn!r} — contractor not verified"
+        )
+
+    # ── Adopt locally ─────────────────────────────────────────────────────────
+    try:
+        draft, was_created = pildb.adopt_issued_draft(
+            _proforma_db_path(), batch_id, cn,
+            wfirma_proforma_id=wfirma_id_body,
+            reason=reason,
+        )
+    except ValueError as exc:
+        return JSONResponse({
+            "ok":     False,
+            "status": "blocked",
+            "error":  str(exc),
+        })
+
+    result: Dict[str, Any] = {
+        "ok":                  True,
+        "status":              "adopted" if was_created else "already_adopted",
+        "batch_id":            batch_id,
+        "client_name":         cn,
+        "wfirma_proforma_id":  wfirma_id_body,
+        "local_status":        draft.status,
+        "was_created":         was_created,
+        "next_step": (
+            f"POST /api/v1/proforma/cancel-issued-for-reissue/{batch_id}/{client_name} "
+            "to delete from wFirma and reset for reissue"
+        ),
+    }
+    if contractor_warn:
+        result["contractor_warning"] = contractor_warn
+    return JSONResponse(result)
+
+
 # ── Refresh proforma line names from locked description blocks ──────────────
 #
 # Operator-approved per-call. wFirma freezes invoicecontent <name> at issue
