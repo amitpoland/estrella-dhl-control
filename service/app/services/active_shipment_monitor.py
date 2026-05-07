@@ -1097,6 +1097,83 @@ def _ensure_path_a_auto_queue(audit_path: Path, audit: Dict[str, Any]) -> Dict[s
         out["queued"] = True
         out["outcome"] = "fired"
         out["email_id"] = email_id
+
+        # ── Drive SMTP send in the same lock (mirrors the manual /queue fix) ──
+        # Without this, queue_email writes a 'pending' record that is never
+        # drained for dhl_proactive_dispatch (no other observer covers it).
+        # The auto_queue_started_at marker still prevents the next sweep from
+        # re-firing this whole block, so failures stay retry-via-manual-/queue
+        # rather than retry-via-sweep.
+        from .email_sender import send_queued_email, _smtp_configured
+        if _smtp_configured():
+            try:
+                send_result = send_queued_email(email_id, method="smtp")
+            except Exception as exc:
+                send_result = {
+                    "ok":           False,
+                    "error":        "send_exception",
+                    "error_detail": f"{type(exc).__name__}: {exc}",
+                }
+
+            if send_result.get("ok") and send_result.get("status") == "sent":
+                provider_id = send_result.get("provider_message_id")
+                sent_at_iso = send_result.get("sent_at") or datetime.now(timezone.utc).isoformat()
+                proposal["status"]              = "sent"
+                proposal["sent_at"]             = sent_at_iso
+                proposal["provider_message_id"] = provider_id
+                audit_locked["proactive_dispatch_delivered_at"]        = sent_at_iso
+                audit_locked["proactive_dispatch_provider_message_id"] = provider_id
+                # Clear any prior failure marker
+                audit_locked.pop("proactive_dispatch_failure_reason", None)
+                audit_locked.pop("proactive_dispatch_send_error",     None)
+                write_json_atomic(audit_path, audit_locked)
+                try:
+                    tl.log_event(
+                        audit_path,
+                        "dhl_proactive_dispatch_delivered",
+                        "monitor",
+                        "active_shipment_monitor",
+                        detail={
+                            "batch_id":            batch_id,
+                            "email_id":            email_id,
+                            "provider_message_id": provider_id,
+                            "sent_at":             sent_at_iso,
+                            "actor":               _AUTO_ACTOR,
+                        },
+                    )
+                except Exception:
+                    pass
+                out["delivered"] = True
+                out["provider_message_id"] = provider_id
+            else:
+                reason     = send_result.get("error") or "smtp_send_failed"
+                err_detail = (send_result.get("error_detail") or "")[:200]
+                failed_at  = datetime.now(timezone.utc).isoformat()
+                audit_locked["proactive_dispatch_failure_reason"] = reason
+                audit_locked["proactive_dispatch_send_error"]     = {
+                    "reason":       reason,
+                    "error_detail": err_detail,
+                    "failed_at":    failed_at,
+                }
+                write_json_atomic(audit_path, audit_locked)
+                try:
+                    tl.log_event(
+                        audit_path,
+                        "dhl_proactive_dispatch_send_failed",
+                        "monitor",
+                        "active_shipment_monitor",
+                        detail={
+                            "batch_id":     batch_id,
+                            "email_id":     email_id,
+                            "reason":       reason,
+                            "error_detail": err_detail,
+                            "actor":        _AUTO_ACTOR,
+                        },
+                    )
+                except Exception:
+                    pass
+                out["delivered"] = False
+                out["send_error"] = reason
         return out
 
 

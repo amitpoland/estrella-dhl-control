@@ -786,3 +786,161 @@ def test_in_process_probe_full_happy_path_with_flag_on(tmp_path, monkeypatch):
     # real send would have raised on missing SMTP config or hit the wire.
     # Both inline assertions confirm no bypass occurred.
     assert mock_queue.call_count == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Auto-queue SMTP autosend (parallel to the manual /queue fix)
+# Pins: queue_email + send_queued_email run in the same sweep when SMTP
+# is configured; failures stay retryable; second sweep is idempotent.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _stub_send_queued_email(*, ok: bool, **kw):
+    """Patch send_queued_email at the asm import site.
+
+    asm imports `send_queued_email` from `email_sender` lazily inside the
+    function. The fastest reliable patch site is `email_sender.send_queued_email`.
+    """
+    if ok:
+        ret = {
+            "ok":                  True,
+            "status":              "sent",
+            "queue_id":            kw.get("queue_id", "email-id-OK"),
+            "provider_message_id": kw.get("pid", "<auto-msg-001@zoho>"),
+            "sent_at":             kw.get("sent_at", "2026-05-07T22:55:00+00:00"),
+        }
+    else:
+        ret = {
+            "ok":           False,
+            "status":       "pending",
+            "queue_id":     kw.get("queue_id", "email-id-OK"),
+            "error":        kw.get("error", "smtp_send_failed"),
+            "error_detail": kw.get("error_detail", "connection refused"),
+        }
+    return patch("app.services.email_sender.send_queued_email", return_value=ret)
+
+
+def _stub_smtp_configured(value: bool):
+    return patch("app.services.email_sender._smtp_configured", return_value=value)
+
+
+def test_auto_queue_drives_smtp_send_when_configured(tmp_path, monkeypatch):
+    _patch_settings(monkeypatch, tmp_path, flag=True)
+    ap, _ = _seed(tmp_path, batch_id="B_AQ_SMTP_OK")
+    from app.services import active_shipment_monitor as asm
+
+    with _stub_queue_email(succeed=True), \
+         _stub_smtp_configured(True), \
+         _stub_send_queued_email(ok=True):
+        result = asm._ensure_path_a_auto_queue(ap, json.loads(ap.read_text()))
+
+    assert result["queued"]    is True
+    assert result["delivered"] is True
+    assert result["provider_message_id"] == "<auto-msg-001@zoho>"
+
+    audit = json.loads(ap.read_text())
+    assert audit["proactive_dispatch_delivered_at"]        == "2026-05-07T22:55:00+00:00"
+    assert audit["proactive_dispatch_provider_message_id"] == "<auto-msg-001@zoho>"
+    # No leftover failure marker
+    assert audit.get("proactive_dispatch_failure_reason") is None
+    assert audit.get("proactive_dispatch_send_error")     is None
+    # Proposal flipped to sent
+    prop = audit["action_proposals"][0]
+    assert prop["status"]              == "sent"
+    assert prop["sent_at"]             == "2026-05-07T22:55:00+00:00"
+    assert prop["provider_message_id"] == "<auto-msg-001@zoho>"
+    # Delivery event in timeline
+    events = [e["event"] for e in audit["timeline"]]
+    assert "dhl_proactive_dispatch_delivered" in events
+
+
+def test_auto_queue_smtp_failure_keeps_proposal_retryable(tmp_path, monkeypatch):
+    _patch_settings(monkeypatch, tmp_path, flag=True)
+    ap, _ = _seed(tmp_path, batch_id="B_AQ_SMTP_FAIL")
+    from app.services import active_shipment_monitor as asm
+
+    with _stub_queue_email(succeed=True), \
+         _stub_smtp_configured(True), \
+         _stub_send_queued_email(ok=False, error="smtp_auth_failed",
+                                 error_detail="535 authentication failed"):
+        result = asm._ensure_path_a_auto_queue(ap, json.loads(ap.read_text()))
+
+    assert result["queued"]    is True   # queue_email succeeded
+    assert result["delivered"] is False
+    assert result["send_error"] == "smtp_auth_failed"
+
+    audit = json.loads(ap.read_text())
+    assert audit["proactive_dispatch_failure_reason"] == "smtp_auth_failed"
+    err = audit["proactive_dispatch_send_error"]
+    assert err["reason"]       == "smtp_auth_failed"
+    assert err["error_detail"] == "535 authentication failed"
+    # Proposal must remain retryable: status=queued, email_id set so the
+    # manual /queue endpoint's proactive_retry path can retry SMTP.
+    prop = audit["action_proposals"][0]
+    assert prop["status"]   == "queued"
+    assert prop["email_id"] == "email-id-OK"
+    events = [e["event"] for e in audit["timeline"]]
+    assert "dhl_proactive_dispatch_send_failed" in events
+
+
+def test_auto_queue_second_sweep_is_idempotent(tmp_path, monkeypatch):
+    """First sweep: queue+send. Second sweep: skipped:already_fired."""
+    _patch_settings(monkeypatch, tmp_path, flag=True)
+    ap, _ = _seed(tmp_path, batch_id="B_AQ_IDEMPOTENT")
+    from app.services import active_shipment_monitor as asm
+
+    queue_calls = {"n": 0}
+    def _counted_queue(**kwargs):
+        queue_calls["n"] += 1
+        return f"email-id-{queue_calls['n']}"
+
+    send_calls = {"n": 0}
+    def _counted_send(qid, method="smtp", **kw):
+        send_calls["n"] += 1
+        return {"ok": True, "status": "sent", "queue_id": qid,
+                "provider_message_id": f"<msg-{send_calls['n']}@zoho>",
+                "sent_at": "2026-05-07T23:00:00+00:00"}
+
+    # First sweep
+    with patch("app.services.email_service.queue_email", side_effect=_counted_queue), \
+         _stub_smtp_configured(True), \
+         patch("app.services.email_sender.send_queued_email", side_effect=_counted_send):
+        r1 = asm._ensure_path_a_auto_queue(ap, json.loads(ap.read_text()))
+    assert r1["queued"] is True and r1.get("delivered") is True
+
+    # Second sweep — must short-circuit on auto_queue_started_at
+    with patch("app.services.email_service.queue_email", side_effect=_counted_queue), \
+         _stub_smtp_configured(True), \
+         patch("app.services.email_sender.send_queued_email", side_effect=_counted_send):
+        r2 = asm._ensure_path_a_auto_queue(ap, json.loads(ap.read_text()))
+    assert r2["outcome"] == "skipped:already_fired"
+
+    # Critical: queue_email + send_queued_email each called exactly ONCE
+    # across both sweeps.
+    assert queue_calls["n"] == 1, f"queue_email called {queue_calls['n']} times"
+    assert send_calls["n"]  == 1, f"send_queued_email called {send_calls['n']} times"
+
+
+def test_auto_queue_smtp_off_keeps_legacy_queued_only(tmp_path, monkeypatch):
+    """Dev path (SMTP not configured): queue_email runs, send_queued_email
+    is NOT invoked, proposal stays at status=queued."""
+    _patch_settings(monkeypatch, tmp_path, flag=True)
+    ap, _ = _seed(tmp_path, batch_id="B_AQ_NOSMTP")
+    from app.services import active_shipment_monitor as asm
+
+    send_calls = {"n": 0}
+    def _trip(qid, method="smtp", **kw):
+        send_calls["n"] += 1
+        return {"ok": True, "status": "sent"}
+
+    with _stub_queue_email(succeed=True), \
+         _stub_smtp_configured(False), \
+         patch("app.services.email_sender.send_queued_email", side_effect=_trip):
+        result = asm._ensure_path_a_auto_queue(ap, json.loads(ap.read_text()))
+
+    assert result["queued"] is True
+    assert "delivered" not in result   # never set in the dev path
+    assert send_calls["n"] == 0
+    audit = json.loads(ap.read_text())
+    assert audit.get("proactive_dispatch_delivered_at") is None
+    prop = audit["action_proposals"][0]
+    assert prop["status"] == "queued"

@@ -794,6 +794,91 @@ def delete_source_file(batch_id: str, category: str, filename: str) -> Dict[str,
             "files": _build_files_detail(batch_id)}
 
 
+@router.delete("/batches/{batch_id}/polish-description", dependencies=[_auth])
+def delete_polish_description(batch_id: str) -> Dict[str, Any]:
+    """
+    Delete this batch's Polish customs description PDF.
+
+    Path-safety: the filename is read from audit.polish_desc_filename — never
+    from user input — so URL-injection (..\\..\\evil.pdf) cannot reach the
+    filesystem. The resolved path must (a) be inside storage_root/
+    polish_descriptions/, and (b) exactly match the audit-recorded filename
+    for THIS batch. On success, audit.polish_desc_filename / polish_desc_path
+    / polish_desc_file_exists are cleared so the dashboard regenerate flow
+    sees a clean slate.
+
+    Returns 404 when no Polish description is recorded or on disk; never
+    falls back to a permissive scan.
+    """
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    audit_path = _OUTPUTS / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read audit: {exc}") from exc
+
+    fn = (audit.get("polish_desc_filename") or "").strip()
+    if not fn:
+        raise HTTPException(
+            status_code=404,
+            detail="No Polish description recorded for this batch.",
+        )
+    # Path-safety: filename must be a bare filename, no separators
+    if "/" in fn or "\\" in fn or ".." in fn:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid polish_desc_filename in audit.",
+        )
+
+    polish_dir = settings.storage_root / "polish_descriptions"
+    target    = polish_dir / fn
+    # Defence in depth: resolved path must remain inside polish_dir
+    try:
+        target_resolved    = target.resolve()
+        polish_dir_resolved = polish_dir.resolve()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Path resolution failed: {exc}") from exc
+    if polish_dir_resolved not in target_resolved.parents:
+        raise HTTPException(
+            status_code=400,
+            detail="Resolved path escapes polish_descriptions directory.",
+        )
+
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"Polish description not on disk: {fn}")
+
+    try:
+        target.unlink()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {exc}") from exc
+
+    # Clear audit pointers so the regenerate flow can write a fresh file
+    for k in ("polish_desc_filename", "polish_desc_path", "polish_desc_file_exists",
+              "polish_desc_generated_at"):
+        audit.pop(k, None)
+    try:
+        audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+    except Exception:
+        # Filesystem delete already succeeded; audit-write failure is
+        # logged but not raised so the operator sees the deletion result.
+        log.warning("[%s] polish_desc audit-clear failed after unlink", batch_id)
+
+    log.info("[dashboard] deleted polish description %s for batch %s", fn, batch_id)
+    try:
+        tl.log_event(audit_path, "polish_description_deleted", "dashboard", "user",
+                     detail={"filename": fn})
+    except Exception:
+        pass
+
+    return {"ok": True, "deleted": fn, "batch_id": batch_id}
+
+
 @router.post("/batches/{batch_id}/regenerate", dependencies=[_auth])
 def regenerate_outputs(batch_id: str) -> Dict[str, Any]:
     """Delete existing output files and re-trigger processing for a batch."""
