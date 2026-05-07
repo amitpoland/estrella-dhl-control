@@ -151,6 +151,57 @@ def test_flag_off_skips_no_queue_no_proposal(tmp_path, monkeypatch):
     assert "action_proposals" not in audit
 
 
+# ── Legacy alias: carrier_self_clearance → treated as Path A ──────────────
+
+def test_legacy_carrier_self_clearance_alias_recognized_as_path_a(tmp_path, monkeypatch):
+    """Regression: audits created before the spec rename still carry
+    clearance_decision.clearance_path = 'carrier_self_clearance' (the old
+    value) and have no top-level audit['clearance_path']. The observer must
+    normalize through clearance_path_alias and treat them as Path A.
+
+    Audit shape: top-level clearance_path absent, clearance_decision uses
+    the legacy value. Feature flag ON so the happy path runs.
+    Expected: auto-queue fires (not skipped:not_path_a)."""
+    _patch_settings(monkeypatch, tmp_path, flag=True)
+    # Seed with the legacy alias — _seed normally passes "dhl_self_clearance".
+    ap, _ = _seed(tmp_path, path="carrier_self_clearance", batch_id="B_LEGACY_ALIAS")
+    # Remove top-level clearance_path if _seed ever writes it (currently it
+    # does not — this assert documents the expected audit shape).
+    a = json.loads(ap.read_text())
+    assert a.get("clearance_path") is None, (
+        "test fixture unexpectedly has top-level clearance_path set")
+    assert a["clearance_decision"]["clearance_path"] == "carrier_self_clearance"
+    ap.write_text(json.dumps(a), encoding="utf-8")
+
+    from app.services import active_shipment_monitor as asm
+    with _stub_queue_email(succeed=True) as q:
+        result = asm._ensure_path_a_auto_queue(ap, json.loads(ap.read_text()))
+
+    assert result["outcome"] != "skipped:not_path_a", (
+        f"Legacy alias 'carrier_self_clearance' was not recognized as Path A; "
+        f"got outcome={result['outcome']!r}")
+    assert q.call_count == 1, "Expected exactly one queue_email call for legacy alias shape"
+
+
+def test_legacy_carrier_self_clearance_alias_flag_off_records_decision(tmp_path, monkeypatch):
+    """Regression guard for flag-off path with legacy alias.
+    Observer must record 'skipped:flag_off', not 'skipped:not_path_a'."""
+    _patch_settings(monkeypatch, tmp_path, flag=False)
+    ap, _ = _seed(tmp_path, path="carrier_self_clearance", batch_id="B_LEGACY_FLAGOFF")
+    a = json.loads(ap.read_text())
+    assert a["clearance_decision"]["clearance_path"] == "carrier_self_clearance"
+
+    from app.services import active_shipment_monitor as asm
+    with _stub_queue_email(succeed=True) as q:
+        result = asm._ensure_path_a_auto_queue(ap, json.loads(ap.read_text()))
+
+    assert result["outcome"] == "skipped:flag_off", (
+        f"Legacy alias should produce skipped:flag_off, got {result['outcome']!r}")
+    q.assert_not_called()
+    audit = json.loads(ap.read_text())
+    assert audit.get("auto_queue_decision_outcome") == "skipped:flag_off"
+
+
 # ── Path B → skipped ───────────────────────────────────────────────────────
 
 def test_path_b_skipped_no_queue(tmp_path, monkeypatch):
