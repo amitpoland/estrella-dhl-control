@@ -25,7 +25,17 @@ from . import email_evidence_store as evs
 log = get_logger(__name__)
 
 _AWB_ASYNCIO_LOCKS: Dict[str, asyncio.Lock] = {}
-_LOCK_DIR = evs.EVIDENCE_ROOT / "_locks"
+
+
+def _lock_dir() -> Path:
+    """Resolve the per-AWB lock directory at call time.
+
+    Computed lazily because ``evs.EVIDENCE_ROOT`` is not exported as a module
+    attribute — only the ``_evidence_root()`` helper is. Importing this
+    module previously crashed at load time with AttributeError, which made
+    every ``email-evidence/process`` request return 500.
+    """
+    return evs._evidence_root() / "_locks"
 
 
 def _get_async_lock(awb: str) -> asyncio.Lock:
@@ -36,8 +46,9 @@ def _get_async_lock(awb: str) -> asyncio.Lock:
 
 @contextlib.contextmanager
 def _file_lock(awb: str):
-    _LOCK_DIR.mkdir(parents=True, exist_ok=True)
-    p = _LOCK_DIR / f"{awb}.lock"
+    lock_dir = _lock_dir()
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    p = lock_dir / f"{awb}.lock"
     p.touch(exist_ok=True)
     f = open(p, "r+")
     try:

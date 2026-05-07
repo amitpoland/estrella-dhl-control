@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+log = logging.getLogger(__name__)
 
 # ── Intent detection keyword lists ───────────────────────────────────────────
 
@@ -324,6 +327,54 @@ def match_email_to_shipment(
 ZOHO_ACCOUNT_ID = "2261204000000002002"
 ZOHO_INBOX_FOLDER_ID = "2261204000000002014"   # Inbox folder ID for info@estrellajewels.eu
 
+# Default API base — Zoho mailbox lives in the India data centre. The .eu and
+# .com regions both reject this account's tokens with 401 INVALID_OAUTHTOKEN.
+# Empirically verified against the live mailbox account 2261204000000002002.
+ZOHO_MAIL_API_BASE_DEFAULT = "https://zmail.zoho.in/api"
+
+
+# ── Search-key helpers ────────────────────────────────────────────────────────
+#
+# Zoho's .in region rejects bare-keyword searchKey values with HTTP 400
+# "Invalid Input / Index 1 out of bounds for length 1". The .in region requires
+# the field-prefixed form (e.g. ``entire:1012178215``). The .eu region accepts
+# both, so the prefixed form is safe across regions.
+#
+# These helpers exist to (a) prevent accidental reintroduction of the bare
+# form and (b) give tests an importable target.
+
+def _build_search_key(term: Any) -> str:
+    """
+    Wrap *term* in the ``entire:`` prefix that Zoho's .in region requires.
+
+    Raises ValueError if *term* is empty/None or non-string.
+    """
+    if term is None:
+        raise ValueError("search term must not be None")
+    s = str(term).strip()
+    if not s:
+        raise ValueError("search term must not be empty")
+    return f"entire:{s}"
+
+
+def _assert_search_key_valid(key: str, context: str = "") -> None:
+    """
+    Guard against bare-keyword search keys.
+
+    Zoho's .in region returns HTTP 400 on bare keywords. A valid key must
+    contain a ``:`` separating field and value (e.g. ``entire:1234567890``,
+    ``subject:foo``).
+    """
+    if not key or ":" not in str(key):
+        log.warning(
+            "INVALID searchKey detected (bare keyword) context=%s key=%r",
+            context, key,
+        )
+        raise ValueError(
+            f"INVALID searchKey {key!r} — must be field:value form "
+            f"(context={context!r})"
+        )
+
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -511,33 +562,12 @@ def scan_for_dhl_customs_emails(
         dhl_ticket=dhl_ticket,
     )
 
-    # ── Sent folder scan: if targeted search returned nothing, also scan the
-    #    Sent folder for our own outgoing emails that reference this AWB.
-    #    Outgoing emails (our DHL reply, agency forward) only appear in Sent,
-    #    never in the Inbox search results.
-    if not raw and awb_clean:
-        sent_folder_id = _get_sent_folder_id(zoho_account_id, token, api_base)
-        if sent_folder_id:
-            sent_raw, sent_scanned, _, _ = _fetch_messages(
-                account_id=zoho_account_id,
-                folder_id=sent_folder_id,
-                limit=min(limit * 2, 200),
-                token=token,
-                target_awb=None,    # folder-based read, no search key
-                api_base=api_base,
-            )
-            # Filter locally to messages that mention this AWB
-            sent_matches = [
-                m for m in sent_raw
-                if awb_clean in re.sub(r"\D", "", (m.get("subject", "") + " " +
-                                                    m.get("snippet", "") + " " +
-                                                    m.get("body", "")))
-            ]
-            if sent_matches:
-                raw      = sent_matches
-                scanned += sent_scanned
-                query_used  = f"{query_used}+sent_folder({len(sent_matches)} matched)"
-                scan_method = "sent_folder_scan"
+    # NOTE: the historical Sent-folder fallback is intentionally GONE.
+    # The ``entire:`` searchKey form spans Inbox, Sent, Archive, and any
+    # custom folders in a single Zoho call, so the dedicated Sent scan is
+    # both redundant and (on the .in region) impossible — the
+    # /folders/{id}/messages endpoint that the old fallback used returns
+    # HTTP 404 INVALID_METHOD on .in.
 
     matched: list[dict] = []
     for msg in raw:
@@ -607,9 +637,12 @@ def _fetch_messages(
     Fetch raw messages from Zoho Mail.
 
     When target_awb is provided, searches Zoho for that AWB.
-    Uses plain searchKey (no newentire:: prefix) — the prefix caused
-    false-negatives when the AWB appeared after a colon in Polish subjects
-    (e.g. "przesyłka numer: 1012178215").
+    Uses Zoho's ``entire:<term>`` searchKey — the bare term (no prefix) is
+    rejected by the Zoho .in region with HTTP 400 "Invalid Input / Index 1
+    out of bounds for length 1". The ``entire:`` form searches across all
+    indexed fields (subject + body + headers) and is the documented
+    cross-region syntax. The legacy ``newentire::`` prefix from earlier code
+    is also rejected by the .in region — do not reintroduce it.
 
     Falls back to a ticket search (T#...) if the AWB search returns nothing
     and a dhl_ticket is known.
@@ -627,60 +660,93 @@ def _fetch_messages(
     }
     base = api_base.rstrip("/")
 
-    if target_awb:
+    def _do_search(search_key: str) -> list[dict]:
+        """Issue a single Zoho search; return [] on failure (warn on 400/INVALID)."""
+        try:
+            _assert_search_key_valid(search_key, context="_fetch_messages")
+        except ValueError:
+            return []
         url = f"{base}/accounts/{account_id}/messages/search"
         params = {
-            "searchKey": target_awb,          # plain AWB — works across all fields
+            "searchKey": search_key,
             "start":     1,
             "limit":     min(limit, 200),
         }
-        scan_method = "rest_api_search"
-        query_used  = f"searchKey={target_awb}"
-
         try:
             resp = _req.get(url, headers=headers, params=params, timeout=15)
+            if resp.status_code == 400 or "INVALID_METHOD" in (resp.text or ""):
+                log.warning(
+                    "[zoho] HTTP %s on searchKey=%r body=%r",
+                    resp.status_code, search_key, (resp.text or "")[:300],
+                )
             resp.raise_for_status()
-            data = resp.json()
-        except Exception:
-            return [], 0, query_used, scan_method
+            return resp.json().get("data", []) or []
+        except Exception as exc:
+            log.debug("[zoho] search failed key=%r: %s", search_key, exc)
+            return []
 
-        messages = data.get("data", []) or []
+    if target_awb:
+        # 1. Primary search — entire:<awb>
+        primary_key = _build_search_key(target_awb)
+        messages = _do_search(primary_key)
+        scan_method = "rest_api_search"
+        query_used  = f"searchKey={primary_key}"
 
-        # Fallback: if AWB search returned nothing and we have a ticket, try ticket
+        # 2. Spaced-AWB secondary search — Zoho indexes some AWBs split into
+        #    two 4+6 digit chunks, especially when the original mail rendered
+        #    them with a thin space. Try once if the primary returned 0.
+        if not messages and len(target_awb) >= 10 and target_awb.isdigit():
+            spaced = f"{target_awb[:4]} {target_awb[4:]}"
+            spaced_key = _build_search_key(spaced)
+            spaced_messages = _do_search(spaced_key)
+            if spaced_messages:
+                messages = spaced_messages
+                scan_method = "rest_api_search_spaced"
+                query_used  = f"searchKey={spaced_key} (spaced)"
+
+        # 3. Ticket fallback — entire:<ticket_core> after stripping T#/# prefix.
         if not messages and dhl_ticket:
-            ticket_clean = dhl_ticket.lstrip("T#").lstrip("#")
-            params2 = {
-                "searchKey": ticket_clean,
-                "start":     1,
-                "limit":     min(limit, 200),
-            }
-            query_used2 = f"searchKey={ticket_clean} (ticket fallback)"
-            try:
-                resp2 = _req.get(url, headers=headers, params=params2, timeout=15)
-                resp2.raise_for_status()
-                messages = resp2.json().get("data", []) or []
-                if messages:
-                    query_used    = query_used2
-                    scan_method   = "rest_api_search_ticket"
-            except Exception:
-                pass
+            ticket_clean = dhl_ticket.lstrip("T#").lstrip("#").strip()
+            if ticket_clean:
+                ticket_key = _build_search_key(ticket_clean)
+                ticket_messages = _do_search(ticket_key)
+                if ticket_messages:
+                    messages    = ticket_messages
+                    scan_method = "rest_api_search_ticket"
+                    query_used  = f"searchKey={ticket_key} (ticket fallback)"
 
         return messages, len(messages), query_used, scan_method
     else:
-        url = f"{base}/accounts/{account_id}/folders/{folder_id}/messages"
+        # Broad scan — list recent messages from a folder.
+        # Zoho's .in region requires the /messages endpoint (NOT
+        # /folders/{id}/messages — that path returns HTTP 404 INVALID_METHOD)
+        # and a `fields` query parameter listing the columns to return.
+        url = f"{base}/accounts/{account_id}/messages"
         params = {
-            "count":     min(limit, 200),
+            "folderId":  folder_id,
+            "limit":     min(limit, 200),
             "start":     1,
             "sortorder": "false",
+            # Zoho rejects /messages without `fields`. Request the columns
+            # the matcher needs downstream.
+            "fields":    "messageId,subject,fromAddress,toAddress,"
+                         "receivedTime,summary,folderId,threadId,"
+                         "hasAttachment",
         }
         scan_method = "rest_api_recent"
-        query_used  = f"folder={folder_id} count={params['count']}"
+        query_used  = f"folderId={folder_id} limit={params['limit']}"
 
         try:
             resp = _req.get(url, headers=headers, params=params, timeout=15)
+            if resp.status_code == 400 or "INVALID_METHOD" in (resp.text or ""):
+                log.warning(
+                    "[zoho] broad scan HTTP %s body=%r",
+                    resp.status_code, (resp.text or "")[:300],
+                )
             resp.raise_for_status()
             data = resp.json()
-        except Exception:
+        except Exception as exc:
+            log.debug("[zoho] broad scan failed: %s", exc)
             return [], 0, query_used, scan_method
 
         messages = data.get("data", []) or []

@@ -507,24 +507,35 @@ class TestRecipientResolution:
 
 class TestBuilder:
 
-    def test_subject_no_re_prefix(self, tmp_path, dhl_env):
+    def test_subject_fallback_when_no_dhl_ticket(self, tmp_path, dhl_env):
+        """No ticket recorded → standalone fallback subject."""
         bid, _, _ = _make_batch(tmp_path)
         from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
         a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
         pkg = build_dhl_proactive_dispatch(a, bid)
+        assert pkg["subject"] == f"AWB {a['awb']} — Dokumenty celne / Customs documents"
         assert not pkg["subject"].lower().startswith("re:")
-        assert "Zgłoszenie celne" in pkg["subject"]
-        assert "Customs Declaration" in pkg["subject"]
-        assert pkg["subject"].startswith(f"AWB {a['awb']}")
 
-    def test_builder_ignores_dhl_email_ticket(self, tmp_path, dhl_env):
-        bid, _, _ = _make_batch(tmp_path, extra={"dhl_email": {"ticket": "T#1WA000"}})
+    def test_subject_uses_thread_when_dhl_ticket_present(self, tmp_path, dhl_env):
+        """audit.dhl_ticket present → join existing DHL thread."""
+        bid, _, _ = _make_batch(tmp_path, extra={"dhl_ticket": "T#1WA0001234"})
         from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
         a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
         pkg = build_dhl_proactive_dispatch(a, bid)
-        assert "T#1WA000" not in pkg["body_text"]
-        assert "T#1WA000" not in pkg["subject"]
-        assert "ticket" not in pkg["body_text"].lower()
+        assert pkg["subject"] == (
+            f"Re:T#1WA0001234 - Agencja Celna DHL - przesyłka numer: {a['awb']}"
+        )
+
+    def test_subject_uses_thread_when_dhl_email_ticket_present(self, tmp_path, dhl_env):
+        """audit.dhl_email.ticket fallback location is also honored."""
+        bid, _, _ = _make_batch(
+            tmp_path, extra={"dhl_email": {"ticket": "T#1WA000"}},
+        )
+        from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+        a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
+        pkg = build_dhl_proactive_dispatch(a, bid)
+        assert "T#1WA000" in pkg["subject"]
+        assert pkg["subject"].startswith("Re:T#1WA000")
 
     def test_builder_does_not_read_monetary_fields(self, tmp_path, dhl_env):
         bid, _, _ = _make_batch(tmp_path, extra={
@@ -614,7 +625,11 @@ def test_attachment_missing_at_create_returns_503(tmp_path, client):
 
 class TestQueueHappyPath:
 
-    def test_first_contact_no_reply_headers(self, tmp_path, client):
+    def test_first_contact_no_reply_mime_headers(self, tmp_path, client):
+        """queue_email must NOT receive reply_to/in_reply_to/references/
+        thread_id MIME header kwargs. Subject text may still use 'Re:' when
+        the audit carries a DHL ticket — that is a thread-aware human
+        subject, not an SMTP reply header."""
         bid, _, ap = _make_batch(tmp_path)
         r1 = _post_proactive(client, bid, "alice")
         proposal_id = r1.json()["proposal_id"]
@@ -629,10 +644,8 @@ class TestQueueHappyPath:
         with patch("app.services.email_service.queue_email", side_effect=fake_queue):
             r = _queue(client, proposal_id)
         assert r.status_code == 200, r.text
-        # No thread/reply headers passed to queue_email
         for forbidden_key in ("reply_to", "in_reply_to", "references", "thread_id"):
             assert forbidden_key not in captured
-        assert not captured["subject"].lower().startswith("re:")
 
     def test_audit_writes_no_financial_keys(self, tmp_path, client):
         bid, _, ap = _make_batch(tmp_path)
@@ -1224,3 +1237,118 @@ class TestQueueAutoSendsSmtp:
         assert r.json()["status"] == "queued"
         # send_queued_email is NOT called for non-proactive types from /queue
         assert s_called["n"] == 0
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 13. Body formatting & correction mode
+# ──────────────────────────────────────────────────────────────────────────
+
+class TestBodyFormatting:
+
+    def test_body_polish_first_then_english(self, tmp_path, dhl_env):
+        bid, _, _ = _make_batch(tmp_path)
+        from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+        a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
+        pkg = build_dhl_proactive_dispatch(a, bid)
+        body = pkg["body_text"]
+        pl_idx = body.find("Szanowni Państwo")
+        en_idx = body.find("Dear DHL Customs Team")
+        assert pl_idx >= 0 and en_idx >= 0, body
+        assert pl_idx < en_idx, "Polish must precede English"
+
+    def test_body_uses_numbered_attachment_list(self, tmp_path, dhl_env):
+        """Numbered list, not leading-space bullets that wrap badly on phones."""
+        bid, _, _ = _make_batch(tmp_path)
+        from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+        a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
+        pkg = build_dhl_proactive_dispatch(a, bid)
+        body = pkg["body_text"]
+        for line in ("1. Faktury handlowe", "2. List przewozowy AWB",
+                     "3. Opis towarów w języku polskim"):
+            assert line in body, f"missing: {line}\n---\n{body}"
+        for line in ("1. Commercial invoices", "2. AWB document",
+                     "3. Polish goods description"):
+            assert line in body, f"missing: {line}\n---\n{body}"
+        # Old indented-bullet style must be gone
+        assert "  - Faktura(y) handlowa(e)" not in body
+        assert "  - Commercial invoice(s)" not in body
+
+    def test_body_has_no_wide_table_markup(self, tmp_path, dhl_env):
+        """HTML must not embed <table>/<tr>/<td> — those break on mobile.
+        plain <pre> wrapper is mobile-safe."""
+        bid, _, _ = _make_batch(tmp_path)
+        from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+        a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
+        pkg = build_dhl_proactive_dispatch(a, bid)
+        html = pkg["body_html"].lower()
+        for tag in ("<table", "<tr", "<td", "<th", "width=", "colspan"):
+            assert tag not in html, f"forbidden HTML markup '{tag}' in body_html"
+
+    def test_body_no_total_attachments_count_line(self, tmp_path, dhl_env):
+        """Old 'Total attachments: N' line is gone — count is implicit
+        from the actual MIME parts."""
+        bid, _, _ = _make_batch(tmp_path)
+        from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+        a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
+        pkg = build_dhl_proactive_dispatch(a, bid)
+        assert "Total attachments:" not in pkg["body_text"]
+        assert "Total attachments:" not in pkg["body_html"]
+
+    def test_correction_mode_inserts_correction_paragraph(self, tmp_path, dhl_env):
+        bid, _, _ = _make_batch(tmp_path)
+        from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+        a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
+        pkg = build_dhl_proactive_dispatch(a, bid, correction=True)
+        body = pkg["body_text"]
+        assert "korektą" in body.lower(), body
+        assert "correction of an earlier message" in body, body
+
+    def test_normal_mode_omits_correction_paragraph(self, tmp_path, dhl_env):
+        bid, _, _ = _make_batch(tmp_path)
+        from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+        a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
+        pkg = build_dhl_proactive_dispatch(a, bid)   # correction defaults to False
+        body = pkg["body_text"]
+        assert "korekt" not in body.lower(), body
+        assert "correction" not in body.lower(), body
+
+    def test_body_text_and_html_match_in_meaning(self, tmp_path, dhl_env):
+        """The HTML must be a faithful rendering of body_text — same words,
+        same order — so recipients on plain-text and HTML clients see the
+        same message."""
+        bid, _, _ = _make_batch(tmp_path)
+        from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+        a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
+        pkg = build_dhl_proactive_dispatch(a, bid)
+        # body_text is embedded verbatim inside the <pre> wrapper
+        assert pkg["body_text"] in pkg["body_html"]
+
+
+class TestSubjectThreading:
+
+    def test_dhl_ticket_takes_precedence_over_dhl_email_ticket(
+        self, tmp_path, dhl_env,
+    ):
+        """When both audit.dhl_ticket and audit.dhl_email.ticket are set,
+        the top-level field wins."""
+        bid, _, _ = _make_batch(tmp_path, extra={
+            "dhl_ticket": "T#TOPLEVEL",
+            "dhl_email":  {"ticket": "T#NESTED"},
+        })
+        from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+        a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
+        pkg = build_dhl_proactive_dispatch(a, bid)
+        assert "T#TOPLEVEL" in pkg["subject"]
+        assert "T#NESTED" not in pkg["subject"]
+
+    def test_empty_ticket_strings_treated_as_absent(self, tmp_path, dhl_env):
+        """An empty string for a ticket field must NOT trigger the 'Re:'
+        thread-mode subject."""
+        bid, _, _ = _make_batch(tmp_path, extra={
+            "dhl_ticket": "",
+            "dhl_email":  {"ticket": ""},
+        })
+        from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+        a = _read_audit(tmp_path / "outputs" / bid / "audit.json")
+        pkg = build_dhl_proactive_dispatch(a, bid)
+        assert pkg["subject"] == f"AWB {a['awb']} — Dokumenty celne / Customs documents"

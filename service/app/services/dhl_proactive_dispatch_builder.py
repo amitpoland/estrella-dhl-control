@@ -1,30 +1,23 @@
 """
-dhl_proactive_dispatch_builder.py — first-contact body builder for proactive
-DHL customs dispatch (P2 Slice A).
+dhl_proactive_dispatch_builder.py — body builder for proactive DHL customs
+dispatch.
 
-Distinct from :mod:`app.services.dhl_self_clearance_builder` which is reply-
-thread-coupled and embeds CIF in the body. This builder is intentionally
-first-contact-only:
+Subject policy (revised):
+  * If ``audit["dhl_ticket"]`` (or ``audit["dhl_email"]["ticket"]``) is set,
+    the subject joins the existing DHL thread:
+        ``Re:T#... - Agencja Celna DHL - przesyłka numer: <AWB>``
+  * Otherwise, fall back to a standalone subject:
+        ``AWB <AWB> — Dokumenty celne / Customs documents``
 
-  * subject does NOT start with "Re:" — D4 locked format
-  * NEVER reads ``audit["dhl_email"]["ticket"]``
-  * NEVER reads any monetary or customs-value field
-  * goods description is delivered ONLY as the attached Polish description PDF
-  * recipient/CC values in the returned dict are an OPERATOR PREVIEW; the
-    queue-time path (:func:`queue_proposal`) re-resolves them from
-    ``email_routing.DHL_TO`` / ``email_routing.INTERNAL_CC`` (canonical),
-    falling back to ``settings.dhl_customs_email`` / ``settings.dhl_customs_cc``
-    only when the centralized constants are empty, before invoking
-    ``email_service.queue_email``
+Body policy:
+  * Mobile-safe: short paragraphs, numbered list, no wide tables, no
+    leading-indent bullets that wrap badly on narrow screens.
+  * Polish first, English second, both reading the same meaning.
+  * Attachment count in the body is derived from the actual attachments
+    list — never inflated or hardcoded.
+  * Optional one-paragraph correction note when ``correction=True``.
 
-Allowed audit reads (FROZEN):
-  * ``audit["dhl_awb"]`` / ``audit["awb"]`` / ``audit["batch_meta"]["awb"]``
-    / ``audit["tracking_no"]``
-  * ``audit["polish_desc_filename"]``
-  * ``audit["inputs"]["invoices"]``
-  * ``audit["inputs"]["awb"]``
-
-Forbidden audit reads:
+Forbidden audit reads (FROZEN):
   * ``audit["clearance_decision"]`` (no CIF, no duty, no path)
   * ``audit["customs_declaration"]``
   * ``audit["invoice_totals"]``
@@ -62,9 +55,32 @@ def _resolve_awb(audit: Dict[str, Any]) -> str:
     )
 
 
+def _resolve_dhl_ticket(audit: Dict[str, Any]) -> str:
+    """Pull the DHL customs ticket from any known location in the audit.
+    Returns empty string when no ticket has been recorded."""
+    t = (audit.get("dhl_ticket") or "").strip()
+    if t:
+        return t
+    de = audit.get("dhl_email") or {}
+    if isinstance(de, dict):
+        t = (de.get("ticket") or "").strip()
+        if t:
+            return t
+    return ""
+
+
+def _build_subject(awb: str, ticket: str) -> str:
+    """Subject precedence: DHL thread (when ticket present) > standalone."""
+    if ticket:
+        return f"Re:{ticket} - Agencja Celna DHL - przesyłka numer: {awb}"
+    return f"AWB {awb} — Dokumenty celne / Customs documents"
+
+
 def build_dhl_proactive_dispatch(
     audit: Dict[str, Any],
     batch_id: str,
+    *,
+    correction: bool = False,
 ) -> Dict[str, Any]:
     """
     Build the proactive customs-dispatch email package.
@@ -139,10 +155,11 @@ def build_dhl_proactive_dispatch(
     else:
         missing.append("awb: no PDF uploaded")
 
-    # ── Subject (D4 locked format — first-contact, AWB-first, Polish-first)
-    subject = f"AWB {awb} — Zgłoszenie celne / Customs Declaration"
+    # ── Subject (thread-aware) ──────────────────────────────────────────────
+    ticket  = _resolve_dhl_ticket(audit)
+    subject = _build_subject(awb, ticket)
 
-    body_text = _render_body_text(awb, len(attachments))
+    body_text = _render_body_text(awb, correction=correction)
     body_html = _render_body_html(body_text)
 
     # Recipient/CC preview — DHL_TO + INTERNAL_CC (canonical) with env-var
@@ -164,40 +181,57 @@ def build_dhl_proactive_dispatch(
     }
 
 
-def _render_body_text(awb: str, attach_count: int) -> str:
-    """First-contact body. Polish first, then English. No CIF, no ticket, no Re."""
+def _render_body_text(awb: str, *, correction: bool = False) -> str:
+    """Mobile-safe bilingual body. Polish first, then English. Numbered list,
+    no leading-space bullets, no wide tables. The attachment count is NOT
+    injected here — the recipient sees the actual MIME parts attached."""
+    correction_pl = (
+        "Niniejsza wiadomość jest korektą wcześniejszej wysyłki, "
+        "która została dostarczona bez załączników. Przesyłamy komplet "
+        "dokumentów.\n\n"
+    ) if correction else ""
+
+    correction_en = (
+        "This is a correction of an earlier message that was delivered "
+        "without attachments. The full document set is attached.\n\n"
+    ) if correction else ""
+
     return (
         "Szanowni Państwo,\n\n"
-        f"Niniejszym przesyłamy proaktywnie dokumenty celne dla przesyłki "
-        f"AWB {awb} zmierzającej do Polski.\n\n"
-        "W załączeniu:\n"
-        "  - Faktura(y) handlowa(e)\n"
-        "  - List przewozowy (AWB)\n"
-        "  - Opis towarów w języku polskim\n\n"
-        "Prosimy o uwzględnienie tych dokumentów w procesie odprawy "
-        "celnej po przybyciu przesyłki do Polski.\n\n"
-        "---\n\n"
-        "Dear DHL Customs Team,\n\n"
-        f"We are proactively sending customs documents for the shipment "
-        f"AWB {awb} inbound to Poland.\n\n"
-        "Attached:\n"
-        "  - Commercial invoice(s)\n"
-        "  - AWB document\n"
-        "  - Polish description of goods\n\n"
-        f"Total attachments: {attach_count}.\n\n"
-        "Please use these documents during customs clearance once the "
-        "shipment arrives in Poland.\n\n"
-        "Best regards,\n"
-        "Import Department\n"
-        "Estrella Jewels Sp. z o.o. Sp. k.\n"
-        "import@estrellajewels.eu\n"
+        + correction_pl
+        + f"W załączeniu przesyłamy dokumenty do odprawy celnej dla "
+          f"przesyłki DHL AWB {awb}.\n\n"
+        + "Załączniki:\n"
+        + "1. Faktury handlowe\n"
+        + "2. List przewozowy AWB\n"
+        + "3. Opis towarów w języku polskim\n\n"
+        + "Prosimy o wykorzystanie dokumentów do odprawy celnej przesyłki.\n\n"
+        + "---\n\n"
+        + "Dear DHL Customs Team,\n\n"
+        + correction_en
+        + f"Please find attached the customs documents for DHL shipment "
+          f"AWB {awb}.\n\n"
+        + "Attachments:\n"
+        + "1. Commercial invoices\n"
+        + "2. AWB document\n"
+        + "3. Polish goods description\n\n"
+        + "Please use these documents for customs clearance.\n\n"
+        + "Best regards,\n"
+        + "Import Department\n"
+        + "Estrella Jewels Sp. z o.o. Sp. k.\n"
+        + "import@estrellajewels.eu\n"
     )
 
 
 def _render_body_html(body_text: str) -> str:
+    """HTML wrapper that preserves text layout exactly. Mobile-safe: no
+    tables, no fixed widths, no inline alignment that breaks on narrow
+    viewports. white-space:pre-wrap keeps newlines while allowing word-wrap."""
     return (
-        "<div style='font-family:sans-serif'>"
-        "<pre style='white-space:pre-wrap;font-family:Arial,sans-serif'>"
+        "<div style='font-family:Arial,sans-serif;font-size:14px;"
+        "line-height:1.5;color:#1e293b;max-width:640px;'>"
+        "<pre style='white-space:pre-wrap;word-wrap:break-word;"
+        "font-family:Arial,sans-serif;font-size:14px;margin:0;'>"
         + body_text +
         "</pre></div>"
     )
