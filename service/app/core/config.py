@@ -76,7 +76,7 @@ class Settings(BaseSettings):
 
     # ── AI customs parser (fallback only — XML is source of truth) ──────────
     anthropic_api_key:   Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
-    ai_parser_model:     str           = Field(default="claude-sonnet-4-20250514", env="AI_PARSER_MODEL")
+    ai_parser_model:     str           = Field(default="claude-sonnet-4-6", env="AI_PARSER_MODEL")
     ai_parser_enabled:   bool          = Field(default=False, env="AI_PARSER_ENABLED")
 
     # ── Carrier tracking API credentials ─────────────────────────────────────
