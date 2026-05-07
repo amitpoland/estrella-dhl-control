@@ -31,6 +31,10 @@ from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
 from ..core.guards import guard_dhl_requires_email
+from ..services.clearance_path_alias import (
+    is_agency_clearance,
+    is_dhl_self_clearance,
+)
 from ..pipelines.dhl import receive_dhl_email as _pipeline_dhl_email
 from ..core import timeline as tl
 from ..config.email_routing import (
@@ -764,7 +768,7 @@ async def generate_description(
     # package → THEN handle DHL customs email when it arrives. Blocking the
     # description on dhl_email_received reverses the real workflow.
     _decision = audit.get("clearance_decision") or {}
-    _is_agency_path = (_decision.get("clearance_path") or "") == "external_agency_clearance"
+    _is_agency_path = is_agency_clearance(_decision.get("clearance_path"))
     if not _is_agency_path:
         try:
             guard_dhl_requires_email(audit)
@@ -1613,4 +1617,248 @@ def _safe_polish(pol: Optional[dict]) -> Optional[dict]:
         "filename":        pol.get("filename"),
         "items_described": pol.get("items_described"),
         "error":           pol.get("error"),
+    }
+
+
+# ── P2 Slice A: Proactive DHL customs dispatch ──────────────────────────────
+# First-contact endpoint that creates an action proposal for proactive
+# customs dispatch on a low-value DHL self-clearance shipment. Uses the
+# existing routes_action_proposals approve/queue pipeline; no new execute
+# endpoint. Locked under proposal_write_lock(batch_id) so concurrent POSTs
+# for the same batch dedupe to a single proposal.
+
+class ProactiveDispatchRequest(BaseModel):
+    """Request body — operator_id ONLY. NO recipient/CC fields."""
+    operator_id: str
+
+    class Config:
+        # Pydantic v1 — reject unknown fields so a malicious caller cannot
+        # smuggle a `to:` or `cc:` override through the schema.
+        extra = "forbid"
+
+
+def _resolve_proactive_awb(audit: Dict[str, Any]) -> str:
+    return (
+        audit.get("dhl_awb")
+        or audit.get("awb")
+        or (audit.get("batch_meta") or {}).get("awb")
+        or audit.get("tracking_no")
+        or ""
+    )
+
+
+def _check_proactive_preconditions(audit: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """
+    Run G-PC1..G-PC8 against the live audit.
+
+    Returns ``None`` on success, or a dict ``{"guard", "error", "code"}``
+    that the caller raises as HTTP 422.
+    """
+    # G-PC7 — carrier must be DHL
+    carrier = (audit.get("carrier") or "").upper()
+    if carrier != "DHL":
+        return {
+            "guard": "carrier_not_dhl",
+            "error": f"Carrier is {carrier!r}; proactive dispatch requires DHL.",
+            "code":  "carrier_not_dhl",
+        }
+
+    # G-PC1 — must be carrier_self_clearance path
+    cd = audit.get("clearance_decision") or {}
+    clearance_path = (cd.get("clearance_path") or "").strip()
+    if is_agency_clearance(clearance_path):
+        return {
+            "guard": "agency_path_active",
+            "error": "Clearance path is agency clearance — proactive "
+                     "dispatch not applicable.",
+            "code":  "agency_path_active",
+        }
+    if clearance_path and not is_dhl_self_clearance(clearance_path):
+        return {
+            "guard": "not_self_clearance_path",
+            "error": f"Clearance path is {clearance_path!r}; expected "
+                     "carrier_self_clearance.",
+            "code":  "not_self_clearance_path",
+        }
+
+    # G-PC2 — customs package must have been generated
+    if not audit.get("customs_package_generated_at"):
+        return {
+            "guard": "customs_package_not_generated",
+            "error": "Run /generate-customs-package before proactive dispatch.",
+            "code":  "customs_package_not_generated",
+        }
+
+    # G-PC3 — must not have been dispatched
+    if audit.get("proactive_dispatch_sent_at"):
+        return {
+            "guard": "already_dispatched",
+            "error": "Proactive dispatch already sent for this batch.",
+            "code":  "already_dispatched",
+        }
+
+    # G-PC5 — no agency
+    if audit.get("agency_name") or (audit.get("agency_reply_package") or {}).get("status"):
+        return {
+            "guard": "agency_path_active",
+            "error": "Agency forwarding active — proactive dispatch blocked.",
+            "code":  "agency_path_active",
+        }
+
+    # G-PC6 — no DSK
+    if audit.get("dsk_filename") or audit.get("dsk_reference"):
+        return {
+            "guard": "dsk_already_created",
+            "error": "DSK has been generated — proactive dispatch blocked.",
+            "code":  "dsk_already_created",
+        }
+
+    return None
+
+
+@router.post("/proactive-dispatch/{batch_id}", dependencies=[_auth])
+def request_proactive_dispatch(
+    batch_id: str,
+    body: ProactiveDispatchRequest,
+) -> Dict[str, Any]:
+    """
+    Create an action proposal for proactive DHL customs dispatch.
+
+    Step 1 of a two-step flow: this endpoint creates the proposal only.
+    Approval and queueing go through the existing
+    /api/v1/action-proposals/{proposal_id}/approve and /queue endpoints.
+
+    No email is queued by this endpoint. No clearance_status is mutated.
+    """
+    from ..utils.proposal_lock import proposal_write_lock
+    from ..api.routes_action_proposals import (
+        create_proposal,
+        _save_audit as _proposal_save_audit,
+        _audit_path as _proposal_audit_path,
+    )
+    from ..services.dhl_proactive_dispatch_builder import (
+        build_dhl_proactive_dispatch,
+    )
+
+    operator_id = (body.operator_id or "").strip()
+    if not operator_id:
+        raise HTTPException(
+            status_code=422,
+            detail={"guard": "missing_operator_id",
+                    "error": "operator_id is required."},
+        )
+
+    # Phase 2.3.1 (Finding 1.2): reject operator_id values that match the
+    # auto-actor sentinel space. Without this guard, an operator could mint
+    # a self-approving proposal by spoofing the system actor name and bypass
+    # the G9 self-approval block via the auto-actor exemption.
+    from .routes_action_proposals import _is_auto_actor
+    if _is_auto_actor(operator_id):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code":    "auto_actor_sentinel_reserved",
+                "guard":   "auto_actor_sentinel_reserved",
+                "error":   f"operator_id is reserved for system actors and cannot be set by request.",
+            },
+        )
+
+    # Acquire per-batch lock — concurrent POSTs serialise here.
+    with proposal_write_lock(batch_id):
+        audit = _load_audit(batch_id)
+        if audit is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"guard": "batch_not_found",
+                        "error": f"Batch {batch_id!r} not found."},
+            )
+
+        # G-PC8 — batch exists (just validated above)
+        # Run remaining preconditions G-PC1..G-PC7
+        gate_failure = _check_proactive_preconditions(audit)
+        if gate_failure is not None:
+            raise HTTPException(status_code=422, detail=gate_failure)
+
+        # G-PC4 — idempotent dedup. create_proposal already returns
+        # existing active proposal of the same type (lines 220-224 of
+        # routes_action_proposals.py).
+        proposal = create_proposal(
+            audit         = audit,
+            batch_id      = batch_id,
+            proposal_type = "dhl_proactive_dispatch",
+            reason        = "operator_initiated_proactive_dispatch",
+            confidence    = "high",
+        )
+
+        # If we just created a NEW proposal (status pending_review and no
+        # approved_by yet AND no created_by yet), stamp created_by + the
+        # batch-level requested_at. If create_proposal returned an
+        # existing active proposal, we must not stamp anything fresh.
+        proposal_id = proposal["proposal_id"]
+        is_new_proposal = (
+            not proposal.get("created_by")
+            and proposal.get("status") == "pending_review"
+        )
+
+        if is_new_proposal:
+            # Re-verify attachments exist on disk via the builder's missing
+            # list. Abort with 503 if anything is missing — do NOT persist
+            # a partial proposal.
+            draft = proposal.get("draft") or {}
+            missing = draft.get("missing") or []
+            if missing:
+                # Roll back the in-memory append (not yet persisted)
+                proposals = audit.get("action_proposals") or []
+                audit["action_proposals"] = [
+                    p for p in proposals
+                    if p.get("proposal_id") != proposal_id
+                ]
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "guard":   "attachment_missing",
+                        "error":   "Required attachments missing on disk.",
+                        "missing": missing,
+                    },
+                )
+
+            # Stamp creator + batch-level timestamp
+            proposal["created_by"] = operator_id
+            audit["proactive_dispatch_requested_at"] = (
+                datetime.now(timezone.utc).isoformat()
+            )
+            audit["proactive_dispatch_proposal_id"] = proposal_id
+
+            _proposal_save_audit(batch_id, audit)
+
+            tl.log_event(
+                _proposal_audit_path(batch_id),
+                tl.EV_DHL_PROACTIVE_DISPATCH_REQUESTED,
+                "admin",
+                actor=operator_id,
+                detail={
+                    "batch_id":         batch_id,
+                    "proposal_id":      proposal_id,
+                    "awb":              _resolve_proactive_awb(audit),
+                    "operator_id":      operator_id,
+                    "attachment_count": len(draft.get("attachments") or []),
+                    "recipient":        draft.get("to") or "",
+                },
+            )
+            log.info(
+                "[proactive-dispatch] proposal created batch=%s proposal=%s by=%s",
+                batch_id, proposal_id, operator_id,
+            )
+        else:
+            log.info(
+                "[proactive-dispatch] returning existing proposal batch=%s proposal=%s",
+                batch_id, proposal_id,
+            )
+
+    return {
+        "ok":           True,
+        "batch_id":     batch_id,
+        "proposal_id":  proposal_id,
+        "status":       proposal.get("status", "pending_review"),
+        "is_new":       bool(is_new_proposal),
     }

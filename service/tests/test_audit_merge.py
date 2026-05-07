@@ -33,7 +33,7 @@ def _existing():
         "dsk_received_at": "2026-04-28T17:32:34Z",
         "dsk_source": "odprawacelna@dhl.com",
         "clearance_decision": {
-            "clearance_path": "external_agency_clearance",
+            "clearance_path": "agency_clearance",
             "total_value_usd": 14169.0,
             "agency": "Agencja Celna Spedycja",
         },
@@ -112,7 +112,7 @@ class TestWorkflowPreservation:
 
     def test_clearance_decision_preserved(self):
         m = merge_regenerated_audit(_existing(), _regenerated())
-        assert m["clearance_decision"]["clearance_path"] == "external_agency_clearance"
+        assert m["clearance_decision"]["clearance_path"] == "agency_clearance"
         assert m["clearance_decision"]["agency"] == "Agencja Celna Spedycja"
 
     def test_dsk_workflow_preserved(self):

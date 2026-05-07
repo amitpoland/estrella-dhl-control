@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ..core.config import settings
+from ..config.email_routing import AGENCY_TO, AGENCY_CC, INTERNAL_CC
 
 log = logging.getLogger(__name__)
 
@@ -41,19 +42,12 @@ def build_agency_forward_after_dhl(audit: Dict[str, Any], batch_id: str) -> Dict
     )
     ticket = (audit.get("dhl_email") or {}).get("ticket") or audit.get("dhl_ticket") or ""
 
-    # Recipients — Ganther must be TO (not CC) when forwarding DHL document set
-    to_list = [
-        "piotr@acspedycja.pl",
-        "ciagarlak@ganther.com.pl",
-    ]
-    cc_list = [
-        "biuro@acspedycja.pl",
-        "roman@acspedycja.pl",
-        "info@estrellajewels.eu",
-        "import@estrellajewels.eu",
-        "account@estrellajewels.eu",
-    ]
-    # Dedupe (in case piotr appears in CC by accident)
+    # Recipients — spec v3 hard rule 7: agency recipient layout is identical
+    # for B1 and B4. Read from the centralized email_routing constants so
+    # any future spec amendment lands once and applies to both stages.
+    to_list = list(AGENCY_TO)
+    cc_list = list(AGENCY_CC) + list(INTERNAL_CC)
+    # Dedupe (defensive — in case any address appears in both)
     to_norm = {a.lower() for a in to_list}
     cc_list = [a for a in cc_list if a.lower() not in to_norm]
 

@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from ..core.config import settings
 from ..core import timeline as tl
 from ..utils.io import write_json_atomic
+from .clearance_path_alias import is_agency_clearance, is_dhl_self_clearance
 
 log = logging.getLogger(__name__)
 
@@ -247,7 +248,7 @@ def _evaluate_sla(audit: Dict[str, Any]) -> Dict[str, Any]:
     }
     cd = audit.get("clearance_decision") or {}
     cif = cd.get("total_value_usd") or 0
-    out["high_value"] = (cif or 0) > 2500 or cd.get("clearance_path") == "external_agency_clearance"
+    out["high_value"] = (cif or 0) > 2500 or is_agency_clearance(cd.get("clearance_path"))
 
     # SLA: Warsaw arrival → DHL email within 6h
     tr = audit.get("tracking") or {}
@@ -318,26 +319,181 @@ def _ensure_dhl_reply(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]
     out: Dict[str, Any] = {"built": False, "sent": False, "error": None}
     cd   = audit.get("clearance_decision") or {}
     path = cd.get("clearance_path") or ""
-    cif  = cd.get("total_value_usd") or 0
     dhl_received = bool((audit.get("dhl_email") or {}).get("received"))
 
     if not dhl_received:
         return out
 
-    # Branch by clearance path
-    is_high_value = path == "external_agency_clearance" or (cif or 0) > 2500
-    is_low_value  = path == "carrier_self_clearance"     or (0 < (cif or 0) <= 2500)
-
-    if is_high_value:
+    # Branch strictly by normalized clearance_path. Spec rule: B2 (DSK-only
+    # same-thread reply) fires only when path normalizes to agency_clearance;
+    # the self-clearance reply fires only when path normalizes to
+    # dhl_self_clearance. Missing / routing_pending / unknown values are a
+    # no-op (default-block). Both spec names and pre-spec legacy aliases
+    # (external_agency_clearance / carrier_self_clearance) flow correctly
+    # via clearance_path_alias.normalize_path.
+    from .clearance_path_alias import (
+        PATH_AGENCY_CLEARANCE, PATH_DHL_SELF_CLEARANCE, normalize_path,
+    )
+    canonical = normalize_path(path)
+    if canonical == PATH_AGENCY_CLEARANCE:
         return _ensure_dhl_dsk_transfer_reply(audit_path, audit)
-    if is_low_value:
+    if canonical == PATH_DHL_SELF_CLEARANCE:
         return _ensure_dhl_self_clearance_reply(audit_path, audit)
     return out
 
 
 def _ensure_dhl_dsk_transfer_reply(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
-    """High-value: build DHL DSK transfer reply (existing builder)."""
-    out: Dict[str, Any] = {"built": False, "sent": False, "error": None, "path": "external_agency_clearance"}
+    """B2 (Path B reply when DHL emails for the customs package).
+
+    Phase 3.2 changes:
+      * Switched from build_dhl_reply_package (full-doc-set) to
+        build_dhl_b2_dsk_only_reply (spec rule 5: DSK only, internal CC only).
+      * Added DSK precondition gate: skips silently when audit.dsk_filename is
+        empty or the file doesn't exist on disk. Operator generates DSK via
+        the existing /api/v1/dsk/generate endpoint; the observer fires on the
+        next sweep once dsk_filename is populated.
+      * Wrapped critical section in proposal_write_lock(batch_id).
+      * Pre-marker (build_started_at) written inside the lock BEFORE
+        queue_email so a crash mid-fire does not result in re-queue.
+      * Entry gate rejects when EITHER status OR build_started_at is set.
+    """
+    from ..utils.proposal_lock import proposal_write_lock as _b2_lock
+
+    out: Dict[str, Any] = {"built": False, "sent": False, "error": None,
+                           "path": "agency_clearance"}
+    batch_id = audit_path.parent.name
+
+    # ── Idempotency pre-check (cheap; in-lock re-check is authoritative) ──
+    drp = audit.get("dhl_reply_package") or {}
+    if drp.get("status") or drp.get("build_started_at"):
+        return out
+
+    # ── B2 DSK gate: skip silently if DSK not yet generated ──────────────
+    dsk_filename = (audit.get("dsk_filename") or "").strip()
+    dsk_path_str = (audit.get("dsk_path") or "").strip()
+    dsk_present = (
+        bool(dsk_filename)
+        and bool(dsk_path_str)
+        and Path(dsk_path_str).is_file()
+    )
+    if not dsk_present:
+        # Decision-trail field for incident debugging; NOT an idempotency
+        # marker (does not block re-fire on next sweep once DSK lands).
+        try:
+            audit_skip = json.loads(audit_path.read_text(encoding="utf-8"))
+            audit_skip["b2_dsk_skip_reason"] = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "reason":    "dsk_not_yet_generated",
+            }
+            write_json_atomic(audit_path, audit_skip)
+        except Exception:
+            pass
+        return out
+
+    # ── GUARANTEE-1 — single critical section ────────────────────────────
+    with _b2_lock(batch_id):
+        # Re-read audit inside the lock (authoritative state).
+        audit_locked = json.loads(audit_path.read_text(encoding="utf-8"))
+
+        # Re-check idempotency markers under fresh state.
+        drp_locked = audit_locked.get("dhl_reply_package") or {}
+        if drp_locked.get("status") or drp_locked.get("build_started_at"):
+            return out
+
+        # Re-check DSK presence (file may have been removed between gate
+        # check and lock acquisition).
+        dsk_filename_locked = (audit_locked.get("dsk_filename") or "").strip()
+        dsk_path_locked     = (audit_locked.get("dsk_path") or "").strip()
+        if not (dsk_filename_locked and dsk_path_locked
+                and Path(dsk_path_locked).is_file()):
+            return out
+
+        # Pre-marker: write BEFORE queue_email so a crash leaves an
+        # idempotency mark on disk. Builder runs after this write; if it
+        # raises, the marker stays set and re-fires are blocked until
+        # operator clears.
+        pre_marker_iso = datetime.now(timezone.utc).isoformat()
+        audit_locked.setdefault("dhl_reply_package", {})
+        audit_locked["dhl_reply_package"]["build_started_at"] = pre_marker_iso
+        write_json_atomic(audit_path, audit_locked)
+
+        try:
+            from .dhl_reply_builder import build_dhl_b2_dsk_only_reply
+            from .email_service     import queue_email
+            pkg = build_dhl_b2_dsk_only_reply(audit_locked, batch_id)
+
+            # Validate attachments exist (defensive — gate already checked)
+            existing = [a for a in pkg.get("attachments", [])
+                        if Path(a.get("path", "")).is_file()]
+            if not existing or pkg.get("missing"):
+                out["error"] = "no_attachments_on_disk"
+                return out
+
+            body_text = pkg["body_text"]
+            body_html = pkg["body_html"]
+            email_id = queue_email(
+                to=pkg["to"], subject=pkg["subject"],
+                body_html=body_html, body_text=body_text,
+                batch_id=batch_id,
+                cc=pkg.get("cc", ""),
+                from_address=pkg.get("from_address", ""),
+                email_type=pkg.get("email_type", "dhl_b2_dsk_only_reply"),
+            )
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            audit_locked["dhl_reply_package"] = {
+                "from_address": pkg.get("from_address", ""),
+                "to":           pkg["to"],
+                "to_list":      pkg.get("to_list", []),
+                "cc":           pkg.get("cc", ""),
+                "cc_list":      pkg.get("cc_list", []),
+                "subject":      pkg["subject"],
+                "body_text":    body_text,
+                "body_html":    body_html,
+                "attachments":  existing,
+                "ticket":       pkg.get("ticket", ""),
+                "email_id":     email_id,
+                "status":       "queued",
+                "queued_at":    now_iso,
+                "source":       "monitor_auto_after_dhl_email",
+                "build_started_at": pre_marker_iso,
+            }
+            audit = audit_locked
+            write_json_atomic(audit_path, audit_locked)
+            out["built"] = True
+            out["email_id"] = email_id
+
+            try:
+                tl.log_event(audit_path, "dhl_reply_package_auto_built",
+                             "monitor", "active_shipment_monitor",
+                             detail={"email_id": email_id,
+                                     "ticket": pkg.get("ticket", ""),
+                                     "email_type": "dhl_b2_dsk_only_reply"})
+            except Exception:
+                pass
+
+            # Auto-send if SMTP is configured
+            from .email_sender import send_queued_email, _smtp_configured
+            if _smtp_configured():
+                send_result = send_queued_email(email_id, method="smtp")
+                if send_result.get("ok") and send_result.get("status") == "sent":
+                    out["sent"] = True
+                    out["provider_message_id"] = send_result.get("provider_message_id")
+                else:
+                    out["error"] = f"send_failed: {send_result.get('error')}"
+            else:
+                out["error"] = "smtp_not_configured"
+
+        except Exception as exc:
+            out["error"] = f"build_failed: {exc}"
+
+        return out
+
+
+def _DEPRECATED_ensure_dhl_dsk_transfer_reply_legacy(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
+    """Legacy implementation retained for reference only. Replaced by the
+    new _ensure_dhl_dsk_transfer_reply above in Phase 3.2."""
+    out: Dict[str, Any] = {"built": False, "sent": False, "error": None, "path": "agency_clearance"}
     drp = audit.get("dhl_reply_package") or {}
     if drp.get("status"):
         return out
@@ -417,7 +573,7 @@ def _ensure_dhl_self_clearance_reply(audit_path: Path, audit: Dict[str, Any]) ->
     document set so DHL can self-clear directly. No agency, no DSK transfer.
     """
     out: Dict[str, Any] = {"built": False, "sent": False, "error": None,
-                            "path": "carrier_self_clearance"}
+                            "path": "dhl_self_clearance"}
     pkg_existing = audit.get("dhl_self_clearance_reply_package") or {}
     if pkg_existing.get("status"):
         return out
@@ -496,6 +652,561 @@ def _ensure_dhl_self_clearance_reply(audit_path: Path, audit: Dict[str, Any]) ->
     return out
 
 
+# ── Phase 2.3 — Path A auto-queue at Departed origin ─────────────────────────
+
+import re as _p23_re
+import uuid as _p23_uuid
+
+# Recipient allowlist regex for the auto-queue path. DHL only.
+# Note: @estrellajewels.eu and @estrellajewels.com are real Estrella domain
+# aliases pointing at the same mailboxes — they are NOT in this allowlist
+# because the allowlist is for DHL recipients only.
+_DHL_TO_ALLOWLIST_RE = _p23_re.compile(r"^[a-z._-]+@dhl\.com$", _p23_re.IGNORECASE)
+_DHL_AWB_RE = _p23_re.compile(r"^\d{10}$")
+_AUTO_ACTOR = "system:path_a_auto_queue"
+_DEPARTED_ORIGIN_CODES = {"DEPARTED_ORIGIN_HUB", "DEPARTED_ORIGIN"}
+_ALREADY_SHIPPED_TRACKING_CODES = {
+    "ARRIVED_DESTINATION_COUNTRY", "CUSTOMS_PENDING", "CLEARED", "DELIVERED",
+}
+_INTERNAL_CC_REQUIRED = {
+    "info@estrellajewels.eu",
+    "import@estrellajewels.eu",
+    "account@estrellajewels.eu",
+}
+_VALUE_THRESHOLD_USD = 2_500.0
+_VALUE_PLAUSIBILITY_FLOOR_USD = 1.0
+
+
+def _record_auto_queue_decision(
+    audit: Dict[str, Any],
+    *,
+    outcome: str,
+    flag_value: bool,
+    extras: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Write the GUARANTEE-9 decision-trail audit fields. In-memory mutation
+    only — caller persists via write_json_atomic."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    audit["auto_queue_decision_at"] = now_iso
+    audit["auto_queue_decision_outcome"] = outcome
+    audit["auto_queue_flag_at_decision"] = bool(flag_value)
+    if extras:
+        for k, v in extras.items():
+            audit[k] = v
+
+
+def _has_departed_origin_event(audit: Dict[str, Any]) -> bool:
+    """GUARANTEE-11: first Departed-origin event detection. Scans
+    audit['tracking_events'] in audit-record order; returns True if any
+    event normalizes to one of {DEPARTED_ORIGIN_HUB, DEPARTED_ORIGIN}."""
+    for ev in audit.get("tracking_events") or []:
+        code = (ev.get("normalized_stage") or "").strip().upper()
+        if code in _DEPARTED_ORIGIN_CODES:
+            return True
+    return False
+
+
+def _already_shipped(audit: Dict[str, Any]) -> bool:
+    """GUARANTEE-12 / Check 9: True when the shipment has progressed past
+    Departed-origin (DHL has taken it / customs already engaged)."""
+    if (audit.get("dhl_email") or {}).get("received"):
+        return True
+    if (audit.get("dhl_documents_received") or {}).get("received"):
+        return True
+    for ev in audit.get("tracking_events") or []:
+        code = (ev.get("normalized_stage") or "").strip().upper()
+        if code in _ALREADY_SHIPPED_TRACKING_CODES:
+            return True
+    return False
+
+
+def _run_path_a_validation_gate(
+    audit: Dict[str, Any], batch_id: str,
+) -> tuple[bool, Optional[str]]:
+    """Eleven-check validation gate. Returns (ok, failure_reason).
+    Failure reasons are stable strings the proposal carries as
+    validation_failure_reason. Fail-fast: returns on first failure."""
+    from .clearance_path_alias import is_dhl_self_clearance
+    from ..config.email_routing import resolve_dhl_to, resolve_dhl_cc
+
+    cd = audit.get("clearance_decision") or {}
+    if not cd:
+        return False, "validation_failed:clearance_decision_missing"
+
+    if not is_dhl_self_clearance(cd.get("clearance_path")):
+        return False, "validation_failed:not_path_a"
+
+    awb = (
+        audit.get("awb")
+        or audit.get("tracking_no")
+        or audit.get("dhl_awb")
+        or (audit.get("batch_meta") or {}).get("awb")
+        or ""
+    )
+    if not _DHL_AWB_RE.match(awb):
+        return False, "validation_failed:awb_format"
+
+    inv_totals = audit.get("invoice_totals") or {}
+    cif_inv = float(inv_totals.get("total_cif_usd") or 0)
+    cif_ver = float((audit.get("verification") or {}).get("invoice_cif_total_usd") or 0)
+    cif = cif_inv or cif_ver
+    if cif < _VALUE_PLAUSIBILITY_FLOOR_USD:
+        return False, "validation_failed:invoice_value_below_floor"
+
+    # Check 5: value/path consistency. Path A means total < threshold.
+    if cif >= _VALUE_THRESHOLD_USD:
+        log.error(
+            "[%s] auto-queue: value/path inconsistency CIF=%.2f >= %.0f "
+            "but clearance_path=dhl_self_clearance — possible audit corruption",
+            batch_id, cif, _VALUE_THRESHOLD_USD,
+        )
+        return False, "validation_failed:value_path_inconsistency"
+
+    # Check 6: Polish desc PDF exists, non-empty
+    polish_fn = audit.get("polish_desc_filename") or ""
+    if not polish_fn:
+        return False, "validation_failed:polish_desc_missing"
+    polish_path = settings.storage_root / "polish_descriptions" / polish_fn
+    if not polish_path.is_file() or polish_path.stat().st_size <= 0:
+        return False, "validation_failed:polish_desc_missing"
+
+    # Check 7: invoice files
+    inv_dir = settings.storage_root / "outputs" / batch_id / "source" / "invoices"
+    if not inv_dir.is_dir():
+        return False, "validation_failed:invoice_files_missing"
+    inv_pdfs = sorted(inv_dir.glob("*.pdf"))
+    if not inv_pdfs:
+        return False, "validation_failed:invoice_files_missing"
+    for p in inv_pdfs:
+        if not p.is_file():
+            return False, "validation_failed:invoice_files_missing"
+
+    # Check 8: AWB PDF
+    awb_filename = (audit.get("inputs") or {}).get("awb") or ""
+    if not awb_filename:
+        return False, "validation_failed:awb_pdf_missing"
+    awb_path = settings.storage_root / "outputs" / batch_id / "source" / "awb" / awb_filename
+    if not awb_path.is_file():
+        return False, "validation_failed:awb_pdf_missing"
+
+    # Check 9: not already shipped
+    if _already_shipped(audit):
+        return False, "validation_failed:already_shipped"
+
+    # Check 10: recipient resolves AND matches DHL allowlist
+    to_str = resolve_dhl_to()
+    if not to_str:
+        return False, "validation_failed:recipient_not_allowlisted"
+    # resolve_dhl_to returns comma-joined list; allowlist must hold for each
+    for addr in (a.strip() for a in to_str.split(",") if a.strip()):
+        if not _DHL_TO_ALLOWLIST_RE.match(addr):
+            return False, "validation_failed:recipient_not_allowlisted"
+
+    # Check 11: internal CC complete
+    cc_str = resolve_dhl_cc()
+    if not cc_str:
+        return False, "validation_failed:internal_cc_incomplete"
+    cc_addrs = {a.strip().lower() for a in cc_str.split(",") if a.strip()}
+    if not _INTERNAL_CC_REQUIRED.issubset(cc_addrs):
+        return False, "validation_failed:internal_cc_incomplete"
+
+    return True, None
+
+
+def _ensure_path_a_auto_queue(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Phase 2.3 — Path A auto-queue at the first Departed-origin tracking event.
+
+    GUARANTEE-1 / GUARANTEE-4: entire create→approve→queue runs inside a single
+    proposal_write_lock(batch_id) acquisition with audit re-read inside the lock.
+
+    GUARANTEE-7: feature flag read once at entry, captured to local var.
+
+    Outcome dict: {triggered, queued, error, outcome}. Always read-only when
+    feature flag off, when not Path A, when no Departed-origin event, or when
+    auto_queue_started_at marker already set.
+    """
+    from ..api.routes_action_proposals import (
+        create_proposal, _save_audit, _audit_path, _is_auto_actor,
+    )
+    from ..utils.proposal_lock import proposal_write_lock
+    from ..config.email_routing import resolve_dhl_to, resolve_dhl_cc
+    from .clearance_path_alias import is_dhl_self_clearance
+    from .dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+    from .email_service import queue_email
+    from ..core import timeline as tl
+
+    out: Dict[str, Any] = {
+        "triggered": False, "queued": False, "error": None, "outcome": None,
+    }
+    batch_id = audit_path.parent.name
+
+    # GUARANTEE-7 — single read of the flag at entry.
+    flag_on = bool(getattr(settings, "enable_path_a_auto_queue", False))
+
+    # Cheap pre-checks (no lock needed; read-only paths)
+    cd = audit.get("clearance_decision") or {}
+    if not is_dhl_self_clearance(cd.get("clearance_path")):
+        out["outcome"] = "skipped:not_path_a"
+        return out
+    if not _has_departed_origin_event(audit):
+        out["outcome"] = "skipped:no_departed_origin_event"
+        return out
+
+    # Pre-lock idempotency check — performance optimization only. May return
+    # a false-negative (saying "go") under concurrent state changes; the
+    # in-lock re-check on the freshly-loaded audit_locked.get(...) is the
+    # only authoritative idempotency gate.
+    if audit.get("auto_queue_started_at"):
+        out["outcome"] = "skipped:already_fired"
+        return out
+
+    # Flag gate — record decision then return.
+    if not flag_on:
+        out["outcome"] = "skipped:flag_off"
+        try:
+            audit_now = json.loads(audit_path.read_text(encoding="utf-8"))
+            _record_auto_queue_decision(audit_now, outcome="skipped:flag_off",
+                                        flag_value=False)
+            write_json_atomic(audit_path, audit_now)
+        except Exception:
+            pass
+        return out
+
+    # ── GUARANTEE-1 — single critical section ───────────────────────────────
+    with proposal_write_lock(batch_id):
+        # Re-read audit inside the lock (authoritative state).
+        audit_locked = json.loads(audit_path.read_text(encoding="utf-8"))
+
+        # GUARANTEE-4 — re-check idempotency marker inside the lock.
+        if audit_locked.get("auto_queue_started_at"):
+            out["outcome"] = "skipped:already_fired"
+            return out
+
+        # Re-evaluate path/event under fresh state.
+        cd_locked = audit_locked.get("clearance_decision") or {}
+        if not is_dhl_self_clearance(cd_locked.get("clearance_path")):
+            out["outcome"] = "skipped:not_path_a"
+            return out
+        if not _has_departed_origin_event(audit_locked):
+            out["outcome"] = "skipped:no_departed_origin_event"
+            return out
+
+        # GUARANTEE-5 — eleven-check validation gate.
+        ok, fail_reason = _run_path_a_validation_gate(audit_locked, batch_id)
+        if not ok:
+            # Fallback proposal carries validation_failure_reason.
+            try:
+                proposal = create_proposal(
+                    audit         = audit_locked,
+                    batch_id      = batch_id,
+                    proposal_type = "dhl_proactive_dispatch",
+                    reason        = "auto_queue_validation_failed",
+                    confidence    = "high",
+                )
+                proposal["validation_failure_reason"] = fail_reason
+                # Phase 2.3.1 (Finding 2.1): create_proposal dedups by type;
+                # if it returned an existing operator-created proposal, do
+                # NOT clobber the operator's authorship. Only stamp _AUTO_ACTOR
+                # when created_by is empty or already an auto-actor sentinel.
+                _existing_cb = (proposal.get("created_by") or "").strip()
+                if not _existing_cb or _is_auto_actor(_existing_cb):
+                    proposal["created_by"] = _AUTO_ACTOR
+            except Exception as exc:
+                out["error"] = f"fallback_proposal_failed: {exc}"
+            _record_auto_queue_decision(
+                audit_locked, outcome=fail_reason, flag_value=True,
+            )
+            write_json_atomic(audit_path, audit_locked)
+            out["outcome"] = fail_reason
+            return out
+
+        # GUARANTEE-4 — set auto_queue_started_at BEFORE any send action.
+        now_iso = datetime.now(timezone.utc).isoformat()
+        audit_locked["auto_queue_started_at"] = now_iso
+        write_json_atomic(audit_path, audit_locked)
+
+        # ── Build the dispatch package ──────────────────────────────────
+        try:
+            pkg = build_dhl_proactive_dispatch(audit_locked, batch_id)
+        except Exception as exc:
+            log.warning("[%s] auto-queue: builder raised %s", batch_id, exc)
+            audit_locked["auto_queue_failed_at"] = datetime.now(timezone.utc).isoformat()
+            audit_locked["auto_queue_failure_reason"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            _record_auto_queue_decision(
+                audit_locked, outcome=f"builder_raised:{type(exc).__name__}",
+                flag_value=True,
+            )
+            write_json_atomic(audit_path, audit_locked)
+            out["error"] = str(exc)
+            out["outcome"] = f"builder_raised:{type(exc).__name__}"
+            return out
+
+        # GUARANTEE-8 — builder missing check.
+        missing_list = pkg.get("missing") or []
+        if missing_list:
+            reason = "builder_missing:" + ",".join(missing_list)
+            try:
+                proposal = create_proposal(
+                    audit         = audit_locked,
+                    batch_id      = batch_id,
+                    proposal_type = "dhl_proactive_dispatch",
+                    reason        = "auto_queue_builder_missing",
+                    confidence    = "high",
+                )
+                proposal["validation_failure_reason"] = reason
+                # Phase 2.3.1 (Finding 2.1): preserve operator's created_by.
+                _existing_cb = (proposal.get("created_by") or "").strip()
+                if not _existing_cb or _is_auto_actor(_existing_cb):
+                    proposal["created_by"] = _AUTO_ACTOR
+            except Exception as exc:
+                out["error"] = f"fallback_proposal_failed: {exc}"
+            _record_auto_queue_decision(audit_locked, outcome=reason, flag_value=True)
+            write_json_atomic(audit_path, audit_locked)
+            out["outcome"] = reason
+            return out
+
+        # GUARANTEE-6 — recipient allowlist double-check at queue time.
+        resolved_to = resolve_dhl_to()
+        resolved_cc = resolve_dhl_cc()
+        if not resolved_to or any(
+            not _DHL_TO_ALLOWLIST_RE.match(a.strip())
+            for a in resolved_to.split(",") if a.strip()
+        ):
+            reason = "validation_failed:recipient_not_allowlisted"
+            try:
+                proposal = create_proposal(
+                    audit         = audit_locked,
+                    batch_id      = batch_id,
+                    proposal_type = "dhl_proactive_dispatch",
+                    reason        = "auto_queue_recipient_blocked",
+                    confidence    = "high",
+                )
+                proposal["validation_failure_reason"] = reason
+                # Phase 2.3.1 (Finding 2.1): preserve operator's created_by.
+                _existing_cb = (proposal.get("created_by") or "").strip()
+                if not _existing_cb or _is_auto_actor(_existing_cb):
+                    proposal["created_by"] = _AUTO_ACTOR
+            except Exception as exc:
+                out["error"] = f"fallback_proposal_failed: {exc}"
+            _record_auto_queue_decision(audit_locked, outcome=reason, flag_value=True)
+            write_json_atomic(audit_path, audit_locked)
+            out["outcome"] = reason
+            return out
+
+        # ── Create + auto-approve proposal ──────────────────────────────
+        try:
+            proposal = create_proposal(
+                audit         = audit_locked,
+                batch_id      = batch_id,
+                proposal_type = "dhl_proactive_dispatch",
+                reason        = "auto_queue_at_departed_origin",
+                confidence    = "high",
+            )
+            # Phase 2.3.1 (Finding 2.1): preserve operator's created_by if
+            # the dedup returned an existing operator-created proposal.
+            _existing_cb = (proposal.get("created_by") or "").strip()
+            if not _existing_cb or _is_auto_actor(_existing_cb):
+                proposal["created_by"] = _AUTO_ACTOR
+            proposal["approved_by"] = _AUTO_ACTOR
+            proposal["approved_at"] = datetime.now(timezone.utc).isoformat()
+            proposal["status"]      = "approved"
+            proposal["draft"]       = pkg
+            write_json_atomic(audit_path, audit_locked)
+        except Exception as exc:
+            audit_locked["auto_queue_failed_at"] = datetime.now(timezone.utc).isoformat()
+            audit_locked["auto_queue_failure_reason"] = f"create_proposal: {exc}"
+            _record_auto_queue_decision(
+                audit_locked, outcome="create_proposal_failed", flag_value=True,
+            )
+            write_json_atomic(audit_path, audit_locked)
+            out["error"] = str(exc)
+            out["outcome"] = "create_proposal_failed"
+            return out
+
+        out["triggered"] = True
+
+        # ── queue_email ─────────────────────────────────────────────────
+        try:
+            email_id = queue_email(
+                to        = resolved_to,
+                subject   = pkg["subject"],
+                body_html = pkg.get("body_html") or f"<pre>{pkg.get('body_text', '')}</pre>",
+                body_text = pkg.get("body_text", ""),
+                batch_id  = batch_id,
+                cc        = resolved_cc,
+            )
+        except Exception as exc:
+            log.warning("[%s] auto-queue: queue_email raised %s", batch_id, exc)
+            proposal["status"] = "auto_queue_failed"
+            audit_locked["proactive_dispatch_failed_at"] = datetime.now(timezone.utc).isoformat()
+            audit_locked["auto_queue_failed_at"] = audit_locked["proactive_dispatch_failed_at"]
+            audit_locked["auto_queue_failure_reason"] = f"{type(exc).__name__}: {exc}"
+            _record_auto_queue_decision(
+                audit_locked, outcome=f"queue_failed:{type(exc).__name__}",
+                flag_value=True,
+                extras={
+                    "auto_queue_resolved_to":  resolved_to,
+                    "auto_queue_resolved_cc":  resolved_cc,
+                    "auto_queue_actor":        _AUTO_ACTOR,
+                },
+            )
+            write_json_atomic(audit_path, audit_locked)
+            out["error"] = str(exc)
+            out["outcome"] = f"queue_failed:{type(exc).__name__}"
+            return out
+
+        # Success path
+        completion_iso = datetime.now(timezone.utc).isoformat()
+        proposal["status"]    = "queued"
+        proposal["email_id"]  = email_id
+        proposal["queued_at"] = completion_iso
+        audit_locked["proactive_dispatch_sent_at"]   = completion_iso
+        audit_locked["proactive_dispatch_email_id"]  = email_id
+        audit_locked["proactive_dispatch_recipient"] = resolved_to
+        audit_locked["proactive_dispatch_cc"]        = resolved_cc
+        audit_locked["auto_queue_completed_at"]      = completion_iso
+        _record_auto_queue_decision(
+            audit_locked, outcome="fired", flag_value=True,
+            extras={
+                "auto_queue_resolved_to":  resolved_to,
+                "auto_queue_resolved_cc":  resolved_cc,
+                "auto_queue_actor":        _AUTO_ACTOR,
+            },
+        )
+        write_json_atomic(audit_path, audit_locked)
+
+        try:
+            tl.log_event(
+                audit_path,
+                "path_a_auto_queue_fired",
+                "monitor",
+                "active_shipment_monitor",
+                detail={
+                    "batch_id":   batch_id,
+                    "email_id":   email_id,
+                    "to":         resolved_to,
+                    "actor":      _AUTO_ACTOR,
+                },
+            )
+        except Exception:
+            pass
+
+        out["queued"] = True
+        out["outcome"] = "fired"
+        out["email_id"] = email_id
+        return out
+
+
+def _ensure_polish_description(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Auto-generate the Polish customs description PDF for Path A shipments
+    after upload. Spec: docs/dhl_clearance_paths.md A1 ("Operator action
+    or auto after upload"). Phase 2.1 implements the auto-after-upload
+    branch as an audit-state-observer.
+
+    Conditions (all must hold):
+      - clearance_decision present (classification has run)
+      - clearance_path normalizes to dhl_self_clearance (Path A)
+      - polish_desc_filename not yet set (idempotency)
+      - no prior polish_desc_generation_error marker (operator must
+        explicitly retry on failure — see dashboard retry UX)
+      - AWB resolvable
+      - CIF non-zero (parser must have produced valid invoice values)
+
+    On success: writes audit.polish_desc_filename / polish_desc_path /
+    polish_desc_generated_at and logs `polish_description_generated_auto`.
+    On failure: writes audit.polish_desc_generation_error structured marker;
+    does not raise; does not retry.
+    Read-only when path != Path A.
+    """
+    out: Dict[str, Any] = {"generated": False, "skipped": True, "error": None}
+
+    cd = audit.get("clearance_decision") or {}
+    if not cd:
+        return out
+    if not is_dhl_self_clearance(cd.get("clearance_path")):
+        return out
+    if audit.get("polish_desc_filename"):
+        return out
+    if audit.get("polish_desc_generation_error"):
+        return out
+
+    awb = (
+        audit.get("awb")
+        or audit.get("tracking_no")
+        or audit.get("dhl_awb")
+        or (audit.get("batch_meta") or {}).get("awb")
+        or ""
+    )
+    if not awb:
+        return out
+
+    inv_totals = audit.get("invoice_totals") or {}
+    cif_inv    = float(inv_totals.get("total_cif_usd") or 0)
+    cif_ver    = float((audit.get("verification") or {}).get("invoice_cif_total_usd") or 0)
+    if cif_inv == 0.0 and cif_ver == 0.0:
+        return out
+
+    out["skipped"] = False
+    batch_id = audit_path.parent.name
+    out_dir  = settings.storage_root / "polish_descriptions"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from customs_description_engine import generate_customs_description_package
+        pkg = generate_customs_description_package(
+            batch=audit, awb=awb, output_dir=str(out_dir),
+        )
+        pdf_result = (pkg or {}).get("pdf") or {}
+        if not pdf_result.get("generated"):
+            raise RuntimeError(
+                f"PDF generation reported failure: {pdf_result.get('error', 'unknown')}"
+            )
+
+        audit["polish_desc_filename"]     = pdf_result.get("filename")
+        audit["polish_desc_path"]         = pdf_result.get("output_path")
+        audit["polish_desc_generated_at"] = datetime.now(timezone.utc).isoformat()
+        json_result = (pkg or {}).get("json") or {}
+        if json_result.get("generated"):
+            audit["sad_ready_filename"] = json_result.get("filename")
+            audit["sad_ready_path"]     = json_result.get("output_path")
+        write_json_atomic(audit_path, audit)
+        out["generated"] = True
+        out["filename"]  = pdf_result.get("filename")
+
+        try:
+            tl.log_event(
+                audit_path,
+                "polish_description_generated_auto",
+                "monitor",
+                "active_shipment_monitor",
+                detail={"awb": awb, "filename": pdf_result.get("filename")},
+            )
+        except Exception:
+            pass
+
+    except Exception as exc:
+        log.warning(
+            "[%s] Auto-A1 Polish description generation failed (AWB=%s): %s",
+            batch_id, awb, exc,
+        )
+        audit["polish_desc_generation_error"] = {
+            "timestamp":      datetime.now(timezone.utc).isoformat(),
+            "reason":         str(exc),
+            "exception_type": type(exc).__name__,
+        }
+        try:
+            write_json_atomic(audit_path, audit)
+        except Exception:
+            pass
+        out["error"] = str(exc)
+
+    return out
+
+
 def _ensure_agency_forward_after_dhl(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
     """
     Auto-forward DHL-received customs documents to the agency (Piotr @ ACS,
@@ -512,7 +1223,7 @@ def _ensure_agency_forward_after_dhl(audit_path: Path, audit: Dict[str, Any]) ->
     out: Dict[str, Any] = {"built": False, "sent": False, "error": None}
 
     cd       = audit.get("clearance_decision") or {}
-    is_high  = cd.get("clearance_path") == "external_agency_clearance"
+    is_high  = is_agency_clearance(cd.get("clearance_path"))
     dhl_recv = bool((audit.get("dhl_email") or {}).get("received"))
     docs     = audit.get("dhl_documents_received") or {}
     files    = docs.get("files") or []
@@ -532,124 +1243,163 @@ def _ensure_agency_forward_after_dhl(audit_path: Path, audit: Dict[str, Any]) ->
         return out
 
     # Hard-stop: block retries that slip past the outer `already` flag.
-    # Covers two cases:
+    # Covers four cases (Phase 1.1.5 triple-check + Phase 3.2.x pre-marker):
     #   1. sent=True + provider_message_id → confirmed delivered
     #   2. email_id present → queued (SMTP pending or already processed)
+    #   3. build_started_at set → critical section was entered (handles
+    #      crash mid-fire; matches B2's pattern from Phase 3.2)
     _existing_fwd = audit.get("agency_forward_after_dhl") or {}
     if _existing_fwd.get("sent") and _existing_fwd.get("provider_message_id"):
         return out
     if _existing_fwd.get("email_id"):
         return out
+    if _existing_fwd.get("build_started_at"):
+        return out
 
-    try:
-        from .agency_forward_after_dhl_builder import build_agency_forward_after_dhl
-        from .email_service                    import queue_email
-        from .email_sender                     import send_queued_email, _smtp_configured
+    # ── Phase 3.2.x — single critical section ────────────────────────────
+    # Wrap build → queue → audit-write in proposal_write_lock(batch_id) so
+    # parallel sweeps cannot double-fire the forward email. Pre-marker
+    # (build_started_at) written inside the lock BEFORE queue_email so a
+    # crash mid-fire blocks future re-queues. Mirrors Phase 3.2's B2
+    # observer pattern.
+    from ..utils.proposal_lock import proposal_write_lock as _b4_lock
+    batch_id_b4 = audit_path.parent.name
 
-        pkg = build_agency_forward_after_dhl(audit, audit_path.parent.name)
-        if pkg.get("error"):
-            out["error"] = pkg["error"]
-            out["error_detail"] = pkg.get("error_detail")
+    with _b4_lock(batch_id_b4):
+        # Re-read audit inside the lock (authoritative state).
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+
+        # Re-check gates under fresh state — another sweep may have fired
+        # between our pre-lock read and lock acquisition.
+        _existing_fwd_locked = audit.get("agency_forward_after_dhl") or {}
+        if _existing_fwd_locked.get("sent") and \
+                _existing_fwd_locked.get("provider_message_id"):
+            return out
+        if _existing_fwd_locked.get("email_id"):
+            return out
+        if _existing_fwd_locked.get("build_started_at"):
             return out
 
-        existing_attach = [a for a in pkg.get("attachments", [])
-                           if Path(a.get("path", "")).is_file()]
-        if not existing_attach:
-            out["error"] = "no_attachments_on_disk"
-            return out
-
-        email_id = queue_email(
-            to=pkg["to"], subject=pkg["subject"],
-            body_html=pkg["body_html"], body_text=pkg["body_text"],
-            batch_id=audit_path.parent.name,
-            cc=pkg.get("cc", ""),
-            from_address=pkg.get("from_address", ""),
-            email_type=pkg.get("email_type", "agency_forward_after_dhl"),
-        )
-
-        now_iso = datetime.now(timezone.utc).isoformat()
-        send_outcome = None
-        if _smtp_configured():
-            send_outcome = send_queued_email(email_id, method="smtp")
-
-        # Persist forward state (sent only if SMTP success)
-        sent_ok = bool(send_outcome and send_outcome.get("ok") and send_outcome.get("status") == "sent")
-        audit["agency_forward_after_dhl"] = {
-            "from_address":        pkg.get("from_address", ""),
-            "to":                  pkg["to"],
-            "to_list":             pkg.get("to_list", []),
-            "cc":                  pkg.get("cc", ""),
-            "cc_list":             pkg.get("cc_list", []),
-            "subject":             pkg["subject"],
-            "ticket":              pkg.get("ticket", ""),
-            "attachments":         existing_attach,
-            "attachments_count":   len(existing_attach),
-            "email_id":            email_id,
-            "status":              "sent" if sent_ok else "queued",
-            "sent":                sent_ok,
-            "sent_at":             now_iso if sent_ok else None,
-            "provider_message_id": (send_outcome or {}).get("provider_message_id"),
-            "queued_at":           now_iso,
-            "source":              "monitor_auto_after_dhl_documents",
-            "send_verified":       sent_ok,
-        }
+        # Pre-marker: write BEFORE the build call so a crash anywhere in
+        # the build → queue path leaves the marker on disk and blocks
+        # re-fires. The final audit write (after queue success) preserves
+        # build_started_at alongside status/email_id.
+        pre_marker_iso = datetime.now(timezone.utc).isoformat()
+        audit.setdefault("agency_forward_after_dhl", {})
+        audit["agency_forward_after_dhl"]["build_started_at"] = pre_marker_iso
         write_json_atomic(audit_path, audit)
 
-        # ── Mirror into email evidence store ─────────────────────────────────
-        _awb_fwd = str(audit.get("awb") or audit.get("tracking_no") or "")
-        _batch_id_fwd = audit_path.parent.name
-        if _awb_fwd:
-            try:
-                from .email_evidence_store import link_batch as _evs_link, save_message as _evs_save
-                _evs_link(_awb_fwd, _batch_id_fwd)
-                _evs_save(_awb_fwd, {
-                    "message_id":      f"op_agency_forward:{_batch_id_fwd}",
-                    "thread_id":       f"op_agency_forward:{_batch_id_fwd}",
-                    "direction":       "outgoing",
-                    "sender":          pkg.get("from_address", "import@estrellajewels.eu"),
-                    "to":              pkg.get("to_list") or ([pkg["to"]] if pkg.get("to") else []),
-                    "cc":              pkg.get("cc_list") or ([pkg["cc"]] if pkg.get("cc") else []),
-                    "subject":         pkg["subject"],
-                    "body_text":       f"Agency forward sent for batch {_batch_id_fwd}.",
-                    "timestamp":       now_iso,
-                    "event_type":      "agency_forward",
-                    "delivery_status": "sent" if sent_ok else "queued",
-                    "matched_identifiers": {"awb": True},
-                    "attachments":     [{"filename": a.get("name", Path(a.get("path","")).name),
-                                         "document_type": "other", "size": None, "sha256": None}
-                                        for a in existing_attach],
-                    "source":          "monitor_auto",
-                }, source="monitor_auto")
-            except Exception as _evs_exc:
-                log.warning("[agency_forward] evidence store write failed (non-fatal): %s", _evs_exc)
+        try:
+            from .agency_forward_after_dhl_builder import build_agency_forward_after_dhl
+            from .email_service                    import queue_email
+            from .email_sender                     import send_queued_email, _smtp_configured
 
-        out["built"]    = True
-        out["email_id"] = email_id
-        out["sent"]     = sent_ok
-        if sent_ok:
-            out["provider_message_id"] = send_outcome.get("provider_message_id")
-            try:
-                tl.log_event(audit_path, "agency_forward_after_dhl_sent",
-                             "monitor", "active_shipment_monitor",
-                             detail={"email_id":            email_id,
-                                     "provider_message_id": send_outcome.get("provider_message_id"),
-                                     "attachments_count":   len(existing_attach)})
-            except Exception:
-                pass
-        else:
-            out["error"] = (send_outcome or {}).get("error", "smtp_not_configured")
-            try:
-                tl.log_event(audit_path, "agency_forward_after_dhl_queued",
-                             "monitor", "active_shipment_monitor",
-                             detail={"email_id": email_id,
-                                     "reason":   out["error"]})
-            except Exception:
-                pass
+            pkg = build_agency_forward_after_dhl(audit, audit_path.parent.name)
+            if pkg.get("error"):
+                out["error"] = pkg["error"]
+                out["error_detail"] = pkg.get("error_detail")
+                return out
 
-    except Exception as exc:
-        out["error"] = f"forward_failed: {exc}"
+            existing_attach = [a for a in pkg.get("attachments", [])
+                               if Path(a.get("path", "")).is_file()]
+            if not existing_attach:
+                out["error"] = "no_attachments_on_disk"
+                return out
 
-    return out
+            email_id = queue_email(
+                to=pkg["to"], subject=pkg["subject"],
+                body_html=pkg["body_html"], body_text=pkg["body_text"],
+                batch_id=audit_path.parent.name,
+                cc=pkg.get("cc", ""),
+                from_address=pkg.get("from_address", ""),
+                email_type=pkg.get("email_type", "agency_forward_after_dhl"),
+            )
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            send_outcome = None
+            if _smtp_configured():
+                send_outcome = send_queued_email(email_id, method="smtp")
+
+            # Persist forward state (sent only if SMTP success). Preserve
+            # build_started_at alongside the outcome fields.
+            sent_ok = bool(send_outcome and send_outcome.get("ok") and send_outcome.get("status") == "sent")
+            audit["agency_forward_after_dhl"] = {
+                "from_address":        pkg.get("from_address", ""),
+                "to":                  pkg["to"],
+                "to_list":             pkg.get("to_list", []),
+                "cc":                  pkg.get("cc", ""),
+                "cc_list":             pkg.get("cc_list", []),
+                "subject":             pkg["subject"],
+                "ticket":              pkg.get("ticket", ""),
+                "attachments":         existing_attach,
+                "attachments_count":   len(existing_attach),
+                "email_id":            email_id,
+                "status":              "sent" if sent_ok else "queued",
+                "sent":                sent_ok,
+                "sent_at":             now_iso if sent_ok else None,
+                "provider_message_id": (send_outcome or {}).get("provider_message_id"),
+                "queued_at":           now_iso,
+                "source":              "monitor_auto_after_dhl_documents",
+                "send_verified":       sent_ok,
+                "build_started_at":    pre_marker_iso,
+            }
+            write_json_atomic(audit_path, audit)
+
+            # ── Mirror into email evidence store ─────────────────────────
+            _awb_fwd = str(audit.get("awb") or audit.get("tracking_no") or "")
+            _batch_id_fwd = audit_path.parent.name
+            if _awb_fwd:
+                try:
+                    from .email_evidence_store import link_batch as _evs_link, save_message as _evs_save
+                    _evs_link(_awb_fwd, _batch_id_fwd)
+                    _evs_save(_awb_fwd, {
+                        "message_id":      f"op_agency_forward:{_batch_id_fwd}",
+                        "thread_id":       f"op_agency_forward:{_batch_id_fwd}",
+                        "direction":       "outgoing",
+                        "sender":          pkg.get("from_address", "import@estrellajewels.eu"),
+                        "to":              pkg.get("to_list") or ([pkg["to"]] if pkg.get("to") else []),
+                        "cc":              pkg.get("cc_list") or ([pkg["cc"]] if pkg.get("cc") else []),
+                        "subject":         pkg["subject"],
+                        "body_text":       f"Agency forward sent for batch {_batch_id_fwd}.",
+                        "timestamp":       now_iso,
+                        "event_type":      "agency_forward",
+                        "delivery_status": "sent" if sent_ok else "queued",
+                        "matched_identifiers": {"awb": True},
+                        "attachments":     [{"filename": a.get("name", Path(a.get("path","")).name),
+                                             "document_type": "other", "size": None, "sha256": None}
+                                            for a in existing_attach],
+                        "source":          "monitor_auto",
+                    }, source="monitor_auto")
+                except Exception as _evs_exc:
+                    log.warning("[agency_forward] evidence store write failed (non-fatal): %s", _evs_exc)
+
+            out["built"]    = True
+            out["email_id"] = email_id
+            out["sent"]     = sent_ok
+            if sent_ok:
+                out["provider_message_id"] = send_outcome.get("provider_message_id")
+                try:
+                    tl.log_event(audit_path, "agency_forward_after_dhl_sent",
+                                 "monitor", "active_shipment_monitor",
+                                 detail={"email_id":            email_id,
+                                         "provider_message_id": send_outcome.get("provider_message_id"),
+                                         "attachments_count":   len(existing_attach)})
+                except Exception:
+                    pass
+            else:
+                out["error"] = (send_outcome or {}).get("error", "smtp_not_configured")
+                try:
+                    tl.log_event(audit_path, "agency_forward_after_dhl_queued",
+                                 "monitor", "active_shipment_monitor",
+                                 detail={"email_id": email_id,
+                                         "reason":   out["error"]})
+                except Exception:
+                    pass
+
+        except Exception as exc:
+            out["error"] = f"forward_failed: {exc}"
+
+        return out
 
 
 def _process_agency_sla(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
@@ -1152,6 +1902,27 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
                 audit["pending_triggers"] = pending
                 write_json_atomic(audit_path, audit)
                 action["pending_trigger"] = pending["dhl_email_check"]
+
+        # 5a-bis. Auto-A1 — Polish description PDF for Path A shipments after
+        # upload. Read-only when path != Path A. Idempotent.
+        try:
+            audit_for_a1 = json.loads(audit_path.read_text(encoding="utf-8"))
+            a1_result = _ensure_polish_description(audit_path, audit_for_a1)
+            if a1_result.get("generated") or a1_result.get("error"):
+                action["polish_description_auto"] = a1_result
+        except Exception as exc:
+            action["polish_description_auto_error"] = str(exc)
+
+        # 5a-bis-2. Phase 2.3 — Path A auto-queue at Departed origin.
+        # Read-only when feature flag off, when not Path A, when no
+        # Departed-origin event yet, or when already fired.
+        try:
+            audit_for_p23 = json.loads(audit_path.read_text(encoding="utf-8"))
+            p23_result = _ensure_path_a_auto_queue(audit_path, audit_for_p23)
+            if p23_result.get("triggered") or p23_result.get("error"):
+                action["path_a_auto_queue"] = p23_result
+        except Exception as exc:
+            action["path_a_auto_queue_error"] = str(exc)
 
         # 5b. Auto-build + send DHL reply for high-value shipments with email
         try:

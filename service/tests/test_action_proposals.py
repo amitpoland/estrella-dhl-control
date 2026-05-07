@@ -75,7 +75,7 @@ def _make_batch(
         "clearance_decision": {
             "total_value_usd": 800.0,
             "threshold_usd":   2500.0,
-            "clearance_path":  "carrier_self_clearance",
+            "clearance_path":  "dhl_self_clearance",
             "require_dsk":     False,
         },
         "timeline": [],
@@ -163,6 +163,87 @@ class TestProposalCreation:
         new = generate_action_proposals(audit, bid, sug)
 
         assert len(new) == 0
+
+
+# ── Test 1.5: Phase 2.2 — validation_failure_reason schema field ─────────────
+
+class TestValidationFailureReasonField:
+    """Pin the additive `validation_failure_reason` field on the proposal
+    payload schema. Phase 2.3 will populate this field from the auto-queue
+    validation gate; Phase 2.2 only lands the schema slot with default None."""
+
+    def test_field_present_default_none_on_creation(self, tmp_path):
+        bid, _, ap = _make_batch(tmp_path)
+        audit = _read_audit(ap)
+
+        from app.api.routes_action_proposals import create_proposal
+        prop = create_proposal(audit, bid, "dhl_proactive_dispatch",
+                               "operator_initiated", "high")
+
+        assert "validation_failure_reason" in prop
+        assert prop["validation_failure_reason"] is None
+
+    def test_field_present_on_all_proposal_types(self, tmp_path):
+        """Field is added uniformly — all proposal types get it,
+        not just dhl_proactive_dispatch."""
+        bid, _, ap = _make_batch(tmp_path)
+        audit = _read_audit(ap)
+
+        from app.api.routes_action_proposals import create_proposal
+        for ptype in ("dhl_followup", "agency_followup", "dhl_dsk_transfer",
+                      "carrier_description_reply", "duty_payment_followup",
+                      "dhl_proactive_dispatch"):
+            prop = create_proposal(audit, bid, ptype, "reason", "medium")
+            assert "validation_failure_reason" in prop, \
+                f"missing field for type {ptype!r}"
+            assert prop["validation_failure_reason"] is None
+
+    def test_field_round_trip_when_set_to_string(self, tmp_path):
+        """Setting the field to a string value persists through audit
+        write+read (JSON round-trip via plain dict storage)."""
+        import json
+        bid, _, ap = _make_batch(tmp_path)
+        audit = _read_audit(ap)
+
+        from app.api.routes_action_proposals import create_proposal
+        prop = create_proposal(audit, bid, "dhl_proactive_dispatch",
+                               "operator_initiated", "high")
+        prop["validation_failure_reason"] = "Polish description PDF missing on disk"
+
+        # Persist + reload
+        ap.write_text(json.dumps(audit), encoding="utf-8")
+        reloaded = json.loads(ap.read_text(encoding="utf-8"))
+        reloaded_prop = next(p for p in reloaded["action_proposals"]
+                             if p["proposal_id"] == prop["proposal_id"])
+        assert reloaded_prop["validation_failure_reason"] == \
+            "Polish description PDF missing on disk"
+
+    def test_legacy_proposal_without_field_deserializes_cleanly(self, tmp_path):
+        """A pre-Phase-2.2 proposal stored without the field reads
+        back as missing-key; .get() returns None (backward-compat)."""
+        import json, uuid
+        bid, _, ap = _make_batch(tmp_path)
+        audit = _read_audit(ap)
+        # Inject a legacy-shape proposal directly (no validation_failure_reason)
+        audit.setdefault("action_proposals", []).append({
+            "proposal_id":   str(uuid.uuid4()),
+            "type":          "dhl_proactive_dispatch",
+            "batch_id":      bid,
+            "status":        "pending_review",
+            "reason":        "legacy",
+            "confidence":    "high",
+            "draft":         {},
+            "created_at":    "2026-01-01T00:00:00+00:00",
+            # No validation_failure_reason key — legacy data.
+        })
+        ap.write_text(json.dumps(audit), encoding="utf-8")
+        reloaded = json.loads(ap.read_text(encoding="utf-8"))
+        legacy = reloaded["action_proposals"][-1]
+
+        # .get() handles missing-key cleanly (the standard read pattern)
+        assert legacy.get("validation_failure_reason") is None
+        # And direct membership check is False
+        assert "validation_failure_reason" not in legacy
 
 
 # ── Test 2: Deduplication ─────────────────────────────────────────────────────
@@ -331,7 +412,7 @@ class TestValueGuards:
         bid, _, ap = _make_batch(tmp_path, extra={
             "clearance_decision": {
                 "total_value_usd": 5000.0,
-                "clearance_path":  "external_agency_clearance",
+                "clearance_path":  "agency_clearance",
                 "require_dsk":     True,
             }
         })
@@ -355,7 +436,7 @@ class TestValueGuards:
         bid, _, ap = _make_batch(tmp_path, extra={
             "clearance_decision": {
                 "total_value_usd": 800.0,
-                "clearance_path":  "carrier_self_clearance",
+                "clearance_path":  "dhl_self_clearance",
                 "require_dsk":     False,
             }
         })
@@ -379,7 +460,7 @@ class TestValueGuards:
         bid, _, ap = _make_batch(tmp_path, extra={
             "clearance_decision": {
                 "total_value_usd": 800.0,
-                "clearance_path":  "carrier_self_clearance",
+                "clearance_path":  "dhl_self_clearance",
                 "require_dsk":     False,
             }
         })
@@ -394,54 +475,6 @@ class TestValueGuards:
         prop["override_value_check"] = True
 
         _assert_can_queue(prop, audit)  # must not raise
-
-
-# ── Test 8: Agency clearance email recipients and attachments ─────────────────
-
-class TestAgencyEmailDraft:
-    def test_agency_clearance_email_recipients(self, tmp_path):
-        """agency_clearance_email draft has agency + Ganther + internal CC."""
-        bid, batch_dir, ap = _make_batch(tmp_path, create_files=True, extra={
-            "polish_desc_filename": "desc_PL.pdf",
-            "dsk_filename":         "dsk.pdf",
-        })
-        audit = _read_audit(ap)
-
-        from app.services.action_email_builder import build_email_draft
-        draft = build_email_draft("agency_clearance_email", audit)
-
-        assert "piotr@acspedycja.pl" in draft["to"]
-        assert "ciagarlak@ganther.com.pl" in draft["cc"]
-        assert "import@estrellajewels.eu" in draft["cc"]
-
-    def test_agency_clearance_email_attachments_included(self, tmp_path):
-        """Files that exist on disk are included as attachments."""
-        bid, batch_dir, ap = _make_batch(tmp_path, create_files=True, extra={
-            "polish_desc_filename": "desc_PL.pdf",
-            "dsk_filename":         "dsk.pdf",
-        })
-        audit = _read_audit(ap)
-
-        from app.services.action_email_builder import build_email_draft
-        draft = build_email_draft("agency_clearance_email", audit)
-
-        labels = [a["label"] for a in draft.get("attachments", [])]
-        assert "Polish description" in labels
-        assert "DSK" in labels
-
-    def test_missing_files_not_in_attachments(self, tmp_path):
-        """Files that don't exist on disk are not included as attachments."""
-        bid, batch_dir, ap = _make_batch(tmp_path, extra={
-            "polish_desc_filename": "missing_desc.pdf",
-            "dsk_filename":         "missing_dsk.pdf",
-        })
-        audit = _read_audit(ap)
-
-        from app.services.action_email_builder import build_email_draft
-        draft = build_email_draft("agency_clearance_email", audit)
-
-        # No attachments since files don't exist
-        assert draft["attachments"] == []
 
 
 # ── Test 9: Reject proposal blocks queue ──────────────────────────────────────

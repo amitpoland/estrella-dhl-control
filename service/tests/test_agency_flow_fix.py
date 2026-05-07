@@ -24,7 +24,7 @@ def test_dhl_email_guard_skipped_for_agency_path():
 
     # The relaxed-guard block must reference external_agency_clearance
     # AND wrap guard_dhl_requires_email in a conditional
-    assert "external_agency_clearance" in src
+    assert "agency_clearance" in src
     # Find the generate-description handler section (decorator, not docstring)
     idx = src.find('@router.post("/generate-description/')
     assert idx > 0, "generate-description route decorator not found"
@@ -33,7 +33,7 @@ def test_dhl_email_guard_skipped_for_agency_path():
     assert "_is_agency_path" in section
     assert "if not _is_agency_path" in section
     # And the relaxed-guard comment must be present (documents intent)
-    assert "RELAXED" in section or "external_agency_clearance" in section
+    assert "RELAXED" in section or "agency_clearance" in section
 
 
 def test_auto_agency_trigger_block_present():

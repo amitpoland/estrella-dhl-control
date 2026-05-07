@@ -423,16 +423,48 @@ def test_service_invoice_vendor_classification(tmp_path, monkeypatch):
 
 # ── Closure engine ───────────────────────────────────────────────────────────
 
-def test_closure_not_ready_when_missing_anything(tmp_path, monkeypatch):
-    from app.services import shipment_closure as sc
+def test_closure_blocked_when_customs_docs_missing(tmp_path, monkeypatch):
+    """customs_docs.received is a hard blocker — closure must not proceed without it."""
     from app.services.shipment_closure import evaluate_closure
-    audit = {"customs_docs": {"received": True},
-             "polish_desc_filename": "x.pdf",
-             "agency_invoice_received": True,
-             "dhl_invoice_received": False}
+    audit = {"pz_generated": True, "agency_invoice_received": True, "dhl_invoice_received": True}
     d = evaluate_closure(audit)
     assert d["ready"] is False
-    assert "dhl_invoice_received" in d["missing"]
+    assert "customs_docs_received" in d["missing"]
+    assert "agency_invoice_received" not in d["missing"]
+    assert "dhl_invoice_received" not in d["missing"]
+
+
+def test_closure_blocked_when_pz_missing(tmp_path, monkeypatch):
+    """pz_generated is a hard blocker — closure must not proceed without it."""
+    from app.services.shipment_closure import evaluate_closure
+    audit = {"customs_docs": {"received": True}, "agency_invoice_received": True}
+    d = evaluate_closure(audit)
+    assert d["ready"] is False
+    assert "pz_generated" in d["missing"]
+
+
+def test_closure_ready_with_only_customs_and_pz(tmp_path, monkeypatch):
+    """Closure must be ready when customs+PZ present, even if invoices are missing."""
+    from app.services.shipment_closure import evaluate_closure
+    audit = {"customs_docs": {"received": True}, "pz_generated": True}
+    d = evaluate_closure(audit)
+    assert d["ready"] is True
+    assert d["missing"] == []
+    assert d["invoice_status"] == "pending_accounting"
+    assert d["accounting_followup_required"] is True
+    assert d["accounting_checks"]["agency_invoice_received"] is False
+    assert d["accounting_checks"]["dhl_invoice_received"] is False
+
+
+def test_closure_invoice_status_received_when_both_present(tmp_path, monkeypatch):
+    """invoice_status=received and accounting_followup_required=False when both invoices set."""
+    from app.services.shipment_closure import evaluate_closure
+    audit = {"customs_docs": {"received": True}, "pz_generated": True,
+             "agency_invoice_received": True, "dhl_invoice_received": True}
+    d = evaluate_closure(audit)
+    assert d["ready"] is True
+    assert d["invoice_status"] == "received"
+    assert d["accounting_followup_required"] is False
 
 
 def test_closure_ready_when_all_true(tmp_path, monkeypatch):
@@ -450,6 +482,28 @@ def test_closure_ready_when_all_true(tmp_path, monkeypatch):
     assert audit_after["status"]               == "completed"
     assert audit_after["ready_for_accounting"] is True
     assert audit_after["closed_at"]
+    assert audit_after["invoice_status"]       == "received"
+    assert audit_after["accounting_followup_required"] is False
+
+
+def test_accounting_followup_written_to_audit_when_invoices_missing(tmp_path, monkeypatch):
+    """apply_closure must write accounting_followup_required=True when invoices absent."""
+    from app.services import shipment_closure as sc
+    monkeypatch.setattr(sc, "settings", _settings(tmp_path))
+    p = _seed_audit(tmp_path, "B_ACCT_PENDING",
+                    customs_docs={"received": True},
+                    pz_generated=True)
+    out = sc.apply_closure(p)
+    assert out["ok"] is True
+    assert out["ready"] is True
+    assert out["accounting_followup_required"] is True
+    assert out["invoice_status"] == "pending_accounting"
+    audit_after = json.loads(p.read_text())
+    assert audit_after["status"]                       == "completed"
+    assert audit_after["accounting_followup_required"] is True
+    assert audit_after["invoice_status"]               == "pending_accounting"
+    assert audit_after["accounting_checks"]["agency_invoice_received"] is False
+    assert audit_after["accounting_checks"]["dhl_invoice_received"]    is False
 
 
 def test_closure_idempotent(tmp_path, monkeypatch):
@@ -475,7 +529,7 @@ def test_no_forward_if_received_but_no_files(tmp_path, monkeypatch):
 
     audit_path = _seed_audit(
         tmp_path, "B_RECV_NODOCS",
-        clearance_decision={"clearance_path": "external_agency_clearance"},
+        clearance_decision={"clearance_path": "agency_clearance"},
         dhl_email={"received": True},
         dhl_documents_received={"received": True, "files": []},
     )
@@ -509,7 +563,7 @@ def test_forward_if_files_present(tmp_path, monkeypatch):
 
     audit_path = _seed_audit(
         tmp_path, "B_FILES_PRESENT",
-        clearance_decision={"clearance_path": "external_agency_clearance"},
+        clearance_decision={"clearance_path": "agency_clearance"},
         dhl_email={"received": True},
         dhl_documents_received={
             "received":    True,
@@ -556,7 +610,7 @@ def test_monitor_starts_agency_sla_after_forward_sent(tmp_path, monkeypatch):
     _seed_audit(tmp_path, "B_FUSED",
                 clearance_status="awaiting_dhl_customs_email",
                 clearance_decision={"total_value_usd": 5000,
-                                    "clearance_path":  "external_agency_clearance"},
+                                    "clearance_path":  "agency_clearance"},
                 agency_forward_after_dhl={"sent": True, "sent_at": "2026-04-29T09:00:00+02:00"})
     out = m.scan_active_shipments()
     a = next(a for a in out["actions"] if a["batch_id"] == "B_FUSED")
@@ -579,7 +633,7 @@ def test_monitor_closes_shipment_when_all_conditions_met(tmp_path, monkeypatch):
     _seed_audit(tmp_path, "B_AUTOCLOSE",
                 clearance_status="awaiting_dhl_customs_email",
                 clearance_decision={"total_value_usd": 5000,
-                                    "clearance_path":  "external_agency_clearance"},
+                                    "clearance_path":  "agency_clearance"},
                 customs_docs={"received": True},
                 polish_desc_filename="x.pdf",
                 agency_invoice_received=True,
@@ -933,7 +987,7 @@ def test_sla_stops_on_sad_received(tmp_path, monkeypatch):
     _seed_audit(tmp_path, "B_SLA_STOP",
                 clearance_status="awaiting_dhl_customs_email",
                 clearance_decision={"total_value_usd": 3000,
-                                    "clearance_path": "external_agency_clearance"},
+                                    "clearance_path": "agency_clearance"},
                 agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T10:00:00+00:00"},
                 agency_sla={"started": True, "started_at": "2026-05-01T10:00:00+00:00"})
 
@@ -964,7 +1018,7 @@ def test_sla_not_stop_if_not_started(tmp_path, monkeypatch):
     _seed_audit(tmp_path, "B_SLA_NOSTOP",
                 clearance_status="awaiting_dhl_customs_email",
                 clearance_decision={"total_value_usd": 3000,
-                                    "clearance_path": "external_agency_clearance"},
+                                    "clearance_path": "agency_clearance"},
                 agency_forward_after_dhl={"sent": False})
 
     m.scan_active_shipments()
@@ -989,7 +1043,7 @@ def test_sla_starts_on_forward_sent(tmp_path, monkeypatch):
     _seed_audit(tmp_path, "B_SLA_START",
                 clearance_status="awaiting_dhl_customs_email",
                 clearance_decision={"total_value_usd": 3000,
-                                    "clearance_path": "external_agency_clearance"},
+                                    "clearance_path": "agency_clearance"},
                 agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T10:00:00+00:00"})
 
     out = m.scan_active_shipments()
@@ -1039,7 +1093,7 @@ def test_sla_not_restart_if_already_started(tmp_path, monkeypatch):
     _seed_audit(tmp_path, "B_SLA_IDEM",
                 clearance_status="awaiting_dhl_customs_email",
                 clearance_decision={"total_value_usd": 3000,
-                                    "clearance_path": "external_agency_clearance"},
+                                    "clearance_path": "agency_clearance"},
                 agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T10:00:00+00:00"},
                 agency_sla={"started": True, "started_at": "2026-05-01T10:00:00+00:00"})
 
@@ -1060,7 +1114,7 @@ def test_forward_uses_evidence_fallback(tmp_path, monkeypatch):
 
     audit_path = _seed_audit(
         tmp_path, "B_EV_FALLBACK",
-        clearance_decision={"clearance_path": "external_agency_clearance"},
+        clearance_decision={"clearance_path": "agency_clearance"},
         dhl_email={"received": True},
         dhl_documents_received={"received": True, "files": []},
     )
@@ -1095,7 +1149,7 @@ def test_no_forward_when_no_files_and_no_evidence(tmp_path, monkeypatch):
 
     audit_path = _seed_audit(
         tmp_path, "B_NO_EV_NO_FILES",
-        clearance_decision={"clearance_path": "external_agency_clearance"},
+        clearance_decision={"clearance_path": "agency_clearance"},
         dhl_email={"received": True},
         dhl_documents_received={"received": True, "files": []},
     )
@@ -1143,7 +1197,7 @@ def test_sla_starts_via_monitor_only(tmp_path, monkeypatch):
         tmp_path, "B_SLA_MONITOR",
         clearance_status="awaiting_agency_customs_docs",
         clearance_decision={"total_value_usd": 5000,
-                            "clearance_path":  "external_agency_clearance"},
+                            "clearance_path":  "agency_clearance"},
         dhl_email={"received": True, "received_at": "2026-05-01T08:00:00+00:00"},
         agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T09:00:00+00:00"},
         # agency_sla intentionally absent — monitor must create it
@@ -1176,7 +1230,7 @@ def test_no_duplicate_sla_start(tmp_path, monkeypatch):
         tmp_path, "B_SLA_IDEM2",
         clearance_status="awaiting_agency_customs_docs",
         clearance_decision={"total_value_usd": 5000,
-                            "clearance_path":  "external_agency_clearance"},
+                            "clearance_path":  "agency_clearance"},
         dhl_email={"received": True, "received_at": "2026-05-01T08:00:00+00:00"},
         agency_forward_after_dhl={"sent": True, "sent_at": "2026-05-01T09:00:00+00:00"},
         agency_sla={"started": True, "started_at": original_started_at},
@@ -1203,7 +1257,7 @@ def test_no_duplicate_forward_if_already_sent(tmp_path, monkeypatch):
 
     audit_path = _seed_audit(
         tmp_path, "B_DUP_SENT",
-        clearance_decision={"clearance_path": "external_agency_clearance"},
+        clearance_decision={"clearance_path": "agency_clearance"},
         dhl_email={"received": True},
         dhl_documents_received={
             "received":    True,
@@ -1245,7 +1299,7 @@ def test_no_duplicate_forward_if_queued(tmp_path, monkeypatch):
 
     audit_path = _seed_audit(
         tmp_path, "B_DUP_QUEUED",
-        clearance_decision={"clearance_path": "external_agency_clearance"},
+        clearance_decision={"clearance_path": "agency_clearance"},
         dhl_email={"received": True},
         dhl_documents_received={
             "received":    True,

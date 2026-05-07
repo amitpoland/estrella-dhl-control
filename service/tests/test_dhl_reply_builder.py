@@ -68,7 +68,7 @@ def _seed_batch(tmp_path: Path, batch_id: str, awb: str = "1012178215",
         "polish_desc_filename": polish_fn,
         "clearance_status": "dhl_email_received",
         "clearance_decision": {"total_value_usd": 10366,
-                               "clearance_path": "external_agency_clearance"},
+                               "clearance_path": "agency_clearance"},
         "dhl_email": {
             "received": True,
             "sender":   "odprawacelna@dhl.com",
@@ -168,6 +168,9 @@ def test_awb_missing_logs_error_and_surfaces(tmp_path, monkeypatch, caplog):
 # ── Active monitor auto-builds DHL reply ─────────────────────────────────────
 
 def test_monitor_auto_builds_dhl_reply_for_high_value(tmp_path, monkeypatch):
+    """Phase 3.2: B2 observer fires only when audit.dsk_filename is set.
+    The seeded batch now includes a generated DSK file on disk to exercise
+    the post-DSK-gate auto-build path."""
     from app.services import active_shipment_monitor as m
     from app.services import ai_bridge as ab
     from app.services import agency_email_builder, dhl_reply_builder, email_service
@@ -177,17 +180,29 @@ def test_monitor_auto_builds_dhl_reply_for_high_value(tmp_path, monkeypatch):
     monkeypatch.setattr(email_service, "settings", _settings(tmp_path))
 
     batch_dir, _ = _seed_batch(tmp_path, "B_AUTO_REPLY")
+    # Phase 3.2 DSK gate: stamp dsk_filename + dsk_path on disk.
+    dsk_dir  = tmp_path / "dsk"
+    dsk_dir.mkdir(parents=True, exist_ok=True)
+    dsk_file = dsk_dir / "DSK_1012178215_07-05-2026.pdf"
+    dsk_file.write_bytes(b"%PDF DSK")
+    audit_path = batch_dir / "audit.json"
+    audit_now = json.loads(audit_path.read_text())
+    audit_now["dsk_filename"] = dsk_file.name
+    audit_now["dsk_path"]     = str(dsk_file)
+    audit_path.write_text(json.dumps(audit_now), encoding="utf-8")
+
     out = m.scan_active_shipments()
     a = next(a for a in out["actions"] if a["batch_id"] == "B_AUTO_REPLY")
     assert a.get("dhl_reply", {}).get("built") is True
 
     # Audit now has dhl_reply_package with status=queued (SMTP not configured in test)
-    audit = json.loads((batch_dir / "audit.json").read_text())
+    audit = json.loads(audit_path.read_text())
     drp = audit.get("dhl_reply_package", {})
     assert drp.get("status") == "queued"
     assert drp.get("from_address") == "import@estrellajewels.eu"
     assert drp.get("ticket")       == "T#1WA2604290000028"
-    assert drp.get("awb_attached") is True
+    # Phase 3.2: B2 attaches DSK only — no AWB attachment, no awb_attached
+    # field on the new builder's envelope.
 
 
 def test_monitor_skips_dhl_reply_when_already_sent(tmp_path, monkeypatch):

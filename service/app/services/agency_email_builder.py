@@ -1,7 +1,9 @@
 """
 agency_email_builder.py — Build the email package for external customs agency.
 
-Used when clearance_decision.clearance_path == "external_agency_clearance"
+Used when clearance_decision.clearance_path normalizes to "agency_clearance"
+(spec name; legacy alias "external_agency_clearance" also accepted via
+clearance_path_alias.is_agency_clearance)
 (shipment value > 2 500 USD).
 
 The package contains:

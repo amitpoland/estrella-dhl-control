@@ -61,7 +61,7 @@ def _make_batch(
         "status":      "processing",
         "clearance_decision": {
             "total_value_usd": 800.0,
-            "clearance_path":  "carrier_self_clearance",
+            "clearance_path":  "dhl_self_clearance",
         },
         "timeline": [],
     }
@@ -303,7 +303,7 @@ class TestCoworkResultEndpoint:
         bid, _, ap = _make_batch(tmp_path, extra={
             "clearance_decision": {
                 "total_value_usd": 1200.0,
-                "clearance_path":  "carrier_self_clearance",
+                "clearance_path":  "dhl_self_clearance",
                 "require_dsk":     False,
             }
         })

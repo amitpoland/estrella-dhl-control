@@ -297,7 +297,7 @@ def _audit_for_agency_forward(storage: Path, batch_id: str, awb: str) -> tuple:
         "awb":      awb,
         "carrier":  "DHL",
         "status":   "blocked",
-        "clearance_decision":     {"clearance_path": "external_agency_clearance"},
+        "clearance_decision":     {"clearance_path": "agency_clearance"},
         "dhl_email":              {"received": True},
         "dhl_documents_received": {
             "received": True,

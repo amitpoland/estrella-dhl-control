@@ -59,7 +59,7 @@ def _make_batch(root: Path, extra: Dict[str, Any] | None = None, batch_id: str |
         "status":      "processing",
         "clearance_decision": {
             "total_value_usd": 800.0,
-            "clearance_path":  "carrier_self_clearance",
+            "clearance_path":  "dhl_self_clearance",
         },
         "timeline": [],
     }
@@ -204,7 +204,7 @@ class TestTrackingUpdateEndpoint:
     def test_update_does_not_touch_clearance_decision(self, tmp_path):
         """Update never modifies clearance_decision."""
         bid, _, ap = _make_batch(tmp_path, extra={
-            "clearance_decision": {"total_value_usd": 1500.0, "clearance_path": "carrier_self_clearance"}
+            "clearance_decision": {"total_value_usd": 1500.0, "clearance_path": "dhl_self_clearance"}
         })
         before = _read_audit(ap)["clearance_decision"]
 

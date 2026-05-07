@@ -155,6 +155,42 @@ _INVOICE_KEYWORDS = ("invoice", "faktur", "rachunek", "service invoice", "vat in
 _DSK_DOCUMENT_TYPES = {"dsk", "sad", "pzc", "duty"}
 _DHL_REQUEST_TOKENS = ("cesja", "request", "podstawienie", "dokumentacj", "tłumaczeni", "opis tow", "broker", "agencj")
 
+# ── DHL customs ticket thread markers ──────────────────────────────────────
+#
+# These markers identify a DHL customs ticket thread from the subject alone.
+# Used as a fallback when the email metadata is missing the recipient list
+# (some scanner code paths drop ``to`` from the projected message dict).
+#
+# A subject like
+#   "Re:T#1WA2605070000083 - Agencja Celna DHL - przesyłka numer: 6049349806"
+# is unambiguously a DHL customs ticket thread and must not fall through to
+# ``other`` just because to_addresses was not captured.
+_DHL_TICKET_PATTERN = re.compile(r"T#[A-Z0-9]{6,}", re.IGNORECASE)
+_DHL_TICKET_THREAD_PHRASES: Tuple[str, ...] = (
+    "agencja celna dhl",
+    "odprawa celna dhl",
+    "dhl customs agency",
+    "przesyłka numer",
+    "przesylka numer",   # accent-stripped variant some clients normalise to
+)
+
+
+def _is_dhl_ticket_thread(subject: str) -> bool:
+    """True when *subject* identifies a DHL customs ticket thread.
+
+    Matches:
+      * a DHL ticket token (``T#1WA...``) anywhere in the subject, or
+      * any of the canonical DHL customs phrases (PL/EN).
+
+    Pure subject-only check — does not look at sender, body, or attachments.
+    """
+    if not subject:
+        return False
+    s = subject.lower()
+    if any(phrase in s for phrase in _DHL_TICKET_THREAD_PHRASES):
+        return True
+    return bool(_DHL_TICKET_PATTERN.search(subject))
+
 
 def _has_attachment_of_types(attachments: Iterable[Any], types: set[str]) -> bool:
     for att in attachments or []:
@@ -200,6 +236,13 @@ def classify_event_type(
             return "our_dhl_reply"
         if "acspedycja.pl" in recipients or "ganther.com.pl" in recipients:
             return "agency_forward"
+        # Fallback — recipients missing or empty (some scanner paths omit
+        # ``to`` from the projected message dict). If the subject identifies
+        # a DHL customs ticket thread, the outgoing message is our reply on
+        # that thread; classify accordingly so ``our_dhl_reply_*`` summary
+        # flags surface in the dashboard.
+        if _is_dhl_ticket_thread(subject):
+            return "our_dhl_reply"
         return "other"
 
     # Incoming
@@ -219,5 +262,12 @@ def classify_event_type(
         if has_dsk_docs:
             return "agency_sad_reply"
         return "agency_sad_reply"   # agency response with no attachments still informational
+
+    # Last-resort fallback for incoming emails from non-trusted senders that
+    # nonetheless carry a DHL customs ticket thread marker in the subject.
+    # This catches the case where the original DHL request lands from a
+    # forwarder or alias that isn't in TRUSTED_SENDERS["dhl"].
+    if direction == "incoming" and _is_dhl_ticket_thread(subject):
+        return "dhl_request"
 
     return "other"

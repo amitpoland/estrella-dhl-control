@@ -102,7 +102,7 @@ def _seed_batch(tmp_path: Path, batch_id: str, awb: str = "9876543210") -> Path:
         "clearance_status":   "awaiting_dhl_customs_email",
         "clearance_decision": {
             "total_value_usd":  8500.00,
-            "clearance_path":   "external_agency_clearance",
+            "clearance_path":   "agency_clearance",
         },
         "invoice_totals":     {"total_cif_usd": 8500.00},
         # normalized events — enables stage-rank gate (Rule 2)

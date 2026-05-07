@@ -72,7 +72,7 @@ def _seed_shipment(tmp_path, batch_id, awb="1012178215", **extra):
         "inputs":      {"awb": awb_filename, "invoices": ["INV-001.pdf"]},
         "clearance_decision": {
             "total_value_usd": 10366,
-            "clearance_path":  "external_agency_clearance",
+            "clearance_path":  "agency_clearance",
         },
     }
     audit.update(extra)

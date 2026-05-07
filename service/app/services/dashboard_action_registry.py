@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
+from .clearance_path_alias import is_agency_clearance
 from .dashboard_action_types import Action, NormalizedState, SECTION_KEYS
 
 
@@ -405,7 +406,7 @@ def _wfirma_actions(s: NormalizedState) -> List[Action]:
 def _cowork_actions(s: NormalizedState) -> List[Action]:
     """Agency clearance flow — visible always, gated by clearance path."""
     out: List[Action] = []
-    is_agency = s.clearance_path == "external_agency_clearance"
+    is_agency = is_agency_clearance(s.clearance_path)
 
     # Build agency package
     build_enabled = is_agency and s.has_polish_description and s.has_sad_pdf and s.has_customs_declaration and not s.pz_generated

@@ -1737,6 +1737,342 @@ def email_evidence_for_batch(batch_id: str) -> Dict[str, Any]:
     }
 
 
+# ── DHL action-state — operator next-action guidance for the email tab ──────
+#
+# Read-only readiness endpoint. Tells the dashboard which single primary
+# button to render in the DHL/Customs section based on:
+#   * audit fields    (clearance_decision.clearance_path,
+#                      customs_package_generated_at,
+#                      proactive_dispatch_*, dsk_*, agency_*)
+#   * action_proposals (existing dhl_proactive_dispatch proposal status)
+#   * evidence summary (dhl_request_received, our_dhl_reply_*)
+#
+# The endpoint NEVER mutates state and NEVER triggers email send. Buttons
+# returned by this endpoint either:
+#   (a) call /api/v1/dhl/generate-customs-package    (creates files, no email)
+#   (b) call /api/v1/dhl/proactive-dispatch          (creates proposal, no queue)
+#   (c) link to the existing approve / queue flow    (queue stays behind
+#                                                     /api/v1/action-proposals/{id}/approve+queue)
+# No other email-send path is exposed by this endpoint.
+
+def _find_active_proactive_proposal(audit: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Most recent dhl_proactive_dispatch proposal in {pending_review, approved, queued}."""
+    proposals = audit.get("action_proposals") or []
+    active = [p for p in proposals
+              if p.get("type") == "dhl_proactive_dispatch"
+              and p.get("status") in ("pending_review", "approved", "queued")]
+    if not active:
+        return None
+    return sorted(active, key=lambda p: p.get("created_at") or "", reverse=True)[0]
+
+
+def _evidence_summary_for(awb: str) -> Dict[str, Any]:
+    """Best-effort load of the email-evidence summary; never raises."""
+    if not awb:
+        return {}
+    try:
+        from ..services import email_evidence_store as evs
+        return (evs.get_by_awb(awb) or {}).get("summary") or {}
+    except Exception:
+        return {}
+
+
+def _compute_dhl_action_state(audit: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Pure-function decision: given an audit dict, return the next-action card
+    payload. State priority is documented inline.
+    """
+    awb       = str(audit.get("awb") or audit.get("tracking_no") or "")
+    batch_id  = audit.get("batch_id") or ""
+    cd        = audit.get("clearance_decision") or {}
+    clearance_path = (cd.get("clearance_path") or "").strip()
+    # Spec/legacy alias normalization — accept both "agency_clearance"
+    # (spec) and "external_agency_clearance" (legacy) etc.
+    from ..services.clearance_path_alias import (
+        is_agency_clearance as _is_agency_clearance,
+    )
+
+    customs_pkg_generated  = bool(audit.get("customs_package_generated_at"))
+    proactive_sent         = bool(audit.get("proactive_dispatch_sent_at"))
+    proactive_failed       = bool(audit.get("proactive_dispatch_failed_at"))
+    proactive_proposal     = _find_active_proactive_proposal(audit)
+    dsk_present            = bool(audit.get("dsk_filename") or audit.get("dsk_reference"))
+    agency_active          = bool(
+        audit.get("agency_name")
+        or (audit.get("agency_reply_package") or {}).get("status")
+        or _is_agency_clearance(clearance_path)
+    )
+    dhl_email_received     = bool((audit.get("dhl_email") or {}).get("received"))
+
+    summary = _evidence_summary_for(awb)
+    dhl_request_received   = bool(summary.get("dhl_request_received"))
+    our_dhl_reply_present  = bool(
+        summary.get("our_dhl_reply_sent")
+        or summary.get("our_dhl_reply_queued")
+    )
+
+    proactive_failed_at = audit.get("proactive_dispatch_failed_at") or None
+    proactive_failure_reason = audit.get("proactive_dispatch_failure_reason") or None
+    if isinstance(proactive_failure_reason, str) and len(proactive_failure_reason) > 200:
+        # Defensive read-side truncation: the audit is already bounded to
+        # ≤200 chars by Slice A's _record_proactive_failure, but we re-bound
+        # in case of legacy data.
+        proactive_failure_reason = proactive_failure_reason[:200]
+
+    detected = {
+        "customs_package_generated":   customs_pkg_generated,
+        "proactive_dispatch_sent":     proactive_sent,
+        # E1-ii: the existing boolean is preserved unchanged for backward
+        # compatibility. Two new sibling fields are added below for the
+        # failure-retry surface.
+        "proactive_dispatch_failed":   proactive_failed,
+        "proactive_dispatch_failed_at":      proactive_failed_at,
+        "proactive_dispatch_failure_reason": proactive_failure_reason,
+        "proactive_proposal":          (
+            None if proactive_proposal is None else {
+                "proposal_id": proactive_proposal.get("proposal_id"),
+                "status":      proactive_proposal.get("status"),
+                "created_by":  proactive_proposal.get("created_by"),
+                "approved_by": proactive_proposal.get("approved_by"),
+            }
+        ),
+        "dhl_request_received":        dhl_request_received,
+        "our_dhl_reply_present":       our_dhl_reply_present,
+        "dsk_generated":               dsk_present,
+        "agency_active":               agency_active,
+        "dhl_email_received":          dhl_email_received,
+        "clearance_path":              clearance_path,
+    }
+
+    # Build the state-summary chips operator sees above the action button.
+    badges: List[Dict[str, str]] = []
+    if our_dhl_reply_present:
+        badges.append({"key": "our_dhl_reply", "tone": "ok",
+                       "label": "Our DHL reply found"})
+    if dhl_request_received:
+        badges.append({"key": "dhl_request", "tone": "ok",
+                       "label": "DHL request found"})
+    elif customs_pkg_generated:
+        badges.append({"key": "dhl_request_missing", "tone": "warn",
+                       "label": "DHL original request not found"})
+    if not customs_pkg_generated:
+        badges.append({"key": "customs_package_missing", "tone": "warn",
+                       "label": "Customs package not generated"})
+    if proactive_sent:
+        badges.append({"key": "proactive_sent", "tone": "ok",
+                       "label": "Proactive package sent"})
+    if proactive_failed:
+        badges.append({"key": "proactive_failed", "tone": "warn",
+                       "label": "Proactive dispatch failed — retry available"})
+    if dsk_present:
+        badges.append({"key": "dsk_generated", "tone": "info",
+                       "label": "DSK generated"})
+    if agency_active:
+        badges.append({"key": "agency_active", "tone": "info",
+                       "label": "Agency clearance path active"})
+
+    info_messages: List[str] = []
+    primary_action: Optional[Dict[str, Any]] = None
+    # Optional state identifier for branches that have no primary_action
+    # but want to be addressable by a stable name. Today only the
+    # awaiting-DHL info-only branch sets this; other info-only branches
+    # leave state_id=None pending a future cycle (B5) to backfill ids.
+    state_id: Optional[str] = None
+
+    # ── Decision priority ───────────────────────────────────────────────────
+    # 1. Agency path active → no proactive dispatch is applicable
+    if agency_active:
+        info_messages.append(
+            "Agency clearance path is active — proactive dispatch flow does "
+            "not apply. Use the existing agency forward UI."
+        )
+    # 2. Customs package missing → generate it first
+    elif not customs_pkg_generated:
+        primary_action = {
+            "id":       "generate_customs_package",
+            "label":    "Generate customs package",
+            "tone":     "primary",
+            "endpoint": f"/api/v1/dhl/generate-customs-package/{batch_id}",
+            "method":   "POST",
+            "body":     {"awb": awb},
+            "reason":   "Customs package has not been generated yet. "
+                        "Generate it before proactive dispatch.",
+            "disabled": not awb,
+            "disabled_reason": "AWB missing on this batch" if not awb else None,
+        }
+    # 3. Proactive proposal already exists → guide through approve/queue lane.
+    #    Retry-failed-queue takes priority over the regular queue branch when
+    #    a previous queue attempt failed and the proposal stayed in "approved"
+    #    state (Slice A failure handler preserves status="approved" so the
+    #    operator can retry).
+    elif proactive_proposal is not None:
+        pid    = proactive_proposal.get("proposal_id")
+        status = proactive_proposal.get("status")
+        if proactive_failed_at and status == "approved":
+            # Failure-retry state (C3): proposal stayed at status="approved"
+            # after queue_email raised in Slice A's failure handler. Operator
+            # retries via the existing /queue endpoint with empty body (C1).
+            #
+            # Badge label is verbatim per C4. The general ``if proactive_failed:``
+            # block higher up already appends a badge with key="proactive_failed",
+            # tone="warn", and the verbatim label — so this branch does NOT
+            # double-append. The ``proactive_failed`` boolean fires on the
+            # same audit field this branch keys off, so the badge is
+            # always present when the retry primary_action is present.
+            #
+            # The Inspect-proposal action is INFO-MESSAGE ONLY (C2) —
+            # no GET on an invented route.
+            #
+            # The action object emits BOTH ``target`` (per the failure-retry
+            # contract) and ``endpoint`` (the wired key the dashboard React
+            # component already consumes for fetch). Both point to the same
+            # /queue URL so the live UI keeps working without JSX edits (C6).
+            info_messages.append(f"Last failure: {proactive_failed_at}")
+            if proactive_failure_reason:
+                info_messages.append(f"Reason: {proactive_failure_reason}")
+            info_messages.append(
+                f"Proposal ID: {pid} — open the Proposals tab to inspect."
+            )
+            _retry_url = f"/api/v1/action-proposals/{pid}/queue"
+            primary_action = {
+                "id":       "retry_failed_queue",
+                "label":    "Retry queue",
+                "method":   "POST",
+                "endpoint": _retry_url,
+                "tone":     "warn",
+                "body":     {},
+                "reason":   "Previous queue attempt failed — proposal "
+                            "remains approved; retry sends the same email.",
+                "disabled": False,
+                "disabled_reason": None,
+                "proposal_id":     pid,
+                "proposal_status": status,
+            }
+        elif status == "pending_review":
+            primary_action = {
+                "id":       "approve_proactive_proposal",
+                "label":    "Review & approve proactive proposal",
+                "tone":     "primary",
+                "endpoint": f"/api/v1/action-proposals/{pid}/approve",
+                "method":   "POST",
+                "body":     {"approved_by": "<admin>"},
+                "reason":   "A proactive dispatch proposal is awaiting "
+                            "approval. The approver MUST be a different "
+                            "operator than the requester.",
+                "disabled": False,
+                "disabled_reason": None,
+                "proposal_id":   pid,
+                "proposal_status": status,
+            }
+        elif status == "approved":
+            primary_action = {
+                "id":       "queue_proactive_proposal",
+                "label":    "Queue proactive dispatch email",
+                "tone":     "primary",
+                "endpoint": f"/api/v1/action-proposals/{pid}/queue",
+                "method":   "POST",
+                "body":     {},
+                "reason":   "Proactive proposal is approved — queue the "
+                            "email to send.",
+                "disabled": False,
+                "disabled_reason": None,
+                "proposal_id":   pid,
+                "proposal_status": status,
+            }
+        else:  # queued
+            info_messages.append(
+                f"Proactive dispatch proposal {pid} is queued — awaiting "
+                "MCP/SMTP delivery confirmation."
+            )
+    # 4. Already sent → terminal info
+    elif proactive_sent:
+        info_messages.append(
+            "Proactive customs package already dispatched. Awaiting Poland "
+            "arrival / DHL response."
+        )
+        badges.append({"key": "awaiting_dhl", "tone": "info",
+                       "label": "Awaiting DHL"})
+        state_id = "awaiting_dhl"
+    # 5. Customs package ready, no proposal, not sent → primary path
+    else:
+        primary_action = {
+            "id":       "proactive_dispatch_request",
+            "label":    "Send proactive customs package to DHL",
+            "tone":     "primary",
+            "endpoint": f"/api/v1/dhl/proactive-dispatch/{batch_id}",
+            "method":   "POST",
+            "body":     {"operator_id": "<your operator id>"},
+            "reason":   "Customs package is ready and proactive dispatch has "
+                        "not been sent. This creates a proposal — no email "
+                        "is queued by this button.",
+            "disabled": False,
+            "disabled_reason": None,
+        }
+
+    # ── Secondary action — incoming DHL request reply ──────────────────────
+    secondary_actions: List[Dict[str, Any]] = []
+    if dhl_request_received and not our_dhl_reply_present:
+        secondary_actions.append({
+            "id":       "prepare_dhl_reply",
+            "label":    "Prepare reply to DHL thread",
+            "tone":     "primary",
+            "endpoint": f"/api/v1/dhl/match-and-handle",
+            "method":   "POST",
+            "body":     {"batch_id": batch_id},
+            "reason":   "An incoming DHL customs request is in the evidence "
+                        "store. Build the same-thread reply package — no "
+                        "email is queued by this button.",
+            "disabled": False,
+            "disabled_reason": None,
+        })
+    elif our_dhl_reply_present:
+        info_messages.append(
+            "DHL reply already found in mailbox — no duplicate send button "
+            "shown unless DHL sends a new request."
+        )
+
+    # Compact human-readable state line
+    if primary_action:
+        state_summary = primary_action["reason"]
+    elif info_messages:
+        state_summary = info_messages[0]
+    else:
+        state_summary = "No DHL action required at this time."
+
+    return {
+        "batch_id":          batch_id,
+        "awb":               awb,
+        "detected":          detected,
+        "badges":            badges,
+        "primary_action":    primary_action,
+        "secondary_actions": secondary_actions,
+        "info_messages":     info_messages,
+        "state_summary":     state_summary,
+        "state_id":          state_id,
+    }
+
+
+@router.get("/batches/{batch_id}/dhl-action-state", dependencies=[_auth])
+def dhl_action_state(batch_id: str) -> Dict[str, Any]:
+    """
+    Return the operator's next DHL/customs action for this batch.
+
+    Read-only. Never queues email. Buttons returned by this endpoint go
+    through existing /generate-customs-package, /proactive-dispatch
+    (proposal-create only), or /action-proposals/{id}/approve+queue
+    flows. No new send path is exposed here.
+    """
+    _validate_batch_id(batch_id)
+    audit_path = _resolve_audit_path(batch_id)
+    if audit_path is None:
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not read batch audit.")
+    return _compute_dhl_action_state(audit)
+
+
 @router.post("/batches/{batch_id}/email-evidence/rescan", dependencies=[_auth])
 def email_evidence_rescan(batch_id: str) -> Dict[str, Any]:
     """Scan Zoho Mail for this AWB and store any new messages in the evidence store."""

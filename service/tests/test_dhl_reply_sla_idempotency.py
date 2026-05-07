@@ -34,7 +34,7 @@ def _seed(tmp_path: Path, overrides: dict | None = None) -> Path:
         "clearance_status": "dhl_email_received",
         "clearance_decision": {
             "total_value_usd": 10366.0,
-            "clearance_path":  "external_agency_clearance",
+            "clearance_path":  "agency_clearance",
         },
         "dhl_email": {
             "received":    True,

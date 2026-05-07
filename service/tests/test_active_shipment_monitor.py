@@ -159,7 +159,7 @@ def test_high_value_required_actions_after_dhl_email(tmp_path, monkeypatch):
     _write_audit(tmp_path, "B_HV", awb="444",
                  clearance_status="dhl_email_received",
                  clearance_decision={"total_value_usd": 10366,
-                                     "clearance_path": "external_agency_clearance"},
+                                     "clearance_path": "agency_clearance"},
                  dhl_email={"received": True, "received_at":
                             (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()})
     out = m.scan_active_shipments()

@@ -26,6 +26,11 @@ import re
 from typing import Any, Dict, List, Optional
 
 from ..core.config import settings
+from .clearance_path_alias import (
+    PATH_AGENCY_CLEARANCE,
+    PATH_DHL_SELF_CLEARANCE,
+    PATH_ROUTING_PENDING,
+)
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +72,7 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
     dict with fields:
       total_value_usd        float
       threshold_usd          float
-      clearance_path         "external_agency_clearance" | "carrier_self_clearance" | "routing_pending"
+      clearance_path         "agency_clearance" | "dhl_self_clearance" | "routing_pending" (spec canonical names; legacy aliases "external_agency_clearance" / "carrier_self_clearance" remain accepted by readers via clearance_path_alias.normalize_path)
       require_dsk            bool
       require_polish_description  bool
       carrier_handles        bool
@@ -97,7 +102,7 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "total_value_usd":           0.0,
             "threshold_usd":             THRESHOLD_USD,
-            "clearance_path":            "routing_pending",
+            "clearance_path":            PATH_ROUTING_PENDING,
             "require_dsk":               None,
             "require_polish_description": True,
             "carrier_handles":           None,
@@ -107,15 +112,15 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
             "computed_at":               now_iso,
         }
 
-    if cif > THRESHOLD_USD:
+    if cif >= THRESHOLD_USD:
         log.info(
-            "[clearance_decision] CIF=%.2f > %.0f → external_agency_clearance",
-            cif, THRESHOLD_USD,
+            "[clearance_decision] CIF=%.2f >= %.0f → %s",
+            cif, THRESHOLD_USD, PATH_AGENCY_CLEARANCE,
         )
         return {
             "total_value_usd":           round(cif, 2),
             "threshold_usd":             THRESHOLD_USD,
-            "clearance_path":            "external_agency_clearance",
+            "clearance_path":            PATH_AGENCY_CLEARANCE,
             "require_dsk":               True,
             "require_polish_description": True,
             "carrier_handles":           False,
@@ -126,13 +131,13 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     log.info(
-        "[clearance_decision] CIF=%.2f ≤ %.0f → carrier_self_clearance",
-        cif, THRESHOLD_USD,
+        "[clearance_decision] CIF=%.2f ≤ %.0f → %s",
+        cif, THRESHOLD_USD, PATH_DHL_SELF_CLEARANCE,
     )
     return {
         "total_value_usd":           round(cif, 2),
         "threshold_usd":             THRESHOLD_USD,
-        "clearance_path":            "carrier_self_clearance",
+        "clearance_path":            PATH_DHL_SELF_CLEARANCE,
         "require_dsk":               False,
         "require_polish_description": True,
         "carrier_handles":           True,
@@ -166,9 +171,10 @@ def resolve_dhl_action(audit: Dict[str, Any], request_type: str = "") -> Dict[st
         # Legacy batch — compute on the fly (not persisted here)
         dec = build_clearance_decision(audit)
 
-    path = dec.get("clearance_path", "routing_pending")
+    path = dec.get("clearance_path", PATH_ROUTING_PENDING)
 
-    if path == "external_agency_clearance":
+    from .clearance_path_alias import is_agency_clearance, is_dhl_self_clearance
+    if is_agency_clearance(path):
         return {
             "action":                     "dsk_transfer",
             "send_description_to_dhl":    False,
@@ -177,7 +183,7 @@ def resolve_dhl_action(audit: Dict[str, Any], request_type: str = "") -> Dict[st
             "reason":                     "high_value_agency_path",
         }
 
-    if path == "carrier_self_clearance":
+    if is_dhl_self_clearance(path):
         return {
             "action":                     "carrier_description",
             "send_description_to_dhl":    True,
@@ -306,13 +312,15 @@ def apply_timeline_overrides(
     result      = dict(decision)   # shallow copy — safe for top-level scalar fields
     event_names = {ev.get("event") for ev in timeline if ev.get("event")}
 
+    from .clearance_path_alias import is_agency_clearance, is_dhl_self_clearance
+
     if "agency_email_sent" in event_names:
-        if result.get("clearance_path") != "external_agency_clearance":
+        if not is_agency_clearance(result.get("clearance_path")):
             log.info(
                 "[clearance_decision] Timeline override: agency_email_sent "
-                "→ force external_agency_clearance"
+                "→ force %s", PATH_AGENCY_CLEARANCE,
             )
-            result["clearance_path"]  = "external_agency_clearance"
+            result["clearance_path"]  = PATH_AGENCY_CLEARANCE
             result["require_dsk"]     = True
             result["carrier_handles"] = False
             result["agency"]          = result.get("agency") or AGENCY_NAME
@@ -322,13 +330,13 @@ def apply_timeline_overrides(
 
     elif "dhl_reply_sent" in event_names:
         value = result.get("total_value_usd") or 0.0
-        if value < THRESHOLD_USD and result.get("clearance_path") != "carrier_self_clearance":
+        if value < THRESHOLD_USD and not is_dhl_self_clearance(result.get("clearance_path")):
             log.info(
                 "[clearance_decision] Timeline override: dhl_reply_sent + low value "
-                "(%.2f < %.0f) → force carrier_self_clearance",
-                value, THRESHOLD_USD,
+                "(%.2f < %.0f) → force %s",
+                value, THRESHOLD_USD, PATH_DHL_SELF_CLEARANCE,
             )
-            result["clearance_path"]  = "carrier_self_clearance"
+            result["clearance_path"]  = PATH_DHL_SELF_CLEARANCE
             result["require_dsk"]     = False
             result["carrier_handles"] = True
             result["decision_reason"] = "timeline_override:dhl_reply_confirmed_low_value"

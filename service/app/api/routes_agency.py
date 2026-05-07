@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from ..auth.dependencies import get_current_user
 from ..core.config import settings
+from ..services.clearance_path_alias import is_agency_clearance
 from ..core.logging import get_logger
 from ..core import timeline as tl
 from ..utils.io import write_json_atomic
@@ -123,7 +124,7 @@ async def build_agency_email_package(batch_id: str) -> AgencyPackageResponse:
             detail=f"Clearance path not yet determined — invoice CIF is 0. "
                    f"Re-process the batch with valid invoices first.",
         )
-    if path != "external_agency_clearance":
+    if not is_agency_clearance(path):
         cif = dec.get("total_value_usd", 0)
         raise HTTPException(
             status_code=422,

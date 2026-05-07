@@ -100,6 +100,25 @@ class Settings(BaseSettings):
     dhl_tracking_api_secret: Optional[str] = Field(default=None, env="DHL_TRACKING_API_SECRET")
     dhl_tracking_api_status: str           = Field(default="pending", env="DHL_TRACKING_API_STATUS")
 
+    # ── DHL customs email routing (P2 Slice A — proactive dispatch) ───────────
+    # Authoritative recipient + CC for proactive customs dispatch emails.
+    # Resolved at queue time, never read from operator-supplied request body.
+    # Empty string means "not configured":
+    #   - dev/local/test → falls back to dev-null@localhost (test sink)
+    #   - any other environment → queue aborts with 500 (fail loud)
+    dhl_customs_email: str = Field(default="", env="DHL_CUSTOMS_EMAIL")
+    dhl_customs_cc:    str = Field(default="", env="DHL_CUSTOMS_CC")
+
+    # ── Phase 2.3 — Path A auto-queue at Departed origin ──────────────────────
+    # Default-False feature flag. When True, the active_shipment_monitor sweep
+    # auto-creates + auto-approves + auto-queues the proactive customs dispatch
+    # email (A2a) on the first Departed-origin tracking event for any Path A
+    # (dhl_self_clearance) shipment that passes the eleven-check validation
+    # gate. Spec ref: docs/dhl_clearance_paths.md hard rules 9, 11, 12 and the
+    # Tracking-driven triggers section. SECURITY review required all twelve
+    # hard guarantees from the pre-implementation security pass be encoded.
+    enable_path_a_auto_queue: bool = Field(default=False, env="ENABLE_PATH_A_AUTO_QUEUE")
+
     # ── Zoho Mail (OAuth2 with refresh-token rotation) ────────────────────────
     # All values come from .env — never hardcode.
     # Required for /api/v1/dhl/scan-inbox to perform a backend mailbox search.
@@ -164,6 +183,8 @@ class Settings(BaseSettings):
     wfirma_edit_invoice_allowed:    bool = Field(default=False, env="WFIRMA_EDIT_INVOICE_ALLOWED")
     wfirma_sync_customers_allowed:  bool = Field(default=False, env="WFIRMA_SYNC_CUSTOMERS_ALLOWED")
     wfirma_delete_invoice_allowed:  bool = Field(default=False, env="WFIRMA_DELETE_INVOICE_ALLOWED")
+    wfirma_create_pz_allowed:       bool = Field(default=False, env="WFIRMA_CREATE_PZ_ALLOWED")
+    wfirma_supplier_contractor_id:  str  = Field(default="",    env="WFIRMA_SUPPLIER_CONTRACTOR_ID")
 
     # ── Cliq bot batch collection ─────────────────────────────────────────────
     # Expire an incomplete (missing files) session after N minutes of inactivity

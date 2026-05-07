@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.config import settings
 from ..core import timeline as tl
+from ..services.clearance_path_alias import is_agency_clearance
 from ..utils.batch_lock import batch_write_lock
 from ..utils.io import write_json_atomic
 from ..config.email_routing import DHL_TO, INTERNAL_CC, format_to, format_cc, primary
@@ -361,8 +362,10 @@ def send_followup_agency(state: Dict[str, Any], batch_id: str) -> str | None:
 
     awb     = state.get("tracking_no") or state.get("awb") or ""
     dec     = state.get("clearance_decision") or {}
-    # TO: per-shipment override from decision, else centralized config primary
-    _agency_to = dec.get("agency_email") or primary(AGENCY_TO)
+    # Spec v3 hard rule 7: agency follow-up reminders use the same recipient
+    # layout as B1 and B4. TO contains Piotr + Ganther unless the audit's
+    # clearance_decision carries a per-shipment agency override.
+    _agency_to = dec.get("agency_email") or format_to(AGENCY_TO)
     to_addr = _agency_to
     cc_addr = format_cc(AGENCY_CC + INTERNAL_CC)
     subject = f"SAD/ZC429 — AWB {awb}" if awb else "SAD — status request"
@@ -405,7 +408,7 @@ def trigger_agency(state: Dict[str, Any], batch_id: str) -> bool:
 
     dec  = state.get("clearance_decision") or {}
     path = dec.get("clearance_path")
-    if path != "external_agency_clearance":
+    if not is_agency_clearance(path):
         return False
 
     if not state.get("polish_desc_filename"):
@@ -957,7 +960,7 @@ def run_cowork_cycle(suggest_only: bool = False) -> Dict[str, Any]:
                                 summary["dhl_followups"] += 1
 
                 # ── 3. DSK received → trigger agency ──────────────────────────
-                if dsk_received(state) and dec.get("clearance_path") == "external_agency_clearance":
+                if dsk_received(state) and is_agency_clearance(dec.get("clearance_path")):
                     if trigger_agency(state, batch_id):
                         summary["agency_triggered"] += 1
 

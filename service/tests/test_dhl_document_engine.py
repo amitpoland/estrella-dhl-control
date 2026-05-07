@@ -48,7 +48,7 @@ def _seed_audit(tmp_path, batch_id, awb="1012178215", extra=None):
         "status":         "active",
         "clearance_decision": {
             "total_value_usd": 10366.0,
-            "clearance_path":  "external_agency_clearance",
+            "clearance_path":  "agency_clearance",
         },
         "dhl_email": {
             "received":    True,

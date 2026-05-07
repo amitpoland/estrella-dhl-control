@@ -171,7 +171,7 @@ def _seed_active_batch(tmp_path: Path, batch_id: str, awb: str = "1234567890"):
         "inputs":               {"awb": awb_pdf.name},
         "clearance_status":     "awaiting_dhl_customs_email",
         "clearance_decision":   {"total_value_usd": 5000,
-                                 "clearance_path":  "external_agency_clearance"},
+                                 "clearance_path":  "agency_clearance"},
         "tracking": {
             "events": [{
                 "timestamp":   datetime.now(POLAND_TZ).isoformat(),

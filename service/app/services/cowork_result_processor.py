@@ -35,6 +35,10 @@ from typing import Any, Dict, List, Optional
 from ..core.config import settings
 from ..core import timeline as tl
 from ..utils.io import write_json_atomic
+from .clearance_path_alias import (
+    is_agency_clearance,
+    is_dhl_self_clearance,
+)
 
 log = logging.getLogger(__name__)
 
@@ -551,9 +555,9 @@ def _decide_actions(
         and "dhl_email" in evidence):
 
         action_name = None
-        if clearance_path == "external_agency_clearance":
+        if is_agency_clearance(clearance_path):
             action_name = "build_and_send_dhl_reply"
-        elif clearance_path == "carrier_self_clearance":
+        elif is_dhl_self_clearance(clearance_path):
             action_name = "build_and_send_dhl_self_clearance_reply"
 
         if action_name:
@@ -575,7 +579,7 @@ def _decide_actions(
         and dhl_docs.get("files")
         and not agency_fwd.get("sent")
         and not agency_fwd.get("status")
-        and clearance_path == "external_agency_clearance"
+        and is_agency_clearance(clearance_path)
         and "dhl_documents_received" in evidence):
         integrity = _check_thread_integrity(
             audit, evidence, "validate_and_forward_dhl_docs_to_agency")

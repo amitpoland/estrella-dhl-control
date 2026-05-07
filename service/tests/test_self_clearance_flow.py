@@ -60,7 +60,7 @@ def _seed_low_value_batch(tmp_path: Path, batch_id: str, awb: str = "5555555555"
         "polish_desc_filename": polish_fn,
         "clearance_status":     "dhl_email_received",
         "clearance_decision":   {"total_value_usd": cif,
-                                 "clearance_path":  "carrier_self_clearance"},
+                                 "clearance_path":  "dhl_self_clearance"},
         "dhl_email":            {"received": True,
                                  "sender":   "odprawacelna@dhl.com",
                                  "ticket":   "T#LV-1",
@@ -117,6 +117,21 @@ def test_low_value_subject_uses_thread_reply_format(tmp_path, monkeypatch):
     assert "5555555555" in pkg["subject"]
 
 
+def test_low_value_body_strips_cif_and_currency(tmp_path, monkeypatch):
+    """Spec rule 8 (customs-value-freeze): A2b body must not echo CIF or USD.
+    DHL reads value from the attached invoice, not body text."""
+    monkeypatch.setattr("app.services.dhl_self_clearance_builder.settings", _settings(tmp_path))
+    _, audit = _seed_low_value_batch(tmp_path, "B_LV5")
+    from app.services.dhl_self_clearance_builder import build_dhl_self_clearance_reply
+    pkg = build_dhl_self_clearance_reply(audit, "B_LV5")
+    body = pkg["body_text"]
+    assert "cif" not in body.lower()
+    assert "usd" not in body.lower()
+    # Existing body content invariants still hold
+    assert "5555555555" in body          # AWB still rendered
+    assert "DHL Poland team" in body     # salutation preserved
+
+
 # ── Monitor branching: low-value triggers self-clearance, NOT agency ─────────
 
 def test_monitor_low_value_path_builds_self_clearance_reply(tmp_path, monkeypatch):
@@ -131,7 +146,7 @@ def test_monitor_low_value_path_builds_self_clearance_reply(tmp_path, monkeypatc
     out = m.scan_active_shipments()
     a = next(a for a in out["actions"] if a["batch_id"] == "B_LV_MON")
     assert a.get("dhl_reply", {}).get("built") is True
-    assert a["dhl_reply"]["path"] == "carrier_self_clearance"
+    assert a["dhl_reply"]["path"] == "dhl_self_clearance"
 
     audit_after = json.loads((batch_dir / "audit.json").read_text())
     sc_pkg = audit_after.get("dhl_self_clearance_reply_package", {})

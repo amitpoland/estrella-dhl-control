@@ -47,7 +47,6 @@ def build_dhl_self_clearance_reply(audit: Dict[str, Any], batch_id: str) -> Dict
     )
     dhl_email = audit.get("dhl_email") or {}
     ticket    = dhl_email.get("ticket") or audit.get("dhl_ticket") or ""
-    cif       = (audit.get("clearance_decision") or {}).get("total_value_usd", 0)
 
     # Recipients: reply to DHL only (+ internal CC for visibility)
     to_list = list(DHL_TO)
@@ -95,7 +94,7 @@ def build_dhl_self_clearance_reply(audit: Dict[str, Any], batch_id: str) -> Dict
     subject = f"Re: {ticket} – AWB {awb} customs clearance documents" if ticket \
               else f"AWB {awb} customs clearance documents"
 
-    body_text = _render_body_text(awb, ticket, cif, len(attachments))
+    body_text = _render_body_text(awb, ticket, len(attachments))
     body_html = _render_body_html(body_text)
 
     return {
@@ -115,11 +114,10 @@ def build_dhl_self_clearance_reply(audit: Dict[str, Any], batch_id: str) -> Dict
     }
 
 
-def _render_body_text(awb: str, ticket: str, cif: float, attach_count: int) -> str:
+def _render_body_text(awb: str, ticket: str, attach_count: int) -> str:
     return (
         f"Dear DHL Poland team,\n\n"
-        f"Reference: AWB {awb}{f' (ticket {ticket})' if ticket else ''}\n"
-        f"CIF value: USD {cif:,.2f}\n\n"
+        f"Reference: AWB {awb}{f' (ticket {ticket})' if ticket else ''}\n\n"
         f"In response to your customs clearance request, please find attached "
         f"all the documents required for self-clearance:\n"
         f"  - Commercial invoice(s)\n"

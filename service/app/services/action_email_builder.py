@@ -9,7 +9,6 @@ Supported proposal types:
   agency_followup           ACS Spedycja follow-up asking for SAD/ZC429 status
   dhl_dsk_transfer          Send DSK broker notification to DHL customs
   carrier_description_reply Send Polish product description to DHL/FedEx customs
-  agency_clearance_email    Send full clearance package to ACS Spedycja
   duty_payment_followup     Internal reminder to confirm duty payment
 """
 from __future__ import annotations
@@ -48,9 +47,9 @@ def build_email_draft(proposal_type: str, audit: Dict[str, Any]) -> Dict[str, An
         "agency_followup":           _build_agency_followup,
         "dhl_dsk_transfer":          _build_dhl_dsk_transfer,
         "carrier_description_reply": _build_carrier_description_reply,
-        "agency_clearance_email":    _build_agency_clearance_email,
         "duty_payment_followup":     _build_duty_payment_followup,
         "tracking_lookup":           _build_tracking_lookup,
+        "dhl_proactive_dispatch":    _build_dhl_proactive_dispatch,
     }
     builder = builders.get(proposal_type)
     if builder is None:
@@ -124,7 +123,11 @@ def _build_dhl_followup(audit: Dict[str, Any]) -> Dict[str, Any]:
 def _build_agency_followup(audit: Dict[str, Any]) -> Dict[str, Any]:
     awb = _awb(audit)
     dec = audit.get("clearance_decision") or {}
-    agency_primary = dec.get("agency_email") or primary(AGENCY_TO)
+    # Spec v3 hard rule 7: agency follow-up reminders use the same recipient
+    # layout as B1 and B4. TO contains Piotr + Ganther unless the audit's
+    # clearance_decision carries a per-shipment agency override (rare —
+    # used when a different broker handles a specific shipment).
+    agency_primary = dec.get("agency_email") or format_to(AGENCY_TO)
     subject = f"SAD/ZC429 — AWB {awb}" if awb else "SAD — prośba o aktualizację statusu"
     body = (
         "Szanowni Państwo,\n\n"
@@ -201,46 +204,6 @@ def _build_carrier_description_reply(audit: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _build_agency_clearance_email(audit: Dict[str, Any]) -> Dict[str, Any]:
-    awb = _awb(audit)
-    dec = audit.get("clearance_decision") or {}
-    agency_primary = dec.get("agency_email") or primary(AGENCY_TO)
-    subject = f"Odprawa celna — AWB {awb}" if awb else "Zlecenie odprawy celnej"
-    body = (
-        "Szanowni Państwo,\n\n"
-        f"Zlecamy odprawę celną przesyłki AWB: {awb}.\n\n"
-        "W załączeniu:\n"
-        "- Faktura handlowa (Commercial Invoice)\n"
-        "- List przewozowy (AWB)\n"
-        "- Opis towarów w języku polskim\n"
-        "- Dokument DSK (powiadomienie brokera celnego)\n\n"
-        "Prosimy o potwierdzenie przyjęcia zlecenia.\n\n"
-        "Z poważaniem,\nEstrella Jewels\nimport@estrellajewels.eu"
-    )
-    attachments: List[Dict[str, str]] = []
-    for field, label in [
-        ("invoice_filename", "Invoice"),
-        ("invoice_pdf", "Invoice"),
-        ("awb_filename", "AWB"),
-        ("polish_desc_filename", "Polish description"),
-        ("dsk_filename", "DSK"),
-    ]:
-        att = _attachment_if_exists(audit, field, label)
-        if att:
-            attachments.append(att)
-    # Combine: agency primary TO, agency CC + Ganther + internal CC
-    ganther_cc = ["ciagarlak@ganther.com.pl"]
-    cc_list = AGENCY_CC + ganther_cc + INTERNAL_CC
-    return {
-        "to":          agency_primary,
-        "cc":          format_cc(cc_list),
-        "subject":     subject,
-        "body_text":   body,
-        "body_html":   _wrap_html(body),
-        "attachments": attachments,
-    }
-
-
 def _build_tracking_lookup(audit: Dict[str, Any]) -> Dict[str, Any]:
     """
     Tracking lookup task — NOT an email.
@@ -278,6 +241,20 @@ def _build_tracking_lookup(audit: Dict[str, Any]) -> Dict[str, Any]:
         "tracking_url": tracking_url,
         "instruction": f"Fetch latest status from public {carrier} tracking page",
     }
+
+
+def _build_dhl_proactive_dispatch(audit: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Adapter — delegates to dhl_proactive_dispatch_builder.
+
+    Slice A keeps the body logic in its own file
+    (dhl_proactive_dispatch_builder.py) so that the first-contact contract
+    cannot drift into the reply-thread builder. This shim is the
+    action_email_builder registration point.
+    """
+    from .dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+    batch_id = audit.get("batch_id") or ""
+    return build_dhl_proactive_dispatch(audit, batch_id)
 
 
 def _build_duty_payment_followup(audit: Dict[str, Any]) -> Dict[str, Any]:

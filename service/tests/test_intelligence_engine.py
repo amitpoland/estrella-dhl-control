@@ -634,13 +634,13 @@ class TestClearanceDecision:
         from app.services.clearance_decision import build_clearance_decision_for_carrier
         audit = {"carrier": "DHL", "invoice_totals": {"total_cif_usd": 3000.0}}
         dec = build_clearance_decision_for_carrier(audit)
-        assert dec["clearance_path"] == "external_agency_clearance"
+        assert dec["clearance_path"] == "agency_clearance"
 
     def test_dhl_below_threshold_carrier_self_clearance(self):
         from app.services.clearance_decision import build_clearance_decision
         audit = {"invoice_totals": {"total_cif_usd": 1500.0}}
         dec = build_clearance_decision(audit)
-        assert dec["clearance_path"] == "carrier_self_clearance"
+        assert dec["clearance_path"] == "dhl_self_clearance"
         assert dec["require_dsk"] is False
         assert dec["carrier_handles"] is True
 
@@ -648,7 +648,7 @@ class TestClearanceDecision:
         from app.services.clearance_decision import build_clearance_decision
         audit = {"invoice_totals": {"total_cif_usd": 3000.0}}
         dec = build_clearance_decision(audit)
-        assert dec["clearance_path"] == "external_agency_clearance"
+        assert dec["clearance_path"] == "agency_clearance"
         assert dec["require_dsk"] is True
         assert dec["agency_email"] == "biuro@acspedycja.pl"
 

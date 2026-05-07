@@ -372,7 +372,7 @@ class TestTimelineClearanceOverride:
         from app.services.clearance_decision import apply_timeline_overrides
 
         decision = {
-            "clearance_path":  "carrier_self_clearance",
+            "clearance_path":  "dhl_self_clearance",
             "require_dsk":     False,
             "carrier_handles": True,
             "total_value_usd": 1200.0,
@@ -384,7 +384,7 @@ class TestTimelineClearanceOverride:
         ]
         result = apply_timeline_overrides(decision, timeline)
 
-        assert result["clearance_path"]  == "external_agency_clearance"
+        assert result["clearance_path"]  == "agency_clearance"
         assert result["require_dsk"]     is True
         assert result["carrier_handles"] is False
         assert "timeline_override" in result["decision_reason"]
@@ -406,7 +406,7 @@ class TestTimelineClearanceOverride:
         ]
         result = apply_timeline_overrides(decision, timeline)
 
-        assert result["clearance_path"]  == "carrier_self_clearance"
+        assert result["clearance_path"]  == "dhl_self_clearance"
         assert result["require_dsk"]     is False
         assert result["carrier_handles"] is True
         assert "timeline_override" in result["decision_reason"]
@@ -416,7 +416,7 @@ class TestTimelineClearanceOverride:
         from app.services.clearance_decision import apply_timeline_overrides
 
         decision = {
-            "clearance_path":  "carrier_self_clearance",
+            "clearance_path":  "dhl_self_clearance",
             "require_dsk":     False,
             "carrier_handles": True,
             "total_value_usd": 3200.0,
@@ -429,13 +429,13 @@ class TestTimelineClearanceOverride:
         result = apply_timeline_overrides(decision, timeline)
 
         # agency_email_sent wins (checked first)
-        assert result["clearance_path"] == "external_agency_clearance"
+        assert result["clearance_path"] == "agency_clearance"
 
     def test_no_override_when_timeline_empty(self):
         from app.services.clearance_decision import apply_timeline_overrides
 
         decision = {
-            "clearance_path":  "carrier_self_clearance",
+            "clearance_path":  "dhl_self_clearance",
             "require_dsk":     False,
             "carrier_handles": True,
         }
@@ -447,7 +447,7 @@ class TestTimelineClearanceOverride:
         from app.services.clearance_decision import apply_timeline_overrides
 
         decision = {
-            "clearance_path":  "external_agency_clearance",
+            "clearance_path":  "agency_clearance",
             "require_dsk":     True,
             "carrier_handles": False,
         }
@@ -460,7 +460,7 @@ class TestTimelineClearanceOverride:
         from app.services.clearance_decision import apply_timeline_overrides
 
         original = {
-            "clearance_path":  "carrier_self_clearance",
+            "clearance_path":  "dhl_self_clearance",
             "require_dsk":     False,
             "carrier_handles": True,
             "total_value_usd": 1200.0,
@@ -484,7 +484,7 @@ class TestTimelineClearanceOverride:
         }
         dec = build_clearance_decision_for_carrier(audit)
         # Value says carrier_self_clearance; timeline says external_agency_clearance
-        assert dec["clearance_path"] == "external_agency_clearance"
+        assert dec["clearance_path"] == "agency_clearance"
         assert "timeline_override" in dec["decision_reason"]
 
 
@@ -503,7 +503,7 @@ class TestNoAuditCorruption:
             "status": "processing",
             "doc_no": "PZ 10/2026",
             "invoice_totals": {"total_cif_usd": 2800.0},
-            "clearance_decision": {"clearance_path": "external_agency_clearance"},
+            "clearance_decision": {"clearance_path": "agency_clearance"},
         })
         before = _read_audit(ap)
         del before["timeline"]    # exclude timeline from comparison

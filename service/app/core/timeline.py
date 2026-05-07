@@ -73,6 +73,11 @@ EV_EMAIL_QUEUED             = "email_queued"              # email added to queue
 EV_EMAIL_SENT               = "email_sent"                # queue worker confirmed delivery
 EV_EMAIL_FAILED             = "email_failed"              # delivery attempt failed
 
+# ── Proactive DHL customs dispatch (P2 Slice A) ──────────────────────────────
+EV_DHL_PROACTIVE_DISPATCH_REQUESTED = "dhl_proactive_dispatch_requested"  # operator created proposal
+EV_DHL_PROACTIVE_DISPATCH_SENT      = "dhl_proactive_dispatch_sent"       # email queued at queue time
+EV_DHL_PROACTIVE_DISPATCH_FAILED    = "dhl_proactive_dispatch_failed"     # queue_email raised; proposal stays approved
+
 # ── Tracking events ────────────────────────────────────────────────────────────
 EV_TRACKING_PUBLIC_LOOKUP   = "tracking_public_lookup_completed"  # operator/cowork reported public result
 EV_TRACKING_UPDATED         = "tracking_updated"                  # batch tracking block written (any source)

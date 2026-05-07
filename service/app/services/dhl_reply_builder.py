@@ -177,3 +177,111 @@ def _render_body_html(awb: str, ticket: str, cif: float) -> str:
         + text +
         "</pre></div>"
     )
+
+
+# ── Phase 3.2 — B2 DSK-only reply builder ────────────────────────────────────
+# Spec ref: docs/dhl_clearance_paths.md hard rule 5. The B2 reply attaches the
+# operator-generated DSK PDF only and CCs Estrella internal only — no agency,
+# no Ganther, no description, no invoice, no AWB. Distinct from
+# build_dhl_reply_package above (which is still used by execution_engine and
+# cowork_action_runner for the operator-mediated full-package flow). The B2
+# observer in active_shipment_monitor calls this function exclusively.
+
+def build_dhl_b2_dsk_only_reply(audit: Dict[str, Any], batch_id: str) -> Dict[str, Any]:
+    """
+    Assemble the spec-compliant B2 reply: DSK-only attachment, internal CC only.
+
+    Returns the same envelope shape as build_dhl_reply_package so the observer's
+    queue path is unchanged. Caller MUST verify audit.dsk_filename is set and
+    audit.dsk_path points to an existing file BEFORE invoking — the gate lives
+    in the observer, not the builder. If the DSK file is missing on disk at
+    build time (race between gate and build), `missing` list is non-empty.
+    """
+    awb = (
+        audit.get("awb")
+        or audit.get("tracking_no")
+        or (audit.get("batch_meta") or {}).get("awb")
+        or ""
+    )
+    dhl_email = audit.get("dhl_email") or {}
+    ticket    = dhl_email.get("ticket") or audit.get("dhl_ticket") or ""
+
+    # Recipients — DHL on TO (same thread DHL initiated), Estrella internal
+    # only on CC. NO _BROKER_CC. NO administracja_centralna addition.
+    to_list = list(DHL_TO)
+    to_norm = {a.lower() for a in to_list}
+    cc_list = [a for a in INTERNAL_CC if a.lower() not in to_norm]
+
+    # Attachments — DSK only.
+    attachments: List[Dict[str, str]] = []
+    missing:     List[str] = []
+
+    dsk_path_str = (audit.get("dsk_path") or "").strip()
+    dsk_filename = (audit.get("dsk_filename") or "").strip()
+    if not dsk_filename:
+        missing.append("DSK not yet generated (audit.dsk_filename absent)")
+    else:
+        dsk_path = Path(dsk_path_str) if dsk_path_str else None
+        if not dsk_path or not dsk_path.is_file():
+            missing.append(f"DSK file not on disk: {dsk_filename}")
+        else:
+            attachments.append({"label": f"DSK: {dsk_filename}", "path": str(dsk_path)})
+
+    # Subject — same thread-reply pattern as the existing B2 builder so DHL's
+    # mail client groups the reply with the original ticket thread.
+    subject = f"Request for custom clearance – AWB {awb}" if awb else "Request for custom clearance"
+    if ticket:
+        subject = f"Re: {ticket} – {subject}"
+
+    body_text = _render_b2_body_text(awb, ticket)
+    body_html = _render_b2_body_html(body_text)
+
+    return {
+        "from_address": "import@estrellajewels.eu",
+        "email_type":   "dhl_b2_dsk_only_reply",
+        "to":           ", ".join(to_list),
+        "to_list":      to_list,
+        "cc":           ", ".join(cc_list),
+        "cc_list":      cc_list,
+        "subject":      subject,
+        "body_text":    body_text,
+        "body_html":    body_html,
+        "attachments":  attachments,
+        "missing":      missing,
+        "ticket":       ticket,
+    }
+
+
+def _render_b2_body_text(awb: str, ticket: str) -> str:
+    awb_ref = f"AWB {awb}" if awb else "the shipment"
+    ticket_ref = f" (ticket {ticket})" if ticket else ""
+    return (
+        f"Szanowni Państwo,\n\n"
+        f"W odpowiedzi na Państwa zapytanie dotyczące przesyłki "
+        f"{awb_ref}{ticket_ref}, w załączeniu przesyłamy "
+        f"podpisane Zlecenie powiadomienia brokera (DSK), które "
+        f"upoważnia naszą agencję celną Spedycja Sp. z o.o. do "
+        f"przeprowadzenia odprawy.\n\n"
+        f"Prosimy o uwzględnienie załączonego DSK w toku odprawy "
+        f"celnej.\n\n"
+        f"---\n\n"
+        f"Dear DHL Poland team,\n\n"
+        f"In response to your customs query for {awb_ref}{ticket_ref}, "
+        f"please find attached the signed broker-notification order (DSK) "
+        f"authorizing our customs agency, AC Spedycja Sp. z o.o., to "
+        f"handle clearance.\n\n"
+        f"Kindly use the attached DSK as the basis for clearance.\n\n"
+        f"Best regards,\n"
+        f"Import Department\n"
+        f"Estrella Jewels Sp. z o.o. Sp. k.\n"
+        f"import@estrellajewels.eu\n"
+    )
+
+
+def _render_b2_body_html(body_text: str) -> str:
+    return (
+        "<div style='font-family:sans-serif'>"
+        "<pre style='white-space:pre-wrap;font-family:Arial,sans-serif'>"
+        + body_text +
+        "</pre></div>"
+    )

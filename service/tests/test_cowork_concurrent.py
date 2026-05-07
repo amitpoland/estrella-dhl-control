@@ -55,7 +55,7 @@ def _seed_batch(root: Path, batch_id: str, **extra) -> Path:
         "status":      "processing",
         "clearance_decision": {
             "total_value_usd": 800.0,
-            "clearance_path":  "carrier_self_clearance",
+            "clearance_path":  "dhl_self_clearance",
         },
         "timeline": [],
     }

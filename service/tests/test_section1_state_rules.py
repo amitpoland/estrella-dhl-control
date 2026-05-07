@@ -85,7 +85,7 @@ class TestPolishDescriptionState:
 class TestDSKState:
     def test_dsk_required_default_true_for_high_value_path(self):
         a = _audit(clearance_decision={
-            "clearance_path": "external_agency_clearance",
+            "clearance_path": "agency_clearance",
             "require_dsk": True,
         })
         assert a["clearance_decision"]["require_dsk"] is True
@@ -133,14 +133,14 @@ class TestReplyWorkflowStages:
 
 class TestAgencyWorkflowStages:
     def test_agency_path_only_when_clearance_path_external(self):
-        a = _audit(clearance_decision={"clearance_path": "external_agency_clearance"})
-        assert a["clearance_decision"]["clearance_path"] == "external_agency_clearance"
+        a = _audit(clearance_decision={"clearance_path": "agency_clearance"})
+        assert a["clearance_decision"]["clearance_path"] == "agency_clearance"
 
     def test_agency_queued_records_queue_id(self, tmp_path):
         bdir = tmp_path / "T"; bdir.mkdir()
         s = normalize_batch_state(
             _audit(
-                clearance_decision={"clearance_path": "external_agency_clearance"},
+                clearance_decision={"clearance_path": "agency_clearance"},
                 agency_reply_package={"queue_id": "q-99", "status": "queued"},
             ),
             bdir,

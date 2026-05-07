@@ -223,6 +223,14 @@ async def generate_dsk_endpoint(body: DskRequest) -> DskResponse:
                 try:
                     _audit = json.loads(_audit_path.read_text(encoding="utf-8"))
                     _audit["dsk_filename"]   = filename
+                    # Phase 3.2.1 — B2 observer reads audit["dsk_path"] to
+                    # locate the file for attachment. Write the full path
+                    # alongside the filename. Null-safe: if the generator
+                    # returned no output_path (skip/failure), leave the
+                    # field absent so the B2 observer's gate skips silently.
+                    _output_path = result.get("output_path")
+                    if _output_path:
+                        _audit["dsk_path"] = str(_output_path)
                     _audit["dsk_status"]     = "generated"
                     _audit["clearance_status"] = "dsk_generated"
                     _audit["dsk_meta"] = {

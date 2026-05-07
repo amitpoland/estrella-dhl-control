@@ -54,7 +54,7 @@ def _seed_with_dhl_docs(tmp_path: Path, batch_id: str, awb: str = "1012178215",
         "tracking_no": awb,
         "inputs":      {"awb": awb_filename} if awb_filename else {},
         "clearance_decision": {"total_value_usd": 10366,
-                               "clearance_path":  "external_agency_clearance"},
+                               "clearance_path":  "agency_clearance"},
         "dhl_email":  {
             "received": True,
             "ticket":   "T#1WA2604290000028",
@@ -199,7 +199,7 @@ def test_monitor_skips_low_value_path(tmp_path, monkeypatch):
     """Low-value (carrier_self_clearance) batches must NOT trigger this forward."""
     batch_dir, audit = _seed_with_dhl_docs(tmp_path, "B_FWD_LV")
     audit["clearance_decision"] = {"total_value_usd": 1500,
-                                   "clearance_path":  "carrier_self_clearance"}
+                                   "clearance_path":  "dhl_self_clearance"}
     (batch_dir / "audit.json").write_text(json.dumps(audit))
     out = _run_monitor(tmp_path, monkeypatch)
     a = next(a for a in out["actions"] if a["batch_id"] == "B_FWD_LV")

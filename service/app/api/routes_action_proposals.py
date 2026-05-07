@@ -22,19 +22,111 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..core.config import settings
+from ..core.security import require_api_key
+from ..config.email_routing import resolve_dhl_to, resolve_dhl_cc
+from ..services.clearance_path_alias import (
+    is_agency_clearance,
+    is_dhl_self_clearance,
+)
 from ..core import timeline as tl
 from ..utils.io import write_json_atomic
+from ..utils.proposal_lock import proposal_write_lock
 
-router = APIRouter(prefix="/api/v1/action-proposals", tags=["action_proposals"])
+# Router-level auth — every endpoint protected. Closes the pre-existing
+# CRITICAL gap from the SECURITY review: previously /list, /approve,
+# /reject, /queue, /refresh were all unauthenticated.
+_auth = Depends(require_api_key)
+router = APIRouter(
+    prefix="/api/v1/action-proposals",
+    tags=["action_proposals"],
+    dependencies=[_auth],
+)
 
 _OUTPUTS = settings.storage_root / "outputs"
 
 # ── Value guard constants (from clearance_decision.py) ───────────────────────
 _THRESHOLD_USD = 2_500.0
+
+# ── Proposal types created by operator action (not by cowork triggers) ───────
+# Excluded from refresh_proposals auto-resolution because they have no
+# trigger source that could "deactivate" them.
+_OPERATOR_INITIATED_TYPES: frozenset = frozenset({"dhl_proactive_dispatch"})
+
+# Phase 2.3 — auto-actor sentinels. These exact strings are used as both
+# created_by and approved_by by Phase 2.3's auto-queue trigger; the G9
+# self-approval guard recognises them and skips the equality check.
+# New auto-flows must add their sentinels here explicitly.
+AUTO_ACTOR_SENTINELS: frozenset = frozenset({"system:path_a_auto_queue"})
+
+
+def _is_auto_actor(actor: str) -> bool:
+    """True iff *actor* is a registered auto-flow sentinel that bypasses
+    the G9 self-approval guard."""
+    return actor in AUTO_ACTOR_SENTINELS
+
+# Environments where the dhl_customs_email fallback to dev-null@localhost
+# is acceptable. Any environment NOT in this set must fail loud at queue
+# time when dhl_customs_email is empty.
+_DEV_ENVIRONMENTS: frozenset = frozenset({"dev", "local", "test"})
+
+# Environments that are explicitly production-class and must never accept
+# the dev-null fallback.
+_PROD_ENVIRONMENTS: frozenset = frozenset({"prod", "production", "staging"})
+
+
+def _resolve_proactive_recipients() -> tuple[str, str, Optional[str]]:
+    """
+    Authoritative recipient + CC for proactive dispatch, resolved at queue time.
+
+    Returns ``(to, cc, error)`` where *error* is None on success or a string
+    explaining the fail-loud condition (production with empty
+    dhl_customs_email).
+
+    Resolution rules:
+      * Recipient resolution delegates to ``email_routing.resolve_dhl_to`` /
+        ``resolve_dhl_cc``: centralized ``DHL_TO`` / ``INTERNAL_CC`` constants
+        win when non-empty; ``settings.dhl_customs_email`` /
+        ``settings.dhl_customs_cc`` are consulted only as a fallback.
+      * env in {dev, local, test} + empty resolved TO → ("dev-null@localhost", cc, None)
+      * env in {prod, production, staging} + empty resolved TO → ("", cc, "config_missing")
+      * any other env value + empty resolved TO → fail loud (treated as production-class)
+      * any env + non-empty resolved TO → use it
+    """
+    env = (settings.environment or "").strip().lower()
+    to_addr = resolve_dhl_to()
+    cc_addr = resolve_dhl_cc()
+
+    if not to_addr:
+        if env in _DEV_ENVIRONMENTS:
+            return "dev-null@localhost", cc_addr, None
+        # Default to fail-loud for any non-dev environment value
+        return "", cc_addr, "config_missing"
+
+    return to_addr, cc_addr, None
+
+
+def _record_proactive_failure(
+    audit: Dict[str, Any],
+    proposal: Dict[str, Any],
+    exc: Exception,
+) -> Dict[str, Any]:
+    """Write the proactive-only failure side-effects into *audit* in-place."""
+    reason = f"{type(exc).__name__}: {exc}"
+    if len(reason) > 200:
+        reason = reason[:197] + "..."
+    audit["proactive_dispatch_failed_at"]      = _now()
+    audit["proactive_dispatch_failure_reason"] = reason
+    return {
+        "batch_id":      audit.get("batch_id", ""),
+        "proposal_id":   proposal.get("proposal_id", ""),
+        "awb":           audit.get("awb") or audit.get("dhl_awb") or audit.get("tracking_no") or "",
+        "error_class":   type(exc).__name__,
+        "error_summary": reason,
+    }
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
@@ -194,6 +286,103 @@ def _assert_can_queue(proposal: Dict[str, Any], audit: Dict[str, Any]) -> None:
                 ),
             )
 
+    # G9 — proactive-only re-checks against LIVE audit
+    if prop_type == "dhl_proactive_dispatch":
+        _assert_proactive_dispatch_safe(proposal, audit)
+
+
+def _assert_proactive_dispatch_safe(
+    proposal: Dict[str, Any],
+    audit: Dict[str, Any],
+) -> None:
+    """
+    Re-validate proactive-dispatch preconditions at queue time.
+
+    The proposal record is a snapshot from creation time. Audit state may
+    have advanced (agency path activated, DSK generated, dispatch already
+    sent in another window). All four conditions are re-checked against
+    the LIVE audit before queue_email is invoked.
+
+    Also enforces the self-approval block: the operator who created the
+    proposal must not be the same person who approves it.
+    """
+    # G-PC1 / G-PC5 — clearance path must still be self-clearance, no agency
+    cd = audit.get("clearance_decision") or {}
+    clearance_path = (cd.get("clearance_path") or "").strip()
+    if is_agency_clearance(clearance_path):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "guard": "agency_path_active",
+                "error": "Clearance path advanced to agency clearance — "
+                         "proactive dispatch no longer applicable.",
+                "code":  "agency_path_active",
+            },
+        )
+    if clearance_path and not is_dhl_self_clearance(clearance_path):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "guard": "not_self_clearance_path",
+                "error": f"Clearance path is {clearance_path!r}; expected carrier_self_clearance.",
+                "code":  "not_self_clearance_path",
+            },
+        )
+    if audit.get("agency_name") or (audit.get("agency_reply_package") or {}).get("status"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "guard": "agency_path_active",
+                "error": "Agency forwarding active — proactive dispatch blocked.",
+                "code":  "agency_path_active",
+            },
+        )
+
+    # G-PC6 — DSK must not exist
+    if audit.get("dsk_filename") or audit.get("dsk_reference"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "guard": "dsk_already_created",
+                "error": "DSK has been generated — proactive dispatch blocked.",
+                "code":  "dsk_already_created",
+            },
+        )
+
+    # G-PC3 — must not have been dispatched already
+    if audit.get("proactive_dispatch_sent_at"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "guard": "already_dispatched",
+                "error": "Proactive dispatch already sent for this batch.",
+                "code":  "already_dispatched",
+            },
+        )
+
+    # Self-approval block — created_by != approved_by (SECURITY question 17 BLOCK)
+    # Phase 2.3 exemption: registered auto-actor sentinels bypass the
+    # equality check (auto-flows legitimately create + approve as one actor).
+    # Phase 2.3.1 (Finding 1.1): keep .strip() for the equality check (operator
+    # UX tolerates trailing whitespace) but invoke _is_auto_actor on the RAW
+    # unstripped value. The exemption surface is byte-equal-to-sentinel only;
+    # padded variants like " system:path_a_auto_queue " do NOT exempt.
+    created_by_raw  = proposal.get("created_by")  or ""
+    approved_by_raw = proposal.get("approved_by") or ""
+    created_by  = created_by_raw.strip()
+    approved_by = approved_by_raw.strip()
+    if (created_by and approved_by and created_by == approved_by
+            and not _is_auto_actor(created_by_raw)):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "guard": "self_approval_blocked",
+                "error": "The operator who requested proactive dispatch cannot also "
+                         "approve it. Please have a second admin approve the proposal.",
+                "code":  "self_approval_blocked",
+            },
+        )
+
 
 # ── Proposal creation (called by cowork) ──────────────────────────────────────
 
@@ -246,6 +435,14 @@ def create_proposal(
         "email_id":     None,
         "queued_at":    None,
         "override_value_check": False,
+        # Phase 2.2 — additive schema field for Phase 2.3's auto-queue
+        # validation gate at Departed origin. When the auto-queue path
+        # creates a proposal-fallback (rather than auto-queuing) because
+        # one of the seven validation checks failed, this field carries
+        # the human-readable failure reason. Operators see it as the
+        # disabled_reason on the queue button (Phase 4.x renders it).
+        # Default None for proposals not created via the validation gate.
+        "validation_failure_reason": None,
     }
     proposals.append(proposal)
     return proposal
@@ -380,10 +577,13 @@ def refresh_proposals(
             new_p["last_seen_at"] = now_str
             created_ids.append(new_p["proposal_id"])
 
-    # Resolve pending_review proposals whose trigger is no longer detected
+    # Resolve pending_review proposals whose trigger is no longer detected.
+    # Operator-initiated proposals (e.g. dhl_proactive_dispatch) have no
+    # trigger source — they must NEVER be auto-resolved by trigger absence.
     for p in proposals:
         if (p.get("status") == "pending_review"
-                and p.get("type") not in active_prop_types):
+                and p.get("type") not in active_prop_types
+                and p.get("type") not in _OPERATOR_INITIATED_TYPES):
             p["status"] = "resolved"
             p["resolved_at"] = now_str
             p["resolution_reason"] = "trigger_no_longer_detected"
@@ -463,6 +663,20 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
     """
     if not (body.approved_by or "").strip():
         raise HTTPException(status_code=422, detail="approved_by is required.")
+
+    # Phase 2.3.1 (Finding 1.2): operator-supplied approved_by must NOT be
+    # in the auto-actor sentinel space. Otherwise an operator could approve
+    # an auto-created proposal as the same auto actor and bypass the
+    # implicit human-in-the-loop on auto-flow's self-approval exemption.
+    if _is_auto_actor((body.approved_by or "").strip()):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code":  "auto_actor_sentinel_reserved",
+                "guard": "auto_actor_sentinel_reserved",
+                "error": "approved_by is reserved for system actors and cannot be set by request.",
+            },
+        )
 
     # Find which batch owns this proposal
     batch_id, audit, proposal = _resolve_proposal(proposal_id)
@@ -549,50 +763,173 @@ def queue_proposal(proposal_id: str) -> Dict[str, Any]:
       - Attachment files must exist on disk
       - High-value blocks carrier_description_reply
       - Low-value blocks dhl_dsk_transfer (without override)
+      - dhl_proactive_dispatch — additional G9 re-checks against live audit
+        (clearance path, agency, DSK, already-dispatched, self-approval)
 
-    On success: calls queue_email(), writes email_id to proposal, logs timeline.
-    NO email is auto-sent — the queued email waits for MCP/admin delivery.
+    Locking (P2 Slice A):
+      The full critical section — fresh audit reload → guards →
+      recipient re-resolution → queue_email → audit mutation → write — runs
+      under proposal_write_lock(batch_id). Two concurrent calls for the
+      same proposal serialise: one wins, the second observes the first's
+      audit mutation and is blocked at G1/G-PC3.
+
+    Recipient/CC for dhl_proactive_dispatch:
+      Authoritative values are re-resolved at queue time from
+      settings.dhl_customs_email / settings.dhl_customs_cc. The proposal's
+      draft.to / draft.cc fields are demoted to operator preview and
+      NEVER consulted as the queue recipient.
+
+    Failure handling:
+      Only dhl_proactive_dispatch wraps queue_email in try/except. On
+      failure: proactive_dispatch_failed_at is recorded,
+      EV_DHL_PROACTIVE_DISPATCH_FAILED is logged, proposal.status remains
+      "approved" so the operator may retry, response is HTTP 500.
+      All other proposal types preserve existing exception bubbling.
+
+    On success: calls queue_email(), writes email_id to proposal, logs
+    timeline. NO email is auto-sent — the queued email waits for MCP/admin
+    delivery.
     """
     from ..services.email_service import queue_email
 
-    batch_id, audit, proposal = _resolve_proposal(proposal_id)
+    # Resolve initial batch_id (snapshot lookup); the live state is
+    # re-fetched inside the lock below.
+    batch_id, _audit_snapshot, _proposal_snapshot = _resolve_proposal(proposal_id)
 
-    # Run all safety guards before touching any state
-    _assert_can_queue(proposal, audit)
+    with proposal_write_lock(batch_id):
+        # Re-load audit fresh inside the lock. The snapshot from
+        # _resolve_proposal is staler than what's on disk; all guards must
+        # run against the current state.
+        audit = _load_audit(batch_id)
+        proposal = _get_proposal(audit, proposal_id)
 
-    draft    = proposal["draft"]
-    email_id = queue_email(
-        to        = draft["to"],
-        subject   = draft["subject"],
-        body_html = draft.get("body_html") or f"<pre>{draft.get('body_text', '')}</pre>",
-        body_text = draft.get("body_text", ""),
-        batch_id  = batch_id,
-        cc        = draft.get("cc", ""),
-    )
+        # Run all safety guards (G1..G8 + G9 for proactive)
+        _assert_can_queue(proposal, audit)
 
-    proposal["status"]    = "queued"
-    proposal["email_id"]  = email_id
-    proposal["queued_at"] = _now()
+        draft     = proposal["draft"]
+        prop_type = proposal.get("type", "")
+        is_proactive = (prop_type == "dhl_proactive_dispatch")
 
-    _save_audit(batch_id, audit)
-    tl.log_event(
-        _audit_path(batch_id),
-        tl.EV_EMAIL_QUEUED,
-        "admin",
-        actor=proposal["approved_by"],
-        detail={
-            "proposal_id":   proposal_id,
-            "proposal_type": proposal["type"],
-            "email_id":      email_id,
-            "to":            draft["to"],
-            "approved_by":   proposal["approved_by"],
-        },
-    )
+        # ── Resolve authoritative recipients ──────────────────────────────
+        # For proactive dispatch: read settings at queue time. Drafts are
+        # not authoritative.
+        # For all other types: pass through draft.to / draft.cc unchanged
+        # (existing behaviour preserved).
+        if is_proactive:
+            to_addr, cc_addr, env_error = _resolve_proactive_recipients()
+            if env_error:
+                # Production fail-loud: do not queue, do not write any
+                # audit field, do not emit a timeline event.
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error":  env_error,
+                        "guard":  "config_missing",
+                        "reason": "settings.dhl_customs_email is empty in a "
+                                  "non-dev environment.",
+                    },
+                )
+        else:
+            to_addr = draft.get("to", "")
+            cc_addr = draft.get("cc", "")
+
+        # ── queue_email — type-discriminated failure handling ─────────────
+        if is_proactive:
+            try:
+                email_id = queue_email(
+                    to        = to_addr,
+                    subject   = draft["subject"],
+                    body_html = draft.get("body_html") or f"<pre>{draft.get('body_text', '')}</pre>",
+                    body_text = draft.get("body_text", ""),
+                    batch_id  = batch_id,
+                    cc        = cc_addr,
+                )
+            except Exception as exc:
+                # Proactive-only: capture failure into audit, log timeline,
+                # leave proposal in "approved" so operator can retry.
+                detail = _record_proactive_failure(audit, proposal, exc)
+                _save_audit(batch_id, audit)
+                tl.log_event(
+                    _audit_path(batch_id),
+                    tl.EV_DHL_PROACTIVE_DISPATCH_FAILED,
+                    "admin",
+                    actor=proposal.get("approved_by") or "system",
+                    detail=detail,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error":       "queue_failed",
+                        "proposal_id": proposal_id,
+                        "reason":      detail["error_summary"],
+                    },
+                ) from exc
+        else:
+            # Existing six types: exception bubbles up unchanged.
+            email_id = queue_email(
+                to        = to_addr,
+                subject   = draft["subject"],
+                body_html = draft.get("body_html") or f"<pre>{draft.get('body_text', '')}</pre>",
+                body_text = draft.get("body_text", ""),
+                batch_id  = batch_id,
+                cc        = cc_addr,
+            )
+
+        # ── Mutate proposal + audit + write ───────────────────────────────
+        proposal["status"]    = "queued"
+        proposal["email_id"]  = email_id
+        proposal["queued_at"] = _now()
+
+        if is_proactive:
+            now_iso = _now()
+            audit["proactive_dispatch_sent_at"]      = now_iso
+            audit["proactive_dispatch_email_id"]     = email_id
+            audit["proactive_dispatch_recipient"]    = to_addr
+            audit["proactive_dispatch_cc"]           = cc_addr
+            audit["proactive_dispatch_attachments"]  = [
+                Path(a["path"]).name
+                for a in (draft.get("attachments") or [])
+                if a.get("path")
+            ]
+
+        _save_audit(batch_id, audit)
+
+        # ── Timeline events ───────────────────────────────────────────────
+        tl.log_event(
+            _audit_path(batch_id),
+            tl.EV_EMAIL_QUEUED,
+            "admin",
+            actor=proposal["approved_by"],
+            detail={
+                "proposal_id":   proposal_id,
+                "proposal_type": prop_type,
+                "email_id":      email_id,
+                "to":            to_addr,
+                "approved_by":   proposal["approved_by"],
+            },
+        )
+        if is_proactive:
+            tl.log_event(
+                _audit_path(batch_id),
+                tl.EV_DHL_PROACTIVE_DISPATCH_SENT,
+                "admin",
+                actor=proposal["approved_by"],
+                detail={
+                    "batch_id":         batch_id,
+                    "proposal_id":      proposal_id,
+                    "awb":              audit.get("awb") or audit.get("dhl_awb") or audit.get("tracking_no") or "",
+                    "approved_by":      proposal["approved_by"],
+                    "email_id":         email_id,
+                    "attachment_count": len(audit.get("proactive_dispatch_attachments") or []),
+                    "recipient":        to_addr,
+                },
+            )
+
     return {
         "status":      "queued",
         "proposal_id": proposal_id,
         "email_id":    email_id,
-        "to":          draft["to"],
+        "to":          to_addr,
     }
 
 

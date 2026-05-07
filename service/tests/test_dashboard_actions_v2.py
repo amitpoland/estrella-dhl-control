@@ -61,7 +61,7 @@ def pz_done_audit() -> dict:
         "polish_desc_filename": "POLISH_TEST.pdf",
         "dsk_filename":         "DSK_TEST.pdf",
         "totals":               {"net": 1000.0, "gross": 1230.0, "duty": 100.0, "line_count": 5},
-        "clearance_decision":   {"clearance_path": "external_agency_clearance"},
+        "clearance_decision":   {"clearance_path": "agency_clearance"},
     }
 
 

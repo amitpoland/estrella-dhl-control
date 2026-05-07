@@ -5849,9 +5849,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                   const pathColor  = isAgency  ? 'var(--badge-amber-text)' :
                                     isCarrier  ? 'var(--badge-green-text)' :
                                                  'var(--text-3)';
-                  const dhlAction  = isAgency  ? '📨 Send DSK Transfer to DHL' :
-                                    isCarrier  ? '📝 Send Polish Description to DHL' :
-                                                 '— (determine after CIF parsed)';
+                  // dhlAction CTA strings removed in the action-panel
+                  // consolidation — the authoritative next-action button
+                  // now lives in DhlActionCard. The legacy "Send Polish
+                  // Description to DHL" / "Send DSK Transfer to DHL"
+                  // labels duplicated that surface and confused operators
+                  // about which button to click.
                   return (
                     <div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>DHL Clearance Values</div>
@@ -5879,8 +5882,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Clearance Routing</div>
                         <InfoRow label="Clearance Path"
                           value={<span style={{ color: pathColor, fontWeight: 600 }}>{pathLabel}</span>} />
-                        <InfoRow label="DHL Action"
-                          value={<span style={{ color: isAgency ? 'var(--badge-amber-text)' : isCarrier ? 'var(--text)' : 'var(--text-3)', fontSize: 11 }}>{dhlAction}</span>} />
+                        {/* "DHL Action" InfoRow removed — DhlActionCard is
+                            authoritative for the next-action surface. */}
                         {isAgency && (
                           <InfoRow label="Agency"
                             value={<span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>{dec.agency || 'Agencja Celna Spedycja'}</span>} />
@@ -6082,7 +6085,17 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       )}
                     </div>
 
-                    {/* C. Reply workflow — one button per stage */}
+                    {/* C. Reply workflow — collapsed under "Advanced /
+                        Manual DHL tools" because DhlActionCard is now the
+                        authoritative next-action surface. The buttons here
+                        (Find DHL Emails, Build DHL Reply Package, queued-
+                        reply SMTP fallback) remain accessible for manual
+                        recovery / debug paths but are no longer the first
+                        thing operator sees. */}
+                    <details data-testid="dhl-advanced-tools" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
+                      <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', marginBottom: 8 }}>
+                        ▸ Advanced / Manual DHL tools
+                      </summary>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                       <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginRight: 4 }}>DHL Reply</span>
 
@@ -6267,19 +6280,25 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         </div>
                       </details>
                     )}
+                    </details>
                   </div>
                 );
               })()}
-              {/* ── Manual fallback row — separated below primary actions ── */}
+              {/* ── Manual fallback row — also under collapsed Advanced
+                  tools to keep operator focus on DhlActionCard. */}
               {!v2Active && (
-              <div style={{ padding: '0 20px 16px', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', borderTop: '1px dashed var(--border)', paddingTop: 8, marginTop: 4 }}>
-                <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Manual fallback</span>
-                <Btn variant="ghost" disabled={!!busy.markRec}
-                  title="Use only if Cowork email search returned 0 matches or is unavailable"
-                  onClick={() => { setMarkRecFields(_markRecDefaults); setConfirmingMarkRec(true); }}>
-                  {busy.markRec ? '⟳ Marking…' : '↩ Manual: Mark DHL Received'}
-                </Btn>
-              </div>
+              <details data-testid="dhl-manual-mark-received" style={{ padding: '0 20px 16px' }}>
+                <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', padding: '4px 0' }}>
+                  ▸ Advanced / Manual DHL tools — Mark DHL email received
+                </summary>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', borderTop: '1px dashed var(--border)', paddingTop: 8, marginTop: 4 }}>
+                  <Btn variant="ghost" disabled={!!busy.markRec}
+                    title="Use only if Cowork email search returned 0 matches or is unavailable"
+                    onClick={() => { setMarkRecFields(_markRecDefaults); setConfirmingMarkRec(true); }}>
+                    {busy.markRec ? '⟳ Marking…' : '↩ Manual: Mark DHL Received'}
+                  </Btn>
+                </div>
+              </details>
               )}
               <div>
                 {/* DHL Reply Lifecycle Tracker — visible once any reply activity begins */}
@@ -7041,7 +7060,11 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           )}
                         </div>
                       )}
-                      <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <details data-testid="dhl-docs-upload-tools" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', marginBottom: 6 }}>
+                          ▸ Advanced / Manual: Upload DHL documents
+                        </summary>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         <label data-testid="dhl-docs-upload-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: dhlDocsBusy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: dhlDocsBusy ? 'var(--text-3)' : 'var(--text)', background: 'transparent', opacity: dhlDocsBusy ? 0.6 : 1, width: 'fit-content' }}>
                           <input
                             data-testid="dhl-docs-file-input"
@@ -7081,7 +7104,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           {dhlDocsBusy ? '⟳ Uploading…' : '⊞ Upload DHL documents'}
                         </label>
                         <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Accepted: .pdf, .xml, .html, .htm, .jpg, .jpeg, .png</div>
-                      </div>
+                        </div>
+                      </details>
 
                       {dhlDocsResult && (
                         <div data-testid="dhl-docs-upload-success" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
@@ -7141,7 +7165,11 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         </div>
                       )}
 
-                      <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <details data-testid="agency-docs-upload-tools" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', marginBottom: 6 }}>
+                          ▸ Advanced / Manual: Upload agency documents
+                        </summary>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         <label data-testid="agency-docs-upload-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: agencyDocsBusy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: agencyDocsBusy ? 'var(--text-3)' : 'var(--text)', background: 'transparent', opacity: agencyDocsBusy ? 0.6 : 1, width: 'fit-content' }}>
                           <input
                             data-testid="agency-docs-file-input"
@@ -7184,7 +7212,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         <div data-testid="agency-docs-accepted-extensions" style={{ fontSize: 10, color: 'var(--text-3)' }}>
                           Accepted: .pdf, .xml, .html, .htm, .jpg, .jpeg, .png
                         </div>
-                      </div>
+                        </div>
+                      </details>
 
                       {agencyDocsResult && (
                         <div data-testid="agency-docs-success" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
@@ -7352,8 +7381,11 @@ function StatsRow({ stats }) {
 }
 
 function DhlClearancePage({ batches, onViewShipment }) {
-  const [scanning, setScanning] = React.useState(false);
-  const [scanResult, setScanResult] = React.useState(null);
+  // The standalone "Find DHL Emails" Card (formerly between the StatsRow
+  // and the awaiting-reply table) was removed as a duplicate of the
+  // per-batch scan inside <details data-testid="dhl-advanced-tools">.
+  // The cross-shipment overview keeps its stats + tables; per-batch scans
+  // remain reachable from each batch's DHL Action card.
   const dhl = batches.filter(s => s.carrier === 'DHL');
   return (
     <div style={{ padding: '24px 32px', overflowY: 'auto', flex: 1 }}>
@@ -7363,45 +7395,6 @@ function DhlClearancePage({ batches, onViewShipment }) {
         { label: 'Reply Queued / Sent', value: dhl.filter(s => s.dhlStatus === 'Reply Queued' || s.dhlStatus === 'Reply Sent').length, color: 'var(--badge-amber-text)' },
         { label: 'Pre-check Complete', value: dhl.filter(s => s.dhlStatus === 'Pre-check Completed').length, color: 'var(--badge-green-text)' },
       ]} />
-      <Card style={{ padding: '16px 20px', marginBottom: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: scanResult ? 14 : 0 }}>
-          <div style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>DHL Inbox Scanner</div>
-          <Btn variant="outline" onClick={async () => {
-            setScanning(true);
-            try { const r = await apiFetch('/api/v1/dhl/scan-inbox'); setScanResult(r); }
-            catch (e) { setScanResult({ matched: 0, scanned: 0, emails: [], error: e.message }); }
-            setScanning(false);
-          }}>
-            {scanning ? '⟳ Searching…' : '⌕ Find DHL Emails'}
-          </Btn>
-          {scanResult && !scanning && (
-            <span style={{ fontSize: 11, fontWeight: 700, color: scanResult.matched > 0 ? 'var(--badge-amber-text)' : 'var(--badge-green-text)' }}>
-              {scanResult.matched > 0 ? `⚑ ${scanResult.matched} email${scanResult.matched !== 1 ? 's' : ''} matched` : '✓ No new emails'}
-            </span>
-          )}
-        </div>
-        {scanResult && (
-          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
-              Scan Summary · {scanResult.scanned} checked
-              {scanResult.scanned_at && <span style={{ fontWeight: 400, marginLeft: 8 }}>{scanResult.scanned_at.slice(0,16).replace('T',' ')} UTC</span>}
-            </div>
-            {scanResult.matched === 0 && <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '6px 0' }}>No DHL customs emails found in inbox.</div>}
-            {(scanResult.emails || []).map((em, i) => (
-              <div key={i} style={{ padding: '10px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', marginBottom: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: em.body_snippet ? 6 : 0 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{em.subject || em.raw_subject || '—'}</span>
-                  {em.awb && <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)', fontWeight: 700, whiteSpace: 'nowrap' }}>AWB {em.awb}</span>}
-                  {em.dhl_ticket && <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: 'var(--badge-neutral-bg)', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{em.dhl_ticket}</span>}
-                  {em.routing_hint && em.routing_hint !== 'unknown' && <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', whiteSpace: 'nowrap' }}>{em.routing_hint.replace(/_/g,' ')}</span>}
-                  {em.received_at && <span style={{ fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{em.received_at.slice(0,10)}</span>}
-                </div>
-                {em.body_snippet && <div style={{ fontSize: 10, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{em.body_snippet.slice(0,160)}</div>}
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
       <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Awaiting DHL Email / Reply Required</div>
       <ShipmentsTable batches={batches} onViewShipment={onViewShipment} filterFn={s => s.dhlStatus === 'Awaiting DHL Email' || s.dhlStatus === 'DHL Email Received'} emptyMsg="No shipments awaiting DHL email" />
       <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8, marginTop: 24 }}>All DHL Shipments</div>
@@ -8889,6 +8882,188 @@ const EE_STATUS_STYLE = {
   processed: { color: 'var(--accent)',           bg: 'var(--accent-subtle)',  label: 'processed' },
 };
 
+// ── DHL action card — operator next-action guidance ─────────────────────────
+//
+// Reads the read-only /dhl-action-state endpoint and renders the single
+// primary button operator should click next. Buttons NEVER call queue_email
+// directly — they go through:
+//   * /generate-customs-package    (creates files, no email)
+//   * /proactive-dispatch          (creates proposal, no email queued)
+//   * /action-proposals/{id}/approve / queue   (existing approve+queue lane)
+//
+// On any 200 response from a button, the parent EmailEvidenceTimeline reload
+// callback is invoked so the badges and stages refresh.
+
+const BADGE_TONE = {
+  ok:   { bg: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: 'var(--badge-green-border)' },
+  warn: { bg: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', border: 'var(--badge-amber-border)' },
+  info: { bg: 'var(--badge-blue-bg)',  color: 'var(--badge-blue-text)',  border: 'var(--badge-blue-border)'  },
+};
+
+function DhlActionCard({ batchId, onAfterAction }) {
+  const [state, setState] = React.useState(null);
+  const [err,   setErr]   = React.useState(null);
+  const [busy,  setBusy]  = React.useState(null);
+
+  const reload = React.useCallback(async () => {
+    try {
+      const res = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/dhl-action-state`, { credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setState(await res.json()); setErr(null);
+    } catch (e) { setErr(e.message); }
+  }, [batchId]);
+
+  React.useEffect(() => { reload(); }, [reload]);
+
+  const runAction = async (action) => {
+    if (!action || action.disabled) return;
+    // For approve_proactive_proposal we ask the operator for an approver id
+    // (must differ from created_by — server enforces self-approval block).
+    let body = action.body || {};
+    if (action.id === 'approve_proactive_proposal') {
+      const who = window.prompt('Approver (must differ from requester):', '');
+      if (!who) return;
+      body = { approved_by: who };
+    } else if (action.id === 'proactive_dispatch_request') {
+      const op = window.prompt('Your operator id:', '');
+      if (!op) return;
+      body = { operator_id: op };
+    }
+    setBusy(action.id);
+    try {
+      const res = await fetch(action.endpoint, {
+        method: action.method || 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = j.detail?.error || j.detail?.message || j.detail || j.error || `HTTP ${res.status}`;
+        window.alert(`Action failed: ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`);
+      } else {
+        const ok = j.ok !== false;
+        const summary = j.proposal_id ? `proposal_id=${j.proposal_id}` :
+                        j.email_id    ? `email_id=${j.email_id}`       :
+                                        'OK';
+        window.alert(`${action.label}: ${ok ? 'OK' : 'FAILED'} — ${summary}`);
+      }
+      await reload();
+      if (typeof onAfterAction === 'function') await onAfterAction();
+    } finally { setBusy(null); }
+  };
+
+  if (err) return (
+    <div style={{ padding: 10, fontSize: 11, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', borderRadius: 6, border: '1px solid var(--badge-red-border)' }}>
+      DHL action state load failed: {err}
+    </div>
+  );
+  if (!state) return null;
+
+  const a       = state.primary_action;
+  const sec     = state.secondary_actions || [];
+  const badges  = state.badges || [];
+  const infos   = state.info_messages || [];
+
+  return (
+    <div data-testid="dhl-action-card" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 18px', marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 14 }}>🎯</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Next DHL action</span>
+      </div>
+
+      {/* Detected badges */}
+      {badges.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+          {badges.map((b, i) => {
+            const t = BADGE_TONE[b.tone] || BADGE_TONE.info;
+            return (
+              <span key={i} style={{ padding: '3px 9px', fontSize: 10, fontWeight: 600, borderRadius: 4, background: t.bg, color: t.color, border: `1px solid ${t.border}` }}>
+                {b.label}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Primary action */}
+      {a ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: sec.length > 0 || infos.length > 0 ? 10 : 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              data-action-id={a.id}
+              disabled={a.disabled || busy === a.id}
+              onClick={() => runAction(a)}
+              style={{
+                padding: '8px 16px', fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
+                borderRadius: 6, cursor: (a.disabled || busy === a.id) ? 'not-allowed' : 'pointer',
+                border: '1px solid var(--accent-border)',
+                background: a.disabled ? 'var(--bg-subtle)' : 'var(--accent-subtle)',
+                color: a.disabled ? 'var(--text-3)' : 'var(--accent)',
+                opacity: (a.disabled || busy === a.id) ? 0.6 : 1,
+              }}>
+              {busy === a.id ? '⟳…' : `▶ ${a.label}`}
+            </button>
+            {a.proposal_status && (
+              <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                proposal: {a.proposal_status}{a.proposal_id ? ` (${String(a.proposal_id).slice(0, 8)}…)` : ''}
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.4 }}>
+            {a.reason}
+          </div>
+          {a.disabled && a.disabled_reason && (
+            <div style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>
+              ⚠ {a.disabled_reason}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: infos.length > 0 ? 10 : 0 }}>
+          {state.state_summary}
+        </div>
+      )}
+
+      {/* Secondary actions (e.g. Prepare reply to DHL thread) */}
+      {sec.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: infos.length > 0 ? 10 : 0, borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
+          {sec.map((s, i) => (
+            <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <button
+                data-action-id={s.id}
+                disabled={s.disabled || busy === s.id}
+                onClick={() => runAction(s)}
+                style={{
+                  alignSelf: 'flex-start',
+                  padding: '6px 14px', fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+                  borderRadius: 5, cursor: (s.disabled || busy === s.id) ? 'not-allowed' : 'pointer',
+                  border: '1px solid var(--border)',
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  opacity: (s.disabled || busy === s.id) ? 0.6 : 1,
+                }}>
+                {busy === s.id ? '⟳…' : s.label}
+              </button>
+              <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{s.reason}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Info messages — shown when an action would otherwise be redundant */}
+      {infos.length > 0 && (
+        <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {infos.map((msg, i) => (
+            <div key={i} style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic' }}>· {msg}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function EmailEvidenceTimeline({ batchId }) {
   const [data, setData] = React.useState(null);
   const [err,  setErr]  = React.useState(null);
@@ -8944,7 +9119,13 @@ function EmailEvidenceTimeline({ batchId }) {
   const messages = data.messages || [];
 
   return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 18px' }}>
+    <React.Fragment>
+      {/* DHL action card — operator next-action guidance, rendered above the
+          milestone grid so the operator always sees what to do next, not just
+          a row of "missing" badges. The card refreshes the evidence timeline
+          after any successful action. */}
+      <DhlActionCard batchId={batchId} onAfterAction={reload} />
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 18px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
         <span style={{ fontSize: 14 }}>📧</span>
         <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Email Evidence Timeline</span>
@@ -8999,7 +9180,8 @@ function EmailEvidenceTimeline({ batchId }) {
           </div>
         </details>
       )}
-    </div>
+      </div>
+    </React.Fragment>
   );
 }
 
