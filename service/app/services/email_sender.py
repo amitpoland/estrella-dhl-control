@@ -65,6 +65,24 @@ def _find_queue_entry(queue_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _mark_queue_error(queue_id: str, error: str, error_detail: str) -> None:
+    """Write a non-blocking error marker onto the queue entry so retries can
+    see why a prior send was refused. Does NOT change status — the entry
+    stays 'pending' so it remains retryable after the underlying issue
+    (missing file, unresolved attachment) is fixed."""
+    try:
+        queue = _load_queue()
+        for e in queue:
+            if e.get("id") == queue_id:
+                e["error"]              = error
+                e["error_detail"]       = (error_detail or "")[:500]
+                e["last_send_attempt_at"] = datetime.now(timezone.utc).isoformat()
+                break
+        _save_queue(queue)
+    except Exception:
+        pass
+
+
 def _split_recipients(value: str) -> List[str]:
     if not value:
         return []
@@ -85,8 +103,16 @@ def _dedupe_addresses(addrs: List[str]) -> List[str]:
 def _attachments_for_queue(queue_entry: Dict[str, Any]) -> Tuple[List[Path], List[str]]:
     """
     Resolve attachment paths for this queue entry by reading the linked batch's
-    audit.json (agency_reply_package or dhl_reply_package). Returns
-    (existing_paths, missing_labels).
+    audit.json. Looks in three locations, in priority order, matched by the
+    queue entry's id (== proposal.email_id):
+
+      1. action_proposals[*].draft.attachments   (dhl_proactive_dispatch and
+         any other proposal-driven email)
+      2. agency_reply_package.attachments
+      3. dhl_reply_package.attachments
+
+    Falls back to the union of all (1)+(2)+(3) when no match found.
+    Returns (existing_paths, missing_labels).
     """
     batch_id = queue_entry.get("batch_id", "")
     if not batch_id:
@@ -101,16 +127,29 @@ def _attachments_for_queue(queue_entry: Dict[str, Any]) -> Tuple[List[Path], Lis
     except Exception:
         return [], []
 
-    # Prefer the package whose email_id matches this queue entry
     qid = queue_entry.get("id", "")
-    candidates = []
-    for key in ("agency_reply_package", "dhl_reply_package"):
-        pkg = audit.get(key) or {}
-        if pkg.get("email_id") == qid:
-            candidates = pkg.get("attachments") or []
+    candidates: List[Any] = []
+
+    # 1. Proposal-driven email — match by proposal.email_id
+    for prop in (audit.get("action_proposals") or []):
+        if prop.get("email_id") == qid:
+            draft = prop.get("draft") or {}
+            candidates = list(draft.get("attachments") or [])
             break
+
+    # 2/3. Reply-package fallback — match by package.email_id
     if not candidates:
-        # Fallback: union of all packages
+        for key in ("agency_reply_package", "dhl_reply_package"):
+            pkg = audit.get(key) or {}
+            if pkg.get("email_id") == qid:
+                candidates = list(pkg.get("attachments") or [])
+                break
+
+    # Last-resort union (unchanged legacy behaviour)
+    if not candidates:
+        for prop in (audit.get("action_proposals") or []):
+            for a in ((prop.get("draft") or {}).get("attachments") or []):
+                candidates.append(a)
         for key in ("agency_reply_package", "dhl_reply_package"):
             pkg = audit.get(key) or {}
             for a in (pkg.get("attachments") or []):
@@ -127,6 +166,35 @@ def _attachments_for_queue(queue_entry: Dict[str, Any]) -> Tuple[List[Path], Lis
             else:
                 missing.append(a.get("label") or path_str)
     return found, missing
+
+
+def _expected_attachment_count(queue_entry: Dict[str, Any]) -> int:
+    """How many attachments SHOULD this queue entry carry, per the linked
+    proposal/package? Used to detect the silent-send bug where attachments
+    were declared upstream but the resolver returned an empty list. Returns
+    0 when no proposal or package is found, in which case 'no attachments'
+    is a valid send (e.g. plain admin notification)."""
+    batch_id = queue_entry.get("batch_id", "")
+    if not batch_id:
+        return 0
+    audit_path = settings.storage_root / "outputs" / batch_id / "audit.json"
+    if not audit_path.exists():
+        audit_path = settings.storage_root / "working" / batch_id / "audit.json"
+    if not audit_path.exists():
+        return 0
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    qid = queue_entry.get("id", "")
+    for prop in (audit.get("action_proposals") or []):
+        if prop.get("email_id") == qid:
+            return len(((prop.get("draft") or {}).get("attachments")) or [])
+    for key in ("agency_reply_package", "dhl_reply_package"):
+        pkg = audit.get(key) or {}
+        if pkg.get("email_id") == qid:
+            return len(pkg.get("attachments") or [])
+    return 0
 
 
 def _build_mime(
@@ -280,12 +348,36 @@ def send_queued_email(
     # ── Resolve attachments ───────────────────────────────────────────────
     attach_paths, missing = _attachments_for_queue(entry)
     if missing:
+        # Persist failure marker on the queue entry so a retry doesn't
+        # silently send body-only.
+        _mark_queue_error(queue_id, "attachments_missing",
+                          f"Files not found on disk: {missing}")
         return {
             "ok":       False,
             "queue_id": queue_id,
             "status":   entry.get("status", "pending"),
             "error":    "attachments_missing",
             "error_detail": f"Files not found on disk: {missing}",
+        }
+
+    # Silent-send guard: if upstream declared attachments but the resolver
+    # returned zero (e.g. proposal-draft attachments not visible to the
+    # resolver), abort. Body-only delivery for an attachment-bearing email
+    # is the bug this gate prevents.
+    expected_count = _expected_attachment_count(entry)
+    if expected_count > 0 and len(attach_paths) == 0:
+        reason = (
+            f"resolver returned 0 attachments but batch declares "
+            f"{expected_count} — refusing to send body-only."
+        )
+        _mark_queue_error(queue_id, "attachments_unresolved", reason)
+        log.warning("[email_sender] %s queue=%s", reason, queue_id)
+        return {
+            "ok":           False,
+            "queue_id":     queue_id,
+            "status":       entry.get("status", "pending"),
+            "error":        "attachments_unresolved",
+            "error_detail": reason,
         }
 
     # SMTP authenticates as smtp_user (amit@), but FROM may be an alias
@@ -308,9 +400,10 @@ def send_queued_email(
     # ── Connect + send ────────────────────────────────────────────────────
     all_recipients = to_list + cc_list
     log.info(
-        "[email_sender] sending queue=%s subject=%r to=%d cc=%d attach=%d host=%s",
+        "[email_sender] sending queue=%s subject=%r to=%d cc=%d attach=%d host=%s files=%s",
         queue_id, entry.get("subject", ""), len(to_list), len(cc_list),
         len(attach_paths), settings.smtp_host,
+        [p.name for p in attach_paths],
     )
     try:
         ctx = ssl.create_default_context()

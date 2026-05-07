@@ -901,6 +901,8 @@ def _generate_pdf(
 
     inv_refs = (batch.get("inputs") or {}).get("invoice_refs") or []
     if not inv_refs:
+        inv_refs = _extract_invoice_refs_from_names(batch)
+    if not inv_refs:
         seen: set = set()
         for ln in lines:
             if ln["invoice_number"] and ln["invoice_number"] not in seen:
@@ -999,8 +1001,9 @@ def _generate_pdf(
     # ── Header info grid (bilingual labels) ───────────────────────────────────
     inv_refs_str = ", ".join(str(r) for r in inv_refs) if inv_refs else "—"
     inv_count    = (
-        len(invoices) if invoices
-        else len(set(ln["invoice_number"] for ln in lines if ln["invoice_number"])) or len(inv_refs)
+        len(inv_refs) if inv_refs
+        else (len(invoices) if invoices
+              else len(set(ln["invoice_number"] for ln in lines if ln["invoice_number"])))
     )
 
     hdr_data = [
@@ -1039,12 +1042,17 @@ def _generate_pdf(
     # Group lines by invoice_number preserving original order
     inv_groups: dict[str, list] = {}
     inv_order: list[str] = []
+    # Preserve the inv_refs ordering when present (so groups appear in
+    # invoice-number order rather than first-line order).
+    _ref_index = {str(r): i for i, r in enumerate(inv_refs)} if inv_refs else {}
     for ln in lines:
         inv_no = ln["invoice_number"] or "—"
         if inv_no not in inv_groups:
             inv_groups[inv_no] = []
             inv_order.append(inv_no)
         inv_groups[inv_no].append(ln)
+    if _ref_index:
+        inv_order.sort(key=lambda x: _ref_index.get(x, 10**9))
 
     LABEL_W = 42 * mm
     VALUE_W = CONTENT_W - LABEL_W
@@ -1172,14 +1180,99 @@ def _generate_pdf(
         story.append(subtot_tbl)
         story.append(Spacer(1, 4 * mm))
 
-    # ── Grand total ───────────────────────────────────────────────────────────
-    total_usd = sum(ln["line_total_usd"] for ln in lines)
-    total_qty = sum(ln["quantity"]        for ln in lines)
+    # ── Consolidated customs summary (per item type, across all invoices) ────
+    type_groups = _consolidate_by_type(lines)
+    if type_groups:
+        story.append(Spacer(1, 4 * mm))
+        story.append(HRFlowable(width="100%", thickness=0.6, color=BLACK, spaceAfter=2))
+        story.append(Paragraph(
+            "PODSUMOWANIE / CONSOLIDATED CUSTOMS SUMMARY", INV_HDR,
+        ))
+
+        sum_header = [
+            Paragraph("Typ / Type",        SUBTOT_S),
+            Paragraph("Ilość / Qty",       SUBTOT_S),
+            Paragraph("Wartość / Value",   SUBTOT_S),
+        ]
+        sum_rows = [sum_header]
+        # uom per type from the synthetic line (first line of each type)
+        type_uom: dict[str, str] = {}
+        for ln in lines:
+            t = ln.get("item_type") or ""
+            if t and t not in type_uom:
+                type_uom[t] = ln.get("uom") or "PCS"
+        for grp in type_groups:
+            t = grp["item_type"]
+            uom = type_uom.get(t, "PCS")
+            qty = grp["total_qty"]
+            qty_disp = "{:.0f}".format(qty) if qty == int(qty) else "{}".format(qty)
+            sum_rows.append([
+                Paragraph(t,                                       FIELD_VAL),
+                Paragraph(f"{qty_disp} {uom}",                     FIELD_VAL),
+                Paragraph("USD {:,.2f}".format(grp["total_value_usd"]), FIELD_VAL),
+            ])
+        sum_tbl = Table(
+            sum_rows,
+            colWidths=[CONTENT_W * 0.45, CONTENT_W * 0.25, CONTENT_W * 0.30],
+        )
+        sum_tbl.setStyle(TableStyle([
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING",    (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+            ("BOX",           (0, 0), (-1, -1), 0.5, BLACK),
+            ("INNERGRID",     (0, 0), (-1, -1), 0.3, RULE_GRAY),
+            ("BACKGROUND",    (0, 0), (-1, 0),  LIGHT_GRAY),
+            ("ALIGN",         (1, 1), (2, -1),  "RIGHT"),
+        ]))
+        story.append(sum_tbl)
+        story.append(Spacer(1, 3 * mm))
+
+    # ── Financial breakdown (FOB + freight + insurance = CIF) ────────────────
+    fob_usd       = _safe_float(invoice_totals.get("total_fob_usd"))
+    freight_usd   = _safe_float(invoice_totals.get("total_freight_usd"))
+    insurance_usd = _safe_float(invoice_totals.get("total_insurance_usd"))
+    total_qty = sum(ln["quantity"] for ln in lines)
+    # Grand total is the customs value (CIF). Fall back to sum of line totals
+    # only when CIF is unavailable.
+    grand_total_usd = cif_usd or sum(ln["line_total_usd"] for ln in lines)
+
+    if fob_usd is not None or freight_usd is not None or insurance_usd is not None:
+        breakdown_rows = []
+        if fob_usd is not None:
+            breakdown_rows.append([
+                Paragraph("Wartość FOB / FOB Value:", SUBTOT_S),
+                Paragraph("USD {:,.2f}".format(fob_usd), SUBTOT_S),
+            ])
+        if freight_usd is not None:
+            breakdown_rows.append([
+                Paragraph("Fracht / Freight:", SUBTOT_S),
+                Paragraph("USD {:,.2f}".format(freight_usd), SUBTOT_S),
+            ])
+        if insurance_usd is not None:
+            breakdown_rows.append([
+                Paragraph("Ubezpieczenie / Insurance:", SUBTOT_S),
+                Paragraph("USD {:,.2f}".format(insurance_usd), SUBTOT_S),
+            ])
+        if breakdown_rows:
+            breakdown_tbl = Table(breakdown_rows, colWidths=[CONTENT_W * 0.5, CONTENT_W * 0.5])
+            breakdown_tbl.setStyle(TableStyle([
+                ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING",    (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+                ("ALIGN",         (1, 0), (1, -1), "RIGHT"),
+            ]))
+            story.append(breakdown_tbl)
+
+    # ── Grand total (uses CIF customs value) ──────────────────────────────────
     story.append(HRFlowable(width="100%", thickness=1, color=BLACK, spaceAfter=2))
     grand_tbl = Table(
         [[
-            Paragraph("RAZEM / GRAND TOTAL:", GRAND_S),
-            Paragraph("{:.0f} PCS  |  USD {:,.2f}".format(total_qty, total_usd), GRAND_S),
+            Paragraph("RAZEM CIF / TOTAL CIF (customs value):", GRAND_S),
+            Paragraph("{:.0f} PCS  |  USD {:,.2f}".format(total_qty, grand_total_usd), GRAND_S),
         ]],
         colWidths=[CONTENT_W * 0.5, CONTENT_W * 0.5],
     )
@@ -1322,6 +1415,25 @@ def generate_customs_description_package(
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
+def _extract_invoice_refs_from_names(batch: dict) -> list[str]:
+    """
+    Parse the leading numeric token from each entry in audit['invoice_names'].
+    E.g. "121 Invoice EJL-26-27-121-04-05-26.pdf" → "121".
+    Falls back to the truncated stem when no leading numeric token is found.
+    Returns [] when invoice_names is absent.
+    """
+    names = batch.get("invoice_names") or []
+    refs: list[str] = []
+    for name in names:
+        stem = Path(name).stem
+        token = stem.split()[0] if stem.split() else stem
+        if re.match(r"^\d+$", token):
+            refs.append(token)
+        else:
+            refs.append(stem[:40])
+    return refs
+
+
 def _extract_invoices(batch: dict) -> list[dict]:
     """Pull the invoices list from wherever it lives in the batch dict."""
     result = batch.get("result") or batch
@@ -1393,8 +1505,26 @@ def _build_synthetic_lines_from_totals(batch: dict) -> list[dict]:
     if total_items == 0:
         return []
 
-    inv_refs = (batch.get("inputs") or {}).get("invoice_refs") or ["N/A"]
-    inv_no = inv_refs[0] if inv_refs else "N/A"
+    # Prefer real invoice refs: inputs.invoice_refs → invoice_names parsing.
+    # When multiple refs exist we DO NOT have per-invoice attribution at this
+    # fallback level. We synthesize per-invoice rows by distributing each
+    # item-type quantity across the invoice list using deterministic integer
+    # divmod (first `remainder` invoices receive base+1, rest receive base).
+    # The aggregate type-level totals are restored in the consolidated
+    # summary section the renderer adds at the bottom of the document; the
+    # per-invoice blocks exist for customs structural clarity.
+    inv_refs = (
+        (batch.get("inputs") or {}).get("invoice_refs")
+        or _extract_invoice_refs_from_names(batch)
+        or []
+    )
+    inv_refs = [str(r) for r in inv_refs]
+
+    # When we have multiple invoice refs, each item type's qty is distributed
+    # across them using divmod. A "single-invoice or no-refs" case behaves as
+    # before (one row per type, full quantity).
+    n_inv = len(inv_refs) if inv_refs else 1
+    targets = inv_refs if inv_refs else [""]
 
     lines: list[dict] = []
     order = 0
@@ -1416,37 +1546,45 @@ def _build_synthetic_lines_from_totals(batch: dict) -> list[dict]:
 
         norm = normalize_item_description(raw_desc, item_type=itype)
 
-        # Proportional value allocation
+        # Type-level value (proportional to type qty in total_items, FOB-based).
         prop = count / total_items
-        line_val = round(fob_usd * prop, 2)
-        unit_p   = round(line_val / count, 2) if count else 0.0
+        type_val = round(fob_usd * prop, 2)
+        unit_p   = round(type_val / count, 2) if count else 0.0
 
-        order += 1
-        lines.append({
-            "line_order":                     order,
-            "invoice_number":                 str(inv_no),
-            "original_description":           raw_desc,
-            "normalized_english_description": norm["normalized_english"],
-            "polish_customs_description":     norm["polish_customs_description"],
-            "item_type":                      norm["item_type"],
-            "item_type_pl":                   norm["item_type_pl"],
-            "material":                       norm["material_pl"],
-            "gold_purity":                    norm["gold_purity_raw"],
-            "stones":                         norm["stones_pl"],
-            "natural_or_lab_grown":           norm["natural_or_lab"],
-            "purpose":                        norm["purpose_pl"],
-            "hs_candidate":                   norm["hs_candidate"],
-            "hsn_from_invoice":               cn_code[:8] if cn_code else "",
-            "classification_confidence":      norm["classification_confidence"],
-            "classification_flag":            norm["classification_flag"],
-            "classification_note":            norm["classification_note"],
-            "quantity":                       float(count),
-            "uom":                            uom,
-            "gross_weight_g":                 None,
-            "net_weight_g":                   None,
-            "value_usd":                      unit_p,
-            "line_total_usd":                 line_val,
-        })
+        # divmod split across invoices for THIS item type
+        base = int(count) // n_inv
+        rem  = int(count) %  n_inv
+        for i, inv_no in enumerate(targets):
+            inv_qty = base + (1 if i < rem else 0)
+            if inv_qty <= 0:
+                continue
+            order += 1
+            line_val = round(unit_p * inv_qty, 2)
+            lines.append({
+                "line_order":                     order,
+                "invoice_number":                 str(inv_no),
+                "original_description":           raw_desc,
+                "normalized_english_description": norm["normalized_english"],
+                "polish_customs_description":     norm["polish_customs_description"],
+                "item_type":                      norm["item_type"],
+                "item_type_pl":                   norm["item_type_pl"],
+                "material":                       norm["material_pl"],
+                "gold_purity":                    norm["gold_purity_raw"],
+                "stones":                         norm["stones_pl"],
+                "natural_or_lab_grown":           norm["natural_or_lab"],
+                "purpose":                        norm["purpose_pl"],
+                "hs_candidate":                   norm["hs_candidate"],
+                "hsn_from_invoice":               cn_code[:8] if cn_code else "",
+                "classification_confidence":      norm["classification_confidence"],
+                "classification_flag":            norm["classification_flag"],
+                "classification_note":            norm["classification_note"],
+                "quantity":                       float(inv_qty),
+                "uom":                            uom,
+                "gross_weight_g":                 None,
+                "net_weight_g":                   None,
+                "value_usd":                      unit_p,
+                "line_total_usd":                 line_val,
+            })
 
     return lines
 

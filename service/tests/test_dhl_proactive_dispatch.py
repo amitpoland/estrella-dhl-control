@@ -67,6 +67,10 @@ def dhl_env(monkeypatch):
     monkeypatch.setattr(settings, "dhl_customs_email", "customs@dhl.example", raising=False)
     monkeypatch.setattr(settings, "dhl_customs_cc",    "ops@estrellajewels.eu", raising=False)
     monkeypatch.setattr(settings, "api_key",          "test-key",       raising=False)
+    # SMTP off by default; tests that exercise the new autosend path
+    # explicitly patch _smtp_configured to True.
+    monkeypatch.setattr(settings, "smtp_user",        "",               raising=False)
+    monkeypatch.setattr(settings, "smtp_password",    "",               raising=False)
     return settings
 
 
@@ -893,15 +897,16 @@ class TestConcurrency:
         assert call_count["n"] == 1, (
             f"Expected queue_email called exactly once; got {call_count['n']}"
         )
-        # Exactly one thread receives 200; others receive non-200 (409 from G1
-        # after the first thread flipped status to queued)
-        successes = [s for s in statuses if s == 200]
-        assert len(successes) == 1
-        # All other threads received a non-success — typically 409
-        non_successes = [s for s in statuses if s != 200]
-        assert len(non_successes) == 3
-        for s in non_successes:
-            assert s in (409, 422, 500)
+        # Post-SMTP-autosend-fix contract:
+        #   thread 1: status=approved → queue_email + (SMTP off in dhl_env)
+        #             → 200 (queued)
+        #   threads 2-4: status=queued + email_id → proactive_retry path
+        #             → skip queue_email, SMTP off → 200 (queued)
+        # Concurrent retries no longer fail with 409; they observe the prior
+        # queue entry and short-circuit. queue_email-once invariant still holds.
+        assert all(s == 200 for s in statuses), (
+            f"All concurrent /queue calls expected 200 with SMTP off; got {statuses}"
+        )
 
     def test_real_proposal_write_lock_primitive_used(self):
         """The lock helper must return a real threading.Lock."""
@@ -961,3 +966,261 @@ def test_refresh_does_not_auto_resolve_proactive(tmp_path, client):
 
 # Phase 1.3 helper-resolution tests moved to test_email_routing.py
 # (the helpers were promoted from this module to email_routing in Phase 1.3.5).
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 12. SMTP autosend on /queue (real-send fix)
+# Pins the post-fix contract: /queue performs queue_email + send_queued_email
+# in the same request when SMTP is configured.
+# ──────────────────────────────────────────────────────────────────────────
+
+class TestQueueAutoSendsSmtp:
+
+    def test_queue_calls_send_queued_email_immediately(self, tmp_path, client):
+        """When SMTP is configured, /queue triggers send_queued_email and
+        returns delivered=True with provider_message_id + sent_at."""
+        bid, _, ap = _make_batch(tmp_path)
+        r1 = _post_proactive(client, bid, "alice")
+        proposal_id = r1.json()["proposal_id"]
+        _approve(client, proposal_id, "bob")
+
+        send_calls = []
+
+        def fake_send(queue_id, method="smtp", **kw):
+            send_calls.append({"queue_id": queue_id, "method": method})
+            return {
+                "ok":                  True,
+                "queue_id":            queue_id,
+                "status":              "sent",
+                "provider_message_id": "<smtp-msg-id-001@zoho>",
+                "sent_at":             "2026-05-07T20:50:00+00:00",
+            }
+
+        with patch("app.services.email_service.queue_email", return_value="qid-001"), \
+             patch("app.services.email_sender._smtp_configured", return_value=True), \
+             patch("app.services.email_sender.send_queued_email", side_effect=fake_send):
+            r = _queue(client, proposal_id)
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"]    == "sent"
+        assert body["delivered"] is True
+        assert body["email_id"]  == "qid-001"
+        assert body["provider_message_id"] == "<smtp-msg-id-001@zoho>"
+        assert body["sent_at"]   == "2026-05-07T20:50:00+00:00"
+
+        # send_queued_email called exactly once with the queue id
+        assert len(send_calls) == 1
+        assert send_calls[0]["queue_id"] == "qid-001"
+        assert send_calls[0]["method"]   == "smtp"
+
+        # Audit reflects delivery
+        a = _read_audit(ap)
+        assert a["proactive_dispatch_delivered_at"]        == "2026-05-07T20:50:00+00:00"
+        assert a["proactive_dispatch_provider_message_id"] == "<smtp-msg-id-001@zoho>"
+        # Proposal flipped to sent
+        prop = a["action_proposals"][0]
+        assert prop["status"]              == "sent"
+        assert prop["sent_at"]             == "2026-05-07T20:50:00+00:00"
+        assert prop["provider_message_id"] == "<smtp-msg-id-001@zoho>"
+        # Delivery timeline event present
+        events = [e["event"] for e in a["timeline"]]
+        assert "dhl_proactive_dispatch_delivered" in events
+
+    def test_smtp_failure_records_failure_markers_and_returns_502(
+        self, tmp_path, client,
+    ):
+        """SMTP failure: response is 502, audit captures failure markers,
+        proposal stays at status='queued' (retryable)."""
+        bid, _, ap = _make_batch(tmp_path)
+        r1 = _post_proactive(client, bid, "alice")
+        proposal_id = r1.json()["proposal_id"]
+        _approve(client, proposal_id, "bob")
+
+        def fail_send(queue_id, method="smtp", **kw):
+            return {
+                "ok":           False,
+                "queue_id":     queue_id,
+                "status":       "pending",
+                "error":        "smtp_auth_failed",
+                "error_detail": "535 authentication failed",
+            }
+
+        with patch("app.services.email_service.queue_email", return_value="qid-002"), \
+             patch("app.services.email_sender._smtp_configured", return_value=True), \
+             patch("app.services.email_sender.send_queued_email", side_effect=fail_send):
+            r = _queue(client, proposal_id)
+
+        assert r.status_code == 502, r.text
+        body = r.json()["detail"]
+        assert body["error"]       == "smtp_send_failed"
+        assert body["reason"]      == "smtp_auth_failed"
+        assert body["retryable"]   is True
+        assert body["email_id"]    == "qid-002"
+
+        a = _read_audit(ap)
+        assert a["proactive_dispatch_failed_at"]
+        assert a["proactive_dispatch_failure_reason"] == "smtp_auth_failed"
+        assert a["proactive_dispatch_send_error"]["reason"]       == "smtp_auth_failed"
+        assert a["proactive_dispatch_send_error"]["error_detail"] == "535 authentication failed"
+
+        # Proposal must be retryable: status remains 'queued' with email_id
+        prop = a["action_proposals"][0]
+        assert prop["status"]   == "queued"
+        assert prop["email_id"] == "qid-002"
+
+        events = [e["event"] for e in a["timeline"]]
+        assert "dhl_proactive_dispatch_send_failed" in events
+
+    def test_retry_after_smtp_failure_does_not_duplicate_queue_record(
+        self, tmp_path, client,
+    ):
+        """After SMTP failure, calling /queue again must NOT call queue_email
+        a second time. It only retries send_queued_email."""
+        bid, _, ap = _make_batch(tmp_path)
+        r1 = _post_proactive(client, bid, "alice")
+        proposal_id = r1.json()["proposal_id"]
+        _approve(client, proposal_id, "bob")
+
+        queue_calls: List[Dict[str, Any]] = []
+        def fake_queue(**kwargs):
+            queue_calls.append(kwargs)
+            return f"qid-{len(queue_calls):03d}"
+
+        # First attempt: queue ok, send fails
+        def fail_send(queue_id, method="smtp", **kw):
+            return {"ok": False, "queue_id": queue_id, "status": "pending",
+                    "error": "smtp_send_failed", "error_detail": "connection refused"}
+
+        with patch("app.services.email_service.queue_email", side_effect=fake_queue), \
+             patch("app.services.email_sender._smtp_configured", return_value=True), \
+             patch("app.services.email_sender.send_queued_email", side_effect=fail_send):
+            r = _queue(client, proposal_id)
+            assert r.status_code == 502
+
+        # Second attempt: send succeeds; queue_email must NOT be called again
+        def ok_send(queue_id, method="smtp", **kw):
+            return {"ok": True, "queue_id": queue_id, "status": "sent",
+                    "provider_message_id": "<msg-2@zoho>",
+                    "sent_at": "2026-05-07T21:00:00+00:00"}
+
+        with patch("app.services.email_service.queue_email", side_effect=fake_queue), \
+             patch("app.services.email_sender._smtp_configured", return_value=True), \
+             patch("app.services.email_sender.send_queued_email", side_effect=ok_send):
+            r2 = _queue(client, proposal_id)
+
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["status"]    == "sent"
+        assert r2.json()["delivered"] is True
+        # Critical: queue_email was called exactly once across both attempts
+        assert len(queue_calls) == 1, (
+            f"queue_email called {len(queue_calls)} times — retry duplicated queue record"
+        )
+
+    def test_already_sent_proposal_short_circuits_idempotently(
+        self, tmp_path, client,
+    ):
+        """Re-calling /queue on a proposal already marked sent returns the
+        prior delivery state without calling queue_email or SMTP."""
+        bid, _, ap = _make_batch(tmp_path)
+        r1 = _post_proactive(client, bid, "alice")
+        proposal_id = r1.json()["proposal_id"]
+        _approve(client, proposal_id, "bob")
+
+        def ok_send(queue_id, method="smtp", **kw):
+            return {"ok": True, "queue_id": queue_id, "status": "sent",
+                    "provider_message_id": "<msg-3@zoho>",
+                    "sent_at": "2026-05-07T21:10:00+00:00"}
+
+        with patch("app.services.email_service.queue_email", return_value="qid-A"), \
+             patch("app.services.email_sender._smtp_configured", return_value=True), \
+             patch("app.services.email_sender.send_queued_email", side_effect=ok_send):
+            r1q = _queue(client, proposal_id)
+            assert r1q.json()["status"] == "sent"
+
+        # Second call must short-circuit. queue_email and send_queued_email
+        # MUST NOT be invoked.
+        q_called = {"n": 0}
+        s_called = {"n": 0}
+        def trip_q(**kw):  q_called["n"] += 1; return "should-not-be-called"
+        def trip_s(*a, **kw): s_called["n"] += 1; return {"ok": True, "status": "sent"}
+
+        with patch("app.services.email_service.queue_email", side_effect=trip_q), \
+             patch("app.services.email_sender._smtp_configured", return_value=True), \
+             patch("app.services.email_sender.send_queued_email", side_effect=trip_s):
+            r2 = _queue(client, proposal_id)
+
+        assert r2.status_code == 200
+        body = r2.json()
+        assert body["status"]       == "sent"
+        assert body["already_sent"] is True
+        assert body["delivered"]    is True
+        assert body["provider_message_id"] == "<msg-3@zoho>"
+        assert q_called["n"] == 0
+        assert s_called["n"] == 0
+
+    def test_smtp_not_configured_keeps_legacy_queued_response(
+        self, tmp_path, client,
+    ):
+        """When SMTP is not configured (dev), the endpoint preserves the
+        legacy 'queued' response — does NOT call send, does NOT 502."""
+        bid, _, ap = _make_batch(tmp_path)
+        r1 = _post_proactive(client, bid, "alice")
+        proposal_id = r1.json()["proposal_id"]
+        _approve(client, proposal_id, "bob")
+
+        s_called = {"n": 0}
+        def trip_s(*a, **kw): s_called["n"] += 1; return {"ok": True, "status": "sent"}
+
+        with patch("app.services.email_service.queue_email", return_value="qid-D"), \
+             patch("app.services.email_sender._smtp_configured", return_value=False), \
+             patch("app.services.email_sender.send_queued_email", side_effect=trip_s):
+            r = _queue(client, proposal_id)
+
+        assert r.status_code == 200
+        assert r.json()["status"] == "queued"
+        assert "delivered" not in r.json() or r.json().get("delivered") in (None, False)
+        assert s_called["n"] == 0
+
+    def test_non_proactive_queue_does_not_call_send(self, tmp_path, client):
+        """Non-proactive proposal types must keep their existing behavior:
+        /queue returns 'queued' and does NOT call send_queued_email."""
+        bid, _, ap = _make_batch(tmp_path)
+        a = _read_audit(ap)
+        proposal_id = str(uuid.uuid4())
+        a["action_proposals"] = [{
+            "proposal_id":  proposal_id,
+            "type":         "dhl_followup",
+            "batch_id":     bid,
+            "status":       "approved",
+            "approved_by":  "bob",
+            "approved_at":  "2026-05-07T10:00:00Z",
+            "reason":       "test",
+            "confidence":   "high",
+            "draft": {
+                "to":          "odprawacelna@dhl.com",
+                "cc":          "",
+                "subject":     "Test followup",
+                "body_text":   "...",
+                "body_html":   "<pre>...</pre>",
+                "attachments": [],
+            },
+            "created_at":  "2026-05-07T09:59:00Z",
+            "created_by":  "alice",
+            "rejected_by": None, "rejected_at": None, "reject_reason": None,
+            "email_id":    None, "queued_at":   None,
+        }]
+        ap.write_text(json.dumps(a), encoding="utf-8")
+
+        s_called = {"n": 0}
+        def trip_s(*a_, **kw): s_called["n"] += 1; return {"ok": True, "status": "sent"}
+
+        with patch("app.services.email_service.queue_email", return_value="qid-NF"), \
+             patch("app.services.email_sender._smtp_configured", return_value=True), \
+             patch("app.services.email_sender.send_queued_email", side_effect=trip_s):
+            r = _queue(client, proposal_id)
+
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "queued"
+        # send_queued_email is NOT called for non-proactive types from /queue
+        assert s_called["n"] == 0

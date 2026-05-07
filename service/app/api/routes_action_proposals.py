@@ -791,6 +791,7 @@ def queue_proposal(proposal_id: str) -> Dict[str, Any]:
     delivery.
     """
     from ..services.email_service import queue_email
+    from ..services.email_sender  import send_queued_email, _smtp_configured
 
     # Resolve initial batch_id (snapshot lookup); the live state is
     # re-fetched inside the lock below.
@@ -802,39 +803,72 @@ def queue_proposal(proposal_id: str) -> Dict[str, Any]:
         # run against the current state.
         audit = _load_audit(batch_id)
         proposal = _get_proposal(audit, proposal_id)
-
-        # Run all safety guards (G1..G8 + G9 for proactive)
-        _assert_can_queue(proposal, audit)
-
-        draft     = proposal["draft"]
         prop_type = proposal.get("type", "")
         is_proactive = (prop_type == "dhl_proactive_dispatch")
 
-        # ── Resolve authoritative recipients ──────────────────────────────
-        # For proactive dispatch: read settings at queue time. Drafts are
-        # not authoritative.
-        # For all other types: pass through draft.to / draft.cc unchanged
-        # (existing behaviour preserved).
-        if is_proactive:
-            to_addr, cc_addr, env_error = _resolve_proactive_recipients()
-            if env_error:
-                # Production fail-loud: do not queue, do not write any
-                # audit field, do not emit a timeline event.
-                raise HTTPException(
-                    status_code=500,
-                    detail={
-                        "error":  env_error,
-                        "guard":  "config_missing",
-                        "reason": "settings.dhl_customs_email is empty in a "
-                                  "non-dev environment.",
-                    },
-                )
+        # ── Idempotency: already-delivered short-circuit (proactive) ──────
+        # Re-calling /queue on a proactive proposal that has already been
+        # SMTP-delivered must NOT re-send. Return the prior delivery state.
+        if is_proactive and proposal.get("status") == "sent":
+            return {
+                "status":              "sent",
+                "delivered":           True,
+                "already_sent":        True,
+                "proposal_id":         proposal_id,
+                "email_id":            proposal.get("email_id"),
+                "provider_message_id": proposal.get("provider_message_id"),
+                "sent_at":             proposal.get("sent_at"),
+                "to":                  (proposal.get("draft") or {}).get("to", ""),
+            }
+
+        # ── Proactive retry-send path: queue record exists, SMTP failed ──
+        # When status="queued" + email_id present (set by an earlier call
+        # that hit SMTP failure), skip queue_email and retry send only.
+        # This avoids creating a duplicate queue record while the operator
+        # retries via the same endpoint.
+        proactive_retry = (
+            is_proactive
+            and proposal.get("status") == "queued"
+            and bool(proposal.get("email_id"))
+        )
+
+        if proactive_retry:
+            draft   = proposal.get("draft") or {}
+            email_id = proposal["email_id"]
+            to_addr  = draft.get("to", "")
+            cc_addr  = draft.get("cc", "")
         else:
-            to_addr = draft.get("to", "")
-            cc_addr = draft.get("cc", "")
+            # Run all safety guards (G1..G8 + G9 for proactive)
+            _assert_can_queue(proposal, audit)
+
+        if not proactive_retry:
+            draft     = proposal["draft"]
+
+            # ── Resolve authoritative recipients ──────────────────────────
+            # For proactive dispatch: read settings at queue time. Drafts
+            # are not authoritative. For other types: pass draft through.
+            if is_proactive:
+                to_addr, cc_addr, env_error = _resolve_proactive_recipients()
+                if env_error:
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "error":  env_error,
+                            "guard":  "config_missing",
+                            "reason": "settings.dhl_customs_email is empty in a "
+                                      "non-dev environment.",
+                        },
+                    )
+            else:
+                to_addr = draft.get("to", "")
+                cc_addr = draft.get("cc", "")
 
         # ── queue_email — type-discriminated failure handling ─────────────
-        if is_proactive:
+        if proactive_retry:
+            # Skip queue_email entirely; the queue record already exists
+            # and will be (re-)sent via SMTP below.
+            pass
+        elif is_proactive:
             try:
                 email_id = queue_email(
                     to        = to_addr,
@@ -875,56 +909,152 @@ def queue_proposal(proposal_id: str) -> Dict[str, Any]:
                 cc        = cc_addr,
             )
 
-        # ── Mutate proposal + audit + write ───────────────────────────────
-        proposal["status"]    = "queued"
-        proposal["email_id"]  = email_id
-        proposal["queued_at"] = _now()
+        # ── Mutate proposal + audit + write (skip on proactive retry) ─────
+        if not proactive_retry:
+            proposal["status"]    = "queued"
+            proposal["email_id"]  = email_id
+            proposal["queued_at"] = _now()
 
-        if is_proactive:
-            now_iso = _now()
-            audit["proactive_dispatch_sent_at"]      = now_iso
-            audit["proactive_dispatch_email_id"]     = email_id
-            audit["proactive_dispatch_recipient"]    = to_addr
-            audit["proactive_dispatch_cc"]           = cc_addr
-            audit["proactive_dispatch_attachments"]  = [
-                Path(a["path"]).name
-                for a in (draft.get("attachments") or [])
-                if a.get("path")
-            ]
+            if is_proactive:
+                now_iso = _now()
+                audit["proactive_dispatch_sent_at"]      = now_iso
+                audit["proactive_dispatch_email_id"]     = email_id
+                audit["proactive_dispatch_recipient"]    = to_addr
+                audit["proactive_dispatch_cc"]           = cc_addr
+                audit["proactive_dispatch_attachments"]  = [
+                    Path(a["path"]).name
+                    for a in (draft.get("attachments") or [])
+                    if a.get("path")
+                ]
 
-        _save_audit(batch_id, audit)
+            _save_audit(batch_id, audit)
 
-        # ── Timeline events ───────────────────────────────────────────────
-        tl.log_event(
-            _audit_path(batch_id),
-            tl.EV_EMAIL_QUEUED,
-            "admin",
-            actor=proposal["approved_by"],
-            detail={
-                "proposal_id":   proposal_id,
-                "proposal_type": prop_type,
-                "email_id":      email_id,
-                "to":            to_addr,
-                "approved_by":   proposal["approved_by"],
-            },
-        )
-        if is_proactive:
+            # ── Timeline events ───────────────────────────────────────────
             tl.log_event(
                 _audit_path(batch_id),
-                tl.EV_DHL_PROACTIVE_DISPATCH_SENT,
+                tl.EV_EMAIL_QUEUED,
                 "admin",
                 actor=proposal["approved_by"],
                 detail={
-                    "batch_id":         batch_id,
-                    "proposal_id":      proposal_id,
-                    "awb":              audit.get("awb") or audit.get("dhl_awb") or audit.get("tracking_no") or "",
-                    "approved_by":      proposal["approved_by"],
-                    "email_id":         email_id,
-                    "attachment_count": len(audit.get("proactive_dispatch_attachments") or []),
-                    "recipient":        to_addr,
+                    "proposal_id":   proposal_id,
+                    "proposal_type": prop_type,
+                    "email_id":      email_id,
+                    "to":            to_addr,
+                    "approved_by":   proposal["approved_by"],
+                },
+            )
+            if is_proactive:
+                tl.log_event(
+                    _audit_path(batch_id),
+                    tl.EV_DHL_PROACTIVE_DISPATCH_SENT,
+                    "admin",
+                    actor=proposal["approved_by"],
+                    detail={
+                        "batch_id":         batch_id,
+                        "proposal_id":      proposal_id,
+                        "awb":              audit.get("awb") or audit.get("dhl_awb") or audit.get("tracking_no") or "",
+                        "approved_by":      proposal["approved_by"],
+                        "email_id":         email_id,
+                        "attachment_count": len(audit.get("proactive_dispatch_attachments") or []),
+                        "recipient":        to_addr,
+                    },
+                )
+
+        # ── Real SMTP send (proactive only, when SMTP is configured) ──────
+        # The original implementation stopped after queue_email; the queue
+        # record was never drained for `dhl_proactive_dispatch`. Trigger
+        # the SMTP send in the same request so the operator-facing /queue
+        # action actually delivers the email. Idempotent: send_queued_email
+        # short-circuits when status=="sent" already; the proposal-level
+        # short-circuit at the top of this handler covers re-calls of /queue.
+        if is_proactive and _smtp_configured():
+            try:
+                send_result = send_queued_email(email_id, method="smtp")
+            except Exception as exc:
+                send_result = {
+                    "ok":           False,
+                    "error":        "send_exception",
+                    "error_detail": f"{type(exc).__name__}: {exc}",
+                }
+
+            if send_result.get("ok") and send_result.get("status") == "sent":
+                provider_id = send_result.get("provider_message_id")
+                sent_at_iso = send_result.get("sent_at") or _now()
+                proposal["status"]              = "sent"
+                proposal["sent_at"]             = sent_at_iso
+                proposal["provider_message_id"] = provider_id
+                audit["proactive_dispatch_delivered_at"]        = sent_at_iso
+                audit["proactive_dispatch_provider_message_id"] = provider_id
+                # Clear any prior failure marker from a previous attempt
+                audit.pop("proactive_dispatch_failed_at",      None)
+                audit.pop("proactive_dispatch_failure_reason", None)
+                audit.pop("proactive_dispatch_send_error",     None)
+                _save_audit(batch_id, audit)
+
+                tl.log_event(
+                    _audit_path(batch_id),
+                    "dhl_proactive_dispatch_delivered",
+                    "admin",
+                    actor=proposal.get("approved_by") or "system",
+                    detail={
+                        "proposal_id":         proposal_id,
+                        "email_id":            email_id,
+                        "provider_message_id": provider_id,
+                        "sent_at":             sent_at_iso,
+                        "recipient":           to_addr,
+                    },
+                )
+                return {
+                    "status":              "sent",
+                    "delivered":           True,
+                    "proposal_id":         proposal_id,
+                    "email_id":            email_id,
+                    "provider_message_id": provider_id,
+                    "sent_at":             sent_at_iso,
+                    "to":                  to_addr,
+                }
+
+            # SMTP failed — keep proposal at status="queued" so the same
+            # endpoint retries SMTP (proactive_retry path) without
+            # creating a duplicate queue record. Record failure markers.
+            reason     = send_result.get("error") or "smtp_send_failed"
+            err_detail = (send_result.get("error_detail") or "")[:200]
+            failed_at  = _now()
+            audit["proactive_dispatch_failed_at"]      = failed_at
+            audit["proactive_dispatch_failure_reason"] = reason
+            audit["proactive_dispatch_send_error"]     = {
+                "reason":       reason,
+                "error_detail": err_detail,
+                "failed_at":    failed_at,
+            }
+            _save_audit(batch_id, audit)
+            tl.log_event(
+                _audit_path(batch_id),
+                "dhl_proactive_dispatch_send_failed",
+                "admin",
+                actor=proposal.get("approved_by") or "system",
+                detail={
+                    "proposal_id":  proposal_id,
+                    "email_id":     email_id,
+                    "reason":       reason,
+                    "error_detail": err_detail,
+                    "failed_at":    failed_at,
+                },
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error":        "smtp_send_failed",
+                    "proposal_id":  proposal_id,
+                    "email_id":     email_id,
+                    "reason":       reason,
+                    "error_detail": err_detail,
+                    "retryable":    True,
                 },
             )
 
+    # SMTP not configured (dev) or non-proactive proposal → existing
+    # queued-only response unchanged.
     return {
         "status":      "queued",
         "proposal_id": proposal_id,

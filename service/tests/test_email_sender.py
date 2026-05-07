@@ -346,3 +346,144 @@ def test_dsk_route_does_not_require_pz():
                "r", encoding="utf-8").read()
     assert "guard_pz_requires_sad" not in src
     assert "pz_status" not in src
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Proposal-driven attachments (proactive_dispatch silent-send fix)
+# ──────────────────────────────────────────────────────────────────────────
+
+def _seed_queue_with_proposal_attachments(
+    tmp_path: Path,
+    queue_id: str = "Q_PROP",
+    batch_id: str = "B_PROP",
+    attachment_files: int = 2,
+):
+    """Seed a queue + audit where the attachments live in
+    audit.action_proposals[*].draft.attachments (the proactive_dispatch
+    layout), not in agency_reply_package / dhl_reply_package."""
+    batch_dir = tmp_path / "outputs" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    attach_paths = []
+    for i in range(attachment_files):
+        p = batch_dir / f"prop_att_{i}.pdf"
+        p.write_bytes(b"%PDF-1.4 fake")
+        attach_paths.append({"label": f"prop_att_{i}", "path": str(p), "filename": p.name})
+
+    audit = {
+        "batch_id": batch_id,
+        "action_proposals": [{
+            "proposal_id": "p-1",
+            "type":        "dhl_proactive_dispatch",
+            "status":      "queued",
+            "email_id":    queue_id,
+            "draft": {
+                "to":          "odprawacelna@dhl.example",
+                "cc":          "",
+                "subject":     "AWB X — Customs",
+                "body_text":   "...",
+                "body_html":   "<pre>...</pre>",
+                "attachments": attach_paths,
+            },
+        }],
+    }
+    (batch_dir / "audit.json").write_text(json.dumps(audit), encoding="utf-8")
+
+    queue = [{
+        "id":        queue_id,
+        "batch_id":  batch_id,
+        "to":        "odprawacelna@dhl.example",
+        "cc":        "",
+        "subject":   "AWB X — Customs",
+        "body_text": "plain body",
+        "body_html": "<p>html body</p>",
+        "status":    "pending",
+    }]
+    (tmp_path / "email_queue.json").write_text(json.dumps(queue), encoding="utf-8")
+    return queue_id, batch_id, attach_paths
+
+
+def test_proactive_proposal_attachments_resolved_and_sent(tmp_path, monkeypatch):
+    """Proactive-dispatch attachments must be picked up from the
+    proposal.draft.attachments path and attached to the MIME."""
+    monkeypatch.setattr("app.services.email_sender.settings",
+                        _settings(tmp_path, smtp_user="x", smtp_password="y"))
+    qid, _, atts = _seed_queue_with_proposal_attachments(
+        tmp_path, attachment_files=2,
+    )
+
+    from app.services.email_sender import send_queued_email
+    with patch("smtplib.SMTP_SSL") as smtp_cls:
+        smtp = smtp_cls.return_value.__enter__.return_value
+        r = send_queued_email(qid, method="smtp")
+
+    assert r["ok"] is True, r
+    assert r["status"] == "sent"
+    assert r["attachments_count"] == 2
+    smtp.send_message.assert_called_once()
+
+
+def test_proactive_with_attachment_list_cannot_send_body_only(tmp_path, monkeypatch):
+    """Silent-send guard: if the proposal declares attachments but the
+    resolver returns zero (e.g. attachments key in an unscanned location),
+    the send must be refused with attachments_unresolved, NOT marked sent."""
+    monkeypatch.setattr("app.services.email_sender.settings",
+                        _settings(tmp_path, smtp_user="x", smtp_password="y"))
+    qid, _, _ = _seed_queue_with_proposal_attachments(
+        tmp_path, attachment_files=2,
+    )
+
+    # Patch the resolver to return empty (simulating a future bug where
+    # the location moves) while _expected_attachment_count still sees the
+    # 2 declared attachments.
+    from app.services import email_sender as es
+    with patch.object(es, "_attachments_for_queue", return_value=([], [])), \
+         patch("smtplib.SMTP_SSL") as smtp_cls:
+        r = es.send_queued_email(qid, method="smtp")
+        smtp_cls.assert_not_called()
+
+    assert r["ok"] is False
+    assert r["error"] == "attachments_unresolved"
+    assert "refusing to send body-only" in r["error_detail"]
+    # Queue must NOT be marked sent
+    queue = json.loads((tmp_path / "email_queue.json").read_text())
+    assert queue[0]["status"] == "pending"
+    # Error marker persisted on queue entry
+    assert queue[0]["error"] == "attachments_unresolved"
+
+
+def test_missing_attachment_marks_queue_error_and_does_not_send(tmp_path, monkeypatch):
+    """When _attachments_for_queue reports a missing file, the send is
+    refused AND the queue entry's error field is updated so a retry sees
+    the prior failure."""
+    monkeypatch.setattr("app.services.email_sender.settings",
+                        _settings(tmp_path, smtp_user="x", smtp_password="y"))
+    qid, _, atts = _seed_queue_with_proposal_attachments(
+        tmp_path, attachment_files=1,
+    )
+    # Delete the file so it's missing at send time
+    Path(atts[0]["path"]).unlink()
+
+    from app.services.email_sender import send_queued_email
+    with patch("smtplib.SMTP_SSL") as smtp_cls:
+        r = send_queued_email(qid, method="smtp")
+        smtp_cls.assert_not_called()
+
+    assert r["ok"] is False
+    assert r["error"] == "attachments_missing"
+    queue = json.loads((tmp_path / "email_queue.json").read_text())
+    assert queue[0]["status"] == "pending"
+    assert queue[0]["error"]  == "attachments_missing"
+
+
+def test_expected_attachment_count_reads_proposal_draft(tmp_path, monkeypatch):
+    """_expected_attachment_count must count attachments from
+    action_proposals[*].draft.attachments when proposal.email_id matches."""
+    monkeypatch.setattr("app.services.email_sender.settings",
+                        _settings(tmp_path, smtp_user="x", smtp_password="y"))
+    qid, _, _ = _seed_queue_with_proposal_attachments(
+        tmp_path, attachment_files=6,
+    )
+    from app.services.email_sender import _expected_attachment_count
+    # Simulate the queue entry as the resolver sees it
+    entry = json.loads((tmp_path / "email_queue.json").read_text())[0]
+    assert _expected_attachment_count(entry) == 6
