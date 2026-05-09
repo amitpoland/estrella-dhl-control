@@ -15,7 +15,12 @@ Used by:
 """
 
 from __future__ import annotations
+import logging
 from typing import Dict, List, Optional, Tuple
+
+# Module logger — shadow telemetry uses this. Production deployments should
+# capture INFO-level logs from this module to collect HARDENING_SHADOW lines.
+_log = logging.getLogger(__name__)
 
 # ── Weight table (must sum ≤ 100) ─────────────────────────────────────────────
 WEIGHTS: Dict[str, int] = {
@@ -335,17 +340,47 @@ def score_batch(
         "weights":          dict(WEIGHTS),
     }
 
-    hardening_active = (
-        _hardening_enabled()
-        or qty_status is not None
-        or cn_status  is not None
-        or nip_source is not None
+    # Hardening activation: gated SOLELY by the AUDIT_HARDENING_ENABLED
+    # feature flag. Earlier revisions of this module also activated when
+    # any categorical kwarg was non-None, but verify_sad_invoice_match
+    # always emits non-None categoricals (commit 42ceb54), so the
+    # categorical-trigger silently activated hardening for every
+    # audit_agent batch — bypassing the flag's intended gate. The flag
+    # is now the SINGLE source of truth for whether caps + force-zero
+    # affect returned values.
+    hardening_active = _hardening_enabled()
+
+    # Always compute the *hypothetical* hardening result so we can either
+    # apply it (when active) or shadow-log it (when dormant). This is
+    # cheap (no I/O, just three branches in _resolve_hardening_status).
+    capped_score, capped_level, status = _resolve_hardening_status(
+        score, c1, c4, c5, c6, qty_status, cn_status, nip_source,
     )
+
     if hardening_active:
-        capped_score, capped_level, status = _resolve_hardening_status(
-            score, c1, c4, c5, c6, qty_status, cn_status, nip_source,
-        )
+        # Active: apply caps and emit status.
         out["score"]      = capped_score
         out["risk_level"] = capped_level
         out["status"]     = status
+    else:
+        # Shadow: telemetry only. Returned score / risk_level untouched.
+        # The shadow_* informational keys are additive — existing readers
+        # of the score_batch return dict are unaffected (they read score,
+        # risk_level, flags, failed_checks, penalty_breakdown,
+        # learning_applied, max_possible, weights).
+        out["shadow_status"]  = status
+        out["shadow_score"]   = capped_score
+        out["shadow_blocked"] = (status == "BLOCKED")
+
+        # Structured log line for ops to grep / aggregate. Format is
+        # stable so log shippers can parse without coupling to phrasing.
+        _log.info(
+            "HARDENING_SHADOW would_blocked=%s status=%s score=%s "
+            "legacy_score=%s legacy_risk_level=%s",
+            (status == "BLOCKED"),
+            status,
+            capped_score,
+            score,
+            level,
+        )
     return out

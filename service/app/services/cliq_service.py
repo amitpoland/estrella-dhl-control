@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
@@ -11,6 +12,15 @@ from ..core.config import settings
 from ..core.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _shadow_notify_enabled() -> bool:
+    """Read AUDIT_HARDENING_SHADOW_NOTIFY at call time so toggling the env
+    var doesn't require a process restart. Treats unset / empty / false /
+    0 / off as disabled (default disabled)."""
+    return os.environ.get("AUDIT_HARDENING_SHADOW_NOTIFY", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
 
 # ── Message builders ──────────────────────────────────────────────────────────
 
@@ -33,6 +43,8 @@ def build_success_message(
     audit_pdf_url:        Optional[str] = None,
     audit_score:          Optional[int] = None,
     audit_risk_level:     Optional[str] = None,
+    audit_shadow_status:  Optional[str] = None,   # hardening hypothetical
+    audit_shadow_score:   Optional[int] = None,   # hardening hypothetical
     batch_id:             str = "",
     tracking_no:          str = "",   # AWB / shipment tracking number
     msg_id:               str = "",
@@ -57,6 +69,19 @@ def build_success_message(
         f"Risk Score: {audit_score}/100 ({audit_risk_level})\n"
         if audit_score is not None else ""
     )
+
+    # Optional shadow-hardening debug line. Only included when ALL of:
+    #   1. AUDIT_HARDENING_SHADOW_NOTIFY env is truthy (operator opt-in)
+    #   2. caller passed an audit_shadow_status (audit_agent populates it
+    #      when AUDIT_HARDENING_ENABLED is OFF)
+    # The line lets ops eyeball the hypothetical hardening verdict
+    # alongside the legacy score during the rollout dry-run.
+    shadow_line = ""
+    if audit_shadow_status is not None and _shadow_notify_enabled():
+        shadow_line = (
+            f"[SHADOW] Hardening would say: status={audit_shadow_status} "
+            f"score={audit_shadow_score}/100\n"
+        )
 
     links = []
     if pdf_url:       links.append(f"PDF: {pdf_url}")
@@ -89,6 +114,7 @@ def build_success_message(
         f"{trk_line}"
         f"{batch_line}"
         f"{score_line}"
+        f"{shadow_line}"
         f"Lines: {lines}\n"
         f"Netto: {_fmt_pln(total_net)}\n"
         f"Brutto: {_fmt_pln(total_gross)}\n"
