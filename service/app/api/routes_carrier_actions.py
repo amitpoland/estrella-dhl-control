@@ -189,6 +189,11 @@ def _select_carrier_adapter(actor: str):
             username       = username,
             password       = password,
             account_number = account_number,
+            # DL-F3 — Paperless Trade is forwarded into the adapter's
+            # constructor so the adapter never reads settings directly.
+            paperless_trade_enabled = bool(
+                settings.carrier_dhl_paperless_trade_enabled
+            ),
         )
     except Exception:
         # Defensive: live constructor rejected the inputs (empty after
@@ -282,6 +287,12 @@ class _ShipmentRequestPayload(BaseModel):
     service_code: str = ""
     reference:    str = ""
     metadata:     Optional[Dict[str, Any]] = None
+    # DL-F3 — optional Paperless Trade fields. The live adapter only
+    # honours these when carrier_dhl_paperless_trade_enabled is True
+    # AND the file passes validate_paperless_trade_pdf. Stub adapters
+    # ignore both fields entirely.
+    customs_invoice_pdf_path:  str = ""
+    customs_invoice_metadata:  Optional[Dict[str, Any]] = None
 
 
 class CreateShipmentBody(BaseModel):
@@ -324,6 +335,8 @@ def _payload_to_request(p: _ShipmentRequestPayload) -> CarrierShipmentRequest:
         service_code = p.service_code,
         reference    = p.reference,
         metadata     = dict(p.metadata or {}),
+        customs_invoice_pdf_path = p.customs_invoice_pdf_path or "",
+        customs_invoice_metadata = dict(p.customs_invoice_metadata or {}),
     )
 
 

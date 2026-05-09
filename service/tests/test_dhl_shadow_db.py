@@ -82,6 +82,11 @@ def test_init_creates_all_documented_columns(db):
         "live_error_class", "live_error_summary",
         "live_duration_ms", "diff_outcome", "diff_notes",
         "created_at",
+        # DL-F3 — Paperless Trade metadata columns added via
+        # idempotent ALTER TABLE in init_db.
+        "live_paperless_trade_attached",
+        "live_paperless_trade_size",
+        "live_paperless_trade_sha256",
     }
     assert set(cols) == expected
 

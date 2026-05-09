@@ -500,6 +500,15 @@ class DHLExpressShadowAdapter:
                 live_duration_ms    = live_outcome.duration_ms,
                 diff_outcome        = diff_outcome,
                 diff_notes          = diff_notes,
+                # DL-F3 — Paperless Trade metadata. Live side only;
+                # stub deliberately ignores PLT and the shape
+                # extractor returns False/0/"" for the stub side.
+                live_paperless_trade_attached =
+                    bool(live_shape.get("paperless_trade_attached")),
+                live_paperless_trade_size     =
+                    int(live_shape.get("paperless_trade_size", 0)),
+                live_paperless_trade_sha256   =
+                    str(live_shape.get("paperless_trade_sha256", "")),
             )
         except Exception:
             # Never fail the operator action because the shadow log
@@ -545,10 +554,17 @@ def _live_skipped_note(live: _CallOutcome) -> str:
 def _extract_shipment_shape(rsp: RawShipmentResponse) -> Dict[str, Any]:
     if rsp is None:
         return {}
+    raw = dict(rsp.raw or {})
     return {
         "awb":           rsp.awb or "",
         "label_format":  (rsp.label_format or "").lower(),
         "label_size":    len(rsp.label_bytes) if rsp.label_bytes else 0,
+        # DL-F3 — PLT metadata only. The PDF bytes themselves NEVER
+        # appear here; the adapter merges only sha256 / size /
+        # boolean / filename into rsp.raw.
+        "paperless_trade_attached":  bool(raw.get("paperless_trade_attached")),
+        "paperless_trade_size":      int(raw.get("paperless_trade_document_size") or 0),
+        "paperless_trade_sha256":    str(raw.get("paperless_trade_document_sha256") or ""),
     }
 
 

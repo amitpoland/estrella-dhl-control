@@ -522,3 +522,149 @@ def test_live_adapter_quota_helper_imported(live_src):
     declares the field."""
     assert "from .dhl_express_quota import DHLDailyQuota" in live_src
     assert "self._quota.consume_or_raise()" in live_src
+
+
+# ── DL-F3 — Paperless Trade live-adapter behaviour ──────────────────────
+
+def _shipment_request_with_plt(pdf_path: str):
+    """Reuse the helper from this file with a PLT path supplied."""
+    return CarrierShipmentRequest(
+        batch_id="B-LIVE-PLT",
+        ship_from=_addr("PL"), ship_to=_addr("US"),
+        packages=(PackageSpec(
+            weight_kg=0.5, length_cm=15, width_cm=10, height_cm=5,
+            declared_value=100.0, declared_currency="USD",
+        ),),
+        service_code="P", reference="R-LIVE-PLT",
+        customs_invoice_pdf_path=pdf_path,
+    )
+
+
+def _write_pdf(tmp_path, name: str, content: bytes):
+    p = tmp_path / name
+    p.write_bytes(content)
+    return p
+
+
+def _make_plt_adapter(http_client, *, plt_enabled: bool = True):
+    return DHLExpressLiveAdapter(
+        base_url="https://example.test/mydhlapi",
+        username="u", password="p", account_number="ACC-1",
+        http_client=http_client,
+        sleep=lambda _s: None,
+        max_retries=3,
+        paperless_trade_enabled=plt_enabled,
+    )
+
+
+def test_create_shipment_with_valid_plt_records_metadata_in_raw(tmp_path):
+    pdf_bytes = b"%PDF-1.4\ndl-f3 valid plt content\n%%EOF\n"
+    pdf_path = _write_pdf(tmp_path, "ok.pdf", pdf_bytes)
+
+    fake = FakeClient([FakeResponse(201, _create_shipment_response())])
+    adapter = _make_plt_adapter(fake)
+    rsp = adapter.create_shipment(_shipment_request_with_plt(str(pdf_path)))
+
+    raw = rsp.raw
+    assert raw["paperless_trade_requested"] is True
+    assert raw["paperless_trade_attached"]  is True
+    assert raw["paperless_trade_reason"]    == "ok"
+    assert raw["paperless_trade_document_filename"] == "ok.pdf"
+    assert raw["paperless_trade_document_size"]     == len(pdf_bytes)
+    import hashlib
+    assert raw["paperless_trade_document_sha256"] == \
+        hashlib.sha256(pdf_bytes).hexdigest()
+
+
+def test_create_shipment_with_oversize_plt_skips_attachment(tmp_path):
+    big_pdf = b"%PDF-1.4\n" + (b"X" * (5 * 1024 * 1024 + 1)) + b"\n%%EOF\n"
+    pdf_path = _write_pdf(tmp_path, "big.pdf", big_pdf)
+
+    fake = FakeClient([FakeResponse(201, _create_shipment_response())])
+    adapter = _make_plt_adapter(fake)
+    rsp = adapter.create_shipment(_shipment_request_with_plt(str(pdf_path)))
+
+    assert rsp.raw["paperless_trade_attached"] is False
+    assert rsp.raw["paperless_trade_reason"]   == "oversize"
+    # And the request body must NOT carry documentImages
+    body = fake.calls[0]["json"]
+    assert "documentImages" not in body
+    assert "exportDeclaration" not in body["content"]
+
+
+def test_create_shipment_with_bad_magic_skips_attachment(tmp_path):
+    not_pdf = b"\x89PNG\r\n\x1a\n" + b"actually a png"
+    pdf_path = _write_pdf(tmp_path, "fake.pdf", not_pdf)
+
+    fake = FakeClient([FakeResponse(201, _create_shipment_response())])
+    adapter = _make_plt_adapter(fake)
+    rsp = adapter.create_shipment(_shipment_request_with_plt(str(pdf_path)))
+
+    assert rsp.raw["paperless_trade_attached"] is False
+    assert rsp.raw["paperless_trade_reason"]   == "not_pdf"
+    assert "documentImages" not in fake.calls[0]["json"]
+
+
+def test_create_shipment_with_missing_plt_file_skips_attachment(tmp_path):
+    fake = FakeClient([FakeResponse(201, _create_shipment_response())])
+    adapter = _make_plt_adapter(fake)
+    rsp = adapter.create_shipment(_shipment_request_with_plt(
+        str(tmp_path / "missing.pdf"),
+    ))
+    assert rsp.raw["paperless_trade_attached"] is False
+    assert rsp.raw["paperless_trade_reason"]   == "file_not_found"
+
+
+def test_create_shipment_with_plt_flag_disabled_skips_attachment(tmp_path):
+    pdf_path = _write_pdf(tmp_path, "ok.pdf", b"%PDF-1.4 valid\n%%EOF\n")
+
+    fake = FakeClient([FakeResponse(201, _create_shipment_response())])
+    adapter = _make_plt_adapter(fake, plt_enabled=False)
+    rsp = adapter.create_shipment(_shipment_request_with_plt(str(pdf_path)))
+
+    assert rsp.raw["paperless_trade_requested"] is True
+    assert rsp.raw["paperless_trade_attached"]  is False
+    assert rsp.raw["paperless_trade_reason"]    == "flag_disabled"
+    assert "documentImages" not in fake.calls[0]["json"]
+
+
+def test_create_shipment_without_plt_path_records_not_requested():
+    """Default path: no PLT field on the request → adapter records
+    requested=False / attached=False / reason=not_requested."""
+    fake = FakeClient([FakeResponse(201, _create_shipment_response())])
+    adapter = _make_plt_adapter(fake)
+    rsp = adapter.create_shipment(_shipment_request())  # no PLT path
+    assert rsp.raw["paperless_trade_requested"] is False
+    assert rsp.raw["paperless_trade_attached"]  is False
+    assert rsp.raw["paperless_trade_reason"]    == "not_requested"
+
+
+def test_pdf_bytes_never_appear_in_response_raw(tmp_path):
+    """Strongest invariant — the source PDF bytes never land in
+    RawShipmentResponse.raw. Only sha256 + size + boolean + filename."""
+    sentinel = b"%PDF-1.4 SECRET-PLT-BODY-DO-NOT-LEAK"
+    pdf_path = _write_pdf(tmp_path, "secret.pdf", sentinel + b"\n%%EOF\n")
+
+    fake = FakeClient([FakeResponse(201, _create_shipment_response())])
+    adapter = _make_plt_adapter(fake)
+    rsp = adapter.create_shipment(_shipment_request_with_plt(str(pdf_path)))
+
+    import json as _json
+    serialised = _json.dumps(rsp.raw, default=str)
+    assert "SECRET-PLT-BODY" not in serialised
+
+
+def test_live_adapter_source_no_print_log_documentImages(live_src):
+    """Extends the Authorization-leak guard to the new PLT
+    base64 carrier field name."""
+    leak_tokens = ("print(", "log.", "logger.")
+    for line in live_src.splitlines():
+        if "documentImages" not in line:
+            continue
+        stripped = line.lstrip()
+        if stripped.startswith("#") or stripped.startswith('"""'):
+            continue
+        for token in leak_tokens:
+            assert token not in line, (
+                f"live adapter leaks documentImages through {token!r}: {line!r}"
+            )

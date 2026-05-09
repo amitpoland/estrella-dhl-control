@@ -53,7 +53,15 @@ _db_path: Optional[Path] = None
 # ── Init ────────────────────────────────────────────────────────────────────
 
 def init_db(db_path: Path) -> None:
-    """Idempotent schema setup."""
+    """Idempotent schema setup.
+
+    DL-F3 adds three nullable columns:
+      live_paperless_trade_attached  INTEGER NOT NULL DEFAULT 0
+      live_paperless_trade_size      INTEGER NOT NULL DEFAULT 0
+      live_paperless_trade_sha256    TEXT    NOT NULL DEFAULT ''
+    Added via ALTER TABLE only when missing — safe on a pre-existing
+    DB carrying DL-F2 rows.
+    """
     global _db_path
     _db_path = Path(db_path)
     _db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +101,39 @@ def init_db(db_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_csl_created_at
                 ON carrier_shadow_log (created_at);
         """)
+        _ensure_paperless_trade_columns(con)
+
+
+def _ensure_paperless_trade_columns(con: sqlite3.Connection) -> None:
+    """Idempotent ALTER TABLE for the DL-F3 PLT metadata columns.
+
+    SQLite does not support ``ADD COLUMN IF NOT EXISTS``, so the
+    helper inspects ``PRAGMA table_info`` and only adds columns
+    that are missing. Re-init on an existing DB is a no-op.
+    """
+    cols = {
+        r[1] for r in con.execute(
+            "PRAGMA table_info(carrier_shadow_log)"
+        ).fetchall()
+    }
+    if "live_paperless_trade_attached" not in cols:
+        con.execute(
+            "ALTER TABLE carrier_shadow_log "
+            "ADD COLUMN live_paperless_trade_attached "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+    if "live_paperless_trade_size" not in cols:
+        con.execute(
+            "ALTER TABLE carrier_shadow_log "
+            "ADD COLUMN live_paperless_trade_size "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+    if "live_paperless_trade_sha256" not in cols:
+        con.execute(
+            "ALTER TABLE carrier_shadow_log "
+            "ADD COLUMN live_paperless_trade_sha256 "
+            "TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _connect() -> sqlite3.Connection:
@@ -169,6 +210,10 @@ def record_call_outcome(
     live_duration_ms:    int = 0,
     diff_outcome:        str = "unknown",
     diff_notes:          str = "",
+    # ── DL-F3 — Paperless Trade columns (live side only) ──────────────────
+    live_paperless_trade_attached: bool = False,
+    live_paperless_trade_size:     int = 0,
+    live_paperless_trade_sha256:   str = "",
 ) -> str:
     """Insert one shadow-log row and return its id.
 
@@ -176,6 +221,9 @@ def record_call_outcome(
     error message cannot grow the row beyond ~1 KB. Diff outcomes
     outside the documented set fall back to "unknown" rather than
     raising — the shadow log must never crash the operator path.
+
+    The DL-F3 PLT kwargs default to safe empties so DL-F2 callers
+    that pass no PLT args continue to insert clean rows.
     """
     if not (method or "").strip() or not (request_hash or "").strip():
         raise ValueError("method and request_hash are required")
@@ -194,8 +242,11 @@ def record_call_outcome(
                     live_label_size, live_http_status,
                     live_error_class, live_error_summary,
                     live_duration_ms, diff_outcome, diff_notes,
-                    created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    created_at,
+                    live_paperless_trade_attached,
+                    live_paperless_trade_size,
+                    live_paperless_trade_sha256)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 rid, method, request_hash, actor or "",
                 stub_status, stub_awb, stub_label_format,
@@ -211,6 +262,9 @@ def record_call_outcome(
                 diff_outcome_clean,
                 truncate_summary(diff_notes),
                 _now_iso(),
+                1 if bool(live_paperless_trade_attached) else 0,
+                int(live_paperless_trade_size or 0),
+                str(live_paperless_trade_sha256 or ""),
             ),
         )
     return rid

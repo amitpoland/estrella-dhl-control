@@ -28,6 +28,7 @@ Conventions
 """
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -125,19 +126,43 @@ def _content_description(req: CarrierShipmentRequest) -> str:
 
 # ── Public builder ──────────────────────────────────────────────────────────
 
+#: DHL document type code for a commercial invoice.
+_PLT_INV_TYPE_CODE: str = "INV"
+
+#: DHL "shipper of record" signature on PLT-attached customs declarations.
+#: Account-level constant for Estrella; if the DHL account is provisioned
+#: with a different signatory name the live adapter callers can override.
+_PLT_DEFAULT_SIGNATURE_NAME: str = "Estrella Jewels"
+
+
 def build_create_shipment_body(
     request: CarrierShipmentRequest,
     *,
-    account_number:        str,
-    planned_shipping_dt:   Optional[str] = None,
-    incoterm:              str = _DEFAULT_INCOTERM,
-    label_template:        str = _DEFAULT_LABEL_TEMPLATE,
+    account_number:           str,
+    planned_shipping_dt:      Optional[str] = None,
+    incoterm:                 str = _DEFAULT_INCOTERM,
+    label_template:           str = _DEFAULT_LABEL_TEMPLATE,
+    paperless_trade_pdf_bytes: Optional[bytes] = None,
+    paperless_trade_signature_name: str = _PLT_DEFAULT_SIGNATURE_NAME,
 ) -> Dict[str, Any]:
     """Translate *request* into a DHL ``POST /shipments`` JSON body.
 
     Required: a non-empty *account_number*. Empty values raise
     ValueError so the adapter cannot accidentally send a request DHL
     will reject for a billing reason.
+
+    Paperless Trade
+    ---------------
+    When *paperless_trade_pdf_bytes* is non-empty, the body gains:
+      * ``content.exportDeclaration`` describing the declared invoice
+      * ``documentImages[0]`` carrying the base64-encoded PDF bytes
+        as ``typeCode = "INV"``.
+
+    The caller (live adapter) is responsible for:
+      * checking the operator-level feature flag,
+      * running the ``dhl_paperless_trade.validate_paperless_trade_pdf``
+        validator,
+      * passing only validated bytes here.
 
     The body is deterministic given identical inputs — this lets
     request-mapping tests pin field placement without timestamp churn
@@ -150,10 +175,10 @@ def build_create_shipment_body(
     if not request.packages:
         raise ValueError("request must carry at least one package")
 
-    return {
-        "plannedShippingDateAndTime": (
-            planned_shipping_dt or _planned_shipping_default()
-        ),
+    planned_dt = planned_shipping_dt or _planned_shipping_default()
+
+    body: Dict[str, Any] = {
+        "plannedShippingDateAndTime": planned_dt,
         "pickup": {
             # Estrella books pickups via the dedicated /pickups endpoint
             # — never inline on the shipment.
@@ -189,3 +214,32 @@ def build_create_shipment_body(
             }],
         },
     }
+
+    if paperless_trade_pdf_bytes:
+        # Inline the customs invoice as a Paperless Trade attachment.
+        # Discipline: this branch fires ONLY when the caller has
+        # already run the validator. The base64 encoding lives in
+        # memory for the duration of the HTTP call only — never
+        # persisted alongside the manifest or the shadow log.
+        body["content"]["exportDeclaration"] = {
+            "lineItems":         [],   # DHL infers from packages
+            "invoice": {
+                "number":        request.reference or request.batch_id,
+                "date":          planned_dt[:10],
+                "function":      "import",
+                "signatureName": paperless_trade_signature_name,
+            },
+            "exportReason":      "permanent",
+            "additionalCharges": [],
+            "placeOfIncoterm":   request.ship_from.city or "Warsaw",
+            "shipmentType":      "commercial",
+        }
+        body["documentImages"] = [{
+            "typeCode":    _PLT_INV_TYPE_CODE,
+            "imageFormat": "PDF",
+            "content":     base64.b64encode(
+                paperless_trade_pdf_bytes
+            ).decode("ascii"),
+        }]
+
+    return body

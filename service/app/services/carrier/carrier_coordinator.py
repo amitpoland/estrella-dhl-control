@@ -167,6 +167,7 @@ class CarrierCoordinator:
         )
 
         # 4. write manifest with request/response metadata
+        plt_attached = bool((rsp.raw or {}).get("paperless_trade_attached"))
         manifest = {
             "carrier":        rsp.carrier,
             "awb":            rsp.awb,
@@ -195,6 +196,22 @@ class CarrierCoordinator:
                 "created_at":  _now(),
                 "actor":       self._actor,
             },
+            # DL-F3 — Paperless Trade. Lifted verbatim from rsp.raw,
+            # which the live adapter populates from the validator.
+            # Stub adapters omit these keys; the manifest records them
+            # as False/empty by default, so the operator UI can
+            # always read `paperless_trade_*` without KeyError.
+            "paperless_trade_requested":         bool(
+                bool(request.customs_invoice_pdf_path)
+                or (rsp.raw or {}).get("paperless_trade_requested")
+            ),
+            "paperless_trade_attached":          plt_attached,
+            "paperless_trade_document_sha256":   str(
+                (rsp.raw or {}).get("paperless_trade_document_sha256") or ""
+            ),
+            "paperless_trade_document_filename": str(
+                (rsp.raw or {}).get("paperless_trade_document_filename") or ""
+            ),
         }
         manifest_path = cls.write_manifest(rsp.awb, manifest)
 
@@ -225,14 +242,24 @@ class CarrierCoordinator:
         )
 
         # Append a stub message into the AWB log so the manifest dir
-        # contains a verifiable trace of the creation event.
+        # contains a verifiable trace of the creation event. DL-F3
+        # branches the event_code so an operator scanning messages
+        # sees PLT-attached creations distinctly.
+        creation_event_code = (
+            "shipment_created_with_paperless_trade"
+            if plt_attached else "shipment_created"
+        )
         cls.append_message(rsp.awb, {
-            "event_code":   "shipment_created",
+            "event_code":   creation_event_code,
             "from_state":   "",
             "to_state":     cse.LABEL_CREATED,
             "label_sha256": artefact.sha256,
             "actor":        self._actor,
             "reason":       reason or "",
+            "paperless_trade_attached":        plt_attached,
+            "paperless_trade_document_sha256": str(
+                (rsp.raw or {}).get("paperless_trade_document_sha256") or ""
+            ),
         })
 
         return {

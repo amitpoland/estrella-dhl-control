@@ -83,6 +83,12 @@ class CarrierShipmentRequest:
     service_code:  str = ""              # carrier-specific service tier
     reference:     str = ""              # operator-visible reference
     metadata:      Dict[str, Any] = field(default_factory=dict)
+    # ── Paperless Trade (DL-F3) — optional ──────────────────────────────────
+    # When non-empty AND the live-adapter feature flag is enabled AND the
+    # file passes the PLT validator, the live adapter inlines this PDF
+    # into DHL's documentImages[]. Stub adapters ignore both fields.
+    customs_invoice_pdf_path:  str = ""
+    customs_invoice_metadata:  Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -195,3 +195,96 @@ def test_pickup_is_always_not_requested_inline():
     """Estrella books pickups via /pickups; never inline on shipments."""
     body = build_create_shipment_body(_req(), account_number="ACC")
     assert body["pickup"]["isRequested"] is False
+
+
+# ── DL-F3 — Paperless Trade mapping ─────────────────────────────────────
+
+def test_no_paperless_trade_block_when_no_pdf_bytes():
+    """Backwards-compat with DL-F1 baseline: when the caller passes
+    no PLT bytes, body has no exportDeclaration / documentImages."""
+    body = build_create_shipment_body(_req(), account_number="ACC")
+    assert "exportDeclaration" not in body["content"]
+    assert "documentImages" not in body
+
+
+def test_paperless_trade_inlines_document_images_when_bytes_provided():
+    pdf = b"%PDF-1.4\nlive-bytes\n%%EOF\n"
+    body = build_create_shipment_body(
+        _req(), account_number="ACC",
+        paperless_trade_pdf_bytes=pdf,
+    )
+    assert "documentImages" in body
+    assert len(body["documentImages"]) == 1
+    img = body["documentImages"][0]
+    assert img["typeCode"]    == "INV"
+    assert img["imageFormat"] == "PDF"
+    import base64 as _b64
+    decoded = _b64.b64decode(img["content"])
+    assert decoded == pdf
+
+
+def test_paperless_trade_adds_export_declaration_block():
+    pdf = b"%PDF-1.4\n"
+    body = build_create_shipment_body(
+        _req(batch_id="B-PLT", reference="R-PLT"),
+        account_number="ACC", paperless_trade_pdf_bytes=pdf,
+    )
+    decl = body["content"]["exportDeclaration"]
+    assert decl["invoice"]["number"]    == "R-PLT"   # reference wins
+    assert decl["invoice"]["function"]  == "import"
+    # signatureName is the documented constant for Estrella
+    assert decl["invoice"]["signatureName"] == "Estrella Jewels"
+    assert decl["exportReason"]         == "permanent"
+    assert decl["shipmentType"]         == "commercial"
+
+
+def test_paperless_trade_uses_batch_id_when_reference_missing():
+    pdf = b"%PDF-1.4\n"
+    body = build_create_shipment_body(
+        _req(batch_id="B-ONLY", reference=""),
+        account_number="ACC", paperless_trade_pdf_bytes=pdf,
+    )
+    assert body["content"]["exportDeclaration"]["invoice"]["number"] == "B-ONLY"
+
+
+def test_paperless_trade_signature_name_override():
+    pdf = b"%PDF-1.4\n"
+    body = build_create_shipment_body(
+        _req(), account_number="ACC",
+        paperless_trade_pdf_bytes=pdf,
+        paperless_trade_signature_name="Other Signer",
+    )
+    assert body["content"]["exportDeclaration"]["invoice"]["signatureName"] == "Other Signer"
+
+
+def test_paperless_trade_invoice_date_uses_planned_shipping_dt():
+    pdf = b"%PDF-1.4\n"
+    body = build_create_shipment_body(
+        _req(), account_number="ACC",
+        planned_shipping_dt="2026-04-15T10:00:00+00:00",
+        paperless_trade_pdf_bytes=pdf,
+    )
+    assert body["content"]["exportDeclaration"]["invoice"]["date"] == "2026-04-15"
+
+
+def test_paperless_trade_zero_bytes_leaves_body_unchanged():
+    """Empty bytes is treated as no PLT — same as None."""
+    body = build_create_shipment_body(
+        _req(), account_number="ACC", paperless_trade_pdf_bytes=b"",
+    )
+    assert "documentImages" not in body
+    assert "exportDeclaration" not in body["content"]
+
+
+def test_paperless_trade_payload_is_json_serialisable():
+    """Body with PLT must round-trip through json.dumps cleanly."""
+    import json as _json
+    pdf = b"%PDF-1.4\nbinary-junk\x00\x01\x02\n%%EOF\n"
+    body = build_create_shipment_body(
+        _req(), account_number="ACC",
+        paperless_trade_pdf_bytes=pdf,
+    )
+    encoded = _json.dumps(body)
+    decoded = _json.loads(encoded)
+    # And the documentImages content is a plain ASCII string, not bytes
+    assert isinstance(decoded["documentImages"][0]["content"], str)

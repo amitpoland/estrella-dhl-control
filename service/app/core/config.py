@@ -257,6 +257,21 @@ class Settings(BaseSettings):
     #   3. carrier_dhl_shadow_mode=False    → live becomes source of truth
     carrier_dhl_shadow_mode:     bool = Field(default=False, env="CARRIER_DHL_SHADOW_MODE")
 
+    # ── Carrier DHL Paperless Trade (DL-F3) ──────────────────────────────────
+    # When True, the action-route factory passes paperless_trade_enabled=True
+    # to the live DHL adapter constructor, which then honours
+    # CarrierShipmentRequest.customs_invoice_pdf_path. When False (default),
+    # a customs_invoice_pdf_path is silently ignored by the live adapter
+    # and the manifest records reason="flag_disabled". The stub adapter
+    # always ignores PLT fields regardless of this flag.
+    #
+    # DHL Poland account must be PLT-enrolled before flipping this flag.
+    # An unenrolled account will accept the documentImages[] payload but
+    # still demand the paper invoice — defeating the purpose.
+    carrier_dhl_paperless_trade_enabled: bool = Field(
+        default=False, env="CARRIER_DHL_PAPERLESS_TRADE_ENABLED",
+    )
+
     # ── Carrier DHL webhook ingestion (DL-E1) ─────────────────────────────────
     # Master switch. When False, both /api/v1/carrier/webhook/* endpoints
     # return HTTP 503 webhook_disabled. The router is mounted regardless so

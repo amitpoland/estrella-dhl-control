@@ -64,6 +64,11 @@ from .base import (
 )
 from .dhl_express_live_request import build_create_shipment_body
 from .dhl_express_quota import DHLDailyQuota
+from .dhl_paperless_trade import (
+    PLT_MAX_BYTES,
+    PLTValidationResult,
+    validate_paperless_trade_pdf,
+)
 
 
 # ── Defaults ────────────────────────────────────────────────────────────────
@@ -77,6 +82,19 @@ _SUPPORTED_LABEL_FMTS = frozenset({"pdf", "zpl"})
 #: latency = sum(_RETRY_BACKOFF) ≈ 1.75s, leaving margin under any
 #: 5-second SLA the route caller may impose.
 _RETRY_BACKOFF: Tuple[float, ...] = (0.25, 0.5, 1.0)
+
+
+def _filename_only(path: str) -> str:
+    """Defensive basename extraction for the PLT manifest field.
+
+    Avoids importing ``pathlib`` for a one-shot operation and avoids
+    an OSError when the path is malformed (we still want to record
+    the filename in the manifest even if validation failed at an
+    earlier gate)."""
+    if not path:
+        return ""
+    cleaned = path.replace("\\", "/")
+    return cleaned.rsplit("/", 1)[-1]
 
 
 def _make_default_httpx_client() -> Any:
@@ -124,6 +142,7 @@ class DHLExpressLiveAdapter:
         daily_limit:     int = _DEFAULT_DAILY_LIMIT,
         clock:           Optional[Callable[[], Any]] = None,
         max_retries:     int = _DEFAULT_MAX_RETRIES,
+        paperless_trade_enabled: bool = False,
     ) -> None:
         # Defaults are empty strings so the adapter can be constructed
         # for parse-only use (e.g. by the webhook receiver, which only
@@ -144,6 +163,11 @@ class DHLExpressLiveAdapter:
             daily_limit=daily_limit,
             clock=clock,
         )
+        # DL-F3 — Paperless Trade is OFF by default. The factory
+        # (routes_carrier_actions._select_carrier_adapter) flips this
+        # only when settings.carrier_dhl_paperless_trade_enabled is
+        # True. The adapter never reads settings directly.
+        self._plt_enabled:    bool = bool(paperless_trade_enabled)
 
     @property
     def _send_ready(self) -> bool:
@@ -190,8 +214,15 @@ class DHLExpressLiveAdapter:
         request: CarrierShipmentRequest,
     ) -> RawShipmentResponse:
         self._require_send_ready()
+
+        # DL-F3 — Paperless Trade resolution. The validator NEVER raises;
+        # failures suppress the PLT inline and let the shipment proceed.
+        plt_meta, plt_pdf_bytes = self._resolve_paperless_trade(request)
+
         body = build_create_shipment_body(
-            request, account_number=self._account_number,
+            request,
+            account_number=self._account_number,
+            paperless_trade_pdf_bytes=plt_pdf_bytes,
         )
         status, payload = self._request("POST", "/shipments", json_body=body)
         if status >= 400:
@@ -221,13 +252,19 @@ class DHLExpressLiveAdapter:
                 f"DHL response label not base64: {exc}"
             ) from exc
         label_format = (first.get("imageFormat") or "pdf").lower().strip()
+        # Merge DL-F3 Paperless Trade metadata into the raw response.
+        # The base64-encoded PDF lives only inside `body` (the HTTP
+        # request payload, already discarded). It is NEVER inlined
+        # into raw — only the size + sha256 + boolean + filename.
+        merged_raw = dict(payload)
+        merged_raw.update(plt_meta)
         return RawShipmentResponse(
             awb            = awb,
             carrier        = self.carrier,
             label_bytes    = label_bytes,
             label_format   = label_format,
             label_filename = f"{awb}.{label_format}",
-            raw            = dict(payload),
+            raw            = merged_raw,
         )
 
     # ── cancel_shipment ─────────────────────────────────────────────────────
@@ -338,6 +375,65 @@ class DHLExpressLiveAdapter:
                 f"DHL schedule_pickup {status}: {self._summarise(payload)}"
             )
         return dict(payload)
+
+    # ── DL-F3 — Paperless Trade resolution ──────────────────────────────────
+
+    def _resolve_paperless_trade(
+        self,
+        request: CarrierShipmentRequest,
+    ) -> tuple:
+        """Decide whether a Paperless Trade attachment lands on this
+        request. Returns ``(metadata, pdf_bytes_or_none)`` where
+        *metadata* is the dict the live response will merge into
+        ``raw`` for the coordinator and shadow log to lift verbatim.
+
+        Failures are non-fatal — the metadata's ``reason`` token
+        names the gate that blocked the attachment.
+        """
+        path = (request.customs_invoice_pdf_path or "").strip()
+        requested = bool(path)
+
+        if not requested:
+            return ({
+                "paperless_trade_requested":         False,
+                "paperless_trade_attached":          False,
+                "paperless_trade_reason":            "not_requested",
+                "paperless_trade_document_sha256":   "",
+                "paperless_trade_document_filename": "",
+                "paperless_trade_document_size":     0,
+            }, None)
+
+        if not self._plt_enabled:
+            return ({
+                "paperless_trade_requested":         True,
+                "paperless_trade_attached":          False,
+                "paperless_trade_reason":            "flag_disabled",
+                "paperless_trade_document_sha256":   "",
+                "paperless_trade_document_filename": _filename_only(path),
+                "paperless_trade_document_size":     0,
+            }, None)
+
+        result: PLTValidationResult = validate_paperless_trade_pdf(
+            path, max_bytes=PLT_MAX_BYTES,
+        )
+        if not result.ok:
+            return ({
+                "paperless_trade_requested":         True,
+                "paperless_trade_attached":          False,
+                "paperless_trade_reason":            result.reason,
+                "paperless_trade_document_sha256":   "",
+                "paperless_trade_document_filename": _filename_only(path),
+                "paperless_trade_document_size":     int(result.size or 0),
+            }, None)
+
+        return ({
+            "paperless_trade_requested":         True,
+            "paperless_trade_attached":          True,
+            "paperless_trade_reason":            "ok",
+            "paperless_trade_document_sha256":   result.sha256,
+            "paperless_trade_document_filename": _filename_only(path),
+            "paperless_trade_document_size":     int(result.size),
+        }, result.pdf_bytes)
 
     # ── HTTP transport with retries ─────────────────────────────────────────
 
