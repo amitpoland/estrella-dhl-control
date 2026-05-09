@@ -12373,6 +12373,189 @@ function PlaceholderPage({ title, icon, desc }) {
 }
 
 // ══════════════════════════════════════════════════════════
+// PROFORMA DRAFTS — CROSS-BATCH READ-ONLY PAGE
+// ══════════════════════════════════════════════════════════
+//
+// Read-only aggregator over /dashboard/batches + /api/v1/proforma/drafts/{batch_id}.
+// No write actions: per-draft approve / post / send / create / cancel-issued-for-reissue
+// / adopt-issued live in ProformaDraftPanel inside BatchDetailPage. The
+// "Open batch" button only switches to the existing batch detail view —
+// it does not call any new endpoint.
+//
+// Fetches once on mount and again only via Refresh. No auto-poll.
+
+function ProformaDraftsCrossBatchPage({ onViewBatch, onToast }) {
+  const [drafts, setDrafts]   = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError]     = React.useState(null);
+  const [lastLoaded, setLastLoaded] = React.useState(null);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // 1. Fetch the batch list. Same endpoint App already uses.
+      const batchList = await apiFetch('/dashboard/batches?all=1');
+      const list = Array.isArray(batchList) ? batchList : [];
+
+      // 2. Fetch drafts per batch in parallel. Per-batch failures are
+      //    tolerated so one bad batch doesn't blank the whole page.
+      const all = [];
+      await Promise.all(list.map(async (b) => {
+        const bid = b && (b.batch_id || b.id);
+        if (!bid) return;
+        try {
+          const data = await apiFetch(
+            '/api/v1/proforma/drafts/' + encodeURIComponent(bid)
+          );
+          const dr = (data && Array.isArray(data.drafts)) ? data.drafts : [];
+          for (const d of dr) {
+            all.push({ ...d, _batch_summary: b });
+          }
+        } catch (_perBatch) {
+          // Tolerate — keep loading the rest. A real auth/network
+          // failure will be caught on the outer fetch.
+        }
+      }));
+
+      // Sort: newest first using updated_at then created_at.
+      // Defensive on missing fields — never crash on null timestamps.
+      all.sort((a, b) => {
+        const av = a.updated_at || a.created_at || '';
+        const bv = b.updated_at || b.created_at || '';
+        return bv.localeCompare(av);
+      });
+      setDrafts(all);
+      setLastLoaded(new Date().toLocaleTimeString());
+    } catch (e) {
+      setError(String((e && e.message) || e || 'Unknown error'));
+      if (onToast) onToast('Failed to load drafts: ' + String(e.message || e), 'error');
+    }
+    setLoading(false);
+  }, [onToast]);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  const handleOpen = React.useCallback((batchId) => {
+    if (onViewBatch && batchId) onViewBatch({ batch_id: batchId });
+  }, [onViewBatch]);
+
+  return (
+    <div data-testid="proforma-drafts-cross-batch"
+         style={{ flex: 1, padding: '20px 32px 40px', overflow: 'auto' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, fontFamily: '"DM Serif Display",serif', color: 'var(--text)' }}>
+            Proforma Drafts
+          </h2>
+          <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-3)' }}>
+            Read-only cross-batch list. Composed from <code style={{ fontFamily: 'monospace', fontSize: 10, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>/dashboard/batches</code>
+            {' '}and{' '}
+            <code style={{ fontFamily: 'monospace', fontSize: 10, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>/api/v1/proforma/drafts/&#123;batch_id&#125;</code>.
+            Use a draft's <em>Open batch</em> link for editing actions.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {lastLoaded && !loading && (
+            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
+          )}
+          <Btn small variant="outline" onClick={load} disabled={loading}
+               data-testid="btn-proforma-drafts-refresh">
+            {loading ? 'Loading…' : '↻ Refresh'}
+          </Btn>
+        </div>
+      </div>
+
+      {loading && (
+        <Card>
+          <div data-testid="proforma-drafts-loading"
+               style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+            Loading drafts across all batches…
+          </div>
+        </Card>
+      )}
+
+      {!loading && error && (
+        <Card>
+          <div data-testid="proforma-drafts-error"
+               style={{ padding: 12, fontSize: 12, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 4 }}>
+            <b>Failed to load drafts:</b> {error}
+          </div>
+        </Card>
+      )}
+
+      {!loading && !error && drafts.length === 0 && (
+        <Card>
+          <div data-testid="proforma-drafts-empty"
+               style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+            No drafts in flight. Drafts appear here once a batch has at
+            least one proforma draft — open a batch and use the
+            Proforma Draft panel to create one.
+          </div>
+        </Card>
+      )}
+
+      {!loading && !error && drafts.length > 0 && (
+        <Card>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-subtle)' }}>
+                {['Batch', 'Client', 'Draft status', 'wFirma proforma', 'Currency', 'Updated', ''].map((h) => (
+                  <th key={h} style={{ padding: '8px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', borderBottom: '1px solid var(--border)' }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {drafts.map((d) => {
+                const bid = d.batch_id || (d._batch_summary && d._batch_summary.batch_id) || '';
+                const wfirmaLabel = d.wfirma_proforma_fullnumber || d.wfirma_proforma_id || '—';
+                const updatedLabel = d.updated_at || d.created_at || '—';
+                return (
+                  <tr key={d.id} data-testid="proforma-drafts-row"
+                      style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '8px 8px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10 }}>
+                      {bid || '—'}
+                    </td>
+                    <td style={{ padding: '8px 8px', color: 'var(--text)' }}>
+                      {d.client_name || '—'}
+                    </td>
+                    <td style={{ padding: '8px 8px' }}>
+                      <span style={{ display: 'inline-block', fontSize: 10, padding: '2px 8px', borderRadius: 4, fontWeight: 600, background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)', border: '1px solid var(--badge-blue-border)' }}>
+                        {d.draft_state || '—'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '8px 8px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10 }}>
+                      {wfirmaLabel}
+                    </td>
+                    <td style={{ padding: '8px 8px', color: 'var(--text-2)' }}>
+                      {d.currency || '—'}
+                    </td>
+                    <td style={{ padding: '8px 8px', color: 'var(--text-3)', fontSize: 10 }}>
+                      {updatedLabel}
+                    </td>
+                    <td style={{ padding: '8px 8px', textAlign: 'right' }}>
+                      <Btn small variant="outline" onClick={() => handleOpen(bid)} disabled={!bid}
+                           data-testid="btn-proforma-drafts-open-batch">
+                        Open batch
+                      </Btn>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ padding: '8px 12px', fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)' }}>
+            {drafts.length} draft{drafts.length === 1 ? '' : 's'} across all batches.
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
 // LEARNING PAGE
 // ══════════════════════════════════════════════════════════
 
@@ -13662,8 +13845,10 @@ function App() {
         {page === 'learning'      && <LearningPage onToast={notify} />}
         {page === 'admin'         && <AdminPage user={user} />}
 
+        {/* Phase B — proforma drafts cross-batch read-only view. */}
+        {page === 'proforma'   && <ProformaDraftsCrossBatchPage onViewBatch={viewShipment} onToast={notify} />}
+
         {/* Design refresh placeholders. Backend verified; UI pages deferred. */}
-        {page === 'proforma'   && <PlaceholderPage title="Proforma Drafts"     icon="✎" desc="Backend exists; page implementation is planned." />}
         {page === 'statements' && <PlaceholderPage title="Customer Statements" icon="◫" desc="Backend exists; page implementation is planned." />}
         {page === 'proposals'  && <PlaceholderPage title="Action Proposals"    icon="⚐" desc="Backend exists; page implementation is planned." />}
         {page === 'broker'     && <PlaceholderPage title="Broker Follow-ups"   icon="✉" desc="Backend exists; page implementation is planned." />}

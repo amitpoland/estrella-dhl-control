@@ -140,13 +140,24 @@ def test_no_invented_endpoints(html: str, endpoint: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 6. The 4 new page ids do not introduce any fetch / apiFetch calls
+# 6. The placeholder-only page ids still render via PlaceholderPage and
+#    do not introduce any fetch / apiFetch calls on their conditional
+#    render line.
+#
+# `proforma` was removed from this list when Phase B replaced it with
+# the real ProformaDraftsCrossBatchPage. The Phase B test
+# (test_dashboard_proforma_drafts_cross_batch.py) covers the new page
+# instead. The remaining three ids — statements, proposals, broker —
+# stay placeholders until their own Phase C/D/E lands.
 # ──────────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("nav_id", NEW_NAV_IDS)
-def test_new_page_ids_use_placeholder_only(html: str, nav_id: str) -> None:
+PLACEHOLDER_NAV_IDS = ["statements", "proposals", "broker"]
+
+
+@pytest.mark.parametrize("nav_id", PLACEHOLDER_NAV_IDS)
+def test_placeholder_page_ids_use_placeholder_only(html: str, nav_id: str) -> None:
     """
-    For each new id, the conditional render line must be:
+    For each placeholder id, the conditional render line must be:
         page === '<id>' && <PlaceholderPage ... />
     and not a fetch-bearing component.
 
@@ -165,18 +176,20 @@ def test_new_page_ids_use_placeholder_only(html: str, nav_id: str) -> None:
     )
     # Every match must reference PlaceholderPage on the same line.
     # If a future commit replaces a placeholder with a real page,
-    # this test will fail — at which point the page should be moved
-    # out of the placeholder list and into the real-page test suite.
+    # the page id should be moved out of PLACEHOLDER_NAV_IDS and into
+    # its own dedicated test suite (see Phase B for the precedent).
     placeholder_match = any("PlaceholderPage" in line for line in matches)
     assert placeholder_match, (
         f"Page id {nav_id!r} is rendered but does NOT use PlaceholderPage. "
-        f"Phase A pages must remain placeholders. Render lines found: {matches!r}"
+        f"If a real page has shipped for this id, drop it from "
+        f"PLACEHOLDER_NAV_IDS and add a dedicated test file. "
+        f"Render lines found: {matches!r}"
     )
     # And critically — none of those matches contain fetch / apiFetch.
     for line in matches:
         assert "fetch(" not in line and "apiFetch(" not in line, (
             f"Page id {nav_id!r} render line introduces a fetch call: {line!r}. "
-            f"Phase A placeholders must not call any endpoint."
+            f"Placeholders must not call any endpoint."
         )
 
 
