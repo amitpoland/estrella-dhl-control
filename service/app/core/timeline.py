@@ -95,6 +95,18 @@ EV_TRACKING_UPDATED         = "tracking_updated"                  # batch tracki
 EV_AI_BRIDGE_TASK_CREATED   = "ai_bridge_task_created"           # task file created for external AI
 EV_AI_BRIDGE_RESULT_RECEIVED = "ai_bridge_result_received"       # result imported from external AI
 
+# ── Outbound carrier execution events (DL-D5) ─────────────────────────────────
+# Emitted by routes_carrier_actions.py after a CarrierCoordinator call lands.
+# The carrier coordinator already writes its own evidence to the per-AWB
+# manifest + transitions table; these events mirror the action onto the
+# parent batch's audit timeline so an operator scanning audit.json sees the
+# carrier-side activity alongside customs/clearance entries.
+EV_CARRIER_SHIPMENT_CREATED   = "carrier_shipment_created"
+EV_CARRIER_LABEL_PRINTED      = "carrier_label_printed"
+EV_CARRIER_HANDED_TO_CARRIER  = "carrier_handed_to_carrier"
+EV_CARRIER_SHIPMENT_VOIDED    = "carrier_shipment_voided"
+EV_CARRIER_EXECUTE_REJECTED   = "carrier_execute_rejected"
+
 _MAX_EVENTS           = 200
 
 
