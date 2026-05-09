@@ -224,10 +224,16 @@ def test_proforma_draft_panel_unchanged(html: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 10. The remaining Phase A nav placeholders stay placeholders
+# 10. The remaining nav placeholders stay placeholders
+#
+# `statements` was removed from this list when Phase C replaced it with
+# the real CustomerStatementsPickerPage. The Phase C test
+# (test_dashboard_customer_statements_picker.py) asserts `statements`
+# now renders the real page. The remaining two ids — proposals, broker —
+# stay placeholders until their own Phase D/E lands.
 # ──────────────────────────────────────────────────────────────────────
 
-REMAINING_PLACEHOLDERS = ["statements", "proposals", "broker"]
+REMAINING_PLACEHOLDERS = ["proposals", "broker"]
 
 
 @pytest.mark.parametrize("nav_id", REMAINING_PLACEHOLDERS)
@@ -238,6 +244,7 @@ def test_remaining_placeholders_unchanged(html: str, nav_id: str) -> None:
     placeholder_match = any("PlaceholderPage" in line for line in matches)
     assert placeholder_match, (
         f"Page id {nav_id!r} is no longer rendering PlaceholderPage. "
-        f"Phase B was supposed to only replace the proforma placeholder. "
+        f"If a real page has shipped for this id, drop it from "
+        f"REMAINING_PLACEHOLDERS and add a dedicated test file. "
         f"Render lines found: {matches!r}"
     )

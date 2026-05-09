@@ -147,11 +147,16 @@ def test_no_invented_endpoints(html: str, endpoint: str) -> None:
 # `proforma` was removed from this list when Phase B replaced it with
 # the real ProformaDraftsCrossBatchPage. The Phase B test
 # (test_dashboard_proforma_drafts_cross_batch.py) covers the new page
-# instead. The remaining three ids — statements, proposals, broker —
-# stay placeholders until their own Phase C/D/E lands.
+# instead.
+#
+# `statements` was removed from this list when Phase C replaced it with
+# the real CustomerStatementsPickerPage. The Phase C test
+# (test_dashboard_customer_statements_picker.py) covers the new page
+# instead. The remaining two ids — proposals, broker — stay
+# placeholders until their own Phase D/E lands.
 # ──────────────────────────────────────────────────────────────────────
 
-PLACEHOLDER_NAV_IDS = ["statements", "proposals", "broker"]
+PLACEHOLDER_NAV_IDS = ["proposals", "broker"]
 
 
 @pytest.mark.parametrize("nav_id", PLACEHOLDER_NAV_IDS)
