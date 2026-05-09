@@ -240,6 +240,23 @@ class Settings(BaseSettings):
     # credentials and status are validated in shadow mode.
     carrier_dhl_live_enabled:    bool = Field(default=False, env="CARRIER_DHL_LIVE_ENABLED")
 
+    # ── Carrier DHL shadow mode (DL-F2) ───────────────────────────────────────
+    # When True (and the live-adapter eligibility checks all pass),
+    # the action route factory wraps the live adapter in a shadow
+    # adapter that calls the stub for the canonical response and the
+    # live adapter for observation. The operator-facing return value
+    # is always the stub's. The live response is recorded to the
+    # carrier_shadow_log SQLite table for diff review and never
+    # mutates carrier_shipment_db / carrier_label_store.
+    #
+    # Production cutover sequence:
+    #   1. carrier_dhl_live_enabled=True + dhl_express_api_status=sandbox
+    #      + carrier_dhl_shadow_mode=True   → shadow vs sandbox
+    #   2. dhl_express_api_status=production (still shadow)
+    #      → shadow vs production for at least 1 week of operator review
+    #   3. carrier_dhl_shadow_mode=False    → live becomes source of truth
+    carrier_dhl_shadow_mode:     bool = Field(default=False, env="CARRIER_DHL_SHADOW_MODE")
+
     # ── Carrier DHL webhook ingestion (DL-E1) ─────────────────────────────────
     # Master switch. When False, both /api/v1/carrier/webhook/* endpoints
     # return HTTP 503 webhook_disabled. The router is mounted regardless so

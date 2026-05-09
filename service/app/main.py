@@ -65,6 +65,7 @@ from .services.proforma_service_charges_db import init as init_proforma_service_
 from .services.carrier.carrier_shipment_db import init_db    as init_carrier_db
 from .services.carrier.carrier_label_store import init_store as init_carrier_label_store
 from .services.carrier.carrier_event_db    import init_db    as init_carrier_event_db
+from .services.carrier.adapters.dhl_shadow_db import init_db  as init_dhl_shadow_db
 from .auth.database import init_db
 from .auth.dependencies import check_session_or_redirect
 
@@ -116,6 +117,13 @@ async def lifespan(app: FastAPI):
     # The webhook router is mounted always but inert until
     # settings.carrier_dhl_webhook_enabled is flipped on.
     init_carrier_event_db(_root / "carrier_events.db")
+
+    # Carrier shadow-mode log (DL-F2). Idempotent. The shadow adapter
+    # is selected by the action-route factory only when both
+    # carrier_dhl_live_enabled AND carrier_dhl_shadow_mode are True
+    # AND credentials are present, so an inert install never writes
+    # any rows here.
+    init_dhl_shadow_db(_root / "carrier_shadow.db")
 
     log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma / carrier)", _root)
 

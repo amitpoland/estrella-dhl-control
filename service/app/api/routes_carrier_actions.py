@@ -138,17 +138,20 @@ _DHL_PRODUCTION_URL: str = "https://express.api.dhl.com/mydhlapi"
 def _select_carrier_adapter(actor: str):
     """Pick the carrier adapter for this request.
 
-    DL-F1 selection rules — falls back to the DHL Express stub for any
-    condition that fails live-eligibility checks. NEVER raises; the
-    worst case is "stub when you wanted live", which the dashboard
-    surfaces. Order:
+    DL-F1/F2 selection rules — falls back to the DHL Express stub for
+    any condition that fails live-eligibility checks. NEVER raises;
+    the worst case is "stub when you wanted live", which the
+    dashboard surfaces. Order:
 
       1. carrier_dhl_live_enabled is False                  → stub
       2. dhl_express_api_status == "pending"                → stub
       3. username / password / account_number empty         → stub
-      4. status == "sandbox"                                → live (sandbox URL)
-      5. status == "production"                             → live (prod URL)
-      6. any unknown status                                 → stub
+      4. unknown status                                     → stub
+      5. live constructor raises (defensive)                → stub
+      6. carrier_dhl_shadow_mode is True (and 1-5 passed)   → SHADOW(stub, live)
+      7. status == "sandbox"  (shadow off)                  → live (sandbox URL)
+      8. status == "production" (shadow off)                → live (prod URL)
+      9. shadow constructor raises (defensive)              → stub
 
     Imports are local so the route module's source-grep contract
     ("no adapter base import at module scope") holds.
@@ -181,7 +184,7 @@ def _select_carrier_adapter(actor: str):
         DHLExpressLiveAdapter,
     )
     try:
-        return DHLExpressLiveAdapter(
+        live = DHLExpressLiveAdapter(
             base_url       = base_url,
             username       = username,
             password       = password,
@@ -192,6 +195,29 @@ def _select_carrier_adapter(actor: str):
         # strip, malformed URL, etc.). Fall back to the stub rather
         # than crash the action endpoint.
         return DHLExpressStubAdapter()
+
+    # Shadow-mode wrap (DL-F2) — only when the operator has explicitly
+    # enabled it AND the live adapter is fully configured. The wrapper
+    # routes the operator-facing return value through the stub while
+    # observing the live adapter for diff review.
+    if settings.carrier_dhl_shadow_mode:
+        try:
+            from ..services.carrier.adapters.dhl_express_shadow import (
+                DHLExpressShadowAdapter,
+            )
+            return DHLExpressShadowAdapter(
+                stub  = DHLExpressStubAdapter(),
+                live  = live,
+                actor = (actor or "system:shadow"),
+            )
+        except Exception:
+            # Defensive: any wrapping failure falls back to the stub
+            # so the operator action never crashes. The live adapter
+            # constructed above is dropped on the floor; the next
+            # request rebuilds.
+            return DHLExpressStubAdapter()
+
+    return live
 
 
 def _make_coordinator(actor: str) -> CarrierCoordinator:
