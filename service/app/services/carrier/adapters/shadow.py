@@ -14,10 +14,15 @@ Behaviour contract:
 from __future__ import annotations
 
 import hashlib
-import json
 
 from .base import AbstractCarrierAdapter
-from ..models.shipment import ShipmentMode, ShipmentResult, ShipmentState, ShipmentRequest
+from ..models.shipment import (
+    ShipmentMode,
+    ShipmentRequest,
+    ShipmentResult,
+    ShipmentState,
+    compute_idempotency_key,
+)
 
 
 class DhlExpressShadowAdapter(AbstractCarrierAdapter):
@@ -45,22 +50,10 @@ class DhlExpressShadowAdapter(AbstractCarrierAdapter):
         )
 
 
-# ── helpers (module-private) ──────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
 
-
-def _idempotency_key(request: ShipmentRequest) -> str:
-    """sha256 of the canonical shipment intent fields."""
-    canonical = json.dumps(
-        {
-            "batch_id": request.batch_id,
-            "shipper_account": request.shipper_account,
-            "weight_kg": request.weight_kg,
-            "declared_value": request.declared_value,
-            "currency": request.currency,
-        },
-        sort_keys=True,
-    )
-    return hashlib.sha256(canonical.encode()).hexdigest()
+# Alias kept for backward-compatibility with tests that import _idempotency_key directly.
+_idempotency_key = compute_idempotency_key
 
 
 def _sim_ref(idempotency_key: str) -> str:

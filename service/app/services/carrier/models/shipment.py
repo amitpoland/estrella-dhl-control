@@ -5,7 +5,9 @@ No imports from customs-clearance services.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import hashlib
+import json
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
@@ -54,3 +56,25 @@ class CarrierConfigError(Exception):
 
 class CarrierAllowlistError(Exception):
     """Raised when a batch_id is not on the live allowlist."""
+
+
+def compute_idempotency_key(request: ShipmentRequest) -> str:
+    """
+    Deterministic idempotency key for a shipment request.
+
+    sha256 of the canonical JSON of the fields that uniquely identify
+    a shipment intent. Same inputs always produce the same key.
+    Used by both the adapter and the coordinator (so the coordinator
+    can query the DB before calling the adapter).
+    """
+    canonical = json.dumps(
+        {
+            "batch_id": request.batch_id,
+            "shipper_account": request.shipper_account,
+            "weight_kg": request.weight_kg,
+            "declared_value": request.declared_value,
+            "currency": request.currency,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
