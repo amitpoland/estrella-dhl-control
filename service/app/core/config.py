@@ -216,6 +216,30 @@ class Settings(BaseSettings):
     # Set DEBUG_ALLOW_OLD_BATCH_FLOW=true in .env only for backward-compat testing.
     debug_allow_old_batch_flow: bool = False
 
+    # ── Carrier DHL Express live adapter (DL-F1) ──────────────────────────────
+    # DHL MyDHL API credentials. The live adapter is selected by the
+    # action route factory only when ALL of:
+    #   * carrier_dhl_live_enabled is True
+    #   * dhl_express_api_status is "sandbox" or "production"
+    #   * username + password + account_number are non-empty
+    # Otherwise the factory falls back to DHLExpressStubAdapter so dev /
+    # CI / unconfigured environments stay offline. Misconfiguration NEVER
+    # raises; the worst case is "stub when you wanted live", surfaced via
+    # the dashboard.
+    dhl_express_api_username:    str = Field(default="",  env="DHL_EXPRESS_API_USERNAME")
+    dhl_express_api_password:    str = Field(default="",  env="DHL_EXPRESS_API_PASSWORD")
+    dhl_express_account_number:  str = Field(default="",  env="DHL_EXPRESS_ACCOUNT_NUMBER")
+    # Three-state lifecycle gate (mirrors dhl_tracking_api_status):
+    #   "pending"     — DHL has not approved this account; no live calls.
+    #   "sandbox"     — calls https://express.api.dhl.com/mydhlapi/test
+    #   "production"  — calls https://express.api.dhl.com/mydhlapi
+    dhl_express_api_status:      str  = Field(default="pending", env="DHL_EXPRESS_API_STATUS")
+    # Master kill-switch. Symmetrical to carrier_dhl_webhook_enabled.
+    # When False the route factory unconditionally selects the stub
+    # regardless of any other setting. Operators flip this last, after
+    # credentials and status are validated in shadow mode.
+    carrier_dhl_live_enabled:    bool = Field(default=False, env="CARRIER_DHL_LIVE_ENABLED")
+
     # ── Carrier DHL webhook ingestion (DL-E1) ─────────────────────────────────
     # Master switch. When False, both /api/v1/carrier/webhook/* endpoints
     # return HTTP 503 webhook_disabled. The router is mounted regardless so

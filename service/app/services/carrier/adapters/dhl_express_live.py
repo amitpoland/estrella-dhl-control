@@ -1,55 +1,52 @@
 """
-dhl_express_live.py — Parse-only DHL Express adapter.
+dhl_express_live.py — Live DHL Express adapter.
 
-DL-E1 scope
+DL-F1 scope
 -----------
-Parse-only. Takes the DHL Tracking-Unified-Push payload and turns it
-into ``CarrierEvent`` instances. The send-side methods
-(``create_shipment``, ``cancel_shipment``, ``fetch_label``,
-``schedule_pickup``) are NOT implemented in this phase — calling
-them raises :class:`NotImplementedError` with a "DL-F" pointer.
+Implements the four send-side methods of :class:`CarrierAdapter`
+against the DHL MyDHL API:
 
-Contract
---------
-* Implements the :class:`CarrierAdapter` Protocol surface (so the
-  coordinator type-checks the same way it does for the stub).
-* No HTTP client (``requests`` / ``httpx`` / ``urllib`` are NOT
-  imported).
-* No DHL SDK.
-* No environment variable reads.
-* No disk I/O.
+  * create_shipment    → POST /shipments
+  * cancel_shipment    → DELETE /shipments/{awb}
+  * fetch_label        → GET /shipments/{awb}/image
+  * schedule_pickup    → POST /pickups
 
-Live HTTP client lands in DL-F. Splitting parse from transport here
-means the webhook receiver can be tested end-to-end in DL-E1
-without any network surface.
+Parse-side methods (``parse_webhook_event`` / ``parse_push_payload``)
+land from DL-E1 unchanged — they consume DHL Tracking-Unified-Push
+events and remain transport-agnostic.
 
-Push payload shape (subset DL-E1 parses)
-----------------------------------------
-::
+Hard rules (also enforced by source-grep tests)
+-----------------------------------------------
+* No environment variable reads. All credentials enter through the
+  constructor.
+* HTTP transport is httpx-compatible; the constructor accepts an
+  injected ``http_client`` so tests run with a fake client and the
+  module never touches the network.
+* The ``Authorization`` header is constructed via httpx's basic-auth
+  helper but never logged or printed — pinned by source-grep test.
+* Daily-quota counter (DHL sandbox = 500/day) lives in
+  :class:`DHLDailyQuota`. Exhaustion raises ``CarrierRateLimitError``
+  BEFORE making the HTTP call, so a runaway retry loop on our side
+  cannot exceed the budget.
 
-    {
-      "shipments": [{
-        "id":      "<AWB>",
-        "service": "express",
-        "status":  {
-          "timestamp":   "<ISO-8601>",
-          "location":    "...",
-          "statusCode":  "transit",
-          "status":      "...",
-          "description": "..."
-        }
-      }, ...]
-    }
-
-For each shipment we emit one ``CarrierEvent``. Shipments with
-missing required fields (``id``, ``status.timestamp``, or
-``status.statusCode``) are dropped from the output and the dropped
-count is returned alongside the events.
+Error mapping
+-------------
+  401 / 403          → CarrierAuthError
+  429                → CarrierRateLimitError (after retry budget)
+  5xx                → CarrierResponseError (after retry budget)
+  network / timeout  → CarrierTransportError (after retry budget)
+  malformed body     → CarrierResponseError
+  4xx other          → returned to caller as (status, body) so domain
+                       methods can decide (e.g., cancel returns
+                       accepted=False instead of raising)
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+import time
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from ..base import (
     CARRIER_DHL,
@@ -58,35 +55,182 @@ from ..base import (
     RawCancelResponse,
     RawShipmentResponse,
 )
-from .base import CarrierResponseError
-
-
-_NOT_IMPL_MSG = (
-    "DHL Express live transport is not implemented in DL-E1 "
-    "(parse-only). The live HTTP client lands in DL-F."
+from .base import (
+    CarrierAdapterError,
+    CarrierAuthError,
+    CarrierRateLimitError,
+    CarrierResponseError,
+    CarrierTransportError,
 )
+from .dhl_express_live_request import build_create_shipment_body
+from .dhl_express_quota import DHLDailyQuota
+
+
+# ── Defaults ────────────────────────────────────────────────────────────────
+
+_DEFAULT_TIMEOUT_S:    float = 4.0    # under DHL's 5s push budget
+_DEFAULT_MAX_RETRIES:  int   = 3
+_DEFAULT_DAILY_LIMIT:  int   = 500    # DHL sandbox quota
+_SUPPORTED_LABEL_FMTS = frozenset({"pdf", "zpl"})
+
+#: Backoff schedule (seconds) for retryable failures. Total worst-case
+#: latency = sum(_RETRY_BACKOFF) ≈ 1.75s, leaving margin under any
+#: 5-second SLA the route caller may impose.
+_RETRY_BACKOFF: Tuple[float, ...] = (0.25, 0.5, 1.0)
+
+
+def _make_default_httpx_client() -> Any:
+    """Default sync httpx client. Imported lazily so test environments
+    can monkey-patch this module without httpx wiring at module load."""
+    import httpx
+    return httpx.Client()
 
 
 class DHLExpressLiveAdapter:
-    """DHL Express adapter — parse-only for DL-E1.
+    """DHL Express adapter — live HTTP via injected ``http_client``.
 
-    Public ``parse_push_payload`` method takes the DHL push envelope
-    and returns a list of ``CarrierEvent`` instances. The
-    Protocol-required ``parse_webhook_event`` method is provided for
-    Protocol compatibility but only handles a single-shipment
-    payload (test-friendly fallback); production code should use
-    ``parse_push_payload``.
+    Constructor
+    -----------
+    ``base_url``           — sandbox or production base URL.
+    ``username``           — Basic-auth username from DHL onboarding.
+    ``password``           — Basic-auth password.
+    ``account_number``     — DHL account / payer number.
+    ``timeout_s``          — per-request timeout in seconds (default 4).
+    ``http_client``        — any object exposing ``request(method, url,
+                              json=, params=, auth=, timeout=)`` and
+                              returning a Response with ``status_code``,
+                              ``headers``, ``json()``, ``text``. Default
+                              is ``httpx.Client()``.
+    ``sleep``              — callable used between retries; default
+                              ``time.sleep``. Tests inject a no-op.
+    ``daily_limit``        — daily call cap (sandbox 500; production
+                              negotiated).
+    ``clock``              — passed through to the quota helper for
+                              UTC-day rollover testing.
     """
 
     carrier: str = CARRIER_DHL
 
-    # ── Send-side methods — all raise NotImplementedError in DL-E1 ─────────
+    def __init__(
+        self,
+        *,
+        base_url:        str = "",
+        username:        str = "",
+        password:        str = "",
+        account_number:  str = "",
+        timeout_s:       float = _DEFAULT_TIMEOUT_S,
+        http_client:     Optional[Any] = None,
+        sleep:           Optional[Callable[[float], None]] = None,
+        daily_limit:     int = _DEFAULT_DAILY_LIMIT,
+        clock:           Optional[Callable[[], Any]] = None,
+        max_retries:     int = _DEFAULT_MAX_RETRIES,
+    ) -> None:
+        # Defaults are empty strings so the adapter can be constructed
+        # for parse-only use (e.g. by the webhook receiver, which only
+        # calls parse_push_payload). Send-side methods check
+        # ``_send_ready`` and raise CarrierResponseError when called on
+        # an adapter constructed without credentials.
+        self._base_url:       str   = (base_url or "").rstrip("/")
+        self._username:       str   = username or ""
+        self._password:       str   = password or ""
+        self._account_number: str   = account_number or ""
+        self._timeout_s:      float = float(timeout_s)
+        self._max_retries:    int   = int(max_retries)
+        # http_client is only built lazily on the first send-side call.
+        # Parse-only consumers never trigger the httpx import.
+        self._client:         Any   = http_client
+        self._sleep:          Callable[[float], None] = sleep or time.sleep
+        self._quota:          DHLDailyQuota = DHLDailyQuota(
+            daily_limit=daily_limit,
+            clock=clock,
+        )
+
+    @property
+    def _send_ready(self) -> bool:
+        """True iff all credentials + base URL are non-empty."""
+        return bool(
+            self._base_url
+            and self._username.strip()
+            and self._password.strip()
+            and self._account_number.strip()
+        )
+
+    def _require_send_ready(self) -> None:
+        """Send-side methods call this first. Parse-only consumers
+        constructed with default empty credentials get a clear domain
+        error rather than an obscure HTTP failure."""
+        if not self._send_ready:
+            raise CarrierResponseError(
+                "DHLExpressLiveAdapter constructed without credentials; "
+                "send-side methods are unavailable. The adapter is "
+                "parse-only in this configuration."
+            )
+
+    def _ensure_client(self) -> Any:
+        """Lazily build the default httpx client when a send-side
+        method needs it."""
+        if self._client is None:
+            self._client = _make_default_httpx_client()
+        return self._client
+
+    # ── Public read helpers (test surface) ──────────────────────────────────
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @property
+    def quota(self) -> DHLDailyQuota:
+        return self._quota
+
+    # ── create_shipment ─────────────────────────────────────────────────────
 
     def create_shipment(
         self,
         request: CarrierShipmentRequest,
     ) -> RawShipmentResponse:
-        raise NotImplementedError(_NOT_IMPL_MSG)
+        self._require_send_ready()
+        body = build_create_shipment_body(
+            request, account_number=self._account_number,
+        )
+        status, payload = self._request("POST", "/shipments", json_body=body)
+        if status >= 400:
+            raise CarrierResponseError(
+                f"DHL create_shipment {status}: {self._summarise(payload)}"
+            )
+        awb = (payload.get("shipmentTrackingNumber") or "").strip()
+        if not awb:
+            raise CarrierResponseError(
+                "DHL response missing shipmentTrackingNumber"
+            )
+        documents = payload.get("documents") or []
+        if not isinstance(documents, list) or not documents:
+            raise CarrierResponseError(
+                "DHL response missing label documents"
+            )
+        first = documents[0] or {}
+        content_b64 = (first.get("content") or "").strip()
+        if not content_b64:
+            raise CarrierResponseError(
+                "DHL response label content is empty"
+            )
+        try:
+            label_bytes = base64.b64decode(content_b64)
+        except (binascii.Error, ValueError) as exc:
+            raise CarrierResponseError(
+                f"DHL response label not base64: {exc}"
+            ) from exc
+        label_format = (first.get("imageFormat") or "pdf").lower().strip()
+        return RawShipmentResponse(
+            awb            = awb,
+            carrier        = self.carrier,
+            label_bytes    = label_bytes,
+            label_format   = label_format,
+            label_filename = f"{awb}.{label_format}",
+            raw            = dict(payload),
+        )
+
+    # ── cancel_shipment ─────────────────────────────────────────────────────
 
     def cancel_shipment(
         self,
@@ -94,7 +238,32 @@ class DHLExpressLiveAdapter:
         *,
         reason: str = "",
     ) -> RawCancelResponse:
-        raise NotImplementedError(_NOT_IMPL_MSG)
+        self._require_send_ready()
+        if not (awb or "").strip():
+            raise CarrierResponseError("awb is required")
+        status, body = self._request(
+            "DELETE", f"/shipments/{awb}",
+            params={"requestorName": (reason or "system").strip()[:60]},
+        )
+        if status in (200, 204):
+            return RawCancelResponse(
+                carrier=self.carrier, awb=awb, accepted=True,
+                reason=reason or "accepted",
+                raw=dict(body) if isinstance(body, dict) else {"text": body},
+            )
+        if status in (404, 409):
+            raw = dict(body) if isinstance(body, dict) else {"text": body}
+            return RawCancelResponse(
+                carrier=self.carrier, awb=awb, accepted=False,
+                reason=str(raw.get("detail") or raw.get("title")
+                            or f"DHL {status}"),
+                raw=raw,
+            )
+        raise CarrierResponseError(
+            f"DHL cancel_shipment {status}: {self._summarise(body)}"
+        )
+
+    # ── fetch_label ─────────────────────────────────────────────────────────
 
     def fetch_label(
         self,
@@ -102,7 +271,42 @@ class DHLExpressLiveAdapter:
         *,
         fmt: str = "pdf",
     ) -> bytes:
-        raise NotImplementedError(_NOT_IMPL_MSG)
+        self._require_send_ready()
+        if not (awb or "").strip():
+            raise CarrierResponseError("awb is required")
+        fmt_norm = (fmt or "pdf").lower().strip()
+        if fmt_norm not in _SUPPORTED_LABEL_FMTS:
+            raise CarrierResponseError(
+                f"unsupported label format {fmt!r} "
+                f"(supported: {sorted(_SUPPORTED_LABEL_FMTS)})"
+            )
+        status, body = self._request(
+            "GET", f"/shipments/{awb}/image",
+            params={"typeCode": "label", "imageFormat": fmt_norm.upper()},
+        )
+        if status >= 400:
+            raise CarrierResponseError(
+                f"DHL fetch_label {status}: {self._summarise(body)}"
+            )
+        documents = body.get("documents") or []
+        if not isinstance(documents, list) or not documents:
+            raise CarrierResponseError(
+                "DHL fetch_label response missing documents"
+            )
+        first = documents[0] or {}
+        content_b64 = (first.get("content") or "").strip()
+        if not content_b64:
+            raise CarrierResponseError(
+                "DHL fetch_label response label content is empty"
+            )
+        try:
+            return base64.b64decode(content_b64)
+        except (binascii.Error, ValueError) as exc:
+            raise CarrierResponseError(
+                f"DHL fetch_label response not base64: {exc}"
+            ) from exc
+
+    # ── schedule_pickup ─────────────────────────────────────────────────────
 
     def schedule_pickup(
         self,
@@ -111,7 +315,174 @@ class DHLExpressLiveAdapter:
         when_iso: str,
         location: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
-        raise NotImplementedError(_NOT_IMPL_MSG)
+        self._require_send_ready()
+        if not (awb or "").strip():
+            raise CarrierResponseError("awb is required")
+        if not (when_iso or "").strip():
+            raise CarrierResponseError("when_iso is required")
+        body_in: Dict[str, Any] = {
+            "plannedPickupDateAndTime": when_iso,
+            "accounts": [{
+                "typeCode": "shipper",
+                "number":   self._account_number,
+            }],
+            "consignmentNumber": awb,
+        }
+        if location:
+            body_in["pickupAddress"] = dict(location)
+        status, payload = self._request(
+            "POST", "/pickups", json_body=body_in,
+        )
+        if status >= 400:
+            raise CarrierResponseError(
+                f"DHL schedule_pickup {status}: {self._summarise(payload)}"
+            )
+        return dict(payload)
+
+    # ── HTTP transport with retries ─────────────────────────────────────────
+
+    def _request(
+        self,
+        method:    str,
+        path:      str,
+        *,
+        json_body: Optional[Dict[str, Any]] = None,
+        params:    Optional[Dict[str, Any]] = None,
+    ) -> Tuple[int, Any]:
+        """Issue one DHL request with bounded retries.
+
+        Returns ``(status_code, body)`` for 2xx and 4xx (non-auth, non-
+        rate-limit). Raises:
+          * CarrierRateLimitError — daily quota exhausted (no HTTP) or
+            429 after retries.
+          * CarrierAuthError      — 401 / 403.
+          * CarrierTransportError — network/timeout after retries.
+          * CarrierResponseError  — 5xx after retries, or malformed
+            success body.
+        """
+        # Quota is checked BEFORE the HTTP call so a runaway retry loop
+        # cannot burn the daily budget.
+        self._quota.consume_or_raise()
+
+        url = f"{self._base_url}{path}"
+        # Built but never logged. Pinned by source-grep test.
+        auth = (self._username, self._password)
+
+        client = self._ensure_client()
+        attempt = 0
+        while True:
+            try:
+                resp = client.request(
+                    method, url,
+                    json=json_body,
+                    params=params,
+                    auth=auth,
+                    timeout=self._timeout_s,
+                )
+            except CarrierAdapterError:
+                raise
+            except Exception as exc:
+                if attempt < self._max_retries:
+                    self._sleep(_RETRY_BACKOFF[
+                        min(attempt, len(_RETRY_BACKOFF) - 1)
+                    ])
+                    attempt += 1
+                    continue
+                raise CarrierTransportError(
+                    f"DHL transport failed after {attempt} retries: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+
+            status = getattr(resp, "status_code", 0)
+            if status in (200, 201):
+                return status, self._parse_json(resp)
+            if status == 204:
+                return status, {}
+            if status in (401, 403):
+                raise CarrierAuthError(
+                    f"DHL auth failed (HTTP {status})"
+                )
+            if status == 429:
+                if attempt < self._max_retries:
+                    retry_after = self._retry_after_seconds(resp)
+                    self._sleep(retry_after)
+                    attempt += 1
+                    continue
+                raise CarrierRateLimitError(
+                    f"DHL rate-limited (HTTP 429) after "
+                    f"{self._max_retries} retries"
+                )
+            if 500 <= status < 600:
+                if attempt < self._max_retries:
+                    self._sleep(_RETRY_BACKOFF[
+                        min(attempt, len(_RETRY_BACKOFF) - 1)
+                    ])
+                    attempt += 1
+                    continue
+                raise CarrierResponseError(
+                    f"DHL server error (HTTP {status}) after "
+                    f"{self._max_retries} retries"
+                )
+            # 4xx other than 401/403/429 — caller decides.
+            return status, self._safe_parse_json(resp)
+
+    # ── Response helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_json(resp: Any) -> Dict[str, Any]:
+        """Parse a 2xx response body. Malformed → CarrierResponseError."""
+        try:
+            payload = resp.json()
+        except Exception as exc:
+            raise CarrierResponseError(
+                f"DHL response body is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise CarrierResponseError(
+                f"DHL response body is not a JSON object "
+                f"(got {type(payload).__name__})"
+            )
+        return payload
+
+    @staticmethod
+    def _safe_parse_json(resp: Any) -> Any:
+        """Parse a 4xx response body without raising — used so domain
+        methods (cancel_shipment) can inspect the body and translate
+        to a domain-level signal."""
+        try:
+            payload = resp.json()
+            if isinstance(payload, dict):
+                return payload
+            return {"text": payload}
+        except Exception:
+            text = getattr(resp, "text", "")
+            return {"text": text}
+
+    @staticmethod
+    def _retry_after_seconds(resp: Any) -> float:
+        """Decode a Retry-After header. Falls back to 1.0s when absent
+        or malformed."""
+        headers = getattr(resp, "headers", {}) or {}
+        try:
+            raw = headers.get("Retry-After") or headers.get("retry-after") or ""
+        except AttributeError:
+            raw = ""
+        try:
+            return max(0.0, float(raw))
+        except (ValueError, TypeError):
+            return 1.0
+
+    @staticmethod
+    def _summarise(payload: Any) -> str:
+        """Tight one-line summary of a 4xx body for error messages.
+        Truncates at 200 chars so log lines stay scannable."""
+        try:
+            s = json.dumps(payload, default=str, sort_keys=True)
+        except Exception:
+            s = str(payload)
+        if len(s) > 200:
+            s = s[:197] + "..."
+        return s
 
     # ── Parse a single-shipment webhook body ───────────────────────────────
 

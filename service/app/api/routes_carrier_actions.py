@@ -128,24 +128,84 @@ def _carrier_label_root() -> Path:
     return Path(settings.storage_root) / "carrier_labels"
 
 
-def _make_coordinator(actor: str) -> CarrierCoordinator:
-    """Construct a per-request coordinator wired to the stub adapter.
+# DHL MyDHL API base URLs. Constants — never read from environment.
+# Selection between sandbox and production is driven by
+# settings.dhl_express_api_status, gated by carrier_dhl_live_enabled.
+_DHL_SANDBOX_URL:    str = "https://express.api.dhl.com/mydhlapi/test"
+_DHL_PRODUCTION_URL: str = "https://express.api.dhl.com/mydhlapi"
 
-    DL-D5 does NOT read any live-DHL env flag. The adapter is the
-    deterministic stub regardless. Live DHL is introduced behind an
-    explicit injection in DL-F.
 
-    The import is local to this factory so source-grep on the module
-    body does not pick up the stub's class name (rule 7 of DL-D5
-    forbids "import or call any adapter directly" at module scope).
+def _select_carrier_adapter(actor: str):
+    """Pick the carrier adapter for this request.
+
+    DL-F1 selection rules — falls back to the DHL Express stub for any
+    condition that fails live-eligibility checks. NEVER raises; the
+    worst case is "stub when you wanted live", which the dashboard
+    surfaces. Order:
+
+      1. carrier_dhl_live_enabled is False                  → stub
+      2. dhl_express_api_status == "pending"                → stub
+      3. username / password / account_number empty         → stub
+      4. status == "sandbox"                                → live (sandbox URL)
+      5. status == "production"                             → live (prod URL)
+      6. any unknown status                                 → stub
+
+    Imports are local so the route module's source-grep contract
+    ("no adapter base import at module scope") holds.
     """
     from ..services.carrier.adapters.dhl_express_stub import (
         DHLExpressStubAdapter,
     )
+
+    if not settings.carrier_dhl_live_enabled:
+        return DHLExpressStubAdapter()
+
+    status = (settings.dhl_express_api_status or "pending").lower().strip()
+    if status == "pending":
+        return DHLExpressStubAdapter()
+
+    username       = (settings.dhl_express_api_username   or "").strip()
+    password       = (settings.dhl_express_api_password   or "").strip()
+    account_number = (settings.dhl_express_account_number or "").strip()
+    if not username or not password or not account_number:
+        return DHLExpressStubAdapter()
+
+    if status == "sandbox":
+        base_url = _DHL_SANDBOX_URL
+    elif status == "production":
+        base_url = _DHL_PRODUCTION_URL
+    else:
+        return DHLExpressStubAdapter()
+
+    from ..services.carrier.adapters.dhl_express_live import (
+        DHLExpressLiveAdapter,
+    )
+    try:
+        return DHLExpressLiveAdapter(
+            base_url       = base_url,
+            username       = username,
+            password       = password,
+            account_number = account_number,
+        )
+    except Exception:
+        # Defensive: live constructor rejected the inputs (empty after
+        # strip, malformed URL, etc.). Fall back to the stub rather
+        # than crash the action endpoint.
+        return DHLExpressStubAdapter()
+
+
+def _make_coordinator(actor: str) -> CarrierCoordinator:
+    """Construct a per-request coordinator wired to the selected
+    adapter (stub by default; live DHL behind feature flag).
+
+    The adapter import is local to keep the module-scope source-grep
+    proof intact (rule 7 of DL-D5 forbids "import or call any adapter
+    directly" at module scope).
+    """
     return CarrierCoordinator(
         db_path          = _carrier_db_path(),
         label_store_root = _carrier_label_root(),
-        adapter          = DHLExpressStubAdapter(),
+        adapter          = _select_carrier_adapter(actor),
         actor            = actor,
     )
 
