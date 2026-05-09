@@ -703,8 +703,13 @@ def main():
           "INV-003" in _v_miss["missing_invoices_in_pdfs"], True)
     check("  INV-002 in extra_invoices_not_in_sad",
           "INV-002" in _v_miss["extra_invoices_not_in_sad"], True)
-    check("  CIF diff 100 > 1 → cif_match is False",
-          _v_miss["cif_match"], False)
+    # Three-state CIF contract (per CLAUDE.md): True / False / None.
+    # A $100 diff with no additions evidence is freight-shaped (≤ $500
+    # AND (mod 50 < 10 OR < 200)), so the engine returns None ("cannot
+    # verify"), not False ("confirmed mismatch"). Mirrors the
+    # reconciliation in test_cif_softmatch_safety.py (commit e1b4b70).
+    check("  CIF diff 100 freight-shaped, no additions → cif_match is None",
+          _v_miss["cif_match"], None)
 
     # ── [19] Importer / exporter match logic ─────────────────────────────────────
     print("\n[19] Importer / exporter match")
