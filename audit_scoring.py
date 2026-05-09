@@ -131,6 +131,66 @@ def _penalty_breakdown(
     return breakdown
 
 
+# ── Hard-link integrity ──────────────────────────────────────────────────────
+
+def detect_hard_link_break(
+    c4:  dict,
+    c5:  dict,
+    c6:  dict,
+    hl:  Optional[dict] = None,
+) -> Dict[str, object]:
+    """
+    Pure helper that decides whether a batch's hard-link evidence is broken
+    (SAD ↔ invoice ↔ AWB ↔ CIF integrity has a *confirmed* failure).
+
+    A hard-link break is recognised only on an explicit ``False`` result.
+    ``None`` (could-not-verify) is NEVER a break — it's a verification gap,
+    not a confirmed mismatch.
+
+    Inspects:
+      * ``c4["result"]``       — invoice ↔ SAD reference match
+      * ``c5["cif_result"]``   — CIF total invoice vs SAD
+      * ``c6["result"]``       — AWB ↔ SAD transport reference
+      * ``hl``                 — optional pre-computed hard-link dict
+                                  with ``any_broken`` marker and free-text
+                                  ``reason`` string from upstream parsers
+
+    Returns
+    -------
+    dict
+        ``{"blocked": bool, "reasons": list[str]}``
+
+        ``blocked`` is ``True`` if ANY of the above signals a confirmed
+        failure. ``reasons`` is a list of stable human-readable strings
+        naming each contributing failure (empty when not blocked). The
+        reason strings are intentionally stable so callers can grep for
+        a substring (e.g. ``"AWB"``, ``"cif_total"``) in tests and
+        downstream UI without coupling to a specific phrasing.
+
+    No I/O. No mutation of inputs.
+    """
+    reasons: List[str] = []
+
+    if c4.get("result") is False:
+        reasons.append(
+            "invoice_ref_mismatch: invoice references not found in SAD"
+        )
+    if c5.get("cif_result") is False:
+        reasons.append(
+            "cif_total_mismatch: invoice CIF total != SAD CIF total"
+        )
+    if c6.get("result") is False:
+        reasons.append(
+            "awb_mismatch: AWB not found in SAD transport reference"
+        )
+
+    if hl is not None and hl.get("any_broken") is True:
+        msg = (hl.get("reason") or "").strip() or "hard link broken"
+        reasons.append(msg)
+
+    return {"blocked": bool(reasons), "reasons": reasons}
+
+
 # ── Public convenience ────────────────────────────────────────────────────────
 
 def score_batch(
