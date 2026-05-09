@@ -925,11 +925,11 @@ def test_create_proforma_draft_posts_invoices_add_and_verifies(monkeypatch):
     assert fake.captured[0]["action"] == "add"
     assert "<type>proforma</type>" in fake.captured[0]["body"]
     assert "<currency>USD</currency>" in fake.captured[0]["body"]
-    # Verify-after-create fetch happens immediately.
+    # Verify-after-create fetch happens immediately via path-based GET.
     assert fake.captured[1]["method"] == "GET"
     assert fake.captured[1]["module"] == "invoices"
-    assert fake.captured[1]["action"] == "find"
-    assert "<value>99887766</value>" in fake.captured[1]["body"]
+    assert fake.captured[1]["action"] == "get/99887766"
+    assert fake.captured[1]["body"] == ""
     assert res.ok is True
     assert res.wfirma_invoice_id == "99887766"
 
@@ -1257,7 +1257,14 @@ _OK_INVOICE_FIND_XML = """<?xml version="1.0" encoding="UTF-8"?>
 </api>"""
 
 
-def test_fetch_invoice_xml_get_invoices_find(monkeypatch):
+def test_fetch_invoice_xml_uses_path_based_get(monkeypatch):
+    """fetch_invoice_xml uses path-based GET invoices/get/{id} with empty body.
+
+    The earlier implementation used invoices/find with an id-condition body,
+    but wFirma's find action silently ignores unsupported filterable fields
+    and returns the first-1000 collection — see wfirma_client.fetch_invoice_xml
+    docstring. This test pins the corrected contract.
+    """
     captured = {}
     def fake_http(method, module, action, body, id_suffix=None):
         captured.update(method=method, module=module, action=action,
@@ -1268,10 +1275,9 @@ def test_fetch_invoice_xml_get_invoices_find(monkeypatch):
     text = _wc.fetch_invoice_xml("465611619")
     assert captured["method"] == "GET"
     assert captured["module"] == "invoices"
-    assert captured["action"] == "find"
+    assert captured["action"] == "get/465611619"
     assert captured["id_suffix"] is None
-    assert "<field>id</field>" in captured["body"]
-    assert "<value>465611619</value>" in captured["body"]
+    assert captured["body"] == ""
     assert "<id>465611619</id>" in text
     assert "<type>proforma</type>" in text
 
