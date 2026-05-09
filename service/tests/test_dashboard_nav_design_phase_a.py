@@ -140,66 +140,63 @@ def test_no_invented_endpoints(html: str, endpoint: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 6. The placeholder-only page ids still render via PlaceholderPage and
-#    do not introduce any fetch / apiFetch calls on their conditional
-#    render line.
+# 6. All four design-refresh nav entries now render real pages.
 #
-# `proforma` was removed from this list when Phase B replaced it with
-# the real ProformaDraftsCrossBatchPage. The Phase B test
-# (test_dashboard_proforma_drafts_cross_batch.py) covers the new page
-# instead.
+# Migration history of the parametrised list that used to live here:
+#   Phase A (commit 90289a5): NEW_NAV_IDS = [proforma, statements,
+#                                            proposals, broker]
+#                              all 4 are placeholders.
+#   Phase B (commit 6ec303e): proforma → ProformaDraftsCrossBatchPage
+#                              dropped from PLACEHOLDER_NAV_IDS.
+#   Phase C (commit 6164050): statements → CustomerStatementsPickerPage
+#                              dropped from PLACEHOLDER_NAV_IDS.
+#   Phase D (commit c91423c): proposals → ActionProposalsCrossBatchPage
+#                              dropped from PLACEHOLDER_NAV_IDS.
+#   Phase E (this commit):    broker → BrokerFollowupsCrossBatchPage
+#                              dropped from PLACEHOLDER_NAV_IDS.
 #
-# `statements` was removed from this list when Phase C replaced it with
-# the real CustomerStatementsPickerPage. The Phase C test
-# (test_dashboard_customer_statements_picker.py) covers the new page
-# instead.
-#
-# `proposals` was removed from this list when Phase D replaced it with
-# the real ActionProposalsCrossBatchPage. The Phase D test
-# (test_dashboard_action_proposals_cross_batch.py) covers the new
-# page instead. Only `broker` remains a placeholder, awaiting Phase E.
+# All four ids now have dedicated phase test files asserting their real
+# page renders. The list-of-placeholders is empty by construction. We
+# replace the parametrised "still placeholders" sentinel with a positive
+# parametrised "all four are real" sentinel — same shape, opposite
+# polarity. Future regressions that revert any one page back to
+# PlaceholderPage will fail this test.
 # ──────────────────────────────────────────────────────────────────────
 
-PLACEHOLDER_NAV_IDS = ["broker"]
+DESIGN_REFRESH_REAL_PAGES = [
+    ("proforma",   "ProformaDraftsCrossBatchPage"),
+    ("statements", "CustomerStatementsPickerPage"),
+    ("proposals",  "ActionProposalsCrossBatchPage"),
+    ("broker",     "BrokerFollowupsCrossBatchPage"),
+]
 
 
-@pytest.mark.parametrize("nav_id", PLACEHOLDER_NAV_IDS)
-def test_placeholder_page_ids_use_placeholder_only(html: str, nav_id: str) -> None:
+@pytest.mark.parametrize("page_id,component", DESIGN_REFRESH_REAL_PAGES)
+def test_design_refresh_pages_are_real(
+    html: str, page_id: str, component: str
+) -> None:
     """
-    For each placeholder id, the conditional render line must be:
-        page === '<id>' && <PlaceholderPage ... />
-    and not a fetch-bearing component.
-
-    The simplest source-level guarantee: find the line containing
-    page === '<id>' (excluding the App page-state assignment context)
-    and confirm <PlaceholderPage appears on the same line.
+    Every design-refresh nav id must render its real component (not
+    PlaceholderPage). This is the post-Phase-E sentinel that catches
+    any regression that re-introduces a placeholder for these ids.
     """
-    # Find the conditional render line — the App router uses the
-    # exact spelling "page === '<id>'" inside the JSX tree.
-    pattern = re.compile(rf"page\s*===\s*'{re.escape(nav_id)}'[^\n]*")
+    pattern = re.compile(rf"page\s*===\s*'{re.escape(page_id)}'[^\n]*")
     matches = pattern.findall(html)
-    # We expect at least one match — the App router's render line.
     assert matches, (
-        f"No conditional render line for page === '{nav_id}'. "
-        f"App router did not wire the placeholder."
+        f"No conditional render line for page === '{page_id}'. "
+        f"App router is missing this design-refresh nav id."
     )
-    # Every match must reference PlaceholderPage on the same line.
-    # If a future commit replaces a placeholder with a real page,
-    # the page id should be moved out of PLACEHOLDER_NAV_IDS and into
-    # its own dedicated test suite (see Phase B for the precedent).
-    placeholder_match = any("PlaceholderPage" in line for line in matches)
-    assert placeholder_match, (
-        f"Page id {nav_id!r} is rendered but does NOT use PlaceholderPage. "
-        f"If a real page has shipped for this id, drop it from "
-        f"PLACEHOLDER_NAV_IDS and add a dedicated test file. "
+    real_match = any(component in line for line in matches)
+    assert real_match, (
+        f"Page id {page_id!r} is not wired to {component!r}. "
         f"Render lines found: {matches!r}"
     )
-    # And critically — none of those matches contain fetch / apiFetch.
-    for line in matches:
-        assert "fetch(" not in line and "apiFetch(" not in line, (
-            f"Page id {nav_id!r} render line introduces a fetch call: {line!r}. "
-            f"Placeholders must not call any endpoint."
-        )
+    placeholder_match = any("PlaceholderPage" in line for line in matches)
+    assert not placeholder_match, (
+        f"Page id {page_id!r} is wired to PlaceholderPage somewhere — the "
+        f"design-refresh migration is supposed to be complete. "
+        f"Render lines found: {matches!r}"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────

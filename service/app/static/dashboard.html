@@ -12944,6 +12944,179 @@ function ActionProposalsCrossBatchPage({ onViewBatch, onToast }) {
 }
 
 // ══════════════════════════════════════════════════════════
+// BROKER FOLLOW-UPS — CROSS-BATCH READ-ONLY LIST
+// ══════════════════════════════════════════════════════════
+//
+// Read-only cross-batch list of broker follow-up drafts. The
+// per-batch BrokerFollowupPanel inside BatchDetailPage handles the
+// actual draft transmission via POST /dashboard/broker-followups/
+// {batch_id}/send (defined at routes_dashboard.py:1194). The
+// cross-batch view only surfaces the list — operators click "Open
+// batch" to act on a row.
+//
+// Endpoint used by THIS component:
+//   apiFetch('/dashboard/broker-followups')
+//     — already returns a globally aggregated draft list per
+//       routes_dashboard.py:1104; no per-batch fan-out needed.
+//
+// No write actions. No auto-poll. Refresh button only.
+
+function BrokerFollowupsCrossBatchPage({ onViewBatch, onToast }) {
+  const [drafts, setDrafts]   = React.useState([]);
+  const [meta, setMeta]       = React.useState({ scanned: 0, created: 0 });
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError]     = React.useState(null);
+  const [lastLoaded, setLastLoaded] = React.useState(null);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiFetch('/dashboard/broker-followups');
+      const list = (data && Array.isArray(data.drafts)) ? data.drafts : [];
+      setDrafts(list);
+      setMeta({
+        scanned: (data && data.scanned) || 0,
+        created: (data && data.created) || 0,
+      });
+      setLastLoaded(new Date().toLocaleTimeString());
+    } catch (e) {
+      setError(String((e && e.message) || e || 'Unknown error'));
+      if (onToast) onToast('Failed to load broker follow-ups: ' + String(e.message || e), 'error');
+    }
+    setLoading(false);
+  }, [onToast]);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  const handleOpen = React.useCallback((batchId) => {
+    if (onViewBatch && batchId) onViewBatch({ batch_id: batchId });
+  }, [onViewBatch]);
+
+  return (
+    <div data-testid="broker-followups-cross-batch"
+         style={{ flex: 1, padding: '20px 32px 40px', overflow: 'auto' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, fontFamily: '"DM Serif Display",serif', color: 'var(--text)' }}>
+            Broker Follow-ups
+          </h2>
+          <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-3)' }}>
+            Read-only cross-batch list. Backed by{' '}
+            <code style={{ fontFamily: 'monospace', fontSize: 10, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>/dashboard/broker-followups</code>,
+            which already aggregates draft follow-ups across every batch.
+            Use <em>Open batch</em> to take action — the per-batch panel
+            (data-testid <code style={{ fontFamily: 'monospace', fontSize: 10 }}>broker-followup-panel</code>) handles transmission.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {lastLoaded && !loading && (
+            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
+          )}
+          <Btn small variant="outline" onClick={load} disabled={loading}
+               data-testid="btn-broker-followups-refresh">
+            {loading ? 'Loading…' : '↻ Refresh'}
+          </Btn>
+        </div>
+      </div>
+
+      {loading && (
+        <Card>
+          <div data-testid="broker-followups-loading"
+               style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+            Scanning batches for follow-up drafts…
+          </div>
+        </Card>
+      )}
+
+      {!loading && error && (
+        <Card>
+          <div data-testid="broker-followups-error"
+               style={{ padding: 12, fontSize: 12, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 4 }}>
+            <b>Failed to load broker follow-ups:</b> {error}
+          </div>
+        </Card>
+      )}
+
+      {!loading && !error && drafts.length === 0 && (
+        <Card>
+          <div data-testid="broker-followups-empty"
+               style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+            No broker follow-ups in flight. Drafts appear here when an
+            eligible blocked batch is missing invoices or has a CIF gap.
+            {meta.scanned > 0 && (
+              <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-3)' }}>
+                Scanned {meta.scanned} batch{meta.scanned === 1 ? '' : 'es'}.
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {!loading && !error && drafts.length > 0 && (
+        <Card>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-subtle)' }}>
+                {['Batch', 'AWB / MRN', 'Reason', 'Status', 'Created', ''].map((h) => (
+                  <th key={h} style={{ padding: '8px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', borderBottom: '1px solid var(--border)' }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {drafts.map((d, idx) => {
+                const bid    = d.batch_id || '';
+                const awb    = d.awb || '—';
+                const mrn    = d.mrn || '';
+                const ref    = mrn ? `${awb} · ${mrn}` : awb;
+                const reason = d.reason || '—';
+                const status = d.status || '—';
+                const ts     = d.created_at || '—';
+                const key    = d.draft_id || `row-${idx}`;
+                return (
+                  <tr key={key} data-testid="broker-followups-row"
+                      style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '8px 8px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10 }}>
+                      {bid || '—'}
+                    </td>
+                    <td style={{ padding: '8px 8px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10 }}>
+                      {ref}
+                    </td>
+                    <td style={{ padding: '8px 8px', color: 'var(--text)' }}>
+                      {reason}
+                    </td>
+                    <td style={{ padding: '8px 8px' }}>
+                      <span style={{ display: 'inline-block', fontSize: 10, padding: '2px 8px', borderRadius: 4, fontWeight: 600, background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)', border: '1px solid var(--badge-blue-border)' }}>
+                        {status}
+                      </span>
+                    </td>
+                    <td style={{ padding: '8px 8px', color: 'var(--text-3)', fontSize: 10 }}>
+                      {ts}
+                    </td>
+                    <td style={{ padding: '8px 8px', textAlign: 'right' }}>
+                      <Btn small variant="outline" onClick={() => handleOpen(bid)} disabled={!bid}
+                           data-testid="btn-broker-followups-open-batch">
+                        Open batch
+                      </Btn>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ padding: '8px 12px', fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)' }}>
+            {drafts.length} draft{drafts.length === 1 ? '' : 's'} across all batches
+            {meta.scanned ? ` · scanned ${meta.scanned}` : ''}.
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
 // LEARNING PAGE
 // ══════════════════════════════════════════════════════════
 
@@ -14233,17 +14406,14 @@ function App() {
         {page === 'learning'      && <LearningPage onToast={notify} />}
         {page === 'admin'         && <AdminPage user={user} />}
 
-        {/* Phase B — proforma drafts cross-batch read-only view. */}
-        {page === 'proforma'   && <ProformaDraftsCrossBatchPage onViewBatch={viewShipment} onToast={notify} />}
-
-        {/* Phase C — customer statements picker (opens existing drawer). */}
-        {page === 'statements' && <CustomerStatementsPickerPage onToast={notify} />}
-
-        {/* Phase D — action proposals cross-batch read-only list. */}
-        {page === 'proposals'  && <ActionProposalsCrossBatchPage onViewBatch={viewShipment} onToast={notify} />}
-
-        {/* Design refresh placeholders. Backend verified; UI pages deferred. */}
-        {page === 'broker'     && <PlaceholderPage title="Broker Follow-ups"   icon="✉" desc="Backend exists; page implementation is planned." />}
+        {/* Design-refresh real pages — Phase B/C/D/E migration complete.
+            All four cross-batch / picker pages introduced by the design
+            refresh now consume real backend endpoints. No design-refresh
+            placeholders remain. */}
+        {page === 'proforma'   && <ProformaDraftsCrossBatchPage   onViewBatch={viewShipment} onToast={notify} />}
+        {page === 'statements' && <CustomerStatementsPickerPage   onToast={notify} />}
+        {page === 'proposals'  && <ActionProposalsCrossBatchPage  onViewBatch={viewShipment} onToast={notify} />}
+        {page === 'broker'     && <BrokerFollowupsCrossBatchPage  onViewBatch={viewShipment} onToast={notify} />}
       </div>
 
       {showNewShipment && (

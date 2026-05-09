@@ -265,18 +265,42 @@ def test_earlier_phase_pages_unchanged(html: str, page_id: str, component: str) 
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 13. `broker` route still renders PlaceholderPage
+# 13. All four design-refresh nav entries now render real pages.
+#
+# Migration history: see test_dashboard_nav_design_phase_a.py header
+# for the full Phase A → Phase E timeline. Phase E (broker →
+# BrokerFollowupsCrossBatchPage) closed the migration; no design-
+# refresh placeholders remain.
+#
+# This file's earlier `test_broker_remains_placeholder` standalone
+# assertion was replaced with the same positive parametrised "all
+# four are real" sentinel that lives in every phase test file.
 # ──────────────────────────────────────────────────────────────────────
 
-def test_broker_remains_placeholder(html: str) -> None:
-    pattern = re.compile(r"page\s*===\s*'broker'[^\n]*")
+DESIGN_REFRESH_REAL_PAGES = [
+    ("proforma",   "ProformaDraftsCrossBatchPage"),
+    ("statements", "CustomerStatementsPickerPage"),
+    ("proposals",  "ActionProposalsCrossBatchPage"),
+    ("broker",     "BrokerFollowupsCrossBatchPage"),
+]
+
+
+@pytest.mark.parametrize("page_id,component", DESIGN_REFRESH_REAL_PAGES)
+def test_design_refresh_pages_are_real(
+    html: str, page_id: str, component: str
+) -> None:
+    pattern = re.compile(rf"page\s*===\s*'{re.escape(page_id)}'[^\n]*")
     matches = pattern.findall(html)
-    assert matches, "No conditional render line for page === 'broker'."
-    placeholder_match = any("PlaceholderPage" in line for line in matches)
-    assert placeholder_match, (
-        f"page === 'broker' is no longer rendering PlaceholderPage. "
-        f"Phase D was supposed to only replace the proposals placeholder. "
+    assert matches, f"No conditional render line for page === '{page_id}'."
+    real_match = any(component in line for line in matches)
+    assert real_match, (
+        f"Page id {page_id!r} is not wired to {component!r}. "
         f"Render lines: {matches!r}"
+    )
+    placeholder_match = any("PlaceholderPage" in line for line in matches)
+    assert not placeholder_match, (
+        f"Page id {page_id!r} is wired to PlaceholderPage somewhere — "
+        f"design-refresh migration is supposed to be complete."
     )
 
 

@@ -1,28 +1,32 @@
 """
-test_dashboard_customer_statements_picker.py
+test_dashboard_broker_followups_cross_batch.py
 
-Phase C of the dashboard design refresh — verify the new read-only
-Customer Statements picker page has landed correctly:
+Phase E of the dashboard design refresh — verify the new read-only
+Broker Follow-ups cross-batch page has landed correctly:
 
-  * CustomerStatementsPickerPage component is defined.
-  * The page exposes data-testid="customer-statements-picker".
-  * The Refresh button is wired with data-testid="btn-customer-statements-refresh".
-  * The search input is wired with data-testid="customer-statements-search".
-  * The page consumes only one existing endpoint:
-      GET /api/v1/wfirma/customers
-  * The page does NOT call /statement.json or /statement.pdf directly.
-    Statement loads stay inside CustomerStatementDrawer (the existing
-    Phase 10D component).
-  * The picker opens CustomerStatementDrawer when a row is selected.
-  * The picker component body contains no write-button labels:
-      Create, Edit, Delete, Sync, Export, Send.
-  * The picker contains none of the design-bundle invented endpoints.
-  * The App router replaces the placeholder for `statements` and
-    renders the new component.
-  * The remaining Phase A placeholders (proposals, broker) stay
-    placeholders.
-  * Phase B's `proforma` route remains wired to
-    ProformaDraftsCrossBatchPage.
+  * BrokerFollowupsCrossBatchPage component is defined.
+  * The page exposes data-testid="broker-followups-cross-batch".
+  * The Refresh button is wired with data-testid="btn-broker-followups-refresh".
+  * The page consumes only the existing aggregated endpoint:
+      GET /dashboard/broker-followups
+    (no per-batch fan-out — the endpoint already aggregates).
+  * The page does NOT reference the per-batch send endpoint
+    /dashboard/broker-followups/{batch_id}/send. Transmission lives
+    in the existing per-batch BrokerFollowupPanel.
+  * The component body contains no write-action labels (Send,
+    Resend, Queue, Execute).
+  * The page has an "Open batch" action wired through the existing
+    App-level `viewShipment` function (passed as the onViewBatch
+    prop in the App router).
+  * The page does NOT contain any of the design-bundle invented
+    endpoints.
+  * The App router replaces the `broker` PlaceholderPage with the
+    real component.
+  * Phase B/C/D routes for proforma / statements / proposals
+    continue to render their real pages — the design-refresh
+    migration is complete.
+  * The existing per-batch broker-followup-panel data-testid
+    remains present.
 
 Pure source-level grep. No browser, no React rendering.
 """
@@ -46,12 +50,12 @@ def html() -> str:
 
 def _component_body(html: str) -> str:
     """
-    Slice the source between `function CustomerStatementsPickerPage(`
+    Slice the source between `function BrokerFollowupsCrossBatchPage(`
     and the next top-level `function ` declaration. Returns "" if not
     found.
     """
     start_match = re.search(
-        r"function\s+CustomerStatementsPickerPage\s*\(", html
+        r"function\s+BrokerFollowupsCrossBatchPage\s*\(", html
     )
     if not start_match:
         return ""
@@ -68,10 +72,10 @@ def _component_body(html: str) -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 def test_component_defined(html: str) -> None:
-    pattern = re.compile(r"function\s+CustomerStatementsPickerPage\s*\(")
+    pattern = re.compile(r"function\s+BrokerFollowupsCrossBatchPage\s*\(")
     assert pattern.search(html), (
-        "CustomerStatementsPickerPage component declaration not found in "
-        "dashboard.html. Phase C did not land."
+        "BrokerFollowupsCrossBatchPage component declaration not found in "
+        "dashboard.html. Phase E did not land."
     )
 
 
@@ -80,8 +84,8 @@ def test_component_defined(html: str) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 def test_root_testid_present(html: str) -> None:
-    assert 'data-testid="customer-statements-picker"' in html, (
-        "Required root testid `customer-statements-picker` missing."
+    assert 'data-testid="broker-followups-cross-batch"' in html, (
+        "Required root testid `broker-followups-cross-batch` missing."
     )
 
 
@@ -90,113 +94,99 @@ def test_root_testid_present(html: str) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 def test_refresh_button_testid_present(html: str) -> None:
-    assert 'data-testid="btn-customer-statements-refresh"' in html, (
-        "Refresh button testid `btn-customer-statements-refresh` missing."
+    assert 'data-testid="btn-broker-followups-refresh"' in html, (
+        "Refresh button testid `btn-broker-followups-refresh` missing."
     )
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 4. Search input testid is present
+# 4. Uses /dashboard/broker-followups
 # ──────────────────────────────────────────────────────────────────────
 
-def test_search_input_testid_present(html: str) -> None:
-    assert 'data-testid="customer-statements-search"' in html, (
-        "Search input testid `customer-statements-search` missing."
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 5. Uses /api/v1/wfirma/customers
-# ──────────────────────────────────────────────────────────────────────
-
-def test_uses_wfirma_customers_endpoint(html: str) -> None:
+def test_uses_broker_followups_endpoint(html: str) -> None:
     body = _component_body(html)
-    assert body, "Could not slice CustomerStatementsPickerPage component body."
-    assert "/api/v1/wfirma/customers" in body, (
-        "Picker component does not call /api/v1/wfirma/customers. "
-        "Phase C requires this single endpoint for the customer list."
+    assert body, "Could not slice BrokerFollowupsCrossBatchPage component body."
+    assert "/dashboard/broker-followups" in body, (
+        "Component does not call /dashboard/broker-followups. Phase E "
+        "must consume the aggregated endpoint."
     )
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 6. Picker page does NOT directly call /statement.json
+# 5. Component does NOT reference the per-batch send endpoint
 # ──────────────────────────────────────────────────────────────────────
 
-def test_no_direct_statement_json_call(html: str) -> None:
+FORBIDDEN_WRITE_FRAGMENTS = [
+    "/dashboard/broker-followups/${batch_id}/send",
+    "/dashboard/broker-followups/{batch_id}/send",
+    "/send",
+]
+
+
+@pytest.mark.parametrize("frag", FORBIDDEN_WRITE_FRAGMENTS)
+def test_no_send_endpoint_in_component(html: str, frag: str) -> None:
     body = _component_body(html)
-    assert body, "Could not slice picker component body."
-    assert "/statement.json" not in body, (
-        "Picker component contains /statement.json. The picker must NOT "
-        "fetch statement data directly — that work lives in "
-        "CustomerStatementDrawer."
+    assert body, "Could not slice component body."
+    assert frag not in body, (
+        f"Forbidden write-endpoint fragment {frag!r} appears inside "
+        f"BrokerFollowupsCrossBatchPage. The cross-batch list must be "
+        f"read-only — transmission lives in the per-batch "
+        f"BrokerFollowupPanel inside BatchDetailPage."
     )
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 7. Picker page does NOT directly call /statement.pdf
+# 6. Component does NOT contain write-action labels
 # ──────────────────────────────────────────────────────────────────────
 
-def test_no_direct_statement_pdf_call(html: str) -> None:
-    body = _component_body(html)
-    assert body, "Could not slice picker component body."
-    assert "/statement.pdf" not in body, (
-        "Picker component contains /statement.pdf. The picker must NOT "
-        "fetch the PDF directly — the drawer handles PDF retrieval."
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 8. Existing CustomerStatementDrawer still exists
-# ──────────────────────────────────────────────────────────────────────
-
-def test_drawer_component_unchanged(html: str) -> None:
-    """The Phase 10D drawer must still be defined in the file."""
-    assert re.search(r"function\s+CustomerStatementDrawer\s*\(", html), (
-        "CustomerStatementDrawer function disappeared from dashboard.html. "
-        "Phase C must not modify it."
-    )
-    assert "customer-statement-drawer" in html, (
-        "data-testid `customer-statement-drawer` disappeared. The existing "
-        "drawer must remain intact."
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 9. Picker opens CustomerStatementDrawer
-# ──────────────────────────────────────────────────────────────────────
-
-def test_picker_opens_drawer(html: str) -> None:
-    body = _component_body(html)
-    assert body, "Could not slice picker component body."
-    # The picker should render <CustomerStatementDrawer ... /> conditionally.
-    # We accept either single or no whitespace between the angle and name.
-    assert re.search(r"<\s*CustomerStatementDrawer\b", body), (
-        "Picker component does not render CustomerStatementDrawer. "
-        "Phase C requires the picker to open the existing drawer for the "
-        "selected customer."
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 10. Picker component body contains no write-button labels
-# ──────────────────────────────────────────────────────────────────────
-
-WRITE_BUTTON_LABELS = ["Create", "Edit", "Delete", "Sync", "Export", "Send"]
+WRITE_BUTTON_LABELS = ["Send", "Resend", "Queue", "Execute"]
 
 
 @pytest.mark.parametrize("label", WRITE_BUTTON_LABELS)
-def test_no_write_button_labels(html: str, label: str) -> None:
+def test_no_write_action_labels(html: str, label: str) -> None:
     body = _component_body(html)
-    assert body, "Could not slice picker component body."
+    assert body, "Could not slice component body."
     assert label not in body, (
-        f"Write-button label {label!r} appears inside the picker component. "
-        f"The picker is read-only — no Create / Edit / Delete / Sync / "
-        f"Export / Send actions are allowed."
+        f"Write-button label {label!r} appears inside the cross-batch "
+        f"page. The page must be read-only — transmission lives in the "
+        f"per-batch BrokerFollowupPanel."
     )
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 11. Picker contains none of the design-bundle invented endpoints
+# 7. "Open batch" action exists
+# ──────────────────────────────────────────────────────────────────────
+
+def test_open_batch_action_present(html: str) -> None:
+    body = _component_body(html)
+    assert body, "Could not slice component body."
+    assert "Open batch" in body, (
+        "Component is missing the `Open batch` action. Operators need a "
+        "navigation link from the cross-batch list to the per-batch panel."
+    )
+    assert "btn-broker-followups-open-batch" in body, (
+        "data-testid `btn-broker-followups-open-batch` missing on the "
+        "per-row navigation button."
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 8. Page is wired to existing `viewShipment` via App router
+# ──────────────────────────────────────────────────────────────────────
+
+def test_uses_existing_view_shipment(html: str) -> None:
+    pattern = re.compile(
+        r"<\s*BrokerFollowupsCrossBatchPage\b[^>]*onViewBatch\s*=\s*\{\s*viewShipment\s*\}"
+    )
+    assert pattern.search(html), (
+        "App router does not wire BrokerFollowupsCrossBatchPage with "
+        "onViewBatch={viewShipment}. Phase E must reuse the existing "
+        "viewShipment function."
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 9. No design-bundle invented endpoints anywhere in the dashboard
 # ──────────────────────────────────────────────────────────────────────
 
 INVENTED_ENDPOINTS = [
@@ -211,42 +201,34 @@ INVENTED_ENDPOINTS = [
 def test_no_invented_endpoints(html: str, endpoint: str) -> None:
     assert endpoint not in html, (
         f"Design-bundle invented endpoint {endpoint!r} found in dashboard.html. "
-        f"Backend does not implement that path; Phase C must not surface it."
+        f"Backend does not implement that path; Phase E must not surface it."
     )
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 12. App router renders CustomerStatementsPickerPage for `statements`,
+# 10. App router renders BrokerFollowupsCrossBatchPage for `broker`,
 #     not PlaceholderPage
 # ──────────────────────────────────────────────────────────────────────
 
 def test_app_router_uses_real_page(html: str) -> None:
-    pattern = re.compile(r"page\s*===\s*'statements'[^\n]*")
+    pattern = re.compile(r"page\s*===\s*'broker'[^\n]*")
     matches = pattern.findall(html)
-    assert matches, "No conditional render line for page === 'statements'."
-    real_match = any("CustomerStatementsPickerPage" in line for line in matches)
+    assert matches, "No conditional render line for page === 'broker'."
+    real_match = any("BrokerFollowupsCrossBatchPage" in line for line in matches)
     assert real_match, (
-        f"page === 'statements' is not wired to CustomerStatementsPickerPage. "
-        f"Render lines found: {matches!r}"
+        f"page === 'broker' is not wired to "
+        f"BrokerFollowupsCrossBatchPage. Render lines: {matches!r}"
     )
     placeholder_match = any("PlaceholderPage" in line for line in matches)
     assert not placeholder_match, (
-        f"page === 'statements' is still wired to PlaceholderPage somewhere. "
-        f"Phase C should have replaced it. Render lines: {matches!r}"
+        f"page === 'broker' is still wired to PlaceholderPage somewhere. "
+        f"Phase E should have replaced the final placeholder. "
+        f"Render lines: {matches!r}"
     )
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 13. All four design-refresh nav entries now render real pages.
-#
-# Migration history: see test_dashboard_nav_design_phase_a.py header
-# for the full Phase A → Phase E timeline. Phase E closed the
-# migration; no design-refresh placeholders remain.
-#
-# This file's earlier `REMAINING_PLACEHOLDERS` parametrised list was
-# replaced with a positive parametrised "all four are real" sentinel
-# of the same shape, opposite polarity. Catches regressions that
-# revert any design-refresh page back to PlaceholderPage.
+# 11. All four design-refresh routes are real (Phase E closes migration)
 # ──────────────────────────────────────────────────────────────────────
 
 DESIGN_REFRESH_REAL_PAGES = [
@@ -271,22 +253,24 @@ def test_design_refresh_pages_are_real(
     )
     placeholder_match = any("PlaceholderPage" in line for line in matches)
     assert not placeholder_match, (
-        f"Page id {page_id!r} is wired to PlaceholderPage somewhere — "
-        f"design-refresh migration is supposed to be complete."
+        f"Page id {page_id!r} is wired to PlaceholderPage — Phase E was "
+        f"supposed to close the migration. All four design-refresh "
+        f"routes must render real components."
     )
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 14. Phase B `proforma` route remains ProformaDraftsCrossBatchPage
+# 12. Existing per-batch broker-followup-panel substring remains present
 # ──────────────────────────────────────────────────────────────────────
 
-def test_phase_b_proforma_unchanged(html: str) -> None:
-    pattern = re.compile(r"page\s*===\s*'proforma'[^\n]*")
-    matches = pattern.findall(html)
-    assert matches, "No conditional render line for page === 'proforma'."
-    real_match = any("ProformaDraftsCrossBatchPage" in line for line in matches)
-    assert real_match, (
-        f"page === 'proforma' is no longer wired to "
-        f"ProformaDraftsCrossBatchPage. Phase C must not regress Phase B. "
-        f"Render lines: {matches!r}"
+def test_existing_per_batch_panel_substring_unchanged(html: str) -> None:
+    """The per-batch BrokerFollowupPanel inside BatchDetailPage must still mount."""
+    assert "broker-followup-panel" in html, (
+        "data-testid `broker-followup-panel` disappeared from dashboard.html. "
+        "Phase E is supposed to be additive only — the existing per-batch "
+        "panel must remain wired."
+    )
+    assert re.search(r"function\s+BrokerFollowupPanel\s*\(", html), (
+        "BrokerFollowupPanel function declaration disappeared from "
+        "dashboard.html. Phase E must not modify it."
     )

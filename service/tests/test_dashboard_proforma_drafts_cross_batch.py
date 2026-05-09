@@ -224,31 +224,43 @@ def test_proforma_draft_panel_unchanged(html: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 10. The remaining nav placeholders stay placeholders
+# 10. All four design-refresh nav entries now render real pages.
 #
-# `statements` was removed from this list when Phase C replaced it with
-# the real CustomerStatementsPickerPage. The Phase C test
-# (test_dashboard_customer_statements_picker.py) asserts `statements`
-# now renders the real page.
+# Migration history: see test_dashboard_nav_design_phase_a.py header
+# for the full Phase A → Phase E timeline. Phase E (broker →
+# BrokerFollowupsCrossBatchPage) closed the migration; no design-
+# refresh placeholders remain.
 #
-# `proposals` was removed from this list when Phase D replaced it with
-# the real ActionProposalsCrossBatchPage. The Phase D test
-# (test_dashboard_action_proposals_cross_batch.py) covers the new
-# page instead. Only `broker` remains a placeholder, awaiting Phase E.
+# This file's earlier `REMAINING_PLACEHOLDERS` parametrised list was
+# replaced with a positive parametrised "all four are real" sentinel
+# of the same shape, opposite polarity. Catches regressions that
+# revert any design-refresh page back to PlaceholderPage.
 # ──────────────────────────────────────────────────────────────────────
 
-REMAINING_PLACEHOLDERS = ["broker"]
+DESIGN_REFRESH_REAL_PAGES = [
+    ("proforma",   "ProformaDraftsCrossBatchPage"),
+    ("statements", "CustomerStatementsPickerPage"),
+    ("proposals",  "ActionProposalsCrossBatchPage"),
+    ("broker",     "BrokerFollowupsCrossBatchPage"),
+]
 
 
-@pytest.mark.parametrize("nav_id", REMAINING_PLACEHOLDERS)
-def test_remaining_placeholders_unchanged(html: str, nav_id: str) -> None:
-    pattern = re.compile(rf"page\s*===\s*'{re.escape(nav_id)}'[^\n]*")
+@pytest.mark.parametrize("page_id,component", DESIGN_REFRESH_REAL_PAGES)
+def test_design_refresh_pages_are_real(
+    html: str, page_id: str, component: str
+) -> None:
+    pattern = re.compile(rf"page\s*===\s*'{re.escape(page_id)}'[^\n]*")
     matches = pattern.findall(html)
-    assert matches, f"No conditional render line for page === '{nav_id}'."
+    assert matches, (
+        f"No conditional render line for page === '{page_id}'."
+    )
+    real_match = any(component in line for line in matches)
+    assert real_match, (
+        f"Page id {page_id!r} is not wired to {component!r}. "
+        f"Render lines: {matches!r}"
+    )
     placeholder_match = any("PlaceholderPage" in line for line in matches)
-    assert placeholder_match, (
-        f"Page id {nav_id!r} is no longer rendering PlaceholderPage. "
-        f"If a real page has shipped for this id, drop it from "
-        f"REMAINING_PLACEHOLDERS and add a dedicated test file. "
-        f"Render lines found: {matches!r}"
+    assert not placeholder_match, (
+        f"Page id {page_id!r} is wired to PlaceholderPage somewhere — "
+        f"design-refresh migration is supposed to be complete."
     )
