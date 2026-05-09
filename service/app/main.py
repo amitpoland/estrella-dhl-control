@@ -51,6 +51,7 @@ from .api.routes_carrier import router as carrier_router
 from .api.routes_carrier_proposals import router as carrier_proposals_router
 from .api.routes_carrier_actions import router as carrier_actions_router
 from .api.routes_carrier_webhook import router as carrier_webhook_router
+from .api.routes_carrier_shadow  import router as carrier_shadow_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -243,6 +244,7 @@ app.include_router(carrier_router)
 app.include_router(carrier_proposals_router)
 app.include_router(carrier_actions_router)
 app.include_router(carrier_webhook_router)
+app.include_router(carrier_shadow_router)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
