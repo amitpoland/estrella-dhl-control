@@ -64,9 +64,55 @@ def seed_purchase_transit(batch_id: str, line_records: List[Dict[str, Any]]) -> 
             except Exception as _row_exc:
                 log.warning("[%s] inventory_state seed skipped for one line: %s",
                             batch_id, _row_exc)
+                # Best-effort per-line failure mirror — never raises into the loop.
+                # Bounded payload: error str truncated to 200 chars.
+                try:
+                    from ..services.batch_service import get_output_dir as _get_output_dir
+                    _audit_path_fail = _get_output_dir(batch_id) / "audit.json"
+                    tl.log_event(
+                        _audit_path_fail,
+                        tl.EV_INVENTORY_TRANSITION_FAILED,
+                        trigger_source = "packing_upload",
+                        actor          = "system",
+                        detail = {
+                            "batch_id":   batch_id,
+                            "scan_code":  pdb._compute_scan_code(line) or "",
+                            "to_state":   "purchase_transit",
+                            "error":      str(_row_exc)[:200],
+                        },
+                    )
+                except Exception as _tl_exc:
+                    log.warning(
+                        "[%s] inventory transition failure mirror failed (non-fatal): %s",
+                        batch_id, _tl_exc,
+                    )
     except Exception as _outer:
         log.warning("[%s] inventory_state seed best-effort failure: %s",
                     batch_id, _outer)
+
+    # ── Best-effort timeline mirror — never breaks the upload flow ───────────
+    # Emits one per-batch summary event regardless of seeded count, mirroring
+    # the existing EV_PZ_GENERATED idiom.  log_event is itself non-fatal when
+    # audit.json is missing; the outer try/except catches any unrelated failure
+    # (e.g. settings or path resolution) so this can never raise into the route.
+    try:
+        from ..services.batch_service import get_output_dir as _get_output_dir
+        _audit_path = _get_output_dir(batch_id) / "audit.json"
+        tl.log_event(
+            _audit_path,
+            tl.EV_INVENTORY_PURCHASE_TRANSIT_SEEDED,
+            trigger_source = "packing_upload",
+            actor          = "system",
+            detail = {
+                "batch_id":    batch_id,
+                "seeded":      seeded,
+                "total_lines": len(line_records),
+            },
+        )
+    except Exception as _tl_exc:
+        log.warning("[%s] inventory_state seed mirror event failed (non-fatal): %s",
+                    batch_id, _tl_exc)
+
     return seeded
 
 log = get_logger(__name__)
@@ -643,13 +689,35 @@ def _load_audit(batch_id: str) -> Dict[str, Any]:
 
 
 def _pz_done(audit: Dict[str, Any]) -> bool:
-    """Mirror of the inferred PZ-done logic used elsewhere in the app."""
-    return (
+    """
+    Mirror of the inferred PZ-done logic used elsewhere in the app, plus the
+    shared read-time evidence helper so a stale ``audit.status="failed"``
+    doesn't block auto-target resolution when a legitimate PZ exists (e.g.
+    only the timeline event ``wfirma_pz_created`` carried the proof). Strict
+    rejection is preserved when no signal exists.
+    """
+    if (
         audit.get("pz_generated") is True
         or bool(audit.get("pz_pdf_filename"))
         or bool(audit.get("pz_generated_at"))
         or audit.get("status") in ("success", "partial")
-    )
+    ):
+        return True
+    try:
+        from ..services.audit_evidence import effective_pz_evidence
+    except Exception:
+        return False
+    ev = effective_pz_evidence(audit)
+    # Auto-target only flips to WAREHOUSE_STOCK when a *PZ-side* signal is
+    # present — customs-only signals (DSK / SAD / clearance_status) prove
+    # customs cleared but not that the wFirma PZ was issued, so they alone
+    # must NOT promote inventory state. Business semantics preserved.
+    pz_side = {
+        "wfirma_export.wfirma_pz_doc_id",
+        "timeline:wfirma_pz_created",
+        "effective_pz_status_done",
+    }
+    return any(s in pz_side for s in ev["signals"])
 
 
 @dev_router.post("/inventory-state/seed-batch")

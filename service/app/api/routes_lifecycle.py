@@ -382,3 +382,211 @@ def agency_followup_endpoint(body: AgencyFollowupReq) -> Dict[str, Any]:
         "to":       draft["to"],
         "batch_id": batch_id,
     }
+
+
+# ── Direct-dispatch lifecycle promotion ──────────────────────────────────────
+#
+# Operator-explicit endpoint for goods that bypass the warehouse stock pool
+# (DHL/agency-to-client direct delivery). Walks the supplied scan_codes
+# through PURCHASE_TRANSIT → DIRECT_DISPATCH_READY via
+# inventory_state_engine.transition() — never auto-promotes from RECEIVE
+# alone, never touches wFirma / PZ / sales mappings.
+
+class MarkDirectDispatchReq(BaseModel):
+    batch_id:            str
+    scan_codes:          List[str]
+    operator:            str
+    customer_allocation: str
+    evidence_note:       Optional[str] = ""
+
+
+def _customs_cleared_from_audit(batch_id: str) -> Dict[str, Any]:
+    """
+    Derive customs/PZ-clearance evidence from the on-disk audit, delegating
+    to the shared read-time helper ``audit_evidence.effective_pz_evidence``.
+
+    Returns ``{"cleared": bool, "signals": [...], "missing": [...]}``.
+    Never accepts a caller-provided customs_cleared bool — the route owns
+    this decision so the lifecycle gate cannot be bypassed by a forged body.
+
+    The helper recognises stale-audit shapes (e.g. ``status="failed"`` on
+    disk while a wfirma_pz_created timeline event proves PZ was issued) so
+    a legitimate app-created PZ is never falsely rejected.
+    """
+    import json as _json
+    from ..services.audit_evidence import effective_pz_evidence
+
+    p = settings.storage_root / "outputs" / batch_id / "audit.json"
+    if not p.exists():
+        return {"cleared": False, "signals": [], "missing": ["audit.json"]}
+    try:
+        a = _json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"cleared": False, "signals": [],
+                "missing": [f"audit.json unreadable: {exc}"]}
+
+    ev = effective_pz_evidence(a)
+    return {
+        "cleared":          ev["has_evidence"],
+        "signals":          ev["signals"],
+        "wfirma_pz_doc_id": ev["wfirma_pz_doc_id"],
+        "missing":          ev["missing"] if not ev["has_evidence"] else [],
+    }
+
+
+def _packing_scan_codes_for_batch(batch_id: str) -> set:
+    """Set of legitimate scan_codes belonging to *batch_id* (from packing.db)."""
+    from ..services import packing_db as _pdb
+    out: set = set()
+    try:
+        for line in _pdb.get_packing_lines_for_batch(batch_id):
+            sc = line.get("scan_code") or _pdb._compute_scan_code(line)
+            if sc:
+                out.add(sc)
+    except Exception as exc:
+        log.warning("packing scan-code load failed for %s: %s", batch_id, exc)
+    return out
+
+
+def _has_receive_event(scan_code: str, batch_id: str) -> bool:
+    """True iff a RECEIVE movement event exists for *scan_code* in *batch_id*."""
+    import sqlite3
+    from ..services import warehouse_db as _wdb
+    if _wdb._db_path is None:
+        return False
+    con = sqlite3.connect(str(_wdb._db_path))
+    try:
+        row = con.execute(
+            "SELECT 1 FROM inventory_movement_events "
+            "WHERE batch_id=? AND scan_code=? AND action='RECEIVE' LIMIT 1",
+            (batch_id, scan_code),
+        ).fetchone()
+    finally:
+        con.close()
+    return row is not None
+
+
+@router.post("/inventory-state/mark-direct-dispatch", dependencies=[_auth])
+def mark_direct_dispatch(body: MarkDirectDispatchReq) -> Dict[str, Any]:
+    """
+    Mark each scan_code in *batch_id* as DIRECT_DISPATCH_READY.
+
+    Idempotent: scan_codes already at DIRECT_DISPATCH_READY (or beyond on the
+    direct-dispatch chain — i.e. CLIENT_DISPATCHED) are reported with
+    outcome="already_ready" and no transition is attempted.
+
+    Returns 400 on:
+      - missing operator / customer_allocation
+      - empty scan_codes
+      - no customs/PZ clearance evidence in audit.json
+    Returns 200 with per-line outcomes on success; lines that fail individual
+    validation (not in batch, no RECEIVE, illegal current state) are reported
+    with outcome="rejected" and a reason — they do NOT abort the batch.
+    """
+    from ..services import inventory_state_engine as _ise
+
+    batch_id = (body.batch_id or "").strip()
+    if not batch_id or "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+    operator = (body.operator or "").strip()
+    if not operator:
+        raise HTTPException(status_code=400, detail="operator is required")
+    customer = (body.customer_allocation or "").strip()
+    if not customer:
+        raise HTTPException(status_code=400,
+                            detail="customer_allocation is required")
+    if not body.scan_codes:
+        raise HTTPException(status_code=400, detail="scan_codes is empty")
+
+    # Customs/PZ clearance — route owns this; caller cannot supply it.
+    customs = _customs_cleared_from_audit(batch_id)
+    if not customs["cleared"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error":   "customs/PZ clearance evidence missing",
+                "batch_id": batch_id,
+                "missing":  customs["missing"] or ["no clearance signals in audit.json"],
+            },
+        )
+
+    legit = _packing_scan_codes_for_batch(batch_id)
+    note  = (body.evidence_note or "").strip()
+
+    results: List[Dict[str, Any]] = []
+    for sc in body.scan_codes:
+        sc = (sc or "").strip()
+        if not sc:
+            results.append({"scan_code": sc, "outcome": "rejected",
+                            "reason": "empty scan_code"})
+            continue
+        if sc not in legit:
+            results.append({"scan_code": sc, "outcome": "rejected",
+                            "reason": "scan_code does not belong to batch"})
+            continue
+
+        cur = _ise.get_state(sc)
+        cur_state = cur["state"] if cur else None
+        if cur_state in (_ise.DIRECT_DISPATCH_READY, _ise.CLIENT_DISPATCHED):
+            results.append({"scan_code": sc, "outcome": "already_ready",
+                            "state": cur_state})
+            continue
+
+        if not _has_receive_event(sc, batch_id):
+            results.append({"scan_code": sc, "outcome": "rejected",
+                            "reason": "no RECEIVE movement event"})
+            continue
+
+        try:
+            row = _ise.transition(
+                scan_code=sc,
+                to_state=_ise.DIRECT_DISPATCH_READY,
+                operator=operator,
+                customer_allocation=customer,
+                customs_cleared=True,           # derived above; never from caller
+                note=note,
+                batch_id=batch_id,
+            )
+            results.append({"scan_code": sc, "outcome": "transitioned",
+                            "state": row["state"]})
+        except ValueError as exc:
+            # Engine guard fired (illegal transition / residual evidence gap).
+            results.append({"scan_code": sc, "outcome": "rejected",
+                            "reason": str(exc)})
+
+    transitioned = sum(1 for r in results if r["outcome"] == "transitioned")
+    already      = sum(1 for r in results if r["outcome"] == "already_ready")
+    rejected     = sum(1 for r in results if r["outcome"] == "rejected")
+
+    # Append-only audit hardening: emit a timeline event so audit.json
+    # carries proof of the operator's lifecycle decision. Best-effort.
+    try:
+        from ..services.audit_persist import record_inventory_direct_dispatch
+        record_inventory_direct_dispatch(
+            settings.storage_root / "outputs" / batch_id / "audit.json",
+            batch_id            = batch_id,
+            scan_codes          = [r["scan_code"] for r in results
+                                    if r.get("outcome") in
+                                    ("transitioned", "already_ready")],
+            transitioned        = transitioned,
+            already_ready       = already,
+            operator            = operator,
+            customer_allocation = customer,
+            customs_signals     = customs["signals"],
+            evidence_note       = note,
+        )
+    except Exception as exc:
+        log.warning("mark-direct-dispatch audit append skipped: %s", exc)
+
+    return {
+        "ok":           True,
+        "batch_id":     batch_id,
+        "operator":     operator,
+        "customer_allocation": customer,
+        "customs_signals":    customs["signals"],
+        "considered":   len(body.scan_codes),
+        "transitioned": transitioned,
+        "already_ready": already,
+        "rejected":     rejected,
+        "results":      results,
+    }
