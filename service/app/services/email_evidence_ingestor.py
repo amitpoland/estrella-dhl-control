@@ -73,21 +73,27 @@ def _fetch_message_attachment_ids(
     Fetch full attachment list for a Zoho message (includes attachmentId).
     Returns [] on any failure — callers must handle the empty case.
     folder_id must be included when available — Zoho returns 404 without it.
+    Uses the /attachments sub-resource endpoint, not the message-detail URL.
     """
     try:
         import requests
         base = api_base.rstrip("/")
         if folder_id:
-            url = f"{base}/accounts/{account_id}/folders/{folder_id}/messages/{message_id}"
+            url = (f"{base}/accounts/{account_id}"
+                   f"/folders/{folder_id}/messages/{message_id}/attachments")
         else:
-            url = f"{base}/accounts/{account_id}/messages/{message_id}"
+            url = (f"{base}/accounts/{account_id}"
+                   f"/messages/{message_id}/attachments")
         r = requests.get(url,
                          headers={"Authorization": f"Zoho-oauthtoken {token}"},
                          timeout=15)
         if r.status_code != 200:
             log.debug("[ingest] fetch_attachment_ids msg=%s status=%s", message_id, r.status_code)
             return []
-        return r.json().get("data", {}).get("attachments") or []
+        data = r.json().get("data", {})
+        if isinstance(data, list):
+            return data
+        return data.get("attachments") or []
     except Exception as exc:
         log.debug("[ingest] fetch_attachment_ids msg=%s: %s", message_id, exc)
         return []

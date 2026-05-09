@@ -983,14 +983,14 @@ class TestFetchAttachmentIdsUrl:
     def test_url_includes_folder_id_when_provided(self):
         result, url = self._call(folder_id="2261204000000002014")
         assert "/folders/2261204000000002014/" in url
-        assert "/messages/MSG456" in url
+        assert "/messages/MSG456/attachments" in url
         assert len(result) == 1
         assert result[0]["attachmentId"] == "A1"
 
     def test_url_excludes_folder_segment_when_empty(self):
         _, url = self._call(folder_id="")
         assert "/folders/" not in url
-        assert "/messages/MSG456" in url
+        assert "/messages/MSG456/attachments" in url
 
     def test_returns_empty_on_non_200(self):
         from unittest.mock import patch, MagicMock
@@ -1004,6 +1004,22 @@ class TestFetchAttachmentIdsUrl:
         with patch("requests.get", side_effect=fake_get):
             result = _fetch_message_attachment_ids("tok", "ACC", "MSG", "https://x", "FOLDER")
         assert result == []
+
+    def test_url_ends_with_attachments_sub_resource(self):
+        """URL must use /attachments sub-resource, not message-detail endpoint (bug #3 regression)."""
+        _, url = self._call(folder_id="2261204000000002014")
+        assert url.endswith("/attachments"), (
+            f"URL must end with /attachments sub-resource, got: {url}"
+        )
+
+    def test_data_as_list_response(self):
+        """Handles Zoho response where data is a list (not a dict with 'attachments' key)."""
+        result, _ = self._call(
+            folder_id="FOLDER1",
+            response_data={"data": [{"attachmentId": "B1", "attachmentName": "b.pdf"}]},
+        )
+        assert len(result) == 1
+        assert result[0]["attachmentId"] == "B1"
 
 
 class TestFolderIdThreadedThroughIngest:
