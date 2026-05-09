@@ -31,3 +31,13 @@ service/.claude/snapshots/
 # Secrets / configs
 *.env
 .env.*
+
+# Local runtime / generated artefacts
+.claude/settings.local.json
+service/MagicMock/
+service/packing.db
+outputs/
+storage/
+invoice_learning_store.json
+parser_fix_proposals.json
+PZ_READY_*.json
