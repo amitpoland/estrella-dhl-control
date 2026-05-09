@@ -104,14 +104,14 @@ note explaining why.
 
 | Field | Value |
 |---|---|
-| State | `pre-impl` — P1 done per memory; P2-P5 pending |
+| State | `pre-impl` — P1 done per memory; P2-P5 sequestered as ADRs (012-016) |
 | Owner | Backend Architect, Customs Compliance Reviewer, Integration Engineer (Zoho Mail) |
 | Tests | `partial` — DHL clearance tests exist; proactive-dispatch path untested |
 | Telemetry | `gap` |
 | UI | `none` |
-| Debt | `D-6` |
+| Debt | none (D-6 closed by ADR-012..016 on 2026-05-10) |
 | Live-risk gate | Customs Compliance Reviewer sign-off + audit-evidence completeness |
-| Last commit | n/a (mainline; spec under `dhl_selfclearance_flow.md` memory) |
+| Last commit | n/a (mainline; spec sequestered in ADR-012..016) |
 
 ---
 
@@ -172,7 +172,6 @@ Coordinator pulls from this list when deciding the next campaign.
 | D-3 | Carrier label store retention policy is implicit (filesystem); not codified as ADR | DB / State Engineer | P2 |
 | D-4 | Pre-existing dashboard test failures predate F3.5 — `tests/test_dashboard_*.py` partials | QA Lead | P2 |
 | D-5 | Operator click events not structured-logged; click-path observability is gap | Observability Engineer | P3 |
-| D-6 | DHL self-clearance P2-P5 spec exists in memory but not as ADRs; risk of drift if memory is lost | ADR Historian + Customs Compliance | P1 — sequester soon |
 | D-7 | `engineering/charter.md` lists 23 roles; `org/roles.md` lists matching set but several roles have no agent definition file yet (Backend Architect, Customs Compliance, Audit Evidence, Operator Safety, Production Readiness, Gap Hunter, ADR Historian, etc.) — they execute as Coordinator passes for now | Coordinator | P3 |
 
 ---

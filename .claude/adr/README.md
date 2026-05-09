@@ -70,6 +70,11 @@ What does this decision lock in for future work? What does it enable?
 | [ADR-009](ADR-009-webhook-handshake.md) | DHL webhook handshake + IP allowlist | Accepted |
 | [ADR-010](ADR-010-default-off-feature-flags.md) | Default-OFF feature flags | Accepted |
 | [ADR-011](ADR-011-multi-agent-engineering-cell.md) | Persistent multi-agent engineering cell (`org/` operating system) | Accepted |
+| [ADR-012](ADR-012-dhl-self-clearance-flow-overview.md) | DHL self-clearance — flow overview (umbrella) | Accepted |
+| [ADR-013](ADR-013-dhl-self-clearance-proactive-dispatch.md) | DHL self-clearance — proactive customs dispatch (P2) | Accepted |
+| [ADR-014](ADR-014-dhl-self-clearance-arrival-followup.md) | DHL self-clearance — Poland-arrival follow-up scheduler (P3 + P4) | Accepted |
+| [ADR-015](ADR-015-dhl-self-clearance-thread-clarification.md) | DHL self-clearance — thread-based clarification (P5) | Accepted |
+| [ADR-016](ADR-016-dhl-self-clearance-sad-unlock-and-pz.md) | DHL self-clearance — SAD unlock and PZ trigger (P6 + P7) | Accepted |
 
 ## When to write a new ADR
 
