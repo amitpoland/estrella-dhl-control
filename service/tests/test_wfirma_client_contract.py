@@ -1704,3 +1704,209 @@ def test_delete_invoice_raises_on_blank_id():
     """Blank invoice_id raises ValueError before any HTTP call."""
     with pytest.raises(ValueError):
         _wc.delete_invoice("")
+
+
+# ── Tests: _build_pz_xml + create_warehouse_pz ───────────────────────────────
+
+from app.services.wfirma_client import PZLine, PZRequest, PZResult, _build_pz_xml, create_warehouse_pz
+from app.services.proforma_to_invoice import (
+    LineItem, ProformaSnapshot, build_pz_request_from_proforma_snapshot,
+)
+
+_XML_PZ_OK = """<api>
+  <warehouse_documents>
+    <warehouse_document>
+      <id>999001</id>
+    </warehouse_document>
+  </warehouse_documents>
+  <status><code>OK</code></status>
+</api>"""
+
+_XML_PZ_ERROR = """<api>
+  <status><code>ERROR</code><description>Stan magazynowy nie może być ujemny</description></status>
+</api>"""
+
+
+def _sample_pz_request() -> PZRequest:
+    return PZRequest(
+        contractor_id="176578339",
+        warehouse_id="347088",
+        date="2026-05-06",
+        description="PZ pre-fill for PROF 94/2026",
+        lines=[
+            PZLine(good_id="48611875", count=1.0, price=173.00),
+            PZLine(good_id="48612067", count=2.0, price=176.50),
+        ],
+    )
+
+
+def test_build_pz_xml_shape():
+    """PZ XML must have type=PZ, contractor/id, warehouse/id, price_type=netto."""
+    req = _sample_pz_request()
+    xml_str = _build_pz_xml(req)
+    root = ET.fromstring(xml_str)
+
+    wd = root.find(".//warehouse_document")
+    assert wd is not None
+
+    assert wd.findtext("type") == "PZ"
+    assert wd.find("contractor/id").text == "176578339"
+    assert wd.find("warehouse/id").text == "347088"
+    assert wd.findtext("price_type") == "netto"
+
+    contents = root.findall(".//warehouse_document_content")
+    assert len(contents) == 2
+
+    first = contents[0]
+    assert first.find("good/id").text == "48611875"
+    assert first.findtext("unit_count") == "1.0000"
+    assert first.findtext("price") == "173.00"
+
+
+def _make_snap(proforma_id: str, proforma_number: str, contents: list) -> ProformaSnapshot:
+    from decimal import Decimal
+    return ProformaSnapshot(
+        proforma_id=proforma_id,
+        proforma_number=proforma_number,
+        type="proforma",
+        contractor_id="C-001",
+        currency="USD",
+        price_currency_exchange=None,
+        paymentmethod="transfer",
+        paymentdate="2026-06-01",
+        date="2026-05-01",
+        description="",
+        series_id="SER",
+        company_account_id=None,
+        translation_language_id=None,
+        contractor_receiver_id=None,
+        total=Decimal("100.00"),
+        netto=Decimal("100.00"),
+        contents=contents,
+    )
+
+
+def test_build_pz_xml_aggregates_duplicate_good_ids():
+    """build_pz_request aggregates same good_id across multiple lines."""
+    snap = _make_snap("p1", "PROF 1/2026", [
+        LineItem(name="A", good_id="GD-1", unit="szt.", unit_count="2", price="100.00", vat_code_id="228"),
+        LineItem(name="A-dup", good_id="GD-1", unit="szt.", unit_count="3", price="100.00", vat_code_id="228"),
+    ])
+    req = build_pz_request_from_proforma_snapshot(snap, "WH-001")
+    assert len(req.lines) == 1
+    assert req.lines[0].good_id == "GD-1"
+    assert abs(req.lines[0].count - 5.0) < 1e-6
+
+
+def test_build_pz_xml_raises_on_price_conflict():
+    """build_pz_request raises ValueError when same good_id has different prices."""
+    snap = _make_snap("p2", "PROF 2/2026", [
+        LineItem(name="X", good_id="GD-2", unit="szt.", unit_count="1", price="100.00", vat_code_id="228"),
+        LineItem(name="X2", good_id="GD-2", unit="szt.", unit_count="1", price="200.00", vat_code_id="228"),
+    ])
+    with pytest.raises(ValueError, match="conflicting prices"):
+        build_pz_request_from_proforma_snapshot(snap, "WH-001")
+
+
+def test_create_warehouse_pz_success():
+    """create_warehouse_pz returns PZResult(ok=True, wfirma_pz_doc_id=...)."""
+    with _full_settings(wfirma_create_pz_allowed=True):
+        with patch("app.services.wfirma_client._requests.request",
+                   return_value=_resp(200, _XML_PZ_OK)):
+            result = create_warehouse_pz(_sample_pz_request())
+    assert result.ok is True
+    assert result.wfirma_pz_doc_id == "999001"
+    assert result.error is None
+
+
+def test_create_warehouse_pz_blocked_by_gate():
+    """create_warehouse_pz returns error when WFIRMA_CREATE_PZ_ALLOWED is False."""
+    with _full_settings(wfirma_create_pz_allowed=False):
+        result = create_warehouse_pz(_sample_pz_request())
+    assert result.ok is False
+    assert "WFIRMA_CREATE_PZ_ALLOWED" in (result.error or "")
+
+
+def test_create_warehouse_pz_wfirma_error_status():
+    """create_warehouse_pz returns ok=False on wFirma ERROR status."""
+    with _full_settings(wfirma_create_pz_allowed=True):
+        with patch("app.services.wfirma_client._requests.request",
+                   return_value=_resp(200, _XML_PZ_ERROR)):
+            result = create_warehouse_pz(_sample_pz_request())
+    assert result.ok is False
+    assert "ERROR" in (result.error or "")
+
+
+def test_create_warehouse_pz_missing_id_in_response():
+    """create_warehouse_pz returns ok=False when response has no warehouse_document.id."""
+    xml_no_id = """<api>
+  <warehouse_documents><warehouse_document></warehouse_document></warehouse_documents>
+  <status><code>OK</code></status>
+</api>"""
+    with _full_settings(wfirma_create_pz_allowed=True):
+        with patch("app.services.wfirma_client._requests.request",
+                   return_value=_resp(200, xml_no_id)):
+            result = create_warehouse_pz(_sample_pz_request())
+    assert result.ok is False
+    assert "id" in (result.error or "").lower()
+
+
+# ── Tests: proforma_invoice_link_db PZ helpers ────────────────────────────────
+
+import tempfile
+from pathlib import Path
+from app.services.proforma_invoice_link_db import (
+    ProformaInvoiceLink, init_db, create_pending_link, get_pz_doc_id, set_pz_doc_id,
+)
+from decimal import Decimal
+
+
+def _make_test_db() -> Path:
+    tmp = tempfile.mktemp(suffix=".sqlite")
+    p = Path(tmp)
+    init_db(p)
+    return p
+
+
+def _insert_link(db_path: Path, proforma_id: str = "P-001") -> None:
+    link = ProformaInvoiceLink(
+        proforma_id=proforma_id,
+        proforma_number="PROF 1/2026",
+        converted_at="2026-05-06T00:00:00Z",
+        operator="test",
+        source_total=Decimal("100.00"),
+        currency="USD",
+        status="pending",
+    )
+    create_pending_link(db_path, link)
+
+
+def test_set_and_get_pz_doc_id():
+    """set_pz_doc_id stores, get_pz_doc_id retrieves."""
+    db = _make_test_db()
+    _insert_link(db)
+    set_pz_doc_id(db, "P-001", "PZ-999")
+    assert get_pz_doc_id(db, "P-001") == "PZ-999"
+
+
+def test_set_pz_doc_id_idempotent():
+    """Setting same pz_doc_id twice is a no-op."""
+    db = _make_test_db()
+    _insert_link(db)
+    set_pz_doc_id(db, "P-001", "PZ-999")
+    set_pz_doc_id(db, "P-001", "PZ-999")  # should not raise
+
+
+def test_set_pz_doc_id_conflict_raises():
+    """Setting a different pz_doc_id when one already exists raises ValueError."""
+    db = _make_test_db()
+    _insert_link(db)
+    set_pz_doc_id(db, "P-001", "PZ-999")
+    with pytest.raises(ValueError, match="already has pz_doc_id"):
+        set_pz_doc_id(db, "P-001", "PZ-DIFFERENT")
+
+
+def test_init_db_migration_is_idempotent():
+    """Calling init_db twice on same DB does not raise (duplicate column guard)."""
+    db = _make_test_db()
+    init_db(db)  # second call must not raise on duplicate column
