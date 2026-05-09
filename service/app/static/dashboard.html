@@ -60,6 +60,52 @@
     --badge-purple-bg: #160E28; --badge-purple-text: #AA88EE; --badge-purple-border: #341860;
     --badge-accent-bg: #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border: #5A4A18;
   }
+
+  /* ── Responsive layout breakpoints (Phase F) ────────────────────────────
+     Visual-only adjustments that improve density on smaller viewports.
+     Selectors target the dashboard's existing inline-style patterns so
+     no JSX has to change. Status colors, button visuals, and primitive
+     components are untouched. */
+
+  @media (max-width: 1100px) {
+    /* 4-column stat grids collapse to 2 columns. */
+    [style*="grid-template-columns: repeat(4, 1fr)"],
+    [style*="grid-template-columns:repeat(4,1fr)"] {
+      grid-template-columns: repeat(2, 1fr) !important;
+    }
+    /* Two-column panel grids (1fr 1fr) collapse to a single column. */
+    [style*="grid-template-columns: 1fr 1fr"] {
+      grid-template-columns: 1fr !important;
+    }
+  }
+
+  @media (max-width: 900px) {
+    /* Tables in cards scroll horizontally instead of breaking the layout. */
+    table { display: block; overflow-x: auto; max-width: 100%; }
+    /* Tighter page padding everywhere. */
+    [style*="padding: '24px 32px"], [style*="padding:'24px 32px"],
+    [style*="padding: '20px 32px"], [style*="padding:'20px 32px"] {
+      padding-left: 16px !important; padding-right: 16px !important;
+    }
+    /* Three-column grids collapse to 1. */
+    [style*="grid-template-columns: repeat(3, 1fr)"] {
+      grid-template-columns: 1fr !important;
+    }
+  }
+
+  @media (max-width: 600px) {
+    /* Every multi-column grid becomes single-column on phones. */
+    [style*="grid-template-columns: repeat(4, 1fr)"],
+    [style*="grid-template-columns: repeat(3, 1fr)"],
+    [style*="grid-template-columns: repeat(2, 1fr)"],
+    [style*="grid-template-columns: 1fr 1fr"] {
+      grid-template-columns: 1fr !important;
+    }
+    /* Top-bar search input shrinks so the action buttons remain reachable. */
+    input[placeholder*="Search"] { max-width: 140px !important; }
+    /* PageHeader stacks the actions slot below the title on phones. */
+    h1 + p { font-size: 11px !important; }
+  }
 </style>
 </head>
 <body>
@@ -12442,28 +12488,17 @@ function ProformaDraftsCrossBatchPage({ onViewBatch, onToast }) {
 
   return (
     <div data-testid="proforma-drafts-cross-batch"
-         style={{ flex: 1, padding: '20px 32px 40px', overflow: 'auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, fontFamily: '"DM Serif Display",serif', color: 'var(--text)' }}>
-            Proforma Drafts
-          </h2>
-          <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-3)' }}>
-            Read-only cross-batch list. Composed from <code style={{ fontFamily: 'monospace', fontSize: 10, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>/dashboard/batches</code>
-            {' '}and{' '}
-            <code style={{ fontFamily: 'monospace', fontSize: 10, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>/api/v1/proforma/drafts/&#123;batch_id&#125;</code>.
-            Use a draft's <em>Open batch</em> link for editing actions.
-          </p>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {lastLoaded && !loading && (
-            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
-          )}
-          <Btn small variant="outline" onClick={load} disabled={loading}
-               data-testid="btn-proforma-drafts-refresh">
-            {loading ? 'Loading…' : '↻ Refresh'}
-          </Btn>
-        </div>
+         style={{ flex: 1, padding: '8px 32px 40px', overflow: 'auto' }}>
+      {/* Phase F — page title moved to App-level PageHeader (PAGE_TITLES.proforma).
+          Body keeps a slim Refresh row; the load handler stays local. */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
+        {lastLoaded && !loading && (
+          <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
+        )}
+        <Btn small variant="outline" onClick={load} disabled={loading}
+             data-testid="btn-proforma-drafts-refresh">
+          {loading ? 'Loading…' : '↻ Refresh'}
+        </Btn>
       </div>
 
       {loading && (
@@ -12623,27 +12658,17 @@ function CustomerStatementsPickerPage({ onToast }) {
 
   return (
     <div data-testid="customer-statements-picker"
-         style={{ flex: 1, padding: '20px 32px 40px', overflow: 'auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, fontFamily: '"DM Serif Display",serif', color: 'var(--text)' }}>
-            Customer Statements
-          </h2>
-          <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-3)' }}>
-            Read-only customer picker. Selecting a row opens the Statement of
-            Account drawer; the drawer is the only surface that fetches
-            statement data and PDF on operator-explicit clicks.
-          </p>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {lastLoaded && !loading && (
-            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
-          )}
-          <Btn small variant="outline" onClick={load} disabled={loading}
-               data-testid="btn-customer-statements-refresh">
-            {loading ? 'Loading…' : '↻ Refresh'}
-          </Btn>
-        </div>
+         style={{ flex: 1, padding: '8px 32px 40px', overflow: 'auto' }}>
+      {/* Phase F — page title moved to App-level PageHeader (PAGE_TITLES.statements).
+          Body keeps a slim Refresh row; the load handler stays local. */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
+        {lastLoaded && !loading && (
+          <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
+        )}
+        <Btn small variant="outline" onClick={load} disabled={loading}
+             data-testid="btn-customer-statements-refresh">
+          {loading ? 'Loading…' : '↻ Refresh'}
+        </Btn>
       </div>
 
       <div style={{ marginBottom: 12 }}>
@@ -12826,29 +12851,17 @@ function ActionProposalsCrossBatchPage({ onViewBatch, onToast }) {
 
   return (
     <div data-testid="action-proposals-cross-batch"
-         style={{ flex: 1, padding: '20px 32px 40px', overflow: 'auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, fontFamily: '"DM Serif Display",serif', color: 'var(--text)' }}>
-            Action Proposals
-          </h2>
-          <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-3)' }}>
-            Read-only cross-batch list. Composed from <code style={{ fontFamily: 'monospace', fontSize: 10, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>/dashboard/batches</code>
-            {' '}and{' '}
-            <code style={{ fontFamily: 'monospace', fontSize: 10, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>/api/v1/action-proposals/&#123;batch_id&#125;</code>.
-            Use <em>Open batch</em> to take action on a proposal — status
-            transitions live in the per-batch panel.
-          </p>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {lastLoaded && !loading && (
-            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
-          )}
-          <Btn small variant="outline" onClick={load} disabled={loading}
-               data-testid="btn-action-proposals-refresh">
-            {loading ? 'Loading…' : '↻ Refresh'}
-          </Btn>
-        </div>
+         style={{ flex: 1, padding: '8px 32px 40px', overflow: 'auto' }}>
+      {/* Phase F — page title moved to App-level PageHeader (PAGE_TITLES.proposals).
+          Body keeps a slim Refresh row; the load handler stays local. */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
+        {lastLoaded && !loading && (
+          <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
+        )}
+        <Btn small variant="outline" onClick={load} disabled={loading}
+             data-testid="btn-action-proposals-refresh">
+          {loading ? 'Loading…' : '↻ Refresh'}
+        </Btn>
       </div>
 
       {loading && (
@@ -12995,29 +13008,17 @@ function BrokerFollowupsCrossBatchPage({ onViewBatch, onToast }) {
 
   return (
     <div data-testid="broker-followups-cross-batch"
-         style={{ flex: 1, padding: '20px 32px 40px', overflow: 'auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, fontFamily: '"DM Serif Display",serif', color: 'var(--text)' }}>
-            Broker Follow-ups
-          </h2>
-          <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-3)' }}>
-            Read-only cross-batch list. Backed by{' '}
-            <code style={{ fontFamily: 'monospace', fontSize: 10, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>/dashboard/broker-followups</code>,
-            which already aggregates draft follow-ups across every batch.
-            Use <em>Open batch</em> to take action — the per-batch panel
-            (data-testid <code style={{ fontFamily: 'monospace', fontSize: 10 }}>broker-followup-panel</code>) handles transmission.
-          </p>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {lastLoaded && !loading && (
-            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
-          )}
-          <Btn small variant="outline" onClick={load} disabled={loading}
-               data-testid="btn-broker-followups-refresh">
-            {loading ? 'Loading…' : '↻ Refresh'}
-          </Btn>
-        </div>
+         style={{ flex: 1, padding: '8px 32px 40px', overflow: 'auto' }}>
+      {/* Phase F — page title moved to App-level PageHeader (PAGE_TITLES.broker).
+          Body keeps a slim Refresh row; the load handler stays local. */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
+        {lastLoaded && !loading && (
+          <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
+        )}
+        <Btn small variant="outline" onClick={load} disabled={loading}
+             data-testid="btn-broker-followups-refresh">
+          {loading ? 'Loading…' : '↻ Refresh'}
+        </Btn>
       </div>
 
       {loading && (
@@ -14348,6 +14349,13 @@ function App() {
     ai_bridge:     { title: 'AI Bridge',            subtitle: 'File-based coordination tasks for Claude Cowork / ChatGPT — no direct production access' },
     learning:      { title: 'Learning / Parser',   subtitle: 'Invoice learning patterns and parser feedback' },
     admin:         { title: 'Admin / Settings',    subtitle: 'System configuration and API health' },
+
+    /* Phase F — design-refresh cross-batch pages now share the centralised
+       PageHeader. Each page's body keeps its own Refresh control. */
+    proforma:   { title: 'Proforma Drafts',     subtitle: 'Read-only cross-batch list of in-flight proforma drafts. Open a batch for actions.' },
+    statements: { title: 'Customer Statements', subtitle: 'Pick a customer to open the Statement of Account drawer.' },
+    proposals:  { title: 'Action Proposals',    subtitle: 'Read-only cross-batch list of pending action proposals. Open a batch to approve / reject.' },
+    broker:     { title: 'Broker Follow-ups',   subtitle: 'Read-only cross-batch list of broker follow-up drafts. Open a batch to send.' },
   };
   const currentTitle = PAGE_TITLES[page];
 
