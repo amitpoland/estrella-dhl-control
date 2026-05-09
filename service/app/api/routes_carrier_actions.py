@@ -194,6 +194,12 @@ def _select_carrier_adapter(actor: str):
             paperless_trade_enabled = bool(
                 settings.carrier_dhl_paperless_trade_enabled
             ),
+            # DL-F3.5c — PLT path containment. The validator rejects
+            # any operator-supplied customs_invoice_pdf_path that
+            # escapes the project's storage tree. Closes the
+            # arbitrary-file-read primitive identified by Security
+            # Reviewer as P0.
+            paperless_trade_allowed_root = str(settings.storage_root),
         )
     except Exception:
         # Defensive: live constructor rejected the inputs (empty after

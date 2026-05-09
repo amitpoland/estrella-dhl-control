@@ -163,6 +163,7 @@ class DHLExpressLiveAdapter:
         clock:           Optional[Callable[[], Any]] = None,
         max_retries:     int = _DEFAULT_MAX_RETRIES,
         paperless_trade_enabled: bool = False,
+        paperless_trade_allowed_root: str = "",
     ) -> None:
         # Defaults are empty strings so the adapter can be constructed
         # for parse-only use (e.g. by the webhook receiver, which only
@@ -188,6 +189,13 @@ class DHLExpressLiveAdapter:
         # only when settings.carrier_dhl_paperless_trade_enabled is
         # True. The adapter never reads settings directly.
         self._plt_enabled:    bool = bool(paperless_trade_enabled)
+        # DL-F3.5c — PLT path containment. The factory passes the
+        # storage_root so the adapter can reject any operator-supplied
+        # customs_invoice_pdf_path that escapes the project's storage
+        # tree. Empty (default) preserves backwards-compatible
+        # behaviour for unit tests that don't supply a root, but every
+        # operator-facing path now passes one through.
+        self._plt_allowed_root: str = paperless_trade_allowed_root or ""
 
     @property
     def _send_ready(self) -> bool:
@@ -434,7 +442,9 @@ class DHLExpressLiveAdapter:
             }, None)
 
         result: PLTValidationResult = validate_paperless_trade_pdf(
-            path, max_bytes=PLT_MAX_BYTES,
+            path,
+            max_bytes=PLT_MAX_BYTES,
+            allowed_root=self._plt_allowed_root or None,
         )
         if not result.ok:
             return ({

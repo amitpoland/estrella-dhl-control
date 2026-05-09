@@ -127,8 +127,32 @@ def _check_api_key(request: Request) -> None:
 
 
 def _check_ip_allowlist(request: Request) -> None:
+    """DL-F3.5c — IP allowlist gate.
+
+    Two-mode check, gated by ``carrier_dhl_live_enabled``:
+
+    1. **Dev / shadow / sandbox** (``carrier_dhl_live_enabled=False``):
+       allowlist defaults are permissive. An empty allowlist means
+       "no IP check applies" — convenient for dev.
+
+    2. **Production** (``carrier_dhl_live_enabled=True``): allowlist
+       MUST be non-empty. An empty allowlist when live is enabled
+       means the webhook would be reachable from any source IP
+       carrying a valid ``DHL-API-Key`` — that's the URL-leak replay
+       risk Security Reviewer flagged P1. We refuse to serve in that
+       configuration: HTTP 503 ``ip_allowlist_required_when_live``.
+    """
     allowlist = settings.carrier_dhl_webhook_ip_allowlist or ""
     if not allowlist.strip():
+        if settings.carrier_dhl_live_enabled:
+            raise HTTPException(status_code=503, detail={
+                "code":  "ip_allowlist_required_when_live",
+                "error": (
+                    "carrier_dhl_webhook_ip_allowlist must be non-empty "
+                    "when carrier_dhl_live_enabled=True; refusing to "
+                    "process the request"
+                ),
+            })
         return
     client_ip = _client_ip(request)
     if not _ip_in_allowlist(client_ip, allowlist):

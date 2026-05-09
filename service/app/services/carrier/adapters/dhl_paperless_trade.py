@@ -65,6 +65,7 @@ def validate_paperless_trade_pdf(
     path: str,
     *,
     max_bytes: int = PLT_MAX_BYTES,
+    allowed_root: Optional[str] = None,
 ) -> PLTValidationResult:
     """Validate *path* as a Paperless Trade PDF.
 
@@ -74,17 +75,51 @@ def validate_paperless_trade_pdf(
     ``ok=False`` and a stable ``reason`` token:
 
       * ``no_path_provided``   — path is empty / whitespace-only
+      * ``path_outside_root``  — DL-F3.5c: resolved path escapes
+                                 ``allowed_root`` (path-traversal guard)
       * ``file_not_found``     — path does not resolve to an existing file
       * ``empty_file``         — file size is 0 bytes
       * ``oversize``           — file size > ``max_bytes``
       * ``not_pdf``            — first 4 bytes are not ``b"%PDF"``
       * ``read_error``         — OS-level read error after size check passed
       * ``ok``                 — all gates passed; ``pdf_bytes`` populated
+
+    Containment (DL-F3.5c)
+    ----------------------
+    When *allowed_root* is non-empty, the resolved candidate path
+    must be contained under the resolved *allowed_root*. Symlink
+    escapes are caught because Path.resolve() follows links before
+    the containment check. Empty *allowed_root* (default) preserves
+    the unbounded behaviour for callers that already constrain
+    elsewhere — but the route-layer caller (the only operator-facing
+    entry point) must always pass the storage_root.
     """
     if not (path or "").strip():
         return PLTValidationResult(ok=False, reason="no_path_provided")
 
     p = Path(path)
+
+    # DL-F3.5c — path containment. Runs BEFORE existence check so a
+    # traversal attempt that names a sensitive file the operator
+    # could not even know about (e.g. /etc/passwd) returns
+    # ``path_outside_root``, not ``file_not_found``. The two
+    # outcomes carry different operator messages in the manifest.
+    if allowed_root:
+        try:
+            allowed = Path(allowed_root).resolve()
+            candidate = p.resolve()
+        except (OSError, RuntimeError):
+            # RuntimeError covers loop-symlink resolution failures.
+            return PLTValidationResult(
+                ok=False, reason="path_outside_root",
+            )
+        try:
+            candidate.relative_to(allowed)
+        except ValueError:
+            return PLTValidationResult(
+                ok=False, reason="path_outside_root",
+            )
+
     try:
         if not p.exists() or not p.is_file():
             return PLTValidationResult(ok=False, reason="file_not_found")
