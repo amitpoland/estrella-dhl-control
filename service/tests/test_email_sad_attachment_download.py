@@ -25,6 +25,16 @@ from pathlib import Path
 _SVC = Path(__file__).parent.parent
 sys.path.insert(0, str(_SVC))
 
+# Stub fcntl so email_evidence_store can be imported on Windows (no-op on Linux/Mac).
+import types as _types
+if "fcntl" not in sys.modules:
+    _fcntl_stub = _types.ModuleType("fcntl")
+    _fcntl_stub.LOCK_EX = 2   # type: ignore[attr-defined]
+    _fcntl_stub.LOCK_SH = 1   # type: ignore[attr-defined]
+    _fcntl_stub.LOCK_UN = 8   # type: ignore[attr-defined]
+    _fcntl_stub.flock = lambda *a, **kw: None  # type: ignore[attr-defined]
+    sys.modules["fcntl"] = _fcntl_stub
+
 from app.services.email_evidence_ingestor import (
     _is_valid_agency_sad_attachment,
     _safe_sad_name,
@@ -60,7 +70,7 @@ def test_valid_sad_attachment_downloaded(tmp_path, monkeypatch):
         lambda *_a, **_k: [{"attachmentName": "ZC429_TEST.pdf", "attachmentId": "att1"}],
     )
 
-    def _fake_download(token, account_id, message_id, att_id, dest, api_base):
+    def _fake_download(token, account_id, message_id, att_id, dest, api_base, folder_id=""):
         dest.write_bytes(b"%PDF-1.4 ZC429 stub content")
         return True
 
@@ -91,7 +101,7 @@ def test_file_exists_on_disk_after_download(tmp_path, monkeypatch):
 
     expected_bytes = b"%PDF-1.4 real content"
 
-    def _fake_download(token, account_id, message_id, att_id, dest, api_base):
+    def _fake_download(token, account_id, message_id, att_id, dest, api_base, folder_id=""):
         dest.write_bytes(expected_bytes)
         return True
 
@@ -119,7 +129,7 @@ def test_path_stored_in_audit(tmp_path, monkeypatch):
         lambda *_a, **_k: [{"attachmentName": "ZC429_TEST.pdf", "attachmentId": "att1"}],
     )
 
-    def _fake_download(token, account_id, message_id, att_id, dest, api_base):
+    def _fake_download(token, account_id, message_id, att_id, dest, api_base, folder_id=""):
         dest.write_bytes(b"content")
         return True
 
@@ -163,7 +173,7 @@ def test_duplicate_email_does_not_redownload(tmp_path, monkeypatch):
 
     call_count = []
 
-    def _fake_download(token, account_id, message_id, att_id, dest, api_base):
+    def _fake_download(token, account_id, message_id, att_id, dest, api_base, folder_id=""):
         call_count.append(1)
         dest.write_bytes(b"content")
         return True
@@ -202,7 +212,7 @@ def test_non_sad_attachment_not_downloaded(tmp_path, monkeypatch):
         lambda *_a, **_k: [{"attachmentName": "invoice.pdf", "attachmentId": "att2"}],
     )
 
-    def _fake_download(token, account_id, message_id, att_id, dest, api_base):
+    def _fake_download(token, account_id, message_id, att_id, dest, api_base, folder_id=""):
         downloaded.append(att_id)
         dest.write_bytes(b"x")
         return True
@@ -373,7 +383,7 @@ def test_already_stored_triggers_sad_download(tmp_path, monkeypatch):
 
     call_log = []
 
-    def _fake_dl(token, account_id, message_id, att_id, dest, api_base):
+    def _fake_dl(token, account_id, message_id, att_id, dest, api_base, folder_id=""):
         call_log.append(att_id)
         dest.write_bytes(b"%PDF-1.4 already_stored_test")
         return True
@@ -396,7 +406,7 @@ def test_already_stored_no_duplicate_download(tmp_path, monkeypatch):
 
     call_log = []
 
-    def _fake_dl(token, account_id, message_id, att_id, dest, api_base):
+    def _fake_dl(token, account_id, message_id, att_id, dest, api_base, folder_id=""):
         call_log.append(att_id)
         dest.write_bytes(b"OVERWRITE")
         return True
@@ -426,7 +436,7 @@ def test_already_stored_audit_updated(tmp_path, monkeypatch):
     """already_stored download → audit.agency_documents_received_state must be written."""
     audit_path, run_scan = _make_scan_ingest_env(tmp_path, monkeypatch)
 
-    def _fake_dl(token, account_id, message_id, att_id, dest, api_base):
+    def _fake_dl(token, account_id, message_id, att_id, dest, api_base, folder_id=""):
         dest.write_bytes(b"%PDF-1.4 content")
         return True
 
