@@ -197,7 +197,49 @@ create is blocked — operator runs the product create flow first
 
 ---
 
-## 7. PZ rule
+## 7. PZ rule — canonical import path
+
+### 7a. Permanent architecture
+
+```
+Import invoice + SAD
+  → pz_import_processor.py produces:
+      product_code, unit_netto_pln (landed cost = FOB + freight + A00 duty)
+  → products/resolve maps product_code → wfirma_product_id
+  → pz_preview confirms ready=true (all codes mapped, no price conflicts)
+  → pz_create sends PZRequest to create_warehouse_pz()
+      PZLine.price  = unit_netto_pln   ← import landed cost, NEVER sales price
+      PZLine.good_id = wfirma_product_id from wfirma_products table
+      contractor_id = WFIRMA_SUPPLIER_CONTRACTOR_ID (import supplier)
+  → wFirma stock exists → proforma and final invoice can proceed
+```
+
+### 7b. Recovery-only path (NOT the normal flow)
+
+`build_pz_request_from_proforma_snapshot()` in
+[`proforma_to_invoice.py:424`](../service/app/services/proforma_to_invoice.py)
+and the `--create-pz-before-invoice` flag in
+[`send_wfirma_proforma_to_invoice_live_test.py`](../service/app/tools/send_wfirma_proforma_to_invoice_live_test.py)
+exist **only** as a recovery workaround for shipments where the
+import calculation PZ was not created first.
+
+**Do not use `build_pz_request_from_proforma_snapshot` as a normal path.**
+Using proforma `unit_price` (sales price) as the PZ cost basis is
+architecturally wrong — it mixes sales pricing into the import cost record.
+
+Normal flow never calls `build_pz_request_from_proforma_snapshot`.
+
+### 7c. Price separation (immutable rule)
+
+| Document | Price field | Source |
+|---|---|---|
+| wFirma PZ (`PZLine.price`) | `unit_netto_pln` | PZ engine landed cost (FOB + freight + A00 duty) |
+| wFirma proforma (`ReservationLine.unit_price`) | `unit_price` | Sales/invoice price in USD, converted by FX |
+| wFirma final invoice | Same as proforma | Inherited from proforma snapshot |
+
+These two price fields **must never be swapped or conflated**.
+
+### 7d. Description rule (unchanged)
 
 PZ / customs description PDF uses the same locked description block.
 [`polish_description_generator.py:288-317`](../polish_description_generator.py)
@@ -239,23 +281,41 @@ Every product create call passes these gates in order. Any miss = abort.
 - Creating products via bulk endpoint without per-code operator review.
 - Saving a local mapping with empty/null `wfirma_product_id`.
 - Pulling description text from `design_no`.
+- Using `build_pz_request_from_proforma_snapshot` as a normal code path
+  (recovery workaround only — see §7b).
+- Setting `PZLine.price` from `unit_price` (sales) instead of
+  `unit_netto_pln` (import landed cost) — see §7c.
+- Calling `create_warehouse_pz` before `pz_preview` returns `ready=true`.
 
 ---
 
-## 10. Future implementation checklist
+## 10. Implementation status and remaining gaps
 
-These are the gaps that must be closed before the live product create
-endpoint is wired:
+### 10a. Completed (as of 2026-05-06)
 
-| Gap | Where | Action |
+| Item | Status | File |
 |---|---|---|
-| **No description_block column on wfirma_products** | [`wfirma_db.py:64-78`](../service/app/services/wfirma_db.py) | Add `description_block TEXT` (JSON: `{name_pl, description_pl, material_pl, purpose_pl}`). Forward-compat ALTER, idempotent. |
-| **No persistent description store keyed by product_code** | New table or extend `packing_lines` | Either `product_descriptions(product_code UNIQUE, name_pl, description_pl, material_pl, purpose_pl, source, created_at)`, OR persist on `wfirma_products` row at create time. |
-| **Translations live only in PDF generator memory** | [`polish_description_generator.py:21-91`](../polish_description_generator.py) | Extract the lookup into a service module (`description_engine.py`) that both PDF and product create call. Same translation function, two consumers. |
-| **`wfirma_client.create_product` raises NotImplementedError** | [`wfirma_client.py:538-561`](../service/app/services/wfirma_client.py) | Implement `goods/add` per wFirma docs, gated by `settings.wfirma_create_product_allowed`. Idempotent guard: re-call `get_product_by_code` first. |
-| **No operator-approved create endpoint** | New route in [`routes_wfirma_capabilities.py`](../service/app/api/routes_wfirma_capabilities.py) | `POST /api/v1/wfirma/goods/create-from-product-code` accepting `{product_code, override_name?, override_description?}`. Search-first, locked field set, persist mapping on success. |
-| **Per-code description override slot** | `product_descriptions` table | Optional override columns; default to per-type translation when override empty. |
-| **Tests proving same description across PZ + product + proforma** | New tests | Round-trip: generate PDF, create product, build proforma payload — assert all three consume the same `description_block` (string equality). |
+| `product_code` in PZ_READY JSON | ✅ Done | `routes_wfirma.py:_build_wfirma_rows` |
+| `product_code` in `pz_preview` planned_lines | ✅ Done | `routes_wfirma.py:wfirma_pz_preview` |
+| `POST .../wfirma/products/resolve` | ✅ Done | `routes_wfirma.py:wfirma_products_resolve` |
+| `import_pz_builder.py` (pure builder, no live write) | ✅ Done | `services/import_pz_builder.py` |
+| `WFIRMA_SUPPLIER_CONTRACTOR_ID` config field | ✅ Done | `config.py`, `.env` |
+| `pz_preview` dedup guard via `audit.wfirma_export.wfirma_pz_doc_id` | ✅ Done | `routes_wfirma.py:588-600` |
+| `description_engine.py` service module | ✅ Done | `services/description_engine.py` |
+| `wfirma_client.create_product` implemented | ✅ Done | `wfirma_client.py` (gated) |
+| Per-code batch resolve: search-first, no fake mappings, idempotent | ✅ Done | `routes_wfirma.py:wfirma_products_resolve` |
+
+### 10b. Remaining gaps before pz_create route is safe to add
+
+| Gap | Where | Action needed |
+|---|---|---|
+| **No `description_block` column on `wfirma_products`** | [`wfirma_db.py:64-78`](../service/app/services/wfirma_db.py) | Add `description_block TEXT` (forward-compat ALTER, idempotent). Persist at create time from `description_engine` output. |
+| **`upsert_product` does not accept `description_block`** | [`wfirma_db.py:232`](../service/app/services/wfirma_db.py) | Add parameter; UPDATE/INSERT the column. |
+| **`pz_create` route does not exist** | New route in `routes_wfirma.py` | `POST .../wfirma/pz_create` — gated by `WFIRMA_CREATE_PZ_ALLOWED`; calls `build_pz_request_from_batch` then `create_warehouse_pz`; writes `wfirma_pz_doc_id` into `audit.wfirma_export`; MRN dedup guard required. |
+| **`pz_preview` dedup reads from `audit.wfirma_export` only** | `routes_wfirma.py:589` | After `pz_create` writes the doc_id into the audit, the guard works. No separate DB table needed — but the write must be atomic. |
+| **No audit write for PZ creation event** | `routes_wfirma.py` (future) | `pz_create` must write `wfirma_pz_doc_id` to `audit.wfirma_export` via `_patch_wfirma_export` and emit a timeline event. |
+| **`product_code` stability risk** | `pz_import_processor.py:2212` | `product_code` suffix is positional (`-0`, `-1` index in invoice items). Parser item-order change would silently remap them. Document as known risk; do not mix product_codes from different processor runs for the same batch. |
+| **Tests proving same description across PZ + product + proforma** | New tests | Round-trip: generate PDF, create product, build proforma payload — assert all three consume the same `description_block`. |
 
 Cross-cutting: every test that asserts "create called with payload X"
 must also assert the description block matches what the PDF generator
@@ -269,9 +329,10 @@ Re-read before you:
 - Touch `polish_description_generator.py`.
 - Touch `wfirma_client.create_product` or `_build_proforma_xml`.
 - Add or modify any product description anywhere.
-- Add a route under `/api/v1/wfirma/goods/*` or
-  `/api/v1/proforma/*`.
+- Add a route under `/api/v1/wfirma/goods/*` or `/api/v1/proforma/*`.
 - Change `wfirma_products` or `proforma_drafts` schema.
+- Implement `pz_create` route — re-read §7 price separation rules.
+- Touch `build_pz_request_from_proforma_snapshot` — read §7b first.
 
 If the change touches description text or product master semantics, the
 locked rule wins — even over operator convenience or wFirma payload
