@@ -74,17 +74,38 @@ const GOLD = 'var(--accent)';
 const SIDEBAR_W = 220;
 
 const NAV_ITEMS = [
+  // ── Operations ──
   { id: 'dashboard',  label: 'Dashboard',         icon: '▦' },
   { id: 'shipments',  label: 'Shipments',          icon: '⬡' },
+
+  { divider: true, label: 'DHL / Customs' },
   { id: 'dhl',        label: 'DHL Clearance',      icon: '✈' },
   { id: 'customs',    label: 'Customs Documents',  icon: '⊟' },
+
+  { divider: true, label: 'PZ + Inventory' },
   { id: 'warehouse_scanner', label: 'Warehouse Scanner', icon: '⊡', href: '/dashboard/warehouse.html' },
   { id: 'pz',         label: 'PZ / Accounting',    icon: '⊞' },
+
+  { divider: true, label: 'Sales / wFirma' },
+  // Design refresh placeholders. Backend verified; UI pages deferred.
+  { id: 'proforma',   label: 'Proforma Drafts',     icon: '✎' },
   { id: 'wfirma',     label: 'wFirma',             icon: '↗' },
+  { id: 'statements', label: 'Customer Statements', icon: '◫' },
+
+  { divider: true, label: 'Cross-cutting' },
+  // Design refresh placeholders. Backend verified; UI pages deferred.
+  { id: 'proposals',  label: 'Action Proposals',    icon: '⚐' },
+  { id: 'broker',     label: 'Broker Follow-ups',   icon: '✉' },
+
+  { divider: true, label: 'Reports' },
   { id: 'reports',       label: 'Analytics',          icon: '≡' },
+
+  { divider: true, label: 'AI / Learning' },
   { id: 'intelligence',  label: 'Intelligence',       icon: '◈' },
   { id: 'ai_bridge',    label: 'AI Bridge',          icon: '⇌' },
   { id: 'learning',      label: 'Learning / Parser',  icon: '◎' },
+
+  { divider: true, label: 'System' },
   { id: 'admin',         label: 'Admin / Settings',   icon: '⚙' },
 ];
 
@@ -453,7 +474,22 @@ function Sidebar({ active, onNav, collapsed, onToggle }) {
         )}
       </div>
       <nav style={{ flex: 1, padding: '8px 0', overflowY: 'auto' }}>
-        {NAV_ITEMS.map(item => {
+        {NAV_ITEMS.map((item, idx) => {
+          // Group divider sentinel — renders a small uppercase label
+          // separator instead of a button. Hidden when sidebar is
+          // collapsed so icon-only mode stays compact.
+          if (item.divider) {
+            if (collapsed) return null;
+            return (
+              <div key={`nav-div-${idx}`} style={{
+                padding: '14px 16px 4px', fontSize: 9, fontWeight: 700,
+                letterSpacing: '0.14em', textTransform: 'uppercase',
+                color: 'var(--sidebar-text-muted)', userSelect: 'none',
+              }}>
+                {item.label}
+              </div>
+            );
+          }
           const isActive = active === item.id;
           return (
             <button key={item.id} onClick={() => item.href ? (window.location.href = item.href) : onNav(item.id)} style={{
@@ -13625,6 +13661,12 @@ function App() {
         {page === 'ai_bridge'     && <AiBridgePage onToast={notify} />}
         {page === 'learning'      && <LearningPage onToast={notify} />}
         {page === 'admin'         && <AdminPage user={user} />}
+
+        {/* Design refresh placeholders. Backend verified; UI pages deferred. */}
+        {page === 'proforma'   && <PlaceholderPage title="Proforma Drafts"     icon="✎" desc="Backend exists; page implementation is planned." />}
+        {page === 'statements' && <PlaceholderPage title="Customer Statements" icon="◫" desc="Backend exists; page implementation is planned." />}
+        {page === 'proposals'  && <PlaceholderPage title="Action Proposals"    icon="⚐" desc="Backend exists; page implementation is planned." />}
+        {page === 'broker'     && <PlaceholderPage title="Broker Follow-ups"   icon="✉" desc="Backend exists; page implementation is planned." />}
       </div>
 
       {showNewShipment && (
