@@ -184,6 +184,9 @@ class Settings(BaseSettings):
     wfirma_sync_customers_allowed:  bool = Field(default=False, env="WFIRMA_SYNC_CUSTOMERS_ALLOWED")
     wfirma_delete_invoice_allowed:  bool = Field(default=False, env="WFIRMA_DELETE_INVOICE_ALLOWED")
     wfirma_create_pz_allowed:       bool = Field(default=False, env="WFIRMA_CREATE_PZ_ALLOWED")
+    # Manual Proforma → final invoice conversion gate. Off by default;
+    # operator flips to true only for the conversion run, then back.
+    wfirma_create_invoice_allowed:  bool = Field(default=False, env="WFIRMA_CREATE_INVOICE_ALLOWED")
     wfirma_supplier_contractor_id:  str  = Field(default="",    env="WFIRMA_SUPPLIER_CONTRACTOR_ID")
 
     # ── Cliq bot batch collection ─────────────────────────────────────────────

@@ -6,15 +6,27 @@ Responsibilities:
   - Map raw DHL / public / manual wording to stages (normalize_tracking_event)
   - Append normalized events to audit.tracking_events with deduplication
   - Apply workflow-progression flags based on reached stages
+  - Emit exactly two operator-meaningful timeline milestones from tracking
+    state (carrier_arrived_poland, carrier_delivered)
 
 Storage contract:
   audit.json["tracking_events"] is a chronological list of normalized events.
   Never overwrites — only appends. Dedup key: (awb, event_time, raw_description, source).
+
+Timeline milestone contract (locked invariants — see _MILESTONE_ALLOWLIST):
+  - tracking_normalizer may write ONLY the events in _MILESTONE_ALLOWLIST.
+  - dedup oracle = scan of audit["timeline"] for the dedup key.
+  - canonical dedup key = (event_name, detail["milestone_ts"]).
+  - audit side-fields (carrier_arrived_at_poland_at, shipment_delivered) are
+    advisory mirrors — NEVER consulted for milestone dedup decisions.
+  - clearance_status is NOT mutated by this module.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 # ── Normalized movement stages ────────────────────────────────────────────────
@@ -54,6 +66,17 @@ CUSTOMS_WORKFLOW_STAGES: FrozenSet[str] = frozenset({
     "CUSTOMS_DOCUMENTS_SENT",
     "CUSTOMS_UNDER_REVIEW",
     "CUSTOMS_CLEARED",
+})
+
+# ── Timeline milestone allowlist (LOCKED — runtime-enforced) ──────────────────
+# tracking_normalizer may write ONLY these events into audit["timeline"].
+# Any other event name passed to _emit_milestone raises ValueError.
+# Extending this set requires fresh architecture review — adding a transport-
+# class event here would reintroduce the timeline/tracking_events drift problem
+# the architecture-correction cycle was designed to prevent.
+_MILESTONE_ALLOWLIST: FrozenSet[str] = frozenset({
+    "carrier_arrived_poland",
+    "carrier_delivered",
 })
 
 # ── Normalization rules ───────────────────────────────────────────────────────
@@ -284,17 +307,134 @@ def append_tracking_events(
     return audit, added
 
 
+def _country_code_from_location(loc: str) -> str:
+    """
+    Parse the 2-letter country code from a normalized DHL location string.
+
+    Canonical DHL format:  "CITY - COUNTRY NAME - CC"
+    Examples:
+      "WARSAW - POLAND - PL"                 → "PL"
+      "HONG KONG - HONG KONG SAR, CHINA - HK" → "HK"
+      "MUMBAI (BOMBAY) - INDIA - IN"         → "IN"
+      "LEIPZIG - GERMANY - DE"               → "DE"
+
+    Returns "" when the location is empty, mis-formatted, or the trailing
+    segment is not a 2-letter alphabetic code.
+
+    Pure string operation — no I/O, no audit access.
+    """
+    if not loc:
+        return ""
+    # rsplit on " - " (space-dash-space) — strict separator used by DHL
+    parts = loc.rsplit(" - ", 1)
+    if len(parts) != 2:
+        return ""
+    cc = parts[1].strip().upper()
+    if len(cc) == 2 and cc.isalpha():
+        return cc
+    return ""
+
+
+def _emit_milestone(
+    audit:        Dict[str, Any],
+    event_name:   str,
+    milestone_ts: str,
+    detail:       Dict[str, Any],
+) -> bool:
+    """
+    Append a transport-class milestone to audit["timeline"] iff its dedup key
+    is not already present.
+
+    Dedup oracle (binding):  scan audit["timeline"] for existing entries whose
+                             event name is in _MILESTONE_ALLOWLIST and whose
+                             detail["milestone_ts"] equals *milestone_ts*.
+    Dedup key                = (event_name, milestone_ts).
+    The dedup oracle is the timeline ITSELF — never side-fields, never the
+    write timestamp, never cached state.
+
+    Returns True if appended, False if dedup-skipped.
+    Raises ValueError when *event_name* is not in _MILESTONE_ALLOWLIST.
+
+    Schema (FROZEN — see milestone schema invariant):
+      {
+        "event":          <event_name>,
+        "trigger_source": "dhl_api",
+        "actor":          "system",
+        "ts":             <append/write timestamp — NEVER used for dedup>,
+        "detail":         {**detail, "milestone_ts": <canonical dedup ts>},
+      }
+    """
+    if event_name not in _MILESTONE_ALLOWLIST:
+        raise ValueError(
+            f"tracking_normalizer cannot emit timeline event {event_name!r} — "
+            f"only {sorted(_MILESTONE_ALLOWLIST)} are permitted. "
+            f"Adding new transport-class timeline events requires architecture "
+            f"review."
+        )
+
+    timeline: List[Dict[str, Any]] = audit.setdefault("timeline", [])
+
+    # Build dedup-key set from the timeline ONLY (the canonical oracle).
+    emitted_keys = {
+        (
+            e.get("event"),
+            (e.get("detail") or {}).get("milestone_ts"),
+        )
+        for e in timeline
+        if e.get("event") in _MILESTONE_ALLOWLIST
+    }
+
+    key = (event_name, milestone_ts)
+    if key in emitted_keys:
+        return False
+
+    timeline.append({
+        "event":          event_name,
+        "trigger_source": "dhl_api",
+        "actor":          "system",
+        "ts":             _now_utc(),
+        "detail":         {**detail, "milestone_ts": milestone_ts},
+    })
+    return True
+
+
+def _earliest_event_time(events: List[Dict[str, Any]]) -> str:
+    """Return the earliest non-empty event_time from *events*, or ""."""
+    times = [e.get("event_time", "") for e in events if e.get("event_time")]
+    if not times:
+        return ""
+    return min(times)
+
+
 def apply_workflow_progression(
     audit: Dict[str, Any],
     events: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
-    Inspect tracking_events and set workflow flags in audit (forward-only).
+    Inspect tracking_events, set workflow flags (forward-only), and emit
+    operator-meaningful milestones into audit["timeline"].
 
-    Flags set:
+    Flags set (existing — unchanged):
       customs_workflow_eligible — any event in CUSTOMS_WORKFLOW_STAGES reached
       clearance_complete        — CUSTOMS_CLEARED reached
       shipment_delivered        — DELIVERED reached
+
+    Milestones emitted into timeline (exactly-once per shipment, dedup'd by
+    timeline-scan against (event_name, milestone_ts)):
+      carrier_arrived_poland — earliest event with country_code == "PL"
+      carrier_delivered      — earliest event with normalized_stage == "DELIVERED"
+
+    Advisory side-fields written (mirrors only — NOT consulted for dedup):
+      carrier_arrived_at_poland_at  ← earliest PL event_time
+      shipment_delivered            ← bool flag (existing)
+
+    This function does NOT mutate clearance_status — that is owned by the
+    email/orchestration layer.
+
+    Caller responsibility:
+      In-memory mutation only. Persistence + locking live in the caller, OR
+      use apply_workflow_progression_locked() which wraps load+mutate+write
+      under the per-batch advisory lock.
     """
     if events is None:
         events = audit.get("tracking_events") or []
@@ -313,6 +453,82 @@ def apply_workflow_progression(
         if "DELIVERED" in stages:
             audit["shipment_delivered"] = True
 
+    awb = audit.get("awb") or audit.get("tracking_no") or ""
+
+    # ── carrier_arrived_poland ────────────────────────────────────────────────
+    pl_events = [
+        e for e in events
+        if _country_code_from_location(e.get("location", "")) == "PL"
+    ]
+    first_pl_event_time = _earliest_event_time(pl_events)
+    if first_pl_event_time:
+        appended = _emit_milestone(
+            audit,
+            "carrier_arrived_poland",
+            first_pl_event_time,
+            {
+                "awb":                 awb,
+                "first_pl_event_time": first_pl_event_time,
+            },
+        )
+        # Advisory mirror — written only on first emission, never consulted
+        # by dedup. Future runs continue to dedup against the timeline.
+        if appended and not audit.get("carrier_arrived_at_poland_at"):
+            audit["carrier_arrived_at_poland_at"] = first_pl_event_time
+
+    # ── carrier_delivered ────────────────────────────────────────────────────
+    delivered_events = [
+        e for e in events if e.get("normalized_stage") == "DELIVERED"
+    ]
+    delivered_event_time = _earliest_event_time(delivered_events)
+    if delivered_event_time:
+        _emit_milestone(
+            audit,
+            "carrier_delivered",
+            delivered_event_time,
+            {
+                "awb":                  awb,
+                "delivered_event_time": delivered_event_time,
+            },
+        )
+
+    return audit
+
+
+def apply_workflow_progression_locked(
+    batch_id:   str,
+    *,
+    audit_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Lock-aware wrapper around apply_workflow_progression for production callers.
+
+    Acquires the per-batch advisory write lock, reads audit.json fresh,
+    applies workflow progression (including milestone emission), and persists
+    atomically. Exactly-once milestone emission is guaranteed by the
+    combination of:
+      1. timeline-scan dedup oracle inside _emit_milestone, and
+      2. the per-batch flock serialising read/mutate/write across processes.
+
+    Use this wrapper from any production code path where audit.json is
+    persisted after milestone-touching mutation. The plain
+    apply_workflow_progression() remains available for unit tests and
+    in-memory composition (e.g. callers that already hold the lock).
+    """
+    # Local imports to avoid hard coupling at module load time and keep the
+    # tests that import only the pure helpers fast.
+    from ..core.config import settings
+    from ..utils.batch_lock import batch_write_lock
+    from ..utils.io import write_json_atomic
+
+    if audit_path is None:
+        audit_path = settings.storage_root / "outputs" / batch_id / "audit.json"
+
+    with batch_write_lock(batch_id):
+        with open(audit_path, "r", encoding="utf-8") as fh:
+            audit = json.load(fh)
+        audit = apply_workflow_progression(audit)
+        write_json_atomic(audit_path, audit)
     return audit
 
 

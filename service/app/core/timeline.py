@@ -29,6 +29,15 @@ EV_AWB_UPLOADED       = "awb_uploaded"
 EV_PROCESSING_STARTED = "processing_started"
 EV_PZ_GENERATED       = "pz_generated"
 EV_PZ_BLOCKED         = "pz_blocked"
+
+# ── Inventory lifecycle mirror events ──────────────────────────────────────────
+# Best-effort, per-batch summary events written to audit.json["timeline"] each
+# time an existing inventory_state_engine producer runs.  They mirror the
+# transitions the engine actually performed but live nowhere except the audit
+# timeline — they do not gate, drive, or duplicate any production logic.
+EV_INVENTORY_PURCHASE_TRANSIT_SEEDED   = "inventory_purchase_transit_seeded"
+EV_INVENTORY_WAREHOUSE_STOCK_PROMOTED  = "inventory_warehouse_stock_promoted"
+EV_INVENTORY_TRANSITION_FAILED         = "inventory_transition_failed"
 EV_DHL_EMAIL_RECEIVED     = "dhl_email_received"
 EV_DHL_INBOX_SCANNED      = "dhl_inbox_scanned"
 EV_CLEARANCE_STARTED      = "clearance_started"

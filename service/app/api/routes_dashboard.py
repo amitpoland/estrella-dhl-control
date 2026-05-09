@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -97,11 +97,20 @@ def _detect_carrier(tracking_no: str, awb_filename: str = "") -> Dict[str, str]:
 
 def _with_download_urls(audit: Dict[str, Any]) -> Dict[str, Any]:
     batch_id = audit.get("batch_id", "")
+    out_dir  = settings.storage_root / "outputs" / batch_id if batch_id else None
     for key, entry in audit.get("files", {}).items():
         # Guard: only process dict entries — string paths (legacy or backfilled)
         # are skipped; the proper file URLs come from _build_files_detail().
         if isinstance(entry, dict) and entry.get("name"):
             entry["download_url"] = f"/api/v1/files/{batch_id}/{entry['name']}"
+            # Stamp `exists` based on disk presence so the View/Download
+            # buttons render correctly. Frontend reads this; without it the
+            # button stays disabled even when the file is on disk.
+            if entry.get("exists") in (None, ""):
+                try:
+                    entry["exists"] = bool(out_dir and (out_dir / entry["name"]).exists())
+                except Exception:
+                    entry["exists"] = False
     return audit
 
 
@@ -2260,6 +2269,819 @@ def actions_v2(batch_id: str, request: Request) -> Dict[str, Any]:
         "warnings":          [],
         "broken_routes":     [b.to_dict() for b in broken_routes],
     }
+
+
+# ── Proforma readiness aggregator (read-only, local-only) ─────────────────
+#
+# Single read-only snapshot of every identity-resolution gate the operator
+# needs to see before the Proforma readiness panel can render its decisions.
+# Reads ONLY local SQLite tables and audit.json — never calls live wFirma,
+# never writes anything. The panel's preview/create buttons trigger the
+# existing capability endpoints when the operator wants live behaviour.
+
+
+@router.get("/batches/{batch_id}/proforma-readiness", dependencies=[_auth])
+def proforma_readiness(batch_id: str) -> Dict[str, Any]:
+    """
+    Local-only readiness snapshot for the Proforma flow. Reports product
+    code mapping coverage, customer mapping coverage (against local
+    wfirma_customers, with the same prefix-tolerance the live resolver
+    uses), bridge state, PZ prerequisite state, and an overall verdict.
+
+    Never raises. Returns an ``errors`` list and best-effort partial data
+    when one DB is unavailable.
+    """
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    from ..core.config import settings as _s
+    from ..services import wfirma_db as wfdb
+    from ..services import document_db as ddb
+
+    out: Dict[str, Any] = {
+        "batch_id": batch_id,
+        "products": {
+            "total":            0,
+            "mapped":           0,
+            "missing":          0,
+            "create_flag_on":   bool(getattr(_s, "wfirma_create_product_allowed", False)),
+        },
+        "customers": {
+            "total":            0,
+            "resolved":         0,
+            "missing":          0,
+            "ambiguous":        0,
+            "create_flag_on":   bool(getattr(_s, "wfirma_create_customer_allowed", False)),
+            "details":          [],
+        },
+        "bridge": {
+            "design_product_mappings": 0,
+            "ambiguous_design_codes":   {},
+        },
+        "pz": {
+            "sad_received":          False,
+            "wfirma_pz_doc_id":      None,
+            "pz_rows_json_present":  False,
+            "ready_for_pz_create":   False,
+        },
+        "proforma": {
+            "ready":             False,
+            "blocking_reasons":  [],
+            "next_action":       "",
+        },
+        "errors": [],
+    }
+    blockers: List[str] = []
+
+    # ── Products ─────────────────────────────────────────────────────────
+    try:
+        rows = ddb.get_invoice_lines_for_batch(batch_id) or []
+        codes = {(r.get("product_code") or "").strip() for r in rows if r.get("product_code")}
+        codes.discard("")
+        out["products"]["total"] = len(codes)
+        mapped = 0
+        for c in codes:
+            wp = wfdb.get_product(c)
+            if wp and wp.get("wfirma_product_id") and wp.get("sync_status") == "matched":
+                mapped += 1
+        out["products"]["mapped"]  = mapped
+        out["products"]["missing"] = max(0, len(codes) - mapped)
+        if out["products"]["missing"]:
+            blockers.append(
+                f"{out['products']['missing']} product code(s) not in wfirma_products"
+            )
+    except Exception as exc:
+        out["errors"].append(f"products read failed: {exc}")
+
+    # ── Customers (local-only resolver, same prefix tolerance as live) ──
+    try:
+        from ..services.wfirma_customer_auto_resolve import _resolve_local
+        seen: Dict[str, str] = {}
+        if ddb._db_path is not None:
+            import sqlite3 as _sql
+            with _sql.connect(str(ddb._db_path)) as con:
+                con.row_factory = _sql.Row
+                # sales_documents primary
+                rows_d = con.execute(
+                    "SELECT DISTINCT client_name FROM sales_documents "
+                    "WHERE batch_id=? AND client_name <> ''",
+                    (batch_id,),
+                ).fetchall()
+                names = [r["client_name"] for r in rows_d]
+                if not names:
+                    rows_p = con.execute(
+                        "SELECT DISTINCT client_name FROM sales_packing_lines "
+                        "WHERE batch_id=? AND client_name <> ''",
+                        (batch_id,),
+                    ).fetchall()
+                    names = [r["client_name"] for r in rows_p]
+        else:
+            names = []
+        # Dedupe by normalized form
+        from ..services.wfirma_customer_auto_resolve import _normalize_name
+        for raw in names:
+            key = _normalize_name(raw).lower()
+            if key and key not in seen:
+                seen[key] = raw
+        out["customers"]["total"] = len(seen)
+        for raw in seen.values():
+            normalized = _normalize_name(raw)
+            local = _resolve_local(normalized)
+            # Surface ship-to (Odbiorca) routing per customer so the
+            # dashboard can render mode + receiver id alongside the
+            # bill-to identity. The fields default safely when the
+            # customer isn't matched yet (no wfirma_customers row).
+            ship_to_mode      = ""
+            ship_to_rcv_id    = ""
+            ship_to_warning   = False
+            if local["status"] in ("exact_match", "normalized_match",
+                                    "prefix_match", "reverse_prefix_match"):
+                # Re-read the wfirma_customers row for the matched
+                # candidate to pick up ship_to_* (the resolver only
+                # surfaces wfirma_customer_id and matched_name).
+                try:
+                    from ..services import wfirma_db as _wfdb
+                    wm = (local.get("matched_name") or "").strip()
+                    if wm:
+                        cust_row = _wfdb.get_customer(wm) or {}
+                        ship_to_mode   = (cust_row.get("ship_to_mode")
+                                            or "same_as_bill_to").lower()
+                        ship_to_rcv_id = (cust_row.get(
+                            "ship_to_wfirma_customer_id") or "").strip()
+                        if (ship_to_mode == "separate_contractor"
+                                and not ship_to_rcv_id):
+                            ship_to_warning = True
+                except Exception as exc:
+                    log.warning("ship_to read for %s failed: %s", raw, exc)
+
+            entry: Dict[str, Any] = {
+                "client_name":        raw,
+                "normalized_name":    normalized,
+                "status":             local["status"],
+                "wfirma_customer_id": local.get("wfirma_customer_id", ""),
+                "matched_name":       local.get("matched_name", ""),
+                "candidates":         local.get("candidates", []),
+                # Step 3: ship-to routing surface for the operator UI.
+                "ship_to_mode":                ship_to_mode or "same_as_bill_to",
+                "ship_to_wfirma_customer_id":  ship_to_rcv_id,
+                "ship_to_warning":             ship_to_warning,
+            }
+            out["customers"]["details"].append(entry)
+            if local["status"] in ("exact_match", "normalized_match",
+                                   "prefix_match", "reverse_prefix_match"):
+                out["customers"]["resolved"] += 1
+            elif local["status"] == "ambiguous":
+                out["customers"]["ambiguous"] += 1
+            else:
+                out["customers"]["missing"] += 1
+        if out["customers"]["missing"]:
+            blockers.append(
+                f"{out['customers']['missing']} customer(s) not mapped locally"
+            )
+        if out["customers"]["ambiguous"]:
+            blockers.append(
+                f"{out['customers']['ambiguous']} customer(s) ambiguous in wfirma_customers"
+            )
+    except Exception as exc:
+        out["errors"].append(f"customers read failed: {exc}")
+
+    # ── Bridge ─────────────────────────────────────────────────────────
+    try:
+        rdb_path = _s.storage_root / "reservation_queue.db"
+        if rdb_path.exists():
+            import sqlite3 as _sql
+            with _sql.connect(str(rdb_path)) as con:
+                con.row_factory = _sql.Row
+                bridge_rows = con.execute(
+                    "SELECT design_no, product_code FROM design_product_mapping"
+                ).fetchall()
+                out["bridge"]["design_product_mappings"] = len(bridge_rows)
+                # Detect ambiguous design codes (1 design → 2+ product_codes)
+                from collections import defaultdict
+                groups: Dict[str, List[str]] = defaultdict(list)
+                for r in bridge_rows:
+                    groups[r["design_no"]].append(r["product_code"])
+                ambig = {d: sorted(set(pcs)) for d, pcs in groups.items()
+                         if len(set(pcs)) > 1}
+                out["bridge"]["ambiguous_design_codes"] = ambig
+                if ambig:
+                    blockers.append(
+                        f"{len(ambig)} design_code(s) map to multiple product_codes "
+                        f"(e.g. {next(iter(ambig))})"
+                    )
+    except Exception as exc:
+        out["errors"].append(f"bridge read failed: {exc}")
+
+    # ── PZ prerequisites (read audit.json + pz_rows.json) ──────────────
+    try:
+        outputs_dir = _s.storage_root / "outputs" / batch_id
+        audit_path  = outputs_dir / "audit.json"
+        if audit_path.exists():
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            # SAD: presence of customs_declaration with mrn or non-zero CIF.
+            cd = audit.get("customs_declaration") or {}
+            out["pz"]["sad_received"] = bool(
+                cd.get("mrn") or cd.get("invoice_cif_usd")
+            )
+            wfx = audit.get("wfirma_export") or {}
+            out["pz"]["wfirma_pz_doc_id"] = (wfx.get("wfirma_pz_doc_id") or "").strip() or None
+        out["pz"]["pz_rows_json_present"] = (outputs_dir / "pz_rows.json").exists()
+        out["pz"]["ready_for_pz_create"] = (
+            out["pz"]["sad_received"]
+            and out["products"]["missing"] == 0
+            and not out["bridge"]["ambiguous_design_codes"]
+        )
+        if not out["pz"]["sad_received"]:
+            blockers.append("SAD not received — customs_declaration empty")
+        if not out["pz"]["wfirma_pz_doc_id"]:
+            blockers.append("wFirma PZ document not yet created")
+    except Exception as exc:
+        out["errors"].append(f"pz read failed: {exc}")
+
+    # ── Verdict ────────────────────────────────────────────────────────
+    out["proforma"]["blocking_reasons"] = blockers
+    out["proforma"]["ready"] = (not blockers)
+    if blockers:
+        # Map first blocker to a concrete next-action hint.
+        b0 = blockers[0]
+        if "product code" in b0:
+            out["proforma"]["next_action"] = (
+                "Click 'Auto-register products' to register the missing "
+                "wFirma product codes (requires WFIRMA_CREATE_PRODUCT_ALLOWED=true)."
+            )
+        elif "customer" in b0 and "ambiguous" not in b0:
+            out["proforma"]["next_action"] = (
+                "Use the Customer Identity section to create the missing "
+                "customers (requires WFIRMA_CREATE_CUSTOMER_ALLOWED=true)."
+            )
+        elif "ambiguous" in b0:
+            out["proforma"]["next_action"] = (
+                "Resolve the ambiguity in wFirma master data, then refresh."
+            )
+        elif "SAD" in b0:
+            out["proforma"]["next_action"] = "Wait for SAD/ZC429 from DHL/agency."
+        elif "PZ" in b0:
+            out["proforma"]["next_action"] = "Generate the wFirma PZ document."
+        else:
+            out["proforma"]["next_action"] = b0
+
+    return out
+
+
+# ── DHL ZC429 intake lineage (read-only) ─────────────────────────────────────
+
+@router.get("/batches/{batch_id}/zc429-lineage", dependencies=[_auth])
+def zc429_lineage(batch_id: str) -> Dict[str, Any]:
+    """
+    Read-only lineage envelope for the operator's pre-PZ legal-evidence
+    review. Pulls:
+
+      • ``audit.customs_declaration.intake_event_id`` from this batch's
+        audit.json (the canonical pointer written by dhl_zc429_intake).
+      • The full ``intake_lineage`` envelope (event row + attachments +
+        processing history + timeline events scoped to this event id).
+
+    Never writes. Never deletes. Never reclassifies. Returns
+    ``has_zc429=False`` cleanly when there is no ZC429 yet on the batch
+    so the dashboard can render a "Waiting for DHL ZC429/SAD email"
+    placeholder.
+
+    Warnings surfaced (so the operator sees integrity issues before
+    they touch PZ):
+      • audit says SAD received but no ``intake_event_id`` is present
+      • ``audit.customs_declaration.attachments_count`` differs from
+        the count of rows in ``intake_attachments``
+      • intake_event_id present but the lineage row was not found
+        (e.g. stale audit pointer)
+    """
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    from ..core.config import settings as _s
+    from ..services import intake_lineage as _il
+    from ..services import email_evidence_store as _evs
+
+    out: Dict[str, Any] = {
+        "batch_id":               batch_id,
+        "has_zc429":              False,
+        "intake_event_id":        "",
+        "event":                  None,
+        "attachments":            [],
+        "classified_counts":      {
+            "zc429":         0,
+            "awb":           0,
+            "invoices":      0,
+            "mail_evidence": 0,
+            "others":        0,
+        },
+        "processing_history":     [],
+        "linked_timeline_events": [],
+        "warnings":               [],
+        # Recovery diagnostics — distinguish 4 mutually-exclusive states so
+        # the dashboard can render a precise "what to do next" instruction
+        # without the operator having to read service logs.
+        "recovery_state":         "email_not_found",
+        "recovery_detail":        {
+            "plwawecs_messages_found": 0,
+            "attachments_in_evidence": 0,
+            "lineage_rows":            0,
+            "instruction":             "",
+        },
+    }
+
+    audit_path = _s.storage_root / "outputs" / batch_id / "audit.json"
+    if not audit_path.exists():
+        out["warnings"].append(f"audit.json not found at {audit_path}")
+        # No audit → unknown AWB; recovery_state stays at default with
+        # a generic instruction populated by the helper.
+        return _attach_zc429_recovery_state(out, {}, 0)
+
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        out["warnings"].append(f"audit.json read failed: {exc}")
+        return _attach_zc429_recovery_state(out, {}, 0)
+
+    cd          = audit.get("customs_declaration") or {}
+    received    = bool(cd.get("received"))
+    eid         = (cd.get("intake_event_id") or "").strip()
+    audit_count = int(cd.get("attachments_count") or 0)
+
+    # Integrity warning #1 — declared received but no intake event
+    # was ever recorded. Operator should NOT trust the SAD row.
+    if received and not eid:
+        out["warnings"].append(
+            "customs_declaration.received=true but no intake_event_id "
+            "is recorded — lineage cannot be verified")
+        return _attach_zc429_recovery_state(out, audit, 0)
+
+    if not eid:
+        # No ZC429 intake yet. Return cleanly so the UI can render the
+        # "waiting" state without further branching.
+        return _attach_zc429_recovery_state(out, audit, 0)
+
+    # Pull lineage envelope.
+    try:
+        env = _il.lineage_envelope(eid, audit_path=audit_path)
+    except Exception as exc:
+        out["warnings"].append(f"lineage_envelope read failed: {exc}")
+        return _attach_zc429_recovery_state(out, audit, 0)
+
+    if not env or not env.get("intake_event"):
+        out["warnings"].append(
+            f"intake_event_id={eid!r} present in audit but not found "
+            "in intake_lineage.db (stale pointer)")
+        return _attach_zc429_recovery_state(out, audit, 0)
+
+    ev = env["intake_event"]
+    out["has_zc429"]       = True
+    out["intake_event_id"] = eid
+    out["event"] = {
+        "awb":                 ev.get("awb", "")        or cd.get("awb", ""),
+        "zc_number":           ev.get("zc_number", "")  or cd.get("zc_number", ""),
+        "sender":              ev.get("source_sender", ""),
+        "subject":             ev.get("source_subject", ""),
+        "received_at":         ev.get("received_at", ""),
+        "processing_version":  ev.get("processing_version", ""),
+        "created_at":          ev.get("created_at", ""),
+    }
+
+    atts = env.get("attachments") or []
+    # Slim per-attachment shape for the UI; the full row is available
+    # through the lineage envelope when needed.
+    out["attachments"] = [
+        {
+            "filename":        a.get("original_filename", ""),
+            "safe_filename":   a.get("safe_filename", ""),
+            "classified_type": a.get("classified_type", ""),
+            "bucket":          a.get("bucket", ""),
+            "size":            int(a.get("size", 0) or 0),
+            "sha256":          a.get("sha256", ""),
+            "stored_path":     a.get("stored_path", ""),
+            "received_at":     a.get("received_at", ""),
+        }
+        for a in atts
+    ]
+
+    # Aggregate classified counts (independent of ZC429 intake's runtime
+    # bucketing — this is the ground truth from lineage.db).
+    for a in atts:
+        b = (a.get("bucket") or "").strip().lower()
+        if b in out["classified_counts"]:
+            out["classified_counts"][b] += 1
+        else:
+            out["classified_counts"]["others"] += 1
+
+    out["processing_history"]     = list(env.get("processing_history") or [])
+    out["linked_timeline_events"] = list(env.get("linked_timeline_events") or [])
+
+    # Integrity warning #2 — audit declared a count but lineage rows
+    # disagree. Either intake stored partial state or audit was edited.
+    lineage_count = len(atts)
+    if audit_count and audit_count != lineage_count:
+        out["warnings"].append(
+            f"audit.customs_declaration.attachments_count={audit_count} "
+            f"differs from intake_attachments rows={lineage_count}")
+
+    return _attach_zc429_recovery_state(out, audit, lineage_count)
+
+
+def _attach_zc429_recovery_state(
+    out: Dict[str, Any],
+    audit: Dict[str, Any],
+    lineage_count: int,
+) -> Dict[str, Any]:
+    """Compute and stamp the four-state recovery diagnostic onto a
+    zc429-lineage response. Pure read of the email-evidence store.
+
+    States:
+      intake_completed                       — green; lineage + audit OK
+      email_found_attachments_pending_intake — amber; binaries stored but
+                                                no lineage row yet
+      email_found_no_attachments             — amber; plwawecs message
+                                                stored but binaries missing
+      email_not_found                        — gray; no plwawecs email
+                                                visible to the watcher
+
+    Never fabricates attachments. The instruction text explicitly tells
+    the operator NOT to use the printed-email PDF as a substitute.
+    """
+    from ..services import email_evidence_store as _evs
+    awb = (audit.get("tracking_no") or audit.get("awb") or "")
+    plwawecs_count = 0
+    evs_atts_count = 0
+    if awb:
+        try:
+            ev_doc = _evs.get_by_awb(awb)
+            for thr in (ev_doc.get("threads") or []):
+                for m in (thr.get("messages") or []):
+                    sender = (m.get("sender") or "").lower()
+                    if "plwawecs@dhl.com" in sender:
+                        plwawecs_count += 1
+                        evs_atts_count += len(m.get("attachments") or [])
+        except Exception:
+            pass
+
+    out["recovery_detail"]["plwawecs_messages_found"] = plwawecs_count
+    out["recovery_detail"]["attachments_in_evidence"] = evs_atts_count
+    out["recovery_detail"]["lineage_rows"]            = int(lineage_count or 0)
+
+    if out.get("has_zc429") and (lineage_count or 0) > 0:
+        out["recovery_state"] = "intake_completed"
+        out["recovery_detail"]["instruction"] = (
+            "ZC429 evidence chain is complete. No action needed."
+        )
+    elif plwawecs_count > 0 and evs_atts_count > 0:
+        out["recovery_state"] = "email_found_attachments_pending_intake"
+        out["recovery_detail"]["instruction"] = (
+            "Email and attachments are stored in email_evidence but no "
+            "intake_lineage row exists. Re-run the ingestion worker for "
+            "this AWB or POST /api/v1/upload/dhl-zc429/intake with the "
+            "stored attachments."
+        )
+    elif plwawecs_count > 0:
+        out["recovery_state"] = "email_found_no_attachments"
+        out["recovery_detail"]["instruction"] = (
+            "DHL plwawecs email is in the evidence store but no binary "
+            "attachments were downloaded. Verify Zoho attachment-download "
+            "permissions, then re-run the ingestion worker. Do NOT "
+            "fabricate attachments from the printed email PDF."
+        )
+    else:
+        out["recovery_state"] = "email_not_found"
+        out["recovery_detail"]["instruction"] = (
+            "No plwawecs ZC429 email is visible to the mailbox watcher. "
+            "Check the import@ inbox in Zoho (Spam, Trash, sub-folders), "
+            "trigger Rescan, or backfill via "
+            "POST /api/v1/upload/dhl-zc429/intake using the original "
+            "downloaded binaries (NEVER the printed-email PDF)."
+        )
+    return out
+
+
+# ── CN / HSN classification + operator decisions (read-only + decisions) ────
+#
+# Replaces the legacy strict 8-digit CN==HSN equality check (which
+# produced false "blocked" states for SAD aggregations) with the
+# hierarchy compare in services.cn_hsn_classifier. The decision
+# endpoints record operator choices into correction_registry — they
+# never call PZ create, never write to wFirma, never send SMTP.
+
+@router.get("/batches/{batch_id}/cn-hsn-classification", dependencies=[_auth])
+def cn_hsn_classification(batch_id: str) -> Dict[str, Any]:
+    """Read-only CN ↔ HSN classification for the operator review panel.
+
+    Pulls SAD CN from ``audit.customs_declaration.cn_code`` and the
+    invoice HSN list from ``audit.verification.invoice_hsn_codes``
+    (with sensible fallbacks). Compares using the hierarchy rule and
+    returns the structured result + any prior operator decision.
+    """
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    from ..core.config import settings as _s
+    from ..services import cn_hsn_classifier as _cn
+
+    out: Dict[str, Any] = {
+        "batch_id":     batch_id,
+        "has_data":     False,
+        "sad_cn_code":  "",
+        "invoice_hsns": [],
+        "result":       None,
+        "decision":     None,
+        "warnings":     [],
+    }
+    audit_path = _s.storage_root / "outputs" / batch_id / "audit.json"
+    if not audit_path.exists():
+        out["warnings"].append(f"audit.json not found at {audit_path}")
+        return out
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        out["warnings"].append(f"audit read failed: {exc}")
+        return out
+
+    cd  = audit.get("customs_declaration") or {}
+    ver = audit.get("verification") or {}
+    sad_cn = (
+        ver.get("sad_cn_code")
+        or ver.get("cn_code")
+        or cd.get("cn_code")
+        or ""
+    )
+    invoice_hsns = (
+        ver.get("invoice_hsn_codes")
+        or audit.get("invoice_hsn_codes")
+        or []
+    )
+    out["sad_cn_code"]  = sad_cn or ""
+    out["invoice_hsns"] = list(invoice_hsns or [])
+    out["has_data"]     = bool(sad_cn) or bool(invoice_hsns)
+    out["result"]       = _cn.classify(sad_cn, list(invoice_hsns or []))
+    out["decision"]     = audit.get("cn_decision") or None
+    return out
+
+
+class CNDecisionRequest(BaseModel):
+    operator: str = ""
+    reason:   str = ""
+
+
+def _operator_or_default(req_operator: str, x_op_header: Optional[str]) -> str:
+    val = (req_operator or x_op_header or "").strip()
+    return val or "operator"
+
+
+def _record_cn_decision(
+    *,
+    batch_id:        str,
+    decision_type:   str,                 # accept_sad | correct_internal | escalate_agent
+    correction_type: str,                 # mapped to correction_registry SUPPORTED_TYPES
+    approved:        bool,
+    operator:        str,
+    reason:          str,
+) -> Dict[str, Any]:
+    """Single shared writer for the three CN-decision endpoints.
+
+    Reads the audit, derives evidence pointers (intake_event_id from
+    customs_declaration.intake_event_id when present, plus AWB), and
+    appends an append-only correction-registry row. Also stamps a
+    ``cn_decision`` block on the audit so the dashboard can render the
+    chosen status without re-reading the registry. NEVER mutates SAD
+    source values, financial fields, or wFirma master data.
+    """
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    from ..core.config import settings as _s
+    from ..services import cn_hsn_classifier as _cn
+    from ..services import correction_registry as _cr
+    from ..core import timeline as _tl
+
+    audit_path = _s.storage_root / "outputs" / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="audit.json not found")
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+
+    cd     = audit.get("customs_declaration") or {}
+    ver    = audit.get("verification") or {}
+    sad_cn = (ver.get("sad_cn_code") or ver.get("cn_code")
+              or cd.get("cn_code") or "")
+    invoice_hsns = list(ver.get("invoice_hsn_codes")
+                        or audit.get("invoice_hsn_codes") or [])
+    awb = (audit.get("tracking_no") or audit.get("awb") or "")
+
+    classified = _cn.classify(sad_cn, invoice_hsns)
+
+    evidence_refs: List[Dict[str, str]] = [
+        {"type": "endpoint",     "ref": f"/dashboard/batches/{batch_id}/cn-decision/{decision_type}"},
+        {"type": "batch_id",     "ref": batch_id},
+        {"type": "awb",          "ref": awb},
+        {"type": "sad_cn_code",  "ref": str(sad_cn)},
+        {"type": "invoice_hsns", "ref": ",".join(str(x) for x in invoice_hsns)},
+        {"type": "cn_level",     "ref": classified.get("worst_level", "")},
+    ]
+    eid = (cd.get("intake_event_id") or "").strip()
+    if eid:
+        evidence_refs.append({"type": "intake_event", "ref": eid})
+
+    rid = ""
+    log_warning = ""
+    try:
+        rid = _cr.record_correction(
+            correction_type = correction_type,
+            entity_type     = "classification",
+            entity_key      = f"{batch_id}::cn_hsn",
+            old_value       = sad_cn,
+            new_value       = {
+                "decision":     decision_type,
+                "sad_cn_code":  sad_cn,
+                "invoice_hsns": invoice_hsns,
+                "level":        classified.get("worst_level"),
+            },
+            shipment_id     = awb,
+            batch_id        = batch_id,
+            operator        = operator,
+            module_source   = "cn_hsn_decision",
+            confidence      = 1.0 if approved else 0.0,
+            approved        = approved,
+            notes           = reason or decision_type,
+            evidence_refs   = evidence_refs,
+        )
+    except Exception as exc:
+        log_warning = f"correction_registry log failed: {type(exc).__name__}: {exc}"
+
+    # ── Branch: accept_sad clears the legacy cn_match block ─────────────
+    # Operator-explicit decision to accept the SAD CN as authoritative.
+    # Mutates verification provenance, removes 'cn_match' from
+    # failed_checks, and recomputes audit.status. Never touches CN/HSN
+    # source values, financial fields, or wFirma master data. Idempotent:
+    # repeated calls converge on the same final audit state.
+    previous_status = audit.get("status")
+    new_status      = previous_status
+
+    if decision_type == "accept_sad":
+        ver = audit.get("verification") or {}
+        # Provenance — preserve original SAD CN + invoice HSN values
+        ver["cn_match"]                  = True
+        ver["cn_status"]                 = "operator_accepted_sad_cn"
+        ver["cn_risk_level"]             = "operator_accepted"
+        ver["cn_match_overridden_by"]    = "cn_decision/accept_sad"
+        ver["cn_match_correction_id"]    = rid
+        ver["cn_match_overridden_at"]    = datetime.now(timezone.utc).isoformat()
+        ver["cn_match_overridden_by_op"] = operator
+        # Note: ver["sad_cn_code"], ver["cn_code"], ver["invoice_hsn_codes"]
+        # are intentionally NOT touched — those are the source-of-truth
+        # values the engine wrote.
+        audit["verification"] = ver
+
+        # Remove cn_match from failed_checks (idempotent).
+        fc = list(audit.get("failed_checks") or [])
+        fc_clean = [c for c in fc if c != "cn_match"]
+        audit["failed_checks"] = fc_clean
+
+        # Append an operator_overrides[] entry so the existing
+        # _compute_effective_blocked() helper recognises this clearance
+        # at read time too. Append-only, never updated.
+        ov_list = audit.get("operator_overrides") or []
+        if not isinstance(ov_list, list):
+            ov_list = []
+        ov_list.append({
+            "override_id":         rid,
+            "check":               "cn_match",
+            "reason":              reason or "operator accepted SAD CN as authoritative",
+            "operator":            operator,
+            "timestamp":           datetime.now(timezone.utc).isoformat(),
+            "evidence_reference":  f"correction:{rid}",
+            "batch_id":            batch_id,
+            "original_value":      False,
+            "decision_source":     "cn_decision/accept_sad",
+        })
+        audit["operator_overrides"] = ov_list
+
+        # Recompute audit.status — minimal, conservative rule:
+        #   - If status was 'blocked' AND failed_checks now empty → 'partial'.
+        #   - Otherwise leave the engine-derived status untouched.
+        # Never invent 'success' / 'complete'.
+        if previous_status == "blocked" and not fc_clean:
+            audit["status"] = "partial"
+        new_status = audit.get("status")
+
+    # Stamp audit.cn_decision so the dashboard can render quickly.
+    audit["cn_decision"] = {
+        "decision_type":      decision_type,
+        "approved":           bool(approved),
+        "operator":           operator,
+        "sad_cn_code":        sad_cn,
+        "invoice_hsns":       invoice_hsns,
+        "classification":     classified,
+        "reason":             reason or "",
+        "correction_id":      rid,
+        "recorded_at":        datetime.now(timezone.utc).isoformat(),
+        "intake_event_id":    eid,
+        "previous_status":    previous_status,
+        "new_status":         new_status,
+    }
+    tmp = audit_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(audit, ensure_ascii=False, default=str),
+                   encoding="utf-8")
+    tmp.replace(audit_path)
+
+    # Timeline note (non-fatal). Uses generic status_change so we don't
+    # add a new event constant for a UI-level decision.
+    try:
+        _tl.log_event(
+            audit_path     = audit_path,
+            event          = _tl.EV_STATUS_CHANGE,
+            trigger_source = "cn_hsn_decision",
+            actor          = operator,
+            detail         = {
+                "decision_type":   decision_type,
+                "sad_cn_code":     sad_cn,
+                "invoice_hsns":    invoice_hsns,
+                "approved":        approved,
+                "level":           classified.get("worst_level"),
+                "correction_id":   rid,
+                "intake_event_id": eid,
+                "previous_status": previous_status,
+                "new_status":      new_status,
+                "operator":        operator,
+            },
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok":             True,
+        "batch_id":       batch_id,
+        "decision_type":  decision_type,
+        "correction_id":  rid,
+        "approved":       approved,
+        "classification": classified,
+        "warning":        log_warning,
+    }
+
+
+@router.post("/batches/{batch_id}/cn-decision/accept-sad", dependencies=[_auth])
+def cn_decision_accept_sad(
+    batch_id: str,
+    body: CNDecisionRequest,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> Dict[str, Any]:
+    """Operator chose to accept the SAD CN as authoritative for this
+    shipment. Records ``accepted_match`` in correction_registry and
+    sets ``audit.cn_decision``. Does NOT execute PZ. The PZ-create
+    button stays operator-explicit and gated by the existing
+    pz_preview readiness rules."""
+    return _record_cn_decision(
+        batch_id        = batch_id,
+        decision_type   = "accept_sad",
+        correction_type = "accepted_match",
+        approved        = True,
+        operator        = _operator_or_default(body.operator, x_operator),
+        reason          = body.reason or "Operator accepted SAD CN as authoritative",
+    )
+
+
+@router.post("/batches/{batch_id}/cn-decision/correct-internal",
+             dependencies=[_auth])
+def cn_decision_correct_internal(
+    batch_id: str,
+    body: CNDecisionRequest,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> Dict[str, Any]:
+    """Operator chose to record an internal classification correction
+    (e.g. flag for invoice-side reclassification) WITHOUT modifying
+    the SAD source value. Recorded as ``ambiguity_resolution`` in
+    correction_registry."""
+    return _record_cn_decision(
+        batch_id        = batch_id,
+        decision_type   = "correct_internal",
+        correction_type = "ambiguity_resolution",
+        approved        = True,
+        operator        = _operator_or_default(body.operator, x_operator),
+        reason          = body.reason or "Operator flagged for internal CN/HSN correction",
+    )
+
+
+@router.post("/batches/{batch_id}/cn-decision/escalate-agent",
+             dependencies=[_auth])
+def cn_decision_escalate_agent(
+    batch_id: str,
+    body: CNDecisionRequest,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> Dict[str, Any]:
+    """Operator chose to send the classification mismatch back to the
+    customs agent for clarification. Recorded as ``rejected_match``
+    (approved=False) — the gate stays blocked."""
+    return _record_cn_decision(
+        batch_id        = batch_id,
+        decision_type   = "escalate_agent",
+        correction_type = "rejected_match",
+        approved        = False,
+        operator        = _operator_or_default(body.operator, x_operator),
+        reason          = body.reason or "Operator escalated CN/HSN mismatch to customs agent",
+    )
 
 
 # ── Archive a shipment (soft — 14-day retention) ──────────────────────────────

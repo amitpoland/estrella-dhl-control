@@ -226,15 +226,22 @@ def _dhl_domain(batch_id: str) -> Dict[str, Any]:
     """
     try:
         r          = get_dhl_readiness(batch_id)
-        dhl_status = r.get("dhl_status", "awaiting_start")
-        sla_breach = r.get("sla_breach", False)
-        nra        = r.get("next_required_action") or ""
-        days_out   = r.get("days_since_last_outbound")
+        dhl_status   = r.get("dhl_status", "awaiting_start")
+        sla_breach   = r.get("sla_breach", False)
+        nra          = r.get("next_required_action") or ""
+        days_out     = r.get("days_since_last_outbound")
+        pz_generated = bool(r.get("pz_generated"))
 
-        ready = dhl_status == "customs_cleared"
+        # `ready` is satisfied when customs is fully cleared OR the wFirma
+        # PZ has already been generated. A PZ-generated batch has finished
+        # the operator-actionable DHL work; later customs_cleared confirmation
+        # is informational, not a blocker for downstream Proforma/closure.
+        ready = (dhl_status == "customs_cleared") or pz_generated
 
         if sla_breach and days_out is not None:
             msg = f"SLA breach: no DHL response after {days_out:.1f} day(s) — {nra}"
+        elif ready and pz_generated and dhl_status != "customs_cleared":
+            msg = "wFirma PZ generated — customs clearance confirmation pending"
         elif ready:
             msg = "Customs clearance confirmed"
         elif dhl_status == "awaiting_start":
@@ -246,6 +253,7 @@ def _dhl_domain(batch_id: str) -> Dict[str, Any]:
             "status":       dhl_status,
             "ready":        ready,
             "sla_breach":   sla_breach,
+            "pz_generated": pz_generated,
             "message":      msg,
         }
     except Exception as exc:  # noqa: BLE001

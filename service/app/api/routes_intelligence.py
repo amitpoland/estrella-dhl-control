@@ -203,9 +203,10 @@ async def get_batch_intelligence_suggestions(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Import error: {exc}")
 
-    carrier   = audit.get("carrier") or "DHL"
-    awb       = audit.get("awb") or audit.get("tracking_no") or ""
-    timeline  = audit.get("timeline") or []
+    carrier         = audit.get("carrier") or "DHL"
+    awb             = audit.get("awb") or audit.get("tracking_no") or ""
+    timeline        = audit.get("timeline") or []
+    tracking_events = audit.get("tracking_events") or []
 
     # Cowork trigger suggestions (suggest-only)
     suggestions = detect_triggers(audit, batch_id)
@@ -223,36 +224,20 @@ async def get_batch_intelligence_suggestions(
         except Exception as exc:
             log.warning("[intelligence] SLA check failed for %s: %s", batch_id, exc)
 
-    # Last detected clearance event (most recent email_classifier event on timeline)
-    last_event: Optional[Dict[str, Any]] = None
-    for ev in reversed(timeline):
-        if (ev.get("trigger_source") == "email_classifier"
-                or ev.get("event") in {
-                    "carrier_arrived", "cesja_received", "zc429_received",
-                    "pzc_received", "duty_note_received", "payment_confirmed",
-                    "ganther_pzc_sent", "dsk_received", "cesja_submitted",
-                }):
-            last_event = ev
-            break
+    # ── Reader-side integration (architecture-correction cycle) ──────────────
+    # Document lifecycle events live in audit["timeline"].
+    # Carrier transport telemetry lives in audit["tracking_events"].
+    # Intelligence reads BOTH and returns whichever is newer, with a source tag.
+    # We do NOT mirror tracking events into timeline (locked invariant).
 
-    # Next expected step — inferred from current state
-    def _next_step() -> str:
-        ev_names = {e.get("event") for e in timeline}
-        if "payment_confirmed" in ev_names:
-            return "Await Ganther service invoice (ganther_invoice_received)"
-        if "duty_note_received" in ev_names:
-            return "Confirm duty payment with account@estrellajewels.eu"
-        if "pzc_received" in ev_names or "ganther_pzc_sent" in ev_names:
-            return "Await Ganther duty notice (duty_note_received)"
-        if "zc429_received" in ev_names or "sad_uploaded" in ev_names:
-            return "Await ACS PZC + duty notice (pzc_received)"
-        if "cesja_received" in ev_names or "cesja_submitted" in ev_names:
-            return "Await ZC429 / SAD clearance confirmation (zc429_received)"
-        if "carrier_arrived" in ev_names:
-            return "Await cesja / ACS clearance initiation (cesja_received)"
-        if carrier == "FEDEX" and not audit.get("cesja_submitted_at"):
-            return "Submit cesja to pl-import@fedex.com (manual step required)"
-        return "Await carrier arrival confirmation (carrier_arrived)"
+    last_event = _resolve_last_event(timeline, tracking_events)
+
+    next_step_str = _next_step(
+        timeline        = timeline,
+        tracking_events = tracking_events,
+        carrier         = carrier,
+        audit           = audit,
+    )
 
     return JSONResponse({
         "batch_id":       batch_id,
@@ -260,7 +245,7 @@ async def get_batch_intelligence_suggestions(
         "carrier":        carrier,
         "generated_at":   datetime.now(timezone.utc).isoformat(),
         "last_event":     last_event,
-        "next_step":      _next_step(),
+        "next_step":      next_step_str,
         "sla_summary":    sla_summary,
         "sla_warnings":   sla_warnings,
         "suggestions":    suggestions,
@@ -268,6 +253,144 @@ async def get_batch_intelligence_suggestions(
         "timeline_depth": len(timeline),
         "mode":           "suggest_only",
     })
+
+
+# ── Reader-side helpers (used by /suggestions/{batch_id}) ────────────────────
+# These compose document lifecycle events (timeline) and carrier transport
+# telemetry (tracking_events) without mirroring one into the other.
+
+# Document-class events that live in audit["timeline"]. Adding a new doc-class
+# event here is the right way to make it visible to Intelligence — adding a
+# transport-class event here is forbidden (use tracking_events instead).
+_DOC_LIFECYCLE_EVENTS: frozenset = frozenset({
+    "carrier_arrived",            # legacy timeline event (kept for back-compat)
+    "carrier_arrived_poland",     # new milestone (transport→timeline boundary)
+    "carrier_delivered",          # new milestone (transport→timeline boundary)
+    "cesja_received",
+    "zc429_received",
+    "pzc_received",
+    "duty_note_received",
+    "payment_confirmed",
+    "ganther_pzc_sent",
+    "dsk_received",
+    "cesja_submitted",
+    "dhl_email_received",
+})
+
+
+def _last_doc_event(timeline: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Most recent document-lifecycle event from timeline, or None."""
+    for ev in reversed(timeline):
+        if (ev.get("trigger_source") == "email_classifier"
+                or ev.get("event") in _DOC_LIFECYCLE_EVENTS):
+            return ev
+    return None
+
+
+def _last_carrier_event(
+    tracking_events: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Most recent carrier transport event from tracking_events, or None."""
+    if not tracking_events:
+        return None
+    return max(
+        tracking_events,
+        key=lambda e: (e.get("event_time") or "", e.get("captured_at") or ""),
+    )
+
+
+def _format_carrier_as_event(car: Dict[str, Any]) -> Dict[str, Any]:
+    """Render a tracking_events entry in the timeline-event shape with source tag."""
+    stage = (car.get("normalized_stage") or "UNKNOWN").lower()
+    return {
+        "event":          f"carrier_{stage}",
+        "ts":             car.get("event_time", ""),
+        "trigger_source": "dhl_api",
+        "actor":          "system",
+        "source":         "tracking",
+        "detail": {
+            "awb":              car.get("awb", ""),
+            "normalized_stage": car.get("normalized_stage", ""),
+            "location":         car.get("location", ""),
+            "event_time":       car.get("event_time", ""),
+        },
+    }
+
+
+def _resolve_last_event(
+    timeline:        List[Dict[str, Any]],
+    tracking_events: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    Return whichever of (last document event, last carrier event) is newer.
+
+    Adds a "source" tag of "timeline" or "tracking" so the UI can label the
+    origin without conflating the two streams. Returns None if neither stream
+    has an event.
+    """
+    doc = _last_doc_event(timeline)
+    car = _last_carrier_event(tracking_events)
+
+    if not doc and not car:
+        return None
+    if doc and not car:
+        return {**doc, "source": "timeline"}
+    if car and not doc:
+        return _format_carrier_as_event(car)
+
+    doc_ts = doc.get("ts", "") or ""
+    car_ts = car.get("event_time", "") or ""
+    if car_ts > doc_ts:
+        return _format_carrier_as_event(car)
+    return {**doc, "source": "timeline"}
+
+
+def _next_step(
+    *,
+    timeline:        List[Dict[str, Any]],
+    tracking_events: List[Dict[str, Any]],
+    carrier:         str,
+    audit:           Dict[str, Any],
+) -> str:
+    """
+    Infer the next expected operator step.
+
+    Document-driven branches read from timeline (existing behaviour).
+    Carrier-arrival branch reads from tracking_events directly (NOT from a
+    mirrored timeline event) — this is the architecture-correction fix.
+    """
+    # Local import to avoid circular dependency at module load time
+    from ..services.tracking_normalizer import _country_code_from_location
+
+    ev_names = {e.get("event") for e in timeline}
+
+    # Document-driven cascade — unchanged
+    if "payment_confirmed" in ev_names:
+        return "Await Ganther service invoice (ganther_invoice_received)"
+    if "duty_note_received" in ev_names:
+        return "Confirm duty payment with account@estrellajewels.eu"
+    if "pzc_received" in ev_names or "ganther_pzc_sent" in ev_names:
+        return "Await Ganther duty notice (duty_note_received)"
+    if "zc429_received" in ev_names or "sad_uploaded" in ev_names:
+        return "Await ACS PZC + duty notice (pzc_received)"
+    if "cesja_received" in ev_names or "cesja_submitted" in ev_names:
+        return "Await ZC429 / SAD clearance confirmation (zc429_received)"
+
+    # Carrier state — read tracking_events DIRECTLY. Also accept the
+    # carrier_arrived_poland milestone (timeline) and the legacy
+    # carrier_arrived event for back-compat.
+    has_pl_tracking_event = any(
+        _country_code_from_location(e.get("location", "")) == "PL"
+        for e in tracking_events
+    )
+    if (has_pl_tracking_event
+            or "carrier_arrived" in ev_names
+            or "carrier_arrived_poland" in ev_names):
+        return "Await cesja / ACS clearance initiation (cesja_received)"
+
+    if carrier == "FEDEX" and not audit.get("cesja_submitted_at"):
+        return "Submit cesja to pl-import@fedex.com (manual step required)"
+    return "Await carrier arrival confirmation (carrier_arrived)"
 
 
 @router.get("/config")

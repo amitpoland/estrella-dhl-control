@@ -32,6 +32,7 @@ from ..services.clearance_path_alias import (
     is_agency_clearance,
     is_dhl_self_clearance,
 )
+from ..services.polish_desc_validator import validate_polish_customs_description
 from ..core import timeline as tl
 from ..utils.io import write_json_atomic
 from ..utils.proposal_lock import proposal_write_lock
@@ -289,6 +290,94 @@ def _assert_can_queue(proposal: Dict[str, Any], audit: Dict[str, Any]) -> None:
     # G9 — proactive-only re-checks against LIVE audit
     if prop_type == "dhl_proactive_dispatch":
         _assert_proactive_dispatch_safe(proposal, audit)
+
+
+def _gate_polish_desc_validation(
+    audit: Dict[str, Any],
+    batch_id: str,
+    *,
+    stage: str,
+) -> None:
+    """G-PC10 — mandatory format gate for the Polish customs description PDF.
+
+    Runs the central validator (services.polish_desc_validator) and:
+      • writes audit.polish_desc_validation = <result>
+      • emits a timeline event (passed / failed)
+      • raises HTTP 422 with the failed-rule list when invalid
+
+    ``stage`` is one of {"approve", "queue"} and is recorded in the audit /
+    timeline so a subsequent operator can see when the gate fired.
+    """
+    pdf_path = audit.get("polish_desc_path") or ""
+    if not pdf_path and audit.get("polish_desc_filename"):
+        pdf_path = str(
+            settings.storage_root / "polish_descriptions"
+            / audit["polish_desc_filename"]
+        )
+
+    batch_outputs_dir = _OUTPUTS / batch_id
+
+    result = validate_polish_customs_description(
+        pdf_path           = pdf_path,
+        audit              = audit,
+        batch_outputs_dir  = batch_outputs_dir if batch_outputs_dir.is_dir() else None,
+    )
+    result["stage"] = stage
+
+    # Persist result + timeline event (best-effort; never block on write
+    # failure — the gate decision below is what matters). The audit field
+    # is saved before any HTTPException raise so the failure marker
+    # survives the gate even when the operator only sees the 422.
+    audit["polish_desc_validation"] = result
+    try:
+        _save_audit(batch_id, audit)
+    except Exception:
+        pass
+    try:
+        tl.log_event(
+            _audit_path(batch_id),
+            ("polish_desc_validation_passed" if result["valid"]
+             else "polish_desc_validation_failed"),
+            "admin",
+            actor="system:polish_desc_validator",
+            detail={
+                "stage":         stage,
+                "valid":         result["valid"],
+                "failed_rules":  [f["rule"] for f in result["failed_rules"]],
+                "summary":       result["summary"],
+            },
+        )
+    except Exception:
+        pass
+
+    # tl.log_event writes the timeline event to disk via read-modify-write.
+    # The caller's in-memory audit dict is now stale (missing the new
+    # timeline entry). Refresh from disk so a subsequent _save_audit in
+    # the calling handler does not overwrite the event we just persisted.
+    try:
+        fresh = json.loads(_audit_path(batch_id).read_text(encoding="utf-8"))
+        audit.clear()
+        audit.update(fresh)
+    except Exception:
+        pass
+
+    if not result["valid"]:
+        # Hard block — operator must regenerate / repair the PDF
+        # before approve or queue can proceed.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":         "polish_desc_validation_failed",
+                "code":          "polish_desc_validation_failed",
+                "error":         "Polish customs description PDF failed format validation. "
+                                 "Regenerate the PDF; do not approve or queue until validation passes.",
+                "stage":         stage,
+                "summary":       result["summary"],
+                "failed_rules":  result["failed_rules"],
+                "expected":      result.get("expected", {}),
+                "pdf_path":      result.get("pdf_path", ""),
+            },
+        )
 
 
 def _assert_proactive_dispatch_safe(
@@ -689,6 +778,17 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
             detail=f"Proposal already in terminal status: {proposal['status']}",
         )
 
+    # G-PC10 (approve stage) — Polish customs description format gate.
+    # Only applies to dhl_proactive_dispatch proposals; non-DHL proposals
+    # do not carry a Polish description PDF as a hard precondition.
+    if proposal.get("type") == "dhl_proactive_dispatch":
+        _gate_polish_desc_validation(audit, batch_id, stage="approve")
+        # Gate refreshes audit in-place from disk to pick up the timeline
+        # event it wrote. The caller's `proposal` variable now points to
+        # an orphaned dict from the pre-refresh list — re-resolve it from
+        # the new action_proposals list before mutating status below.
+        proposal = _get_proposal(audit, proposal_id)
+
     proposal["status"]      = "approved"
     proposal["approved_by"] = body.approved_by.strip()
     proposal["approved_at"] = _now()
@@ -840,6 +940,16 @@ def queue_proposal(proposal_id: str) -> Dict[str, Any]:
         else:
             # Run all safety guards (G1..G8 + G9 for proactive)
             _assert_can_queue(proposal, audit)
+
+        # G-PC10 (queue stage) — Polish customs description format gate.
+        # Re-runs the central validator at queue time so a stale audit
+        # cannot let an invalid PDF through after a regenerate-without-revalidate.
+        # Applies to both first-queue and retry-send paths so SMTP never
+        # carries an invalid PDF.
+        if is_proactive:
+            _gate_polish_desc_validation(audit, batch_id, stage="queue")
+            # Re-resolve proposal after the gate refreshes audit from disk.
+            proposal = _get_proposal(audit, proposal_id)
 
         if not proactive_retry:
             draft     = proposal["draft"]

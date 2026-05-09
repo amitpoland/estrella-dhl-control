@@ -898,12 +898,31 @@ def get_tracking_status(
 
     # ── Normalize and persist events to audit.tracking_events ────────────────
     # Best-effort: never fails the response if audit write is unavailable.
+    #
+    # Lock invariant (locked invariant F — tracking→Intelligence integration):
+    #   The milestone append + audit persist must execute under the per-batch
+    #   advisory write lock. The whole load → append → apply_workflow_progression
+    #   → write_json_atomic block runs inside batch_write_lock(_bid).
+    #
+    #   This delivers the same exactly-once milestone guarantee that
+    #   apply_workflow_progression_locked() promises. We do NOT call that
+    #   wrapper directly here because:
+    #     (a) it re-reads audit.json from disk and would discard the events
+    #         we just appended in-memory, and
+    #     (b) fcntl.flock is not reentrant from a separate fd in the same
+    #         process — calling the locked wrapper inside another lock would
+    #         deadlock.
+    #   Wrapping the existing block with batch_write_lock + plain
+    #   apply_workflow_progression() is the structurally correct realization
+    #   of the lock invariant for this call site.
     if result.get("available") and result.get("events"):
         try:
             from .tracking_normalizer import (
                 normalize_dhl_events_batch, append_tracking_events,
                 apply_workflow_progression,
             )
+            from ..utils.batch_lock import batch_write_lock
+            from ..utils.io import write_json_atomic
             # Resolve audit.json — typically in cache_dir or its parent
             _audit_path = None
             for _p in (cache_dir / "audit.json", cache_dir.parent / "audit.json"):
@@ -911,27 +930,36 @@ def get_tracking_status(
                     _audit_path = _p
                     break
             if _audit_path is not None:
+                _bid = _audit_path.parent.name
                 try:
-                    _audit = json.loads(_audit_path.read_text(encoding="utf-8"))
-                except Exception:
-                    _audit = None
-                if _audit is not None:
-                    _awb = _audit.get("awb") or _audit.get("tracking_no") or tracking_no
-                    _bid = _audit_path.parent.name
-                    _norm = normalize_dhl_events_batch(
-                        result["events"], awb=_awb, batch_id=_bid,
-                    )
-                    _audit, _added = append_tracking_events(_audit, _norm)
-                    if _added:
-                        _audit = apply_workflow_progression(_audit)
-                        from ..utils.io import write_json_atomic
-                        write_json_atomic(_audit_path, _audit)
-                        # Also write to tracking DB
+                    with batch_write_lock(_bid):
                         try:
-                            from . import tracking_db as tdb
-                            tdb.record_events_batch(_norm)
-                        except Exception as _db_exc:
-                            log.debug("[tracking] DB write failed: %s", _db_exc)
+                            _audit = json.loads(_audit_path.read_text(encoding="utf-8"))
+                        except Exception:
+                            _audit = None
+                        if _audit is not None:
+                            _awb = _audit.get("awb") or _audit.get("tracking_no") or tracking_no
+                            _norm = normalize_dhl_events_batch(
+                                result["events"], awb=_awb, batch_id=_bid,
+                            )
+                            _audit, _added = append_tracking_events(_audit, _norm)
+                            if _added:
+                                _audit = apply_workflow_progression(_audit)
+                                write_json_atomic(_audit_path, _audit)
+                                # Tracking DB write — kept inside the lock so
+                                # the DB and audit.json stay consistent. The
+                                # DB has its own threading.Lock; nesting the
+                                # advisory file lock around it is safe.
+                                try:
+                                    from . import tracking_db as tdb
+                                    tdb.record_events_batch(_norm)
+                                except Exception as _db_exc:
+                                    log.debug("[tracking] DB write failed: %s", _db_exc)
+                except TimeoutError as _tlk:
+                    log.warning(
+                        "[tracking] could not acquire batch lock for %s: %s",
+                        _bid, _tlk,
+                    )
         except Exception as _exc:
             log.debug("[tracking] event normalization failed: %s", _exc)
 
