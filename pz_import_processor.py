@@ -1949,6 +1949,25 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
         qty_diff  = {}
         qty_match = None  # could not verify
 
+    # qty_status — categorical label for the audit hardening pipeline.
+    # Mirrors qty_match_by_type but expresses *why* verification has the
+    # state it has, so audit_scoring caps can be applied without re-deriving.
+    #   "verified"               → exact per-type qty match
+    #   "partial_aggregated_sad" → SAD has a single aggregated line
+    #                              (sad_qty empty, sad_item_count>=1) and
+    #                              per-type proof is impossible; the SAD is
+    #                              internally consistent
+    #   "not_verified"           → confirmed mismatch, or no evidence at all
+    _sad_item_count = zc429.get("sad_item_count", 0) or 0
+    if qty_match is True:
+        qty_status = "verified"
+    elif qty_match is False:
+        qty_status = "not_verified"
+    elif not sad_qty and _sad_item_count >= 1:
+        qty_status = "partial_aggregated_sad"
+    else:
+        qty_status = "not_verified"
+
     # ── 4. Importer match ─────────────────────────────────────────────────────
     sad_importer = zc429.get("importer_name", "")
     sad_nip      = zc429.get("importer_nip",  "")
@@ -1970,6 +1989,39 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
         nip_match = (sad_nip == inv_nip)
     else:
         nip_match = None
+
+    # nip_source — categorical describing which side(s) provided the NIP
+    # used for importer verification. Master fallback recognises the
+    # well-known Estrella Jewels Sp. z o.o. master NIP (RECIPIENT.nip): when
+    # the invoice does not carry a NIP but the SAD-declared NIP equals the
+    # master, treat the verification as confirmed.
+    #   "invoice_and_sad" → both sides parsed (canonical case)
+    #   "sad_and_master"  → invoice NIP missing; SAD NIP == master NIP
+    #   "sad_only"        → invoice NIP missing; SAD NIP not master
+    #   "invoice_only"    → SAD NIP missing; invoice NIP present
+    #   "neither"         → neither side parsed a NIP
+    def _norm_nip(s: str) -> str:
+        s = (s or "").upper().replace(" ", "").replace("-", "")
+        return s[2:] if s.startswith("PL") else s
+    _master_nip_n = _norm_nip(RECIPIENT.get("nip", ""))
+    _inv_nip_n    = _norm_nip(inv_nip)
+    _sad_nip_n    = _norm_nip(sad_nip)
+    if _inv_nip_n and _sad_nip_n:
+        nip_source = "invoice_and_sad"
+    elif _sad_nip_n and not _inv_nip_n:
+        if _master_nip_n and _sad_nip_n == _master_nip_n:
+            nip_source = "sad_and_master"
+            # Master fallback: invoice missing NIP but SAD declares the
+            # known master NIP — treat as verified. Only escalates None to
+            # True; never overrides an existing False.
+            if nip_match is None:
+                nip_match = True
+        else:
+            nip_source = "sad_only"
+    elif _inv_nip_n and not _sad_nip_n:
+        nip_source = "invoice_only"
+    else:
+        nip_source = "neither"
 
     # ── 5. Exporter match ─────────────────────────────────────────────────────
     # Use exporter_name (from Merchant Exporter / Exporter block) preferring
@@ -2085,6 +2137,7 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
         "cif_difference_usd":   cif_diff,
         # Quantity by type
         "qty_match_by_type":    qty_match,              # True/False/None
+        "qty_status":           qty_status,             # "verified"|"partial_aggregated_sad"|"not_verified"
         "invoice_qty_by_type":  inv_qty,
         "sad_qty_by_type":      sad_qty,
         "qty_diff_by_type":     qty_diff,
@@ -2095,6 +2148,7 @@ def verify_sad_invoice_match(invoices: list, zc429: dict) -> dict:
         "invoice_vat":          inv_nip,
         "sad_vat":              sad_nip,
         "vat_match":            nip_match,
+        "nip_source":           nip_source,             # "invoice_and_sad"|"sad_and_master"|"sad_only"|"invoice_only"|"neither"
         # Exporter
         "exporter_match":        exporter_match,        # True/False/None
         "exporter_label":        _exporter_label,       # human-readable label
