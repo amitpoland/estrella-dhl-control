@@ -11376,7 +11376,7 @@ function ProformaReadinessCard({ batchId, onToast }) {
     })
   );
   const writeProducts = () => {
-    if (!confirm('Auto-register all missing product codes in wFirma? This calls live goods/add for each missing code.')) return;
+    if (!confirm('Auto-register all missing product codes in wFirma? This calls the live wFirma product-registration endpoint for each missing code.')) return;
     return runAction('Auto-register products', () =>
       apiFetch(`/api/v1/wfirma/goods/auto-register/${encodeURIComponent(batchId)}`, {
         method: 'POST',
@@ -12787,8 +12787,8 @@ function CustomerStatementsPickerPage({ onToast }) {
 // list — operators click "Open batch" to act on a row.
 //
 // Endpoints used by THIS component:
-//   apiFetch('/dashboard/batches?all=1')
-//   apiFetch('/api/v1/action-proposals/' + batch_id)
+//   GET /dashboard/batches?all=1
+//   GET /api/v1/action-proposals/{batch_id}
 //
 // No write endpoints. No auto-poll. Refresh button only.
 
@@ -12815,7 +12815,7 @@ function ActionProposalsCrossBatchPage({ onViewBatch, onToast }) {
         if (!bid) return;
         try {
           const data = await apiFetch(
-            '/api/v1/action-proposals/' + encodeURIComponent(bid)
+            `/api/v1/action-proposals/${encodeURIComponent(bid)}`
           );
           const dr = (data && Array.isArray(data.proposals)) ? data.proposals : [];
           for (const p of dr) {
