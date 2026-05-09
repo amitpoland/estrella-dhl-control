@@ -158,6 +158,17 @@ Safety, Gap Hunter, Production Readiness) activate per the
 triggers in `roles.md`. The Coordinator decides on their reports;
 reviewers never approve their own findings into action.
 
+### Lane serialization
+At most **one** workstream may have an active edit on `service/**`
+or `ui/**` at any time. Governance / docs lanes (edits scoped to
+`.claude/**`) and release-inspection lanes (RELEASE-mode sessions
+that produce no source changes) run unrestricted in parallel.
+When a code lane is active, no second code lane opens until the
+first commits, reverts, or pauses on the program board. The
+Coordinator enforces this at session-header time: a new session
+declaring code edits is rejected if another code lane is already
+in flight.
+
 ### Length cap
 A session that exceeds ~3 hours of compute time exits cleanly
 regardless of mode. Symptoms of context poisoning override mode
