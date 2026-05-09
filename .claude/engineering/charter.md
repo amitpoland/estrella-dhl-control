@@ -136,3 +136,23 @@ inspection pass, or pauses the phase.
 - Rollback procedures: see `rollback-doctrine.md`.
 - Observability requirements: see `observability-standards.md`.
 - Production cutover gate: see `production-readiness-checklist.md`.
+
+## Operating system (added 2026-05-10, ADR-011)
+
+This charter defines the role cosmology. The operating system
+that *runs* this organisation lives at `../org/`:
+
+- **`../org/roles.md`** — routing table. Path-glob allowlist /
+  denylist / triggers / review obligations per role. Translates
+  charter identity into operational boundaries.
+- **`../org/program_board.md`** — persistent workstream state.
+  Read this first at session start. Updated at every phase commit.
+- **`../org/execution_modes.md`** — PRE-IMPLEMENTATION /
+  IMPLEMENTATION / RELEASE contract. The Coordinator declares mode
+  at session start. **No mode = no work.**
+- **`../org/dry_runs/`** — PRE-IMPLEMENTATION audit artifacts.
+
+The charter says *what each role is*. The org/ files say *what
+they edit, when they activate, and what mode is in force right
+now*. If the two disagree, the charter wins on identity (model
+tier, layer, deliverable); the org/ files win on paths and modes.

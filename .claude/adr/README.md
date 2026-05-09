@@ -69,6 +69,7 @@ What does this decision lock in for future work? What does it enable?
 | [ADR-008](ADR-008-dhl-api-status-three-state.md) | Three-state DHL API status lifecycle | Accepted |
 | [ADR-009](ADR-009-webhook-handshake.md) | DHL webhook handshake + IP allowlist | Accepted |
 | [ADR-010](ADR-010-default-off-feature-flags.md) | Default-OFF feature flags | Accepted |
+| [ADR-011](ADR-011-multi-agent-engineering-cell.md) | Persistent multi-agent engineering cell (`org/` operating system) | Accepted |
 
 ## When to write a new ADR
 
