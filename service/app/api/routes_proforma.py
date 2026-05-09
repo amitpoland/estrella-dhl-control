@@ -20,8 +20,8 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import JSONResponse, Response
 
 from ..core.config import settings
 from ..core.security import require_api_key
@@ -166,6 +166,150 @@ def _check_warehouse_readiness(batch_id: str) -> List[str]:
     return reasons
 
 
+# ── Customer resolver (single source of truth — used by preview, payload   ──
+#    builder, and adopt-issued contractor verifier) ─────────────────────────
+
+import re as _re
+
+def _normalize_client_name(raw: str) -> str:
+    """Trim outer whitespace + collapse internal whitespace runs to a single
+    space. Case is preserved here so the displayed name in diagnostics
+    matches what the operator entered. The resolver's match step is
+    case-insensitive separately."""
+    if not raw:
+        return ""
+    return _re.sub(r"\s+", " ", raw.strip())
+
+
+def _resolve_customer(client_name: str) -> Dict[str, Any]:
+    """Resolve a sales-list client name to a wfirma_customers row.
+
+    Three-step strategy:
+      1. Normalized exact match (case-insensitive) — wins immediately.
+      2. Prefix tolerance — sales-side input is a leading substring of
+         the wFirma stored name (e.g. ``"Clear-Diamonds"`` ⇒
+         ``"Clear-Diamonds Ltd"``). Auto-resolves only when exactly ONE
+         candidate is found.
+      3. Reverse-prefix tolerance — wFirma name is a leading substring
+         of the sales input (rarer; covers the case where wFirma
+         stripped a suffix like " Ltd" the operator now includes).
+
+    Result dict shape::
+
+        {
+          "raw_input":              <as given>,
+          "normalized_name":        <stripped+collapsed>,
+          "found":                  bool,           # exactly one match
+          "ambiguous":              bool,           # 2+ candidates
+          "match_strategy":         "exact" | "prefix" | "reverse_prefix" |
+                                    "ambiguous" | "none",
+          "customer":               <full wfirma_customers row dict> | None,
+          "wfirma_customer_id":     str | "",
+          "resolved_wfirma_name":   str,            # the customer's stored name
+          "candidates":             List[str],      # display names when ambiguous
+        }
+
+    The resolver does NOT call the live wFirma API. It only reads the
+    local ``wfirma_customers`` table (populated by a separate sync flow).
+    No mutation; no creation; safe for read-only preview gates and write
+    payload builders alike.
+    """
+    raw = client_name or ""
+    norm = _normalize_client_name(raw)
+    out: Dict[str, Any] = {
+        "raw_input":            raw,
+        "normalized_name":      norm,
+        "found":                False,
+        "ambiguous":            False,
+        "match_strategy":       "none",
+        "customer":             None,
+        "wfirma_customer_id":   "",
+        "resolved_wfirma_name": "",
+        "candidates":           [],
+    }
+    if not norm or wfdb._db_path is None:
+        return out
+
+    # 1. Normalized exact match — current behaviour, preserved.
+    cust = wfdb.get_customer(norm)
+    if cust and cust.get("wfirma_customer_id"):
+        out.update({
+            "found":                True,
+            "match_strategy":       "exact",
+            "customer":             cust,
+            "wfirma_customer_id":   cust["wfirma_customer_id"],
+            "resolved_wfirma_name": cust.get("client_name", ""),
+        })
+        return out
+
+    # 2/3. Walk wfirma_customers for prefix / reverse-prefix candidates.
+    norm_lc = norm.lower()
+    all_rows = wfdb.list_customers()
+    prefix_matches: List[Dict[str, Any]] = []
+    rev_prefix_matches: List[Dict[str, Any]] = []
+    for row in all_rows:
+        wf_name = (row.get("client_name") or "").strip()
+        if not wf_name or not row.get("wfirma_customer_id"):
+            continue
+        wf_norm = _normalize_client_name(wf_name).lower()
+        if wf_norm == norm_lc:
+            # Exact match got missed in step 1 only when match_status filter
+            # excluded it; treat as exact.
+            out.update({
+                "found":                True,
+                "match_strategy":       "exact",
+                "customer":             row,
+                "wfirma_customer_id":   row["wfirma_customer_id"],
+                "resolved_wfirma_name": wf_name,
+            })
+            return out
+        if wf_norm.startswith(norm_lc + " ") or wf_norm.startswith(norm_lc + ","):
+            prefix_matches.append(row)
+        elif norm_lc.startswith(wf_norm + " ") or norm_lc.startswith(wf_norm + ","):
+            rev_prefix_matches.append(row)
+
+    if len(prefix_matches) == 1:
+        row = prefix_matches[0]
+        out.update({
+            "found":                True,
+            "match_strategy":       "prefix",
+            "customer":             row,
+            "wfirma_customer_id":   row["wfirma_customer_id"],
+            "resolved_wfirma_name": row["client_name"],
+        })
+        return out
+
+    if len(prefix_matches) > 1:
+        out.update({
+            "ambiguous":      True,
+            "match_strategy": "ambiguous",
+            "candidates":     [r["client_name"] for r in prefix_matches],
+        })
+        return out
+
+    # No prefix candidates — try reverse direction
+    if len(rev_prefix_matches) == 1:
+        row = rev_prefix_matches[0]
+        out.update({
+            "found":                True,
+            "match_strategy":       "reverse_prefix",
+            "customer":             row,
+            "wfirma_customer_id":   row["wfirma_customer_id"],
+            "resolved_wfirma_name": row["client_name"],
+        })
+        return out
+
+    if len(rev_prefix_matches) > 1:
+        out.update({
+            "ambiguous":      True,
+            "match_strategy": "ambiguous",
+            "candidates":     [r["client_name"] for r in rev_prefix_matches],
+        })
+        return out
+
+    return out
+
+
 # ── Preview core (callable from both /preview and /create) ──────────────────
 
 def _validate_args(batch_id: str, client_name: str) -> str:
@@ -186,8 +330,35 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     """
     blocking_reasons: List[str] = []
 
-    # ── 0. Warehouse readiness gate ───────────────────────────────────────────
+    # ── 0a. Warehouse readiness gate ──────────────────────────────────────────
     blocking_reasons.extend(_check_warehouse_readiness(batch_id))
+
+    # ── 0b. Populate design_product_mapping from packing_lines (idempotent) ──
+    # The bridge data lives on every packing_lines row (product_code +
+    # design_no). Project it into design_product_mapping so this preview —
+    # and any future resolver that walks the registry — can read a single
+    # source of truth without re-deriving from packing_lines each time.
+    bridge_summary: Dict[str, Any] = {}
+    try:
+        from ..services.design_product_bridge import populate_from_packing
+        bridge_summary = populate_from_packing(batch_id)
+    except Exception as exc:
+        # Never fatal — preview still works via v_sales_to_wfirma view.
+        bridge_summary = {"errors": [f"design_product_bridge: {exc}"]}
+
+    # Ambiguity surfaces as a blocker the operator must resolve before a
+    # Proforma is built (otherwise the wrong product_code might be billed).
+    # Example: PND mapped to both EJL/26-27/123-2 AND EJL/26-27/123-3.
+    for design_no, codes in (bridge_summary.get("ambiguous_design_codes") or {}).items():
+        blocking_reasons.append(
+            f"design_no {design_no!r} maps to multiple product_codes "
+            f"in this batch: {codes} — clarify which line to bill"
+        )
+
+    # Resolve customer up-front so the early-exit path (no sales rows) and
+    # the full path produce a consistent response shape and so a passing
+    # preview implies _build_proforma_request will succeed at this step.
+    customer_resolution = _resolve_customer(client_name)
 
     # ── 1. Resolution rows (sales → wFirma product_code) ────────────────────
     resolution_rows = [
@@ -195,6 +366,21 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         if (r.get("client_name") or "").strip() == client_name
     ]
     if not resolution_rows:
+        # Also surface customer-resolution blockers in the early-exit path
+        # so the operator UI sees ambiguity / missing-customer reasons even
+        # before any sales rows exist.
+        early_blockers: List[str] = list(blocking_reasons)
+        early_blockers.append(f"no sales rows for client {client_name!r}")
+        if customer_resolution["ambiguous"]:
+            early_blockers.append(
+                f"multiple wfirma customer candidates for {client_name!r}: "
+                f"{customer_resolution['candidates']} — clarify which mapping "
+                "to use before issuing a proforma"
+            )
+        elif not customer_resolution["found"]:
+            early_blockers.append(
+                f"customer {client_name!r} not matched in wfirma_customers"
+            )
         return {
             "ok":               False,
             "batch_id":         batch_id,
@@ -202,47 +388,63 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
             "currency":         "unknown",
             "exchange_rate":    None,
             "ready":            False,
-            "blocking_reasons": [f"no sales rows for client {client_name!r}"],
+            "blocking_reasons": early_blockers,
             "lines":            [],
+            "customer_resolution": {
+                "normalized_customer_name":   customer_resolution["normalized_name"],
+                "resolved_wfirma_customer_name": customer_resolution["resolved_wfirma_name"],
+                "wfirma_customer_id":         customer_resolution["wfirma_customer_id"],
+                "match_strategy":             customer_resolution["match_strategy"],
+                "candidates":                 customer_resolution["candidates"],
+            },
         }
 
-    # ── 2. Invoice pricing index: product_code → (unit_price, currency, fx) ─
-    inv_lines = ddb.get_invoice_lines_for_batch(batch_id)
-    inv_price:    Dict[str, float] = {}
-    inv_currency: Dict[str, str]   = {}
-    inv_fx:       Dict[str, Optional[float]] = {}
-    for il in inv_lines:
-        pc = il.get("product_code") or ""
-        if not pc or pc in inv_price:
-            continue
-        price    = il.get("rate_usd") or il.get("unit_price") or 0
-        currency = (il.get("currency") or "").upper() or "unknown"
-        fx       = il.get("exchange_rate")
-        inv_price[pc]    = float(price or 0)
-        inv_currency[pc] = currency
-        try:
-            inv_fx[pc] = float(fx) if fx not in (None, "") else None
-        except (TypeError, ValueError):
-            inv_fx[pc] = None
+    # ── 2. Pricing source: SALES packing list, NOT import invoice ──────────
+    # Customer Proformas must use what we bill the client (sales_packing_lines
+    # unit_price/currency), never the supplier cost the engine recorded for
+    # customs (invoice_lines.rate_usd). The sales price/currency is read
+    # per-row off v_sales_to_wfirma (see resolution_rows below).
 
     # ── 3. Stock readiness via inventory_state (NOT warehouse DISPATCH) ─────
-    # A proforma may be issued when items are in WAREHOUSE_STOCK.
+    # A proforma may be issued when every scan_code for the product_code is
+    # in one of the eligible states:
+    #   WAREHOUSE_STOCK         classic warehoused goods
+    #   DIRECT_DISPATCH_READY   customs-cleared, operator-marked direct ship
+    #   CLIENT_DISPATCHED       already physically dispatched to client
     # PURCHASE_TRANSIT (not yet received), SALES_TRANSIT (already promised
     # on another proforma/invoice), and CLOSED (delivered) all block
     # availability for a NEW proforma.
     sc_per_product   = _scan_codes_per_product(batch_id)
     state_codes      = _state_codes(batch_id)
-    in_warehouse     = set(state_codes.get(ise.WAREHOUSE_STOCK,  []))
-    in_purchase      = set(state_codes.get(ise.PURCHASE_TRANSIT, []))
-    in_sales_transit = set(state_codes.get(ise.SALES_TRANSIT,    []))
-    in_closed        = set(state_codes.get(ise.CLOSED,           []))
+    in_warehouse     = set(state_codes.get(ise.WAREHOUSE_STOCK,        []))
+    in_direct_ready  = set(state_codes.get(ise.DIRECT_DISPATCH_READY,  []))
+    in_dispatched    = set(state_codes.get(ise.CLIENT_DISPATCHED,      []))
+    in_purchase      = set(state_codes.get(ise.PURCHASE_TRANSIT,       []))
+    in_sales_transit = set(state_codes.get(ise.SALES_TRANSIT,          []))
+    in_closed        = set(state_codes.get(ise.CLOSED,                 []))
+
+    # Eligible = any state listed in PROFORMA_ELIGIBLE_STATES. We aggregate
+    # to the strictest descriptive label so the UI reports cleanly.
+    _eligible_sets = {
+        "warehouse_stock":        in_warehouse,
+        "direct_dispatch_ready":  in_direct_ready,
+        "client_dispatched":      in_dispatched,
+    }
 
     def _stock_status(pc: str) -> str:
         scs = sc_per_product.get(pc, [])
         if not scs:
             return "no_scan_codes"
-        if all(sc in in_warehouse for sc in scs):
-            return "warehouse_stock"
+        # Pass when every scan_code is in *some* eligible state (mixed
+        # eligible states are still a pass — e.g. half WAREHOUSE_STOCK,
+        # half DIRECT_DISPATCH_READY).
+        eligible_union = in_warehouse | in_direct_ready | in_dispatched
+        if all(sc in eligible_union for sc in scs):
+            # Report the dominant single state if all match; else "mixed_eligible".
+            for label, sset in _eligible_sets.items():
+                if all(sc in sset for sc in scs):
+                    return label
+            return "mixed_eligible"
         if any(sc in in_purchase for sc in scs):
             return "purchase_transit"
         if any(sc in in_sales_transit for sc in scs):
@@ -251,8 +453,13 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
             return "closed"
         return "missing_state"
 
+    _ELIGIBLE_LABELS = {
+        "warehouse_stock", "direct_dispatch_ready",
+        "client_dispatched", "mixed_eligible",
+    }
+
     def _stock_ok(pc: str) -> bool:
-        return _stock_status(pc) == "warehouse_stock"
+        return _stock_status(pc) in _ELIGIBLE_LABELS
 
     # ── 4. Build per-line response ──────────────────────────────────────────
     lines: List[Dict[str, Any]] = []
@@ -263,10 +470,43 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     line_currencies: List[str] = []
     line_fx:            List[float] = []
 
+    # Bridge fallback for any row whose v_sales_to_wfirma join failed
+    # (e.g. packing_lines and sales_packing_lines disagree on the design
+    # spelling, or the join was missed by a casing edge). The
+    # design_product_mapping registry was populated above from the same
+    # packing_lines source, so this lookup is consistent with the
+    # primary resolver.
+    from ..services.design_product_bridge import (
+        get_product_codes_for_design as _bridge_lookup,
+    )
+    bridge_resolved_codes: Dict[str, List[str]] = {}
+
     for r in resolution_rows:
         product_code = r.get("wfirma_product_code")  # may be None
         design_no    = r.get("sales_design_no") or ""
         qty          = float(r.get("qty") or 0)
+
+        # ── Sales-side pricing (canonical for customer Proformas) ──────────
+        # The customer Proforma must reflect what we BILL the client, not
+        # the supplier cost we paid. Read from sales_packing_lines via
+        # v_sales_to_wfirma; never substitute import-side cost as a
+        # silent fallback. Operators who genuinely need cost-basis
+        # invoicing (rare; internal stock transfers) must record those
+        # prices on the sales packing list explicitly.
+        sales_unit_price   = r.get("sales_unit_price")
+        sales_currency     = (r.get("sales_currency") or "").upper()
+        sales_price_source = r.get("sales_price_source") or ""
+
+        # Fallback: when the view did not project a product_code, consult
+        # design_product_mapping as a secondary source. Single match
+        # resolves cleanly; multi-match records the ambiguity for the
+        # operator (the global ambiguity check above would already have
+        # flagged it as a top-level blocker).
+        if not product_code and design_no:
+            mapped = _bridge_lookup(design_no)
+            bridge_resolved_codes[design_no] = mapped
+            if len(mapped) == 1:
+                product_code = mapped[0]
 
         if not product_code:
             unmatched_count += 1
@@ -280,20 +520,28 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
                 "line_value":    None,
                 "stock_ok":      False,
                 "product_match": False,
+                "price_source":  "",
             })
             continue
 
-        unit_price = inv_price.get(product_code)
-        currency   = inv_currency.get(product_code, "unknown")
-        fx         = inv_fx.get(product_code)
+        # Use sales price/currency. If absent, this line counts toward
+        # missing_price and the preview blocks; we DO NOT silently fall
+        # through to import-invoice cost.
+        try:
+            unit_price = float(sales_unit_price) if sales_unit_price not in (None, "") else None
+        except (TypeError, ValueError):
+            unit_price = None
+        if unit_price is not None and unit_price <= 0:
+            unit_price = None
+        currency   = sales_currency or "unknown"
+        fx         = None  # sales rows don't carry FX; wFirma applies its own
+        price_source = sales_price_source if unit_price is not None else "missing"
         line_value = (unit_price * qty) if unit_price is not None else None
 
         if unit_price is None or currency == "unknown":
             missing_price += 1
         else:
             line_currencies.append(currency)
-            if fx is not None:
-                line_fx.append(fx)
 
         prod_rec = wfdb.get_product(product_code) if wfdb._db_path is not None else None
         product_match = bool(
@@ -305,7 +553,7 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
             missing_product += 1
 
         st = _stock_status(product_code)
-        s_ok = (st == "warehouse_stock")
+        s_ok = st in _ELIGIBLE_LABELS
         if not s_ok:
             stock_blocked[st] += 1
 
@@ -320,6 +568,7 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
             "stock_ok":      s_ok,
             "stock_status":  st,
             "product_match": product_match,
+            "price_source":  price_source,
         })
 
     # ── 5. Header currency + FX (dominant across priced lines) ─────────────
@@ -336,7 +585,9 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         )
     if missing_price:
         blocking_reasons.append(
-            f"{missing_price} line(s) missing unit_price or currency in invoice_lines"
+            f"{missing_price} line(s) missing sales unit_price or currency on the "
+            "customer packing list — re-upload the sales packing list with prices "
+            "or set them via the sales-pricing endpoint"
         )
     if missing_product:
         blocking_reasons.append(
@@ -347,24 +598,85 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         "purchase_transit": "still in PURCHASE_TRANSIT (not yet received in warehouse)",
         "sales_transit":    "already in SALES_TRANSIT (committed to another proforma/invoice)",
         "closed":           "in CLOSED state (already delivered)",
-        "missing_state":    "have no inventory_state record (not seeded)",
-        "no_scan_codes":    "have no scan_codes in packing_lines",
+        # Improved: distinguish "scans exist in packing but no inventory_state
+        # was ever written" (engine never ran) from the no-scan-at-all case.
+        "missing_state":    "have packing_lines scan_codes but no inventory_state row "
+                            "— inventory_state_engine has not seeded this batch",
+        "no_scan_codes":    "have no scan_codes in packing_lines for the resolved product_code",
     }
     for state, count in stock_blocked.items():
         blurb = _STATE_BLURB.get(state, f"in unexpected state {state!r}")
         blocking_reasons.append(f"{count} product(s) {blurb}")
 
-    # Customer match — local lookup only
-    cust = wfdb.get_customer(client_name) if wfdb._db_path is not None else None
-    customer_match = bool(
-        cust
-        and cust.get("wfirma_customer_id")
-        and cust.get("match_status") == "matched"
-    )
-    if not customer_match:
+    # Customer match — uses the central resolver result computed above.
+    # Same resolver used by _build_proforma_request so a passing preview
+    # implies a successful payload build at the customer-resolution step.
+    customer_match = customer_resolution["found"]
+    if customer_resolution["ambiguous"]:
+        blocking_reasons.append(
+            f"multiple wfirma customer candidates for {client_name!r}: "
+            f"{customer_resolution['candidates']} — clarify which mapping "
+            "to use before issuing a proforma"
+        )
+    elif not customer_match:
         blocking_reasons.append(
             f"customer {client_name!r} not matched in wfirma_customers"
         )
+
+    # ── Ship-to (Odbiorca) readiness ──────────────────────────────────────
+    # When the customer is mapped, surface the mode + receiver state so
+    # the operator can verify Odbiorca routing before issuing. Missing
+    # receiver under separate_contractor mode is a hard blocker (matches
+    # the validation in _build_proforma_request).
+    ship_to_mode = ""
+    ship_to_receiver_id = ""
+    if customer_match:
+        cust_row = customer_resolution.get("customer") or {}
+        ship_to_mode        = (cust_row.get("ship_to_mode")
+                                or "same_as_bill_to").lower()
+        ship_to_receiver_id = (cust_row.get("ship_to_wfirma_customer_id")
+                                or "").strip()
+        bill_to_id = (customer_resolution.get("wfirma_customer_id") or "").strip()
+        if ship_to_mode == "separate_contractor":
+            if not ship_to_receiver_id:
+                blocking_reasons.append(
+                    f"ship_to_mode is 'separate_contractor' for "
+                    f"{client_name!r} but ship_to_wfirma_customer_id is "
+                    "empty — set the receiver via PUT "
+                    "/api/v1/wfirma/customers/{name}/ship-to before issuing"
+                )
+            elif ship_to_receiver_id == bill_to_id:
+                blocking_reasons.append(
+                    f"ship_to_wfirma_customer_id equals the bill-to id "
+                    f"for {client_name!r} — separate_contractor requires a "
+                    "DIFFERENT receiver"
+                )
+
+    # ── Service charges (operator-entered freight / insurance) ─────────────
+    # Loaded read-only here so the preview surfaces them before create.
+    service_charges: List[Dict[str, Any]] = []
+    service_charge_warnings: List[str] = []
+    try:
+        from ..services import proforma_service_charges_db as _scdb
+        service_charges = _scdb.list_charges(batch_id, client_name)
+    except Exception as exc:
+        log.warning("service_charges read failed for %s/%s: %s",
+                    batch_id, client_name, exc)
+    # Each charge contributes to the line-currency dominant calc and the
+    # final total. Operator MUST submit charges in the same currency as
+    # the product lines — mixed currencies block create.
+    sc_currencies = {(c.get("currency") or "").upper() for c in service_charges
+                     if (c.get("currency") or "").strip()}
+    if service_charges and currency != "unknown" and \
+       sc_currencies and sc_currencies != {currency}:
+        blocking_reasons.append(
+            f"service charge currency {sorted(sc_currencies)} does not match "
+            f"product line currency {currency!r}"
+        )
+    service_charge_total = sum(float(c.get("amount") or 0)
+                                for c in service_charges)
+    product_total = sum((ln.get("line_value") or 0) for ln in lines)
+    final_total   = product_total + service_charge_total
 
     ready = not blocking_reasons
 
@@ -377,6 +689,47 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         "ready":            ready,
         "blocking_reasons": blocking_reasons,
         "lines":            lines,
+        # Operator-entered freight / insurance (not derived from import cost)
+        "service_charges":  [
+            {"charge_type": c.get("charge_type"),
+             "amount":      c.get("amount"),
+             "currency":    c.get("currency"),
+             "note":        c.get("note") or ""}
+            for c in service_charges
+        ],
+        "totals": {
+            "product_total":         product_total,
+            "service_charge_total":  service_charge_total,
+            "final_total":           final_total,
+            "currency":              currency,
+        },
+        # Diagnostic surface for the design→product bridge population that
+        # ran at the top of this preview. Operator UI / debugging tools
+        # use this to see what was projected and what's ambiguous.
+        "design_product_bridge": {
+            "scanned":               bridge_summary.get("scanned", 0),
+            "inserted":              bridge_summary.get("inserted", 0),
+            "updated":               bridge_summary.get("updated", 0),
+            "ambiguous_design_codes": bridge_summary.get("ambiguous_design_codes", {}),
+            "errors":                bridge_summary.get("errors", []),
+            "fallback_resolutions":  bridge_resolved_codes,
+        },
+        # Customer-resolution diagnostic (mirrors what _build_proforma_request
+        # will see). Operator UI uses this to show the candidate name BEFORE
+        # the operator hits Create.
+        "customer_resolution": {
+            "normalized_customer_name":   customer_resolution["normalized_name"],
+            "resolved_wfirma_customer_name": customer_resolution["resolved_wfirma_name"],
+            "wfirma_customer_id":         customer_resolution["wfirma_customer_id"],
+            "match_strategy":             customer_resolution["match_strategy"],
+            "candidates":                 customer_resolution["candidates"],
+        },
+        # Ship-to (Odbiorca) state per Step 1 mapping. Surfaced read-only
+        # so the operator UI can show the receiver routing before Create.
+        "ship_to": {
+            "mode":                       ship_to_mode or "same_as_bill_to",
+            "ship_to_wfirma_customer_id": ship_to_receiver_id,
+        },
     }
 
 
@@ -408,11 +761,20 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
     absent. Caller must surface this as a blocked status — never as a 500.
     """
     client_name = (preview.get("client_name") or "").strip()
-    cust = wfdb.get_customer(client_name) if wfdb._db_path is not None else None
-    contractor_id = (cust or {}).get("wfirma_customer_id") or ""
+    # Use the same resolver as the preview so a passing preview implies
+    # a successful payload build at this point.
+    resolution = _resolve_customer(client_name)
+    if resolution["ambiguous"]:
+        raise ValueError(
+            f"multiple wfirma customer candidates for {client_name!r}: "
+            f"{resolution['candidates']} — refusing to auto-pick"
+        )
+    cust = resolution["customer"]
+    contractor_id = resolution["wfirma_customer_id"]
     if not contractor_id:
         raise ValueError(
-            f"wfirma_customers has no wfirma_customer_id for {client_name!r} — "
+            f"wfirma_customers has no wfirma_customer_id for "
+            f"{client_name!r} (normalized {resolution['normalized_name']!r}) — "
             "register the customer mapping before creating a proforma"
         )
 
@@ -477,19 +839,57 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
             + ("…" if len(missing_products) > 5 else "")
         )
 
+    # ── Ship-to (Odbiorca) — Shape B threading ────────────────────────────
+    # Read the per-customer ship_to_mode + ship_to_wfirma_customer_id set
+    # via PUT /api/v1/wfirma/customers/{name}/ship-to (Step 1 helper).
+    # Behaviour:
+    #   same_as_bill_to / bill_to_alt → no receiver block emitted; wFirma
+    #                                    renders ship-to from the bill-to
+    #                                    contractor record.
+    #   separate_contractor           → ship_to_wfirma_customer_id is
+    #                                    threaded into ProformaRequest;
+    #                                    builder emits <contractor_receiver>.
+    #
+    # Validation: separate_contractor requires a non-empty receiver id
+    # (the Step-1 helper already enforces this on write, but defence-
+    # in-depth at request-build time catches a stale row that pre-dates
+    # the helper landing).
+    ship_to_mode    = ((cust or {}).get("ship_to_mode") or "same_as_bill_to").lower()
+    ship_to_rcv_id  = ((cust or {}).get("ship_to_wfirma_customer_id") or "").strip()
+    if ship_to_mode == "separate_contractor" and not ship_to_rcv_id:
+        raise ValueError(
+            f"ship_to_mode is 'separate_contractor' for {client_name!r} but "
+            "ship_to_wfirma_customer_id is empty — set the receiver via "
+            "PUT /api/v1/wfirma/customers/{name}/ship-to before issuing"
+        )
+    if ship_to_mode == "separate_contractor" and ship_to_rcv_id == contractor_id:
+        # Should be impossible (helper rejects self-reference) but guard
+        # against a stale row that pre-dates the helper.
+        raise ValueError(
+            f"ship_to_wfirma_customer_id equals the bill-to "
+            f"wfirma_customer_id for {client_name!r} — separate_contractor "
+            "requires a DIFFERENT receiver"
+        )
+    receiver_id = ship_to_rcv_id if ship_to_mode == "separate_contractor" else ""
+
     return wfirma_client.ProformaRequest(
-        client_name          = client_name,
-        client_zip           = "",
-        client_city          = "",
-        lines                = lines,
-        currency             = preview.get("currency") or "PLN",
-        wfirma_contractor_id = contractor_id,
-        vat_code_id          = vat_code_id,
+        client_name                   = client_name,
+        client_zip                    = "",
+        client_city                   = "",
+        lines                         = lines,
+        currency                      = preview.get("currency") or "PLN",
+        wfirma_contractor_id          = contractor_id,
+        vat_code_id                   = vat_code_id,
+        wfirma_contractor_receiver_id = receiver_id,
     )
 
 
 @router.post("/create/{batch_id}/{client_name:path}", dependencies=[_auth])
-def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
+def proforma_create(
+    batch_id:     str,
+    client_name:  str,
+    x_operator:   Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
     """
     Create a wFirma proforma when all gates are satisfied.
 
@@ -533,6 +933,29 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
             "blocking_reasons":  preview.get("blocking_reasons", []),
             "currency":          preview.get("currency"),
             "exchange_rate":     preview.get("exchange_rate"),
+        })
+
+    # ── 3a. Service-charge inclusion gate ───────────────────────────────
+    # Service charges (freight/insurance) need a wFirma service product
+    # to ride into the invoicecontent payload. Until that mapping is
+    # registered, block the create with an explicit reason — never
+    # silently drop them or auto-derive from import cost.
+    if (preview.get("service_charges") or []):
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": [
+                "service charges present but wFirma service product mapping "
+                "not configured — register a freight/insurance service "
+                "product in wfirma_products and wire it into "
+                "_build_proforma_request before creating Proformas with "
+                "service charges",
+            ],
+            "currency":          preview.get("currency"),
+            "exchange_rate":     preview.get("exchange_rate"),
+            "service_charges":   preview.get("service_charges"),
         })
 
     # ── 3. Settings gate — no live call when disabled ──────────────────────
@@ -593,6 +1016,43 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
             "blocking_reasons": [str(exc)],
         })
 
+    # ── Live wFirma receiver preflight (Step 3 of Nabywca/Odbiorca) ────────
+    # When a separate Odbiorca contractor was threaded into the request
+    # (Shape B), confirm it actually exists in wFirma master before the
+    # invoices/add call. Without this, a typo or since-deleted contractor
+    # surfaces only as a generic wFirma error AFTER a partial state has
+    # been written. Read-only call; never creates. Skipped entirely for
+    # Shape A (empty receiver id).
+    receiver_id = (req.wfirma_contractor_receiver_id or "").strip()
+    if receiver_id:
+        try:
+            rcv = wfirma_client.fetch_contractor_by_id(receiver_id)
+        except Exception as exc:
+            return JSONResponse({
+                "ok":               False,
+                "status":           "blocked",
+                "batch_id":         batch_id,
+                "client_name":      cn,
+                "draft_id":         draft.id,
+                "blocking_reasons": [
+                    f"receiver preflight failed: {type(exc).__name__}: {exc}"
+                ],
+            })
+        if not rcv.ok:
+            return JSONResponse({
+                "ok":               False,
+                "status":           "blocked",
+                "batch_id":         batch_id,
+                "client_name":      cn,
+                "draft_id":         draft.id,
+                "blocking_reasons": [
+                    f"receiver contractor id {receiver_id!r} not found in "
+                    f"wFirma — {rcv.error or 'unavailable'}. Register the "
+                    "receiver in wFirma master or update the ship-to "
+                    "mapping via PUT /api/v1/wfirma/customers/{name}/ship-to"
+                ],
+            })
+
     try:
         result = wfirma_client.create_proforma_draft(req)
     except Exception as exc:
@@ -628,9 +1088,39 @@ def proforma_create(batch_id: str, client_name: str) -> JSONResponse:
     # ── 6. Success: mark issued, persist wfirma_proforma_id ────────────────
     pildb.mark_draft_issued(
         _proforma_db_path(), batch_id, cn,
-        wfirma_proforma_id=result.wfirma_invoice_id or "",
+        wfirma_proforma_id         = result.wfirma_invoice_id or "",
+        wfirma_proforma_fullnumber = result.wfirma_invoice_number or "",
     )
     final = pildb.get_draft(_proforma_db_path(), batch_id, cn)
+
+    # Append-only audit hardening: persist Proforma id under
+    # audit.proforma_issued[] and emit a timeline event so audit.json
+    # alone reflects the issued state. Best-effort.
+    try:
+        from ..services.audit_persist import record_proforma_issued
+        from ..core.config import settings as _s
+        _audit_path = _s.storage_root / "outputs" / batch_id / "audit.json"
+        # Phase 9.2 — surface the X-Operator header on the legacy route
+        # so its audit rows match the Phase-5 /post identity quality.
+        # Fallback mirrors the PZ flow's _operator_or_default: trimmed
+        # header value if non-empty, otherwise the literal "operator".
+        # Stays NON-mandatory — old callers without the header keep
+        # working and just record under the safe-fallback identity.
+        _op = ((x_operator or "").strip() or "operator")
+        record_proforma_issued(
+            _audit_path,
+            batch_id                   = batch_id,
+            client_name                = cn,
+            wfirma_proforma_id         = result.wfirma_invoice_id or "",
+            wfirma_proforma_fullnumber = (result.wfirma_invoice_number or ""),
+            line_count                 = len(preview.get("lines") or []),
+            currency                   = (final or draft).currency or "",
+            operator                   = _op,
+        )
+    except Exception as _exc:
+        log.warning("[%s] proforma_create audit append skipped: %s",
+                    batch_id, _exc)
+
     return JSONResponse({
         "ok":                  True,
         "status":              "issued",
@@ -669,8 +1159,12 @@ def cancel_issued_proforma_for_reissue(
       3. Local draft status must be "issued"
       4. wfirma_proforma_id must be present on the draft
       5. wFirma delete must return OK before the local row is changed
+
+    Normalisation: ``_validate_args`` (strip-only). Must match the create
+    route exactly — uppercasing here would break the lookup against
+    proforma_drafts rows persisted by create with mixed-case client names.
     """
-    cn = _norm(client_name)
+    cn = _validate_args(batch_id, client_name)
 
     # ── 1. Settings gate ───────────────────────────────────────────────────
     if not settings.wfirma_delete_invoice_allowed:
@@ -766,6 +1260,27 @@ def cancel_issued_proforma_for_reissue(
                 "proforma is gone from wFirma; create can be retried manually"
             ),
         })
+
+    # Append-only audit hardening: emit a `proforma_cancelled` timeline
+    # event so audit.json carries proof of the cancellation. Best-effort —
+    # never breaks the operator-facing response (the local row is already
+    # reset; the wFirma document is already gone).
+    try:
+        from ..services.audit_persist import record_proforma_cancelled
+        from ..core.config import settings as _s
+        _audit_path = _s.storage_root / "outputs" / batch_id / "audit.json"
+        record_proforma_cancelled(
+            _audit_path,
+            batch_id                       = batch_id,
+            client_name                    = cn,
+            deleted_wfirma_proforma_id     = wfirma_id,
+            replaced_by_wfirma_proforma_id = "",
+            reason                         = "cancel-issued-for-reissue endpoint",
+            operator                       = "",
+            source                         = "cancel_for_reissue",
+        )
+    except Exception as _exc:
+        log.warning("[%s] cancel: audit append skipped: %s", batch_id, _exc)
 
     return JSONResponse({
         "ok":                True,
@@ -872,8 +1387,12 @@ def adopt_issued_proforma(
         })
 
     # ── Contractor verification ───────────────────────────────────────────────
+    # Use the central resolver (same as preview / payload builder) so a
+    # whitespace-padded or "Ltd"-suffixed sales name still verifies
+    # against the wFirma contractor id.
     contractor_warn = None
-    cust = wfdb.get_customer(cn) if wfdb._db_path is not None else None
+    _resolution = _resolve_customer(cn)
+    cust = _resolution["customer"] if _resolution["found"] else None
     if cust and cust.get("wfirma_customer_id"):
         expected_contractor_id = str(cust["wfirma_customer_id"]).strip()
         contractor_node        = invoice_node.find(".//contractor")
@@ -1224,9 +1743,27 @@ def _parse_proforma_from_xml(xml_text: str) -> dict:
         return (node.text or "").strip() if node is not None else ""
 
     invoice_type  = _txt("type") or _txt("invoice_type") or ""
-    full_number   = _txt("full_number") or _txt("number") or ""
+    # wFirma's invoice/proforma read response carries the canonical
+    # operator-readable number under ``<fullnumber>`` (no underscore),
+    # e.g. "PROF 92/2026". Bare ``<number>`` is the per-month sequence
+    # ("92") and only useful as a last-resort fallback. The find/edit
+    # query bodies use ``<full_number>`` — a separate namespace, left
+    # untouched.
+    full_number   = (
+        _txt("fullnumber")
+        or _txt("full_number")
+        or _txt("number")
+        or ""
+    )
     date          = _txt("date") or _txt("invoice_date") or ""
     contractor_id = _txt("contractor", "id") or _txt("contractor_id") or ""
+    # Optional Odbiorca / ship-to contractor reference. wFirma normalises
+    # "no separate receiver" as id="0" on read responses (per the snapshot
+    # tool's convention). Project as empty string in that case so callers
+    # don't display the sentinel as a real id.
+    contractor_receiver_id = _txt("contractor_receiver", "id") or ""
+    if contractor_receiver_id.strip() == "0":
+        contractor_receiver_id = ""
     currency      = _txt("currency") or "PLN"
     status        = _txt("status") or ""
 
@@ -1264,13 +1801,14 @@ def _parse_proforma_from_xml(xml_text: str) -> dict:
         })
 
     return {
-        "invoice_type":  invoice_type,
-        "full_number":   full_number,
-        "date":          date,
-        "contractor_id": contractor_id,
-        "currency":      currency,
-        "status":        status,
-        "lines":         lines,
+        "invoice_type":           invoice_type,
+        "full_number":            full_number,
+        "date":                   date,
+        "contractor_id":          contractor_id,
+        "contractor_receiver_id": contractor_receiver_id,
+        "currency":               currency,
+        "status":                 status,
+        "lines":                  lines,
     }
 
 
@@ -1373,4 +1911,1553 @@ async def proforma_document(batch_id: str, client_name: str) -> JSONResponse:
         "line_count":         len(parsed.get("lines", [])),
         "lines":              parsed.get("lines", []),
         "raw_xml":            xml_text,
+    })
+
+
+@router.get("/{batch_id}/{client_name:path}/document.pdf",
+             dependencies=[_auth])
+async def proforma_document_pdf(batch_id: str, client_name: str) -> Response:
+    """Download the PDF of the linked wFirma Proforma.
+
+    READ-ONLY: calls ``wfirma_client.fetch_invoice_pdf`` (path-based
+    ``GET invoices/download/{id}``). Never writes to wFirma.
+
+    Returns:
+      200 + ``application/pdf`` — bytes streamed back to the operator.
+      404 — no draft for (batch, client), or draft has no
+            ``wfirma_proforma_id`` (i.e. not yet posted).
+      502 — wFirma fetch / parse failed.
+
+    The download filename uses ``wfirma_proforma_fullnumber`` if known
+    on the local draft (e.g. ``PRO 12_2026.pdf``); otherwise it falls
+    back to the wFirma id (``proforma-465123456.pdf``).
+    """
+    cn = (client_name or "").strip()
+    if not cn:
+        raise HTTPException(status_code=400, detail="client_name is required")
+
+    db_path = _proforma_db_path()
+    draft   = pildb.get_draft(db_path, batch_id, cn)
+    if draft is None or not (draft.wfirma_proforma_id or "").strip():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error":       "No proforma linked to this shipment/client.",
+                "code":        "PROFORMA_NOT_LINKED",
+                "batch_id":    batch_id,
+                "client_name": cn,
+            },
+        )
+    wfirma_id = draft.wfirma_proforma_id.strip()
+
+    try:
+        pdf_bytes = wfirma_client.fetch_invoice_pdf(wfirma_id)
+    except Exception as exc:
+        log.warning(
+            "[%s/%s] proforma_document_pdf: fetch_invoice_pdf failed for id=%s: %s",
+            batch_id, cn, wfirma_id, exc,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error":              f"wFirma PDF fetch failed: {exc}",
+                "code":               "PROFORMA_PDF_FETCH_FAILED",
+                "batch_id":           batch_id,
+                "wfirma_proforma_id": wfirma_id,
+            },
+        )
+
+    # Build a sensible filename. fullnumber may include slashes in wFirma
+    # series notation (e.g. "PRO 12/2026") which are invalid on most
+    # filesystems / Content-Disposition headers — sanitise to underscores.
+    fullnumber = (draft.wfirma_proforma_fullnumber or "").strip()
+    if fullnumber:
+        safe = "".join(c if (c.isalnum() or c in "._- ") else "_"
+                        for c in fullnumber)
+        filename = f"{safe}.pdf"
+    else:
+        filename = f"proforma-{wfirma_id}.pdf"
+
+    log.info(
+        "[%s/%s] proforma_document_pdf: served %d bytes for wfirma_id=%s",
+        batch_id, cn, len(pdf_bytes), wfirma_id,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
+    )
+
+
+# ── Service charges (operator-entered freight / insurance) ─────────────────
+
+class _ServiceChargeIn(_BaseModel):
+    charge_type: str
+    amount:      float
+    currency:    str
+    note:        Optional[str] = ""
+
+
+class _ServiceChargesReq(_BaseModel):
+    charges: List[_ServiceChargeIn]
+
+
+@router.get(
+    "/service-charges/{batch_id}/{client_name:path}",
+    dependencies=[_auth],
+)
+def get_service_charges(batch_id: str, client_name: str) -> JSONResponse:
+    """List operator-entered service charges for (batch, client)."""
+    cn = _validate_args(batch_id, client_name)
+    from ..services import proforma_service_charges_db as _scdb
+    return JSONResponse({
+        "batch_id":    batch_id,
+        "client_name": cn,
+        "charges":     _scdb.list_charges(batch_id, cn),
+    })
+
+
+@router.post(
+    "/service-charges/{batch_id}/{client_name:path}",
+    dependencies=[_auth],
+)
+def set_service_charges(
+    batch_id: str, client_name: str, body: _ServiceChargesReq,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Replace all freight/insurance charges for (batch, client).
+    Idempotent. Each charge: {charge_type, amount, currency, note?}.
+    Allowed types: freight, insurance.
+    """
+    cn = _validate_args(batch_id, client_name)
+    from ..services import proforma_service_charges_db as _scdb
+    operator = (x_operator or "").strip()
+    try:
+        result = _scdb.replace_all(
+            batch_id    = batch_id,
+            client_name = cn,
+            charges     = [c.dict() for c in (body.charges or [])],
+            created_by  = operator,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse({
+        "ok":          True,
+        "batch_id":    batch_id,
+        "client_name": cn,
+        "charges":     result,
+    })
+
+
+@router.delete(
+    "/service-charges/{batch_id}/{client_name}/{charge_type}",
+    dependencies=[_auth],
+)
+def delete_service_charge(
+    batch_id: str, client_name: str, charge_type: str,
+) -> JSONResponse:
+    """Remove one service charge. 404 if not present."""
+    cn = _validate_args(batch_id, client_name)
+    from ..services import proforma_service_charges_db as _scdb
+    if (charge_type or "").strip().lower() not in _scdb.ALLOWED_CHARGE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"charge_type must be one of "
+                   f"{sorted(_scdb.ALLOWED_CHARGE_TYPES)}",
+        )
+    deleted = _scdb.delete_charge(batch_id, cn, charge_type.lower())
+    if not deleted:
+        raise HTTPException(status_code=404,
+                            detail="charge not found")
+    return JSONResponse({"ok": True, "deleted": True,
+                          "batch_id": batch_id, "client_name": cn,
+                          "charge_type": charge_type.lower()})
+
+
+# ── Proforma → final invoice conversion (manual two-step flow) ─────────────
+#
+# Strict operator-only conversion. No background path, no auto-conversion.
+#
+#   GET  /api/v1/proforma/to-invoice-preview/{batch_id}/{client_name}
+#        Pure read: fetches the live wFirma proforma, parses it, builds a
+#        FinalInvoicePlan, returns the planned XML + summary. Never calls
+#        invoices/add. Never writes the link row.
+#
+#   POST /api/v1/proforma/to-invoice/{batch_id}/{client_name}
+#        Live conversion. Requires ALL of:
+#          • settings.wfirma_create_invoice_allowed  (env: WFIRMA_CREATE_INVOICE_ALLOWED)
+#          • confirm token "YES_CREATE_FINAL_INVOICE_FROM_PROFORMA"
+#          • X-Operator header
+#          • existing local proforma_drafts row with status='issued'
+#          • no existing proforma_invoice_links row for this proforma_id
+#        Then:
+#          1. Re-fetch the live proforma XML from wFirma
+#          2. Parse it via proforma_to_invoice.parse_proforma_xml
+#          3. Build the final-invoice plan (preserves contractor_receiver
+#             when present on the source proforma)
+#          4. Optional Step-3-style receiver preflight via
+#             wfirma_client.fetch_contractor_by_id
+#          5. Insert pending link row (proforma_invoice_links — UNIQUE on
+#             proforma_id is the duplicate-conversion guard)
+#          6. POST invoices/add with the final-invoice XML
+#          7. On success, mark the link row 'issued' with the new
+#             wfirma_invoice_id + fullnumber
+
+_FINAL_INVOICE_CONFIRM_TOKEN = "YES_CREATE_FINAL_INVOICE_FROM_PROFORMA"
+
+
+def _proforma_link_db_path():
+    return _proforma_db_path()
+
+
+def _gather_conversion_inputs(batch_id: str, client_name: str
+                                ) -> tuple[Optional[str], Optional[str]]:
+    """Look up the local proforma draft for (batch, client). Returns
+    ``(wfirma_proforma_id, error_reason)``. ``error_reason`` is set when
+    the draft is missing or not in ``issued`` status."""
+    cn = _validate_args(batch_id, client_name)
+    draft = pildb.get_draft(_proforma_db_path(), batch_id, cn)
+    if draft is None:
+        return None, f"no local proforma_drafts row for {batch_id!r}/{cn!r}"
+    if draft.status != "issued":
+        return None, (
+            f"draft status is {draft.status!r} — must be 'issued' to convert"
+        )
+    pid = (draft.wfirma_proforma_id or "").strip()
+    if not pid:
+        return None, "draft has no wfirma_proforma_id"
+    return pid, None
+
+
+def _link_already_exists(proforma_id: str) -> bool:
+    """True if a proforma_invoice_links row already exists for this
+    proforma_id (any status). Uses the canonical conversion link DB."""
+    try:
+        from ..services import proforma_invoice_link_db as plink
+        from ..core.config import settings as _s
+        # The proforma_invoice_links table lives in proforma_links.db
+        # alongside proforma_drafts (init'd by main.py).
+        link_db = _s.storage_root / "proforma_links.db"
+        existing = plink.get_link_by_proforma(link_db, proforma_id)
+        return existing is not None
+    except Exception:
+        return False
+
+
+def _build_conversion_plan(proforma_id: str, *, operator: str
+                             ) -> Dict[str, Any]:
+    """Live-fetch the proforma, parse, build plan. Returns
+    ``{"snap": ProformaSnapshot, "plan": FinalInvoicePlan,
+       "plan_xml": str}`` or raises ``RuntimeError`` / ``ValueError``."""
+    from ..services import proforma_to_invoice as p2i
+    from datetime import date as _date
+
+    xml = wfirma_client.fetch_invoice_xml(proforma_id)
+    snap = p2i.parse_proforma_xml(xml)
+    # Default series id = preserve source proforma's series. Operator
+    # may pass an override at execute time via the request body if
+    # they need to change series (e.g. WDT vs proforma).
+    series_id = (snap.series_id or "").strip()
+    plan = p2i.build_final_invoice_plan(
+        snap,
+        final_series_id      = series_id or "0",   # validated below if "0"
+        invoice_date         = _date.today(),
+        operator_description = "",
+    )
+    if not plan.series_id or plan.series_id == "0":
+        raise ValueError(
+            f"source proforma {snap.proforma_number!r} has no series id "
+            "— cannot infer final-invoice series. Operator must set "
+            "series_id explicitly."
+        )
+    plan_xml = p2i.build_final_invoice_xml(plan)
+    return {"snap": snap, "plan": plan, "plan_xml": plan_xml}
+
+
+@router.get(
+    "/to-invoice-preview/{batch_id}/{client_name:path}",
+    dependencies=[_auth],
+)
+def proforma_to_invoice_preview(
+    batch_id: str, client_name: str,
+) -> JSONResponse:
+    """
+    Read-only preview of the Proforma → Invoice conversion plan.
+
+    Returns the planned final-invoice XML + a structured summary. Never
+    calls wFirma's invoices/add. Never writes proforma_invoice_links.
+
+    Blocked when:
+      • No local proforma_drafts row for (batch, client).
+      • Draft is not in ``issued`` status.
+      • Existing proforma_invoice_links row already converted this
+        proforma to an invoice (avoids the operator clicking Convert
+        on an already-converted Proforma).
+    """
+    cn = _validate_args(batch_id, client_name)
+    pid, err = _gather_conversion_inputs(batch_id, cn)
+    if err:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": [err],
+        })
+    if _link_already_exists(pid):
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "wfirma_proforma_id": pid,
+            "blocking_reasons": [
+                f"proforma_id {pid!r} already has a conversion link — "
+                "refusing duplicate conversion"
+            ],
+        })
+
+    try:
+        plan_data = _build_conversion_plan(pid, operator="")
+    except Exception as exc:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "wfirma_proforma_id": pid,
+            "blocking_reasons": [
+                f"plan build failed: {type(exc).__name__}: {exc}"
+            ],
+        })
+
+    snap = plan_data["snap"]
+    plan = plan_data["plan"]
+    return JSONResponse({
+        "ok":                  True,
+        "status":              "preview",
+        "batch_id":            batch_id,
+        "client_name":         cn,
+        "wfirma_proforma_id":  pid,
+        "summary": {
+            "source_proforma_number":   snap.proforma_number,
+            "source_proforma_total":    str(snap.total),
+            "currency":                 snap.currency,
+            "contractor_id":            plan.contractor_id,
+            "contractor_receiver_id":   plan.contractor_receiver_id or "",
+            "ship_to_preserved_from_proforma": bool(plan.contractor_receiver_id),
+            "series_id":                plan.series_id,
+            "line_count":               len(plan.contents),
+            "expected_total":           str(plan.expected_total),
+            "back_reference":           plan.description,
+            "final_date":               plan.date,
+        },
+        "plan_xml":            plan_data["plan_xml"],
+        "warning": (
+            "Manual final invoice action. Confirming will create a real "
+            "wFirma invoice and write a Proforma→Invoice link."
+        ),
+    })
+
+
+class _FinalInvoiceConfirmReq(_BaseModel):
+    confirm:                str
+    operator_description:   Optional[str] = ""
+    final_series_id:        Optional[str] = ""   # if blank, copy source proforma series
+
+
+@router.post(
+    "/to-invoice/{batch_id}/{client_name:path}",
+    dependencies=[_auth],
+)
+def proforma_to_invoice(
+    batch_id:    str,
+    client_name: str,
+    body:        _FinalInvoiceConfirmReq,
+    x_operator:  Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Convert an issued Proforma to a final wFirma invoice. Manual
+    operator action — never auto-fired.
+
+    Required:
+      • settings.wfirma_create_invoice_allowed = true
+      • body.confirm == "YES_CREATE_FINAL_INVOICE_FROM_PROFORMA"
+      • X-Operator header (non-empty)
+      • Local proforma_drafts row in ``issued`` status
+      • No existing proforma_invoice_links row for this proforma_id
+
+    Flow (each step gates the next; stops on first failure):
+      1. Validate gates.
+      2. Look up local proforma_drafts → wfirma_proforma_id.
+      3. Live-fetch the proforma XML from wFirma.
+      4. Parse → build FinalInvoicePlan (preserves contractor_receiver).
+      5. Insert pending link row (UNIQUE on proforma_id catches races).
+      6. POST invoices/add with the planned XML.
+      7. Mark link 'issued' with the new wfirma_invoice_id and number.
+    """
+    cn = _validate_args(batch_id, client_name)
+    operator = (x_operator or "").strip()
+
+    # 1a. Settings gate
+    if not settings.wfirma_create_invoice_allowed:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": [
+                "WFIRMA_CREATE_INVOICE_ALLOWED=false — flip the flag and "
+                "restart to enable manual conversion"
+            ],
+        })
+
+    # 1b. Confirm token
+    if (body.confirm or "").strip() != _FINAL_INVOICE_CONFIRM_TOKEN:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": [
+                f"confirm token missing or wrong — must be "
+                f"{_FINAL_INVOICE_CONFIRM_TOKEN!r}"
+            ],
+        })
+
+    # 1c. Operator header
+    if not operator:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": ["X-Operator header is required"],
+        })
+
+    # 2. Local draft lookup
+    pid, err = _gather_conversion_inputs(batch_id, cn)
+    if err:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": [err],
+        })
+
+    # 2b. Duplicate-conversion guard (pre-flight; UNIQUE catches races
+    # at insert time too).
+    if _link_already_exists(pid):
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "wfirma_proforma_id": pid,
+            "blocking_reasons": [
+                f"proforma_id {pid!r} already has a conversion link — "
+                "refusing duplicate conversion"
+            ],
+        })
+
+    # 3+4. Fetch + parse + plan
+    try:
+        from ..services import proforma_to_invoice as p2i
+        from ..services import proforma_invoice_link_db as plink
+        from datetime import date as _date
+
+        proforma_xml = wfirma_client.fetch_invoice_xml(pid)
+        snap = p2i.parse_proforma_xml(proforma_xml)
+        series_id = (body.final_series_id or "").strip() or (snap.series_id or "")
+        if not series_id or series_id == "0":
+            return JSONResponse({
+                "ok":               False,
+                "status":           "blocked",
+                "batch_id":         batch_id,
+                "client_name":      cn,
+                "wfirma_proforma_id": pid,
+                "blocking_reasons": [
+                    "final_series_id is required — source proforma "
+                    f"{snap.proforma_number!r} has no series id and the "
+                    "operator did not supply one in the request body"
+                ],
+            })
+        plan = p2i.build_final_invoice_plan(
+            snap,
+            final_series_id      = series_id,
+            invoice_date         = _date.today(),
+            operator_description = (body.operator_description or "").strip(),
+        )
+    except Exception as exc:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "wfirma_proforma_id": pid,
+            "blocking_reasons": [
+                f"plan build failed: {type(exc).__name__}: {exc}"
+            ],
+        })
+
+    # 4b. Optional receiver preflight (Step-3-style). Only fires when
+    # the plan carries a contractor_receiver — guarantees that we never
+    # POST a final invoice with a stale receiver id.
+    rcv_id = (plan.contractor_receiver_id or "").strip()
+    if rcv_id:
+        try:
+            rcv = wfirma_client.fetch_contractor_by_id(rcv_id)
+        except Exception as exc:
+            return JSONResponse({
+                "ok":               False,
+                "status":           "blocked",
+                "batch_id":         batch_id,
+                "client_name":      cn,
+                "wfirma_proforma_id": pid,
+                "blocking_reasons": [
+                    f"receiver preflight failed: {type(exc).__name__}: {exc}"
+                ],
+            })
+        if not rcv.ok:
+            return JSONResponse({
+                "ok":               False,
+                "status":           "blocked",
+                "batch_id":         batch_id,
+                "client_name":      cn,
+                "wfirma_proforma_id": pid,
+                "blocking_reasons": [
+                    f"receiver contractor id {rcv_id!r} not found in "
+                    f"wFirma — {rcv.error or 'unavailable'}"
+                ],
+            })
+
+    plan_xml = p2i.build_final_invoice_xml(plan)
+
+    # 5. Insert pending link row (UNIQUE guard catches races).
+    link_db = settings.storage_root / "proforma_links.db"
+    pending = plink.ProformaInvoiceLink(
+        proforma_id     = pid,
+        proforma_number = snap.proforma_number,
+        converted_at    = "",      # helper stamps if blank
+        operator        = operator,
+        source_total    = snap.total,
+        currency        = snap.currency,
+        status          = "pending",
+    )
+    try:
+        plink.create_pending_link(link_db, pending)
+    except plink.ProformaAlreadyConverted as exc:
+        return JSONResponse({
+            "ok":               False,
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "wfirma_proforma_id": pid,
+            "blocking_reasons": [str(exc)],
+        })
+
+    # 6. Live wFirma invoices/add.
+    try:
+        http_status, response_text = wfirma_client._http_request(
+            "POST", "invoices", "add", plan_xml,
+        )
+        if http_status >= 400:
+            raise RuntimeError(
+                f"invoices/add HTTP {http_status}: {response_text[:200]}"
+            )
+        code, desc = wfirma_client._parse_status(response_text)
+        if code != "OK":
+            raise RuntimeError(
+                f"invoices/add wFirma status={code}: {desc}"
+            )
+        import xml.etree.ElementTree as _ET
+        root = _ET.fromstring(response_text)
+        node = root.find(".//invoice")
+        if node is None:
+            raise RuntimeError("invoices/add: no <invoice> in response")
+        wfirma_inv_id  = (node.findtext("id") or "").strip()
+        wfirma_inv_num = (
+            node.findtext("fullnumber")
+            or node.findtext("full_number")
+            or node.findtext("number")
+            or ""
+        )
+        if not wfirma_inv_id or not wfirma_inv_num:
+            raise RuntimeError(
+                f"invoices/add response missing id ({wfirma_inv_id!r}) "
+                f"or fullnumber ({wfirma_inv_num!r})"
+            )
+    except Exception as exc:
+        try:
+            plink.mark_failed(link_db, pid,
+                               notes=f"{type(exc).__name__}: {exc}"[:500])
+        except Exception:
+            pass
+        return JSONResponse({
+            "ok":               False,
+            "status":           "failed",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "wfirma_proforma_id": pid,
+            "error":            f"{type(exc).__name__}: {exc}",
+        })
+
+    # 7. Promote link to issued. The expected_total comes from wFirma's
+    # own recalculation of the line items; we trust it as the canonical
+    # value and store it alongside the source_total for audit.
+    link_marked_issued = False
+    try:
+        plink.mark_issued(
+            link_db, pid,
+            invoice_id     = wfirma_inv_id,
+            invoice_number = wfirma_inv_num,
+            invoice_total  = plan.expected_total,
+            notes          = (f"converted by {operator} from proforma "
+                              f"{snap.proforma_number}")[:500],
+        )
+        link_marked_issued = True
+    except Exception as exc:
+        log.warning("[%s] proforma->invoice link mark_issued failed: %s",
+                    batch_id, exc)
+
+    # 8. Append-only audit hardening: emit a `proforma_converted_to_invoice`
+    # timeline event so audit.json carries proof of the manual conversion.
+    # Fires ONLY after the live invoice was created AND the link row was
+    # marked issued. Never fires for blocked / failed paths or for the
+    # rare case where mark_issued itself raised. Idempotent on
+    # (batch_id, wfirma_proforma_id, wfirma_invoice_id).
+    if link_marked_issued:
+        try:
+            from ..services.audit_persist import (
+                record_proforma_converted_to_invoice,
+            )
+            from ..core.config import settings as _s
+            _audit_path = (_s.storage_root / "outputs" / batch_id
+                            / "audit.json")
+            record_proforma_converted_to_invoice(
+                _audit_path,
+                batch_id           = batch_id,
+                client_name        = cn,
+                wfirma_proforma_id = pid,
+                wfirma_invoice_id  = wfirma_inv_id,
+                invoice_number     = wfirma_inv_num,
+                operator           = operator,
+                source             = "manual_convert_button",
+            )
+        except Exception as _exc:
+            log.warning("[%s] convert audit append skipped: %s",
+                        batch_id, _exc)
+
+    return JSONResponse({
+        "ok":                       True,
+        "status":                   "issued",
+        "batch_id":                 batch_id,
+        "client_name":              cn,
+        "wfirma_proforma_id":       pid,
+        "wfirma_invoice_id":        wfirma_inv_id,
+        "wfirma_invoice_number":    wfirma_inv_num,
+        "currency":                 plan.currency,
+        "expected_total":           str(plan.expected_total),
+        "contractor_receiver_id":   plan.contractor_receiver_id or "",
+        "operator":                 operator,
+    })
+
+
+# ── Phase 2 — read-only editable-draft endpoints ─────────────────────────────
+
+def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
+    """Compact projection for the batch listing endpoint. Excludes the big
+    JSON blobs so the listing stays cheap."""
+    return {
+        "id":                         d.id,
+        "batch_id":                   d.batch_id,
+        "client_name":                d.client_name,
+        "draft_state":                d.draft_state,
+        "draft_version":              d.draft_version,
+        "currency":                   d.currency,
+        "wfirma_proforma_id":         d.wfirma_proforma_id,
+        "wfirma_proforma_fullnumber": d.wfirma_proforma_fullnumber,
+        "supersedes_draft_id":        d.supersedes_draft_id,
+        "superseded_by_draft_id":     d.superseded_by_draft_id,
+        "approved_at":                d.approved_at,
+        "approved_by":                d.approved_by,
+        "posted_at":                  d.posted_at,
+        "locked_at":                  d.locked_at,
+        "created_at":                 d.created_at,
+        "updated_at":                 d.updated_at,
+    }
+
+
+def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
+    """Full editable payload — parses the JSON blobs into native lists/dicts
+    so the dashboard can render without a second decode step."""
+    def _safe_loads(blob: str, default):
+        try:
+            v = json.loads(blob or "")
+        except Exception:
+            return default
+        return v if v is not None else default
+
+    raw_lines = _safe_loads(d.editable_lines_json, [])
+    if not isinstance(raw_lines, list):
+        raw_lines = []
+    # Phase 3 — every line surfaced to the dashboard carries a stable
+    # line_id so PATCH-by-id is unambiguous. We do NOT persist this back
+    # here (read-only projection); update_draft_line writes a normalised
+    # copy on its own.
+    editable_lines = pildb._ensure_line_ids(raw_lines)
+
+    return {
+        **_draft_to_summary(d),
+        "remarks":               d.remarks,
+        "buyer_override":        _safe_loads(d.buyer_override_json,    {}),
+        "ship_to_override":      _safe_loads(d.ship_to_override_json,  {}),
+        "payment_terms":         _safe_loads(d.payment_terms_json,     {}),
+        "editable_lines":        editable_lines,
+        "service_charges":       _safe_loads(d.service_charges_json,   []),
+        # Legacy/source-of-truth for the wFirma posting payload — kept for
+        # debug/operator visibility. The editable fields above are what the
+        # dashboard should edit; source_lines is read-only history.
+        "source_lines":          _safe_loads(d.source_lines_json,      []),
+        "notes":                 d.notes,
+        "exchange_rate":         d.exchange_rate,
+        "status_legacy":         d.status,
+    }
+
+
+@router.get("/drafts/{batch_id}", dependencies=[_auth])
+def list_proforma_drafts(batch_id: str) -> JSONResponse:
+    """List every editable Proforma Draft for *batch_id* (oldest first).
+
+    Read-only. Returns a compact summary per draft (no JSON blobs).
+    Empty list if the batch has no drafts. Never raises 404 — the
+    operator may want to render an empty pane.
+    """
+    if not (batch_id or "").strip():
+        raise HTTPException(status_code=400, detail="batch_id is required")
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="invalid batch_id")
+    drafts = pildb.list_drafts_for_batch(_proforma_db_path(), batch_id)
+    return JSONResponse({
+        "ok":       True,
+        "batch_id": batch_id,
+        "drafts":   [_draft_to_summary(d) for d in drafts],
+        "count":    len(drafts),
+    })
+
+
+@router.get("/draft/{draft_id}", dependencies=[_auth])
+def get_proforma_draft(draft_id: int) -> JSONResponse:
+    """Return the full editable payload for a single draft.
+
+    Read-only. 404 if no draft with this id exists.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    return JSONResponse({
+        "ok":    True,
+        "draft": _draft_to_full(d),
+    })
+
+
+@router.get("/draft/{draft_id}/events", dependencies=[_auth])
+def get_proforma_draft_events(draft_id: int) -> JSONResponse:
+    """Return the chronological event log for a draft.
+
+    Read-only. 404 if no draft with this id exists. Empty ``events`` is
+    valid (a draft created via a non-Phase-2 path may have no events).
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    events = pildb.list_draft_events(_proforma_db_path(), int(draft_id))
+    return JSONResponse({
+        "ok":       True,
+        "draft_id": int(draft_id),
+        "events":   events,
+        "count":    len(events),
+    })
+
+
+# ── Phase 3 — editable mutation endpoints ───────────────────────────────────
+#
+# All four write endpoints share:
+#   - X-Operator header (required, non-empty)
+#   - expected_updated_at (optimistic-lock; in body for PATCH/POST,
+#     query param for DELETE)
+#   - 404 when the draft id is unknown
+#   - 409 on lock mismatch (DraftConflict) or non-editable state
+#     (DraftNotEditable)
+#   - 400 on validation failure
+#   - response shape: {ok: True, draft: <full payload>}
+
+def _require_operator(x_operator: Optional[str]) -> str:
+    op = (x_operator or "").strip()
+    if not op:
+        raise HTTPException(
+            status_code=400,
+            detail="X-Operator header is required for draft mutations",
+        )
+    return op
+
+
+def _draft_edit_dispatch(
+    draft_id: int,
+    operation,                     # callable: () -> ProformaDraft
+) -> JSONResponse:
+    """Run a draft mutation and translate domain errors → HTTP."""
+    try:
+        refreshed = operation()
+    except pildb.DraftNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except pildb.DraftConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except pildb.DraftNotEditable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse({
+        "ok":    True,
+        "draft": _draft_to_full(refreshed),
+    })
+
+
+@router.patch("/draft/{draft_id}", dependencies=[_auth])
+def patch_proforma_draft(
+    draft_id:  int,
+    body:      Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """PATCH the editable top-level fields of a draft.
+
+    Body shape::
+
+        {
+          "expected_updated_at": "<iso-utc>",
+          "patch": {"remarks": "...", "payment_terms": {...}, ...}
+        }
+
+    Allowed patch keys: remarks, buyer_override, ship_to_override,
+    payment_terms, currency, exchange_rate.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    patch    = body.get("patch") or {}
+    return _draft_edit_dispatch(draft_id, lambda: pildb.update_draft_fields(
+        _proforma_db_path(),
+        int(draft_id),
+        patch,
+        operator,
+        expected,
+    ))
+
+
+@router.patch("/draft/{draft_id}/lines/{line_id}", dependencies=[_auth])
+def patch_proforma_draft_line(
+    draft_id:  int,
+    line_id:   int,
+    body:      Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """PATCH a single editable line.
+
+    Body::
+        {"expected_updated_at": "...", "patch": {"qty": 3, "unit_price": 10.0}}
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(line_id, int) or line_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid line_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    patch    = body.get("patch") or {}
+    return _draft_edit_dispatch(draft_id, lambda: pildb.update_draft_line(
+        _proforma_db_path(),
+        int(draft_id), int(line_id),
+        patch,
+        operator,
+        expected,
+    ))
+
+
+@router.post("/draft/{draft_id}/service-charges", dependencies=[_auth])
+def post_proforma_draft_service_charge(
+    draft_id:  int,
+    body:      Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Append a service charge.
+
+    Body::
+        {
+          "expected_updated_at": "...",
+          "charge": {"charge_type":"freight","amount":50,"currency":"EUR",
+                     "label":"DHL fee"}
+        }
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    charge   = body.get("charge") or {}
+    return _draft_edit_dispatch(draft_id, lambda: pildb.add_draft_service_charge(
+        _proforma_db_path(),
+        int(draft_id),
+        charge,
+        operator,
+        expected,
+    ))
+
+
+# ── Phase 4 — lifecycle controls + line add/remove ─────────────────────────
+
+@router.post("/draft/{draft_id}/approve", dependencies=[_auth])
+def approve_proforma_draft(
+    draft_id:  int,
+    body:      Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Lock a draft as ``approved``.
+
+    Body::
+        {
+          "expected_updated_at": "...",
+          "confirm_token": "YES_APPROVE_LOCAL_PROFORMA_DRAFT"
+        }
+
+    Allowed from: draft, editing, post_failed.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    token    = str(body.get("confirm_token") or "")
+    return _draft_edit_dispatch(draft_id, lambda: pildb.approve_draft(
+        _proforma_db_path(),
+        int(draft_id),
+        operator,
+        expected,
+        confirm_token=token,
+    ))
+
+
+@router.post("/draft/{draft_id}/re-open", dependencies=[_auth])
+def reopen_proforma_draft(
+    draft_id:  int,
+    body:      Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Move an approved draft back to ``editing``.
+
+    Body::
+        {
+          "expected_updated_at": "...",
+          "confirm_token": "YES_REOPEN_LOCAL_PROFORMA_DRAFT"
+        }
+
+    Allowed only from: approved.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    token    = str(body.get("confirm_token") or "")
+    return _draft_edit_dispatch(draft_id, lambda: pildb.reopen_draft(
+        _proforma_db_path(),
+        int(draft_id),
+        operator,
+        expected,
+        confirm_token=token,
+    ))
+
+
+@router.post("/draft/{draft_id}/cancel", dependencies=[_auth])
+def cancel_proforma_draft(
+    draft_id:  int,
+    body:      Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Mark a draft ``cancelled`` (LOCAL only — does NOT delete a wFirma
+    Proforma; for that use the existing ``cancel-issued-for-reissue`` route).
+
+    Body::
+        {"expected_updated_at": "...", "reason": "client withdrew order"}
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    reason   = str(body.get("reason") or "")
+    return _draft_edit_dispatch(draft_id, lambda: pildb.cancel_draft(
+        _proforma_db_path(),
+        int(draft_id),
+        operator,
+        expected,
+        reason=reason,
+    ))
+
+
+@router.post("/draft/{draft_id}/reset-from-sales-packing",
+             dependencies=[_auth])
+def reset_proforma_draft_from_sales_packing(
+    draft_id:  int,
+    body:      Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Rebuild ``editable_lines`` from the LATEST sales_packing_lines for
+    this draft's batch+client.
+
+    Body::
+        {"expected_updated_at": "...", "reset_all": false}
+
+    With ``reset_all=true``, buyer/ship-to/payment-terms/remarks/
+    service-charges are also wiped.
+
+    Allowed only in editable states (draft / editing / post_failed).
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    reset_all = bool(body.get("reset_all") or False)
+
+    # Fetch the draft so we know which batch+client to pull from.
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    # Resolve sales_packing_lines for this batch+client. Filter
+    # client-side so we don't add a new doc_db helper.
+    all_rows = ddb.get_sales_packing_lines(d.batch_id) or []
+    target = (d.client_name or "").strip().upper()
+    matched = [r for r in all_rows
+                if (r.get("client_name") or "").strip().upper() == target]
+
+    # Reshape sales_packing_lines columns into the helper's input shape.
+    sales_lines = [
+        {
+            "product_code": r.get("product_code") or "",
+            "design_no":    r.get("design_no") or "",
+            "qty":          r.get("quantity") or 0,
+            "unit_price":   r.get("unit_price") or 0,
+            "currency":     (r.get("currency") or d.currency or "").upper(),
+            "price_source": r.get("price_source") or "",
+            "client_ref":   r.get("client_ref") or "",
+        }
+        for r in matched
+    ]
+    return _draft_edit_dispatch(draft_id, lambda: pildb.reset_draft_from_sales_packing(
+        _proforma_db_path(),
+        int(draft_id),
+        operator,
+        expected,
+        sales_lines=sales_lines,
+        reset_all=reset_all,
+    ))
+
+
+@router.post("/draft/{draft_id}/lines", dependencies=[_auth])
+def post_proforma_draft_line(
+    draft_id:  int,
+    body:      Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Append a new editable line.
+
+    Body::
+        {
+          "expected_updated_at": "...",
+          "line": {"product_code":"X","qty":1,"unit_price":10,"currency":"EUR"}
+        }
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+    line     = body.get("line") or {}
+    return _draft_edit_dispatch(draft_id, lambda: pildb.add_draft_line(
+        _proforma_db_path(),
+        int(draft_id),
+        line,
+        operator,
+        expected,
+    ))
+
+
+@router.delete("/draft/{draft_id}/lines/{line_id}", dependencies=[_auth])
+def delete_proforma_draft_line(
+    draft_id:             int,
+    line_id:              int,
+    expected_updated_at:  str = "",
+    force:                bool = False,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Remove a line. ``force=true`` is required to remove the last line."""
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(line_id, int) or line_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid line_id")
+    operator = _require_operator(x_operator)
+    return _draft_edit_dispatch(draft_id, lambda: pildb.remove_draft_line(
+        _proforma_db_path(),
+        int(draft_id),
+        int(line_id),
+        operator,
+        str(expected_updated_at or ""),
+        force=bool(force),
+    ))
+
+
+@router.delete("/draft/{draft_id}/service-charges/{charge_id}",
+               dependencies=[_auth])
+def delete_proforma_draft_service_charge(
+    draft_id:             int,
+    charge_id:            int,
+    expected_updated_at:  str = "",
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Remove a service charge by id.
+
+    ``expected_updated_at`` is supplied as a query parameter (DELETE has
+    no body in our convention)."""
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(charge_id, int) or charge_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid charge_id")
+    operator = _require_operator(x_operator)
+    return _draft_edit_dispatch(draft_id, lambda: pildb.remove_draft_service_charge(
+        _proforma_db_path(),
+        int(draft_id),
+        int(charge_id),
+        operator,
+        str(expected_updated_at or ""),
+    ))
+
+
+# ── Phase 5 — operator-driven posting to wFirma ────────────────────────────
+#
+# Single endpoint: POST /api/v1/proforma/draft/{draft_id}/post
+#
+# Hard rules:
+#   - Source of truth is the persisted draft. NEVER re-read sales_packing_lines
+#     for prices/qty/currency in this path. Master-data lookups (wfirma_db
+#     product/customer, vat-context resolver, receiver preflight) are
+#     allowed.
+#   - Service charges block posting until the wFirma service-product
+#     mapping ships (Phase 6).
+#   - Single-currency drafts only.
+#   - Idempotent on draft_id: a draft with wfirma_proforma_id set, or in
+#     state posting/posted, returns 409 with no wFirma call.
+#   - approved → posting commit happens BEFORE the wFirma call; any
+#     subsequent failure transitions to post_failed (never silently back).
+
+
+def _post_validation_error(draft_id: int, msg: str) -> JSONResponse:
+    """Pre-commit validation failure: no wFirma call, no state change.
+    Returns ``{ok:false, status:"blocked", ...}`` shape mirroring the
+    legacy /create route so dashboard rendering can converge."""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "ok":               False,
+            "status":           "blocked",
+            "draft_id":         int(draft_id),
+            "blocking_reasons": [msg],
+        },
+    )
+
+
+def _build_proforma_request_from_draft(
+    draft: "pildb.ProformaDraft",
+) -> "wfirma_client.ProformaRequest":
+    """Build a ``ProformaRequest`` strictly from persisted draft fields.
+
+    Pricing, quantity, currency, product_code come from
+    ``editable_lines_json`` only — no live preview, no sales_packing_lines.
+    Master-data lookups (wfirma_customer_id, wfirma_product_id, vat_code_id,
+    receiver id) ARE made — these are static references, not pricing.
+
+    Raises ``ValueError`` for any missing/inconsistent input. The caller
+    must surface the message verbatim as a blocking reason — never as a 500.
+    """
+    client_name = (draft.client_name or "").strip()
+    if not client_name:
+        raise ValueError("draft has no client_name")
+
+    # Parse lines
+    try:
+        lines_raw = json.loads(draft.editable_lines_json or "[]") or []
+    except Exception:
+        raise ValueError("editable_lines_json is not valid JSON")
+    if not isinstance(lines_raw, list) or not lines_raw:
+        raise ValueError("editable_lines_json must be a non-empty list")
+
+    # Service-charge block
+    try:
+        charges = json.loads(draft.service_charges_json or "[]") or []
+    except Exception:
+        charges = []
+    if charges:
+        raise ValueError(
+            "service_charges present but wFirma service-product mapping not "
+            "configured — remove the charges or wait for Phase 6 wiring"
+        )
+
+    # Single-currency check
+    line_ccys = {(ln.get("currency") or "").upper() for ln in lines_raw
+                  if (ln.get("currency") or "").strip()}
+    if len(line_ccys) > 1:
+        raise ValueError(
+            f"draft has mixed line currencies {sorted(line_ccys)}; "
+            "Proforma posting requires a single currency across all lines"
+        )
+    draft_ccy = (draft.currency or "").strip().upper()
+    if line_ccys and draft_ccy and next(iter(line_ccys)) != draft_ccy:
+        raise ValueError(
+            f"draft.currency={draft_ccy!r} disagrees with line currency "
+            f"{next(iter(line_ccys))!r}"
+        )
+    currency = (next(iter(line_ccys)) if line_ccys else draft_ccy) or "PLN"
+
+    # Per-line validation (qty>0, unit_price>=0)
+    for idx, ln in enumerate(lines_raw, start=1):
+        try:
+            q = float(ln.get("qty") or 0)
+        except (TypeError, ValueError):
+            raise ValueError(f"line {idx}: qty must be numeric")
+        if q <= 0:
+            raise ValueError(f"line {idx}: qty must be > 0")
+        try:
+            up = float(ln.get("unit_price") or 0)
+        except (TypeError, ValueError):
+            raise ValueError(f"line {idx}: unit_price must be numeric")
+        if up < 0:
+            raise ValueError(f"line {idx}: unit_price must be >= 0")
+        if not str(ln.get("product_code") or "").strip():
+            raise ValueError(f"line {idx}: product_code is required")
+
+    # Customer resolution (master-data lookup, not pricing)
+    resolution = _resolve_customer(client_name)
+    if resolution["ambiguous"]:
+        raise ValueError(
+            f"multiple wfirma customer candidates for {client_name!r}: "
+            f"{resolution['candidates']} — refusing to auto-pick"
+        )
+    cust = resolution["customer"]
+    contractor_id = resolution["wfirma_customer_id"]
+    if not contractor_id:
+        raise ValueError(
+            f"wfirma_customers has no wfirma_customer_id for {client_name!r} "
+            "(normalized "
+            f"{resolution['normalized_name']!r}) — register the mapping first"
+        )
+
+    # VAT context (live, same as legacy)
+    customer_country = ((cust or {}).get("country") or "").strip()
+    customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
+    if not customer_country or (customer_country.upper() != "PL"
+                                 and not customer_vat_id):
+        try:
+            live = wfirma_client.search_customer(client_name)
+        except Exception:
+            live = None
+        if live is not None:
+            customer_country = customer_country or (live.country or "").strip()
+            customer_vat_id  = customer_vat_id  or (live.nip     or "").strip()
+    decision = wfirma_client.decide_proforma_vat_context(
+        customer_country = customer_country,
+        customer_vat_id  = customer_vat_id,
+    )
+    if decision["context"] == "blocked":
+        raise ValueError(
+            f"vat decision blocked for {client_name!r}: {decision['reason']}"
+        )
+    try:
+        vat_code_id = wfirma_client.resolve_vat_code_id_for_context(
+            decision["vat_code"]
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"vat_code resolution failed for {decision['vat_code']!r}: {exc}"
+        )
+
+    # Per-line wfirma_good_id resolution (master-data, not pricing)
+    rlines: List[wfirma_client.ReservationLine] = []
+    missing_products: List[str] = []
+    for ln in lines_raw:
+        pc = (ln.get("product_code") or "").strip()
+        prod = wfdb.get_product(pc) if (pc and wfdb._db_path is not None) else None
+        good_id = (prod or {}).get("wfirma_product_id") or ""
+        if not good_id:
+            missing_products.append(pc or "<unknown>")
+            continue
+        rlines.append(wfirma_client.ReservationLine(
+            product_code   = pc,
+            wfirma_good_id = good_id,
+            product_name   = (ln.get("design_no") or pc),
+            qty            = float(ln.get("qty") or 0),
+            unit_price     = float(ln.get("unit_price") or 0),
+            unit           = "szt.",
+            currency       = (ln.get("currency") or currency or "PLN").upper(),
+        ))
+    if missing_products:
+        raise ValueError(
+            "wfirma_products missing wfirma_product_id for: "
+            + ", ".join(missing_products[:5])
+            + ("…" if len(missing_products) > 5 else "")
+        )
+
+    # Ship-to / Odbiorca (same logic as legacy _build_proforma_request)
+    ship_to_mode   = ((cust or {}).get("ship_to_mode") or "same_as_bill_to").lower()
+    ship_to_rcv_id = ((cust or {}).get("ship_to_wfirma_customer_id") or "").strip()
+    if ship_to_mode == "separate_contractor" and not ship_to_rcv_id:
+        raise ValueError(
+            f"ship_to_mode is 'separate_contractor' for {client_name!r} but "
+            "ship_to_wfirma_customer_id is empty"
+        )
+    if ship_to_mode == "separate_contractor" and ship_to_rcv_id == contractor_id:
+        raise ValueError(
+            f"ship_to_wfirma_customer_id equals bill-to id for {client_name!r}"
+        )
+    receiver_id = ship_to_rcv_id if ship_to_mode == "separate_contractor" else ""
+
+    return wfirma_client.ProformaRequest(
+        client_name                   = client_name,
+        client_zip                    = "",
+        client_city                   = "",
+        lines                         = rlines,
+        currency                      = currency,
+        wfirma_contractor_id          = contractor_id,
+        vat_code_id                   = vat_code_id,
+        wfirma_contractor_receiver_id = receiver_id,
+    )
+
+
+@router.post("/draft/{draft_id}/post", dependencies=[_auth])
+def post_proforma_draft_to_wfirma(
+    draft_id:  int,
+    body:      Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Post an ``approved`` local Proforma Draft to wFirma.
+
+    Body::
+        {
+          "expected_updated_at": "<iso-utc>",
+          "confirm_token": "YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA"
+        }
+
+    Outcomes:
+      - ``200 {status:"posted", wfirma_proforma_id}`` — wFirma write succeeded
+        and the local draft has been transitioned to ``posted``.
+      - ``200 {status:"failed"}`` — wFirma rejected; draft is now ``post_failed``.
+      - ``400 blocked`` — pre-commit validation failure; no wFirma call,
+        no state change.
+      - ``409`` — wrong state, stale lock, or draft already posted.
+      - ``500`` — wFirma succeeded but local persistence failed; the
+        response carries ``wfirma_proforma_id`` so the operator can
+        manually adopt via ``POST /adopt-issued/{batch}/{client}``.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator      = _require_operator(x_operator)
+    expected      = str(body.get("expected_updated_at") or "")
+    confirm_token = str(body.get("confirm_token") or "")
+
+    # ── Settings gate (no live call when disabled) ─────────────────────────
+    if not settings.wfirma_create_proforma_allowed:
+        return _post_validation_error(
+            draft_id,
+            "wfirma proforma create disabled "
+            "(WFIRMA_CREATE_PROFORMA_ALLOWED=false)",
+        )
+
+    db = _proforma_db_path()
+
+    # ── Pre-flight inspection (no state change yet) ────────────────────────
+    pre = pildb.get_draft_by_id(db, int(draft_id))
+    if pre is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    if (pre.wfirma_proforma_id or "").strip():
+        raise HTTPException(
+            status_code=409,
+            detail=f"draft {draft_id} already has wfirma_proforma_id="
+                   f"{pre.wfirma_proforma_id!r}",
+        )
+
+    # Build the wFirma request from persisted fields BEFORE start_post —
+    # this surfaces missing-mapping / mixed-currency / service-charge
+    # blockers without ever leaving the draft in `posting`.
+    try:
+        req = _build_proforma_request_from_draft(pre)
+    except ValueError as exc:
+        return _post_validation_error(draft_id, str(exc))
+
+    # Receiver preflight (live wFirma read; same as legacy /create)
+    receiver_id = (req.wfirma_contractor_receiver_id or "").strip()
+    if receiver_id:
+        try:
+            rcv = wfirma_client.fetch_contractor_by_id(receiver_id)
+        except Exception as exc:
+            return _post_validation_error(
+                draft_id,
+                f"receiver preflight failed: {type(exc).__name__}: {exc}",
+            )
+        if not rcv.ok:
+            return _post_validation_error(
+                draft_id,
+                f"receiver contractor id {receiver_id!r} not found in wFirma — "
+                f"{rcv.error or 'unavailable'}",
+            )
+
+    # ── Commit point: approved → posting ───────────────────────────────────
+    try:
+        posting = pildb.start_post(
+            db, int(draft_id), operator, expected,
+            confirm_token=confirm_token,
+        )
+    except pildb.DraftNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except pildb.DraftConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except pildb.DraftNotEditable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # ── Live wFirma call ──────────────────────────────────────────────────
+    try:
+        result = wfirma_client.create_proforma_draft(req)
+    except Exception as exc:
+        # Network / runtime / verify-after-create failure. Move to
+        # post_failed; the operator can re-open + edit + approve to retry.
+        try:
+            pildb.mark_post_failed(
+                db, int(draft_id),
+                error=f"{type(exc).__name__}: {exc}",
+                operator=operator,
+            )
+        except Exception as inner:
+            log.error("[draft %s] mark_post_failed itself failed: %s",
+                      draft_id, inner)
+        return JSONResponse({
+            "ok":          False,
+            "status":      "failed",
+            "draft_id":    int(draft_id),
+            "error":       f"{type(exc).__name__}: {exc}",
+        })
+
+    if not result.ok:
+        try:
+            pildb.mark_post_failed(
+                db, int(draft_id),
+                error=(result.error or "wfirma create_proforma_draft returned ok=false"),
+                operator=operator,
+            )
+        except Exception as inner:
+            log.error("[draft %s] mark_post_failed itself failed: %s",
+                      draft_id, inner)
+        return JSONResponse({
+            "ok":          False,
+            "status":      "failed",
+            "draft_id":    int(draft_id),
+            "error":       result.error or "unknown",
+        })
+
+    # ── wFirma success → mark posted ──────────────────────────────────────
+    wfirma_id   = result.wfirma_invoice_id or ""
+    full_number = getattr(result, "wfirma_invoice_number", "") or ""
+
+    try:
+        posted = pildb.mark_post_succeeded(
+            db, int(draft_id),
+            wfirma_proforma_id         = wfirma_id,
+            wfirma_proforma_fullnumber = full_number,
+            operator                   = operator,
+        )
+    except Exception as exc:
+        # The dangerous case: wFirma created the Proforma but our DB
+        # write failed. Record an orphan event (best effort) and return
+        # 500 with wfirma_proforma_id so the operator can adopt.
+        log.error(
+            "[draft %s] wFirma success (id=%s) but local mark_post_succeeded "
+            "failed: %s — orphan recovery required",
+            draft_id, wfirma_id, exc,
+        )
+        recorded = pildb.record_post_orphan(
+            db, int(draft_id),
+            wfirma_proforma_id = wfirma_id,
+            error              = f"{type(exc).__name__}: {exc}",
+            operator           = operator,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok":                  False,
+                "status":              "orphan",
+                "draft_id":            int(draft_id),
+                "wfirma_proforma_id":  wfirma_id,
+                "error":               f"{type(exc).__name__}: {exc}",
+                "orphan_event_recorded": bool(recorded),
+                "recovery_hint":       "use POST /api/v1/proforma/adopt-issued/"
+                                       "{batch}/{client} with the wfirma_proforma_id "
+                                       "above to re-link",
+            },
+        )
+
+    # ── Audit trail (best-effort, post-state-commit) ──────────────────────
+    try:
+        from ..services.audit_persist import record_proforma_issued
+        audit_path = settings.storage_root / "outputs" / posted.batch_id / "audit.json"
+        record_proforma_issued(
+            audit_path,
+            batch_id                   = posted.batch_id,
+            client_name                = posted.client_name,
+            wfirma_proforma_id         = wfirma_id,
+            wfirma_proforma_fullnumber = full_number,
+            line_count                 = len(json.loads(posted.editable_lines_json or "[]") or []),
+            currency                   = posted.currency or "",
+            operator                   = operator,
+        )
+    except Exception as exc:
+        log.warning("[draft %s] proforma_issued audit append skipped: %s",
+                    draft_id, exc)
+
+    return JSONResponse({
+        "ok":                         True,
+        "status":                     "posted",
+        "draft_id":                   posted.id,
+        "wfirma_proforma_id":         wfirma_id,
+        "wfirma_proforma_fullnumber": full_number,
+        "currency":                   posted.currency,
+        "draft":                      _draft_to_full(posted),
     })
