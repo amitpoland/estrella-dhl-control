@@ -20,8 +20,8 @@ Lock properties:
 """
 from __future__ import annotations
 
-import fcntl
 import logging
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,6 +30,13 @@ from typing import Generator
 from ..core.config import settings
 
 log = logging.getLogger(__name__)
+
+if sys.platform != "win32":
+    import fcntl
+    _USE_FCNTL = True
+else:
+    import msvcrt
+    _USE_FCNTL = False
 
 
 def _lock_path(batch_id: str) -> Path:
@@ -44,45 +51,70 @@ def batch_write_lock(
     """
     Acquire an exclusive per-batch lock before writing to audit.json.
 
-    Uses fcntl.flock(LOCK_EX) with a polling timeout.  The lock file is
-    automatically released when the context exits (normal return, exception,
-    or process crash — the OS closes the fd and releases the flock).
+    Uses fcntl.flock on POSIX, msvcrt.locking on Windows.
+    Auto-released on context exit, exception, or process crash.
 
     Raises TimeoutError if the lock cannot be acquired within *timeout_seconds*.
     """
     lp = _lock_path(batch_id)
     lp.parent.mkdir(parents=True, exist_ok=True)
 
-    fd = open(lp, "w")
-    try:
-        # Try non-blocking first
+    if _USE_FCNTL:
+        fd = open(lp, "w")
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (BlockingIOError, OSError):
-            # Lock held by another process — poll until timeout
-            deadline = time.monotonic() + timeout_seconds
-            acquired = False
-            while time.monotonic() < deadline:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[name-defined]
+            except (BlockingIOError, OSError):
+                deadline = time.monotonic() + timeout_seconds
+                acquired = False
+                while time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[name-defined]
+                        acquired = True
+                        break
+                    except (BlockingIOError, OSError):
+                        continue
+                if not acquired:
+                    fd.close()
+                    raise TimeoutError(
+                        f"Could not acquire batch lock for {batch_id} "
+                        f"within {timeout_seconds}s"
+                    )
+            log.debug("[batch_lock] Acquired lock for %s", batch_id)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)  # type: ignore[name-defined]
+            except Exception:
+                pass
+            fd.close()
+            log.debug("[batch_lock] Released lock for %s", batch_id)
+    else:
+        # Windows: use msvcrt byte-range lock on the lock file
+        fd = open(lp, "w")
+        deadline = time.monotonic() + timeout_seconds
+        acquired = False
+        while time.monotonic() < deadline:
+            try:
+                msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[name-defined]
+                acquired = True
+                break
+            except OSError:
                 time.sleep(0.05)
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    acquired = True
-                    break
-                except (BlockingIOError, OSError):
-                    continue
-            if not acquired:
-                fd.close()
-                raise TimeoutError(
-                    f"Could not acquire batch lock for {batch_id} "
-                    f"within {timeout_seconds}s"
-                )
-
-        log.debug("[batch_lock] Acquired lock for %s", batch_id)
-        yield
-    finally:
+        if not acquired:
+            fd.close()
+            raise TimeoutError(
+                f"Could not acquire batch lock for {batch_id} "
+                f"within {timeout_seconds}s"
+            )
+        log.debug("[batch_lock] Acquired lock for %s (win32)", batch_id)
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except Exception:
-            pass
-        fd.close()
-        log.debug("[batch_lock] Released lock for %s", batch_id)
+            yield
+        finally:
+            try:
+                msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[name-defined]
+            except Exception:
+                pass
+            fd.close()
+            log.debug("[batch_lock] Released lock for %s (win32)", batch_id)

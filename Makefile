@@ -2,7 +2,11 @@
 # ===================================
 # Prerequisites: python3, pdfplumber, requests (pip3 install pdfplumber requests)
 
-PYTHON  := python3
+ifeq ($(OS),Windows_NT)
+    PYTHON := python -X utf8
+else
+    PYTHON := python3 -X utf8
+endif
 TEST    := test_pz_regression.py
 PROC    := pz_import_processor.py
 
