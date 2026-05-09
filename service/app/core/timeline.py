@@ -107,6 +107,15 @@ EV_CARRIER_HANDED_TO_CARRIER  = "carrier_handed_to_carrier"
 EV_CARRIER_SHIPMENT_VOIDED    = "carrier_shipment_voided"
 EV_CARRIER_EXECUTE_REJECTED   = "carrier_execute_rejected"
 
+# ── Inbound carrier webhook events (DL-E1) ────────────────────────────────────
+# Emitted by routes_carrier_webhook.py after carrier_event_handler resolves an
+# inbound DHL push event. ACCEPTED == applied state transition; IGNORED ==
+# accepted but no-op (dedupe / no_shipment / illegal-transition / unknown
+# code); REJECTED == auth / format failure at the request layer.
+EV_CARRIER_WEBHOOK_ACCEPTED   = "carrier_webhook_accepted"
+EV_CARRIER_WEBHOOK_IGNORED    = "carrier_webhook_ignored"
+EV_CARRIER_WEBHOOK_REJECTED   = "carrier_webhook_rejected"
+
 _MAX_EVENTS           = 200
 
 

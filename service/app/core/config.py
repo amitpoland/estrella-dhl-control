@@ -216,5 +216,20 @@ class Settings(BaseSettings):
     # Set DEBUG_ALLOW_OLD_BATCH_FLOW=true in .env only for backward-compat testing.
     debug_allow_old_batch_flow: bool = False
 
+    # ── Carrier DHL webhook ingestion (DL-E1) ─────────────────────────────────
+    # Master switch. When False, both /api/v1/carrier/webhook/* endpoints
+    # return HTTP 503 webhook_disabled. The router is mounted regardless so
+    # the endpoints are discoverable, but they remain inert until an
+    # operator explicitly flips this flag.
+    carrier_dhl_webhook_enabled: bool = False
+    # Comma-separated CIDR list. Empty means "no IP check" (dev only).
+    # When non-empty, the events endpoint rejects requests whose source
+    # IP is outside every listed range with HTTP 403.
+    carrier_dhl_webhook_ip_allowlist: str = ""
+    # Hard cap on the size of the inbound shipments[] array on a single
+    # push. Defends against an oversized payload exhausting the 5-second
+    # DHL response budget.
+    carrier_dhl_webhook_max_shipments_per_push: int = 200
+
 
 settings = Settings()

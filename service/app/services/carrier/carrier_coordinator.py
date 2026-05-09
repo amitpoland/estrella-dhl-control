@@ -398,6 +398,127 @@ class CarrierCoordinator:
         cls.append_message(row["awb"], msg)
         return {"shipment": updated, "transition": transition}
 
+    # ── DL-E1: post-handover transitions driven by inbound carrier events ──
+    #
+    # These four methods are called by carrier_event_handler when a webhook
+    # event resolves to a state change. State-engine validation lives at the
+    # top of each method just like mark_label_printed / mark_handed_to_carrier.
+    # No method skips the engine; an illegal current state raises ValueError
+    # which the handler catches and turns into outcome="ignored" without a
+    # 5xx (DHL retry budget protection).
+
+    def record_in_transit(
+        self,
+        *,
+        carrier: str,
+        awb:     str,
+        reason:  Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Apply ``handed_to_carrier → in_transit`` from a webhook signal.
+
+        Rejects unless current state is exactly ``handed_to_carrier``.
+        State engine forbids ``in_transit → in_transit`` so retries
+        from the carrier are caught by the legality check.
+        """
+        row = self._require_row(carrier, awb)
+        if row["state"] != cse.HANDED_TO_CARRIER:
+            raise ValueError(
+                f"record_in_transit requires state "
+                f"{cse.HANDED_TO_CARRIER!r}, got {row['state']!r}"
+            )
+        cse.transition(cse.HANDED_TO_CARRIER, cse.IN_TRANSIT)
+        return self._apply_transition(
+            row=row,
+            to_state=cse.IN_TRANSIT,
+            reason=reason or "carrier-event:in_transit",
+            event_code="in_transit",
+        )
+
+    def record_delivered(
+        self,
+        *,
+        carrier: str,
+        awb:     str,
+        reason:  Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Apply ``→ delivered`` from a webhook signal.
+
+        Accepts the documented "out-of-order delivered from
+        handed_to_carrier" case. Rejects from any state where the
+        engine forbids the move (delivered/returned/voided terminals,
+        or the pre-handover band).
+        """
+        row = self._require_row(carrier, awb)
+        current = row["state"]
+        if current not in (cse.HANDED_TO_CARRIER, cse.IN_TRANSIT):
+            raise ValueError(
+                f"record_delivered requires state "
+                f"{cse.HANDED_TO_CARRIER!r} or {cse.IN_TRANSIT!r}, "
+                f"got {current!r}"
+            )
+        cse.transition(current, cse.DELIVERED)
+        return self._apply_transition(
+            row=row,
+            to_state=cse.DELIVERED,
+            reason=reason or "carrier-event:delivered",
+            event_code="delivered",
+        )
+
+    def record_returned(
+        self,
+        *,
+        carrier: str,
+        awb:     str,
+        reason:  Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Apply ``→ returned`` from a webhook signal."""
+        row = self._require_row(carrier, awb)
+        current = row["state"]
+        if current not in (cse.HANDED_TO_CARRIER, cse.IN_TRANSIT):
+            raise ValueError(
+                f"record_returned requires state "
+                f"{cse.HANDED_TO_CARRIER!r} or {cse.IN_TRANSIT!r}, "
+                f"got {current!r}"
+            )
+        cse.transition(current, cse.RETURNED)
+        return self._apply_transition(
+            row=row,
+            to_state=cse.RETURNED,
+            reason=reason or "carrier-event:returned",
+            event_code="returned",
+        )
+
+    def record_exception(
+        self,
+        *,
+        carrier:     str,
+        awb:         str,
+        reason:      Optional[str] = None,
+        status_code: str = "",
+        location:    str = "",
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """Append an informational manifest message — NO state change.
+
+        Used for DHL ``exception`` events and for any unknown
+        statusCode the translator could not map. The engine is not
+        consulted because nothing transitions; the manifest message
+        carries the raw fields so the audit trail still names the
+        external signal.
+        """
+        row = self._require_row(carrier, awb)
+        cls.append_message(row["awb"], {
+            "event_code":   "carrier_exception",
+            "from_state":   row["state"],
+            "to_state":     row["state"],
+            "actor":        self._actor,
+            "reason":       reason or "",
+            "status_code":  status_code or "",
+            "location":     location or "",
+            "description":  description or "",
+        })
+        return {"shipment": row, "transition": None}
+
     # ── read-through helpers (no state mutation) ───────────────────────────
 
     def get_shipment(self, *, carrier: str, awb: str) -> Optional[Dict[str, Any]]:

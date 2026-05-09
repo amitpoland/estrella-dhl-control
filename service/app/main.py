@@ -50,6 +50,7 @@ from .api.routes_ledgers import router as ledgers_router
 from .api.routes_carrier import router as carrier_router
 from .api.routes_carrier_proposals import router as carrier_proposals_router
 from .api.routes_carrier_actions import router as carrier_actions_router
+from .api.routes_carrier_webhook import router as carrier_webhook_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -63,6 +64,7 @@ from .services.intake_lineage     import init_intake_lineage
 from .services.proforma_service_charges_db import init as init_proforma_service_charges
 from .services.carrier.carrier_shipment_db import init_db    as init_carrier_db
 from .services.carrier.carrier_label_store import init_store as init_carrier_label_store
+from .services.carrier.carrier_event_db    import init_db    as init_carrier_event_db
 from .auth.database import init_db
 from .auth.dependencies import check_session_or_redirect
 
@@ -109,6 +111,11 @@ async def lifespan(app: FastAPI):
     # (DL-D) owns writes.
     init_carrier_db(_root / "carrier_shipments.db")
     init_carrier_label_store(_root / "carrier_labels")
+
+    # Carrier webhook ingestion (DL-E1) — events + subscriptions DB.
+    # The webhook router is mounted always but inert until
+    # settings.carrier_dhl_webhook_enabled is flipped on.
+    init_carrier_event_db(_root / "carrier_events.db")
 
     log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma / carrier)", _root)
 
@@ -227,6 +234,7 @@ app.include_router(ledgers_router)
 app.include_router(carrier_router)
 app.include_router(carrier_proposals_router)
 app.include_router(carrier_actions_router)
+app.include_router(carrier_webhook_router)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
