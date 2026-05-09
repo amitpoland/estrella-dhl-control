@@ -132,7 +132,7 @@ def _set_session_cookie(response: Response, token: str, remember: bool) -> None:
         value=token,
         httponly=True,
         samesite="lax",
-        secure=False,   # set True behind HTTPS / Cloudflare
+        secure=True,
         max_age=max_age,
         path="/",
     )
