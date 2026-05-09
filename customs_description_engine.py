@@ -636,7 +636,38 @@ def _generate_sad_json(
 
     # Count unique invoice numbers
     inv_numbers = set(line["invoice_number"] for line in lines if line["invoice_number"])
-    total_value = sum(line["line_total_usd"] for line in lines)
+
+    # SAD_READY top-level total_value_usd is the customs value (CIF), not the
+    # FOB sum of line totals. This aligns the JSON output with:
+    #   • the PDF generator's `grand_total_usd = cif_usd` (see line ~1239)
+    #   • clearance_decision.total_value_usd everywhere else in the codebase
+    #   • CLAUDE.md customs-value rules (CIF = FOB + freight + insurance)
+    #
+    # Resolution order — first non-zero source wins. Mirrors the PDF
+    # generator's cif_usd fallback chain to keep JSON and PDF in lock-step:
+    #   1. invoice_totals.total_cif_usd                  (canonical)
+    #   2. sum of per-invoice inv["cif_usd"]             (parsed invoices)
+    #   3. verification.invoice_cif_total_usd            (verifier output)
+    #   4. customs_declaration.invoice_cif_usd           (legacy audit shape)
+    #   5. sum of line_total_usd (FOB fallback)          (legacy batches)
+    #   6. 0.0                                            (no data)
+    invoice_totals_for_total = batch.get("invoice_totals") or {}
+    verification_for_total   = (
+        (batch.get("result") or {}).get("verification")
+        or batch.get("verification")
+        or {}
+    )
+    customs_decl_for_total   = batch.get("customs_declaration") or {}
+    total_value = (
+        _safe_float(invoice_totals_for_total.get("total_cif_usd"))
+        or sum(
+            _safe_float(inv.get("cif_usd") or 0) or 0.0 for inv in invoices
+        )
+        or _safe_float(verification_for_total.get("invoice_cif_total_usd"))
+        or _safe_float(customs_decl_for_total.get("invoice_cif_usd"))
+        or sum(line["line_total_usd"] for line in lines)
+        or 0.0
+    )
 
     # Source invoice hash — sha256 of the audit.json content if available
     source_hash = _compute_source_hash(batch)
