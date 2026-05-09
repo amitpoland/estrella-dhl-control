@@ -2327,6 +2327,23 @@ def calculate_landed(invoices: list, zc429: dict, nbp: dict, corrections_log: li
             line_usd         = item["total_usd"]
             qty              = item["quantity"]
 
+            # Backfill `family` and `karat` for any caller that hands
+            # calculate_landed a bare invoice item without routing it
+            # through parse_invoice first (e.g. synthetic test fixtures).
+            # Production parsing paths already assign both keys via
+            # normalize_family()/get_karat() before persisting items, so
+            # setdefault is a strict no-op for them. Without this guard,
+            # build_pl_name / build_en_name (called below) would raise
+            # KeyError: 'family' on the first synthetic line item.
+            _desc_for_naming = (
+                item.get("description_en")
+                or item.get("description")
+                or item.get("desc")
+                or ""
+            )
+            item.setdefault("family", normalize_family(_desc_for_naming))
+            item.setdefault("karat",  get_karat(_desc_for_naming))
+
             allocated_ship_usd  = line_usd * freight_rate_pct
             allocated_ship_pln  = allocated_ship_usd * usd_pln
             purchase_value_pln  = line_usd * usd_pln
