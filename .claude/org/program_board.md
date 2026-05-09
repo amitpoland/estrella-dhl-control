@@ -39,7 +39,7 @@ note explaining why.
 | Tests | `green` — 1238/1238 carrier+DHL suite, 17/17 hardening, 14/14 telemetry+E2E |
 | Telemetry | `green` — `carrier_live_fallback_to_stub` token live; webhook accept/ignore/reject events; CarrierEvent table |
 | UI | `partial` — proposal listing routes exist; operator action surface in dashboard not yet shipped |
-| Debt | `D-1`, `D-2`, `D-3` |
+| Debt | `D-1`, `D-2` (D-3 closed by ADR-017 on 2026-05-10) |
 | Live-risk gate | Production Readiness Reviewer sign-off + Operator Safety Reviewer sign-off + non-empty `carrier_dhl_webhook_ip_allowlist` + DHL sandbox handshake passed |
 | Last commit | `c5ef1e2` |
 
@@ -169,7 +169,6 @@ Coordinator pulls from this list when deciding the next campaign.
 |---|---|---|---|
 | D-1 | DHL webhook activate-call has no per-event HMAC because DHL doesn't sign — IP allowlist is the only structural mitigation (ADR-009 caveat) | Security Reviewer | P1 — review before live-prod |
 | D-2 | Operator dashboard has no carrier-actions UI; create-shipment / cancel-shipment must be invoked via API | Implementation Engineer + Dashboard Reviewer | P2 |
-| D-3 | Carrier label store retention policy is implicit (filesystem); not codified as ADR | DB / State Engineer | P2 |
 | D-4 | Pre-existing dashboard test failures predate F3.5 — `tests/test_dashboard_*.py` partials | QA Lead | P2 |
 | D-5 | Operator click events not structured-logged; click-path observability is gap | Observability Engineer | P3 |
 | D-7 | `engineering/charter.md` lists 23 roles; `org/roles.md` lists matching set but several roles have no agent definition file yet (Backend Architect, Customs Compliance, Audit Evidence, Operator Safety, Production Readiness, Gap Hunter, ADR Historian, etc.) — they execute as Coordinator passes for now | Coordinator | P3 |

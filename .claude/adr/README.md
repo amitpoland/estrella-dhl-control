@@ -75,6 +75,7 @@ What does this decision lock in for future work? What does it enable?
 | [ADR-014](ADR-014-dhl-self-clearance-arrival-followup.md) | DHL self-clearance — Poland-arrival follow-up scheduler (P3 + P4) | Accepted |
 | [ADR-015](ADR-015-dhl-self-clearance-thread-clarification.md) | DHL self-clearance — thread-based clarification (P5) | Accepted |
 | [ADR-016](ADR-016-dhl-self-clearance-sad-unlock-and-pz.md) | DHL self-clearance — SAD unlock and PZ trigger (P6 + P7) | Accepted |
+| [ADR-017](ADR-017-carrier-label-store-retention.md) | Carrier label store — retention policy (immutable evidence) | Accepted |
 
 ## When to write a new ADR
 
