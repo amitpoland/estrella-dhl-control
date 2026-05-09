@@ -48,6 +48,7 @@ from .api.routes_tracking_db import router as tracking_db_router
 from .api.routes_correction_registry import router as correction_registry_router
 from .api.routes_ledgers import router as ledgers_router
 from .api.routes_carrier import router as carrier_router
+from .api.routes_carrier_proposals import router as carrier_proposals_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -223,6 +224,7 @@ app.include_router(tracking_db_router)  # /events/* before tracking_router's /{t
 app.include_router(correction_registry_router)
 app.include_router(ledgers_router)
 app.include_router(carrier_router)
+app.include_router(carrier_proposals_router)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
