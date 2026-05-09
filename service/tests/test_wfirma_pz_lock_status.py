@@ -110,8 +110,8 @@ def test_lock_status_true_when_doc_id_set():
     assert out["recovery_required"] is False
     assert out["can_create"]        is False
     assert out["can_adopt"]         is False
-    assert out["code"]              in ("PZ_ALREADY_LINKED", "PZ_ALREADY_CREATED",
-                                         "PZ_ALREADY_ADOPTED")
+    assert out["reason"]            == "pz_doc_id_set"
+    assert out["code"]              == "PZ_ALREADY_LINKED"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -139,6 +139,32 @@ def test_lock_status_true_when_only_timeline_event():
     assert out["can_create"]        is False
     # Recovery: adopt remains TRUE so the operator can manually link the live
     # wFirma doc id back into the audit
+    assert out["can_adopt"]         is True
+
+
+def test_lock_status_recovery_required_for_adopted_terminal_event():
+    """
+    Symmetric counterpart to test_lock_status_true_when_only_timeline_event:
+    timeline records EV_WFIRMA_PZ_ADOPTED but wfirma_pz_doc_id is empty.
+    The recovery path must be triggered for the adopted-terminal sub-case
+    too, so the dashboard renders the same recovery banner with the
+    adopted-event variant of the subtitle.
+    """
+    from app.api.routes_wfirma import _compute_pz_lock_status
+    out = _compute_pz_lock_status(
+        _audit(timeline=("wfirma_pz_adopted",)),
+        preview_ready=True,
+        supplier_configured=True,
+        warehouse_configured=True,
+    )
+    assert out["locked"]            is True
+    assert out["recovery_required"] is True
+    assert out["reason"]            == "audit_write_recovery_required"
+    assert out["code"]              == "PZ_AUDIT_RECOVERY_NEEDED"
+    assert out["terminal_event"]    == "wfirma_pz_adopted"
+    assert out["wfirma_pz_doc_id"]  is None
+    assert out["pz_source"]         is None
+    assert out["can_create"]        is False
     assert out["can_adopt"]         is True
 
 

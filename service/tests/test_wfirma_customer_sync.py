@@ -127,9 +127,10 @@ def test_classify_skip_when_remote_has_no_id():
 def _mock_pages(monkeypatch, contractors):
     """
     Patch wfirma_client.list_contractors_page to return *contractors*
-    paginated in chunks of PAGE_SIZE-equivalent (any size up to len).
+    paginated by 1-indexed page number with the limit the caller chose.
     """
-    def fake_page(start, limit):
+    def fake_page(page, limit):
+        start = (page - 1) * limit
         return contractors[start:start + limit]
     monkeypatch.setattr(wc, "list_contractors_page", fake_page)
 
@@ -355,7 +356,7 @@ def test_route_sync_write_applies_only_safe_rows(client, storage, monkeypatch):
 
 
 def test_route_fetch_failure_returns_502(client, storage, monkeypatch):
-    def raiser(start, limit):
+    def raiser(page, limit):
         raise RuntimeError("contractors/find wFirma status=ERROR: boom")
     monkeypatch.setattr(wc, "list_contractors_page", raiser)
     r = client.get("/api/v1/wfirma/customers/sync-preview", headers=_auth())
@@ -395,7 +396,7 @@ def test_list_contractors_page_skips_nested_and_shadow_nodes(monkeypatch):
     def fake_http(method, module, action, body, id_suffix=None):
         return 200, _REAL_NESTED_FIXTURE
     monkeypatch.setattr(wc, "_http_request", fake_http)
-    rows = wc.list_contractors_page(start=0, limit=50)
+    rows = wc.list_contractors_page(page=1, limit=50)
     ids = [r.wfirma_id for r in rows]
     names = [r.name for r in rows]
     assert ids   == ["1001", "1002"]
@@ -409,7 +410,7 @@ def test_list_contractors_page_skips_id_zero(monkeypatch):
 </contractors><status><code>OK</code></status></api>"""
     monkeypatch.setattr(wc, "_http_request",
                         lambda *a, **k: (200, only_zero))
-    assert wc.list_contractors_page(start=0, limit=10) == []
+    assert wc.list_contractors_page(page=1, limit=10) == []
 
 
 def test_list_contractors_page_skips_blank_name(monkeypatch):
@@ -419,7 +420,7 @@ def test_list_contractors_page_skips_blank_name(monkeypatch):
 </contractors><status><code>OK</code></status></api>"""
     monkeypatch.setattr(wc, "_http_request",
                         lambda *a, **k: (200, blank_name))
-    assert wc.list_contractors_page(start=0, limit=10) == []
+    assert wc.list_contractors_page(page=1, limit=10) == []
 
 
 def test_plan_sync_belt_and_braces_skips_invalid(storage, monkeypatch):
@@ -427,18 +428,95 @@ def test_plan_sync_belt_and_braces_skips_invalid(storage, monkeypatch):
     Even if list_contractors_page regressed and let bad rows through,
     plan_sync must not classify them as inserts.
     """
-    def fake_page(start, limit):
+    def fake_page(page, limit):
         bads = [
             wc.WFirmaContractor(wfirma_id="",   name="ghost",   country="PL"),
             wc.WFirmaContractor(wfirma_id="0",  name="zero",    country="PL"),
             wc.WFirmaContractor(wfirma_id="42", name="",        country="PL"),
         ]
         good = [_wf("W1", "Real Co")]
+        start = (page - 1) * limit
         return (bads + good)[start:start + limit]
     monkeypatch.setattr(wc, "list_contractors_page", fake_page)
 
     plan = wfsync.plan_sync(page_size=50)
     assert plan["total_remote"]    == 1
-    assert plan["skipped_invalid"] == 3
+    # _iter_all_contractors drops blank-id rows during dedup (id="" is
+    # not added to seen_ids), so plan_sync's belt-and-braces filter
+    # sees the remaining 2 invalid rows (id="0" and blank-name).
+    assert plan["skipped_invalid"] == 2
     assert len(plan["insert"]) == 1
     assert plan["insert"][0]["client_name"] == "Real Co"
+
+
+# ── Pagination shape + repeat detection ─────────────────────────────────────
+
+def test_list_contractors_page_xml_uses_sibling_page_and_limit(monkeypatch):
+    """
+    Body must use <page>N</page><limit>K</limit> as siblings at the
+    <parameters> root — NOT the legacy nested <page><start>...</start>
+    <limit>...</limit></page> shape (live wFirma 2026-05-06 ignored
+    that nesting and always returned the first page).
+    """
+    captured = {}
+    def fake_http(method, module, action, body, id_suffix=None):
+        captured["body"] = body
+        return 200, """<?xml version="1.0" encoding="UTF-8"?>
+<api><contractors/><status><code>OK</code></status></api>"""
+    monkeypatch.setattr(wc, "_http_request", fake_http)
+    wc.list_contractors_page(page=3, limit=50)
+    body = captured["body"]
+    assert "<page>3</page>" in body
+    assert "<limit>50</limit>" in body
+    # The legacy nested shape must not appear.
+    assert "<start>" not in body
+
+
+def test_list_contractors_page_validates_args():
+    with pytest.raises(ValueError):
+        wc.list_contractors_page(page=0, limit=50)
+    with pytest.raises(ValueError):
+        wc.list_contractors_page(page=1, limit=0)
+
+
+def test_iter_all_contractors_walks_two_pages_with_distinct_ids(storage, monkeypatch):
+    """Page 1: ids 1..3. Page 2: ids 4..5. Page 3: empty. → 5 total."""
+    pages = {
+        1: [_wf("ID1", "Co1"), _wf("ID2", "Co2"), _wf("ID3", "Co3")],
+        2: [_wf("ID4", "Co4"), _wf("ID5", "Co5")],
+        3: [],
+    }
+    def fake_page(page, limit):
+        return pages.get(page, [])
+    monkeypatch.setattr(wc, "list_contractors_page", fake_page)
+    plan = wfsync.plan_sync(page_size=3)
+    assert plan["total_remote"] == 5
+    assert plan["incomplete"]   is False
+
+
+def test_iter_all_contractors_stops_on_repeated_page(storage, monkeypatch):
+    """
+    If wFirma silently returns the same first page for every request
+    (live behaviour with wrong XML shape), the loop must terminate
+    AFTER the first page and surface incomplete=True.
+    """
+    same_page = [_wf("R1", "Repeat 1"), _wf("R2", "Repeat 2")]
+    calls = {"n": 0}
+    def fake_page(page, limit):
+        calls["n"] += 1
+        return same_page
+    monkeypatch.setattr(wc, "list_contractors_page", fake_page)
+    plan = wfsync.plan_sync(page_size=2)
+    assert plan["total_remote"] == 2     # only the unique ids landed
+    assert plan["incomplete"]   is True  # repeated-page guard fired
+    # Must have stopped after page 2 (page 1 collected, page 2 added 0 new).
+    assert calls["n"] <= 3, "loop must not iterate forever on repeated pages"
+
+
+def test_route_response_includes_incomplete_flag(client, storage, monkeypatch):
+    """sync-preview surfaces the incomplete flag in its JSON."""
+    _mock_pages(monkeypatch, [_wf("W1", "Foo")])
+    body = client.get("/api/v1/wfirma/customers/sync-preview",
+                      headers=_auth()).json()
+    assert "incomplete" in body
+    assert body["incomplete"] is False

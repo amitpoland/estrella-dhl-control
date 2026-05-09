@@ -22,7 +22,7 @@ Endpoints
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Any, List, Optional
@@ -34,11 +34,19 @@ from ..services import description_engine as deng
 from ..services import wfirma_capabilities as wfc
 from ..services import wfirma_client
 from ..services import wfirma_db as wfdb
+from ..services import wfirma_product_auto_register as _wfar
+from ..services import wfirma_customer_auto_resolve as _wfcar
 
 log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/wfirma", tags=["wfirma"])
 _auth  = Depends(require_api_key)
+
+
+def _operator_from_header(x_operator: Optional[str]) -> str:
+    """Extract operator id from the X-Operator header, fallback 'operator'.
+    Used for correction-registry attribution on operator-approved actions."""
+    return (x_operator or "").strip() or "operator"
 
 
 # ── Capabilities ──────────────────────────────────────────────────────────────
@@ -69,6 +77,129 @@ def list_customers(match_status: Optional[str] = None) -> JSONResponse:
     """List locally registered customer → wFirma customer_id mappings."""
     rows = wfdb.list_customers(match_status=match_status)
     return JSONResponse({"count": len(rows), "customers": rows})
+
+
+# ── Ship-to receiver endpoint (Step 1 of Nabywca/Odbiorca support) ─────────
+#
+# Registered BEFORE the catch-all PUT /customers/{client_name:path} so the
+# path-converter doesn't greedily swallow the /ship-to suffix. Mirrors the
+# default-currency endpoint pattern: data-only operator action, never
+# creates wFirma contractors, never touches bill-to identity fields.
+
+class _ShipToRequest(BaseModel):
+    mode: str
+    ship_to_wfirma_customer_id: Optional[str] = ""
+
+
+@router.put(
+    "/customers/{client_name:path}/ship-to",
+    dependencies=[_auth],
+)
+def set_customer_ship_to_endpoint(
+    client_name: str,
+    req:         _ShipToRequest,
+    x_operator:  Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Update ONLY ``ship_to_mode`` and ``ship_to_wfirma_customer_id`` for an
+    existing mapped customer. Never creates customers; never touches
+    ``wfirma_customer_id``, ``vat_id``, ``country``, ``match_status``,
+    ``default_currency``.
+
+    Body: ``{"mode": "separate_contractor", "ship_to_wfirma_customer_id": "..."}``
+
+    Modes:
+      - ``same_as_bill_to`` (default): no separate receiver — wFirma
+        renders ship-to from the bill-to contractor's primary address.
+      - ``bill_to_alt``: wFirma renders ship-to from the bill-to
+        contractor's own alt-address fields (must be configured in
+        wFirma master with ``different_contact_address=1``). No
+        receiver id needed.
+      - ``separate_contractor``: ship-to is a SEPARATE wFirma contractor.
+        ``ship_to_wfirma_customer_id`` is required and must already exist
+        in wFirma master (live existence check is deferred to Step 3 —
+        see Risks).
+
+    Unknown mode → 400.
+    Missing receiver id when mode=separate_contractor → 400.
+    Unknown customer → 404.
+    """
+    try:
+        result = wfdb.set_customer_ship_to(
+            client_name                = client_name,
+            mode                       = req.mode,
+            ship_to_wfirma_customer_id = (req.ship_to_wfirma_customer_id or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"customer {client_name!r} not registered in "
+                   "wfirma_customers — register the mapping first",
+        )
+    return JSONResponse({
+        "ok":          True,
+        "client_name": result["client_name"],
+        "id":          result["id"],
+        "before": {
+            "mode":                       result["before_mode"],
+            "ship_to_wfirma_customer_id": result["before_ship_to_wfirma_customer_id"],
+        },
+        "after": {
+            "mode":                       result["after_mode"],
+            "ship_to_wfirma_customer_id": result["after_ship_to_wfirma_customer_id"],
+        },
+        "operator":    (x_operator or "").strip(),
+    })
+
+
+# ── Default-currency endpoint (Proforma pricing fallback) ──────────────────
+#
+# Registered BEFORE the catch-all PUT /customers/{client_name:path} so the
+# path-converter doesn't greedily swallow the /default-currency suffix.
+
+class _DefaultCurrencyRequest(BaseModel):
+    currency: str
+
+
+@router.put(
+    "/customers/{client_name:path}/default-currency",
+    dependencies=[_auth],
+)
+def set_customer_default_currency(
+    client_name: str,
+    req:         _DefaultCurrencyRequest,
+    x_operator:  Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Update ONLY ``default_currency`` for an existing mapped customer.
+    Never creates customers; never touches ``wfirma_customer_id``,
+    ``vat_id``, ``country``, or ``match_status``.
+
+    Body: ``{"currency": "EUR"}``. Allowed values: EUR, USD, PLN, GBP,
+    CHF, JPY. Unknown currency → 400. Unknown customer → 404.
+    """
+    try:
+        result = wfdb.set_customer_default_currency(
+            client_name=client_name, currency=req.currency,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"customer {client_name!r} not registered in "
+                   "wfirma_customers — register the mapping first",
+        )
+    return JSONResponse({
+        "ok":              True,
+        "client_name":     result["client_name"],
+        "id":              result["id"],
+        "before_currency": result["before_currency"],
+        "after_currency":  result["after_currency"],
+        "operator":        (x_operator or "").strip(),
+    })
 
 
 @router.put("/customers/{client_name:path}", dependencies=[_auth])
@@ -406,6 +537,139 @@ def create_good_from_product_code(
     })
 
 
+# ── Batch wFirma product auto-registration (dry-run + write) ───────────────
+#
+# Compose the existing single-product create flow over an entire batch's
+# invoice_lines. The dry-run endpoint NEVER calls goods/add — it only
+# searches wFirma for each code and reports missing ones. The write
+# endpoint honors the existing wfirma_create_product_allowed flag.
+# No service-actor bypass; no observer (those are deliberately deferred).
+
+
+@router.post("/goods/auto-register-preview/{batch_id:path}",
+             dependencies=[_auth])
+def auto_register_preview(
+    batch_id: str,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Read-only preview of what auto-registration would do for *batch_id*.
+
+    Searches wFirma for each unique invoice-line product_code, mirrors
+    any existing matches into the local wfirma_products table, and
+    reports the rest as ``missing``. NEVER calls goods/add. Safe to
+    invoke at any time, including before the operator flips
+    WFIRMA_CREATE_PRODUCT_ALLOWED.
+
+    Mirrored existing matches log a `product_mapping_override`
+    correction (operator-approved, append-only) — pure missing rows
+    do not log.
+    """
+    if not (batch_id or "").strip() or "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+    return JSONResponse(_wfar.ensure_products_for_batch(
+        batch_id, dry_run=True,
+        operator=_operator_from_header(x_operator),
+    ))
+
+
+@router.post("/goods/auto-register/{batch_id:path}", dependencies=[_auth])
+def auto_register_write(
+    batch_id: str,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Write-mode batch auto-registration. Honors
+    ``settings.wfirma_create_product_allowed`` — when the flag is off,
+    every missing product is reported as ``blocked`` and no goods/add
+    is called. Idempotent: existing products short-circuit to
+    ``existing_mapped`` via the search-first step.
+
+    Each ``existing_mapped`` and ``created`` row records an
+    operator-approved `product_mapping_override` in the correction
+    registry. ``blocked`` / ``failed`` / ``missing`` rows do not log.
+    """
+    if not (batch_id or "").strip() or "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+    return JSONResponse(_wfar.ensure_products_for_batch(
+        batch_id, dry_run=False,
+        operator=_operator_from_header(x_operator),
+    ))
+
+
+# ── Batch wFirma customer auto-resolve (read-only preview) ────────────────
+#
+# Walk distinct sales-side client names for the batch, normalize them,
+# search wFirma's local mirror first, then fall back to a live
+# contractors/find search (read-only). Successful matches are mirrored
+# into both wfirma_customers (master) and wfirma_customer_mapping
+# (parallel registry). NEVER calls create_customer; the single-customer
+# create path remains operator-only.
+
+
+class CustomerAutoCreateRequest(BaseModel):
+    """Body for the operator-triggered customer auto-create endpoint."""
+    client_name:  str
+    vat_id:       str = ""
+    country_code: str = ""
+
+
+@router.post("/customers/auto-create-from-name", dependencies=[_auth])
+def customer_auto_create_from_name(
+    req: CustomerAutoCreateRequest,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Operator-triggered single-customer create with mandatory
+    resolver-gate. Pre-create gate:
+
+      • Re-runs the VAT-first ambiguity-safe resolver.
+      • REFUSES create when the resolver returns any of:
+          exact_match, normalized_match, prefix_match,
+          reverse_prefix_match, ambiguous, ambiguous_vat
+        (resolver already mirrored the safe match into the local
+        registries, or there's enough uncertainty to require operator
+        review).
+      • Only ``status="missing"`` proceeds to wFirma.
+
+    Honors ``settings.wfirma_create_customer_allowed`` (default False);
+    no service-actor bypass. On wFirma confirmed success, mirrors into
+    both ``wfirma_customers`` (master) and
+    ``reservation_queue.wfirma_customer_mapping`` (parallel registry).
+    """
+    return JSONResponse(_wfcar.create_one(
+        client_name  = req.client_name,
+        vat_id       = req.vat_id,
+        country_code = req.country_code,
+        operator     = _operator_from_header(x_operator),
+    ))
+
+
+@router.post("/customers/auto-resolve-preview/{batch_id:path}",
+             dependencies=[_auth])
+def customer_auto_resolve_preview(
+    batch_id: str,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Read-only customer resolution for *batch_id*.
+
+    For every distinct client_name found in sales_documents (with a
+    fallback to sales_packing_lines), the resolver tries: exact local
+    match, normalized exact, prefix tolerance ("Clear-Diamonds" →
+    "Clear-Diamonds Ltd"), reverse-prefix, then a live wFirma
+    contractors/find search. Matches are mirrored into local registries
+    so subsequent Proforma previews resolve them automatically. NEVER
+    creates a customer in wFirma.
+    """
+    if not (batch_id or "").strip() or "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+    return JSONResponse(_wfcar.ensure_customers_for_batch(
+        batch_id, dry_run=True,
+        operator=_operator_from_header(x_operator),
+    ))
+
+
 # ── Operator-approved goods/edit refresh from locked block ─────────────────
 
 @router.post("/goods/refresh-name-from-block/{product_code:path}",
@@ -658,9 +922,11 @@ def sync_customers_preview() -> JSONResponse:
         "update_fill":    plan["update_fill"],
         "update_match":   plan["update_match"],
         "conflict":       plan["conflict"],
-        "skip_count":     plan["skip_count"],
-        "applied_count":  0,
-        "conflicts":      plan["conflict"],
+        "skip_count":      plan["skip_count"],
+        "skipped_invalid": plan.get("skipped_invalid", 0),
+        "incomplete":      plan.get("incomplete", False),
+        "applied_count":   0,
+        "conflicts":       plan["conflict"],
     })
 
 
@@ -691,9 +957,11 @@ def sync_customers(write: bool = False) -> JSONResponse:
         "update_fill":    plan["update_fill"],
         "update_match":   plan["update_match"],
         "conflict":       plan["conflict"],
-        "skip_count":     plan["skip_count"],
-        "applied_count":  0,
-        "conflicts":      plan["conflict"],
+        "skip_count":      plan["skip_count"],
+        "skipped_invalid": plan.get("skipped_invalid", 0),
+        "incomplete":      plan.get("incomplete", False),
+        "applied_count":   0,
+        "conflicts":       plan["conflict"],
     }
 
     if not write:

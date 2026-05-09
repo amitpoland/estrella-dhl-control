@@ -37,7 +37,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -88,8 +88,61 @@ def _read_audit(output_dir: Path) -> dict:
         raise HTTPException(status_code=500, detail=f"audit.json unreadable: {e}")
 
 
+def _compute_effective_pz_status(audit: dict) -> tuple:
+    """Return (effective_status, normalized_flag).
+
+    Normalizes a stale ``audit.status`` back to ``'partial'`` when the
+    shipment is in fact PZ-complete but the persisted status string
+    lags behind operator decisions. The check below is conservative:
+
+      ✓ ``failed_checks`` is empty
+      ✓ ``customs_declaration.mrn`` is populated
+      ✓ ``verification.cn_match`` is True
+        OR ``cn_decision.approved`` is True
+        (operator already accepted SAD CN — see /cn-decision/accept-sad)
+
+    Hard blocks remain (returns the stored status unchanged) when:
+      • ``failed_checks`` non-empty (real engine failures)
+      • MRN missing
+      • CN still unresolved
+
+    The function NEVER mutates the audit; it only computes a value
+    for the guard's decision and the pz_preview response payload.
+    """
+    stored = (audit.get("status") or "").strip()
+    if stored in _PZ_DONE:
+        return stored, False
+
+    failed = audit.get("failed_checks") or []
+    if failed:
+        return stored, False
+
+    cd  = audit.get("customs_declaration") or {}
+    mrn = (cd.get("mrn") or "").strip()
+    if not mrn:
+        return stored, False
+
+    ver    = audit.get("verification") or {}
+    cn_dec = audit.get("cn_decision")  or {}
+    cn_ok  = bool(ver.get("cn_match")) or bool(cn_dec.get("approved"))
+    if not cn_ok:
+        return stored, False
+
+    # Operator-effective complete state. We use "partial" rather than
+    # "success" because the engine did not assert success — this is a
+    # post-override normalisation.
+    return "partial", True
+
+
 def _guard_wfirma_export(audit: dict) -> None:
-    """Block wFirma export if SAD is missing or PZ not yet generated."""
+    """Block wFirma export if SAD is missing or PZ not yet generated.
+
+    Uses ``_compute_effective_pz_status`` so a stale persisted
+    ``audit.status="failed"`` doesn't keep the operator locked out
+    after they cleared all real failed_checks (e.g. via
+    /cn-decision/accept-sad). Hard blocks (real failed_checks, missing
+    MRN) still raise as before.
+    """
     inputs = audit.get("inputs") or {}
     if not inputs.get("zc429"):
         raise HTTPException(
@@ -100,14 +153,22 @@ def _guard_wfirma_export(audit: dict) -> None:
                 "code": "WFIRMA_NO_SAD",
             },
         )
-    status = audit.get("status", "")
-    if status not in _PZ_DONE:
+    effective, normalized = _compute_effective_pz_status(audit)
+    stored = audit.get("status", "")
+    if effective not in _PZ_DONE:
         raise HTTPException(
             status_code=422,
             detail={
                 "guard": "wfirma",
-                "error": f"wFirma export requires a completed PZ. Current status: {status!r}.",
-                "code": "WFIRMA_PZ_NOT_GENERATED",
+                "error": (
+                    f"wFirma export requires a completed PZ. "
+                    f"Stored status: {stored!r}; effective status: "
+                    f"{effective!r}."
+                ),
+                "code":              "WFIRMA_PZ_NOT_GENERATED",
+                "stored_status":     stored,
+                "effective_status":  effective,
+                "status_normalized": normalized,
             },
         )
 
@@ -955,6 +1016,7 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
             supplier_configured=bool((settings.wfirma_supplier_contractor_id or "").strip()),
             warehouse_configured=bool((settings.wfirma_warehouse_id or "").strip()),
         )
+        eff_status, status_normalized = _compute_effective_pz_status(audit)
         return JSONResponse({
             "batch_id":             batch_id,
             "already_created":      True,
@@ -964,6 +1026,9 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
             "unresolved_product_codes": [],
             "price_conflicts":      [],
             "pz_lock_status":       lock_status,
+            "stored_status":        audit.get("status", ""),
+            "effective_status":     eff_status,
+            "status_normalized":    status_normalized,
         })
 
     # ── Load rows ─────────────────────────────────────────────────────────────
@@ -1044,6 +1109,7 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         warehouse_configured=bool(warehouse_id),
     )
 
+    eff_status, status_normalized = _compute_effective_pz_status(audit)
     return JSONResponse({
         "batch_id":                 batch_id,
         "already_created":          False,
@@ -1062,6 +1128,9 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         "planned_lines":            planned,
         "risk_flags":               risk_flags,
         "pz_lock_status":           lock_status,
+        "stored_status":            audit.get("status", ""),
+        "effective_status":         eff_status,
+        "status_normalized":        status_normalized,
     })
 
 
@@ -1250,8 +1319,19 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
     })
 
 
+def _operator_from_header(x_operator: Optional[str]) -> str:
+    """Extract operator id from the X-Operator header. Falls back to
+    'operator' so old clients that don't set the header still produce
+    a stable, non-empty operator label in audit/timeline. Backward-
+    compatible — never raises, never alters request flow."""
+    return (x_operator or "").strip() or "operator"
+
+
 @router.post("/shipment/{batch_id}/wfirma/pz_create", dependencies=[_auth])
-async def wfirma_pz_create(batch_id: str) -> JSONResponse:
+async def wfirma_pz_create(
+    batch_id: str,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
     """
     Create a wFirma warehouse PZ directly from the internal PZ app batch output.
 
@@ -1445,6 +1525,7 @@ async def wfirma_pz_create(batch_id: str) -> JSONResponse:
         # wFirma document has already been created — surface a structured
         # warning so the operator can manually adopt rather than re-create.
         audit_write_error = _patch_pz_doc_id(output_dir, pz_result.wfirma_pz_doc_id)
+        operator = _operator_from_header(x_operator)
         tl.log_event(
             output_dir / "audit.json",
             EV_WFIRMA_PZ_CREATED,
@@ -1454,12 +1535,49 @@ async def wfirma_pz_create(batch_id: str) -> JSONResponse:
                 "batch_id":         batch_id,
                 "wfirma_pz_doc_id": pz_result.wfirma_pz_doc_id,
                 "line_count":       len(planned),
+                "operator":         operator,
             },
         )
         log.info(
-            "[%s] pz_create: wFirma PZ %s created (%d lines)",
-            batch_id, pz_result.wfirma_pz_doc_id, len(planned),
+            "[%s] pz_create: wFirma PZ %s created (%d lines, operator=%s)",
+            batch_id, pz_result.wfirma_pz_doc_id, len(planned), operator,
         )
+        # Restamp audit.status if operator-effective normalisation now
+        # says the run is done. Best-effort: never breaks the create flow.
+        try:
+            from ..services.audit_persist import restamp_pz_status_if_done
+            _r = restamp_pz_status_if_done(output_dir / "audit.json")
+            if _r.get("changed"):
+                log.info("[%s] pz_create: audit.status restamped %r → %r",
+                         batch_id, _r.get("stored_before"), _r.get("stored_after"))
+        except Exception as _exc:
+            log.warning("[%s] pz_create: status restamp skipped: %s",
+                        batch_id, _exc)
+        # Auto-map the canonical wFirma PZ fullnumber. Best-effort: a
+        # network/parse miss leaves the doc_id-only stamp in place and
+        # the operator can run "Refresh Mapping" later.
+        try:
+            from ..services.audit_persist import record_wfirma_pz_mapping
+            _f = wfirma_client.fetch_warehouse_pz(pz_result.wfirma_pz_doc_id)
+            if _f.ok and (_f.pz_number or "").strip():
+                _m = record_wfirma_pz_mapping(
+                    output_dir / "audit.json",
+                    wfirma_pz_doc_id     = pz_result.wfirma_pz_doc_id,
+                    wfirma_pz_fullnumber = _f.pz_number,
+                    source               = "created_via_app",
+                    operator             = operator,
+                )
+                if _m.get("changed"):
+                    log.info("[%s] pz_create: mapped %s → %s",
+                             batch_id, pz_result.wfirma_pz_doc_id,
+                             _f.pz_number)
+            else:
+                log.warning("[%s] pz_create: fullnumber fetch unavailable "
+                            "(%s) — manual confirm remains as fallback",
+                            batch_id, getattr(_f, "error", "?"))
+        except Exception as _exc:
+            log.warning("[%s] pz_create: auto-mapping skipped: %s",
+                        batch_id, _exc)
 
     if audit_write_error:
         # wFirma succeeded but audit didn't reflect it — return 500 with
@@ -1506,7 +1624,11 @@ class _PZAdoptBody(BaseModel):
 
 
 @router.post("/shipment/{batch_id}/wfirma/pz_adopt", dependencies=[_auth])
-async def wfirma_pz_adopt(batch_id: str, body: _PZAdoptBody) -> JSONResponse:
+async def wfirma_pz_adopt(
+    batch_id: str,
+    body: _PZAdoptBody,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
     """
     Attach an already-existing wFirma PZ document to this shipment without
     creating a new one (adoption flow for manual / historical PZ documents).
@@ -1623,6 +1745,7 @@ async def wfirma_pz_adopt(batch_id: str, body: _PZAdoptBody) -> JSONResponse:
 
         # ── Adopt: write to audit ───────────────────────────────────────────
         audit_write_error = _patch_pz_adopted(output_dir, resolved_doc_id)
+        operator = _operator_from_header(x_operator)
         tl.log_event(
             output_dir / "audit.json",
             EV_WFIRMA_PZ_ADOPTED,
@@ -1633,11 +1756,12 @@ async def wfirma_pz_adopt(batch_id: str, body: _PZAdoptBody) -> JSONResponse:
                 "wfirma_pz_doc_id": resolved_doc_id,
                 "pz_number":        resolved_number,
                 "source":           "adopted_existing",
+                "operator":         operator,
             },
         )
         log.info(
-            "[%s] pz_adopt: adopted wFirma PZ %s (%s)",
-            batch_id, resolved_doc_id, resolved_number,
+            "[%s] pz_adopt: adopted wFirma PZ %s (%s, operator=%s)",
+            batch_id, resolved_doc_id, resolved_number, operator,
         )
 
     if audit_write_error:
@@ -1698,7 +1822,18 @@ def _parse_pz_doc_from_xml(xml_text: str) -> dict:
     warehouse_id  = _txt("warehouse", "id") or _txt("warehouse_id")
     date          = _txt("date") or _txt("document_date")
     description   = _txt("description") or _txt("number") or ""
-    pz_number     = _txt("full_number") or _txt("number") or ""
+    # wFirma's PZ read response carries the canonical PZ number under
+    # ``<fullnumber>`` (no underscore), e.g. "PZ 4/5/2026". Bare
+    # ``<number>`` is just the per-month sequence ("4") — only useful
+    # as a last-resort fallback when neither full-form is present.
+    # Query bodies in find/edit calls use ``<full_number>``; that is a
+    # SEPARATE namespace and is left untouched in those builders.
+    pz_number     = (
+        _txt("fullnumber")
+        or _txt("full_number")
+        or _txt("number")
+        or ""
+    )
 
     lines: List[dict] = []
     for content in root.findall(".//warehouse_document_content"):
@@ -1809,4 +1944,87 @@ async def wfirma_pz_document(batch_id: str) -> JSONResponse:
         "lines":        parsed.get("lines", []),
         "pz_source":    pz_source,
         "raw_xml":      fetch.raw_response or "",
+    })
+
+
+# ── Refresh canonical PZ mapping (historical-batch backfill) ──────────────
+#
+# Operator action: re-fetches the wFirma PZ by stored doc_id and stamps
+# `wfirma_pz_doc_id` + `wfirma_pz_fullnumber` + `pz_mapped_at` into
+# audit.json via audit_persist.record_wfirma_pz_mapping. Used when:
+#   - A historical batch was created before auto-mapping landed.
+#   - The PZ create flow's auto-fetch failed (network blip) and the
+#     fullnumber field is empty.
+# Idempotent. Never creates/modifies a wFirma document.
+
+@router.post("/shipment/{batch_id}/wfirma/pz/refresh-mapping",
+             dependencies=[_auth])
+def pz_refresh_mapping(
+    batch_id:    str,
+    x_operator:  Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Refresh the canonical wFirma PZ mapping for *batch_id* by reading
+    the live wFirma PZ document and stamping its full_number into
+    ``audit.wfirma_export.wfirma_pz_fullnumber``.
+
+    Returns 404 if no doc_id is stored yet (operator must first run
+    pz_create or pz_adopt). Returns 502 if wFirma read fails.
+    """
+    output_dir = settings.storage_root / "outputs" / batch_id
+    audit_path = output_dir / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail="audit.json not found")
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                             detail=f"audit.json unreadable: {exc}")
+
+    wf = audit.get("wfirma_export") or {}
+    doc_id = (wf.get("wfirma_pz_doc_id") or "").strip()
+    if not doc_id:
+        raise HTTPException(
+            status_code=404,
+            detail="no wfirma_pz_doc_id stored — run pz_create or pz_adopt first",
+        )
+
+    fetch = wfirma_client.fetch_warehouse_pz(doc_id)
+    if not fetch.ok:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error":    "wFirma fetch failed",
+                "pz_doc_id": doc_id,
+                "wfirma":   fetch.error or "unknown",
+            },
+        )
+    fullnum = (fetch.pz_number or "").strip()
+    if not fullnum:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "wFirma PZ has no full_number",
+                "pz_doc_id": doc_id,
+            },
+        )
+
+    operator = (x_operator or "").strip()
+    from ..services.audit_persist import record_wfirma_pz_mapping
+    result = record_wfirma_pz_mapping(
+        audit_path,
+        wfirma_pz_doc_id     = doc_id,
+        wfirma_pz_fullnumber = fullnum,
+        source               = "refresh_mapping",
+        operator             = operator,
+    )
+    log.info("[%s] pz_refresh_mapping: %s → %s (changed=%s)",
+             batch_id, doc_id, fullnum, result.get("changed"))
+    return JSONResponse({
+        "ok":                   True,
+        "batch_id":             batch_id,
+        "wfirma_pz_doc_id":     doc_id,
+        "wfirma_pz_fullnumber": fullnum,
+        "changed":              bool(result.get("changed")),
+        "operator":             operator,
     })

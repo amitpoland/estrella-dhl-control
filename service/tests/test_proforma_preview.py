@@ -99,6 +99,11 @@ def _seed_purchase(*, design_no: str, product_code: str, pack_sr: float = 1.0):
 
 
 def _seed_sales(client_name: str, designs: list, sales_doc_no: str = "SO-1"):
+    """Seed sales packing rows. Each design may carry per-row price/currency:
+        designs=[{"sku": "JE03137", "qty": 2.0, "price": 150, "currency": "USD"}]
+    Defaults: price=100.0, currency="USD" — tests that intentionally exercise
+    missing-price behaviour pass `price=0` and `currency=""`.
+    """
     sd = ddb.store_sales_document(
         batch_id=BATCH,
         document_id=str(uuid.uuid4()),
@@ -113,6 +118,10 @@ def _seed_sales(client_name: str, designs: list, sales_doc_no: str = "SO-1"):
         "bag_id":       "",
         "quantity":     d.get("qty", 1.0),
         "remarks":      "",
+        "unit_price":   float(d.get("price",   100.0) or 0),
+        "total_value":  float(d.get("price",   100.0) or 0) * float(d.get("qty", 1.0)),
+        "currency":     str(d.get("currency", "USD") or ""),
+        "price_source": "packing_list" if d.get("price", 100.0) else "",
     } for d in designs]
     ddb.store_sales_packing_lines(sd, BATCH, rows)
 
@@ -160,8 +169,10 @@ def _match_customer(client_name: str, country: str = "PL", vat_id: str = ""):
 
 def test_preview_returns_client_product_design_qty(client):
     _seed_purchase(design_no="JE03137", product_code="EJL/26-27/100-1")
-    _seed_sales("ACME", [{"sku": "JE03137", "qty": 2.0}])
-    _seed_invoice_pricing("EJL/26-27/100-1", 150.0, "USD")
+    # Sales price drives Proforma now; import cost is ignored.
+    _seed_sales("ACME", [{"sku": "JE03137", "qty": 2.0,
+                           "price": 150.0, "currency": "USD"}])
+    _seed_invoice_pricing("EJL/26-27/100-1", 999.0, "USD")  # red herring
     _match_product("EJL/26-27/100-1")
     _match_customer("ACME")
 
@@ -221,15 +232,16 @@ def test_usd_currency_not_coerced_to_pln(client):
 
 def test_missing_pricing_blocks_ready(client):
     _seed_purchase(design_no="JE200", product_code="EJL/N-1")
-    _seed_sales("ACME", [{"sku": "JE200", "qty": 1.0}])
-    # No invoice_lines pricing seeded
+    # Explicit zero sales price + no currency — exercises missing-price gate.
+    _seed_sales("ACME", [{"sku": "JE200", "qty": 1.0,
+                           "price": 0, "currency": ""}])
     _match_product("EJL/N-1")
     _match_customer("ACME")
 
     body = client.post(f"/api/v1/proforma/preview/{BATCH}/ACME",
                        headers=_auth()).json()
     assert body["ready"] is False
-    assert any("missing unit_price or currency" in br
+    assert any("missing sales unit_price or currency" in br
                for br in body["blocking_reasons"])
     assert body["lines"][0]["unit_price"] is None
     assert body["lines"][0]["currency"]   == "unknown"
@@ -488,8 +500,11 @@ def _seed_ready(design: str, product_code: str, sku_qty: float = 1.0,
                 price: float = 100.0):
     """Helper: full ready-preview prerequisites for ACME."""
     _seed_purchase(design_no=design, product_code=product_code)
-    _seed_sales("ACME", [{"sku": design, "qty": sku_qty}])
-    _seed_invoice_pricing(product_code, price, "USD")
+    # Sales price now wins. _seed_invoice_pricing remains as a red-herring
+    # (proves cost data is ignored).
+    _seed_sales("ACME", [{"sku": design, "qty": sku_qty,
+                           "price": price, "currency": "USD"}])
+    _seed_invoice_pricing(product_code, 9999.0, "USD")
     _match_product(product_code)
     _match_customer("ACME")
     _advance_state(_scan_code_for(design, product_code),
@@ -1770,3 +1785,4 @@ def test_adopt_then_cancel_full_path(client, storage):
     draft = pildb.get_draft(db, _ADOPT_BATCH, _ADOPT_CLIENT)
     assert draft.status == "failed"
     assert draft.wfirma_proforma_id is None
+

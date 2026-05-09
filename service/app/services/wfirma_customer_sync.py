@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import wfirma_client as wfc
 from . import wfirma_db as wfdb
@@ -133,23 +133,45 @@ def classify_pair(local: Optional[Dict[str, Any]],
 
 # ── Plan + apply ────────────────────────────────────────────────────────────
 
-def _iter_all_contractors(page_size: int = PAGE_SIZE
-                          ) -> Iterable["wfc.WFirmaContractor"]:
+def _iter_all_contractors(page_size: int = PAGE_SIZE,
+                          max_pages: int = 200,
+                          ) -> Tuple[List["wfc.WFirmaContractor"], bool]:
     """
-    Yield every contractor in the configured wFirma company by paging
-    through contractors/find. Stops on first empty page (wFirma returns
-    an empty list once start exceeds total).
+    Walk every contractor in the configured wFirma company by paging
+    through contractors/find with 1-indexed page numbers.
+
+    Returns (rows, complete):
+      rows     — every WFirmaContractor seen (deduplicated by wfirma_id)
+      complete — True if the loop terminated naturally (empty / short
+                 page); False if it hit max_pages or detected a
+                 repeated page (server ignored the cursor, so further
+                 advance is impossible).
+
+    Defensive: stop if a page returns ZERO new wfirma_ids vs already
+    seen, to avoid infinite loops if wFirma silently caps pagination.
     """
-    start = 0
-    while True:
-        page = wfc.list_contractors_page(start=start, limit=page_size)
+    rows: List["wfc.WFirmaContractor"] = []
+    seen_ids: set[str] = set()
+    complete = True
+    for page_num in range(1, max_pages + 1):
+        page = wfc.list_contractors_page(page=page_num, limit=page_size)
         if not page:
-            return
+            return rows, True
+        new_count = 0
         for c in page:
-            yield c
+            if c.wfirma_id and c.wfirma_id not in seen_ids:
+                seen_ids.add(c.wfirma_id)
+                rows.append(c)
+                new_count += 1
+        if new_count == 0:
+            # Server returned a page that contributed no new ids —
+            # treat as a paging dead-end. Mark incomplete=True so the
+            # caller can surface it.
+            return rows, False
         if len(page) < page_size:
-            return
-        start += page_size
+            return rows, True
+    # Exhausted max_pages without natural termination.
+    return rows, False
 
 
 def plan_sync(*, page_size: int = PAGE_SIZE,
@@ -167,10 +189,11 @@ def plan_sync(*, page_size: int = PAGE_SIZE,
     # Belt-and-braces filter: even if list_contractors_page lets a bad
     # row through (blank name, id="0", id missing), skip it here so a
     # parser regression cannot result in junk inserts.
+    contractors, complete = _iter_all_contractors(page_size=page_size)
     remote_all: List[RemoteRow] = []
     skipped_invalid = 0
     name_seen: Dict[str, int] = {}
-    for c in _iter_all_contractors(page_size=page_size):
+    for c in contractors:
         r = RemoteRow.from_contractor(c)
         if not r.wfirma_id or r.wfirma_id == "0" or not r.name:
             skipped_invalid += 1
@@ -257,6 +280,7 @@ def plan_sync(*, page_size: int = PAGE_SIZE,
         "conflict":         conflict,
         "skip_count":       skip_count,
         "skipped_invalid":  skipped_invalid,
+        "incomplete":       not complete,
     }
 
 

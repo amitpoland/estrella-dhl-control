@@ -137,6 +137,21 @@ def init_wfirma_db(db_path: Path) -> None:
             ("description_block", "TEXT NOT NULL DEFAULT ''"),
         ],
     )
+    # Per-customer default currency for sales-side Proforma pricing fallback.
+    # Used only when neither the Excel nor the operator supplied a currency.
+    # Plus ship-to receiver mapping (Step 1 of Nabywca/Odbiorca support).
+    # ``ship_to_mode`` selects the wFirma rendering shape; defaults to the
+    # safe "no separate receiver" value so existing customers keep their
+    # current Proforma behaviour until an operator opts them in.
+    _add_columns_if_missing(
+        db_path,
+        "wfirma_customers",
+        [
+            ("default_currency",            "TEXT NOT NULL DEFAULT ''"),
+            ("ship_to_mode",                "TEXT NOT NULL DEFAULT 'same_as_bill_to'"),
+            ("ship_to_wfirma_customer_id",  "TEXT NOT NULL DEFAULT ''"),
+        ],
+    )
 
 
 def _add_columns_if_missing(
@@ -206,6 +221,176 @@ def upsert_customer(
              match_status, now, now),
         )
         return row_id
+
+
+_ALLOWED_CURRENCIES: frozenset = frozenset({
+    "EUR", "USD", "PLN", "GBP", "CHF", "JPY",
+})
+
+
+def set_customer_default_currency(
+    client_name: str,
+    currency:    str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Update ONLY ``default_currency`` (and ``updated_at``) for an existing
+    mapped customer. Never creates a new customer; never touches identity
+    fields (``wfirma_customer_id``, ``vat_id``, ``country``, ``match_status``).
+
+    Returns
+    -------
+    None
+        If *client_name* has no row in wfirma_customers (caller → HTTP 404).
+    dict
+        ``{"client_name", "before_currency", "after_currency", "id"}`` on
+        success.
+
+    Raises
+    ------
+    ValueError
+        If *currency* is not in the allowed ISO set
+        (``EUR | USD | PLN | GBP | CHF | JPY``).
+    """
+    if _db_path is None or not client_name:
+        return None
+    cur = (currency or "").strip().upper()
+    if cur not in _ALLOWED_CURRENCIES:
+        raise ValueError(
+            f"currency {currency!r} not allowed; must be one of "
+            f"{sorted(_ALLOWED_CURRENCIES)}"
+        )
+    now = _now()
+    with _lock, _connect() as con:
+        row = con.execute(
+            "SELECT id, default_currency FROM wfirma_customers "
+            "WHERE client_name=?",
+            (client_name,),
+        ).fetchone()
+        if not row:
+            return None
+        before = (row["default_currency"] or "").upper()
+        con.execute(
+            """UPDATE wfirma_customers
+               SET default_currency=?, updated_at=?
+               WHERE id=?""",
+            (cur, now, row["id"]),
+        )
+        return {
+            "id":               row["id"],
+            "client_name":      client_name,
+            "before_currency":  before,
+            "after_currency":   cur,
+        }
+
+
+_ALLOWED_SHIP_TO_MODES: frozenset = frozenset({
+    "same_as_bill_to",      # no separate receiver — wFirma uses bill-to address
+    "bill_to_alt",          # bill-to contractor's own alt-address (different_contact_address=1)
+    "separate_contractor",  # ship-to is a SEPARATE wFirma contractor record
+})
+
+
+def set_customer_ship_to(
+    client_name:                str,
+    mode:                       str,
+    ship_to_wfirma_customer_id: str = "",
+) -> Optional[Dict[str, Any]]:
+    """
+    Update ONLY ``ship_to_mode`` and ``ship_to_wfirma_customer_id`` (plus
+    ``updated_at``) for an existing mapped customer. Never creates a new
+    customer; never touches identity fields (``wfirma_customer_id``,
+    ``vat_id``, ``country``, ``match_status``, ``default_currency``).
+
+    Mode contract
+    -------------
+    same_as_bill_to        → ``ship_to_wfirma_customer_id`` is forced empty.
+    bill_to_alt            → ``ship_to_wfirma_customer_id`` is forced empty.
+                              wFirma renders ship-to from the bill-to
+                              contractor's own alt-address fields
+                              (different_contact_address=1 + contact_*).
+    separate_contractor    → ``ship_to_wfirma_customer_id`` is REQUIRED
+                              (non-empty, no leading/trailing whitespace).
+                              The Proforma builder (Step 2) will emit
+                              ``<contractor_receiver><id>...</id></contractor_receiver>``
+                              against this id. The receiver MUST already
+                              exist in wFirma master; this helper does NOT
+                              verify existence (no fetch_contractor_by_id
+                              helper exists in wfirma_client today — Step 3
+                              will add the live preflight).
+
+    Returns
+    -------
+    None
+        If *client_name* has no row in wfirma_customers.
+    dict
+        ``{"id", "client_name",
+            "before_mode", "before_ship_to_wfirma_customer_id",
+            "after_mode",  "after_ship_to_wfirma_customer_id"}``
+
+    Raises
+    ------
+    ValueError
+        If *mode* is not in the allowed set, or
+        ``mode == "separate_contractor"`` with an empty
+        ``ship_to_wfirma_customer_id``, or the receiver id equals the
+        bill-to ``wfirma_customer_id`` (silly self-reference).
+    """
+    if _db_path is None or not client_name:
+        return None
+    m = (mode or "").strip().lower()
+    if m not in _ALLOWED_SHIP_TO_MODES:
+        raise ValueError(
+            f"ship_to_mode {mode!r} not allowed; must be one of "
+            f"{sorted(_ALLOWED_SHIP_TO_MODES)}"
+        )
+    receiver = (ship_to_wfirma_customer_id or "").strip()
+    if m == "separate_contractor":
+        if not receiver:
+            raise ValueError(
+                "ship_to_wfirma_customer_id is required when "
+                "mode='separate_contractor'"
+            )
+    else:
+        # The two non-receiver modes always clear any stale receiver id.
+        receiver = ""
+
+    now = _now()
+    with _lock, _connect() as con:
+        row = con.execute(
+            "SELECT id, wfirma_customer_id, ship_to_mode, "
+            "ship_to_wfirma_customer_id "
+            "FROM wfirma_customers WHERE client_name=?",
+            (client_name,),
+        ).fetchone()
+        if not row:
+            return None
+
+        # Defensive: refuse self-reference for separate_contractor mode.
+        if (m == "separate_contractor"
+                and receiver == (row["wfirma_customer_id"] or "").strip()):
+            raise ValueError(
+                "ship_to_wfirma_customer_id equals the bill-to "
+                "wfirma_customer_id — separate_contractor requires a "
+                "DIFFERENT receiver"
+            )
+
+        before_mode     = (row["ship_to_mode"] or "same_as_bill_to")
+        before_receiver = (row["ship_to_wfirma_customer_id"] or "")
+        con.execute(
+            """UPDATE wfirma_customers
+               SET ship_to_mode=?, ship_to_wfirma_customer_id=?,
+                   updated_at=?
+               WHERE id=?""",
+            (m, receiver, now, row["id"]),
+        )
+        return {
+            "id":                                  row["id"],
+            "client_name":                         client_name,
+            "before_mode":                         before_mode,
+            "before_ship_to_wfirma_customer_id":   before_receiver,
+            "after_mode":                          m,
+            "after_ship_to_wfirma_customer_id":    receiver,
+        }
 
 
 def get_customer(client_name: str) -> Optional[Dict[str, Any]]:
