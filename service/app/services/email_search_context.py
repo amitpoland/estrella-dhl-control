@@ -41,6 +41,7 @@ ESTRELLA_RELATED_IDENTITIES: List[str] = [
 _KNOWN_SENDERS: List[str] = [
     "odprawacelna@dhl.com",
     "administracja_centralna@dhl.com",
+    "plwawecs@dhl.com",                      # DHL WAW ZC429 completion
     "no-reply@acspedycja.pl",
     "piotr@acspedycja.pl",
     "biuro@acspedycja.pl",
@@ -67,6 +68,7 @@ _FIXED_SUBJECT_TERMS: List[str] = [
     "odprawa celna",
     "DSK",
     "ZC429",
+    "Powiadomienie o odebranym komunikacie",   # DHL WAW ZC429 subject
 ]
 
 

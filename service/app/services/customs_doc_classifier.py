@@ -52,6 +52,20 @@ def classify(filename: str) -> Dict[str, str]:
     if ext in ("html", "htm"):
         return {"file": filename, "type": "customs_html", "confidence": "high"}
 
+    # DHL WAW agency notification convention:
+    #   <AWB>^^^^INVOICE^^_…   <AWB>^^^^MAIL^^_…   <AWB>^^^^OTHERS^^_…
+    #   <AWB>.AWB.BOM.GTW.…    ZC429_<MRN>_<n>_PL.(xml|pdf)
+    # Tested before the generic keyword scan so the "^^^^" tag wins over
+    # any incidental keyword present elsewhere in the filename.
+    if "^^^^mail^^" in fn_lower:
+        return {"file": filename, "type": "email_evidence", "confidence": "high"}
+    if "^^^^others^^" in fn_lower:
+        return {"file": filename, "type": "other", "confidence": "high"}
+    if "^^^^invoice^^" in fn_lower:
+        return {"file": filename, "type": "invoice", "confidence": "high"}
+    if ".awb." in fn_lower or fn_lower.startswith("awb_") or "_awb_" in fn_lower:
+        return {"file": filename, "type": "awb", "confidence": "high"}
+
     # Keyword scan
     for kw, doc_type, conf in _RULES:
         if kw in fn_lower:

@@ -104,6 +104,39 @@ def route_email(
 
     actions: List[Dict[str, Any]] = []
 
+    # ── 0. DHL WAW agency ZC429 completion email ────────────────────────────
+    # Wins over the generic customs branch so a single email never gets
+    # imported twice (once via dhl_zc429_intake, once via import_customs_docs).
+    # Idempotency lives in intake_lineage; re-delivery is safe.
+    if (email_record.get("detected_type") == "zc429_completion"
+            or email_record.get("type") == "zc429_completion"):
+        try:
+            from .zc429_email_dispatcher import maybe_dispatch_zc429
+            dispatch = maybe_dispatch_zc429(p, email_record, paths)
+        except Exception as exc:
+            log.exception("[trigger] zc429 dispatcher raised")
+            dispatch = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if dispatch is not None:
+            actions.append({
+                "action":           "dhl_zc429_intake",
+                "ok":               bool(dispatch.get("ok")),
+                "intake_event_id":  dispatch.get("intake_event_id", ""),
+                "duplicate":        bool(dispatch.get("duplicate")),
+                "attachment_count": int(dispatch.get("attachment_count") or 0),
+                "reason":           dispatch.get("reason", ""),
+            })
+            # Record processed and short-circuit BEFORE the generic
+            # customs branch so we never double-import.
+            if msg_id:
+                audit_p = _read_audit(p)
+                ing = audit_p.setdefault("email_ingestion", {})
+                pmids = ing.setdefault("processed_message_ids", [])
+                if msg_id not in pmids:
+                    pmids.append(msg_id)
+                    write_json_atomic(p, audit_p)
+            return {"ok": True, "actions": actions, "message_id": msg_id,
+                    "branch": "zc429_completion"}
+
     # ── 1. Agency reply with documents ──────────────────────────────────────
     if role == "agency" and (customs_paths or other_paths):
         files_for_agency = customs_paths + other_paths

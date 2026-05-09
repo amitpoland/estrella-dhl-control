@@ -122,6 +122,18 @@ def _load_timeline(batch_id: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _load_audit_dict(batch_id: str) -> Dict[str, Any]:
+    """Load the full audit.json. Returns {} on any failure."""
+    audit_path: Path = settings.storage_root / "outputs" / batch_id / "audit.json"
+    if not audit_path.exists():
+        return {}
+    try:
+        with audit_path.open(encoding="utf-8") as fh:
+            return json.load(fh) or {}
+    except Exception:
+        return {}
+
+
 def _parse_ts(ts_str: Optional[str]) -> Optional[datetime]:
     """Parse an ISO timestamp string to a timezone-aware datetime. Returns None on failure."""
     if not ts_str:
@@ -146,6 +158,56 @@ def _first_ts(events: List[Dict[str, Any]], *event_names: str) -> Optional[str]:
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
+def compute_dhl_readiness(audit: Dict[str, Any]) -> Dict[str, Any]:
+    """Pure compute over a passed-in audit dict — never reads disk.
+
+    Used by tests and by callers that already hold the audit in memory.
+    Encodes the same compatibility rule as the disk-based variant:
+    ``customs_declaration.received=True`` OR a populated
+    ``customs_declaration.mrn`` is sufficient to flip the dhl pipeline
+    into the ``sad_received`` state, even when the timeline is silent.
+    """
+    timeline = audit.get("timeline") or []
+    cd       = audit.get("customs_declaration") or {}
+
+    best_state = "awaiting_start"
+    best_rank  = 0
+    sad_received_ts: Optional[str] = None
+
+    for ev in timeline:
+        name = ev.get("event", "")
+        ts   = ev.get("ts", "")
+        if name in _EVENT_STATE_MAP:
+            mapped = _EVENT_STATE_MAP[name]
+            rank   = _STATE_RANK.get(mapped, 0)
+            if rank > best_rank:
+                best_state = mapped
+                best_rank  = rank
+        if name in (tl.EV_ZC429_RECEIVED, tl.EV_PZC_RECEIVED,
+                    tl.EV_SAD_UPLOADED, tl.EV_DUTY_NOTE_RECEIVED):
+            if sad_received_ts is None:
+                sad_received_ts = ts
+
+    if sad_received_ts is None:
+        if cd.get("received") is True or (cd.get("mrn") or "").strip():
+            sad_received_ts = (
+                cd.get("received_at")
+                or cd.get("clearance_date")
+                or audit.get("timestamp")
+                or ""
+            ) or None
+            if best_rank < _STATE_RANK.get("sad_received", 0):
+                best_state = "sad_received"
+                best_rank  = _STATE_RANK.get("sad_received", 0)
+
+    return {
+        "batch_id":      audit.get("batch_id"),
+        "dhl_status":    best_state,
+        "sad_received":  sad_received_ts,
+        "awb":           audit.get("awb") or audit.get("tracking_no"),
+    }
+
+
 def get_dhl_readiness(batch_id: str) -> Dict[str, Any]:
     """
     Reconstruct the DHL customs pipeline state for *batch_id*.
@@ -158,6 +220,7 @@ def get_dhl_readiness(batch_id: str) -> Dict[str, Any]:
     """
     timeline: List[Dict[str, Any]] = _load_timeline(batch_id)
     tracking: List[Dict[str, Any]] = tdb.get_events_for_batch(batch_id)
+    audit:    Dict[str, Any]       = _load_audit_dict(batch_id)
 
     # ── Extract AWB / carrier from tracking_db first, fall back to timeline ────
     awb: Optional[str] = None
@@ -268,6 +331,56 @@ def get_dhl_readiness(batch_id: str) -> Dict[str, Any]:
                     f"{last_outbound_event or 'unknown'}"
                 )
 
+    # ── Compatibility belt — `customs_declaration` block can mark SAD ──────────
+    # received via either:
+    #   (a) the new dhl_zc429_intake path (customs_declaration.received=True), or
+    #   (b) the legacy SAD-PDF-parser path (customs_declaration.mrn populated).
+    # When the timeline did not emit a zc429_received / sad_uploaded /
+    # pzc_received event but the audit nonetheless carries one of those
+    # signals, treat the shipment as having reached sad_received so the
+    # dashboard chip and PZ readiness reflect reality.
+    if sad_received_ts is None:
+        cd = audit.get("customs_declaration") or {}
+        if cd.get("received") is True or (cd.get("mrn") or "").strip():
+            sad_received_ts = (
+                cd.get("received_at")
+                or cd.get("clearance_date")
+                or audit.get("timestamp")
+                or ""
+            ) or None
+            if best_rank < _STATE_RANK.get("sad_received", 0):
+                best_state = "sad_received"
+                best_rank  = _STATE_RANK.get("sad_received", 0)
+
+    # ── Downstream-evidence override (SAD received / PZ generated) ────────────
+    # The SLA-breach signal is meaningful ONLY while we're still waiting on
+    # DHL/agency to respond. Once SAD is in hand or the wFirma PZ has been
+    # generated, "no DHL response" is no longer the actionable next step —
+    # surfacing it would mask the real remaining work (customs clearance
+    # confirmation, Proforma issuance, etc.).
+    #
+    # Likewise, the "Process customs documents and generate PZ" hint that
+    # sits at `sad_received` becomes stale the moment a wFirma PZ exists.
+    # We override the next-action to None in that case so the dashboard's
+    # next-step picker advances to the next real blocker.
+    wfirma_export = (audit.get("wfirma_export") or {})
+    wfirma_pz_doc_id     = (wfirma_export.get("wfirma_pz_doc_id")     or "").strip()
+    wfirma_pz_fullnumber = (wfirma_export.get("wfirma_pz_fullnumber") or "").strip()
+    pz_generated         = bool(wfirma_pz_doc_id or wfirma_pz_fullnumber)
+
+    if (sad_received_ts or pz_generated) and sla_breach:
+        # We are no longer waiting on DHL — suppress the SLA breach
+        # signal but record why so callers can audit the suppression.
+        sla_breach        = False
+        sla_breach_reason = (
+            "suppressed: SAD received" if sad_received_ts and not pz_generated
+            else "suppressed: wFirma PZ generated"
+        )
+
+    next_action = _NEXT_ACTION.get(best_state)
+    if pz_generated and best_state == "sad_received":
+        next_action = None
+
     # ── Missing documents (what we've asked for but haven't received) ──────────
     missing_documents: List[str] = []
     if best_state == "dhl_replied" and not dsk_docs_received:
@@ -293,6 +406,7 @@ def get_dhl_readiness(batch_id: str) -> Dict[str, Any]:
         "days_since_last_outbound": days_since_last_outbound,
         "sla_breach":               sla_breach,
         "sla_breach_reason":        sla_breach_reason,
-        "next_required_action":     _NEXT_ACTION.get(best_state),
+        "next_required_action":     next_action,
         "missing_documents":        missing_documents,
+        "pz_generated":             pz_generated,
     }

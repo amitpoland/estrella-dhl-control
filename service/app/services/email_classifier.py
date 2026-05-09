@@ -90,6 +90,14 @@ _INTERNAL = {
 }
 
 _DHL_SENDERS   = {"odprawacelna@dhl.com", "administracja_centralna@dhl.com"}
+
+# DHL Warsaw customs agency notification mailbox. Distinct from the
+# per-shipment customs agent (odprawacelna@dhl.com) because plwawecs is
+# a one-way notification address (ZC429 completion). It is added to
+# trusted senders below; classification routes it through the
+# zc429_completion branch only.
+_DHL_AGENCY_NOTIFICATION = {"plwawecs@dhl.com"}
+_TRUSTED_CLEARANCE = _TRUSTED_CLEARANCE | _DHL_AGENCY_NOTIFICATION
 _FEDEX_SENDERS = {"pl-import@fedex.com"}
 _ACS_SENDERS   = {"piotr@acspedycja.pl", "logistyka@acspedycja.pl", "roman@acspedycja.pl",
                   "adrian@acspedycja.pl", "michal@acspedycja.pl", "no-reply@acspedycja.pl"}
@@ -224,6 +232,35 @@ def classify_email(
         result["type"]         = "internal"
         result["confidence"]   = "high"
         result["matched_rule"] = "internal_sender"
+        return result
+
+    # ── 0a. DHL WAW agency ZC429 completion notification ─────────────────────
+    # This branch fires BEFORE the generic carrier classification so the
+    # plwawecs notification never gets misrouted as a normal DHL customs
+    # request. The detector lives in dhl_zc429_intake (single source of
+    # truth) — we only ask "does this match?" here.
+    if s_norm in _DHL_AGENCY_NOTIFICATION:
+        try:
+            from .dhl_zc429_intake import is_dhl_zc429_email
+            is_zc429 = is_dhl_zc429_email(
+                sender=sender, subject=subject, body=body)
+        except Exception:
+            is_zc429 = False
+        result["carrier"] = "DHL"
+        if is_zc429:
+            result["type"]         = "zc429_completion"
+            result["sender_role"]  = "dhl_agency_notification"
+            result["matched_rule"] = "dhl_waw_zc429_completion"
+            result["confidence"]   = "high"
+            awb = _extract_awb(f"{subject} {body}", "DHL")
+            result["awb"]          = awb
+        else:
+            # plwawecs@dhl.com sent something that isn't a ZC429 — flag
+            # for review without triggering any side effects.
+            result["type"]         = "dhl_agency_other"
+            result["sender_role"]  = "dhl_agency_notification"
+            result["matched_rule"] = "dhl_waw_unknown_template"
+            result["confidence"]   = "low"
         return result
 
     # Determine carrier from sender

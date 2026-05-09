@@ -163,10 +163,20 @@ def run_ingestion_cycle(
     """
     # Resolve dependencies lazily so tests can stub them.
     if scan_fn is None:
+        # Prefer the in-tree scanner. The legacy ``dhl_email_monitor``
+        # name is not present in the package; the canonical scanner
+        # lives at ``email_evidence_ingestor.scan_and_ingest``. We
+        # adapt its signature so the rest of this worker is unchanged.
         try:
-            from dhl_email_monitor import scan_for_dhl_customs_emails as scan_fn  # type: ignore
+            from .email_evidence_ingestor import scan_and_ingest as _evi_scan
+            def scan_fn(token, account_id, target_awb, limit, api_base, **_):  # type: ignore
+                # Ingestor expects (awb, batch_id, audit_path, audit, *, limit).
+                # We don't have a batch_id at scan-fn level; the per-shipment
+                # caller above already loops batches and calls scan_fn per AWB,
+                # so an empty batch_id is acceptable for the broad scan path.
+                return _evi_scan(target_awb or "", "", None, {}, limit=limit)
         except Exception as exc:
-            log.warning("[ingest] dhl_email_monitor not importable: %s", exc)
+            log.warning("[ingest] in-tree scanner unavailable: %s", exc)
             return {"ok": False, "error": "scan_fn_unavailable"}
 
     if token_provider is None:

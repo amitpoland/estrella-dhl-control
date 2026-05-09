@@ -114,19 +114,39 @@ STOP_MANUAL               = "manual_stop"
 STOP_TERMINAL             = "shipment_terminal"
 STOP_CUSTOMS_DOCS_RECEIVED = "customs_docs_received"
 
+# Normalized carrier stages that, when observed at a Poland location, mean
+# the shipment has reached the customs phase and the DHL follow-up SLA may
+# start. Read from audit["tracking_events"] directly — no timeline mirror.
+_PL_CUSTOMS_STAGES: frozenset = frozenset({
+    "ARRIVED_DESTINATION_COUNTRY",
+    "CUSTOMS_PENDING",
+    "CUSTOMS_DOCUMENTS_REQUESTED",
+    "CUSTOMS_UNDER_REVIEW",
+})
+
 
 def should_start_followup(audit: Dict[str, Any]) -> Optional[Dict[str, str]]:
     """
     Decide whether to start a follow-up SLA for this audit.
 
     Returns:
-      {"reason": "..."} when SLA should start (caller passes to start_followup),
+      {"reason": "poland_customs_stage_detected"} when SLA should start,
       None otherwise.
 
     Skip when:
       - DHL email already received
       - shipment terminal (delivered / returned / cancelled / agency_email_sent)
       - dhl_followup already active
+
+    Trigger when:
+      - audit["tracking_events"] contains an event whose location resolves to
+        country code "PL" AND whose normalized_stage is in _PL_CUSTOMS_STAGES,
+      - AND none of the skip conditions hold.
+
+    Reader-side integration (architecture-correction cycle):
+      tracking_events is the source of truth for transport state. SLA reads
+      it directly — it does NOT depend on any timeline mirror of carrier
+      events. Adding a transport-class timeline event would be redundant.
     """
     if (audit.get("dhl_email") or {}).get("received"):
         return None
@@ -139,7 +159,19 @@ def should_start_followup(audit: Dict[str, Any]) -> Optional[Dict[str, str]]:
     tr_status = (audit.get("tracking") or {}).get("status", "")
     if tr_status in ("delivered", "returned", "cancelled"):
         return None
-    return None  # caller decides start reason from triggers
+
+    # Trigger: any tracking event in PL at a customs-phase stage
+    from .tracking_normalizer import _country_code_from_location
+
+    for ev in audit.get("tracking_events") or []:
+        stage = ev.get("normalized_stage", "")
+        if stage not in _PL_CUSTOMS_STAGES:
+            continue
+        if _country_code_from_location(ev.get("location", "")) != "PL":
+            continue
+        return {"reason": "poland_customs_stage_detected"}
+
+    return None
 
 
 def start_followup(
