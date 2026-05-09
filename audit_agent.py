@@ -909,10 +909,27 @@ def build_audit_report(
         learning_trace   = {}
 
     # ── Compute score (with learning-adjusted confidences) ────────────────────
-    scoring       = score_batch(c1, c2, c3, c4, c5, c6, confidences=confidences)
+    # Forward the categorical verification states (qty_status, cn_status,
+    # nip_source) emitted by verify_sad_invoice_match into score_batch. When
+    # any of these are non-None or AUDIT_HARDENING_ENABLED is true, the
+    # scoring engine returns a categorical `status` field
+    # (VERIFIED/PARTIAL/NOT_VERIFIED/BLOCKED) on top of the legacy score
+    # and risk_level. Legacy consumers continue reading `risk_level` and
+    # `score` unchanged.
+    _verification_for_scoring = (
+        result.get("verification") if isinstance(result, dict) else None
+    ) or {}
+    scoring       = score_batch(
+        c1, c2, c3, c4, c5, c6,
+        confidences=confidences,
+        qty_status=_verification_for_scoring.get("qty_status"),
+        cn_status=_verification_for_scoring.get("cn_status"),
+        nip_source=_verification_for_scoring.get("nip_source"),
+    )
     score         = scoring["score"]
     risk_level    = scoring["risk_level"]
     failed_checks = scoring["failed_checks"]
+    audit_status  = scoring.get("status")  # only present in hardening path
 
     # ── Determine overall assessment strings (for PDF) ─────────────────────────
     _, overall_en, overall_pl = _overall_status(c1, c2, c3, c4, c5, c6)
@@ -968,8 +985,13 @@ def build_audit_report(
         "learning_trace":  learning_trace,
         "freight_checks":  freight_checks,
     }
+    # Hardening status (only when score_batch emitted it). Adding the field
+    # is purely additive — audit_pdf reads `risk_level` and ignores unknown
+    # keys, so consumers pinned to the legacy shape are unaffected.
+    if audit_status is not None:
+        audit_data["status"] = audit_status
 
-    return {
+    out = {
         "en":              en_path,
         "pl":              pl_path,
         "score":           score,
@@ -980,3 +1002,6 @@ def build_audit_report(
         "freight_checks":  freight_checks,
         "audit_data":      audit_data,
     }
+    if audit_status is not None:
+        out["status"] = audit_status
+    return out

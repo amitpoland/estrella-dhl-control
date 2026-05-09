@@ -191,16 +191,131 @@ def detect_hard_link_break(
     return {"blocked": bool(reasons), "reasons": reasons}
 
 
+# ── Audit hardening status taxonomy (feature-flagged) ────────────────────────
+#
+# The hardening path adds a categorical `status` field on top of the existing
+# numeric score + risk_level, gated behind AUDIT_HARDENING_ENABLED.
+#
+# Status precedence (most severe first):
+#     BLOCKED       → confirmed hard-link break (force score=0)
+#     NOT_VERIFIED  → key check could not be verified (cap score≤70)
+#     PARTIAL       → SAD-aggregated or partial evidence (cap score≤85)
+#     VERIFIED      → fully verified, optionally with parser fallback
+#                     (cap score≤90 when nip_source==sad_and_master)
+#
+# Caps only LOWER score; they never raise it. Force-zero overrides all caps.
+# The legacy `risk_level` field stays unchanged for audit_pdf, escalation,
+# Cliq, and API consumers — the new `status` field is purely additive.
+
+import os as _os
+
+
+def _hardening_enabled() -> bool:
+    """Read the AUDIT_HARDENING_ENABLED feature flag at call time.
+
+    Source-of-truth is the environment variable so audit_scoring.py works
+    standalone (no service-side settings dependency). The mirror field
+    `settings.audit_hardening_enabled` in service/app/core/config.py is
+    the canonical service-side configuration; pydantic populates that field
+    from the same env var, keeping the two in lock-step.
+    """
+    return _os.environ.get("AUDIT_HARDENING_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def _resolve_hardening_status(
+    score:      int,
+    c1:         dict,
+    c4:         dict,
+    c5:         dict,
+    c6:         dict,
+    qty_status: Optional[str],
+    cn_status:  Optional[str],
+    nip_source: Optional[str],
+) -> Tuple[int, str, str]:
+    """Apply hardening caps + status taxonomy AFTER the legacy score is computed.
+
+    Returns (final_score, final_risk_level, final_status). The caller decides
+    whether to expose `status` in the public return dict; this helper just
+    computes it.
+    """
+    # 1. BLOCKED — confirmed hard-link break forces score → 0.
+    hl_result = detect_hard_link_break(c4, c5, c6)
+    if hl_result["blocked"]:
+        return 0, "HIGH RISK", "BLOCKED"
+
+    # 2. NOT_VERIFIED — c1 (exporter or sad-value parsing) is None / missing.
+    if c1.get("result") is None or c1.get("sad_value_present") is False:
+        capped = min(score, 70)
+        # Re-derive risk band from the capped score so the legacy field
+        # stays internally consistent.
+        level = "HIGH RISK"
+        for threshold, label in _RISK_BANDS:
+            if capped >= threshold:
+                level = label
+                break
+        return capped, level, "NOT_VERIFIED"
+
+    # 3. PARTIAL — SAD-aggregated quantity OR CN parent-aggregation.
+    if (
+        qty_status == "partial_aggregated_sad"
+        or cn_status == "verified_parent_aggregated"
+    ):
+        capped = min(score, 85)
+        level = "HIGH RISK"
+        for threshold, label in _RISK_BANDS:
+            if capped >= threshold:
+                level = label
+                break
+        return capped, level, "PARTIAL"
+
+    # 4. VERIFIED with parser fallback — invoice NIP missing, SAD NIP matches
+    #    the master record. Slight confidence dock; caller still verified.
+    if nip_source == "sad_and_master":
+        capped = min(score, 90)
+        level = "HIGH RISK"
+        for threshold, label in _RISK_BANDS:
+            if capped >= threshold:
+                level = label
+                break
+        return capped, level, "VERIFIED"
+
+    # 5. VERIFIED at the confidence-weighted score, no cap.
+    level = "HIGH RISK"
+    for threshold, label in _RISK_BANDS:
+        if score >= threshold:
+            level = label
+            break
+    return score, level, "VERIFIED"
+
+
 # ── Public convenience ────────────────────────────────────────────────────────
 
 def score_batch(
     c1: dict, c2: dict, c3: dict, c4: dict, c5: dict, c6: dict,
     confidences: Optional[Dict[str, float]] = None,
+    *,
+    qty_status: Optional[str] = None,
+    cn_status:  Optional[str] = None,
+    nip_source: Optional[str] = None,
 ) -> Dict[str, object]:
     """
     Single call: compute flags + score + risk level + penalty breakdown.
     Pass confidences dict from learning_agent.AdjustmentResult to enable
     confidence-weighted scoring.
+
+    Hardening (feature-flagged): when ``AUDIT_HARDENING_ENABLED`` is true OR
+    when any of ``qty_status`` / ``cn_status`` / ``nip_source`` is supplied,
+    the return dict additionally carries a categorical ``status`` field
+    (``"VERIFIED"``, ``"PARTIAL"``, ``"NOT_VERIFIED"``, or ``"BLOCKED"``)
+    and the score is post-processed by ``_resolve_hardening_status`` to
+    apply caps and BLOCKED-force-zero. The legacy ``risk_level`` field is
+    preserved (and re-derived consistently from the capped score) so
+    existing PDF, Cliq, and API consumers continue to work without change.
+
+    Legacy path (flag off AND no categoricals supplied) returns the
+    previous return shape exactly — no ``status`` key.
 
     Returns a dict suitable for storing in result["audit_score"].
     """
@@ -209,7 +324,7 @@ def score_batch(
     failed       = [k for k, v in flags.items() if v]
     breakdown    = _penalty_breakdown(flags, confidences)
 
-    return {
+    out: Dict[str, object] = {
         "score":            score,
         "risk_level":       level,
         "flags":            flags,
@@ -219,3 +334,18 @@ def score_batch(
         "max_possible":     100,
         "weights":          dict(WEIGHTS),
     }
+
+    hardening_active = (
+        _hardening_enabled()
+        or qty_status is not None
+        or cn_status  is not None
+        or nip_source is not None
+    )
+    if hardening_active:
+        capped_score, capped_level, status = _resolve_hardening_status(
+            score, c1, c4, c5, c6, qty_status, cn_status, nip_source,
+        )
+        out["score"]      = capped_score
+        out["risk_level"] = capped_level
+        out["status"]     = status
+    return out

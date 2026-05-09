@@ -29,6 +29,19 @@ class Settings(BaseSettings):
     run_verify_on_startup: bool = False
     strict_match: bool = False          # global gate: block on any False verification
 
+    # ── Audit hardening (feature-flagged) ─────────────────────────────────────
+    # When True (env: AUDIT_HARDENING_ENABLED=1), audit_scoring.score_batch
+    # emits the categorical `status` taxonomy (VERIFIED / PARTIAL /
+    # NOT_VERIFIED / BLOCKED) on top of the legacy numeric score and
+    # risk_level, and applies hard-link force-zero for confirmed CIF /
+    # invoice-ref mismatches. Defaults to False so production batches run
+    # on the legacy scoring path until ops sign-off.
+    #
+    # Note: audit_scoring.py reads the env var directly (it has no service
+    # dependency) — this Settings field mirrors the same env var so the
+    # canonical configuration lives in one place.
+    audit_hardening_enabled: bool = False
+
     # ── Zoho WorkDrive TrueSync (optional mirror — not used for PZ upload) ───────
     # Kept for reference / convenience mirror only. Never used as upload or
     # success condition for PZ output.
