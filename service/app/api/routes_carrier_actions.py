@@ -58,9 +58,17 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+import logging
+
 from ..core import timeline as tl
 from ..core.config import settings
 from ..core.security import require_api_key
+
+# DL-F3.5d — fail-loud telemetry. Every "wanted live but fell back to
+# stub" branch in _select_carrier_adapter logs through this logger so
+# ops can grep for ``carrier_live_fallback_to_stub`` and surface the
+# misconfiguration before it silently ships labels through the stub.
+log = logging.getLogger(__name__)
 from ..services.carrier import carrier_proposal_builder as pb
 from ..services.carrier import carrier_shipment_db as csdb
 from ..services.carrier import carrier_state_engine as cse
@@ -161,16 +169,31 @@ def _select_carrier_adapter(actor: str):
     )
 
     if not settings.carrier_dhl_live_enabled:
+        # Live not enabled — using the stub is the *intended* path,
+        # not a fallback. No telemetry.
         return DHLExpressStubAdapter()
 
     status = (settings.dhl_express_api_status or "pending").lower().strip()
     if status == "pending":
+        log.warning(
+            "carrier_live_fallback_to_stub: live_enabled=True but "
+            "dhl_express_api_status=%r; serving stub. "
+            "Set status to 'sandbox' or 'production' to engage the "
+            "live adapter.",
+            status,
+        )
         return DHLExpressStubAdapter()
 
     username       = (settings.dhl_express_api_username   or "").strip()
     password       = (settings.dhl_express_api_password   or "").strip()
     account_number = (settings.dhl_express_account_number or "").strip()
     if not username or not password or not account_number:
+        log.warning(
+            "carrier_live_fallback_to_stub: live_enabled=True but DHL "
+            "credentials are incomplete (username_set=%s "
+            "password_set=%s account_set=%s); serving stub.",
+            bool(username), bool(password), bool(account_number),
+        )
         return DHLExpressStubAdapter()
 
     if status == "sandbox":
@@ -178,6 +201,12 @@ def _select_carrier_adapter(actor: str):
     elif status == "production":
         base_url = _DHL_PRODUCTION_URL
     else:
+        log.warning(
+            "carrier_live_fallback_to_stub: live_enabled=True but "
+            "dhl_express_api_status=%r is not in "
+            "{pending, sandbox, production}; serving stub.",
+            status,
+        )
         return DHLExpressStubAdapter()
 
     from ..services.carrier.adapters.dhl_express_live import (
@@ -201,10 +230,17 @@ def _select_carrier_adapter(actor: str):
             # Reviewer as P0.
             paperless_trade_allowed_root = str(settings.storage_root),
         )
-    except Exception:
+    except Exception as exc:
         # Defensive: live constructor rejected the inputs (empty after
         # strip, malformed URL, etc.). Fall back to the stub rather
-        # than crash the action endpoint.
+        # than crash the action endpoint. Telemetry is fail-loud — the
+        # exception type is logged so ops can spot a regression in the
+        # live adapter's __init__ contract immediately.
+        log.warning(
+            "carrier_live_fallback_to_stub: DHLExpressLiveAdapter "
+            "constructor raised %s; serving stub.",
+            type(exc).__name__,
+        )
         return DHLExpressStubAdapter()
 
     # Shadow-mode wrap (DL-F2) — only when the operator has explicitly
@@ -221,11 +257,16 @@ def _select_carrier_adapter(actor: str):
                 live  = live,
                 actor = (actor or "system:shadow"),
             )
-        except Exception:
+        except Exception as exc:
             # Defensive: any wrapping failure falls back to the stub
             # so the operator action never crashes. The live adapter
             # constructed above is dropped on the floor; the next
-            # request rebuilds.
+            # request rebuilds. Fail-loud per DL-F3.5d.
+            log.warning(
+                "carrier_live_fallback_to_stub: DHLExpressShadowAdapter "
+                "wrapping raised %s; serving stub.",
+                type(exc).__name__,
+            )
             return DHLExpressStubAdapter()
 
     return live
