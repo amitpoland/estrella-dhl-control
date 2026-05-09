@@ -446,6 +446,11 @@ async def _process_bot_batch(
         audit_score      = result.get("audit_score")
         audit_risk_level = result.get("audit_risk_level", "")
         audit_failed     = result.get("audit_failed_checks", [])
+        # Shadow audit-hardening telemetry. cliq_service only renders this
+        # when AUDIT_HARDENING_SHADOW_NOTIFY=1 and the result contains
+        # shadow fields, so legacy Cliq output is unchanged by default.
+        audit_shadow_status = result.get("shadow_status")
+        audit_shadow_score  = result.get("shadow_score")
 
         batch_status = "blocked" if (failed_keys or amendment_flags) else "success"
 
@@ -488,6 +493,8 @@ async def _process_bot_batch(
                 audit_pdf_url    = audit_pdf_url,
                 audit_score      = audit_score,
                 audit_risk_level = audit_risk_level,
+                audit_shadow_status = audit_shadow_status,
+                audit_shadow_score  = audit_shadow_score,
             )
 
         if audit_score is not None:
