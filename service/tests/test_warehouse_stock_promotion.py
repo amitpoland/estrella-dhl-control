@@ -28,9 +28,13 @@ from app.api.routes_upload import _promote_to_warehouse_stock
 
 
 @pytest.fixture()
-def db(tmp_path):
+def db(tmp_path, monkeypatch):
     pdb.init_packing_db(tmp_path / "packing.db")
     wdb.init_warehouse_db(tmp_path / "warehouse.db")
+    # Redirect storage_root so the _promote_to_warehouse_stock timeline mirror
+    # writes its audit event under tmp_path, not the live storage tree.
+    from app.core.config import settings as _settings
+    monkeypatch.setattr(_settings, "storage_root", tmp_path)
     return tmp_path
 
 
@@ -176,3 +180,113 @@ def test_lines_without_state_are_skipped(db):
     # Line 2 still has no state row at all
     sc2 = pdb._compute_scan_code(lines[1])
     assert ise.get_state(sc2) is None
+
+
+# ── 8: audit timeline mirror event ───────────────────────────────────────────
+
+def test_promote_emits_warehouse_stock_mirror_event(db):
+    """
+    _promote_to_warehouse_stock must append a single per-batch mirror event
+    (EV_INVENTORY_WAREHOUSE_STOCK_PROMOTED) to audit.json["timeline"].  The
+    detail dict carries only non-financial summary fields.
+    """
+    import json as _json
+    batch_id = "BATCH_PZ"
+
+    # Stub audit.json under the patched storage_root
+    batch_dir = db / "outputs" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = batch_dir / "audit.json"
+    audit_path.write_text(_json.dumps({"batch_id": batch_id, "timeline": []}),
+                          encoding="utf-8")
+
+    lines = [_line(i) for i in range(1, 4)]
+    pdb.upsert_packing_lines(lines)
+    seed_purchase_transit(batch_id, lines)
+
+    promoted = _promote_to_warehouse_stock(batch_id)
+    assert promoted == 3
+
+    audit = _json.loads(audit_path.read_text(encoding="utf-8"))
+    timeline = audit.get("timeline", [])
+    mirrors  = [e for e in timeline
+                if e.get("event") == "inventory_warehouse_stock_promoted"]
+    assert len(mirrors) == 1, mirrors
+    ev = mirrors[0]
+    assert ev["trigger_source"] == "pz_pipeline"
+    assert ev["actor"]          == "system"
+    assert ev["detail"]["batch_id"] == batch_id
+    assert ev["detail"]["promoted"] == promoted
+    forbidden = {"unit_price", "total_value", "cif", "duty", "vat", "amount"}
+    assert not (forbidden & set(ev["detail"].keys()))
+
+
+# ── 9: per-line failure mirror event ─────────────────────────────────────────
+
+def test_promote_emits_transition_failed_on_engine_error(db):
+    """
+    _promote_to_warehouse_stock must append a per-line
+    EV_INVENTORY_TRANSITION_FAILED event for every row whose ise.transition
+    raises, while still promoting the surviving rows AND still emitting the
+    summary EV_INVENTORY_WAREHOUSE_STOCK_PROMOTED at the end.
+
+    Detail is bounded: scan_code + to_state + truncated error string + batch_id.
+    """
+    import json as _json
+    batch_id = "BATCH_PZ"
+
+    # Stub audit.json under the patched storage_root
+    batch_dir = db / "outputs" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = batch_dir / "audit.json"
+    audit_path.write_text(_json.dumps({"batch_id": batch_id, "timeline": []}),
+                          encoding="utf-8")
+
+    lines = [_line(i) for i in range(1, 4)]
+    pdb.upsert_packing_lines(lines)
+    seed_purchase_transit(batch_id, lines)
+
+    # The promote loop calls ise.transition only with scan_code= keyword + to_state.
+    # Re-read the freshly-stamped scan_codes from the DB so the failure target
+    # matches what _promote_to_warehouse_stock will see.
+    db_lines = pdb.get_packing_lines_for_batch(batch_id)
+    failing_scancode = db_lines[1]["scan_code"] or pdb._compute_scan_code(db_lines[1])
+
+    real_transition = ise.transition
+
+    def _raise_for_one(*args, **kwargs):
+        if kwargs.get("scan_code") == failing_scancode \
+                and kwargs.get("to_state") == ise.WAREHOUSE_STOCK:
+            raise RuntimeError("simulated engine failure for one line " + ("Y" * 300))
+        return real_transition(*args, **kwargs)
+
+    with patch.object(ise, "transition", side_effect=_raise_for_one):
+        promoted = _promote_to_warehouse_stock(batch_id)
+
+    # Surviving rows still promoted (best-effort posture preserved)
+    assert promoted == 2
+
+    audit = _json.loads(audit_path.read_text(encoding="utf-8"))
+    timeline = audit.get("timeline", [])
+
+    # Summary event still fires after partial failure
+    summaries = [e for e in timeline
+                 if e.get("event") == "inventory_warehouse_stock_promoted"]
+    assert len(summaries) == 1, summaries
+    assert summaries[0]["detail"]["promoted"] == 2
+
+    # Exactly one per-line failure event, with bounded error
+    failures = [e for e in timeline
+                if e.get("event") == "inventory_transition_failed"]
+    assert len(failures) == 1, failures
+    fev = failures[0]
+    assert fev["trigger_source"]           == "pz_pipeline"
+    assert fev["actor"]                    == "system"
+    assert fev["detail"]["batch_id"]       == batch_id
+    assert fev["detail"]["scan_code"]      == failing_scancode
+    assert fev["detail"]["to_state"]       == "warehouse_stock"
+    assert isinstance(fev["detail"]["error"], str)
+    assert len(fev["detail"]["error"])     >  0
+    assert len(fev["detail"]["error"])     <= 200
+    forbidden = {"unit_price", "total_value", "cif", "duty", "vat", "amount"}
+    assert not (forbidden & set(fev["detail"].keys()))

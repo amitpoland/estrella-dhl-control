@@ -1250,6 +1250,42 @@ def _ensure_polish_description(audit_path: Path, audit: Dict[str, Any]) -> Dict[
         if json_result.get("generated"):
             audit["sad_ready_filename"] = json_result.get("filename")
             audit["sad_ready_path"]     = json_result.get("output_path")
+
+        # ── Polish customs description format validation (post-generation) ──
+        # Runs the same validator the approve/queue gates use, so the audit
+        # carries an authoritative pass/fail BEFORE any operator action. The
+        # observer never blocks here (it just records the result); the hard
+        # block lives in routes_action_proposals so the operator sees the
+        # 422 at the moment of approve/queue.
+        try:
+            from .polish_desc_validator import validate_polish_customs_description
+            _val_result = validate_polish_customs_description(
+                pdf_path           = pdf_result.get("output_path") or "",
+                audit              = audit,
+                batch_outputs_dir  = audit_path.parent,
+            )
+            _val_result["stage"] = "post_generation"
+            audit["polish_desc_validation"] = _val_result
+            try:
+                tl.log_event(
+                    audit_path,
+                    ("polish_desc_validation_passed" if _val_result["valid"]
+                     else "polish_desc_validation_failed"),
+                    "monitor",
+                    "active_shipment_monitor",
+                    detail={
+                        "stage":         "post_generation",
+                        "valid":         _val_result["valid"],
+                        "failed_rules":  [f["rule"] for f in _val_result["failed_rules"]],
+                        "summary":       _val_result["summary"],
+                    },
+                )
+            except Exception:
+                pass
+        except Exception as _vexc:
+            log.warning("[%s] post-generation polish-desc validation hook failed: %s",
+                        batch_id, _vexc)
+
         write_json_atomic(audit_path, audit)
         out["generated"] = True
         out["filename"]  = pdf_result.get("filename")

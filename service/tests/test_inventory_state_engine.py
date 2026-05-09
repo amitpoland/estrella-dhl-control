@@ -121,8 +121,9 @@ def test_no_duplicate_stock_across_states(db):
     counts = ise.count_by_state(batch_id="B4")
     assert sum(counts.values()) == 4
     assert counts == {
-        ise.PURCHASE_TRANSIT: 1, ise.WAREHOUSE_STOCK: 1,
-        ise.SALES_TRANSIT: 1,    ise.CLOSED: 1,
+        ise.PURCHASE_TRANSIT:      1, ise.WAREHOUSE_STOCK:       1,
+        ise.SALES_TRANSIT:         1, ise.CLOSED:                1,
+        ise.DIRECT_DISPATCH_READY: 0, ise.CLIENT_DISPATCHED:     0,
     }
 
 

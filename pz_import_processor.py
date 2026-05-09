@@ -328,24 +328,31 @@ def build_product_code(invoice_no: str, position: int) -> str:
 
 def canonical_item_sort_key(item: dict, original_index: int) -> tuple:
     """
-    Stable sort key for invoice line items — ensures product_code assignment
-    is independent of parser output order.
+    Preserve invoice line order for ``product_code`` assignment.
 
-    Tier 1 — item type (primary physical category)
-    Tier 2 — full English description (family + karat already embedded)
-    Tier 3 — HS code
-    Tier 4 — unit price (ascending) — distinguishes same-type, same-desc, diff-price
-    Tier 5 — quantity (ascending)
-    Tier 6 — original_index — tiebreaker only; preserves stability when all else equal
+    ``product_code`` is the legal/accounting identity that ties a row in
+    pz_rows.json to its invoice line, to its customs declaration, and to
+    its wFirma good. The earlier implementation sorted by item_type /
+    description / hs / price / qty (with original_index only as a
+    tiebreaker), which renumbered ``<invoice>-<N>`` codes whenever an
+    invoice mixed item types — auto-register (which reads
+    ``invoice_lines`` in invoice order) and pz_rows.json (which used the
+    sorted order) ended up disagreeing under the same code, producing
+    drifted line content in wFirma PZ documents.
+
+    Today's parser is deterministic by ``original_index`` (assigned in
+    PDF read order), so the historical motivation for the multi-tier
+    sort — re-parse stability — is already satisfied without it.
+    Returning ``(original_index,)`` makes ``<invoice>-<N>`` mean the
+    invoice's Nth line, full stop. This aligns auto-register and PZ
+    row generation under the same code → the wFirma PZ created from
+    pz_rows references goods whose registered descriptions match the
+    actual line content.
+
+    Function name + signature unchanged to avoid touching call sites.
     """
-    return (
-        (item.get("item_type") or "").strip().lower(),
-        (item.get("description_en") or "").strip().lower(),
-        (item.get("hsn") or "").strip(),
-        float(item.get("unit_price_usd") or 0),
-        float(item.get("quantity") or 0),
-        original_index,
-    )
+    # Single-key sort = preserve original parser/invoice order.
+    return (original_index,)
 
 
 # ── NBP rate ──────────────────────────────────────────────────────────────────
@@ -2241,27 +2248,25 @@ def calculate_landed(invoices: list, zc429: dict, nbp: dict, corrections_log: li
                 f"Negative freight rate {freight_rate_pct:.4%} for {inv['invoice_no']}"
             )
 
-        # Sort items by canonical key so product_code -N is stable across
-        # re-parses regardless of PDF item order.
+        # Sort items by canonical key. Under the current contract,
+        # ``canonical_item_sort_key`` returns ``(original_index,)`` so this
+        # is effectively a stable identity sort that preserves invoice
+        # line order — product_code -N maps to invoice line N.
         indexed_items = sorted(
             enumerate(inv["items"]),
             key=lambda t: canonical_item_sort_key(t[1], t[0]),
         )
-
-        # Warn if two items share an identical canonical key (excluding the
-        # original_index tiebreaker). Duplicate codes are prevented by the
-        # tiebreaker; this surfaces ambiguity to the operator.
-        seen_keys: dict = {}
-        for orig_idx, item in indexed_items:
-            ck = canonical_item_sort_key(item, 0)  # 0 strips tiebreaker for comparison
-            if ck in seen_keys:
-                corrections_log.append(
-                    f"[WARN] {inv['invoice_no']}: items at original positions "
-                    f"{seen_keys[ck]} and {orig_idx} share identical canonical "
-                    f"sort key — product_code order stabilised by original index"
-                )
-            else:
-                seen_keys[ck] = orig_idx
+        # NOTE: a duplicate-canonical-key warning loop used to live here.
+        # It warned when two items shared an identical multi-tier sort
+        # key (item_type+description+hs+price+qty), since the old sort
+        # used original_index only as a tiebreaker. After Option B, the
+        # sort key IS original_index, so every item has a unique key by
+        # construction — there are no canonical-key collisions to
+        # surface, and running the old check would emit one false-
+        # positive [WARN] per item past the first on every multi-line
+        # invoice. The block is removed deliberately; downstream
+        # duplicate detection (e.g. matching invoice descriptions to
+        # warehouse stock) lives in other services and is unaffected.
 
         for line_position, (_orig_idx, item) in enumerate(indexed_items, start=1):
             product_code     = build_product_code(inv["invoice_no"], line_position)

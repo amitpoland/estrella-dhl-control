@@ -92,7 +92,7 @@ def _base_audit() -> dict:
         "invoice_totals":   {"total_cif_usd": 10_000.00},
         "clearance_decision": {
             "total_value_usd": 10_000.00,
-            "clearance_path":  "external_agency_clearance",
+            "clearance_path":  "agency_clearance",
         },
         "clearance_status": "awaiting_dhl_customs_email",
     }
@@ -242,11 +242,14 @@ def test_full_operator_flow(tmp_root, audit_path, monkeypatch):
     assert a5["agency_invoice_received"] is True,        "S5: agency_invoice_received not in audit"
     assert a5["invoice_totals"]["total_cif_usd"] == 10_000.00, "S5: financial field mutated"
 
-    # Verify evaluate_closure now sees all four conditions met
+    # Verify evaluate_closure is ready (customs+PZ are hard blockers; invoices are accounting signals)
     from app.services.shipment_closure import evaluate_closure
     eval5 = evaluate_closure(a5)
     assert eval5["ready"]   is True,  f"S5: evaluate_closure not ready — missing: {eval5['missing']}"
     assert eval5["missing"] == [],    f"S5: unexpected missing: {eval5['missing']}"
+    # Invoices present → accounting already satisfied
+    assert eval5["invoice_status"]             == "received",   "S5: invoice_status wrong"
+    assert eval5["accounting_followup_required"] is False,      "S5: accounting_followup wrong"
 
     # ══════════════════════════════════════════════════════════════════════════
     # Stage 6 — Closure confirm via execute endpoint
@@ -294,10 +297,16 @@ def test_full_operator_flow(tmp_root, audit_path, monkeypatch):
     assert a6["ready_for_accounting"]  is True,         "S6: ready_for_accounting not True"
     assert a6["closure_approved_by"]   == APPROVER,     "S6: approved_by not recorded"
     assert a6.get("closed_at"),                         "S6: closed_at missing"
+    # Hard-blocker checks (customs + PZ only)
     checks6 = a6.get("closure_checks", {})
-    for field in ("customs_docs_received", "pz_generated",
-                  "agency_invoice_received", "dhl_invoice_received"):
+    for field in ("customs_docs_received", "pz_generated"):
         assert checks6.get(field) is True, f"S6: closure_checks.{field} not True"
+    # Invoice fields live in accounting_checks, not closure_checks
+    acct6 = a6.get("accounting_checks", {})
+    assert acct6.get("agency_invoice_received") is True, "S6: accounting_checks.agency_invoice_received not True"
+    assert acct6.get("dhl_invoice_received")    is True, "S6: accounting_checks.dhl_invoice_received not True"
+    assert a6.get("invoice_status")             == "received",   "S6: invoice_status wrong"
+    assert a6.get("accounting_followup_required") is False,      "S6: accounting_followup_required should be False"
 
     # ── Final financial invariant ─────────────────────────────────────────────
     assert a6["invoice_totals"]["total_cif_usd"]       == 10_000.00, "Final: invoice_totals mutated"

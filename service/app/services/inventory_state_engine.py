@@ -6,17 +6,42 @@ physical-location tracking in warehouse_db.
 
 States
 ------
-  PURCHASE_TRANSIT   PZ generated, goods on the way from supplier
-  WAREHOUSE_STOCK    Goods received at warehouse
-  SALES_TRANSIT      Sales invoice issued, goods on the way to customer
-  CLOSED             Delivery confirmed, sale complete (terminal)
+  PURCHASE_TRANSIT       PZ generated, goods on the way from supplier
+  WAREHOUSE_STOCK        Goods received at warehouse
+  DIRECT_DISPATCH_READY  Goods cleared customs and operator marked them for
+                         direct DHL/agency-to-client dispatch — never enter
+                         the warehouse stock pool. Eligible for Proforma
+                         issuance with the same protections as WAREHOUSE_STOCK.
+  CLIENT_DISPATCHED      Direct-dispatch goods physically handed to carrier
+                         for delivery to client. Eligible for late Proforma
+                         issuance (some clients receive paperwork after
+                         arrival).
+  SALES_TRANSIT          Sales invoice issued, goods on the way to customer
+  CLOSED                 Delivery confirmed, sale complete (terminal)
 
 Transitions (only these are legal; everything else raises)
 ----------
-  None              → PURCHASE_TRANSIT     trigger: pz_generated
-  PURCHASE_TRANSIT  → WAREHOUSE_STOCK      trigger: warehouse_receive
-  WAREHOUSE_STOCK   → SALES_TRANSIT        trigger: invoice_issued
-  SALES_TRANSIT     → CLOSED               trigger: delivery_confirmed
+  None                    → PURCHASE_TRANSIT       trigger: pz_generated
+  PURCHASE_TRANSIT        → WAREHOUSE_STOCK        trigger: warehouse_receive
+  PURCHASE_TRANSIT        → DIRECT_DISPATCH_READY  trigger: direct_dispatch_marked
+                                                   (operator-explicit; evidence required)
+  DIRECT_DISPATCH_READY   → CLIENT_DISPATCHED      trigger: client_dispatched
+  WAREHOUSE_STOCK         → SALES_TRANSIT          trigger: invoice_issued
+  SALES_TRANSIT           → CLOSED                 trigger: delivery_confirmed
+  CLIENT_DISPATCHED       → CLOSED                 trigger: delivery_confirmed
+
+Direct-dispatch evidence (enforced by transition() when to_state ==
+DIRECT_DISPATCH_READY):
+  - operator               must be non-empty
+  - customer_allocation    client_name string, non-empty
+  - customs_cleared        explicit True
+  - movement event         a RECEIVE event must already exist for this
+                           scan_code in inventory_movement_events (proves the
+                           goods physically arrived, even if they bypass the
+                           warehouse stock pool).
+
+`RECEIVE` action on /api/v1/warehouse/scan does NOT auto-promote — lifecycle
+state changes only via transition().
 
 Invariants
 ----------
@@ -46,31 +71,48 @@ from . import warehouse_db as wdb
 
 # ── State constants ──────────────────────────────────────────────────────────
 
-PURCHASE_TRANSIT = "PURCHASE_TRANSIT"
-WAREHOUSE_STOCK  = "WAREHOUSE_STOCK"
-SALES_TRANSIT    = "SALES_TRANSIT"
-CLOSED           = "CLOSED"
+PURCHASE_TRANSIT       = "PURCHASE_TRANSIT"
+WAREHOUSE_STOCK        = "WAREHOUSE_STOCK"
+DIRECT_DISPATCH_READY  = "DIRECT_DISPATCH_READY"
+CLIENT_DISPATCHED      = "CLIENT_DISPATCHED"
+SALES_TRANSIT          = "SALES_TRANSIT"
+CLOSED                 = "CLOSED"
 
 STATES: frozenset = frozenset({
-    PURCHASE_TRANSIT, WAREHOUSE_STOCK, SALES_TRANSIT, CLOSED,
+    PURCHASE_TRANSIT, WAREHOUSE_STOCK,
+    DIRECT_DISPATCH_READY, CLIENT_DISPATCHED,
+    SALES_TRANSIT, CLOSED,
 })
 
 # Map: from_state (or None for first entry) → set of legal to_states.
 LEGAL_TRANSITIONS: Dict[Optional[str], frozenset] = {
-    None:             frozenset({PURCHASE_TRANSIT}),
-    PURCHASE_TRANSIT: frozenset({WAREHOUSE_STOCK}),
-    WAREHOUSE_STOCK:  frozenset({SALES_TRANSIT}),
-    SALES_TRANSIT:    frozenset({CLOSED}),
-    CLOSED:           frozenset(),
+    None:                  frozenset({PURCHASE_TRANSIT}),
+    PURCHASE_TRANSIT:      frozenset({WAREHOUSE_STOCK, DIRECT_DISPATCH_READY}),
+    WAREHOUSE_STOCK:       frozenset({SALES_TRANSIT}),
+    DIRECT_DISPATCH_READY: frozenset({CLIENT_DISPATCHED}),
+    CLIENT_DISPATCHED:     frozenset({CLOSED}),
+    SALES_TRANSIT:         frozenset({CLOSED}),
+    CLOSED:                frozenset(),
 }
 
 # Default trigger label for each transition; callers may override.
 DEFAULT_TRIGGER: Dict[tuple, str] = {
-    (None,             PURCHASE_TRANSIT): "pz_generated",
-    (PURCHASE_TRANSIT, WAREHOUSE_STOCK):  "warehouse_receive",
-    (WAREHOUSE_STOCK,  SALES_TRANSIT):    "invoice_issued",
-    (SALES_TRANSIT,    CLOSED):           "delivery_confirmed",
+    (None,                  PURCHASE_TRANSIT):      "pz_generated",
+    (PURCHASE_TRANSIT,      WAREHOUSE_STOCK):       "warehouse_receive",
+    (PURCHASE_TRANSIT,      DIRECT_DISPATCH_READY): "direct_dispatch_marked",
+    (DIRECT_DISPATCH_READY, CLIENT_DISPATCHED):     "client_dispatched",
+    (WAREHOUSE_STOCK,       SALES_TRANSIT):         "invoice_issued",
+    (SALES_TRANSIT,         CLOSED):                "delivery_confirmed",
+    (CLIENT_DISPATCHED,     CLOSED):                "delivery_confirmed",
 }
+
+# Lifecycle states that satisfy a Proforma stock-readiness gate.
+# WAREHOUSE_STOCK         — classic warehoused goods.
+# DIRECT_DISPATCH_READY   — customs-cleared, operator-marked for direct ship.
+# CLIENT_DISPATCHED       — already dispatched directly to client.
+PROFORMA_ELIGIBLE_STATES: frozenset = frozenset({
+    WAREHOUSE_STOCK, DIRECT_DISPATCH_READY, CLIENT_DISPATCHED,
+})
 
 _lock = threading.Lock()
 
@@ -152,23 +194,37 @@ def count_by_state(batch_id: Optional[str] = None) -> Dict[str, int]:
     return counts
 
 
+def _has_receive_event(con: sqlite3.Connection, scan_code: str) -> bool:
+    """True iff a RECEIVE movement event exists for *scan_code*."""
+    row = con.execute(
+        "SELECT 1 FROM inventory_movement_events "
+        "WHERE scan_code=? AND action='RECEIVE' LIMIT 1",
+        (scan_code,),
+    ).fetchone()
+    return row is not None
+
+
 def transition(
     *,
-    scan_code:    str,
-    to_state:     str,
-    trigger:      Optional[str] = None,
-    product_code: str = "",
-    design_no:    str = "",
-    batch_id:     str = "",
-    operator:     str = "",
-    note:         str = "",
+    scan_code:           str,
+    to_state:            str,
+    trigger:             Optional[str] = None,
+    product_code:        str = "",
+    design_no:           str = "",
+    batch_id:            str = "",
+    operator:            str = "",
+    note:                str = "",
+    customer_allocation: str = "",
+    customs_cleared:     bool = False,
 ) -> Dict[str, Any]:
     """
     Move *scan_code* into *to_state*. Validates the transition is legal from
     the current state, atomically updates inventory_state, and appends an
     event to inventory_state_events.
 
-    Raises ValueError on illegal transition or unknown to_state.
+    Raises ValueError on illegal transition, unknown to_state, or — for
+    DIRECT_DISPATCH_READY — missing evidence (operator, customer_allocation,
+    customs_cleared, or no prior RECEIVE movement event).
     """
     if not scan_code:
         raise ValueError("scan_code is required")
@@ -190,6 +246,26 @@ def transition(
                 f"{from_state!r} → {to_state!r}. "
                 f"Legal next states from {from_state!r}: {sorted(legal)}"
             )
+
+        # Evidence gate — direct-dispatch is the only branch that bypasses the
+        # warehouse stock pool, so we enforce a hard evidence contract here
+        # rather than in callers (which can drift). Each missing piece raises
+        # a distinct ValueError so the operator UI can show the exact gap.
+        if to_state == DIRECT_DISPATCH_READY:
+            missing: List[str] = []
+            if not (operator or "").strip():
+                missing.append("operator")
+            if not (customer_allocation or "").strip():
+                missing.append("customer_allocation")
+            if not customs_cleared:
+                missing.append("customs_cleared=True")
+            if not _has_receive_event(con, scan_code):
+                missing.append("RECEIVE movement event")
+            if missing:
+                raise ValueError(
+                    f"DIRECT_DISPATCH_READY requires evidence; missing: "
+                    f"{', '.join(missing)}"
+                )
 
         eff_trigger = trigger or DEFAULT_TRIGGER.get((from_state, to_state), "")
 
