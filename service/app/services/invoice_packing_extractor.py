@@ -208,14 +208,106 @@ _FIELD_ALIASES: Dict[str, str] = {
     "sr":           "line_position",  # generic Serial column
     # misc
     "remarks": "remarks",  "notes": "remarks",  "comment": "remarks",
+    # Per-line currency (sales packing lists may carry one)
+    "currency": "currency",  "ccy": "currency",
 }
 
 
+_CURRENCY_TOKEN_RE = re.compile(
+    r"\b(EUR|USD|PLN|GBP|CHF|JPY)\b", re.IGNORECASE,
+)
+
+# Symbol → ISO. Match longest-first so multi-char tokens win over '$'.
+# 'zł' is the only common Polish symbol; CHF/JPY rarely appear as symbols.
+_CURRENCY_SYMBOL_TO_ISO: List[tuple] = [
+    ("zł",  "PLN"),
+    ("CHF", "CHF"),
+    ("EUR", "EUR"),
+    ("USD", "USD"),
+    ("PLN", "PLN"),
+    ("GBP", "GBP"),
+    ("JPY", "JPY"),
+    ("€",   "EUR"),
+    ("£",   "GBP"),
+    ("¥",   "JPY"),
+    ("$",   "USD"),
+]
+
+
+def _currency_from_format_string(fmt: str) -> str:
+    """Parse an Excel ``cell.number_format`` string and return an ISO
+    currency code, or "" if no recognised marker is present.
+
+    Examples
+    --------
+    ``'[$-10409]"€"\\ 0;\\("€"\\ 0\\)'``    → ``"EUR"``
+    ``'[$-10409]"$"\\ 0;\\("$"\\ 0\\)'``    → ``"USD"``
+    ``'#,##0.00 "zł"'``                       → ``"PLN"``
+    ``'General'``                              → ``""``
+    """
+    if not fmt:
+        return ""
+    s = str(fmt)
+    # Excel locale prefixes like "[$-10409]" must NOT be confused with the
+    # literal "$" symbol — strip them out before scanning.
+    s_clean = re.sub(r"\[\$-[0-9A-Fa-f]+\]", "", s)
+    for sym, iso in _CURRENCY_SYMBOL_TO_ISO:
+        if sym in s_clean:
+            return iso
+    return ""
+
+
+def _detect_packing_currency(rows: list, header_idx: int, headers: list) -> str:
+    """
+    Sales packing lists rarely carry a per-row currency cell. Detect from:
+      1. Header text on Value/Total Value columns: "Value (EUR)", "Total USD"
+      2. Sheet preamble cells (top 12 rows): "Currency: EUR", "USD"
+    Returns the upper-case ISO code, or "" if nothing matched.
+    """
+    # 1. Header-level
+    for h in headers or []:
+        s = str(h or "")
+        m = _CURRENCY_TOKEN_RE.search(s)
+        if m:
+            return m.group(1).upper()
+    # 2. Preamble scan (rows above the header row)
+    for r in (rows or [])[:max(header_idx, 0)]:
+        for cell in r or []:
+            s = str(cell or "")
+            if not s:
+                continue
+            low = s.lower()
+            if "currency" in low or "ccy" in low:
+                m = _CURRENCY_TOKEN_RE.search(s)
+                if m:
+                    return m.group(1).upper()
+            # Bare currency token in preamble (e.g. "All values in EUR")
+            m = _CURRENCY_TOKEN_RE.search(s)
+            if m and ("value" in low or "total" in low or "all " in low
+                      or low.strip() in ("eur", "usd", "pln", "gbp",
+                                           "chf", "jpy")):
+                return m.group(1).upper()
+    return ""
+
+
 def _map_headers(raw_headers: List[str]) -> Dict[int, str]:
-    """Return {col_index: canonical_field_name} for known headers."""
+    """Return {col_index: canonical_field_name} for known headers.
+
+    Tolerant of currency-annotated headers like ``Value (EUR)`` /
+    ``Total USD``: a parenthetical or trailing currency token is stripped
+    before alias lookup so ``value_eur`` resolves to the same canonical
+    field as ``value``.
+    """
     mapping: Dict[int, str] = {}
     for i, h in enumerate(raw_headers):
-        key = _normalise_header(h)
+        raw = (h or "").strip()
+        # Strip "(EUR)" / "(USD)" annotations from header text.
+        cleaned = re.sub(r"\s*\(\s*(?:EUR|USD|PLN|GBP|CHF|JPY)\s*\)\s*",
+                          "", raw, flags=re.IGNORECASE)
+        # Strip trailing bare currency tokens: "Total USD" → "Total"
+        cleaned = re.sub(r"\b(?:EUR|USD|PLN|GBP|CHF|JPY)\b\s*$",
+                          "", cleaned, flags=re.IGNORECASE).strip()
+        key = _normalise_header(cleaned)
         if key in _FIELD_ALIASES:
             mapping[i] = _FIELD_ALIASES[key]
     return mapping
@@ -368,6 +460,47 @@ def _extract_packing_excel(path: Path, engine: str = "openpyxl") -> List[Dict[st
         log.warning("Header row %d had no aliasable cells: %s", hdr_idx, headers)
         return []
 
+    # Sheet-level currency (header text or preamble). Stamped onto every
+    # row that doesn't already carry a per-row currency cell.
+    sheet_currency = _detect_packing_currency(rows, hdr_idx, headers)
+
+    # ── Cell-format currency (highest-priority source) ──────────────────
+    # Excel encodes currency on the Value / Total Value cells via
+    # ``number_format`` (e.g. ``[$-10409]"€" 0``). This is the AUTHORITATIVE
+    # signal — it survives copy/paste and renders the symbol in the source
+    # file the operator sees. Read once per workbook (engine=openpyxl only;
+    # xlrd does not expose per-cell number_format reliably).
+    cell_format_currencies: List[str] = []
+    if engine == "openpyxl":
+        try:
+            import openpyxl as _opx  # type: ignore
+            wb_fmt = _opx.load_workbook(str(path), data_only=False)
+            ws_fmt = wb_fmt.active
+            # Value-bearing columns: any column mapped to unit_price /
+            # total_value. We scan ALL data rows (not just header) so a
+            # mid-sheet currency switch is detectable.
+            value_cols = [i + 1 for i, fld in col_map.items()
+                          if fld in ("unit_price", "total_value")]
+            for ri in range(hdr_idx + 2, ws_fmt.max_row + 1):
+                for ci in value_cols:
+                    cell = ws_fmt.cell(row=ri, column=ci)
+                    iso = _currency_from_format_string(cell.number_format or "")
+                    if iso:
+                        cell_format_currencies.append(iso)
+        except Exception as _exc:
+            log.warning("number_format currency scan failed for %s: %s",
+                         path.name, _exc)
+    # Sheet-level cell-format currency: use the most common one. Mixed
+    # → keep the most common but record the conflict for the caller via a
+    # special marker on the parsed rows so intake can warn.
+    sheet_cell_format_currency = ""
+    sheet_cell_format_conflict = False
+    if cell_format_currencies:
+        from collections import Counter as _Counter
+        counts = _Counter(cell_format_currencies)
+        sheet_cell_format_currency = counts.most_common(1)[0][0]
+        sheet_cell_format_conflict = len(counts) > 1
+
     result: List[Dict[str, Any]] = []
     for raw in rows[hdr_idx + 1:]:
         cells = list(raw)
@@ -397,6 +530,24 @@ def _extract_packing_excel(path: Path, engine: str = "openpyxl") -> List[Dict[st
         # Stamp invoice_no from sheet header if not already on the row
         if invoice_no_from_sheet and not d.get("invoice_no"):
             d["invoice_no"] = invoice_no_from_sheet
+
+        # Currency priority on the row:
+        #   1. cell number_format on Value/Total columns (authoritative)
+        #   2. per-row currency cell (if present)
+        #   3. sheet header / preamble token
+        if not str(d.get("currency", "") or "").strip():
+            if sheet_cell_format_currency:
+                d["currency"]        = sheet_cell_format_currency
+                d["currency_source"] = "excel_symbol"
+            elif sheet_currency:
+                d["currency"]        = sheet_currency
+                d["currency_source"] = "excel_token"
+        else:
+            d.setdefault("currency_source", "excel_row")
+
+        # Surface the multi-currency conflict so intake can warn.
+        if sheet_cell_format_conflict:
+            d["currency_conflict"] = True
 
         result.append(d)
     log.info("Packing extracted %d rows from %s (engine=%s, header_row=%d)",

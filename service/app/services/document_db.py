@@ -261,6 +261,31 @@ def init_document_db(db_path: Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_sales_lines_batch
                 ON sales_packing_lines (batch_id);
+
+            -- ── Product descriptions (locked bilingual block, per code) ────
+            -- Single source of truth keyed by product_code.  See
+            -- docs/wfirma.skill.md — generated once, reused everywhere
+            -- (PZ description PDF, future wFirma product create, future
+            -- proforma/invoice flows).
+            CREATE TABLE IF NOT EXISTS product_descriptions (
+                product_code        TEXT PRIMARY KEY,
+                item_type           TEXT NOT NULL DEFAULT '',
+                name_pl             TEXT NOT NULL DEFAULT '',
+                description_pl      TEXT NOT NULL DEFAULT '',
+                description_en      TEXT NOT NULL DEFAULT '',
+                material_pl         TEXT NOT NULL DEFAULT '',
+                purpose_pl          TEXT NOT NULL DEFAULT '',
+                description_block   TEXT NOT NULL DEFAULT '',
+                description_line    TEXT NOT NULL DEFAULT '',
+                source              TEXT NOT NULL DEFAULT 'auto',
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pd_item_type
+                ON product_descriptions (item_type);
+            CREATE INDEX IF NOT EXISTS idx_pd_source
+                ON product_descriptions (source);
         """)
 
         # ── Forward-compat column migrations on invoice_lines ────────────
@@ -279,6 +304,36 @@ def init_document_db(db_path: Path) -> None:
             except sqlite3.OperationalError:
                 pass  # column already exists
 
+        # ── Forward-compat: product_descriptions added description_en /
+        # description_line later. Idempotent ALTER for older DBs.
+        for col, ddl in (
+            ("description_en",   "TEXT NOT NULL DEFAULT ''"),
+            ("description_line", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            try:
+                con.execute(
+                    f"ALTER TABLE product_descriptions ADD COLUMN {col} {ddl}"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
+        # ── Sales-side pricing: customer Proforma must use SALES prices,
+        # not import/customs cost. Schema gap before this migration: only
+        # quantity was captured; unit_price / currency were dropped at
+        # intake. Idempotent ALTERs preserve existing data (default 0/'').
+        for col, ddl in (
+            ("unit_price",   "REAL NOT NULL DEFAULT 0.0"),
+            ("currency",     "TEXT NOT NULL DEFAULT ''"),
+            ("total_value",  "REAL NOT NULL DEFAULT 0.0"),
+            ("price_source", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            try:
+                con.execute(
+                    f"ALTER TABLE sales_packing_lines ADD COLUMN {col} {ddl}"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
 
 _V_SALES_TO_WFIRMA_DDL = """
 CREATE TEMP VIEW IF NOT EXISTS v_sales_to_wfirma AS
@@ -291,16 +346,29 @@ SELECT
     spl.design_no               AS sales_design_no,
     pl.product_code             AS wfirma_product_code,
     pl.design_no                AS purchase_design_no,
-    SUM(spl.quantity)           AS qty
+    SUM(spl.quantity)           AS qty,
+    -- Sales-side pricing (preferred source for customer Proforma)
+    spl.unit_price              AS sales_unit_price,
+    spl.currency                AS sales_currency,
+    SUM(spl.total_value)        AS sales_total_value,
+    spl.price_source            AS sales_price_source
 FROM sales_packing_lines spl
 LEFT JOIN sales_documents sd
        ON sd.id = spl.sales_document_id
 LEFT JOIN packing.packing_lines pl
        ON pl.batch_id = spl.batch_id
-      AND UPPER(TRIM(pl.design_no)) =
-          UPPER(TRIM(COALESCE(NULLIF(spl.product_code, ''), spl.design_no)))
+      AND (
+              UPPER(TRIM(pl.design_no)) =
+                  UPPER(TRIM(COALESCE(NULLIF(spl.product_code, ''), spl.design_no)))
+           OR (
+              NULLIF(TRIM(spl.product_code), '') IS NOT NULL
+              AND NULLIF(TRIM(pl.product_code),  '') IS NOT NULL
+              AND UPPER(TRIM(pl.product_code)) = UPPER(TRIM(spl.product_code))
+           )
+          )
 GROUP BY spl.batch_id, spl.sales_document_id, sd.sales_doc_no,
-         spl.client_name, spl.client_ref, spl.design_no,
+         spl.client_name, spl.client_ref, spl.design_no, spl.product_code,
+         spl.unit_price, spl.currency, spl.price_source,
          pl.product_code, pl.design_no
 """
 
@@ -1095,8 +1163,10 @@ def store_sales_packing_lines(
                 con.execute(
                     """INSERT INTO sales_packing_lines
                        (id, batch_id, sales_document_id, client_name, client_ref,
-                        product_code, design_no, bag_id, quantity, remarks, created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        product_code, design_no, bag_id, quantity, remarks,
+                        unit_price, currency, total_value, price_source,
+                        created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         str(uuid.uuid4()), batch_id, sales_document_id,
                         str(ln.get("client_name", "")),
@@ -1106,6 +1176,10 @@ def store_sales_packing_lines(
                         str(ln.get("bag_id", "")),
                         float(ln.get("quantity", 0) or 0),
                         str(ln.get("remarks", "")),
+                        float(ln.get("unit_price", 0) or 0),
+                        str(ln.get("currency", "") or "").upper(),
+                        float(ln.get("total_value", 0) or 0),
+                        str(ln.get("price_source", "") or ""),
                         now,
                     ),
                 )
@@ -1113,6 +1187,76 @@ def store_sales_packing_lines(
             except Exception as exc:
                 log.warning("sales_packing_lines insert failed: %s", exc)
     return inserted
+
+
+def replace_sales_packing_lines(
+    sales_document_id: str,
+    batch_id:          str,
+    lines:             List[Dict[str, Any]],
+) -> Dict[str, int]:
+    """
+    Idempotent re-ingest: atomically DELETE all sales_packing_lines for
+    *(sales_document_id, batch_id)* and re-INSERT the supplied *lines*.
+
+    Use ONLY for operator-approved re-ingest (parser fix backfill, sales
+    file correction). Normal first-time intake should keep using
+    ``store_sales_packing_lines`` so concurrent runs don't accidentally
+    wipe a fresh document.
+
+    Scoping is strict on (sales_document_id, batch_id) — never touches
+    rows for other clients or other batches.
+
+    Returns ``{"deleted": int, "inserted": int}``.
+    """
+    if _db_path is None or not sales_document_id or not batch_id:
+        return {"deleted": 0, "inserted": 0}
+    now = _now()
+    deleted = 0
+    inserted = 0
+    with _lock, _connect() as con:
+        # Defensive: count first so the response is honest even if INSERT
+        # fails midway.
+        deleted = con.execute(
+            "SELECT COUNT(*) FROM sales_packing_lines "
+            "WHERE sales_document_id=? AND batch_id=?",
+            (sales_document_id, batch_id),
+        ).fetchone()[0]
+
+        con.execute(
+            "DELETE FROM sales_packing_lines "
+            "WHERE sales_document_id=? AND batch_id=?",
+            (sales_document_id, batch_id),
+        )
+        for ln in (lines or []):
+            try:
+                con.execute(
+                    """INSERT INTO sales_packing_lines
+                       (id, batch_id, sales_document_id, client_name, client_ref,
+                        product_code, design_no, bag_id, quantity, remarks,
+                        unit_price, currency, total_value, price_source,
+                        created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        str(uuid.uuid4()), batch_id, sales_document_id,
+                        str(ln.get("client_name", "")),
+                        str(ln.get("client_ref", "")),
+                        str(ln.get("product_code", "")),
+                        str(ln.get("design_no", "")),
+                        str(ln.get("bag_id", "")),
+                        float(ln.get("quantity", 0) or 0),
+                        str(ln.get("remarks", "")),
+                        float(ln.get("unit_price", 0) or 0),
+                        str(ln.get("currency", "") or "").upper(),
+                        float(ln.get("total_value", 0) or 0),
+                        str(ln.get("price_source", "") or ""),
+                        now,
+                    ),
+                )
+                inserted += 1
+            except Exception as exc:
+                log.warning("replace_sales_packing_lines insert failed: %s",
+                             exc)
+    return {"deleted": int(deleted), "inserted": int(inserted)}
 
 
 def get_sales_packing_lines(batch_id: str) -> List[Dict[str, Any]]:
@@ -1146,3 +1290,74 @@ def query_sales_to_wfirma(batch_id: str) -> List[Dict[str, Any]]:
             (batch_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Product descriptions (locked-block store) ───────────────────────────────
+
+def get_product_description(product_code: str) -> Optional[Dict[str, Any]]:
+    """Return the persisted description row for *product_code*, or None."""
+    if _db_path is None or not product_code:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            "SELECT * FROM product_descriptions WHERE product_code=?",
+            (str(product_code),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_product_description(
+    *,
+    product_code:      str,
+    item_type:         str,
+    name_pl:           str,
+    description_pl:    str,
+    material_pl:       str,
+    purpose_pl:        str,
+    description_block: str,
+    source:            str = "auto",
+    description_en:    str = "",
+    description_line:  str = "",
+) -> None:
+    """
+    Insert or update a product description row.
+
+    Idempotency rule: an existing row with source='manual' is NEVER
+    overwritten by source='auto' callers — protects operator overrides
+    from being clobbered by the default generator. Manual→manual updates
+    are allowed; auto→manual upgrades are allowed; auto→auto is a no-op
+    on second call (existing row returned by get_*).
+    """
+    if _db_path is None or not product_code:
+        return
+    now = _now()
+    with _lock, _connect() as con:
+        existing = con.execute(
+            "SELECT source FROM product_descriptions WHERE product_code=?",
+            (str(product_code),),
+        ).fetchone()
+        if existing is not None and existing["source"] == "manual" and source == "auto":
+            # Manual override — do not touch.
+            return
+        if existing is not None:
+            con.execute(
+                """UPDATE product_descriptions
+                   SET item_type=?, name_pl=?, description_pl=?, description_en=?,
+                       material_pl=?, purpose_pl=?, description_block=?,
+                       description_line=?, source=?, updated_at=?
+                   WHERE product_code=?""",
+                (item_type, name_pl, description_pl, description_en,
+                 material_pl, purpose_pl, description_block, description_line,
+                 source, now, str(product_code)),
+            )
+        else:
+            con.execute(
+                """INSERT INTO product_descriptions
+                   (product_code, item_type, name_pl, description_pl,
+                    description_en, material_pl, purpose_pl, description_block,
+                    description_line, source, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(product_code), item_type, name_pl, description_pl,
+                 description_en, material_pl, purpose_pl, description_block,
+                 description_line, source, now, now),
+            )

@@ -967,9 +967,52 @@ def _promote_to_warehouse_stock(batch_id: str) -> int:
             except Exception as _row_exc:
                 log.warning("[%s] WAREHOUSE_STOCK promote skipped for one line: %s",
                             batch_id, _row_exc)
+                # Best-effort per-line failure mirror — never raises into the loop.
+                # Bounded payload: error str truncated to 200 chars.
+                try:
+                    from ..services.batch_service import get_output_dir as _get_output_dir
+                    _audit_path_fail = _get_output_dir(batch_id) / "audit.json"
+                    tl.log_event(
+                        _audit_path_fail,
+                        tl.EV_INVENTORY_TRANSITION_FAILED,
+                        trigger_source = "pz_pipeline",
+                        actor          = "system",
+                        detail = {
+                            "batch_id":   batch_id,
+                            "scan_code":  line.get("scan_code") or _pdb._compute_scan_code(line) or "",
+                            "to_state":   "warehouse_stock",
+                            "error":      str(_row_exc)[:200],
+                        },
+                    )
+                except Exception as _tl_exc:
+                    log.warning(
+                        "[%s] inventory transition failure mirror failed (non-fatal): %s",
+                        batch_id, _tl_exc,
+                    )
     except Exception as _outer:
         log.warning("[%s] WAREHOUSE_STOCK promote best-effort failure: %s",
                     batch_id, _outer)
+
+    # ── Best-effort timeline mirror — never breaks the PZ pipeline ───────────
+    # One per-batch summary event regardless of promoted count, mirroring the
+    # EV_PZ_GENERATED idiom that fires four lines above the call site.
+    try:
+        from ..services.batch_service import get_output_dir as _get_output_dir
+        _audit_path = _get_output_dir(batch_id) / "audit.json"
+        tl.log_event(
+            _audit_path,
+            tl.EV_INVENTORY_WAREHOUSE_STOCK_PROMOTED,
+            trigger_source = "pz_pipeline",
+            actor          = "system",
+            detail = {
+                "batch_id": batch_id,
+                "promoted": promoted,
+            },
+        )
+    except Exception as _tl_exc:
+        log.warning("[%s] WAREHOUSE_STOCK promote mirror event failed (non-fatal): %s",
+                    batch_id, _tl_exc)
+
     return promoted
 
 
@@ -1124,3 +1167,72 @@ def upload_status(batch_id: str) -> dict:
         "workdrive_xlsx_resource_id": audit.get("workdrive_xlsx_resource_id"),
         "workdrive_batch_folder_id":  audit.get("workdrive_batch_folder_id"),
     }
+
+
+# ── DHL ZC429 completion-email intake ──────────────────────────────────────
+#
+# Accepts a structured representation of the DHL Agencja Celna WAW
+# "Powiadomienie o odebranym komunikacie ZC429" notification (sender,
+# subject, body, attachments) and routes it through dhl_zc429_intake.
+#
+# Read-only over financial/customs values. Sets only customs_declaration
+# scalars + emits the existing ``zc429_received`` timeline event.
+# Never touches PZ / wFirma / Proforma / SMTP. Does not interfere with
+# the existing low-value (< 2500 USD) DHL self-clearance workflow,
+# which operates upstream of this intake.
+
+from pydantic import BaseModel as _ZC429BaseModel, Field as _ZC429Field   # noqa: E402
+import base64 as _zc429_b64                                                # noqa: E402
+
+
+class _ZC429Attachment(_ZC429BaseModel):
+    filename:        str
+    content_base64:  Optional[str] = None
+    size:            Optional[int] = None
+
+
+class _ZC429IntakeRequest(_ZC429BaseModel):
+    sender:       str
+    subject:      str
+    body:         str
+    received_at:  str = ""
+    message_id:   str = ""
+    batch_id:     Optional[str] = None
+    attachments:  List[_ZC429Attachment] = _ZC429Field(default_factory=list)
+
+
+@router.post("/dhl-zc429/intake", dependencies=[_auth])
+def dhl_zc429_intake_endpoint(req: _ZC429IntakeRequest) -> JSONResponse:
+    """Operator-/integration-triggered DHL ZC429 email intake.
+
+    Decodes base64 attachment payloads, runs the detector + classifier,
+    persists evidence + classified attachments into the matched
+    shipment, and writes the ``customs_declaration`` audit block plus
+    the ``zc429_received`` timeline event. Never executes PZ / wFirma /
+    Proforma / SMTP actions and never alters the low-value self-
+    clearance flow."""
+    from ..services import dhl_zc429_intake as _zc429
+    payload_atts: List[dict] = []
+    for a in req.attachments:
+        content = b""
+        if a.content_base64:
+            try:
+                content = _zc429_b64.b64decode(a.content_base64, validate=False)
+            except Exception:
+                content = b""
+        payload_atts.append({
+            "filename": a.filename,
+            "content":  content,
+            "size":     a.size or len(content) or 0,
+        })
+    result = _zc429.ingest_zc429_email(
+        sender       = req.sender,
+        subject      = req.subject,
+        body         = req.body,
+        received_at  = req.received_at,
+        message_id   = req.message_id,
+        attachments  = payload_atts,
+        batch_id     = req.batch_id,
+    )
+    status = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status)

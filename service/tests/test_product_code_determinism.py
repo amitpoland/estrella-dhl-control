@@ -91,9 +91,20 @@ def _codes_by_desc(rows):
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 def test_canonical_sort_key_is_tuple():
+    # Intentional change (Option B, AWB 6049349806 fix): canonical_item_sort_key
+    # now returns a single-element tuple `(original_index,)` so product_codes
+    # follow invoice line order instead of (item_type, description, hs, price,
+    # qty) sort order. The earlier 6-tuple sort renumbered <invoice>-<N> codes
+    # whenever an invoice mixed item types and made auto-register (invoice
+    # order) and pz_rows.json (sorted order) disagree. Today's parser is
+    # deterministic by original_index, so re-parse stability is preserved.
     key = canonical_item_sort_key(_FOUR_ITEMS[0], 0)
     assert isinstance(key, tuple)
-    assert len(key) == 6
+    assert len(key) == 1
+    assert key == (0,)
+    # Sanity: each original_index produces its own unique key
+    keys = [canonical_item_sort_key(it, i) for i, it in enumerate(_FOUR_ITEMS)]
+    assert keys == [(0,), (1,), (2,), (3,)]
 
 
 def test_product_code_format_is_1indexed_hyphen():
@@ -118,21 +129,57 @@ def test_first_position_is_minus_1():
     assert any(r["product_code"] == f"{_INV_NO}-1" for r in rows)
 
 
-def test_shuffled_input_produces_same_codes():
-    """Core determinism invariant: shuffling input order must not change which
-    item gets which product_code."""
-    reference = _codes_by_desc(_run(_FOUR_ITEMS))
+def test_codes_follow_input_list_order():
+    """Intentional contract change (Option B, AWB 6049349806 fix):
+    product_code <invoice>-<N> now means the Nth item in the parser's
+    input list (which is the customs invoice's line order). Shuffling
+    the items dict is no longer a real-world scenario — the parser
+    produces a deterministic list per PDF read. This test pins the new
+    contract: codes follow input order strictly.
 
-    rng = random.Random(42)
-    for _ in range(20):
-        shuffled = _FOUR_ITEMS[:]
-        rng.shuffle(shuffled)
-        result = _codes_by_desc(_run(shuffled))
-        assert result == reference, (
-            f"product_code mapping changed after shuffle:\n"
-            f"  reference: {reference}\n"
-            f"  shuffled:  {result}"
-        )
+    The OLD behaviour (shuffled-input → identical mapping by description)
+    was an artificial protection against parser non-determinism; the
+    parser is deterministic today. Pinning sorted-by-content order
+    instead caused product_codes to drift away from invoice line
+    positions whenever an invoice mixed item types — e.g. invoice 123
+    with RING/PENDANT/EARRINGS lines was renumbered alphabetically by
+    item_type, which made `EJL/26-27/123-2` reference the SECOND
+    SORTED item, not the second invoice line. auto-register
+    (which reads invoice_lines in invoice order) and pz_rows.json
+    (formerly sorted) ended up disagreeing on the same code, producing
+    drifted line content in wFirma PZ documents."""
+    rows = _run(_FOUR_ITEMS)
+    # rows is invoice-positional now: input list[i] → product_code -<i+1>
+    by_pos = {r["line_position"]: r["description_en"] for r in rows}
+    expected = {i + 1: it["description_en"] for i, it in enumerate(_FOUR_ITEMS)}
+    assert by_pos == expected, (
+        f"product_code line_position must match input order:\n"
+        f"  expected: {expected}\n"
+        f"  got:      {by_pos}"
+    )
+
+    # Shuffling the input now intentionally changes which code each item gets,
+    # because the input order IS the canonical order. Verify the contract by
+    # reversing the input and checking codes mirror.
+    reversed_items = _FOUR_ITEMS[::-1]
+    rev_rows = _run(reversed_items)
+    rev_by_pos = {r["line_position"]: r["description_en"] for r in rev_rows}
+    expected_rev = {i + 1: it["description_en"] for i, it in enumerate(reversed_items)}
+    assert rev_by_pos == expected_rev, (
+        "Reversed input must produce reversed code → description mapping"
+    )
+
+
+def test_codes_stable_when_parser_input_is_stable():
+    """Re-parse-stability claim: the same parser input (deterministic
+    PDF read) produces identical codes every time. This is the practical
+    invariant — what actually matters for re-parsing the same PDF
+    against the same parser version."""
+    reference = _codes_by_desc(_run(_FOUR_ITEMS))
+    for _ in range(5):
+        # Same input list passed in identical order — deterministic parser.
+        result = _codes_by_desc(_run(_FOUR_ITEMS[:]))
+        assert result == reference
 
 
 def test_all_codes_unique():
@@ -158,9 +205,19 @@ def test_nazwa_fields_present_in_row():
         assert r["nazwa"].endswith(r["nazwa_en"])
 
 
-def test_duplicate_canonical_key_does_not_crash():
-    """Two items with identical canonical attributes still get unique codes.
-    The warning is logged but execution continues."""
+def test_two_identical_items_still_get_unique_codes():
+    """Two items with identical attributes must still receive unique
+    product_codes by virtue of invoice-position numbering.
+
+    Intentional change (Option B + duplicate-warning cleanup): the
+    earlier ``test_duplicate_canonical_key_does_not_crash`` also
+    asserted that a [WARN] was appended to corrections_log when two
+    items shared a multi-tier canonical key. After the sort became
+    ``(original_index,)``, no two items can share a canonical key by
+    construction, and the surrounding warning loop emitted a false
+    [WARN] per item on every multi-line invoice. The block was removed.
+    What remains is the structural guarantee: identical items still
+    coexist with unique codes."""
     identical = [
         _mk_item("Plain", "9KT", "RING", 2, 400.0, "71131911"),
         _mk_item("Plain", "9KT", "RING", 2, 400.0, "71131911"),  # exact duplicate
@@ -168,9 +225,49 @@ def test_duplicate_canonical_key_does_not_crash():
     log = []
     rows, _ = calculate_landed([_invoice(identical)], _ZC429, _NBP, corrections_log=log)
     codes = [r["product_code"] for r in rows]
-    assert len(codes) == len(set(codes)), "Duplicate canonical key must still yield unique codes"
-    assert any("canonical" in entry.lower() or "warn" in entry.lower() for entry in log), (
-        "Duplicate canonical key must emit a warning to corrections_log"
+    assert len(codes) == len(set(codes)), \
+        "Identical items must still yield unique invoice-positional codes"
+    assert codes == [f"{_INV_NO}-1", f"{_INV_NO}-2"]
+    # NEW: corrections_log must NOT carry a stale "canonical" / "share
+    # identical canonical sort key" entry — that warning was vestigial
+    # under the old multi-tier sort.
+    for entry in log:
+        assert "share identical canonical" not in entry, (
+            "Stale canonical-key warning re-introduced — see Option B "
+            "duplicate-warning cleanup"
+        )
+
+
+def test_no_false_canonical_warnings_on_mixed_invoice():
+    """AWB 6049349806 invoice 123 case: 5 mixed-type lines must NOT
+    trigger any false canonical-key warnings in corrections_log."""
+    five_mixed = [
+        _mk_item("Lab Grown Diamond", "14KT",  "RING",     1, 176.0, "71131914"),
+        _mk_item("Plain",             "14KT",  "PENDANT",  1,  36.0, "71131911"),
+        _mk_item("Plain",             "SL925", "PENDANT",  1,   4.0, "71131141"),
+        _mk_item("Lab Grown Diamond", "SL925", "EARRINGS", 1,  43.0, "71131144"),
+        _mk_item("Lab Grown Diamond", "SL925", "EARRINGS", 3, 171.0, "71131914"),
+    ]
+    log = []
+    # Scale ZC429 numbers to a plausible duty rate (~3%) for this small
+    # synthetic invoice — _ZC429.duty_pln=500 is calibrated for the
+    # 4-item _FOUR_ITEMS bundle, not these 5 mixed items.
+    fob = sum(it["total_usd"] for it in five_mixed)  # 430 USD
+    inv = {**_invoice(five_mixed), "fob_usd": fob, "cif_usd": fob + 60.0}
+    zc429_scaled = {"duty_pln": 60.0, "total_cif_usd": fob + 60.0,
+                    "lrn": "TEST_LRN"}
+    rows, _ = calculate_landed([inv], zc429_scaled, _NBP, corrections_log=log)
+    assert len(rows) == 5
+    # Codes are invoice-positional (Option B contract)
+    assert [r["product_code"] for r in rows] == [
+        f"{_INV_NO}-1", f"{_INV_NO}-2", f"{_INV_NO}-3",
+        f"{_INV_NO}-4", f"{_INV_NO}-5",
+    ]
+    # Nothing in corrections_log mentions the vestigial canonical warning
+    canonical_warnings = [e for e in log if "canonical" in e.lower()]
+    assert canonical_warnings == [], (
+        f"Multi-line invoice must NOT produce canonical-key warnings. "
+        f"Got: {canonical_warnings}"
     )
 
 

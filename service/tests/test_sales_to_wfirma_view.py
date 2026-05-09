@@ -179,3 +179,95 @@ def test_match_is_case_and_whitespace_insensitive(db):
 
     rows = ddb.query_sales_to_wfirma(B)
     assert rows[0]["wfirma_product_code"] == "EJL/26-27/N-1"
+
+
+# ── 7. PND case — sales row with explicit product_code, blank design_no ─────
+# Regression for AWB 6049349806 / Clear-Diamonds: after supplier-side PND
+# correction cleared packing.design_no='' on Plain pendants, the view's
+# design_no↔design_no join failed even though sales rows carried the canonical
+# wFirma product_code. Fix: also match on pl.product_code = spl.product_code
+# when both are non-empty.
+
+def _seed_sales_row(sales_document_id: str, batch_id: str, client_name: str,
+                    *, product_code: str, design_no: str, qty: float = 1.0) -> None:
+    ddb.store_sales_packing_lines(sales_document_id, batch_id, [{
+        "client_name":  client_name,
+        "client_ref":   "REF-PND",
+        "product_code": product_code,
+        "design_no":    design_no,
+        "bag_id":       "",
+        "quantity":     qty,
+        "remarks":      "",
+    }])
+
+
+def test_explicit_product_code_resolves_when_design_no_blank(db):
+    """PND row: sales has product_code='EJL/.../123-2', design_no=''.
+    Packing row also has product_code='EJL/.../123-2', design_no=''.
+    Old join failed (pl.design_no='' vs spl.product_code mismatch);
+    new branch resolves via pl.product_code = spl.product_code."""
+    B = "BATCH_PND_1"
+    _seed_purchase(B, design_no="", product_code="EJL/26-27/123-2")
+    sd = _seed_sales_doc(B, "Clear-Diamonds Ltd", "SO-PND")
+    _seed_sales_row(sd, B, "Clear-Diamonds Ltd",
+                    product_code="EJL/26-27/123-2", design_no="")
+
+    rows = ddb.query_sales_to_wfirma(B)
+    assert len(rows) == 1
+    assert rows[0]["wfirma_product_code"] == "EJL/26-27/123-2"
+    assert rows[0]["qty"] == 1.0
+
+
+def test_blank_product_code_does_not_match_blank_packing_product_code(db):
+    """Defensive: a sales row with no product_code AND no design_no must
+    NOT spuriously join to a packing row whose product_code is also blank."""
+    B = "BATCH_PND_2"
+    # Packing row with both fields blank — pathological, should never match.
+    _seed_purchase(B, design_no="", product_code="")
+    sd = _seed_sales_doc(B, "ACME", "SO-BLANK")
+    _seed_sales_row(sd, B, "ACME", product_code="", design_no="")
+
+    rows = ddb.query_sales_to_wfirma(B)
+    assert len(rows) == 1
+    # Must not resolve to the blank packing row.
+    assert rows[0]["wfirma_product_code"] in (None, "")
+    if rows[0]["wfirma_product_code"] == "":
+        # Some platforms canonicalise NULL→''; either way, it must not be
+        # treated as a successful resolution.
+        pass
+
+
+def test_pnd_pair_resolves_distinctly(db):
+    """Two PND sales rows with different product_codes but both blank
+    design_no must resolve to two distinct rows — not collapse via GROUP BY."""
+    B = "BATCH_PND_3"
+    _seed_purchase(B, design_no="", product_code="EJL/26-27/123-2", pack_sr=1.0)
+    _seed_purchase(B, design_no="", product_code="EJL/26-27/123-3", pack_sr=2.0)
+    sd = _seed_sales_doc(B, "Clear-Diamonds Ltd", "SO-PND-PAIR")
+    _seed_sales_row(sd, B, "Clear-Diamonds Ltd",
+                    product_code="EJL/26-27/123-2", design_no="")
+    _seed_sales_row(sd, B, "Clear-Diamonds Ltd",
+                    product_code="EJL/26-27/123-3", design_no="")
+
+    rows = ddb.query_sales_to_wfirma(B)
+    codes = sorted(r["wfirma_product_code"] for r in rows)
+    assert codes == ["EJL/26-27/123-2", "EJL/26-27/123-3"]
+    assert all(r["qty"] == 1.0 for r in rows)
+
+
+def test_design_no_join_still_takes_precedence_no_duplication(db):
+    """Sanity: a row that would match via BOTH branches (design_no AND
+    product_code) must NOT inflate qty by double-joining. The OR is
+    structured so SQLite still produces a single matching pl row when
+    only one packing row exists for the design+code pair."""
+    B = "BATCH_PND_4"
+    _seed_purchase(B, design_no="JR05671", product_code="EJL/26-27/123-1")
+    sd = _seed_sales_doc(B, "Clear-Diamonds Ltd", "SO-DUAL")
+    _seed_sales_row(sd, B, "Clear-Diamonds Ltd",
+                    product_code="JR05671", design_no="JR05671",
+                    qty=1.0)
+
+    rows = ddb.query_sales_to_wfirma(B)
+    assert len(rows) == 1
+    assert rows[0]["wfirma_product_code"] == "EJL/26-27/123-1"
+    assert rows[0]["qty"] == 1.0  # not doubled

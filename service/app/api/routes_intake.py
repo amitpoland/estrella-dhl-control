@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from ..core.config import settings
@@ -41,6 +41,7 @@ from ..core.security import require_api_key
 from ..core import timeline as tl
 from ..services import document_db as ddb
 from ..services import packing_db as pdb
+from ..services import proforma_invoice_link_db as pildb
 from .routes_packing import seed_purchase_transit
 from ..services.awb_parser import parse_awb_pdf
 from ..services.batch_service import get_output_dir
@@ -75,6 +76,62 @@ def _make_batch_id(tracking_no: str) -> str:
     month = datetime.now(timezone.utc).strftime("%Y-%m")
     uid   = uuid.uuid4().hex[:8]
     return f"SHIPMENT_{slug}_{month}_{uid}"
+
+
+def _proforma_db_path() -> Path:
+    """Storage location for proforma_invoice_link_db (Phase 2 drafts)."""
+    return settings.storage_root / "proforma_links.db"
+
+
+def _auto_create_draft_for_client(
+    *,
+    batch_id:    str,
+    client:      str,
+    client_ref:  str,
+    currency:    str,
+    line_records: List[Dict[str, Any]],
+    operator:    str = "intake",
+) -> None:
+    """Best-effort: auto-create a Phase-2 editable Proforma Draft from
+    sales_packing line_records. Idempotent. Failure is logged and
+    swallowed — never block intake on draft creation.
+    """
+    if not (client or "").strip():
+        return
+    if not line_records:
+        return
+    try:
+        # Reshape line_records (sales_packing_lines schema) into the
+        # auto-create's `lines` shape. Keep client_ref alongside each
+        # line so per-line client refs aren't lost.
+        editable_input = []
+        for r in line_records:
+            editable_input.append({
+                "product_code": r.get("product_code") or "",
+                "design_no":    r.get("design_no") or "",
+                "qty":          r.get("quantity") or 0,
+                "unit_price":   r.get("unit_price") or 0,
+                "currency":     (r.get("currency") or currency or "").upper(),
+                "price_source": r.get("price_source") or "",
+                "client_ref":   r.get("client_ref") or client_ref or "",
+            })
+        draft, was_created = pildb.auto_create_draft_from_sales_packing(
+            _proforma_db_path(),
+            batch_id    = batch_id,
+            client_name = client,
+            currency    = (currency or "").upper(),
+            lines       = editable_input,
+            operator    = operator,
+        )
+        log.info(
+            "[%s] proforma draft %s for client=%r (id=%s, state=%s, lines=%d)",
+            batch_id,
+            "auto-created" if was_created else "already exists",
+            client, draft.id, draft.draft_state, len(editable_input),
+        )
+    except Exception as exc:
+        log.warning("[%s] proforma draft auto-create failed for %r: %s",
+                    batch_id, client, exc)
 
 
 def _validate_file(file: UploadFile, allowed_exts: set) -> None:
@@ -485,6 +542,8 @@ async def shipment_intake(
         block      = next((b for b in sales_blocks if b.get("packing_index") == idx), {})
         client     = block.get("client_name", "")
         client_ref = block.get("client_ref", "")
+        # Operator-supplied per-document currency override (optional).
+        operator_currency = (block.get("currency", "") or "").strip().upper()
         sales_idx    = block.get("document_index", idx)
         sales_doc_id = (sales_doc_ids[sales_idx]
                         if isinstance(sales_idx, int) and 0 <= sales_idx < len(sales_doc_ids)
@@ -525,6 +584,13 @@ async def shipment_intake(
         # Uses the same EJL excel reader as the purchase side.
         n_rows = 0
         export_inv_no = ""
+        currency_for_doc = ""
+        currency_source = "missing"
+        has_pnd = False
+        pnd_summary: Dict[str, Any] = {
+            "applied": False, "reason": "no PND rows",
+            "pairs": [], "warnings": [],
+        }
         try:
             from ..services.invoice_packing_extractor import extract_packing
             sp_rows, _, _ = extract_packing(path)
@@ -533,21 +599,145 @@ async def shipment_intake(
                 from collections import Counter
                 export_inv_no = Counter(export_invs).most_common(1)[0][0]
 
+            # ── Currency resolution ladder (per-document) ──────────────
+            # 1. Excel — sheet/header detection (already on each row's
+            #    "currency" field by the parser).
+            # 2. Operator override — `currency` field on the sales block.
+            # 3. Customer default — wfirma_customers.default_currency.
+            # 4. Blank — Proforma preview will block, never silent guess.
+            customer_default = ""
+            try:
+                from ..services import wfirma_db as _wfdb
+                _cust = _wfdb.get_customer(client) if client else None
+                customer_default = ((_cust or {}).get("default_currency") or "").strip().upper()
+            except Exception as exc:
+                log.warning("[%s] customer default-currency lookup failed: %s",
+                            batch_id, exc)
+
+            currency_source = "missing"
+            currency_for_doc = ""
+            # Determine the document-level currency source by looking at the
+            # FIRST parsed row. The parser already labels the source per-row:
+            #   excel_symbol  — cell number_format ($/€/zł) — authoritative
+            #   excel_token   — header / preamble ISO token
+            #   excel_row     — per-row currency cell
+            # Anything Excel-supplied wins over operator and customer default.
+            first_excel_currency = ""
+            first_excel_source   = ""
+            for _r in sp_rows:
+                _ec = (str(_r.get("currency", "") or "")).strip().upper()
+                if _ec:
+                    first_excel_currency = _ec
+                    first_excel_source   = (_r.get("currency_source")
+                                              or "excel")
+                    break
+            # Multi-currency conflict in one file → never silently use
+            # the dominant value. Operator must clarify.
+            mixed_currency = any(
+                _r.get("currency_conflict") for _r in sp_rows
+            )
+            if mixed_currency:
+                currency_for_doc = ""
+                currency_source  = "mixed_excel_currencies_block"
+            elif first_excel_currency:
+                currency_for_doc = first_excel_currency
+                currency_source  = first_excel_source or "excel"
+            elif operator_currency:
+                currency_for_doc = operator_currency
+                currency_source  = "operator"
+            elif customer_default:
+                currency_for_doc = customer_default
+                currency_source  = "customer_default"
+
+            # ── PND disambiguation (deterministic, gated) ──────────────
+            # Build supplier candidates for the same invoice from packing.db
+            # joined to invoice_lines (for unit_price). Run only when the
+            # parser produced PND rows.
+            from ..services.sales_pnd_disambiguator import disambiguate_pnd
+            pnd_summary: Dict[str, Any] = {
+                "applied": False, "reason": "no PND rows",
+                "pairs": [], "warnings": [],
+            }
+            inv_no_for_pnd = export_inv_no
+            has_pnd = any(
+                str(r.get("design_no", "") or "").strip().upper() == "PND"
+                for r in sp_rows
+            )
+            if has_pnd and inv_no_for_pnd:
+                # Pull supplier-side pendants for this invoice. We use
+                # invoice_lines (cost rows) joined to packing.db product_code
+                # → product_code. invoice_lines item_type isn't projected,
+                # but packing.packing_lines.item_type is. Build from packing
+                # then attach unit_price from invoice_lines by product_code.
+                supplier_candidates: List[Dict[str, Any]] = []
+                try:
+                    from ..services import packing_db as _pdb
+                    p_rows = _pdb.get_packing_lines_for_batch(batch_id)
+                    inv_price_index: Dict[str, float] = {}
+                    for il in ddb.get_invoice_lines_for_batch(batch_id) or []:
+                        ipc = (il.get("product_code") or "").strip()
+                        if ipc and ipc not in inv_price_index:
+                            inv_price_index[ipc] = float(
+                                il.get("rate_usd") or il.get("unit_price") or 0
+                            )
+                    for pl in p_rows:
+                        if (pl.get("invoice_no") or "") != inv_no_for_pnd:
+                            continue
+                        item_type = (pl.get("item_type") or "").strip().upper()
+                        if not (item_type.startswith("PEND") or item_type == "PND"):
+                            continue
+                        pc = (pl.get("product_code") or "").strip()
+                        supplier_candidates.append({
+                            "product_code": pc,
+                            "design_no":    pl.get("design_no") or "",
+                            "item_type":    item_type,
+                            "unit_price":   inv_price_index.get(pc, 0.0),
+                        })
+                except Exception as exc:
+                    log.warning("[%s] supplier PND candidate load failed: %s",
+                                batch_id, exc)
+                # Apply disambiguator. Mutates sp_rows in-place when it fires.
+                sp_rows, pnd_summary = disambiguate_pnd(
+                    sp_rows, supplier_candidates, invoice_no=inv_no_for_pnd,
+                )
+
             if sp_rows and sales_doc_id:
-                line_records = [
-                    {
+                line_records = []
+                for r in sp_rows:
+                    row_currency = str(r.get("currency", "") or "").strip().upper()
+                    final_currency = row_currency or currency_for_doc
+                    line_records.append({
                         "client_name":  client,
                         "client_ref":   client_ref,
-                        "product_code": r.get("design_no") or "",   # fallback
+                        # Use the disambiguator's product_code if it fired;
+                        # otherwise fall back to design_no (preserves
+                        # existing behaviour for non-PND rows).
+                        "product_code": (r.get("product_code")
+                                          or r.get("design_no") or ""),
                         "design_no":    str(r.get("design_no", "") or ""),
                         "bag_id":       str(r.get("bag_id", "") or ""),
                         "quantity":     float(r.get("quantity", 0) or 0),
                         "remarks":      str(r.get("client_po", "") or r.get("remarks", "") or ""),
-                    }
-                    for r in sp_rows
-                ]
+                        # Sales pricing (canonical — never substituted by import cost)
+                        "unit_price":   float(r.get("unit_price",  0) or 0),
+                        "total_value":  float(r.get("total_value", 0) or 0),
+                        "currency":     final_currency,
+                        "price_source": "packing_list" if (
+                            float(r.get("unit_price", 0) or 0) > 0
+                        ) else "",
+                    })
                 ddb.store_sales_packing_lines(sales_doc_id, batch_id, line_records)
                 n_rows = len(line_records)
+                # Phase 2 — auto-create local editable Proforma Draft.
+                # Idempotent; never blocks intake on failure.
+                _auto_create_draft_for_client(
+                    batch_id     = batch_id,
+                    client       = client,
+                    client_ref   = client_ref,
+                    currency     = currency_for_doc,
+                    line_records = line_records,
+                    operator     = "intake",
+                )
         except Exception as exc:
             log.warning("[%s] sales packing parse failed (non-fatal): %s — %s",
                         batch_id, name, exc)
@@ -558,6 +748,25 @@ async def shipment_intake(
             "client_ref":        client_ref,
             "rows":              n_rows,
             "export_invoice_no": export_inv_no,
+            # Operator-visible provenance: where the persisted currency came
+            # from, and whether PND product_codes were resolved by the
+            # deterministic price tiebreak (or left ambiguous).
+            "currency":           currency_for_doc,
+            "currency_source":    currency_source,    # excel | operator | customer_default | missing
+            "pnd_mapping_source": (
+                "price_tiebreak" if pnd_summary.get("applied") else
+                ("ambiguous" if has_pnd else "n/a")
+            ),
+            "pnd_summary":        pnd_summary,
+            "warnings": (
+                (["currency missing — Proforma will block until set"]
+                 if currency_source == "missing" else [])
+                + (["multiple Excel currency symbols detected — operator "
+                    "must clarify before Proforma can issue"]
+                   if currency_source == "mixed_excel_currencies_block"
+                   else [])
+                + list(pnd_summary.get("warnings") or [])
+            ),
         })
         log.info("[%s] Sales packing saved: %s client=%s rows=%d",
                  batch_id, name, client or "?", n_rows)
@@ -737,4 +946,293 @@ async def add_packing_list(
         "file":     name,
         "doc_id":   doc_id,
         "extraction": result_summary,
+    })
+
+
+
+# ── Sales-packing re-ingest ────────────────────────────────────────────────
+#
+# Idempotent backfill / correction path. Replaces sales_packing_lines for
+# (batch_id, sales_document_id) using the SAME parser + currency ladder +
+# PND tiebreak the main intake route uses. Never creates a new batch;
+# never touches unrelated clients or unrelated batches.
+
+@router.post("/sales-packing/reingest", dependencies=[_auth])
+async def sales_packing_reingest(
+    batch_id:           str                = Form(...),
+    metadata:           str                = Form(default="{}"),
+    files:              List[UploadFile]   = [],
+    override_currency:  str                = Form(default=""),
+    x_operator:         Optional[str]      = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Re-parse and atomically replace sales_packing_lines for an EXISTING
+    batch. Each file is matched to a sales_document via metadata blocks
+    (``client_name`` + optional ``client_ref``).
+
+    Body (multipart/form-data):
+      batch_id           — existing SHIPMENT_… batch id (required)
+      files[]            — sales packing list spreadsheets (.xlsx / .xls)
+      metadata           — JSON: {"sales_blocks":[{"packing_index":0,
+                                                    "client_name":"...",
+                                                    "client_ref":"...",
+                                                    "currency":"EUR"}]}
+      override_currency  — optional 3-letter ISO; only honoured when Excel
+                           detection produced a multi-currency conflict.
+
+    Returns per-file: deleted_count, inserted_count, before_count,
+    currency, currency_source, currency_conflict, warnings, pnd_summary.
+
+    Mixed-currency files (parser flagged conflict) are SKIPPED unless the
+    operator supplied ``override_currency``.
+    """
+    if not (batch_id or "").strip():
+        raise HTTPException(status_code=400, detail="batch_id is required")
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="invalid batch_id")
+    if not files:
+        raise HTTPException(status_code=400, detail="no files provided")
+    for f in files:
+        _validate_file(f, _ALLOWED_PACKING_EXT)
+
+    try:
+        meta: Dict[str, Any] = json.loads(metadata) if metadata.strip() else {}
+    except Exception:
+        meta = {}
+    sales_blocks: List[Dict[str, Any]] = meta.get("sales_blocks", [])
+
+    output_dir = get_output_dir(batch_id)
+    sales_dir  = output_dir / "source" / "sales"
+    sales_dir.mkdir(parents=True, exist_ok=True)
+
+    # Index existing sales_documents by client_name (case- and
+    # whitespace-tolerant) so the operator doesn't need to supply
+    # the exact stored key.
+    existing_docs = ddb.get_sales_documents(batch_id)
+    by_client: Dict[str, List[Dict[str, Any]]] = {}
+    for d in existing_docs:
+        key = (d.get("client_name") or "").strip().upper()
+        if not key:
+            continue
+        by_client.setdefault(key, []).append(d)
+
+    override_ccy = (override_currency or "").strip().upper()
+    if override_ccy and override_ccy not in {"EUR", "USD", "PLN", "GBP",
+                                              "CHF", "JPY"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"override_currency {override_currency!r} not in allowed set",
+        )
+
+    operator = (x_operator or "").strip()
+
+    results: List[Dict[str, Any]] = []
+    for idx, f in enumerate(files):
+        block      = next((b for b in sales_blocks
+                            if b.get("packing_index") == idx), {})
+        client     = (block.get("client_name", "") or "").strip()
+        client_ref = (block.get("client_ref",  "") or "").strip()
+        operator_ccy = (block.get("currency", "") or "").strip().upper()
+
+        per_file: Dict[str, Any] = {
+            "file":              f.filename,
+            "client_name":       client,
+            "client_ref":        client_ref,
+            "deleted_count":     0,
+            "inserted_count":    0,
+            "before_count":      0,
+            "currency":          "",
+            "currency_source":   "missing",
+            "currency_conflict": False,
+            "warnings":          [],
+            "pnd_summary":       {"applied": False, "reason": "not run"},
+        }
+
+        if not client:
+            per_file["warnings"].append("client_name missing in metadata")
+            results.append(per_file); continue
+
+        # Resolve sales_document_id by client_name. Refuse if multiple match.
+        candidates = by_client.get(client.upper(), [])
+        if not candidates:
+            per_file["warnings"].append(
+                f"no sales_document found for client {client!r} in batch")
+            results.append(per_file); continue
+        if len(candidates) > 1:
+            per_file["warnings"].append(
+                f"multiple sales_documents for client {client!r} — "
+                "refusing to auto-pick")
+            results.append(per_file); continue
+        sales_doc = candidates[0]
+        sales_doc_id = sales_doc.get("id") or ""
+        if not sales_doc_id:
+            per_file["warnings"].append("resolved sales_document has no id")
+            results.append(per_file); continue
+
+        # Save the file under the existing batch's sales folder so the
+        # source-of-truth is preserved. Overwrite is intentional.
+        name = _safe_name(f.filename or f"sales_packing_reingest_{idx}.xlsx")
+        path = sales_dir / name
+        path.write_bytes(await f.read())
+
+        # Parse via the same extractor — this picks up the cell-format
+        # currency symbol fix that landed earlier.
+        try:
+            from ..services.invoice_packing_extractor import extract_packing
+            sp_rows, _, _ = extract_packing(path)
+        except Exception as exc:
+            per_file["warnings"].append(f"parse failed: {exc}")
+            results.append(per_file); continue
+
+        # Currency ladder (Excel symbol > Excel token > operator > default
+        # > blank). Pre-existing route logic is the source-of-truth for
+        # this; we mirror it here so the re-ingest path stays consistent.
+        from ..services import wfirma_db as _wfdb
+        customer_default = ""
+        try:
+            _cust = _wfdb.get_customer(client) if client else None
+            customer_default = ((_cust or {}).get("default_currency") or "").strip().upper()
+        except Exception:
+            pass
+
+        first_excel_currency = ""
+        first_excel_source   = ""
+        for _r in sp_rows:
+            _ec = (str(_r.get("currency", "") or "")).strip().upper()
+            if _ec:
+                first_excel_currency = _ec
+                first_excel_source   = (_r.get("currency_source") or "excel")
+                break
+        mixed = any(_r.get("currency_conflict") for _r in sp_rows)
+
+        if mixed and not override_ccy:
+            per_file["currency_conflict"] = True
+            per_file["currency_source"]   = "mixed_excel_currencies_block"
+            per_file["warnings"].append(
+                "multiple Excel currency symbols detected — supply "
+                "override_currency or fix the source file")
+            results.append(per_file); continue
+
+        if override_ccy and (mixed or not first_excel_currency):
+            currency_for_doc = override_ccy
+            currency_source  = "operator_override"
+        elif first_excel_currency:
+            currency_for_doc = first_excel_currency
+            currency_source  = first_excel_source or "excel"
+        elif operator_ccy:
+            currency_for_doc = operator_ccy
+            currency_source  = "operator"
+        elif customer_default:
+            currency_for_doc = customer_default
+            currency_source  = "customer_default"
+        else:
+            currency_for_doc = ""
+            currency_source  = "missing"
+
+        # PND tiebreak — same builder as intake.
+        from ..services.sales_pnd_disambiguator import disambiguate_pnd
+        inv_no_for_pnd = ""
+        export_invs = [r.get("invoice_no", "") for r in sp_rows
+                        if r.get("invoice_no")]
+        if export_invs:
+            from collections import Counter as _C
+            inv_no_for_pnd = _C(export_invs).most_common(1)[0][0]
+
+        pnd_summary = {"applied": False, "reason": "no PND rows",
+                        "pairs": [], "warnings": []}
+        has_pnd = any(
+            str(r.get("design_no", "") or "").strip().upper() == "PND"
+            for r in sp_rows
+        )
+        if has_pnd and inv_no_for_pnd:
+            try:
+                p_rows = pdb.get_packing_lines_for_batch(batch_id)
+                inv_price_index: Dict[str, float] = {}
+                for il in ddb.get_invoice_lines_for_batch(batch_id) or []:
+                    ipc = (il.get("product_code") or "").strip()
+                    if ipc and ipc not in inv_price_index:
+                        inv_price_index[ipc] = float(
+                            il.get("rate_usd") or il.get("unit_price") or 0
+                        )
+                supplier_candidates: List[Dict[str, Any]] = []
+                for pl in p_rows:
+                    if (pl.get("invoice_no") or "") != inv_no_for_pnd:
+                        continue
+                    item_type = (pl.get("item_type") or "").strip().upper()
+                    if not (item_type.startswith("PEND")
+                            or item_type == "PND"):
+                        continue
+                    supplier_candidates.append({
+                        "product_code": pl.get("product_code") or "",
+                        "design_no":    pl.get("design_no") or "",
+                        "item_type":    item_type,
+                        "unit_price":   inv_price_index.get(
+                            pl.get("product_code") or "", 0.0,
+                        ),
+                    })
+                sp_rows, pnd_summary = disambiguate_pnd(
+                    sp_rows, supplier_candidates, invoice_no=inv_no_for_pnd,
+                )
+            except Exception as exc:
+                log.warning("[%s] reingest PND tiebreak failed: %s",
+                             batch_id, exc)
+
+        # Build line records with the ladder-resolved currency.
+        line_records: List[Dict[str, Any]] = []
+        for r in sp_rows:
+            row_currency = str(r.get("currency", "") or "").strip().upper()
+            final_currency = row_currency or currency_for_doc
+            line_records.append({
+                "client_name":  client,
+                "client_ref":   client_ref,
+                "product_code": (r.get("product_code")
+                                  or r.get("design_no") or ""),
+                "design_no":    str(r.get("design_no", "") or ""),
+                "bag_id":       str(r.get("bag_id", "") or ""),
+                "quantity":     float(r.get("quantity", 0) or 0),
+                "remarks":      str(r.get("client_po", "") or
+                                     r.get("remarks", "") or ""),
+                "unit_price":   float(r.get("unit_price",  0) or 0),
+                "total_value":  float(r.get("total_value", 0) or 0),
+                "currency":     final_currency,
+                "price_source": "packing_list" if (
+                    float(r.get("unit_price", 0) or 0) > 0
+                ) else "",
+            })
+
+        # Atomic replace, scoped to (sales_doc_id, batch_id) only.
+        repl = ddb.replace_sales_packing_lines(
+            sales_document_id=sales_doc_id,
+            batch_id=batch_id,
+            lines=line_records,
+        )
+        per_file["before_count"]      = repl["deleted"]
+        per_file["deleted_count"]     = repl["deleted"]
+        per_file["inserted_count"]    = repl["inserted"]
+        per_file["currency"]          = currency_for_doc
+        per_file["currency_source"]   = currency_source
+        per_file["currency_conflict"] = mixed
+        per_file["pnd_summary"]       = pnd_summary
+        # Phase 2 — auto-create / surface local editable Proforma Draft.
+        # Idempotent: re-ingest does NOT replace draft lines on a live
+        # draft (only first-time creation populates editable_lines_json).
+        _auto_create_draft_for_client(
+            batch_id     = batch_id,
+            client       = client,
+            client_ref   = client_ref,
+            currency     = currency_for_doc,
+            line_records = line_records,
+            operator     = operator or "reingest",
+        )
+        if currency_source == "missing":
+            per_file["warnings"].append(
+                "currency missing — Proforma will block until set")
+        per_file["warnings"].extend(pnd_summary.get("warnings") or [])
+        results.append(per_file)
+
+    return JSONResponse({
+        "ok":        True,
+        "batch_id":  batch_id,
+        "operator":  operator,
+        "files":     results,
     })

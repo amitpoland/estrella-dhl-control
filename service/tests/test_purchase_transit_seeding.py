@@ -21,9 +21,13 @@ from app.api.routes_packing import seed_purchase_transit
 
 
 @pytest.fixture()
-def db(tmp_path):
+def db(tmp_path, monkeypatch):
     pdb.init_packing_db(tmp_path / "packing.db")
     wdb.init_warehouse_db(tmp_path / "warehouse.db")
+    # Redirect storage_root so the seed_purchase_transit timeline mirror
+    # writes its audit-event under tmp_path rather than the live storage tree.
+    from app.core.config import settings as _settings
+    monkeypatch.setattr(_settings, "storage_root", tmp_path)
     return tmp_path
 
 
@@ -120,6 +124,109 @@ def test_existing_state_skipped(db):
     seeded = seed_purchase_transit("BATCH_PT_TEST", [ln])
     assert seeded == 0
     assert ise.get_state(sc)["state"] == ise.WAREHOUSE_STOCK
+
+
+# ── 6. Audit timeline mirror event ──────────────────────────────────────────
+
+def test_seed_emits_purchase_transit_mirror_event(db):
+    """
+    seed_purchase_transit must append a single per-batch mirror event
+    (EV_INVENTORY_PURCHASE_TRANSIT_SEEDED) to audit.json["timeline"].  The
+    detail dict carries only non-financial summary fields.
+    """
+    import json as _json
+    batch_id = "BATCH_PT_TEST"
+
+    # Stub audit.json under the patched storage_root
+    batch_dir = db / "outputs" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = batch_dir / "audit.json"
+    audit_path.write_text(_json.dumps({"batch_id": batch_id, "timeline": []}),
+                          encoding="utf-8")
+
+    lines  = [_line(i) for i in range(1, 4)]
+    seeded = seed_purchase_transit(batch_id, lines)
+    assert seeded == 3
+
+    audit = _json.loads(audit_path.read_text(encoding="utf-8"))
+    timeline = audit.get("timeline", [])
+    mirrors  = [e for e in timeline
+                if e.get("event") == "inventory_purchase_transit_seeded"]
+    assert len(mirrors) == 1, mirrors
+    ev = mirrors[0]
+    assert ev["trigger_source"] == "packing_upload"
+    assert ev["actor"]          == "system"
+    assert ev["detail"]["batch_id"]    == batch_id
+    assert ev["detail"]["seeded"]      == seeded
+    assert ev["detail"]["total_lines"] == len(lines)
+    # No financial / customs fields leaked into detail
+    forbidden = {"unit_price", "total_value", "cif", "duty", "vat", "amount"}
+    assert not (forbidden & set(ev["detail"].keys()))
+
+
+# ── 7. Per-line failure mirror event ────────────────────────────────────────
+
+def test_seed_emits_transition_failed_on_engine_error(db):
+    """
+    seed_purchase_transit must append a per-line
+    EV_INVENTORY_TRANSITION_FAILED event for every row whose ise.transition
+    raises, while still committing the surviving rows AND still emitting the
+    summary EV_INVENTORY_PURCHASE_TRANSIT_SEEDED at the end.
+
+    Detail is bounded: scan_code + to_state + truncated error string + batch_id.
+    """
+    import json as _json
+    batch_id = "BATCH_PT_TEST"
+
+    # Stub audit.json under the patched storage_root
+    batch_dir = db / "outputs" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = batch_dir / "audit.json"
+    audit_path.write_text(_json.dumps({"batch_id": batch_id, "timeline": []}),
+                          encoding="utf-8")
+
+    lines = [_line(i) for i in range(1, 4)]
+    failing_line     = lines[1]
+    failing_scancode = pdb._compute_scan_code(failing_line)
+
+    real_transition = ise.transition
+
+    def _raise_for_one(*args, **kwargs):
+        if kwargs.get("scan_code") == failing_scancode:
+            raise RuntimeError("simulated engine failure for one line " + ("X" * 300))
+        return real_transition(*args, **kwargs)
+
+    with patch.object(ise, "transition", side_effect=_raise_for_one):
+        seeded = seed_purchase_transit(batch_id, lines)
+
+    # Surviving rows still transitioned (best-effort posture preserved)
+    assert seeded == 2
+
+    audit = _json.loads(audit_path.read_text(encoding="utf-8"))
+    timeline = audit.get("timeline", [])
+
+    # Summary event still fires after partial failure
+    summaries = [e for e in timeline
+                 if e.get("event") == "inventory_purchase_transit_seeded"]
+    assert len(summaries) == 1, summaries
+    assert summaries[0]["detail"]["seeded"]      == 2
+    assert summaries[0]["detail"]["total_lines"] == len(lines)
+
+    # Exactly one per-line failure event, with bounded error
+    failures = [e for e in timeline
+                if e.get("event") == "inventory_transition_failed"]
+    assert len(failures) == 1, failures
+    fev = failures[0]
+    assert fev["trigger_source"]           == "packing_upload"
+    assert fev["actor"]                    == "system"
+    assert fev["detail"]["batch_id"]       == batch_id
+    assert fev["detail"]["scan_code"]      == failing_scancode
+    assert fev["detail"]["to_state"]       == "purchase_transit"
+    assert isinstance(fev["detail"]["error"], str)
+    assert len(fev["detail"]["error"])     >  0
+    assert len(fev["detail"]["error"])     <= 200
+    forbidden = {"unit_price", "total_value", "cif", "duty", "vat", "amount"}
+    assert not (forbidden & set(fev["detail"].keys()))
 
 
 # ── Dev trigger endpoint ─────────────────────────────────────────────────────
