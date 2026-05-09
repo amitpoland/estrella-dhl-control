@@ -835,9 +835,19 @@ def main():
         _full = get_full_nazwa(_item)
         _en   = build_en_name(_item)
         _pl   = build_pl_name(_item)
-        # Full name format: "English (Polish)"
-        check(f"  {_fam}/{_itype}: full nazwa has '(' separator",
-              "(" in _full and _full.endswith(")"), True)
+        # Full name format: "Polish / English" — Polish-first / slash /
+        # English-after-slash, the project-wide convention preserved by
+        # description_engine.build_description_line and matched by every
+        # other surface (audit PDF, customs descriptions, dashboard
+        # rendering, wfirma full_nazwa). Verify the structural slash is
+        # present and BOTH halves are non-empty.
+        _parts_for_separator_check = _full.split(" / ", 1)
+        check(f"  {_fam}/{_itype}: full nazwa uses ' / ' separator",
+              " / " in _full
+              and len(_parts_for_separator_check) == 2
+              and bool(_parts_for_separator_check[0].strip())
+              and bool(_parts_for_separator_check[1].strip()),
+              True)
         check_contains(f"  {_fam}/{_itype}: en contains '{_en_sub}'", _en, _en_sub)
         check_contains(f"  {_fam}/{_itype}: pl contains '{_pl_sub}'", _pl, _pl_sub)
         # Verify no raw template placeholders leaked through
