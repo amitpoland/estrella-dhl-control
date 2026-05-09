@@ -239,6 +239,39 @@ def get_index() -> Dict[str, str]:
         return {}
 
 
+def get_attachment_path(sha256: str) -> Optional[Path]:
+    """Resolve a sha256 to its on-disk attachment path.
+
+    Returns the first file under ``_attachments/`` whose stem equals
+    *sha256*, or ``None`` if no such file exists. The match is strict
+    on the stem (no glob expansion of the hex), so a 64-hex string
+    cannot select files outside the attachments directory.
+    """
+    root = _require_init()
+    sha = (sha256 or "").strip().lower()
+    if not sha or len(sha) != 64 or not all(c in "0123456789abcdef" for c in sha):
+        return None
+    attach_dir = root / "_attachments"
+    # Match either "<sha>" exactly or "<sha>.<ext>". A traversal
+    # attempt would have failed the hex test above.
+    if not attach_dir.is_dir():
+        return None
+    for entry in attach_dir.iterdir():
+        if entry.is_file() and (entry.name == sha or entry.stem == sha):
+            return entry
+    return None
+
+
+def attachment_root() -> Path:
+    """Return the absolute ``_attachments/`` directory path.
+
+    Exposed so route handlers can perform an extra "resolved path stays
+    inside attachments root" check after :func:`get_attachment_path`.
+    """
+    root = _require_init()
+    return (root / "_attachments").resolve()
+
+
 def index_awb(awb: str, manifest_path: Path) -> None:
     """Update the AWB → manifest-path index entry for *awb*."""
     root = _require_init()

@@ -279,6 +279,37 @@ def get_by_batch(batch_id: str) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def list_all(
+    *,
+    state:  Optional[str] = None,
+    limit:  Optional[int] = None,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """Return shipment rows ordered by ``created_at``.
+
+    Optional ``state`` narrows to a single state (validated). Optional
+    ``limit`` / ``offset`` paginate. Used by the read-only routes —
+    keeps the SQL inside the DB module instead of leaking it to the
+    API layer.
+    """
+    if state is not None and state not in STATES:
+        raise ValueError(
+            f"Unknown carrier state {state!r}. Allowed: {sorted(STATES)}"
+        )
+    sql = "SELECT * FROM carrier_shipments"
+    params: List[Any] = []
+    if state is not None:
+        sql += " WHERE state=?"
+        params.append(state)
+    sql += " ORDER BY created_at"
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend([int(limit), int(offset)])
+    with _connect() as con:
+        rows = con.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_by_state(state: str, batch_id: Optional[str] = None) -> List[Dict[str, Any]]:
     if state not in STATES:
         raise ValueError(

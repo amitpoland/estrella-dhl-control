@@ -47,6 +47,7 @@ from .api.routes_batch_readiness import router as batch_readiness_router
 from .api.routes_tracking_db import router as tracking_db_router
 from .api.routes_correction_registry import router as correction_registry_router
 from .api.routes_ledgers import router as ledgers_router
+from .api.routes_carrier import router as carrier_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -58,6 +59,8 @@ from .services.wfirma_db    import init_wfirma_db
 from .services.correction_registry import init_correction_registry
 from .services.intake_lineage     import init_intake_lineage
 from .services.proforma_service_charges_db import init as init_proforma_service_charges
+from .services.carrier.carrier_shipment_db import init_db    as init_carrier_db
+from .services.carrier.carrier_label_store import init_store as init_carrier_label_store
 from .auth.database import init_db
 from .auth.dependencies import check_session_or_redirect
 
@@ -98,7 +101,14 @@ async def lifespan(app: FastAPI):
     init_correction_registry(_root / "correction_registry.db")
     init_intake_lineage(_root / "intake_lineage.db")
     init_proforma_service_charges(_root / "proforma_links.db")
-    log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma)", _root)
+
+    # Carrier (DL-A/B/C) — outbound shipment registry + content-addressed
+    # label store. Read-only routes only land in DL-C; the coordinator
+    # (DL-D) owns writes.
+    init_carrier_db(_root / "carrier_shipments.db")
+    init_carrier_label_store(_root / "carrier_labels")
+
+    log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma / carrier)", _root)
 
     log.info("Starting Estrella PZ Service  [env=%s]", settings.environment)
     log.info("Engine dir: %s", settings.engine_dir)
@@ -212,6 +222,7 @@ app.include_router(batch_readiness_router)
 app.include_router(tracking_db_router)  # /events/* before tracking_router's /{tracking_no}
 app.include_router(correction_registry_router)
 app.include_router(ledgers_router)
+app.include_router(carrier_router)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
