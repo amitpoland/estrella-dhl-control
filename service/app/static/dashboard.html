@@ -206,6 +206,30 @@ function transformBatch(b) {
   };
 }
 
+// Operator identity resolver for write actions that need attribution.
+// Reuses the prompt-and-cache pattern already used by the DHL follow-up
+// stop button. Stored once per browser in localStorage; the operator
+// can clear it by clearing site data.
+//   - first call → prompts ("admin" default), stores
+//   - subsequent calls → returns cached value
+//   - if user cancels → returns "" (caller may still proceed; backend
+//     falls back to "operator" via _operator_from_header)
+function _resolveOperator() {
+  try {
+    const cached = (window.localStorage.getItem('pz_operator_name') || '').trim();
+    if (cached) return cached;
+  } catch (_) { /* localStorage may be disabled */ }
+  let name = '';
+  try {
+    name = (window.prompt('Operator name (recorded in audit timeline):',
+                           'admin') || '').trim();
+  } catch (_) { name = ''; }
+  if (name) {
+    try { window.localStorage.setItem('pz_operator_name', name); } catch (_) {}
+  }
+  return name;
+}
+
 async function apiFetch(url, opts = {}) {
   let res;
   try {
@@ -2131,6 +2155,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [pzDocumentOpen, setPzDocumentOpen] = React.useState(false);
   // per-client proforma doc state: { [client_name]: { data, loading, open } }
   const [proformaDocState, setProformaDocState] = React.useState({});
+  // per-client manual Proforma→Invoice conversion state
+  // { [client_name]: { previewLoading, preview, error, confirmToken,
+  //                    executing, result, open } }
+  const [convertState, setConvertState] = React.useState({});
   const [scanResult, setScanResult] = React.useState(null);          // DHL inbox scan response
   const [confirmingMarkRec, setConfirmingMarkRec] = React.useState(false);
   const _markRecDefaults = { sender: 'odprawacelna@dhl.com', subject: '', ticket: '', request_type: 'unknown', note: '' };
@@ -2200,7 +2228,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     try {
       const a = await apiFetch(`/dashboard/batches/${encodeURIComponent(batchId)}`);
       setAudit(a);
-      if (a.doc_no) setPzNumber(a.doc_no);
+      // Canonical: wfirma_export.wfirma_pz_fullnumber wins. Manual
+      // doc_no remains as a fallback for batches that pre-date the
+      // auto-mapping landing or where the wFirma fetch failed.
+      const canon = (a.wfirma_export || {}).wfirma_pz_fullnumber || '';
+      if (canon)        setPzNumber(canon);
+      else if (a.doc_no) setPzNumber(a.doc_no);
     } catch (e) { setErr(e.message); }
     setLoading(false);
   }, [batchId]);
@@ -2315,7 +2348,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     setPzCreateBusy(true);
     setPzCreateConfirm(false);
     try {
-      const d = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_create`, { method: 'POST' });
+      const _op = _resolveOperator();
+      const _hdrs = _op ? { 'X-Operator': _op } : {};
+      const d = await apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_create`,
+                               { method: 'POST', headers: _hdrs });
       setPzCreateResult(d);
       onToast(`wFirma PZ created: ${d.wfirma_pz_doc_id}`, 'success');
       await loadPzPreview();
@@ -2336,9 +2372,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     const payload = isNumericId ? { pz_doc_id: val } : { pz_number: val };
     setPzAdoptBusy(true);
     try {
+      const _op = _resolveOperator();
+      const _adoptHdrs = { 'Content-Type': 'application/json',
+                           ...(_op ? { 'X-Operator': _op } : {}) };
       const d = await apiFetch(
         `/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_adopt`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+        { method: 'POST', headers: _adoptHdrs, body: JSON.stringify(payload) },
       );
       setPzAdoptResult(d);
       if (d.status === 'adopted' || d.status === 'already_adopted') {
@@ -2377,6 +2416,89 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
       onToast(`Proforma fetch failed for ${clientName}: ` + e.message, 'error');
     }
   }, [batchId, onToast]);
+
+  // ── Manual Proforma → Invoice conversion (two-step flow) ──────────────
+  // Step A: load preview. Never calls wFirma create. Result shape:
+  //   { ok, status: 'preview', summary, plan_xml, warning } on success
+  //   or                  'blocked' with blocking_reasons[].
+  const loadConvertPreview = React.useCallback(async (clientName) => {
+    setConvertState(prev => ({
+      ...prev,
+      [clientName]: { ...(prev[clientName] || {}),
+                      previewLoading: true, error: null, open: true },
+    }));
+    try {
+      const d = await apiFetch(
+        `/api/v1/proforma/to-invoice-preview/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}`
+      );
+      setConvertState(prev => ({
+        ...prev,
+        [clientName]: { ...(prev[clientName] || {}),
+                        previewLoading: false, preview: d,
+                        confirmToken: '', result: null, open: true },
+      }));
+    } catch (e) {
+      setConvertState(prev => ({
+        ...prev,
+        [clientName]: { ...(prev[clientName] || {}),
+                        previewLoading: false,
+                        error: e.message, open: true },
+      }));
+      onToast(`Convert preview failed for ${clientName}: ` + e.message, 'error');
+    }
+  }, [batchId, onToast]);
+
+  // Step B: execute conversion. Operator MUST have typed the confirm
+  // token AND clicked the button explicitly. Never auto-fired.
+  const executeConvert = React.useCallback(async (clientName) => {
+    const st = convertState[clientName] || {};
+    if (!st.preview || st.preview.status !== 'preview') {
+      onToast('Preview must succeed before converting', 'error'); return;
+    }
+    const token = (st.confirmToken || '').trim();
+    if (token !== 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA') {
+      onToast('Type the exact confirm token to convert', 'error'); return;
+    }
+    const operator = (localStorage.getItem('pz_operator_name') || '').trim();
+    if (!operator) {
+      onToast('Set X-Operator (pz_operator_name) before converting', 'error'); return;
+    }
+    setConvertState(prev => ({
+      ...prev,
+      [clientName]: { ...(prev[clientName] || {}),
+                      executing: true, error: null },
+    }));
+    try {
+      const r = await fetch(
+        `/api/v1/proforma/to-invoice/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}`,
+        { method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json',
+                     'X-Operator': operator },
+          body: JSON.stringify({ confirm: token }) }
+      );
+      const data = await r.json();
+      if (!r.ok || data.ok !== true) {
+        throw new Error(
+          (data.blocking_reasons && data.blocking_reasons.join('; '))
+          || data.error || `HTTP ${r.status}`
+        );
+      }
+      setConvertState(prev => ({
+        ...prev,
+        [clientName]: { ...(prev[clientName] || {}),
+                        executing: false, result: data, error: null },
+      }));
+      onToast(`Invoice ${data.wfirma_invoice_number} issued`, 'success');
+    } catch (e) {
+      setConvertState(prev => ({
+        ...prev,
+        [clientName]: { ...(prev[clientName] || {}),
+                        executing: false, error: e.message },
+      }));
+      onToast(`Convert failed for ${clientName}: ` + e.message, 'error');
+    }
+  }, [batchId, convertState, onToast]);
 
   const submitReservation = React.useCallback(async (clientName) => {
     setCreateBusy(true);
@@ -4160,6 +4282,30 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         {/* ── PZ / WFIRMA — Sections moved from Overview ── */}
         {activeTab === 'PZ / wFirma' && (
           <>
+            {/* Unified operator workflow — one ordered view with the 6 stages:
+                Evidence → Classification → Products → Customers → Preview → Execute.
+                Each section is collapsible and reuses the per-stage components
+                already defined below. Read-only by default; every write button
+                lives inside its section and is operator-click-only. */}
+            <OperatorWorkflowCard batchId={batchId} onToast={onToast} />
+            {/* ── Legacy / advanced panel ────────────────────────────────────
+                The unified workflow above is the canonical operator surface.
+                Older Section 3 + reservation/wFirma panels stay available
+                here for download buttons and detailed views, but are
+                collapsed by default to remove the contradictory readiness
+                noise the operator was seeing. */}
+            <details data-testid="legacy-pz-details"
+                     style={{ marginBottom: 16, border: '1px solid var(--border,#e5e7eb)',
+                              borderRadius: 8, background: 'var(--bg-soft,#f9fafb)',
+                              padding: 8 }}>
+              <summary data-testid="legacy-pz-summary"
+                       style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                                color: 'var(--text-2,#6b7280)', padding: '4px 8px' }}>
+                Advanced / legacy reservation &amp; PZ panel
+                <span style={{ fontWeight: 400, marginLeft: 8 }}>
+                  (download buttons + raw section views)
+                </span>
+              </summary>
             {/* Section 3: PZ */}
             <Card>
               <SectionHeader icon="⊞" title="Section 3 — PZ / Accounting"
@@ -4177,7 +4323,31 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     <div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>PZ Details</div>
                       <InfoRow label="PZ Status" value={pzGenerated ? 'Generated' : 'Ready for PZ'} />
-                      <InfoRow label="PZ / Doc Number" value={pzNumber || '—'} mono />
+                      {(() => {
+                        // Show whether the displayed PZ number is the
+                        // canonical wFirma full_number (auto-mapped) or
+                        // the manual fallback. Operators reading the card
+                        // need to know which one they're looking at.
+                        const wf = (audit && audit.wfirma_export) || {};
+                        const canonName = (wf.wfirma_pz_fullnumber || '').trim();
+                        const sourceLabel = canonName
+                          ? '✓ canonical · auto-mapped from wFirma'
+                          : (audit && audit.doc_no
+                              ? '⚠ manual entry · refresh mapping or re-create to canonicalise'
+                              : '');
+                        return (<>
+                          <InfoRow label="PZ / Doc Number" value={pzNumber || '—'} mono />
+                          {sourceLabel && (
+                            <div style={{ fontSize: 10, color: 'var(--text-3)',
+                                           marginTop: -4, marginBottom: 6,
+                                           paddingLeft: 2 }}>{sourceLabel}</div>
+                          )}
+                          {wf.wfirma_pz_doc_id && (
+                            <InfoRow label="wFirma PZ ID"
+                                     value={wf.wfirma_pz_doc_id} mono />
+                          )}
+                        </>);
+                      })()}
                       <InfoRow label="Net Value" value={fmtPLN(t.net)} />
                       <InfoRow label="Gross Value" value={fmtPLN(t.gross)} />
                       <InfoRow label="Duty A00" value={fmtPLN(t.duty)} />
@@ -4263,94 +4433,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     </div>
                   )}
 
-                  {/* ── CN Mismatch Decision Panel ────────────────────────────────────────
-                      Shown when the ONLY reason for blocked status is cn_match failure.
-                      Medium risk (same HS chapter) → operator chooses one of 3 paths.
-                      High risk (different HS chapter) → hard-stop message only.
-                      The "Accept SAD CN" path calls the existing operator-override endpoint. */}
-                  {(() => {
-                    const failedChecks = audit.failed_checks || [];
-                    const cnBlocked = status === 'blocked' && failedChecks.includes('cn_match');
-                    if (!cnBlocked) return null;
-                    const cnRisk = ver.cn_risk_level || (ver.cn_status === 'failed_parent_mismatch' ? 'medium' : 'high');
-                    const sadCn = ver.sad_cn_code || ver.cn_code || '—';
-                    const invHsn = (ver.invoice_hsn_codes || []).join(', ') || '—';
-                    const isHard = cnRisk === 'high';
-                    const onlyBlocker = failedChecks.length === 1 && failedChecks[0] === 'cn_match';
-
-                    const acceptSadCn = async () => {
-                      const reason = window.prompt(
-                        `Accepting SAD CN code ${sadCn} as correct for this shipment.\n\nEnter justification (min 20 characters):`,
-                        `SAD CN ${sadCn} confirmed correct for this shipment after review`
-                      );
-                      if (!reason || reason.trim().length < 20) { alert('Reason must be at least 20 characters.'); return; }
-                      await doAction('cnOverride', 'Accept SAD CN + Run PZ', async () => {
-                        // Step 1: record the override
-                        const r = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/operator-override`, {
-                          method: 'POST', credentials: 'include',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ check: 'cn_match', reason: reason.trim() }),
-                        });
-                        if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`HTTP ${r.status}: ${t.slice(0, 200)}`); }
-                        // Step 2: immediately trigger PZ run — override makes the batch effectively_unblocked
-                        const r2 = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/process`, {
-                          method: 'POST', credentials: 'include',
-                        });
-                        if (r2.status === 409) { const t = await r2.text().catch(() => ''); throw new Error(`PZ blocked (409): ${t.slice(0, 200)}`); }
-                        if (!r2.ok) { const t = await r2.text().catch(() => ''); throw new Error(`PZ run failed (${r2.status}): ${t.slice(0, 200)}`); }
-                        return r2.headers.get('content-type')?.includes('json') ? r2.json() : r2.text();
-                      });
-                    };
-
-                    return (
-                      <div style={{ marginBottom: 16, padding: 16, border: `2px solid ${isHard ? 'var(--badge-red-border, #fca5a5)' : 'var(--badge-amber-border, #fcd34d)'}`, borderRadius: 8, background: isHard ? 'var(--badge-red-bg, #fef2f2)' : 'var(--badge-amber-bg, #fffbeb)' }}>
-                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: isHard ? 'var(--badge-red-text, #991b1b)' : 'var(--badge-amber-text, #92400e)' }}>
-                          {isHard ? '⛔ CN Code Mismatch — Hard Block' : '⚠ CN Code Mismatch — Decision Required'}
-                        </div>
-                        <div style={{ fontSize: 12, marginBottom: 12, color: 'var(--text-2, #555)', lineHeight: 1.5 }}>
-                          <div><strong>SAD CN code:</strong> {sadCn}</div>
-                          <div><strong>Invoice HSN codes:</strong> {invHsn}</div>
-                          <div style={{ marginTop: 6 }}>
-                            {isHard
-                              ? 'These goods belong to different HS chapters. This indicates a classification error or incorrect customs declaration. Contact the clearing agent to obtain a corrected SAD before proceeding.'
-                              : 'Same HS chapter, different subheading. This may be a SAD aggregation or a minor classification difference. Choose how to proceed:'}
-                          </div>
-                        </div>
-                        {!isHard && onlyBlocker && (
-                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                            <Btn variant="gold" disabled={!!busy.cnOverride} onClick={acceptSadCn}>
-                              {busy.cnOverride ? '⟳ Saving…' : '✓ Accept SAD CN — run PZ'}
-                            </Btn>
-                            <Btn variant="outline" disabled={!!busy.cnOverride} onClick={() => {
-                              alert('Mark batch for internal CN correction in the classification log. Override the CN code in the invoice line items before reprocessing.');
-                            }}>
-                              ✎ Correct internally
-                            </Btn>
-                            <Btn variant="outline" disabled={!!busy.cnOverride} onClick={async () => {
-                              const confirm = window.confirm(`Send a classification query back to the clearing agent for batch ${batchId}?\n\nThis will queue an agency follow-up email.`);
-                              if (!confirm) return;
-                              await doAction('cnAgencyFollowup', 'Agency CN query', async () => {
-                                const r = await fetch(`/api/v1/lifecycle/agency-followup`, {
-                                  method: 'POST', credentials: 'include',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ batch_id: batchId, reason: `CN code mismatch: SAD has ${sadCn}, invoices show ${invHsn}` }),
-                                });
-                                if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`HTTP ${r.status}: ${t.slice(0, 200)}`); }
-                                return r.json();
-                              });
-                            }}>
-                              ✉ Send back to agent
-                            </Btn>
-                          </div>
-                        )}
-                        {!isHard && !onlyBlocker && (
-                          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                            Additional blocked checks must be resolved first: {failedChecks.filter(c => c !== 'cn_match').join(', ')}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
+                  {/* ── CN/HSN Decision Panel (hierarchical compare) ─────────────
+                      Replaces the legacy strict 8-digit equality test. Reads from
+                        GET /dashboard/batches/{id}/cn-hsn-classification
+                      and decides whether the comparison blocks PZ:
+                        exact / hs6 / heading_match → review note only (NOT a blocker)
+                        chapter_match               → operator decision
+                        different_chapter           → hard block
+                      Decision buttons call the new endpoints — they record into
+                      correction_registry and NEVER auto-run PZ. */}
+                  <CNHSNDecisionPanel batchId={batchId} onToast={(m) => alert(m)} />
 
                   {!v2Active && (() => {
                     const sadDecision = (audit && audit.agency_sad_decision) || {};
@@ -4386,9 +4478,35 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     })}>
                       {busy.runPz ? '⟳ Processing…' : (status === 'blocked' ? '✗ PZ Blocked' : !canRunPZ ? '⛔ SAD validation failed' : (pzGenerated ? '↺ Regenerate PZ' : '▶ Run PZ'))}
                     </Btn>
-                    {pzGenerated && (
-                      <Btn variant="outline" onClick={() => setConfirmingPz(true)}>✎ Confirm PZ Number</Btn>
-                    )}
+                    {pzGenerated && (() => {
+                      // Canonical mapping check. ``wfirma_pz_fullnumber`` is
+                      // stamped by the create flow's auto-fetch (or by the
+                      // refresh-mapping endpoint). When present, the manual
+                      // "Confirm PZ Number" entry is fallback-only and stays
+                      // hidden — operator instead sees a "Refresh Mapping"
+                      // button for stale/historical batches.
+                      const wf = (audit && audit.wfirma_export) || {};
+                      const canonId   = (wf.wfirma_pz_doc_id || '').trim();
+                      const canonName = (wf.wfirma_pz_fullnumber || '').trim();
+                      const mapped    = !!(canonId && canonName);
+                      return mapped ? (
+                        <Btn variant="outline" title={`Re-fetch full_number from wFirma for ${canonId}`}
+                             onClick={async () => {
+                               await doAction('refreshPzMapping', 'Refresh Mapping', async () => {
+                                 const r = await fetch(
+                                   `/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz/refresh-mapping`,
+                                   { method: 'POST', credentials: 'include',
+                                     headers: { 'X-Operator': (localStorage.getItem('pz_operator_name') || '') } },
+                                 );
+                                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                                 return r.json();
+                               });
+                               await load();
+                             }}>↻ Refresh Mapping</Btn>
+                      ) : (
+                        <Btn variant="outline" onClick={() => setConfirmingPz(true)}>✎ Confirm PZ Number</Btn>
+                      );
+                    })()}
                     {/* Expected downloads always render. Enabled link when the
                         file exists; disabled ghost chip with a clear tooltip
                         otherwise. Layout never collapses when a file is
@@ -4932,10 +5050,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
               </div>
             </Card>
+            </details>
           </>
         )}
 
         {activeTab === 'PZ / wFirma' && (() => {
+          // Legacy reservation preview — uses an older resolver that may
+          // disagree with proforma-readiness. Wrapped as legacy so it
+          // can't contradict the unified workflow above.
           const rp = reservationPreview;
           const isErr = rp && rp.error;
           const docs = rp && !isErr ? (rp.documents || []) : [];
@@ -4987,6 +5109,19 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           const readyDocs = docs.filter(d => d.ready).length;
 
           return (
+            <details data-testid="legacy-reservation-details"
+                     style={{ marginBottom: 16, border: '1px solid var(--border,#e5e7eb)',
+                              borderRadius: 8, background: 'var(--bg-soft,#f9fafb)',
+                              padding: 8 }}>
+              <summary data-testid="legacy-reservation-summary"
+                       style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                                color: 'var(--text-2,#6b7280)', padding: '4px 8px' }}>
+                Advanced / legacy reservation preview
+                <span style={{ fontWeight: 400, marginLeft: 8 }}>
+                  (older resolver — may disagree with the unified workflow above;
+                   consult the workflow card for canonical readiness)
+                </span>
+              </summary>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {/* Phase 2: Readiness banner */}
               <ReadinessBanner
@@ -5192,7 +5327,161 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                 </Btn>
                               );
                             })()}
+                            {/* Manual Convert Proforma to Invoice button.
+                                Two-step flow: preview → operator confirm
+                                token → execute. Disabled by default; only
+                                opens the preview panel below. Never calls
+                                the execute endpoint automatically. */}
+                            {(() => {
+                              const cs = convertState[d.client_name] || {};
+                              const isOpen     = cs.open;
+                              const isLoading  = cs.previewLoading;
+                              return (
+                                <Btn small variant="outline"
+                                     data-testid={`btn-convert-proforma-${d.client_name}`}
+                                     disabled={isLoading || cs.executing}
+                                     onClick={() => isOpen
+                                       ? setConvertState(prev => ({ ...prev, [d.client_name]: { ...cs, open: false } }))
+                                       : loadConvertPreview(d.client_name)
+                                     }>
+                                  {isLoading
+                                    ? '⟳ Loading preview…'
+                                    : (isOpen ? '▲ Hide Convert' : 'Convert Proforma to Invoice')}
+                                </Btn>
+                              );
+                            })()}
                           </div>
+                          {/* Manual Proforma→Invoice conversion panel.
+                              Renders only when the operator has explicitly
+                              clicked the button. Preview-first, confirm-
+                              token gated, never auto-fires. */}
+                          {(() => {
+                            const cs = convertState[d.client_name] || {};
+                            if (!cs.open) return null;
+                            const preview = cs.preview;
+                            const result  = cs.result;
+                            const blocked = preview && preview.status === 'blocked';
+                            const ready   = preview && preview.status === 'preview' && !result;
+                            return (
+                              <div data-testid={`convert-panel-${d.client_name}`}
+                                   style={{ marginTop: 10, border: '1px solid var(--border)',
+                                             borderRadius: 6, overflow: 'hidden', fontSize: 11 }}>
+                                <div style={{ padding: '7px 12px',
+                                               background: 'var(--badge-amber-bg)',
+                                               borderBottom: '1px solid var(--border)',
+                                               color: 'var(--badge-amber-text)',
+                                               display: 'flex', justifyContent: 'space-between',
+                                               alignItems: 'center' }}>
+                                  <span style={{ fontWeight: 700, fontSize: 10,
+                                                  textTransform: 'uppercase',
+                                                  letterSpacing: '0.05em' }}>
+                                    ⚠ Convert Proforma to Invoice — manual final invoice action
+                                  </span>
+                                  <Btn small variant="ghost"
+                                       onClick={() => setConvertState(prev => ({
+                                         ...prev,
+                                         [d.client_name]: { ...cs, open: false },
+                                       }))}>✕</Btn>
+                                </div>
+                                <div style={{ padding: '8px 12px', color: 'var(--text-2)' }}>
+                                  <div style={{ marginBottom: 8, fontStyle: 'italic',
+                                                 color: 'var(--text-3)' }}>
+                                    Manual final invoice action. This will create a real wFirma invoice.
+                                  </div>
+                                  {cs.previewLoading && <div>Loading preview…</div>}
+                                  {cs.error && (
+                                    <div style={{ color: 'var(--badge-red-text)', marginBottom: 6 }}>
+                                      {cs.error}
+                                    </div>
+                                  )}
+                                  {blocked && preview.blocking_reasons && (
+                                    <div data-testid="convert-blocked"
+                                         style={{ background: 'var(--badge-red-bg)',
+                                                   color: 'var(--badge-red-text)',
+                                                   padding: 8, borderRadius: 4 }}>
+                                      <b>Blocked:</b>
+                                      <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                                        {preview.blocking_reasons.map((r, i) => (
+                                          <li key={i}>{r}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                  {ready && preview.summary && (
+                                    <div>
+                                      <table style={{ width: '100%', borderCollapse: 'collapse',
+                                                       fontSize: 11, marginBottom: 8 }}>
+                                        <tbody>
+                                          {[
+                                            ['Source Proforma',          preview.summary.source_proforma_number],
+                                            ['Source Total',             preview.summary.source_proforma_total + ' ' + preview.summary.currency],
+                                            ['Bill-to (contractor)',     preview.summary.contractor_id],
+                                            ['Ship-to (receiver)',
+                                              preview.summary.contractor_receiver_id
+                                                ? `${preview.summary.contractor_receiver_id} (preserved from proforma)`
+                                                : '— same as bill-to'],
+                                            ['Series',                   preview.summary.series_id],
+                                            ['Lines',                    preview.summary.line_count],
+                                            ['Expected Total',           preview.summary.expected_total + ' ' + preview.summary.currency],
+                                            ['Final Invoice Date',       preview.summary.final_date],
+                                          ].map(([k, v]) => (
+                                            <tr key={k} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                                              <td style={{ padding: '3px 6px',
+                                                            color: 'var(--text-3)', width: '40%' }}>{k}</td>
+                                              <td style={{ padding: '3px 6px',
+                                                            fontFamily: 'monospace',
+                                                            color: 'var(--text)' }}>{v ?? '—'}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                      <div style={{ marginBottom: 6, fontSize: 10,
+                                                     color: 'var(--text-3)' }}>
+                                        Type <code style={{ background: 'var(--bg-subtle)',
+                                                              padding: '1px 4px', borderRadius: 3 }}>YES_CREATE_FINAL_INVOICE_FROM_PROFORMA</code> to enable Convert.
+                                      </div>
+                                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                        <Inp
+                                          data-testid={`convert-confirm-${d.client_name}`}
+                                          value={cs.confirmToken || ''}
+                                          onChange={v => setConvertState(prev => ({
+                                            ...prev,
+                                            [d.client_name]: {
+                                              ...(prev[d.client_name] || {}),
+                                              confirmToken: v,
+                                            },
+                                          }))}
+                                          placeholder="confirm token"
+                                          style={{ flex: 1, fontSize: 11,
+                                                    fontFamily: 'monospace' }}
+                                        />
+                                        <Btn variant="gold"
+                                             data-testid={`convert-execute-${d.client_name}`}
+                                             disabled={!!cs.executing
+                                                || (cs.confirmToken || '').trim()
+                                                   !== 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA'}
+                                             onClick={() => executeConvert(d.client_name)}>
+                                          {cs.executing
+                                            ? '⟳ Converting…'
+                                            : 'Convert'}
+                                        </Btn>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {result && (
+                                    <div data-testid="convert-result"
+                                         style={{ background: 'var(--badge-green-bg)',
+                                                   color: 'var(--badge-green-text)',
+                                                   padding: 8, borderRadius: 4 }}>
+                                      ✓ Invoice <b>{result.wfirma_invoice_number}</b>
+                                      &nbsp;(id <code>{result.wfirma_invoice_id}</code>) issued
+                                      from Proforma <code>{result.wfirma_proforma_id}</code>.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })()}
                           {/* Proforma document inline panel */}
                           {(() => {
                             const proDoc = proformaDocState[d.client_name] || {};
@@ -5259,6 +5548,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 </>
               )}
             </div>
+            </details>
           );
         })()}
 
@@ -7437,6 +7727,12 @@ function WfirmaExportPage({ batches, onViewShipment }) {
   const [setupLoading, setSetupLoading] = React.useState(false);
   const [editingCustomer, setEditingCustomer] = React.useState(null); // null | { client_name, ...row, _isNew }
   const [editingProduct, setEditingProduct] = React.useState(null);   // null | { product_code, ...row, _isNew }
+  // Phase 10D — Customer Statement drawer. Read-only. Operator opens
+  // by clicking a Statement button on a Customer Mapping row; closes
+  // by clicking × or pressing Escape (Modal primitive). Statement
+  // JSON is fetched ONLY on operator-explicit Refresh — never on
+  // dashboard mount, never on row hover.
+  const [customerForStatement, setCustomerForStatement] = React.useState(null); // null | row obj
   const [modalBusy, setModalBusy] = React.useState(false);
   const [modalError, setModalError] = React.useState(null);
 
@@ -7729,7 +8025,23 @@ function WfirmaExportPage({ batches, onViewShipment }) {
                           <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{c.vat_id || '—'}</td>
                           <td style={tdStyle}>{c.country || '—'}</td>
                           <td style={tdStyle}><span style={wfPillStyle(statusKind(c.match_status))}>{c.match_status || '—'}</span></td>
-                          <td style={tdStyle}><Btn small variant="outline" onClick={() => { setModalError(null); setEditingCustomer({ ...c, _isNew: false }); }}>Edit</Btn></td>
+                          <td style={tdStyle}>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <Btn small variant="outline" onClick={() => { setModalError(null); setEditingCustomer({ ...c, _isNew: false }); }}>Edit</Btn>
+                              {/* Phase 10D — Statement drawer. Disabled when
+                                  the row has no wFirma id; the Statement
+                                  endpoints key on wfirma_customer_id. */}
+                              <Btn small variant="outline"
+                                   disabled={!c.wfirma_customer_id}
+                                   data-testid={`btn-customer-statement-${c.client_name}`}
+                                   title={c.wfirma_customer_id
+                                            ? 'Open Statement of Account'
+                                            : 'Resolve wFirma id first'}
+                                   onClick={() => setCustomerForStatement(c)}>
+                                Statement
+                              </Btn>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -7915,9 +8227,463 @@ function WfirmaExportPage({ batches, onViewShipment }) {
           </div>
         </Modal>
       )}
+
+      {/* Phase 10D — Customer Statement of Account drawer.
+          Read-only. Operator-explicit fetch only. Wires to:
+            GET /api/v1/ledgers/clients/{wfirma_customer_id}/statement.json
+            GET /api/v1/ledgers/clients/{wfirma_customer_id}/statement.pdf
+          No fake buttons (Email/Send/Export/payment-write) appear here. */}
+      {customerForStatement && (
+        <CustomerStatementDrawer
+          customer={customerForStatement}
+          onClose={() => setCustomerForStatement(null)}
+          onToast={(...args) => { /* toast surface unused at this depth */ }} />
+      )}
     </div>
   );
 }
+
+// ════════════════════════════════════════════════════════════════════════
+//  CustomerStatementDrawer — Phase 10D read-only Statement of Account
+//
+//  Wires to the existing endpoints:
+//    GET /api/v1/ledgers/clients/{contractor_id}/statement.json
+//    GET /api/v1/ledgers/clients/{contractor_id}/statement.pdf
+//
+//  Pinned contracts:
+//    - Read-only; no fake buttons (no Email / Send / Export / payment-write).
+//    - JSON fetched ONLY on operator-explicit Refresh click. The drawer
+//      does NOT auto-fetch on mount, on date-input change, or on
+//      dashboard load.
+//    - Aging method label is the literal "Invoice age". The
+//      alternative ("due-date" aging) is forbidden until Phase 10A.5
+//      real-id probe verifies <paymentdate> on real invoice
+//      responses.
+//    - Multi-currency sections render separately, one block per
+//      currency. No cross-currency totals.
+//    - Unmatched payments + warnings only render when present.
+//    - PDF link's query string mirrors the live picker values so the
+//      downloaded PDF matches what the operator sees on screen.
+// ════════════════════════════════════════════════════════════════════════
+
+function _todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function _daysAgoIso(n) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function CustomerStatementDrawer({ customer, onClose, onToast }) {
+  const cid = (customer && customer.wfirma_customer_id) || '';
+  const [from_,  setFrom]  = React.useState(_daysAgoIso(180));
+  const [to,     setTo]    = React.useState(_todayIso());
+  const [asOf,   setAsOf]  = React.useState(_todayIso());
+  const [loading, setLoading]       = React.useState(false);
+  const [statement, setStatement]   = React.useState(null);
+  const [error,    setError]        = React.useState('');
+
+  // PDF link MUST mirror the live picker values.
+  const pdfHref = (
+    `/api/v1/ledgers/clients/${encodeURIComponent(cid)}`
+    + `/statement.pdf`
+    + `?from=${encodeURIComponent(from_)}`
+    + `&to=${encodeURIComponent(to)}`
+    + `&as_of=${encodeURIComponent(asOf)}`
+  );
+
+  // Refresh handler — operator-explicit. The endpoint URL is also
+  // gated behind this onClick so a mount-time effect cannot
+  // accidentally fire it.
+  const onRefresh = React.useCallback(async () => {
+    if (!cid) return;
+    setLoading(true);
+    setError('');
+    try {
+      const url = (
+        `/api/v1/ledgers/clients/${encodeURIComponent(cid)}`
+        + `/statement.json`
+        + `?from=${encodeURIComponent(from_)}`
+        + `&to=${encodeURIComponent(to)}`
+        + `&as_of=${encodeURIComponent(asOf)}`
+      );
+      const d = await apiFetch(url);
+      setStatement(d);
+    } catch (e) {
+      setError(e.message || 'Failed to load Statement');
+      onToast && onToast(`Statement load failed: ${e.message}`, 'error');
+    }
+    setLoading(false);
+  }, [cid, from_, to, asOf, onToast]);
+
+  if (!customer) return null;
+
+  return (
+    <Modal title={`Statement of Account · ${customer.client_name}`}
+           wide
+           onClose={onClose}>
+      <div data-testid="customer-statement-drawer"
+           style={{ fontSize: 12, color: 'var(--text)' }}>
+
+        {/* Header — wFirma id + Download PDF link */}
+        <div style={{ display: 'flex', alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 12, marginBottom: 12,
+                        paddingBottom: 8,
+                        borderBottom: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+            wFirma id ·{' '}
+            <code style={{ fontFamily: 'ui-monospace,monospace',
+                            color: 'var(--text-2)' }}>
+              {cid || '—'}
+            </code>
+          </div>
+          <a data-testid="customer-statement-pdf-link"
+             href={pdfHref}
+             target="_blank"
+             rel="noreferrer"
+             style={{ fontSize: 11, color: 'var(--accent)',
+                       fontWeight: 700, textDecoration: 'underline' }}>
+            ↓ Download PDF
+          </a>
+        </div>
+
+        {/* Date range pickers + Refresh */}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end',
+                        flexWrap: 'wrap', marginBottom: 12 }}>
+          <FormField label="From">
+            <input type="date" value={from_}
+                   data-testid="customer-statement-from"
+                   onChange={e => setFrom(e.target.value)}
+                   style={{ fontSize: 12, padding: '4px 6px',
+                              border: '1px solid var(--border)',
+                              borderRadius: 4 }} />
+          </FormField>
+          <FormField label="To">
+            <input type="date" value={to}
+                   data-testid="customer-statement-to"
+                   onChange={e => setTo(e.target.value)}
+                   style={{ fontSize: 12, padding: '4px 6px',
+                              border: '1px solid var(--border)',
+                              borderRadius: 4 }} />
+          </FormField>
+          <FormField label="As of">
+            <input type="date" value={asOf}
+                   data-testid="customer-statement-as-of"
+                   onChange={e => setAsOf(e.target.value)}
+                   style={{ fontSize: 12, padding: '4px 6px',
+                              border: '1px solid var(--border)',
+                              borderRadius: 4 }} />
+          </FormField>
+          <Btn small variant="default"
+               disabled={loading || !cid}
+               data-testid="btn-customer-statement-refresh"
+               onClick={onRefresh}>
+            {loading ? 'Loading…' : 'Refresh'}
+          </Btn>
+        </div>
+
+        {/* Aging-method disclaimer — literal "Invoice age" required. */}
+        <div data-testid="customer-statement-aging-method"
+             style={{ fontSize: 11, color: 'var(--text-3)',
+                        marginBottom: 12 }}>
+          Aging method:{' '}
+          <strong style={{ color: 'var(--text-2)' }}>Invoice age</strong>
+        </div>
+
+        {/* Empty / loading / error states */}
+        {!statement && !loading && !error && (
+          <div style={{ fontSize: 12, color: 'var(--text-3)',
+                          padding: '20px 0', textAlign: 'center' }}>
+            Pick a date range and click <b>Refresh</b> to load the
+            Statement.
+          </div>
+        )}
+        {error && (
+          <div style={{ fontSize: 12, color: 'var(--badge-red-text)',
+                          background: 'var(--badge-red-bg)',
+                          border: '1px solid var(--badge-red-border)',
+                          padding: '8px 12px', borderRadius: 4,
+                          marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
+
+        {/* Loaded JSON view */}
+        {statement && (
+          <React.Fragment>
+            {/* Customer header */}
+            <div style={{ marginBottom: 14, padding: 10,
+                            background: 'var(--bg-subtle)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 4 }}>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>
+                {(statement.contractor || {}).name || customer.client_name}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)',
+                              marginTop: 2 }}>
+                {(statement.contractor || {}).country || '—'}
+                {' · VAT/Tax ID: '}
+                {(statement.contractor || {}).vat_id || '—'}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)',
+                              marginTop: 2 }}>
+                Period: {statement.period?.from || '—'} → {statement.period?.to || '—'}
+                {'  ·  Generated: '}{statement.generated_at || '—'}
+              </div>
+            </div>
+
+            {/* Empty currencies = no activity */}
+            {(statement.currencies || []).length === 0 && (
+              <div data-testid="customer-statement-empty"
+                   style={{ fontSize: 12, color: 'var(--text-3)',
+                              padding: '20px 0', textAlign: 'center' }}>
+                <i>No activity for this contractor in the selected period.</i>
+              </div>
+            )}
+
+            {/* Per-currency sections */}
+            {(statement.currencies || []).map(ccy => {
+              const totals = (statement.totals_per_currency || {})[ccy] || {};
+              const aging  = (statement.aging_per_currency  || {})[ccy] || {};
+              const entries = (statement.entries_per_currency || {})[ccy] || [];
+              const unmatched = (statement.unmatched_payments_per_currency || {})[ccy] || [];
+              const isOutNeg = (() => {
+                try {
+                  return parseFloat(totals.outstanding || '0') < 0;
+                } catch (_) { return false; }
+              })();
+              return (
+                <div key={ccy}
+                     data-testid={`customer-statement-currency-${ccy}`}
+                     style={{ marginBottom: 18,
+                                border: '1px solid var(--border)',
+                                borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{ background: 'var(--bg-subtle)',
+                                  padding: '8px 12px',
+                                  fontSize: 12, fontWeight: 700,
+                                  borderBottom: '1px solid var(--border)' }}>
+                    Currency · {ccy}
+                  </div>
+
+                  {/* Totals + aging cards */}
+                  <div style={{ display: 'grid',
+                                  gridTemplateColumns: '1fr 1fr',
+                                  gap: 0,
+                                  borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ padding: 10,
+                                    borderRight: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 10, color: 'var(--text-3)',
+                                      letterSpacing: '0.06em',
+                                      textTransform: 'uppercase' }}>
+                        Totals
+                      </div>
+                      <table style={{ width: '100%', fontSize: 11,
+                                        marginTop: 4 }}>
+                        <tbody>
+                          {[
+                            ['Invoiced',    totals.invoiced],
+                            ['Credited',    totals.credited],
+                            ['Received',    totals.received],
+                            ['Outstanding', totals.outstanding],
+                            ['Entries',     totals.entry_count],
+                          ].map(([lbl, val]) => (
+                            <tr key={lbl}>
+                              <td style={{ color: 'var(--text-3)',
+                                              padding: '2px 0' }}>{lbl}</td>
+                              <td style={{
+                                textAlign: 'right',
+                                fontFamily: 'ui-monospace,monospace',
+                                fontWeight: lbl === 'Outstanding' ? 700 : 400,
+                                color: lbl === 'Outstanding'
+                                          ? (isOutNeg
+                                              ? 'var(--badge-red-text)'
+                                              : 'var(--text)')
+                                          : 'var(--text)',
+                              }}>{val == null ? '—' : val}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ padding: 10 }}>
+                      <div style={{ fontSize: 10, color: 'var(--text-3)',
+                                      letterSpacing: '0.06em',
+                                      textTransform: 'uppercase' }}>
+                        Aging · method {aging.method || 'invoice_age'}
+                      </div>
+                      <table style={{ width: '100%', fontSize: 11,
+                                        marginTop: 4 }}>
+                        <tbody>
+                          {[
+                            ['current', aging.current],
+                            ['1–30',    aging['1_30']],
+                            ['31–60',   aging['31_60']],
+                            ['61–90',   aging['61_90']],
+                            ['90+',     aging['90_plus']],
+                            ['total',   aging.total],
+                          ].map(([lbl, val]) => (
+                            <tr key={lbl}>
+                              <td style={{ color: 'var(--text-3)',
+                                              padding: '2px 0' }}>{lbl}</td>
+                              <td style={{
+                                textAlign: 'right',
+                                fontFamily: 'ui-monospace,monospace',
+                                fontWeight: lbl === 'total' ? 700 : 400,
+                              }}>{val == null ? '—' : val}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Ledger table */}
+                  <div style={{ overflowX: 'auto' }}>
+                    <table data-testid={`customer-statement-ledger-${ccy}`}
+                           style={{ width: '100%',
+                                      borderCollapse: 'collapse',
+                                      fontSize: 11 }}>
+                      <thead>
+                        <tr style={{ background: 'var(--bg-subtle)',
+                                       color: 'var(--text-3)',
+                                       textAlign: 'left' }}>
+                          <th style={{ padding: '4px 8px' }}>Date</th>
+                          <th style={{ padding: '4px 8px' }}>Type</th>
+                          <th style={{ padding: '4px 8px' }}>Doc</th>
+                          <th style={{ padding: '4px 8px' }}>Linked</th>
+                          <th style={{ padding: '4px 8px',
+                                          textAlign: 'right' }}>Debit</th>
+                          <th style={{ padding: '4px 8px',
+                                          textAlign: 'right' }}>Credit</th>
+                          <th style={{ padding: '4px 8px',
+                                          textAlign: 'right' }}>Balance</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {entries.map((e, i) => (
+                          <tr key={`${e.wfirma_doc_id}-${i}`}
+                              style={{
+                                borderTop: '1px solid var(--border)',
+                              }}>
+                            <td style={{ padding: '4px 8px',
+                                          fontFamily: 'ui-monospace,monospace' }}>
+                              {e.date || '—'}
+                            </td>
+                            <td style={{ padding: '4px 8px' }}>{e.type}</td>
+                            <td style={{ padding: '4px 8px',
+                                          fontFamily: 'ui-monospace,monospace' }}>
+                              {e.doc_number || e.wfirma_doc_id || '—'}
+                            </td>
+                            <td style={{ padding: '4px 8px',
+                                          fontFamily: 'ui-monospace,monospace' }}>
+                              {e.linked_invoice || '—'}
+                            </td>
+                            <td style={{ padding: '4px 8px',
+                                          textAlign: 'right',
+                                          fontFamily: 'ui-monospace,monospace' }}>
+                              {e.debit}
+                            </td>
+                            <td style={{ padding: '4px 8px',
+                                          textAlign: 'right',
+                                          fontFamily: 'ui-monospace,monospace' }}>
+                              {e.credit}
+                            </td>
+                            <td style={{ padding: '4px 8px',
+                                          textAlign: 'right',
+                                          fontFamily: 'ui-monospace,monospace',
+                                          fontWeight: 600 }}>
+                              {e.running_balance}
+                            </td>
+                          </tr>
+                        ))}
+                        {entries.length === 0 && (
+                          <tr><td colSpan="7"
+                                  style={{ padding: 10, textAlign: 'center',
+                                              color: 'var(--text-3)' }}>
+                            <i>No entries.</i>
+                          </td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Unmatched payments — conditional */}
+                  {unmatched.length > 0 && (
+                    <div data-testid={`customer-statement-unmatched-${ccy}`}
+                         style={{ background: 'var(--badge-red-bg)',
+                                    borderTop: '1px solid var(--badge-red-border)',
+                                    padding: 10 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700,
+                                      color: 'var(--badge-red-text)',
+                                      letterSpacing: '0.06em',
+                                      textTransform: 'uppercase',
+                                      marginBottom: 4 }}>
+                        Unmatched payments
+                      </div>
+                      <table style={{ width: '100%', fontSize: 11 }}>
+                        <thead>
+                          <tr style={{ color: 'var(--text-3)',
+                                         textAlign: 'left' }}>
+                            <th>Date</th><th>Doc</th>
+                            <th style={{ textAlign: 'right' }}>Value</th>
+                            <th>Currency</th><th>Linked attempt</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {unmatched.map((u, j) => (
+                            <tr key={u.wfirma_doc_id + ':' + j}>
+                              <td>{u.date}</td>
+                              <td style={{ fontFamily: 'ui-monospace,monospace' }}>{u.wfirma_doc_id}</td>
+                              <td style={{ textAlign: 'right',
+                                              fontFamily: 'ui-monospace,monospace' }}>{u.value}</td>
+                              <td>{u.currency}</td>
+                              <td style={{ fontFamily: 'ui-monospace,monospace' }}>{u.linked_invoice || '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Warnings — conditional */}
+            {(statement.warnings || []).length > 0 && (
+              <div data-testid="customer-statement-warnings"
+                   style={{ background: 'var(--badge-amber-bg)',
+                              border: '1px solid var(--badge-amber-border)',
+                              borderRadius: 4,
+                              padding: 10, marginTop: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700,
+                                color: 'var(--badge-amber-text)',
+                                marginBottom: 6 }}>
+                  Warnings · operator review
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 18,
+                              fontSize: 11, color: 'var(--text-2)' }}>
+                  {(statement.warnings || []).map((w, i) => (
+                    <li key={i} style={{ marginBottom: 2 }}>
+                      <strong>{w.event}</strong>
+                      {Object.entries(w)
+                        .filter(([k]) => k !== 'event')
+                        .map(([k, v]) => ` · ${k}: ${v}`)
+                        .join('')}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </React.Fragment>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 
 function PzAccountingPage({ batches, onViewShipment }) {
   return (
@@ -9182,6 +9948,2380 @@ function EmailEvidenceTimeline({ batchId }) {
       )}
       </div>
     </React.Fragment>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// CN ↔ HSN DECISION PANEL  (hierarchical compare, no auto PZ)
+// ════════════════════════════════════════════════════════════════════
+//
+// Uses GET /dashboard/batches/{id}/cn-hsn-classification on mount and
+// renders one of three states:
+//   exact / hs6 / heading_match → green chip + review note (NOT blocking)
+//   chapter_match               → amber chip + 3 decision buttons
+//   different_chapter           → red chip + hard block (no buttons)
+//
+// Decision buttons (POST):
+//   /dashboard/batches/{id}/cn-decision/accept-sad
+//   /dashboard/batches/{id}/cn-decision/correct-internal
+//   /dashboard/batches/{id}/cn-decision/escalate-agent
+//
+// None of these endpoints execute PZ or write to wFirma — every PZ
+// execution remains explicit (see ExecutePZGate).
+
+// ════════════════════════════════════════════════════════════════════
+// OPERATOR WORKFLOW CARD — unified pre-PZ review (read-only by default)
+// ════════════════════════════════════════════════════════════════════
+//
+// One ordered screen with six stages:
+//   1. Evidence       — ZC429 lineage  (GET /zc429-lineage)
+//   2. Classification — CN/HSN result  (GET /cn-hsn-classification)
+//   3. Products       — wFirma mapping (GET /proforma-readiness.products)
+//   4. Customers      — wFirma mapping (GET /proforma-readiness.customers)
+//   5. Preview        — pz_preview     (GET /wfirma/pz_preview)
+//   6. Execute        — wfirma/pz_create gate (operator click only)
+//
+// Hard rules:
+//   • Each endpoint is fetched ONCE on mount and ONCE per explicit
+//     Refresh click. No setInterval, no auto-refresh loops.
+//   • useEffect contains GETs only — never POST.
+//   • Every POST happens inside an onClick handler defined inside the
+//     embedded sub-components (CNHSNDecisionPanel, ExecutePZGate, …).
+//   • The Execute PZ button is enabled iff:
+//       preview.ready && preview.would_create_pz
+//       && wfirma_create_pz_allowed && !preview.already_created
+//       && (no unresolved blockers in any earlier stage)
+//   • Pipeline header colors:
+//       green  = stage complete
+//       amber  = needs operator action
+//       red    = blocking
+//       gray   = not yet evaluated / waiting
+
+function OperatorWorkflowCard({ batchId, onToast }) {
+  const [proforma, setProforma]   = React.useState(null);
+  const [zc429, setZc429]         = React.useState(null);
+  const [cnhsn, setCnhsn]         = React.useState(null);
+  const [preview, setPreview]     = React.useState(null);
+  const [caps, setCaps]           = React.useState(null);
+  const [batchReady, setBatchReady] = React.useState(null); // warehouse + sales blocker source
+  const [batchDet, setBatchDet]     = React.useState(null); // for files (PZ exists)
+  const [expanded, setExpanded]   = React.useState({
+    evidence: true, classification: false,
+    products: false, customers: false, warehouse: false,
+    preview: true, execute: true,
+  });
+  const [loading, setLoading]     = React.useState(true);
+  const [error, setError]         = React.useState('');
+
+  // Single read-only refresh — fetches all five endpoints once.
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true); setError('');
+    const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+    const opts = { headers: hdrs, credentials: 'include' };
+    const safe = async (url) => {
+      try {
+        const r = await fetch(url, opts);
+        return r.ok ? await r.json() : null;
+      } catch { return null; }
+    };
+    const [pf, zc, cn, pv, cp, br, bd] = await Promise.all([
+      safe(`/dashboard/batches/${encodeURIComponent(batchId)}/proforma-readiness`),
+      safe(`/dashboard/batches/${encodeURIComponent(batchId)}/zc429-lineage`),
+      safe(`/dashboard/batches/${encodeURIComponent(batchId)}/cn-hsn-classification`),
+      safe(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_preview`),
+      safe(`/api/v1/wfirma/capabilities`),
+      safe(`/api/v1/batch/${encodeURIComponent(batchId)}/readiness`),
+      safe(`/dashboard/batches/${encodeURIComponent(batchId)}`),
+    ]);
+    setProforma(pf); setZc429(zc); setCnhsn(cn); setPreview(pv); setCaps(cp);
+    setBatchReady(br); setBatchDet(bd);
+    if (!pf && !zc && !cn) setError('All read-only endpoints failed');
+    setLoading(false);
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+  // ↑ This is a GET-only effect. There is no POST anywhere in this
+  //   component or in `refresh`.
+
+  // ── Compute per-stage state (color + reason) ─────────────────────────
+  const stages = React.useMemo(() => {
+    // Evidence: SAD/MRN can come from legacy parse OR ZC429 intake;
+    // surface BOTH facts independently.
+    const sadPresent  = !!(proforma && proforma.pz && proforma.pz.sad_received)
+                        || !!(cnhsn && cnhsn.sad_cn_code);
+    const zcPresent   = !!(zc429 && zc429.has_zc429);
+    const evWarn      = !!(zc429 && (zc429.warnings || []).length);
+    // Evidence is GREEN only when both SAD and ZC429 lineage are present.
+    // SAD-only with no ZC429 is AMBER (legacy SAD; ZC email not yet ingested).
+    // Neither is AMBER → waiting.
+    const evidenceColor = (sadPresent && zcPresent) ? 'green'
+                          : evWarn ? 'red'
+                          : sadPresent ? 'amber'
+                          : 'amber';
+
+    const cnLevel   = (cnhsn && cnhsn.result && cnhsn.result.worst_level) || '';
+    const cnDecided = !!(cnhsn && cnhsn.decision && cnhsn.decision.approved);
+    const cnBlocked = !!(cnhsn && cnhsn.result && cnhsn.result.is_blocking) && !cnDecided;
+    const classColor = cnBlocked ? 'red'
+                       : cnDecided ? 'green'
+                       : (cnLevel === 'invalid_input' || !cnhsn) ? 'gray'
+                       : (cnLevel === 'chapter_match' || cnLevel === 'different_chapter') ? 'amber'
+                       : 'green';
+
+    const prodMissing = (proforma && proforma.products && proforma.products.missing) || 0;
+    const prodTotal   = (proforma && proforma.products && proforma.products.total)   || 0;
+    const productsColor = prodTotal === 0 ? 'gray'
+                          : prodMissing === 0 ? 'green' : 'amber';
+
+    const custMissing = (proforma && proforma.customers && proforma.customers.missing) || 0;
+    const custAmbig   = (proforma && proforma.customers && proforma.customers.ambiguous) || 0;
+    const custTotal   = (proforma && proforma.customers && proforma.customers.total)   || 0;
+    const customersColor = custTotal === 0 ? 'gray'
+                           : (custMissing === 0 && custAmbig === 0) ? 'green' : 'amber';
+
+    // Warehouse / packing — pull the real blocker from
+    // /api/v1/batch/{id}/readiness (warehouse + sales subblocks).
+    const wh    = batchReady && batchReady.warehouse ? batchReady.warehouse : null;
+    const sales = batchReady && batchReady.sales     ? batchReady.sales     : null;
+    const whReady    = !!(wh && wh.ready);
+    const salesReady = !!(sales && sales.ready);
+    const warehouseColor = !batchReady ? 'gray'
+                           : (whReady && salesReady) ? 'green'
+                           : 'amber';
+
+    // Preview / Execute — distinguish local PZ files vs wFirma PZ.
+    const localPzExists  = !!(batchDet && batchDet.files
+                              && batchDet.files.pdf
+                              && batchDet.files.pdf.exists);
+    const previewErr     = !!(preview && preview.detail);
+    const previewReady   = !!(preview && preview.ready);
+    const wouldCreate    = !!(preview && preview.would_create_pz);
+    const alreadyCreated = !!(preview && preview.already_created);
+    const previewColor   = !preview ? 'gray'
+                           : alreadyCreated ? 'green'
+                           : previewErr ? 'amber'
+                           : previewReady ? 'green'
+                           : 'amber';
+
+    const flagOn = !!(caps && (caps.create_pz_allowed
+                                || caps.wfirma_create_pz_allowed
+                                || (caps.flags
+                                    && (caps.flags.create_pz_allowed
+                                         || caps.flags.wfirma_create_pz_allowed))));
+    const blockersBefore = (cnBlocked ? 1 : 0)
+                           + (prodMissing > 0 ? 1 : 0)
+                           + (custMissing + custAmbig > 0 ? 1 : 0)
+                           + (!whReady ? 1 : 0)
+                           + (!sadPresent ? 1 : 0);
+    const executeEnabled = previewReady && wouldCreate && flagOn
+                           && !alreadyCreated && blockersBefore === 0;
+    const executeColor   = executeEnabled ? 'green'
+                           : alreadyCreated ? 'green' : 'amber';
+
+    return {
+      evidence: {
+        color: evidenceColor,
+        label: (sadPresent && zcPresent) ? 'SAD + ZC429'
+               : sadPresent ? 'legacy SAD only'
+               : 'waiting',
+        count: zc429 ? (zc429.attachments || []).length : 0,
+        sadPresent, zcPresent,
+      },
+      classification: {
+        color: classColor,
+        label: cnDecided ? 'accepted'
+               : cnBlocked ? 'blocked'
+               : cnLevel || 'no data',
+        count: cnBlocked ? 1 : 0,
+        decided: cnDecided,
+      },
+      products: {
+        color: productsColor,
+        label: `${prodTotal - prodMissing}/${prodTotal} mapped`,
+        count: prodMissing,
+        flagOn: !!(proforma && proforma.products && proforma.products.create_flag_on),
+      },
+      customers: {
+        color: customersColor,
+        label: `${custTotal - custMissing - custAmbig}/${custTotal} mapped`,
+        count: custMissing + custAmbig,
+        flagOn: !!(proforma && proforma.customers && proforma.customers.create_flag_on),
+      },
+      warehouse: {
+        color: warehouseColor,
+        label: whReady && salesReady ? 'ready'
+               : !batchReady ? 'unknown' : 'action needed',
+        count: (!whReady ? 1 : 0) + (!salesReady ? 1 : 0),
+        message: (wh && wh.message) || '',
+        sales_message: (sales && sales.message) || '',
+      },
+      preview: {
+        color: previewColor,
+        label: alreadyCreated ? 'wFirma PZ created'
+               : previewReady ? 'wFirma PZ preview ready'
+               : previewErr ? 'wFirma PZ preview blocked'
+               : localPzExists ? 'local PZ generated; wFirma PZ not ready'
+               : 'not ready',
+        count: (preview && (preview.unresolved_product_codes || []).length) || 0,
+        localPzExists,
+        previewErr,
+      },
+      execute: {
+        color: executeColor,
+        label: alreadyCreated ? 'PZ created'
+               : executeEnabled ? 'ready' : 'locked',
+        count: 0,
+        enabled: executeEnabled,
+      },
+    };
+  }, [zc429, cnhsn, proforma, preview, caps, batchReady, batchDet]);
+
+  const STAGE_ORDER = [
+    ['evidence',       'Evidence'],
+    ['classification', 'CN/HSN'],
+    ['products',       'Products'],
+    ['customers',      'Customers'],
+    ['warehouse',      'Warehouse'],
+    ['preview',        'Preview'],
+    ['execute',        'Execute'],
+  ];
+
+  // ── Style helpers ────────────────────────────────────────────────────
+  const card  = { background: 'var(--card,#fff)', border: '1px solid var(--border,#e5e7eb)',
+                  borderRadius: 8, padding: 16, marginBottom: 16 };
+  const dot   = (color) => ({
+    width: 12, height: 12, borderRadius: 6, display: 'inline-block',
+    background: color === 'green' ? '#15803d'
+                : color === 'amber' ? '#d97706'
+                : color === 'red'   ? '#dc2626' : '#9ca3af',
+  });
+  const bar   = { display: 'flex', alignItems: 'center', gap: 4,
+                  flexWrap: 'wrap', marginBottom: 12 };
+  const stagePill = (s, key, label) => {
+    const colorBg = s[key].color === 'green' ? '#dcfce7'
+                  : s[key].color === 'amber' ? '#fef3c7'
+                  : s[key].color === 'red'   ? '#fee2e2' : '#f3f4f6';
+    const colorTx = s[key].color === 'green' ? '#15803d'
+                  : s[key].color === 'amber' ? '#b45309'
+                  : s[key].color === 'red'   ? '#991b1b' : '#374151';
+    return (
+      <div key={key} data-testid={`workflow-pill-${key}`}
+           style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '4px 10px', borderRadius: 999, fontSize: 11,
+                    fontWeight: 700, background: colorBg, color: colorTx,
+                    cursor: 'pointer' }}
+           onClick={() => setExpanded(prev => ({ ...prev, [key]: !prev[key] }))}>
+        <span style={dot(s[key].color)} />
+        {label}
+        {(s[key].count > 0) && (
+          <span data-testid={`workflow-pill-count-${key}`}
+                style={{ background: '#fff', color: colorTx,
+                         padding: '0 6px', borderRadius: 8, fontSize: 10 }}>
+            {s[key].count}
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  const sectionShell = (key, title, body) => (
+    <div data-testid={`workflow-section-${key}`}
+         style={{ border: '1px solid var(--border,#e5e7eb)', borderRadius: 6,
+                  marginBottom: 8, background: '#fff' }}>
+      <div data-testid={`workflow-section-header-${key}`}
+           onClick={() => setExpanded(prev => ({ ...prev, [key]: !prev[key] }))}
+           style={{ display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '8px 12px', cursor: 'pointer',
+                    background: 'var(--bg-soft,#f9fafb)' }}>
+        <span style={dot(stages[key].color)} />
+        <span style={{ fontWeight: 700, fontSize: 13 }}>{title}</span>
+        <span style={{ fontSize: 11, color: 'var(--text-2,#6b7280)',
+                       marginLeft: 'auto' }}>
+          {stages[key].label}
+          {stages[key].count > 0 ? ` — ${stages[key].count}` : ''}
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
+          {expanded[key] ? '▾' : '▸'}
+        </span>
+      </div>
+      {expanded[key] && (
+        <div style={{ padding: 12 }}>{body}</div>
+      )}
+    </div>
+  );
+
+  // ── Per-stage bodies (read-only summaries; rich write surfaces stay
+  //    in the embedded sub-components below the summary) ───────────────
+
+  const evidenceBody = (() => {
+    const sadPresent = stages.evidence.sadPresent;
+    const zcPresent  = stages.evidence.zcPresent;
+    const sadCn      = (cnhsn && cnhsn.sad_cn_code) || '';
+    const ev         = (zc429 && zc429.event) || {};
+    const eid        = ((zc429 && zc429.intake_event_id) || '').slice(0, 12);
+    return (
+      <div data-testid="workflow-evidence-body" style={{ fontSize: 12 }}>
+        {/* Two-fact split: SAD/MRN AND ZC429 lineage are independent. */}
+        <div data-testid="workflow-evidence-sad"
+             style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+          <span>{sadPresent ? '✅' : '◻︎'}</span>
+          <strong>SAD / MRN present:</strong>
+          <span>{sadPresent ? 'YES' : 'NO'}</span>
+          {sadPresent && sadCn ? (
+            <span style={{ color: '#6b7280' }}>(CN {sadCn})</span>
+          ) : null}
+        </div>
+        <div data-testid="workflow-evidence-zc"
+             style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+          <span>{zcPresent ? '✅' : '◻︎'}</span>
+          <strong>ZC429 lineage present:</strong>
+          <span>{zcPresent ? 'YES' : 'NO'}</span>
+        </div>
+        {sadPresent && !zcPresent && (
+          <div data-testid="workflow-evidence-amber-note"
+               style={{ marginTop: 6, padding: 6, fontSize: 11,
+                        background: '#fef3c7', color: '#b45309',
+                        borderRadius: 4 }}>
+            ⚠ Legacy SAD/MRN present. DHL ZC429 email attachments not yet ingested.
+          </div>
+        )}
+        {zcPresent && (
+          <div style={{ marginTop: 6 }}>
+            <div><strong>AWB:</strong> {ev.awb || '—'}</div>
+            <div><strong>ZC / MRN:</strong> {ev.zc_number || '—'}</div>
+            <div><strong>Sender:</strong> {ev.sender || '—'}</div>
+            <div><strong>Received:</strong> {ev.received_at || '—'}</div>
+            <div><strong>Intake event:</strong>{' '}
+              <span style={{ fontFamily: 'ui-monospace,Menlo,monospace' }}
+                    title={zc429.intake_event_id}>{eid}…</span>
+            </div>
+            <div><strong>Attachments:</strong>{' '}
+              {(zc429.attachments || []).length}
+              {zc429.classified_counts ? (
+                <span style={{ color: '#6b7280', marginLeft: 6 }}>
+                  ({zc429.classified_counts.zc429 || 0} ZC429,{' '}
+                  {zc429.classified_counts.invoices || 0} inv,{' '}
+                  {zc429.classified_counts.awb || 0} awb,{' '}
+                  {zc429.classified_counts.mail_evidence || 0} mail,{' '}
+                  {zc429.classified_counts.others || 0} other)
+                </span>
+              ) : null}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  })();
+
+  const classificationBody = (() => {
+    const dec = cnhsn && cnhsn.decision;
+    if (dec && dec.approved) {
+      // Compact green summary — no big warning panel.
+      return (
+        <div data-testid="workflow-classification-accepted"
+             style={{ fontSize: 12 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ background: '#dcfce7', color: '#15803d',
+                           padding: '2px 8px', borderRadius: 12,
+                           fontSize: 11, fontWeight: 700 }}>Accepted</span>
+            <span>SAD CN <strong>{dec.sad_cn_code || cnhsn.sad_cn_code || '—'}</strong></span>
+            <span style={{ color: '#6b7280' }}>by {dec.operator || '—'}</span>
+            <span style={{ color: '#6b7280' }}>
+              at {dec.recorded_at ? dec.recorded_at.slice(0, 19).replace('T', ' ') : '—'}
+            </span>
+          </div>
+          {dec.reason && (
+            <div style={{ marginTop: 4, color: '#6b7280', fontSize: 11 }}>
+              <em>{dec.reason}</em>
+            </div>
+          )}
+          <div style={{ marginTop: 4, fontSize: 10, color: '#9ca3af' }}>
+            correction id {(dec.correction_id || '').slice(0, 12)}…
+          </div>
+        </div>
+      );
+    }
+    // Otherwise render the full decision panel (chapter-only review or
+    // hard-block mode requires operator input).
+    return <CNHSNDecisionPanel batchId={batchId}
+                               onToast={onToast || ((m) => alert(m))} />;
+  })();
+
+  const productsBody = (() => {
+    if (!proforma) return <div style={{ fontSize: 11, color: '#6b7280' }}>—</div>;
+    const p = proforma.products || {};
+    return (
+      <div data-testid="workflow-products-body" style={{ fontSize: 12 }}>
+        <div>{p.mapped || 0} of {p.total || 0} product codes mapped to wFirma.</div>
+        {p.missing > 0 && (
+          <div style={{ color: '#b45309', marginTop: 4 }}>
+            ⚠ {p.missing} product code(s) missing.{' '}
+            {p.create_flag_on
+              ? 'Operator may run Auto-register from the detail panel.'
+              : 'Auto-register flag (WFIRMA_CREATE_PRODUCT_ALLOWED) is OFF.'}
+          </div>
+        )}
+        <div style={{ marginTop: 6, color: '#6b7280' }}>
+          Detail panel below provides per-row write actions.
+        </div>
+      </div>
+    );
+  })();
+
+  const customersBody = (() => {
+    if (!proforma) return <div style={{ fontSize: 11, color: '#6b7280' }}>—</div>;
+    const c = proforma.customers || {};
+    return (
+      <div data-testid="workflow-customers-body" style={{ fontSize: 12 }}>
+        <div>{c.resolved || 0} of {c.total || 0} customers mapped (
+          {c.missing || 0} missing, {c.ambiguous || 0} ambiguous).</div>
+        {(c.missing > 0 || c.ambiguous > 0) && (
+          <div style={{ color: '#b45309', marginTop: 4 }}>
+            ⚠ Operator must clear remaining customer rows from the detail
+            panel.{' '}
+            {c.create_flag_on
+              ? ''
+              : '(WFIRMA_CREATE_CUSTOMER_ALLOWED is OFF.)'}
+          </div>
+        )}
+      </div>
+    );
+  })();
+
+  const warehouseBody = (() => {
+    if (!batchReady) return <div style={{ fontSize: 11, color: '#6b7280' }}>—</div>;
+    const wh    = batchReady.warehouse || null;
+    const sales = batchReady.sales     || null;
+    return (
+      <div data-testid="workflow-warehouse-body" style={{ fontSize: 12 }}>
+        <div data-testid="workflow-warehouse-line"
+             style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span>{wh && wh.ready ? '✅' : '⚠'}</span>
+          <strong>Warehouse:</strong>
+          <span>{(wh && wh.message) || '—'}</span>
+        </div>
+        <div data-testid="workflow-sales-line"
+             style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+          <span>{sales && sales.ready ? '✅' : '⚠'}</span>
+          <strong>Sales scan:</strong>
+          <span>{(sales && sales.message) || '—'}</span>
+        </div>
+      </div>
+    );
+  })();
+
+  const previewBody = (() => {
+    const localPzExists = stages.preview.localPzExists;
+    const previewErr    = stages.preview.previewErr;
+    return (
+      <div data-testid="workflow-preview-body" style={{ fontSize: 12 }}>
+        {/* Always surface local PZ status — distinct from wFirma PZ. */}
+        <div data-testid="workflow-preview-local"
+             style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+          <span>{localPzExists ? '✅' : '◻︎'}</span>
+          <strong>Local PZ calculation:</strong>
+          <span>{localPzExists ? 'generated (PDF + XLSX on disk)' : 'not generated'}</span>
+        </div>
+        <div data-testid="workflow-preview-wfirma"
+             style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+          <span>
+            {preview && preview.already_created ? '✅'
+             : preview && preview.ready ? '✅'
+             : '◻︎'}
+          </span>
+          <strong>wFirma PZ export:</strong>
+          <span>
+            {!preview ? '—'
+             : preview.already_created ? `already created (id ${preview.wfirma_pz_doc_id || '—'})`
+             : preview.ready ? 'preview ready'
+             : previewErr ? 'blocked by guard'
+             : 'not ready'}
+          </span>
+        </div>
+        {previewErr && (
+          <div data-testid="workflow-preview-guard"
+               style={{ marginTop: 4, padding: 6, fontSize: 11,
+                        background: '#fef3c7', color: '#b45309',
+                        borderRadius: 4 }}>
+            ⚠ {(preview.detail && preview.detail.error) || 'pz_preview unavailable'}
+            {preview.detail && preview.detail.code ? (
+              <span style={{ marginLeft: 6, fontFamily: 'ui-monospace,Menlo,monospace',
+                             color: '#9ca3af' }}>
+                ({preview.detail.code})
+              </span>
+            ) : null}
+          </div>
+        )}
+        {!previewErr && preview && (
+          <div style={{ marginTop: 4, color: '#6b7280' }}>
+            MRN {preview.mrn || '—'} · warehouse {preview.warehouse_id || '—'}
+            {(preview.unresolved_product_codes || []).length > 0 && (
+              <span style={{ color: '#b45309', marginLeft: 6 }}>
+                · {preview.unresolved_product_codes.length} unresolved product code(s)
+              </span>
+            )}
+            {(preview.price_conflicts || []).length > 0 && (
+              <span style={{ color: '#b45309', marginLeft: 6 }}>
+                · {preview.price_conflicts.length} price conflict(s)
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  })();
+
+  const executeBody = (
+    <ExecutePZGate batchId={batchId} onToast={onToast} />
+  );
+
+  // ── Render ───────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div style={card} data-testid="workflow-card">
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>
+          🛠 Operator Workflow
+        </div>
+        <div style={{ fontSize: 12, color: '#6b7280' }}>Loading…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={card} data-testid="workflow-card">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                    marginBottom: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>
+          🛠 Operator Workflow — pre-PZ review
+        </div>
+        <button data-testid="workflow-refresh"
+                onClick={refresh}
+                style={{ marginLeft: 'auto', padding: '4px 10px',
+                         fontSize: 11, borderRadius: 6,
+                         border: '1px solid #d1d5db', background: '#fff' }}>
+          Refresh
+        </button>
+      </div>
+      {error && (
+        <div data-testid="workflow-error"
+             style={{ fontSize: 11, color: '#991b1b', marginBottom: 8 }}>
+          {error}
+        </div>
+      )}
+
+      {/* Pipeline header */}
+      <div data-testid="workflow-pipeline" style={bar}>
+        {STAGE_ORDER.map(([k, label], i) => (
+          <React.Fragment key={k}>
+            {stagePill(stages, k, label)}
+            {i < STAGE_ORDER.length - 1 && (
+              <span style={{ color: '#9ca3af' }}>→</span>
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+
+      {/* Top-of-card "Next required actions" — show 1–2 most urgent. */}
+      {(() => {
+        const next = [];
+        if (stages.classification.color === 'red')
+          next.push('Resolve CN/HSN block (different chapter detected).');
+        if (stages.products.count > 0)
+          next.push(`Map ${stages.products.count} product code(s) (Auto-register or manual).`);
+        if (stages.customers.count > 0)
+          next.push(`Resolve ${stages.customers.count} customer identity row(s).`);
+        if (stages.warehouse.color === 'amber' && stages.warehouse.message)
+          next.push(stages.warehouse.message);
+        if (stages.evidence.sadPresent && !stages.evidence.zcPresent)
+          next.push('Ingest DHL ZC429 email (operator action).');
+        if (next.length === 0) return null;
+        return (
+          <div data-testid="workflow-next-actions"
+               style={{ background: '#fffbeb', border: '1px solid #fcd34d',
+                        borderRadius: 6, padding: 8, marginBottom: 12,
+                        fontSize: 12, color: '#92400e' }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>
+              Next required actions
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {next.slice(0, 2).map((n, i) => <li key={i}>{n}</li>)}
+            </ul>
+          </div>
+        );
+      })()}
+
+      {/* Seven ordered sections */}
+      {sectionShell('evidence',       '1. DHL / ZC429 evidence',        evidenceBody)}
+      {sectionShell('classification', '2. CN / HSN classification',     classificationBody)}
+      {sectionShell('products',       '3. Product identity mapping',    productsBody)}
+      {sectionShell('customers',      '4. Customer identity mapping',   customersBody)}
+      {sectionShell('warehouse',      '5. Warehouse / packing readiness', warehouseBody)}
+      {sectionShell('preview',        '6. PZ preview readiness',        previewBody)}
+      {sectionShell('execute',        '7. Execute PZ in wFirma',        executeBody)}
+
+      {/* Phase 6 — local editable Proforma Draft panel. Always visible
+          when drafts exist; auto-created from sales packing intake.
+          Posting from this panel is the ONLY UI path that reaches wFirma
+          for Proforma issuance — legacy /proforma/create has no button
+          surface in the dashboard. */}
+      <ProformaDraftPanel batchId={batchId} onToast={onToast} />
+
+      {/* Detail panel — keep the full Proforma readiness card below
+          for the per-row write surfaces the workflow only summarises. */}
+      <details data-testid="workflow-details-toggle" style={{ marginTop: 8 }}>
+        <summary style={{ fontSize: 11, color: '#6b7280', cursor: 'pointer',
+                          padding: '6px 0' }}>
+          Show full Proforma Readiness panel (per-row actions)
+        </summary>
+        <ProformaReadinessCard batchId={batchId} onToast={onToast} />
+      </details>
+    </div>
+  );
+}
+
+
+function CNHSNDecisionPanel({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy]       = React.useState('');
+  const [error, setError]     = React.useState('');
+
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true); setError('');
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      const r = await fetch(
+        `/dashboard/batches/${encodeURIComponent(batchId)}/cn-hsn-classification`,
+        { headers: hdrs, credentials: 'include' });
+      if (!r.ok) { setError(`HTTP ${r.status}`); setData(null); }
+      else        setData(await r.json());
+    } catch (e) { setError(String(e)); setData(null); }
+    finally     { setLoading(false); }
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // onClick-only — never fires from useEffect / mount.
+  const postDecision = React.useCallback(async (path, label, defaultReason) => {
+    const reason = window.prompt(
+      `${label}\n\nEnter a justification (min 20 characters):`,
+      defaultReason);
+    if (!reason || reason.trim().length < 20) {
+      alert('Reason must be at least 20 characters.'); return;
+    }
+    setBusy(path);
+    try {
+      const r = await fetch(
+        `/dashboard/batches/${encodeURIComponent(batchId)}/cn-decision/${path}`,
+        { method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json',
+                     ...(window.__apiHeaders ? window.__apiHeaders() : {}) },
+          body: JSON.stringify({ reason: reason.trim() }) });
+      const body = await r.json().catch(() => ({}));
+      if (onToast) onToast(r.ok
+          ? `Decision recorded: ${path} (id ${body.correction_id || '—'})`
+          : `Decision failed: ${body.detail || r.status}`);
+      await refresh();
+    } catch (e) {
+      if (onToast) onToast(`Decision error: ${e}`);
+    } finally {
+      setBusy('');
+    }
+  }, [batchId, refresh, onToast]);
+
+  if (loading) {
+    return (
+      <div data-testid="cn-hsn-panel"
+           style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border,#e5e7eb)', borderRadius: 6, fontSize: 12 }}>
+        Loading CN/HSN classification…
+      </div>
+    );
+  }
+  if (error || !data) {
+    return (
+      <div data-testid="cn-hsn-panel"
+           style={{ marginBottom: 16, padding: 12, border: '1px solid #fca5a5', borderRadius: 6, fontSize: 12, color: '#991b1b' }}>
+        CN/HSN classification load failed: {error || 'no data'}
+      </div>
+    );
+  }
+  if (!data.has_data) return null;
+
+  const r = data.result || {};
+  const level = r.worst_level || 'invalid_input';
+  const blocking = !!r.is_blocking;
+
+  // Color/label by outcome
+  const colorMap = {
+    exact_code_match: { bg: '#dcfce7', text: '#15803d', label: 'Exact match' },
+    hs6_match:        { bg: '#dcfce7', text: '#15803d', label: 'HS6 compatible' },
+    heading_match:    { bg: '#dcfce7', text: '#15803d', label: 'Heading compatible' },
+    chapter_match:    { bg: '#fef3c7', text: '#b45309', label: 'Chapter only — review' },
+    different_chapter:{ bg: '#fee2e2', text: '#991b1b', label: 'Different chapter — hard block' },
+    invalid_input:    { bg: '#f3f4f6', text: '#374151', label: 'Cannot compare' },
+  };
+  const c = colorMap[level] || colorMap.invalid_input;
+
+  const decision = data.decision || null;
+  const decided = !!(decision && decision.decision_type);
+
+  return (
+    <div data-testid="cn-hsn-panel"
+         style={{ marginBottom: 16, padding: 16, border: `2px solid ${c.text}33`, borderRadius: 8, background: c.bg }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: c.text,
+                    display: 'flex', alignItems: 'center', gap: 8 }}>
+        🧾 CN ↔ HSN Classification
+        <span data-testid="cn-hsn-status-chip"
+              style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700,
+                       background: '#fff', color: c.text, border: `1px solid ${c.text}` }}>
+          {c.label}
+        </span>
+      </div>
+
+      <div style={{ fontSize: 12, color: 'var(--text-2,#555)', marginBottom: 8 }}>
+        <div><strong>SAD CN code:</strong>{' '}
+          <span data-testid="cn-hsn-sad" style={{ fontFamily: 'ui-monospace,Menlo,monospace' }}>
+            {data.sad_cn_code || '—'}
+          </span>
+        </div>
+        <div><strong>Invoice HSN codes:</strong>{' '}
+          <span data-testid="cn-hsn-invoice" style={{ fontFamily: 'ui-monospace,Menlo,monospace' }}>
+            {(data.invoice_hsns || []).join(', ') || '—'}
+          </span>
+        </div>
+        {r.aggregation_detected && (
+          <div data-testid="cn-hsn-aggregation"
+               style={{ marginTop: 4 }}>SAD aggregates multiple invoice HSNs.</div>
+        )}
+        {r.mixed_metals_detected && (
+          <div data-testid="cn-hsn-mixed"
+               style={{ marginTop: 4 }}>Invoice contains mixed HSN headings (e.g. silver vs gold).</div>
+        )}
+      </div>
+
+      {(r.notes || []).length > 0 && (
+        <ul data-testid="cn-hsn-notes" style={{ margin: '6px 0 8px 18px', fontSize: 11 }}>
+          {r.notes.map((n, i) => <li key={i}>{n}</li>)}
+        </ul>
+      )}
+
+      {/* Buttons — only when chapter_match (operator decision needed) */}
+      {!decided && level === 'chapter_match' && (
+        <div data-testid="cn-hsn-buttons"
+             style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+          <button data-testid="cn-accept-sad"
+                  disabled={!!busy}
+                  onClick={() => postDecision(
+                    'accept-sad',
+                    'Accept SAD CN as authoritative for this shipment',
+                    `SAD CN ${data.sad_cn_code} accepted — invoice HSNs share HS chapter; aggregation acceptable for jewelry classification`)}
+                  style={{ padding: '6px 12px', fontSize: 12,
+                           background: '#15803d', color: '#fff',
+                           border: 'none', borderRadius: 6,
+                           cursor: busy ? 'wait' : 'pointer' }}>
+            ✓ Accept SAD CN
+          </button>
+          <button data-testid="cn-correct-internal"
+                  disabled={!!busy}
+                  onClick={() => postDecision(
+                    'correct-internal',
+                    'Record an internal CN/HSN correction (does NOT mutate SAD source)',
+                    `Internal correction: invoice HSN to be reclassified at next intake; SAD CN ${data.sad_cn_code} retained as filed`)}
+                  style={{ padding: '6px 12px', fontSize: 12,
+                           background: '#fff', color: '#374151',
+                           border: '1px solid #9ca3af', borderRadius: 6 }}>
+            ✎ Correct internally
+          </button>
+          <button data-testid="cn-escalate-agent"
+                  disabled={!!busy}
+                  onClick={() => postDecision(
+                    'escalate-agent',
+                    'Escalate CN/HSN mismatch to the customs agent',
+                    `Escalation: SAD CN ${data.sad_cn_code} vs invoice HSN ${(data.invoice_hsns || []).join(', ')} — request clarification from customs agent`)}
+                  style={{ padding: '6px 12px', fontSize: 12,
+                           background: '#fff', color: '#991b1b',
+                           border: '1px solid #fca5a5', borderRadius: 6 }}>
+            ✉ Send back to agent
+          </button>
+        </div>
+      )}
+
+      {!decided && level === 'different_chapter' && (
+        <div data-testid="cn-hsn-hard-block"
+             style={{ fontSize: 12, color: '#991b1b', marginTop: 6 }}>
+          ⛔ Different HS chapters. Contact the clearing agent for a corrected SAD before proceeding. PZ remains blocked.
+        </div>
+      )}
+
+      {decided && (
+        <div data-testid="cn-hsn-decision-recorded"
+             style={{ marginTop: 8, padding: 8, background: '#fff',
+                      border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 11 }}>
+          <strong>Decision recorded:</strong> {decision.decision_type}
+          {' '}— operator: {decision.operator || '—'}
+          {' '}— at {decision.recorded_at}
+          <br />
+          <em>{decision.reason}</em>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// EXECUTE PZ IN WFIRMA — gate card (read-only on load)
+// ════════════════════════════════════════════════════════════════════
+//
+// Reads /api/v1/wfirma/shipment/{batchId}/wfirma/pz_preview on mount
+// and explicit Refresh — never on side-effects. The "Execute PZ in
+// wFirma" button is enabled iff:
+//   pz_preview.ready === true
+//   pz_preview.would_create_pz === true
+//   wfirma_create_pz_allowed === true
+//   not already_created
+// On click — and only on click — it POSTs /wfirma/pz_create. Page load
+// never invokes pz_create.
+
+function ExecutePZGate({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [caps, setCaps]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy]       = React.useState(false);
+  const [error, setError]     = React.useState('');
+
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true); setError('');
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      const [r1, r2] = await Promise.all([
+        fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_preview`, { headers: hdrs }),
+        fetch(`/api/v1/wfirma/capabilities`, { headers: hdrs }),
+      ]);
+      if (!r1.ok) { setError(`pz_preview HTTP ${r1.status}`); setData(null); }
+      else        setData(await r1.json());
+      if (r2.ok)  setCaps(await r2.json());
+    } catch (e) {
+      setError(String(e)); setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // onClick-ONLY action. Never fires from page load / mount / re-render.
+  const onExecute = React.useCallback(async () => {
+    if (!batchId) return;
+    if (!window.confirm(
+        'Execute PZ in wFirma?\n\nThis writes a wFirma PZ document. ' +
+        'Proceed only after PZ Preview verification.')) return;
+    setBusy(true);
+    try {
+      // Operator identity for audit timeline (detail.operator).
+      const _op = _resolveOperator();
+      const _hdrs = {
+        ...(window.__apiHeaders ? window.__apiHeaders() : {}),
+        ...(_op ? { 'X-Operator': _op } : {}),
+      };
+      const r = await fetch(
+        `/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_create`,
+        { method: 'POST', headers: _hdrs });
+      const body = await r.json().catch(() => ({}));
+      if (onToast) onToast(r.ok ? 'PZ executed' : `PZ execute failed: ${body.error || r.status}`);
+      await refresh();
+    } catch (e) {
+      if (onToast) onToast(`PZ execute error: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [batchId, refresh, onToast]);
+
+  const card  = { background: 'var(--card,#fff)', border: '1px solid var(--border,#e5e7eb)',
+                  borderRadius: 8, padding: 16, marginBottom: 16 };
+  const h2    = { fontSize: 14, fontWeight: 700, marginBottom: 12,
+                  display: 'flex', alignItems: 'center', gap: 8 };
+  const chip  = (color) => ({ display: 'inline-block', padding: '2px 8px',
+                              borderRadius: 12, fontSize: 11, fontWeight: 700,
+                              background: color === 'green' ? '#dcfce7' :
+                                          color === 'amber' ? '#fef3c7' :
+                                          color === 'gray'  ? '#f3f4f6' : '#fee2e2',
+                              color:      color === 'green' ? '#15803d' :
+                                          color === 'amber' ? '#b45309' :
+                                          color === 'gray'  ? '#374151' : '#991b1b' });
+  const label = { color: 'var(--text-2,#6b7280)', fontSize: 11, marginBottom: 2 };
+
+  if (loading) {
+    return (
+      <div style={card} data-testid="execute-pz-gate">
+        <div style={h2}>⚡ Execute PZ in wFirma</div>
+        <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}>Loading…</div>
+      </div>
+    );
+  }
+
+  // Compute gating
+  const ready          = !!(data && data.ready);
+  const wouldCreate    = !!(data && data.would_create_pz);
+  const alreadyCreated = !!(data && data.already_created);
+  const flagOn         = !!(caps && (caps.create_pz_allowed
+                                      || caps.wfirma_create_pz_allowed
+                                      || (caps.flags && (caps.flags.create_pz_allowed
+                                                          || caps.flags.wfirma_create_pz_allowed))));
+  const enabled = ready && wouldCreate && flagOn && !alreadyCreated && !busy;
+
+  // Build disabled-reason chips so the operator sees exactly why.
+  const reasons = [];
+  if (alreadyCreated)               reasons.push('PZ already created');
+  if (!flagOn)                      reasons.push('WFIRMA_CREATE_PZ_ALLOWED is off');
+  if (!ready)                       reasons.push('pz_preview.ready=false');
+  if (!wouldCreate && !alreadyCreated) reasons.push('would_create_pz=false');
+  if (data && (data.unresolved_product_codes || []).length > 0) {
+    reasons.push(`${data.unresolved_product_codes.length} product code(s) unresolved`);
+  }
+  if (data && (data.price_conflicts || []).length > 0) {
+    reasons.push(`${data.price_conflicts.length} price conflict(s)`);
+  }
+
+  return (
+    <div style={card} data-testid="execute-pz-gate">
+      <div style={h2}>
+        ⚡ Execute PZ in wFirma
+        <span style={chip(enabled ? 'green' : alreadyCreated ? 'gray' : 'amber')}
+              data-testid="execute-pz-status-chip">
+          {alreadyCreated ? 'Already created' : enabled ? 'Ready to execute' : 'Locked'}
+        </span>
+      </div>
+
+      <div data-testid="execute-pz-summary"
+           style={{ fontSize: 12, color: 'var(--text-2,#6b7280)', marginBottom: 8 }}>
+        <div><span style={label}>pz_preview.ready: </span>{String(ready)}</div>
+        <div><span style={label}>would_create_pz: </span>{String(wouldCreate)}</div>
+        <div><span style={label}>already_created: </span>{String(alreadyCreated)}</div>
+        <div><span style={label}>WFIRMA_CREATE_PZ_ALLOWED: </span>{String(flagOn)}</div>
+        {data && data.wfirma_pz_doc_id ? (
+          <div><span style={label}>wfirma_pz_doc_id: </span>{data.wfirma_pz_doc_id}</div>
+        ) : null}
+      </div>
+
+      {reasons.length > 0 && !enabled && (
+        <div data-testid="execute-pz-reasons"
+             style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
+          {reasons.map((r, i) => <div key={i}>⚠ {r}</div>)}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button data-testid="execute-pz-refresh"
+                onClick={refresh}
+                style={{ padding: '6px 12px', fontSize: 12 }}>
+          Refresh preview
+        </button>
+        <button data-testid="execute-pz-button"
+                onClick={onExecute}
+                disabled={!enabled}
+                title={enabled ? '' : reasons.join('; ')}
+                style={{ padding: '6px 12px', fontSize: 12,
+                         background: enabled ? '#15803d' : '#9ca3af',
+                         color: '#fff', border: 'none', borderRadius: 6,
+                         cursor: enabled ? 'pointer' : 'not-allowed' }}>
+          {busy ? '⟳ Executing…' : 'Execute PZ in wFirma'}
+        </button>
+      </div>
+
+      {error && (
+        <div style={{ marginTop: 8, fontSize: 11, color: '#991b1b' }}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// ZC429 / SAD EVIDENCE CARD  (read-only legal-evidence chain)
+// ════════════════════════════════════════════════════════════════════
+//
+// Shown BEFORE PZ creation so the operator can verify the inbound
+// DHL ZC429 email, every attachment, classification counts, processing
+// history, and linked timeline events. Read-only:
+//   GET /dashboard/batches/{batchId}/zc429-lineage
+// No writes, no reclassification, no deletion, no PZ creation.
+
+function ZC429EvidenceCard({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError]     = React.useState('');
+
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true);
+    setError('');
+    try {
+      const r = await fetch(`/dashboard/batches/${encodeURIComponent(batchId)}/zc429-lineage`,
+                            { headers: window.__apiHeaders ? window.__apiHeaders() : {} });
+      if (!r.ok) {
+        setError(`HTTP ${r.status}`);
+        setData(null);
+      } else {
+        setData(await r.json());
+      }
+    } catch (e) {
+      setError(String(e));
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // Style helpers (kept inline so this component stays self-contained).
+  const card  = { background: 'var(--card,#fff)', border: '1px solid var(--border,#e5e7eb)',
+                  borderRadius: 8, padding: 16, marginBottom: 16 };
+  const h2    = { fontSize: 14, fontWeight: 700, marginBottom: 12,
+                  display: 'flex', alignItems: 'center', gap: 8 };
+  const chip  = (color) => ({ display: 'inline-block', padding: '2px 8px',
+                              borderRadius: 12, fontSize: 11, fontWeight: 700,
+                              background: color === 'green' ? '#dcfce7' :
+                                          color === 'amber' ? '#fef3c7' : '#fee2e2',
+                              color:      color === 'green' ? '#15803d' :
+                                          color === 'amber' ? '#b45309' : '#991b1b' });
+  const grid  = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                  gap: 8, marginBottom: 12 };
+  const kv    = { fontSize: 12 };
+  const label = { color: 'var(--text-2,#6b7280)', fontSize: 11, marginBottom: 2 };
+  const mono  = { fontFamily: 'ui-monospace,Menlo,monospace', fontSize: 11 };
+
+  if (loading) {
+    return (
+      <div style={card} data-testid="zc429-evidence-card">
+        <div style={h2}>📜 ZC429 / SAD Evidence</div>
+        <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}>
+          Loading evidence chain…
+        </div>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div style={card} data-testid="zc429-evidence-card">
+        <div style={h2}>📜 ZC429 / SAD Evidence</div>
+        <div style={{ fontSize: 12, color: '#991b1b' }}
+             data-testid="zc429-evidence-error">
+          Could not load evidence chain: {error}
+        </div>
+      </div>
+    );
+  }
+  if (!data || !data.has_zc429) {
+    // Recovery-state-aware "Not received" view.
+    const rs = (data && data.recovery_state) || 'email_not_found';
+    const rd = (data && data.recovery_detail) || {};
+    const stateLabel = {
+      email_not_found:                          'No plwawecs email yet',
+      email_found_no_attachments:               'Email found · attachments missing',
+      email_found_attachments_pending_intake:   'Attachments stored · intake pending',
+      intake_completed:                         'Complete',
+    }[rs] || 'Not received';
+    const stateColor = (rs === 'email_not_found') ? 'amber'
+                       : (rs === 'email_found_no_attachments'
+                          || rs === 'email_found_attachments_pending_intake') ? 'amber'
+                       : 'amber';
+    return (
+      <div style={card} data-testid="zc429-evidence-card">
+        <div style={h2}>
+          📜 ZC429 / SAD Evidence
+          <span style={chip(stateColor)} data-testid="zc429-status-chip">
+            {stateLabel}
+          </span>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}
+             data-testid="zc429-waiting-message">
+          Waiting for DHL ZC429 / SAD email. The legal-evidence chain
+          will appear here as soon as the WAW agency notification is
+          ingested.
+        </div>
+        {/* Recovery diagnostics — operator-grade instruction. */}
+        <div data-testid="zc429-recovery-state"
+             data-recovery-state={rs}
+             style={{ marginTop: 10, padding: 8, fontSize: 11,
+                      background: '#fffbeb', border: '1px solid #fcd34d',
+                      borderRadius: 6, color: '#92400e' }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+            Recovery state: <span data-testid="zc429-recovery-state-name">{rs}</span>
+          </div>
+          <div data-testid="zc429-recovery-instruction">
+            {rd.instruction || ''}
+          </div>
+          <div style={{ marginTop: 4, color: '#78350f' }}>
+            plwawecs messages: <strong data-testid="zc429-recovery-msgs">
+              {rd.plwawecs_messages_found || 0}
+            </strong>
+            {' · '}
+            attachments stored: <strong data-testid="zc429-recovery-atts">
+              {rd.attachments_in_evidence || 0}
+            </strong>
+            {' · '}
+            lineage rows: <strong data-testid="zc429-recovery-lineage">
+              {rd.lineage_rows || 0}
+            </strong>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 10, color: '#b91c1c' }}>
+            ⚠ Never use the printed-email PDF as a substitute for real
+            attachment binaries. Backfill must use the original
+            downloaded files.
+          </div>
+        </div>
+        {data && data.warnings && data.warnings.length > 0 && (
+          <div data-testid="zc429-warnings" style={{ marginTop: 10 }}>
+            {data.warnings.map((w, i) => (
+              <div key={i} style={{ fontSize: 11, color: '#b45309' }}>⚠️ {w}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const counts = data.classified_counts || {};
+  const ev     = data.event || {};
+  const sha    = (s) => (s || '').slice(0, 12);
+
+  return (
+    <div style={card} data-testid="zc429-evidence-card">
+      <div style={h2}>
+        📜 ZC429 / SAD Evidence
+        <span style={chip('green')} data-testid="zc429-status-chip">
+          ZC429 received
+        </span>
+      </div>
+
+      {/* Event header */}
+      <div style={grid} data-testid="zc429-event-block">
+        <div style={kv}>
+          <div style={label}>AWB</div>
+          <div style={mono}>{ev.awb || '—'}</div>
+        </div>
+        <div style={kv}>
+          <div style={label}>ZC / MRN</div>
+          <div style={mono}>{ev.zc_number || '—'}</div>
+        </div>
+        <div style={kv}>
+          <div style={label}>Sender</div>
+          <div>{ev.sender || '—'}</div>
+        </div>
+        <div style={kv}>
+          <div style={label}>Received</div>
+          <div>{ev.received_at || '—'}</div>
+        </div>
+        <div style={kv}>
+          <div style={label}>Intake event</div>
+          <div style={mono} title={data.intake_event_id}>
+            {sha(data.intake_event_id)}…
+          </div>
+        </div>
+        <div style={kv}>
+          <div style={label}>Processing version</div>
+          <div style={mono}>{ev.processing_version || '—'}</div>
+        </div>
+      </div>
+
+      {/* Classified counts */}
+      <div data-testid="zc429-classified-counts"
+           style={{ display: 'flex', gap: 12, flexWrap: 'wrap',
+                    marginBottom: 12, fontSize: 12 }}>
+        <div><b>{counts.zc429 || 0}</b> ZC429</div>
+        <div><b>{counts.awb || 0}</b> AWB</div>
+        <div><b>{counts.invoices || 0}</b> invoices</div>
+        <div><b>{counts.mail_evidence || 0}</b> mail evidence</div>
+        <div><b>{counts.others || 0}</b> others</div>
+        <div style={{ marginLeft: 'auto', color: 'var(--text-2,#6b7280)' }}>
+          Total attachments: <b>{(data.attachments || []).length}</b>
+        </div>
+      </div>
+
+      {/* Attachment list */}
+      <div data-testid="zc429-attachments" style={{ marginBottom: 12 }}>
+        <div style={label}>Attachments</div>
+        <div style={{ maxHeight: 220, overflowY: 'auto',
+                      border: '1px solid var(--border,#e5e7eb)',
+                      borderRadius: 6 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-soft,#f9fafb)' }}>
+                <th style={{ textAlign: 'left', padding: '6px 8px' }}>Filename</th>
+                <th style={{ textAlign: 'left', padding: '6px 8px' }}>Type</th>
+                <th style={{ textAlign: 'right', padding: '6px 8px' }}>Size</th>
+                <th style={{ textAlign: 'left', padding: '6px 8px' }}>SHA256</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.attachments || []).map((a, i) => (
+                <tr key={i} data-testid={`zc429-att-${i}`}
+                    style={{ borderTop: '1px solid var(--border,#e5e7eb)' }}>
+                  <td style={{ padding: '6px 8px' }} title={a.stored_path}>
+                    {a.filename}
+                  </td>
+                  <td style={{ padding: '6px 8px' }}>{a.classified_type}</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                    {(a.size || 0).toLocaleString()} B
+                  </td>
+                  <td style={{ ...mono, padding: '6px 8px' }}
+                      title={a.sha256}>
+                    {sha(a.sha256)}…
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Processing history */}
+      <div data-testid="zc429-processing-history" style={{ marginBottom: 12 }}>
+        <div style={label}>Processing history</div>
+        {(data.processing_history || []).length === 0 ? (
+          <div style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
+            (no entries)
+          </div>
+        ) : (
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11 }}>
+            {data.processing_history.map((h, i) => (
+              <li key={i}>
+                <span style={mono}>{h.created_at}</span> — {h.note}
+                {h.actor ? <span style={{ color: 'var(--text-2,#6b7280)' }}> ({h.actor})</span> : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Linked timeline events */}
+      <div data-testid="zc429-linked-timeline">
+        <div style={label}>Linked timeline events</div>
+        {(data.linked_timeline_events || []).length === 0 ? (
+          <div style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
+            (none)
+          </div>
+        ) : (
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11 }}>
+            {data.linked_timeline_events.map((e, i) => (
+              <li key={i}>
+                <span style={mono}>{e.ts}</span> — <b>{e.event}</b>
+                {e.trigger_source ? <span style={{ color: 'var(--text-2,#6b7280)' }}> via {e.trigger_source}</span> : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Warnings */}
+      {(data.warnings || []).length > 0 && (
+        <div data-testid="zc429-warnings"
+             style={{ marginTop: 12, padding: 8,
+                      background: '#fef3c7', borderRadius: 6 }}>
+          {data.warnings.map((w, i) => (
+            <div key={i} style={{ fontSize: 11, color: '#b45309' }}>⚠️ {w}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// PROFORMA READINESS PANEL
+// ════════════════════════════════════════════════════════════════════
+//
+// One-stop operator view of every Proforma blocker for a single batch:
+// product mapping, customer mapping, design→product bridge, PZ
+// prerequisites, and an overall ready/blocked verdict with a concrete
+// next-action hint.
+//
+// On mount: fetches the read-only aggregator at
+//   GET /dashboard/batches/{batchId}/proforma-readiness
+// — no live wFirma calls, no writes. The Preview / Auto-register / Create
+// buttons trigger the existing capability endpoints when the operator
+// explicitly asks.
+
+function ProformaReadinessCard({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy]       = React.useState('');
+  // Per-row VAT/country inputs for missing customers
+  const [custInputs, setCustInputs] = React.useState({});
+
+  const refresh = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await apiFetch(`/dashboard/batches/${encodeURIComponent(batchId)}/proforma-readiness`);
+      setData(d);
+    } catch (e) {
+      onToast && onToast('Failed to load Proforma readiness: ' + e.message, 'error');
+    }
+    setLoading(false);
+  }, [batchId, onToast]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // Run a write/preview action and refresh on completion.
+  const runAction = async (label, fn) => {
+    setBusy(label);
+    try {
+      const r = await fn();
+      if (r && r.status) {
+        onToast && onToast(`${label}: ${r.status}`, r.status === 'created' || r.status === 'sent' ? 'success' : 'info');
+      } else if (Array.isArray(r) || typeof r === 'object') {
+        onToast && onToast(`${label}: done`, 'success');
+      }
+      await refresh();
+    } catch (e) {
+      onToast && onToast(`${label} failed: ${e.message}`, 'error');
+    }
+    setBusy('');
+  };
+
+  const previewProducts = () => runAction('Preview product auto-register', () =>
+    apiFetch(`/api/v1/wfirma/goods/auto-register-preview/${encodeURIComponent(batchId)}`, {
+      method: 'POST',
+    })
+  );
+  const writeProducts = () => {
+    if (!confirm('Auto-register all missing product codes in wFirma? This calls live goods/add for each missing code.')) return;
+    return runAction('Auto-register products', () =>
+      apiFetch(`/api/v1/wfirma/goods/auto-register/${encodeURIComponent(batchId)}`, {
+        method: 'POST',
+      })
+    );
+  };
+  const previewCustomers = () => runAction('Preview customer auto-resolve', () =>
+    apiFetch(`/api/v1/wfirma/customers/auto-resolve-preview/${encodeURIComponent(batchId)}`, {
+      method: 'POST',
+    })
+  );
+  const createCustomer = (clientName) => {
+    const inp = custInputs[clientName] || {};
+    if (!confirm(`Create wFirma contractor for "${clientName}"? VAT="${inp.vat_id || ''}" Country="${inp.country_code || ''}"`)) return;
+    return runAction(`Create customer "${clientName}"`, () =>
+      apiFetch('/api/v1/wfirma/customers/auto-create-from-name', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_name:  clientName,
+          vat_id:       (inp.vat_id || '').trim(),
+          country_code: (inp.country_code || '').trim(),
+        }),
+      })
+    );
+  };
+
+  const setCustField = (clientName, field, value) => {
+    setCustInputs(prev => ({
+      ...prev,
+      [clientName]: { ...(prev[clientName] || {}), [field]: value },
+    }));
+  };
+
+  if (loading || !data) {
+    return (
+      <Card>
+        <SectionHeader icon="◇" title="Proforma Readiness" subtitle="Identity-resolution checks for this batch" />
+        <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>
+      </Card>
+    );
+  }
+
+  const products  = data.products || {};
+  const customers = data.customers || {};
+  const bridge    = data.bridge || {};
+  const pz        = data.pz || {};
+  const proforma  = data.proforma || {};
+
+  return (
+    <Card style={{ marginBottom: 16 }}>
+      <SectionHeader
+        icon="◇"
+        title="Proforma Readiness"
+        subtitle="Identity-resolution checks for this batch"
+        status={proforma.ready ? 'Ready' : 'Blocked'}
+      />
+
+      {/* ── Verdict banner ───────────────────────────── */}
+      <div data-testid="proforma-verdict" style={{
+        padding: '12px 16px',
+        background: proforma.ready ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+        borderTop: '1px solid var(--card-border)',
+        borderBottom: '1px solid var(--card-border)',
+        fontSize: 12, fontWeight: 600,
+        color: proforma.ready ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+      }}>
+        <div>{proforma.ready ? 'READY for Proforma issuance' : `BLOCKED — ${(proforma.blocking_reasons || []).length} item(s)`}</div>
+        {!proforma.ready && proforma.next_action && (
+          <div style={{ fontWeight: 400, fontSize: 11, marginTop: 4, color: 'var(--text-2)' }}>Next: {proforma.next_action}</div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, display: 'grid', gap: 18 }}>
+
+        {/* ── Section 1: Product Identity ─────────────── */}
+        <section data-testid="readiness-products">
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            1 · Product Identity
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 12, marginBottom: 8 }}>
+            <InfoRow label="Total codes"   value={products.total ?? 0} />
+            <InfoRow label="Mapped to wFirma" value={products.mapped ?? 0} />
+            <InfoRow label="Missing"        value={products.missing ?? 0} />
+          </div>
+          {!products.create_flag_on && products.missing > 0 && (
+            <div data-testid="product-flag-off" style={{ fontSize: 11, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', padding: '6px 10px', borderRadius: 4, marginBottom: 8 }}>
+              WFIRMA_CREATE_PRODUCT_ALLOWED is off — auto-register write button will return blocked
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Btn onClick={previewProducts} disabled={!!busy} small>Preview product auto-register</Btn>
+            <Btn onClick={writeProducts} disabled={!!busy || !products.create_flag_on || (products.missing ?? 0) === 0} small variant="primary">
+              Auto-register products
+            </Btn>
+          </div>
+        </section>
+
+        {/* ── Section 2: Customer Identity ───────────── */}
+        <section data-testid="readiness-customers">
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            2 · Customer Identity
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 12, marginBottom: 8 }}>
+            <InfoRow label="Total"     value={customers.total ?? 0} />
+            <InfoRow label="Resolved"  value={customers.resolved ?? 0} />
+            <InfoRow label="Missing"   value={customers.missing ?? 0} />
+            <InfoRow label="Ambiguous" value={customers.ambiguous ?? 0} />
+          </div>
+          {!customers.create_flag_on && customers.missing > 0 && (
+            <div data-testid="customer-flag-off" style={{ fontSize: 11, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', padding: '6px 10px', borderRadius: 4, marginBottom: 8 }}>
+              WFIRMA_CREATE_CUSTOMER_ALLOWED is off — create button will return blocked
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <Btn onClick={previewCustomers} disabled={!!busy} small>Preview customer auto-resolve</Btn>
+          </div>
+          {(customers.details || []).length > 0 && (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: 'var(--badge-neutral-bg)' }}>
+                    <th style={{ textAlign: 'left',  padding: 6, fontWeight: 700, color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase' }}>Client</th>
+                    <th style={{ textAlign: 'left',  padding: 6, fontWeight: 700, color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase' }}>Status</th>
+                    <th style={{ textAlign: 'left',  padding: 6, fontWeight: 700, color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase' }}>VAT</th>
+                    <th style={{ textAlign: 'left',  padding: 6, fontWeight: 700, color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase' }}>Country</th>
+                    <th style={{ textAlign: 'right', padding: 6, fontWeight: 700, color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase' }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {customers.details.map((c, i) => {
+                    const isMissing = c.status === 'missing';
+                    const isResolved = ['exact_match','normalized_match','prefix_match','reverse_prefix_match'].includes(c.status);
+                    return (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--card-border)' }}>
+                        <td style={{ padding: 6 }}>
+                          <div style={{ fontWeight: 600 }}>{c.client_name}</div>
+                          {c.matched_name && (
+                            <div style={{ fontSize: 10, color: 'var(--text-3)' }}>→ {c.matched_name}</div>
+                          )}
+                          {/* Ship-to (Odbiorca) routing surface. Defaults
+                              to "same_as_bill_to" — operator can change via
+                              PUT /api/v1/wfirma/customers/{name}/ship-to.
+                              When mode=separate_contractor without a
+                              receiver id, render a yellow warning chip so
+                              the operator clears it before issuing. */}
+                          {c.ship_to_mode && c.ship_to_mode !== 'same_as_bill_to' && (
+                            <div data-testid="ship-to-row"
+                                 style={{ fontSize: 10, marginTop: 3 }}>
+                              <span style={{ color: 'var(--text-3)' }}>Odbiorca:&nbsp;</span>
+                              <span style={{
+                                display: 'inline-block', padding: '1px 6px',
+                                borderRadius: 3, fontWeight: 600,
+                                background: c.ship_to_warning
+                                  ? 'var(--badge-amber-bg)'
+                                  : 'var(--badge-neutral-bg)',
+                                color: c.ship_to_warning
+                                  ? 'var(--badge-amber-text)'
+                                  : 'var(--text-2)',
+                              }}>{c.ship_to_mode}</span>
+                              {c.ship_to_wfirma_customer_id && (
+                                <span style={{ marginLeft: 6, fontFamily: 'monospace',
+                                                color: 'var(--text-2)' }}>
+                                  id {c.ship_to_wfirma_customer_id}
+                                </span>
+                              )}
+                              {c.ship_to_warning && (
+                                <span style={{ marginLeft: 6,
+                                                color: 'var(--badge-amber-text)' }}>
+                                  ⚠ separate_contractor needs a receiver id
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: 6 }}>
+                          <span style={{ display: 'inline-block', padding: '2px 6px', borderRadius: 3, fontSize: 10, fontWeight: 700,
+                            background: isResolved ? 'var(--badge-green-bg)' : isMissing ? 'var(--badge-red-bg)' : 'var(--badge-amber-bg)',
+                            color: isResolved ? 'var(--badge-green-text)' : isMissing ? 'var(--badge-red-text)' : 'var(--badge-amber-text)' }}>
+                            {c.status}
+                          </span>
+                        </td>
+                        <td style={{ padding: 6 }}>
+                          {isMissing ? (
+                            <Inp
+                              value={(custInputs[c.client_name] || {}).vat_id || ''}
+                              onChange={v => setCustField(c.client_name, 'vat_id', v)}
+                              placeholder="e.g. PL5252812119"
+                              style={{ fontSize: 11, padding: '3px 6px' }}
+                            />
+                          ) : <span style={{ fontSize: 11, color: 'var(--text-3)' }}>—</span>}
+                        </td>
+                        <td style={{ padding: 6 }}>
+                          {isMissing ? (
+                            <Inp
+                              value={(custInputs[c.client_name] || {}).country_code || ''}
+                              onChange={v => setCustField(c.client_name, 'country_code', v)}
+                              placeholder="PL"
+                              style={{ fontSize: 11, padding: '3px 6px', width: 60 }}
+                            />
+                          ) : <span style={{ fontSize: 11, color: 'var(--text-3)' }}>—</span>}
+                        </td>
+                        <td style={{ padding: 6, textAlign: 'right' }}>
+                          {isMissing && (
+                            <Btn onClick={() => createCustomer(c.client_name)} disabled={!!busy} small>
+                              Create
+                            </Btn>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        {/* ── Section 3: Bridge / Mapping ──────────────── */}
+        <section data-testid="readiness-bridge">
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            3 · Design → Product Bridge
+          </div>
+          <InfoRow label="Mappings" value={bridge.design_product_mappings ?? 0} />
+          {bridge.ambiguous_design_codes && Object.keys(bridge.ambiguous_design_codes).length > 0 && (
+            <div data-testid="bridge-ambiguous" style={{ marginTop: 8, padding: 10, background: 'var(--badge-amber-bg)', borderRadius: 4, color: 'var(--badge-amber-text)', fontSize: 11 }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Ambiguous design codes</div>
+              {Object.entries(bridge.ambiguous_design_codes).map(([d, codes]) => (
+                <div key={d} style={{ fontFamily: 'monospace' }}>{d} → {(codes || []).join(', ')}</div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── Section 4: PZ / SAD prerequisites ───────── */}
+        <section data-testid="readiness-pz">
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            4 · PZ / SAD prerequisites
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 8 }}>
+            <InfoRow label="SAD received"           value={pz.sad_received ? 'YES' : 'NO'} />
+            <InfoRow label="wFirma PZ doc id"       value={pz.wfirma_pz_doc_id || '—'} mono />
+            <InfoRow label="pz_rows.json on disk"   value={pz.pz_rows_json_present ? 'YES' : 'NO'} />
+            <InfoRow label="Ready for PZ create"    value={pz.ready_for_pz_create ? 'YES' : 'NO'} />
+          </div>
+        </section>
+
+        {/* ── Section 5: Proforma verdict + blockers ───── */}
+        <section data-testid="readiness-verdict">
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            5 · Proforma verdict
+          </div>
+          {(proforma.blocking_reasons || []).length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--badge-green-text)' }}>No blockers — Proforma can be issued.</div>
+          ) : (
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-2)' }}>
+              {proforma.blocking_reasons.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+          )}
+        </section>
+
+        {(data.errors || []).length > 0 && (
+          <section data-testid="readiness-errors" style={{ padding: 8, background: 'var(--badge-red-bg)', borderRadius: 4, fontSize: 11, color: 'var(--badge-red-text)' }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Aggregator errors:</div>
+            {data.errors.map((e, i) => <div key={i}>• {e}</div>)}
+          </section>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════════
+//  ProformaDraftPanel — Phase 6 dashboard wiring for the local editable
+//  Proforma Draft lifecycle (Phases 1–5 backend).
+//
+//  Read endpoints:
+//    GET  /api/v1/proforma/drafts/{batch_id}
+//    GET  /api/v1/proforma/draft/{draft_id}
+//    GET  /api/v1/proforma/draft/{draft_id}/events
+//
+//  Mutation endpoints (every call sends X-Operator + expected_updated_at):
+//    PATCH  /draft/{id}                              — top-level fields
+//    PATCH  /draft/{id}/lines/{line_id}              — per-line edit
+//    POST   /draft/{id}/service-charges              — add charge
+//    DELETE /draft/{id}/service-charges/{charge_id}  — remove charge
+//    POST   /draft/{id}/approve                      — confirm token
+//    POST   /draft/{id}/re-open                      — confirm token
+//    POST   /draft/{id}/cancel                       — reason required
+//    POST   /draft/{id}/reset-from-sales-packing     — replaces lines
+//    POST   /draft/{id}/post                         — confirm token + 2 prompts
+//
+//  Editable states: draft, editing, post_failed.
+//  All other states are read-only here. Posting is the ONLY path that
+//  reaches wFirma — never auto-fired; only via the manual handler below.
+// ════════════════════════════════════════════════════════════════════════
+
+const PROFORMA_DRAFT_TOKENS = {
+  approve: 'YES_APPROVE_LOCAL_PROFORMA_DRAFT',
+  reopen:  'YES_REOPEN_LOCAL_PROFORMA_DRAFT',
+  post:    'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA',
+};
+
+const PROFORMA_DRAFT_EDITABLE_STATES = ['draft', 'editing', 'post_failed'];
+
+function _draftStateChipColors(state) {
+  const map = {
+    draft:        { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)' },
+    editing:      { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)' },
+    approved:     { bg: 'var(--badge-blue-bg)',  tx: 'var(--badge-blue-text)'  },
+    posting:      { bg: 'var(--badge-blue-bg)',  tx: 'var(--badge-blue-text)'  },
+    posted:       { bg: 'var(--badge-green-bg)', tx: 'var(--badge-green-text)' },
+    post_failed:  { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
+    cancelled:    { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
+    superseded:   { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
+  };
+  return map[state] || { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)' };
+}
+
+function ProformaDraftStateChip({ state }) {
+  const c = _draftStateChipColors(state);
+  return (
+    <span data-testid={`draft-state-chip-${state}`}
+          style={{
+            background: c.bg, color: c.tx, padding: '2px 8px',
+            borderRadius: 10, fontSize: 11, fontWeight: 700,
+            textTransform: 'uppercase', letterSpacing: '0.04em',
+          }}>
+      {state}
+    </span>
+  );
+}
+
+function ProformaDraftPanel({ batchId, onToast }) {
+  const [drafts, setDrafts]       = React.useState([]);
+  const [loading, setLoading]     = React.useState(true);
+  const [openId, setOpenId]       = React.useState(null);
+  const [openDraft, setOpenDraft] = React.useState(null);
+  const [openBusy, setOpenBusy]   = React.useState(false);
+  const [events, setEvents]       = React.useState(null);
+  const [eventsOpen, setEventsOpen] = React.useState(false);
+
+  const refreshList = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/proforma/drafts/${encodeURIComponent(batchId)}`);
+      setDrafts((d && d.drafts) || []);
+    } catch (e) {
+      onToast && onToast('Failed to load Proforma drafts: ' + e.message, 'error');
+    }
+    setLoading(false);
+  }, [batchId, onToast]);
+
+  React.useEffect(() => { refreshList(); }, [refreshList]);
+
+  const openOne = React.useCallback(async (draftId) => {
+    setOpenId(draftId);
+    setOpenBusy(true);
+    setEventsOpen(false);
+    setEvents(null);
+    try {
+      const d = await apiFetch(`/api/v1/proforma/draft/${draftId}`);
+      setOpenDraft(d.draft);
+    } catch (e) {
+      onToast && onToast('Failed to load draft: ' + e.message, 'error');
+      setOpenDraft(null);
+    }
+    setOpenBusy(false);
+  }, [onToast]);
+
+  const closeOne = () => { setOpenId(null); setOpenDraft(null); setEvents(null); setEventsOpen(false); };
+
+  const reloadOpen = React.useCallback(async () => {
+    if (!openId) return;
+    try {
+      const d = await apiFetch(`/api/v1/proforma/draft/${openId}`);
+      setOpenDraft(d.draft);
+    } catch (e) {
+      onToast && onToast('Failed to refresh draft: ' + e.message, 'error');
+    }
+  }, [openId, onToast]);
+
+  const loadEvents = React.useCallback(async () => {
+    if (!openId) return;
+    try {
+      const d = await apiFetch(`/api/v1/proforma/draft/${openId}/events`);
+      setEvents(d.events || []);
+      setEventsOpen(true);
+    } catch (e) {
+      onToast && onToast('Failed to load events: ' + e.message, 'error');
+    }
+  }, [openId, onToast]);
+
+  // Wrapped fetch that injects X-Operator + JSON content-type for write calls.
+  const _writeCall = React.useCallback(async (label, url, opts = {}) => {
+    const op = _resolveOperator();
+    if (!op) {
+      onToast && onToast(`${label}: operator name required`, 'error');
+      throw new Error('operator missing');
+    }
+    const headers = {
+      'X-Operator': op,
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    };
+    try {
+      const r = await apiFetch(url, { ...opts, headers });
+      onToast && onToast(`${label} ok`, 'success');
+      await reloadOpen();
+      await refreshList();
+      return r;
+    } catch (e) {
+      onToast && onToast(`${label} failed: ${e.message}`, 'error');
+      throw e;
+    }
+  }, [onToast, reloadOpen, refreshList]);
+
+  // ── Per-action handlers ───────────────────────────────────────────────
+  const onPatchField = (field, value) =>
+    _writeCall(`PATCH ${field}`, `/api/v1/proforma/draft/${openId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        patch: { [field]: value },
+      }),
+    });
+
+  const onPatchLine = (lineId, patch) =>
+    _writeCall(`PATCH line ${lineId}`,
+               `/api/v1/proforma/draft/${openId}/lines/${lineId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        patch,
+      }),
+    });
+
+  const onAddCharge = (charge) =>
+    _writeCall('Add service charge',
+               `/api/v1/proforma/draft/${openId}/service-charges`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        charge,
+      }),
+    });
+
+  const onRemoveCharge = (chargeId) =>
+    _writeCall('Remove service charge',
+               `/api/v1/proforma/draft/${openId}/service-charges/${chargeId}`
+               + `?expected_updated_at=${encodeURIComponent(openDraft.updated_at)}`,
+               { method: 'DELETE' });
+
+  const onApprove = () => {
+    const token = window.prompt(
+      `Type the approval token to lock this draft as approved:\n\n  ${PROFORMA_DRAFT_TOKENS.approve}`,
+      '');
+    if (token !== PROFORMA_DRAFT_TOKENS.approve) {
+      onToast && onToast('Approve cancelled — token mismatch', 'info');
+      return;
+    }
+    return _writeCall('Approve draft',
+                       `/api/v1/proforma/draft/${openId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        confirm_token: PROFORMA_DRAFT_TOKENS.approve,
+      }),
+    });
+  };
+
+  const onReopen = () => {
+    const token = window.prompt(
+      `Type the re-open token to unlock this draft:\n\n  ${PROFORMA_DRAFT_TOKENS.reopen}`,
+      '');
+    if (token !== PROFORMA_DRAFT_TOKENS.reopen) {
+      onToast && onToast('Re-open cancelled — token mismatch', 'info');
+      return;
+    }
+    return _writeCall('Re-open draft',
+                       `/api/v1/proforma/draft/${openId}/re-open`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        confirm_token: PROFORMA_DRAFT_TOKENS.reopen,
+      }),
+    });
+  };
+
+  const onCancel = () => {
+    const reason = window.prompt('Reason for cancelling this draft (required):', '');
+    if (!reason || !reason.trim()) {
+      onToast && onToast('Cancel aborted — reason required', 'info');
+      return;
+    }
+    if (!window.confirm('Cancel this draft? This is local-only and does NOT delete a wFirma Proforma. Cancelled drafts are read-only.')) return;
+    return _writeCall('Cancel draft',
+                       `/api/v1/proforma/draft/${openId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        reason: reason.trim(),
+      }),
+    });
+  };
+
+  const onReset = () => {
+    if (!window.confirm(
+      'Reset this draft from the latest sales packing? '
+      + 'CURRENT EDITABLE LINES WILL BE REPLACED. Buyer/ship-to/payment-terms/remarks are preserved.'
+    )) return;
+    return _writeCall('Reset from sales packing',
+                       `/api/v1/proforma/draft/${openId}/reset-from-sales-packing`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        reset_all: false,
+      }),
+    });
+  };
+
+  const onResetAll = () => {
+    if (!window.confirm(
+      'RESET ALL: replace lines AND wipe buyer / ship-to / payment-terms / remarks / service-charges. Continue?'
+    )) return;
+    return _writeCall('Reset (full) from sales packing',
+                       `/api/v1/proforma/draft/${openId}/reset-from-sales-packing`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        reset_all: true,
+      }),
+    });
+  };
+
+  // POST is special: only allowed when state=approved, double-confirmed.
+  // Manual handler ONLY — must NEVER be invoked from any auto-effect.
+  const onPostToWfirma = () => {
+    if (!openDraft || openDraft.draft_state !== 'approved') return;
+    if (!window.confirm(
+      '⚠️ POSTS A REAL PROFORMA TO wFirma.\n\n'
+      + 'This is a live external write. The draft will transition to '
+      + '"posting" before the call. On success it becomes "posted" with the '
+      + 'returned wFirma id. On failure it becomes "post_failed" — you must '
+      + 're-open + edit + approve again to retry.\n\nContinue?'
+    )) return;
+    const token = window.prompt(
+      `Type the post token to authorise the live wFirma write:\n\n  ${PROFORMA_DRAFT_TOKENS.post}`,
+      '');
+    if (token !== PROFORMA_DRAFT_TOKENS.post) {
+      onToast && onToast('Post cancelled — token mismatch', 'info');
+      return;
+    }
+    return _writeCall('Post to wFirma',
+                       `/api/v1/proforma/draft/${openId}/post`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        confirm_token: PROFORMA_DRAFT_TOKENS.post,
+      }),
+    });
+  };
+
+  // ── Renderers ─────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <Card data-testid="proforma-draft-panel-loading">
+        <SectionHeader icon="◇" title="Local Proforma Drafts" subtitle="Loading…" />
+        <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>
+      </Card>
+    );
+  }
+
+  if (!drafts.length) {
+    return (
+      <Card data-testid="proforma-draft-panel-empty" style={{ marginBottom: 16 }}>
+        <SectionHeader icon="◇" title="Local Proforma Drafts"
+                       subtitle="No drafts yet for this batch — sales packing intake creates them automatically." />
+      </Card>
+    );
+  }
+
+  const isEditable = openDraft && PROFORMA_DRAFT_EDITABLE_STATES.includes(openDraft.draft_state);
+  const isPosted   = openDraft && openDraft.draft_state === 'posted';
+  const isCancelled = openDraft && openDraft.draft_state === 'cancelled';
+
+  return (
+    <Card data-testid="proforma-draft-panel"
+          className="ej-doc-suite"
+          style={{
+            marginBottom: 16,
+            // Phase 7 — adopt Estrella Document Suite brand tokens (scoped to
+            // this panel only via CSS custom properties; no global theme
+            // change). Maps the design's emerald/gold/cream palette onto the
+            // existing structural styles without removing any.
+            ['--ej-brand']: '#0B3D2E',
+            ['--ej-brand-2']: '#0F5A45',
+            ['--ej-brand-3']: '#DCEDE5',
+            ['--ej-gold']: '#C9A24B',
+            ['--ej-gold-2']: '#B0892F',
+            ['--ej-gold-tint']: '#F6EFD9',
+            ['--ej-cream']: '#FBF8F1',
+          }}>
+        {/* Branded masthead — mirrors the Document Suite letterhead.
+            Renders ABOVE the structural SectionHeader so existing tests
+            keep finding the title/subtitle pair unchanged. */}
+        <div data-testid="proforma-draft-masthead"
+             style={{
+               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+               padding: '14px 18px',
+               background: 'linear-gradient(90deg, var(--ej-brand) 0 65%, var(--ej-gold) 65% 100%)',
+               color: '#fff',
+             }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span aria-hidden="true"
+                  style={{
+                    width: 28, height: 28, borderRadius: '50%',
+                    background: 'linear-gradient(135deg,#0B3D2E 0%,#0F5A45 100%)',
+                    color: 'var(--ej-gold)',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    fontWeight: 700, fontSize: 14, letterSpacing: '-0.05em',
+                    boxShadow: '0 0 0 2px var(--ej-gold-tint)',
+                  }}>EJ</span>
+            <div style={{ lineHeight: 1.1 }}>
+              <div style={{ fontSize: 9, letterSpacing: '0.2em',
+                              textTransform: 'uppercase',
+                              color: 'var(--ej-gold-tint)', fontWeight: 600 }}>
+                Estrella Jewels · Document Suite
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, marginTop: 2 }}>
+                Pro Forma · Faktura proforma
+              </div>
+            </div>
+          </div>
+          <div style={{ fontSize: 9, letterSpacing: '0.18em',
+                          textTransform: 'uppercase',
+                          color: 'var(--ej-gold-tint)', fontWeight: 600 }}>
+            {drafts.length} draft{drafts.length === 1 ? '' : 's'}
+          </div>
+        </div>
+
+      <SectionHeader icon="◇" title="Local Proforma Drafts"
+                     subtitle={`${drafts.length} draft(s) — edit locally before posting to wFirma`} />
+
+      <div data-testid="proforma-draft-list" style={{ padding: 12 }}>
+        {drafts.map(d => (
+          <div key={d.id}
+               data-testid={`proforma-draft-row-${d.id}`}
+               style={{
+                 display: 'flex', alignItems: 'center', gap: 10,
+                 padding: '10px 12px', borderBottom: '1px solid var(--card-border)',
+                 background: openId === d.id ? 'var(--card-hover)' : 'transparent',
+                 cursor: 'pointer',
+               }}
+               onClick={() => openId === d.id ? closeOne() : openOne(d.id)}>
+            <ProformaDraftStateChip state={d.draft_state} />
+            <div style={{ flex: 1, fontSize: 13 }}>
+              <strong>{d.client_name}</strong>
+              {' · '}
+              <span style={{ color: 'var(--text-3)' }}>v{d.draft_version}</span>
+              {d.wfirma_proforma_id && (
+                <span data-testid={`draft-wfirma-id-${d.id}`}
+                      style={{ marginLeft: 10, fontSize: 11,
+                                color: 'var(--text-3)', fontFamily: 'monospace' }}>
+                  wFirma id: {d.wfirma_proforma_id}
+                  {d.wfirma_proforma_fullnumber && (
+                    <span style={{ marginLeft: 6 }}>
+                      ({d.wfirma_proforma_fullnumber})
+                    </span>
+                  )}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+              updated {(d.updated_at || '').slice(0, 19).replace('T', ' ')}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {openId && (
+        <div data-testid="proforma-draft-detail"
+             style={{ borderTop: '2px solid var(--card-border)', padding: 16 }}>
+          {openBusy && <div style={{ fontSize: 12 }}>Loading draft…</div>}
+          {openDraft && (
+            <React.Fragment>
+              <div style={{ display: 'flex', alignItems: 'center',
+                              justifyContent: 'space-between', marginBottom: 12 }}>
+                <div>
+                  <ProformaDraftStateChip state={openDraft.draft_state} />
+                  <strong style={{ marginLeft: 10, fontSize: 14 }}>
+                    {openDraft.client_name}
+                  </strong>
+                  <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-3)' }}>
+                    draft #{openDraft.id} · v{openDraft.draft_version}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <Btn small onClick={loadEvents} data-testid="btn-draft-events">
+                    {eventsOpen ? '▲ Hide history' : '▼ History'}
+                  </Btn>
+                  <Btn small onClick={closeOne}>Close</Btn>
+                </div>
+              </div>
+
+              {/* Posted-state panel — branded "Total due" treatment from
+                  the Estrella Document Suite (emerald block + gold accent).
+                  Same single wired endpoint, no fake buttons. */}
+              {isPosted && (
+                <div data-testid="draft-posted-banner"
+                     className="ej-doc-toolbar"
+                     style={{ borderRadius: 4, marginBottom: 12, overflow: 'hidden',
+                                border: '1px solid var(--ej-gold)' }}>
+                  <div style={{ padding: '10px 14px',
+                                  background: 'var(--ej-brand)', color: '#fff',
+                                  display: 'flex', alignItems: 'center',
+                                  justifyContent: 'space-between', gap: 12,
+                                  fontSize: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span aria-hidden="true"
+                            style={{ fontSize: 9, letterSpacing: '0.18em',
+                                      textTransform: 'uppercase',
+                                      color: 'var(--ej-gold)', fontWeight: 700 }}>
+                        Pro Forma · Issued
+                      </span>
+                      <strong style={{ fontWeight: 700 }}>POSTED to wFirma</strong>
+                    </div>
+                    <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+                      <a data-testid="draft-view-proforma-link"
+                         href={`/api/v1/proforma/${encodeURIComponent(openDraft.batch_id)}/${encodeURIComponent(openDraft.client_name)}/document`}
+                         target="_blank" rel="noreferrer"
+                         style={{ color: 'var(--ej-gold)', fontWeight: 700,
+                                    textDecoration: 'underline', fontSize: 11 }}>
+                        View Proforma →
+                      </a>
+                      {/* Phase 8 — real wFirma PDF download. Wired to
+                          GET /api/v1/proforma/{batch}/{client}/document.pdf
+                          which calls wfirma_client.fetch_invoice_pdf
+                          (read-only invoices/download endpoint). */}
+                      <a data-testid="draft-download-proforma-pdf"
+                         href={`/api/v1/proforma/${encodeURIComponent(openDraft.batch_id)}/${encodeURIComponent(openDraft.client_name)}/document.pdf`}
+                         target="_blank" rel="noreferrer"
+                         style={{ color: 'var(--ej-gold)', fontWeight: 700,
+                                    textDecoration: 'underline', fontSize: 11 }}>
+                        ↓ Download PDF
+                      </a>
+                    </div>
+                  </div>
+                  <div style={{ padding: '8px 14px',
+                                  background: 'var(--ej-cream)',
+                                  color: 'var(--ej-gold-2)', fontSize: 10.5,
+                                  display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                    <span>id <code data-testid="draft-posted-wfirma-id"
+                                    style={{ color: 'var(--ej-brand)',
+                                              fontWeight: 600 }}>
+                      {openDraft.wfirma_proforma_id || '—'}
+                    </code></span>
+                    {openDraft.wfirma_proforma_fullnumber && (
+                      <span>
+                        nr <code data-testid="draft-posted-fullnumber"
+                                  style={{ color: 'var(--ej-brand)',
+                                            fontWeight: 600 }}>
+                          {openDraft.wfirma_proforma_fullnumber}
+                        </code>
+                      </span>
+                    )}
+                    <span>currency <strong style={{ color: 'var(--ej-brand)' }}>
+                      {openDraft.currency || '—'}
+                    </strong></span>
+                  </div>
+                </div>
+              )}
+
+              {/* Lines */}
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                                letterSpacing: '0.06em', textTransform: 'uppercase',
+                                marginBottom: 6 }}>
+                  Lines · currency {openDraft.currency || '—'}
+                </div>
+                <table data-testid="draft-lines-table"
+                       style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ color: 'var(--text-3)', textAlign: 'left' }}>
+                      <th>#</th>
+                      <th>product_code</th>
+                      <th>design_no</th>
+                      <th>qty</th>
+                      <th>unit_price</th>
+                      <th>currency</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(openDraft.editable_lines || []).map(ln => (
+                      <ProformaDraftLineRow
+                          key={ln.line_id}
+                          line={ln}
+                          editable={isEditable}
+                          onPatch={(patch) => onPatchLine(ln.line_id, patch)} />
+                    ))}
+                  </tbody>
+                </table>
+                {!(openDraft.editable_lines || []).length && (
+                  <div style={{ padding: 8, fontSize: 12, color: 'var(--text-3)' }}>
+                    (no lines)
+                  </div>
+                )}
+              </div>
+
+              {/* Service charges */}
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                                letterSpacing: '0.06em', textTransform: 'uppercase',
+                                marginBottom: 6 }}>
+                  Service charges
+                </div>
+                <table data-testid="draft-charges-table"
+                       style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <tbody>
+                    {(openDraft.service_charges || []).map(c => (
+                      <tr key={c.charge_id}>
+                        <td>{c.charge_type}</td>
+                        <td>{c.amount}</td>
+                        <td>{c.currency}</td>
+                        <td>{c.label || ''}</td>
+                        <td>{isEditable && (
+                          <Btn small onClick={() => onRemoveCharge(c.charge_id)}>Remove</Btn>
+                        )}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {isEditable && (
+                  <ProformaDraftAddChargeForm onAdd={onAddCharge}
+                                               draftCurrency={openDraft.currency} />
+                )}
+              </div>
+
+              {/* Top-level fields */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12,
+                              marginBottom: 14, fontSize: 12 }}>
+                <ProformaDraftRemarksEditor
+                    value={openDraft.remarks || ''}
+                    editable={isEditable}
+                    onSave={(v) => onPatchField('remarks', v)} />
+                <div data-testid="draft-overrides-summary"
+                     style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  <div><strong>Buyer:</strong>{' '}
+                    {Object.keys(openDraft.buyer_override || {}).length
+                      ? JSON.stringify(openDraft.buyer_override) : '— default —'}
+                  </div>
+                  <div><strong>Ship-to:</strong>{' '}
+                    {Object.keys(openDraft.ship_to_override || {}).length
+                      ? JSON.stringify(openDraft.ship_to_override) : '— default —'}
+                  </div>
+                  <div><strong>Payment terms:</strong>{' '}
+                    {Object.keys(openDraft.payment_terms || {}).length
+                      ? JSON.stringify(openDraft.payment_terms) : '— default —'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Action row — gated by current draft_state */}
+              <div data-testid="draft-action-row"
+                   style={{ display: 'flex', gap: 8, flexWrap: 'wrap',
+                              borderTop: '1px solid var(--card-border)',
+                              paddingTop: 12 }}>
+                {isEditable && (
+                  <React.Fragment>
+                    <Btn small variant="primary" onClick={onApprove}
+                         data-testid="btn-draft-approve">Approve</Btn>
+                    <Btn small onClick={onReset}
+                         data-testid="btn-draft-reset">Reset from sales packing</Btn>
+                    <Btn small onClick={onResetAll}
+                         data-testid="btn-draft-reset-all">Reset ALL</Btn>
+                  </React.Fragment>
+                )}
+                {openDraft.draft_state === 'approved' && (
+                  <React.Fragment>
+                    <Btn small onClick={onReopen}
+                         data-testid="btn-draft-reopen">Re-open for edit</Btn>
+                    <Btn small variant="primary" onClick={onPostToWfirma}
+                         data-testid="btn-draft-post"
+                         style={{ background: 'var(--badge-red-bg)',
+                                    color: 'var(--badge-red-text)' }}>
+                      ⚠ Post to wFirma
+                    </Btn>
+                  </React.Fragment>
+                )}
+                {!isPosted && !isCancelled && (
+                  <Btn small onClick={onCancel}
+                       data-testid="btn-draft-cancel">Cancel draft</Btn>
+                )}
+                {(isPosted || isCancelled) && (
+                  <span data-testid="draft-readonly-note"
+                        style={{ fontSize: 11, color: 'var(--text-3)',
+                                  alignSelf: 'center' }}>
+                    {isPosted ? 'Posted — read-only.' : 'Cancelled — read-only.'}
+                  </span>
+                )}
+              </div>
+
+              {/* Events drawer */}
+              {eventsOpen && events && (
+                <div data-testid="draft-events-drawer"
+                     style={{ marginTop: 14, padding: 12,
+                                background: 'var(--card-hover)',
+                                borderRadius: 4, fontSize: 11 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                    Event history ({events.length})
+                  </div>
+                  {events.map(e => (
+                    <div key={e.id} style={{ marginBottom: 4,
+                                                fontFamily: 'monospace' }}>
+                      <code>{(e.occurred_at || '').slice(0, 19).replace('T', ' ')}</code>
+                      {' · '}<strong>{e.event}</strong>
+                      {' · '}<span style={{ color: 'var(--text-3)' }}>
+                        {e.operator || '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </React.Fragment>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function ProformaDraftLineRow({ line, editable, onPatch }) {
+  const [qty,   setQty]   = React.useState(String(line.qty));
+  const [price, setPrice] = React.useState(String(line.unit_price));
+  React.useEffect(() => {
+    setQty(String(line.qty));
+    setPrice(String(line.unit_price));
+  }, [line.qty, line.unit_price, line.line_id]);
+
+  const dirty = (parseFloat(qty)   !== Number(line.qty)) ||
+                (parseFloat(price) !== Number(line.unit_price));
+
+  return (
+    <tr data-testid={`draft-line-${line.line_id}`}>
+      <td>{line.line_id}</td>
+      <td><code>{line.product_code}</code></td>
+      <td>{line.design_no || '—'}</td>
+      <td style={{ width: 90 }}>
+        {editable
+          ? <Inp value={qty} onChange={setQty} />
+          : line.qty}
+      </td>
+      <td style={{ width: 110 }}>
+        {editable
+          ? <Inp value={price} onChange={setPrice} />
+          : line.unit_price}
+      </td>
+      <td>{line.currency}</td>
+      <td>
+        {editable && dirty && (
+          <Btn small variant="primary"
+               onClick={() => onPatch({ qty: parseFloat(qty),
+                                         unit_price: parseFloat(price) })}
+               data-testid={`btn-line-save-${line.line_id}`}>Save</Btn>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function ProformaDraftRemarksEditor({ value, editable, onSave }) {
+  const [v, setV] = React.useState(value || '');
+  React.useEffect(() => { setV(value || ''); }, [value]);
+  return (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                      letterSpacing: '0.06em', textTransform: 'uppercase',
+                      marginBottom: 4 }}>
+        Remarks
+      </div>
+      {editable ? (
+        <React.Fragment>
+          <textarea data-testid="draft-remarks-input"
+                    value={v}
+                    onChange={(e) => setV(e.target.value)}
+                    style={{ width: '100%', minHeight: 60, fontSize: 12,
+                              padding: 6, border: '1px solid var(--card-border)' }} />
+          {v !== (value || '') && (
+            <Btn small variant="primary" onClick={() => onSave(v)}
+                 data-testid="btn-remarks-save">Save remarks</Btn>
+          )}
+        </React.Fragment>
+      ) : (
+        <div style={{ whiteSpace: 'pre-wrap', minHeight: 60 }}>
+          {value || <span style={{ color: 'var(--text-3)' }}>— none —</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProformaDraftAddChargeForm({ onAdd, draftCurrency }) {
+  const [type,   setType]   = React.useState('freight');
+  const [amount, setAmount] = React.useState('');
+  const [ccy,    setCcy]    = React.useState(draftCurrency || 'EUR');
+  const [label,  setLabel]  = React.useState('');
+  const submit = () => {
+    const a = parseFloat(amount);
+    if (!isFinite(a) || a < 0) return;
+    onAdd({ charge_type: type, amount: a, currency: ccy, label });
+    setAmount(''); setLabel('');
+  };
+  return (
+    <div data-testid="draft-add-charge-form"
+         style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+      <Sel value={type} onChange={setType}>
+        <option value="freight">freight</option>
+        <option value="insurance">insurance</option>
+      </Sel>
+      <Inp value={amount} onChange={setAmount} placeholder="amount" />
+      <Inp value={ccy} onChange={(v) => setCcy(v.toUpperCase())} placeholder="ccy" />
+      <Inp value={label} onChange={setLabel} placeholder="label (optional)" />
+      <Btn small variant="primary" onClick={submit}
+           data-testid="btn-add-charge">Add</Btn>
+    </div>
   );
 }
 

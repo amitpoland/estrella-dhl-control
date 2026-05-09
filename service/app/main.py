@@ -45,6 +45,8 @@ from .api.routes_wfirma_reservation import router as wfirma_reservation_router
 from .api.routes_dhl_readiness import router as dhl_readiness_router
 from .api.routes_batch_readiness import router as batch_readiness_router
 from .api.routes_tracking_db import router as tracking_db_router
+from .api.routes_correction_registry import router as correction_registry_router
+from .api.routes_ledgers import router as ledgers_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -53,6 +55,9 @@ from .services.packing_db   import init_packing_db
 from .services.warehouse_db import init_warehouse_db
 from .services.document_db  import init_document_db
 from .services.wfirma_db    import init_wfirma_db
+from .services.correction_registry import init_correction_registry
+from .services.intake_lineage     import init_intake_lineage
+from .services.proforma_service_charges_db import init as init_proforma_service_charges
 from .auth.database import init_db
 from .auth.dependencies import check_session_or_redirect
 
@@ -90,6 +95,9 @@ async def lifespan(app: FastAPI):
     init_warehouse_db(_root / "warehouse.db")
     init_document_db(_root  / "documents.db")
     init_wfirma_db(_root    / "wfirma.db")
+    init_correction_registry(_root / "correction_registry.db")
+    init_intake_lineage(_root / "intake_lineage.db")
+    init_proforma_service_charges(_root / "proforma_links.db")
     log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma)", _root)
 
     log.info("Starting Estrella PZ Service  [env=%s]", settings.environment)
@@ -202,6 +210,8 @@ app.include_router(wfirma_reservation_router)
 app.include_router(dhl_readiness_router)
 app.include_router(batch_readiness_router)
 app.include_router(tracking_db_router)  # /events/* before tracking_router's /{tracking_no}
+app.include_router(correction_registry_router)
+app.include_router(ledgers_router)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────

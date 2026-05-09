@@ -54,6 +54,33 @@ class WFirmaContractor:
 
 
 @dataclass
+class ContractorFetchResult:
+    """Output from ``fetch_contractor_by_id`` — structured read-back of a
+    single wFirma contractor record by numeric id."""
+    ok: bool
+    contractor_id: str = ""
+    name: str = ""
+    nip: str = ""
+    country: str = ""
+    # Primary address (Nabywca billing).
+    street: str = ""
+    city: str = ""
+    zip: str = ""
+    # Alternate / contact address (Odbiorca / ship-to). Populated only
+    # when the contractor record carries ``different_contact_address=1``;
+    # otherwise these fields are empty strings.
+    different_contact_address: bool = False
+    contact_name:    str = ""
+    contact_person:  str = ""
+    contact_street:  str = ""
+    contact_city:    str = ""
+    contact_zip:     str = ""
+    contact_country: str = ""
+    error: Optional[str] = None
+    raw_response: Optional[str] = None
+
+
+@dataclass
 class WFirmaProduct:
     """Good (product) record from wFirma."""
     wfirma_id: str
@@ -127,15 +154,33 @@ class ProformaRequest:
     # caller that hasn't decided the VAT context yet has no business
     # building a proforma payload — see decide_proforma_vat_context().
     vat_code_id:           str = ""
+    # Optional Odbiorca / ship-to contractor — when set AND not equal to
+    # ``wfirma_contractor_id``, ``_build_proforma_xml`` emits
+    # ``<contractor_receiver><id>...</id></contractor_receiver>``.
+    # Empty string AND the literal "0" both mean "no separate receiver"
+    # (per wFirma's read-side normalisation in
+    # ``app/tools/sync_customer_invoice_snapshot.py``: id "0" is the
+    # canonical "no receiver" sentinel). Set per-customer via
+    # ``wfdb.set_customer_ship_to(...)`` and threaded through by
+    # ``routes_proforma._build_proforma_request``.
+    wfirma_contractor_receiver_id: str = ""
 
 
 @dataclass
 class ProformaResult:
-    """Output from create_proforma_draft()."""
+    """Output from create_proforma_draft().
+
+    Phase 9: ``wfirma_invoice_number`` is the canonical operator-readable
+    proforma number (e.g. ``"PROF 92/2026"``) extracted from the wFirma
+    response with priority ``<fullnumber>`` → ``<full_number>`` → ``<number>``.
+    Empty string when neither ``invoices/add`` nor the verify-after-create
+    fetch surfaced a number — posting still succeeds in that case.
+    """
     ok: bool
     wfirma_invoice_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Optional[str] = None
+    wfirma_invoice_number: str = ""
 
 
 @dataclass
@@ -553,6 +598,104 @@ def count_contractors() -> int:
         return int(total_node.text.strip())
     except (TypeError, ValueError):
         return 0
+
+
+def fetch_contractor_by_id(contractor_id: str) -> "ContractorFetchResult":
+    """
+    Fetch a single wFirma contractor by numeric id.
+
+    Uses path-based ``GET contractors/get/{id}``. The earlier ``find``
+    + ``<field>id eq …>`` pattern is unsafe for id lookups — wFirma
+    silently ignores ``id`` in find conditions and returns the first
+    1000-contractor collection (same trap that hit fetch_invoice_xml /
+    fetch_warehouse_pz; both are now path-based).
+
+    Returns
+    -------
+    ContractorFetchResult(ok=True, ...) on success, with
+    name / nip / country / address fields populated.
+
+    ContractorFetchResult(ok=False, error=...) when:
+      - HTTP 404 (record absent in wFirma)
+      - HTTP ≥ 400 (server / auth / etc.)
+      - wFirma status code other than OK
+      - XML parse error
+      - no <contractor> in response
+
+    Never raises — caller-side checks ``result.ok`` and surfaces a
+    blocking reason on the operator response.
+    """
+    if not (contractor_id or "").strip():
+        return ContractorFetchResult(
+            ok=False, error="contractor_id is required",
+        )
+    safe_id = _esc(contractor_id).strip()
+    try:
+        http_status, response_text = _http_request(
+            "GET", "contractors", f"get/{safe_id}", "",
+        )
+    except (ConnectionError, ValueError) as exc:
+        return ContractorFetchResult(
+            ok=False, contractor_id=contractor_id,
+            error=f"connection: {exc}",
+        )
+
+    if http_status == 404:
+        return ContractorFetchResult(
+            ok=False, contractor_id=contractor_id,
+            error=f"contractor {contractor_id!r} not found",
+            raw_response=response_text,
+        )
+    if http_status >= 400:
+        return ContractorFetchResult(
+            ok=False, contractor_id=contractor_id,
+            error=f"HTTP {http_status}", raw_response=response_text,
+        )
+
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        return ContractorFetchResult(
+            ok=False, contractor_id=contractor_id,
+            error=f"{code}: {desc}" if desc else code,
+            raw_response=response_text,
+        )
+
+    try:
+        root = ET.fromstring(response_text)
+    except ET.ParseError as exc:
+        return ContractorFetchResult(
+            ok=False, contractor_id=contractor_id,
+            error=f"XML parse error: {exc}", raw_response=response_text,
+        )
+
+    node = root.find(".//contractor")
+    if node is None:
+        return ContractorFetchResult(
+            ok=False, contractor_id=contractor_id,
+            error=f"no <contractor> in response for id={contractor_id}",
+            raw_response=response_text,
+        )
+
+    fetched_id = _find_text(node, "id") or contractor_id
+    diff_addr  = (_find_text(node, "different_contact_address") or "0").strip() == "1"
+    return ContractorFetchResult(
+        ok                        = True,
+        contractor_id             = fetched_id,
+        name                      = _find_text(node, "name") or _find_text(node, "altname"),
+        nip                       = _find_text(node, "nip"),
+        country                   = _find_text(node, "country"),
+        street                    = _find_text(node, "street"),
+        city                      = _find_text(node, "city"),
+        zip                       = _find_text(node, "zip"),
+        different_contact_address = diff_addr,
+        contact_name              = _find_text(node, "contact_name"),
+        contact_person            = _find_text(node, "contact_person"),
+        contact_street            = _find_text(node, "contact_street"),
+        contact_city              = _find_text(node, "contact_city"),
+        contact_zip               = _find_text(node, "contact_zip"),
+        contact_country           = _find_text(node, "contact_country"),
+        raw_response              = response_text,
+    )
 
 
 def list_contractors_page(page: int, limit: int) -> List[WFirmaContractor]:
@@ -1104,8 +1247,16 @@ def fetch_warehouse_pz(pz_doc_id: str) -> "PZFetchResult":
     """
     Fetch a single warehouse PZ document by its wFirma numeric ID.
 
-    Uses warehouse_document_p_z/find with an id-eq condition so that only
-    PZ-type documents are searched (the module name IS the type filter).
+    Uses path-based ``GET warehouse_document_p_z/get/{id}``. The earlier
+    implementation used ``warehouse_document_p_z/find`` with a
+    ``<condition><field>id eq …>`` body, but wFirma silently ignores
+    unsupported filterable fields on that operation and returns the
+    full first-1000-PZ list — the parser then took the first node and
+    returned an unrelated 2020 document instead of the requested one.
+
+    The path-based ``get/{id}`` operation is the wFirma-canonical way
+    to retrieve a single document by id and respects the request
+    correctly (verified live against wFirma).
 
     Returns PZFetchResult(ok=True, pz_doc_id=..., pz_number=...) on success.
     Returns PZFetchResult(ok=False, error=...) if the document is not found,
@@ -1113,22 +1264,19 @@ def fetch_warehouse_pz(pz_doc_id: str) -> "PZFetchResult":
     """
     if not (pz_doc_id or "").strip():
         return PZFetchResult(ok=False, error="pz_doc_id is required")
-    body = f"""<?xml version="1.0" encoding="UTF-8"?>
-<api>
-  <warehouse_document_p_z>
-    <parameters>
-      <conditions>
-        <condition><field>id</field><operator>eq</operator><value>{_esc(pz_doc_id)}</value></condition>
-      </conditions>
-    </parameters>
-  </warehouse_document_p_z>
-</api>"""
+    safe_id = _esc(pz_doc_id).strip()
     try:
+        # Path-based id lookup — empty body, the id rides in the URL.
         http_status, response_text = _http_request(
-            "GET", "warehouse_document_p_z", "find", body,
+            "GET", "warehouse_document_p_z", f"get/{safe_id}", "",
         )
     except (ConnectionError, ValueError) as exc:
         return PZFetchResult(ok=False, error=f"connection: {exc}")
+    if http_status == 404:
+        return PZFetchResult(
+            ok=False, error=f"PZ document {pz_doc_id!r} not found",
+            raw_response=response_text,
+        )
     if http_status >= 400:
         return PZFetchResult(
             ok=False, error=f"HTTP {http_status}", raw_response=response_text,
@@ -1152,8 +1300,14 @@ def fetch_warehouse_pz(pz_doc_id: str) -> "PZFetchResult":
             raw_response=response_text,
         )
     fetched_id = _find_text(wd_node, "id") or pz_doc_id
+    # wFirma's read response on warehouse_document_p_z/get/{id} uses
+    # <fullnumber> (no underscore), but the query/find body uses
+    # <full_number>. Try both spellings before falling through to the
+    # bare numeric <number>, which is just the per-month sequence
+    # ("4") — never a canonical operator-readable PZ id.
     pz_number  = (
-        _find_text(wd_node, "full_number")
+        _find_text(wd_node, "fullnumber")
+        or _find_text(wd_node, "full_number")
         or _find_text(wd_node, "number")
         or ""
     )
@@ -1216,8 +1370,15 @@ def find_warehouse_pz_by_number(pz_number: str) -> "PZFetchResult":
             raw_response=response_text,
         )
     fetched_id     = _find_text(wd_node, "id") or ""
+    # wFirma's read responses (warehouse_document_p_z/find result rows)
+    # use ``<fullnumber>`` (no underscore). The query/find body field
+    # name is ``full_number`` (kept above) — different namespace from the
+    # response. Try concatenated first, then underscored, then bare
+    # ``<number>`` (per-month sequence) as last-resort fallback so that
+    # callers don't display "4" instead of "PZ 4/5/2026".
     fetched_number = (
-        _find_text(wd_node, "full_number")
+        _find_text(wd_node, "fullnumber")
+        or _find_text(wd_node, "full_number")
         or _find_text(wd_node, "number")
         or pz_number
     )
@@ -1284,6 +1445,29 @@ def create_warehouse_pz(req: PZRequest) -> PZResult:
 
 
 # ── Proforma invoice (fallback) ───────────────────────────────────────────────
+
+def _extract_fullnumber(invoice_node: Optional[ET.Element]) -> str:
+    """Return the canonical operator-readable Proforma number from an
+    ``<invoice>`` ElementTree node.
+
+    Priority order (Phase 9 spec):
+
+      1. ``<fullnumber>``  — single-word, most reliable on read responses
+      2. ``<full_number>`` — underscore variant; some find/edit shapes
+      3. ``<number>``      — bare per-month sequence; last-resort fallback
+
+    Empty string if the node is None or none of the fields carry text.
+    Bare ``<number>`` is intentionally tried LAST: when ``<fullnumber>``
+    exists alongside, it always wins.
+    """
+    if invoice_node is None:
+        return ""
+    for tag in ("fullnumber", "full_number", "number"):
+        node = invoice_node.find(tag)
+        if node is not None and (node.text or "").strip():
+            return node.text.strip()
+    return ""
+
 
 def create_proforma_draft(req: ProformaRequest) -> ProformaResult:
     """
@@ -1380,11 +1564,21 @@ def create_proforma_draft(req: ProformaRequest) -> ProformaResult:
             "wFirma silently rewrote per-line VAT; do NOT mark as success"
         )
 
+    # Phase 9 — extract canonical operator-readable Proforma number.
+    # We prefer the verify-after-create XML (which is the authoritative
+    # post-write read of the new invoice), and fall back to the
+    # ``invoices/add`` response. No second wFirma call is made.
+    full_number = _extract_fullnumber(verify_root.find(".//invoice"))
+    if not full_number:
+        # The create response's <invoice> node is the next-best source.
+        full_number = _extract_fullnumber(node)
+
     return ProformaResult(
-        ok                = True,
-        wfirma_invoice_id = wfirma_id,
-        error             = None,
-        raw_response      = response_text,
+        ok                    = True,
+        wfirma_invoice_id     = wfirma_id,
+        error                 = None,
+        raw_response          = response_text,
+        wfirma_invoice_number = full_number,
     )
 
 
@@ -1599,11 +1793,28 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
         f"<currency>{_esc(req.currency)}</currency>"
         if (req.currency or "").strip() else ""
     )
+
+    # Optional Odbiorca block. Emit ONLY when the receiver id is a
+    # genuine non-empty, non-zero, non-self-referential value:
+    #   • empty / whitespace → omit (Shape A: same_as_bill_to or bill_to_alt)
+    #   • literal "0"        → omit (wFirma's "no separate receiver" sentinel)
+    #   • equals bill-to id  → omit (silly self-reference; defence-in-depth
+    #                                 — the wfirma_db helper also rejects it)
+    receiver_id  = (req.wfirma_contractor_receiver_id or "").strip()
+    bill_to_id   = (req.wfirma_contractor_id or "").strip()
+    receiver_xml = ""
+    if receiver_id and receiver_id != "0" and receiver_id != bill_to_id:
+        receiver_xml = (
+            f"<contractor_receiver><id>{_esc(receiver_id)}</id>"
+            f"</contractor_receiver>"
+        )
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <api>
   <invoices>
     <invoice>
       <contractor><id>{_esc(req.wfirma_contractor_id)}</id></contractor>
+      {receiver_xml}
       <type>proforma</type>
       {currency_xml}
       <invoicecontents>{lines_xml}
@@ -1650,9 +1861,236 @@ def delete_invoice(invoice_id: str) -> Dict[str, Any]:
 
 # ── invoices/find + invoices/edit helpers (line-name refresh path) ──────────
 
+_INVOICE_LEDGER_PAGE_LIMIT      = 200
+_INVOICE_LEDGER_SAFETY_CAP      = 5000
+
+
+def fetch_invoices_for_contractor(
+    contractor_id: str,
+    date_from:     str,
+    date_to:       str,
+    types:         tuple = ("normal", "correction", "proforma"),
+) -> List[ET.Element]:
+    """Phase 10A — paginated read-only ``invoices/find`` for one contractor.
+
+    READ-ONLY. Uses ``GET invoices/find`` with the proven filter
+    combination from
+    ``app/tools/sync_customer_invoice_snapshot.py:130-136``:
+
+      • ``type``           ``eq``  (one condition per element of ``types``)
+      • ``contractor_id``  ``eq``
+      • ``date``           ``ge`` ``date_from``
+      • ``date``           ``le`` ``date_to``
+
+    The ``date`` conditions are sent because they are DOCUMENTED in
+    ``docs/WFIRMA_ENDPOINT_MAP.md:155``, but wFirma is known to silently
+    ignore unsupported filter shapes (existing ``fetch_invoice_xml``
+    docstring documents this). Callers MUST therefore re-filter the
+    returned list by ``<date>`` Python-side; this helper returns
+    everything wFirma sends and does NOT date-filter itself.
+
+    Pagination: ``start``/``limit`` of 200, with a 5000-doc safety cap
+    so a runaway / mis-filtered query never hangs the request thread.
+
+    Returns the list of parsed ``<invoice>`` Element nodes.
+    Raises:
+      ValueError      — empty contractor_id, or date_from > date_to.
+      RuntimeError    — wFirma status != OK on any page.
+      ConnectionError — network failure (propagated from _http_request).
+    """
+    cid = (contractor_id or "").strip()
+    if not cid:
+        raise ValueError("contractor_id is required")
+    df = (date_from or "").strip()
+    dt = (date_to   or "").strip()
+    if df and dt and df > dt:
+        raise ValueError(f"date_from {df!r} is after date_to {dt!r}")
+    if not isinstance(types, tuple) or not types:
+        raise ValueError("types must be a non-empty tuple")
+
+    type_conditions = "".join(
+        f"<condition><field>type</field>"
+        f"<operator>eq</operator><value>{_esc(t)}</value></condition>"
+        for t in types
+    )
+    contractor_condition = (
+        f"<condition><field>contractor_id</field>"
+        f"<operator>eq</operator><value>{_esc(cid)}</value></condition>"
+    )
+    date_conditions = ""
+    if df:
+        date_conditions += (
+            f"<condition><field>date</field>"
+            f"<operator>ge</operator><value>{_esc(df)}</value></condition>"
+        )
+    if dt:
+        date_conditions += (
+            f"<condition><field>date</field>"
+            f"<operator>le</operator><value>{_esc(dt)}</value></condition>"
+        )
+
+    out: List[ET.Element] = []
+    start = 0
+    page_size = _INVOICE_LEDGER_PAGE_LIMIT
+    while True:
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<api><invoices><parameters>'
+              '<conditions>'
+                f'{type_conditions}'
+                f'{contractor_condition}'
+                f'{date_conditions}'
+              '</conditions>'
+              f'<page><start>{start}</start><limit>{page_size}</limit></page>'
+            '</parameters></invoices></api>'
+        )
+        http_status, response_text = _http_request(
+            "GET", "invoices", "find", body)
+        if http_status >= 400:
+            raise RuntimeError(
+                f"invoices/find HTTP {http_status} (start={start}): "
+                f"{response_text[:200]}"
+            )
+        code, desc = _parse_status(response_text)
+        if code != "OK":
+            raise RuntimeError(
+                f"invoices/find wFirma status={code}: {desc}"
+            )
+        try:
+            root = ET.fromstring(response_text)
+        except ET.ParseError as exc:
+            raise RuntimeError(
+                f"invoices/find: malformed XML at start={start}: {exc}"
+            ) from exc
+        invoices = root.findall("invoices/invoice")
+        if not invoices:
+            break
+        out.extend(invoices)
+        if len(invoices) < page_size:
+            break
+        start += page_size
+        # Safety cap — stop if pagination would exceed the cap on the
+        # NEXT page. The check uses ``start`` (the index of the next
+        # page's first row), so a 5000-cap stops at exactly 5000 rows.
+        if start >= _INVOICE_LEDGER_SAFETY_CAP:
+            break
+    return out
+
+
+# ── Phase 10B — payments/find wrapper for Statement of Account ─────────────
+
+def fetch_payments_for_contractor(
+    contractor_id: str,
+    date_from:     str,
+    date_to:       str,
+) -> List[ET.Element]:
+    """Phase 10B — paginated read-only ``payments/find`` for one contractor.
+
+    READ-ONLY. Uses ``GET payments/find`` with the proven filter
+    combination from the Phase 10A.5 live probe
+    (``docs/WFIRMA_PAYMENTS_PROBE_EVIDENCE.md``):
+
+      • ``contractor_id``  ``eq``
+      • ``date``           ``ge`` ``date_from``  (when supplied)
+      • ``date``           ``le`` ``date_to``    (when supplied)
+
+    Mirrors :func:`fetch_invoices_for_contractor`:
+
+      * Pagination ``start``/``limit`` of 200, safety cap 5000.
+      * Date filters are SENT to wFirma but the caller MUST also
+        Python-side filter by ``<date>`` on the returned nodes,
+        because wFirma is documented to silently ignore unsupported
+        filter shapes.
+
+    Returns the list of parsed ``<payment>`` Element nodes from
+    ``payments/find``'s ``<payments><payment>`` collection.
+
+    Raises:
+      ValueError      — empty ``contractor_id``, ``date_from > date_to``.
+      RuntimeError    — wFirma status != OK on any page; HTTP ≥ 400.
+      ConnectionError — network failure (propagated from _http_request).
+
+    Never calls ``payments/add``, ``payments/edit``, ``payments/delete``,
+    or any other write/state-changing endpoint.
+    """
+    cid = (contractor_id or "").strip()
+    if not cid:
+        raise ValueError("contractor_id is required")
+    df = (date_from or "").strip()
+    dt = (date_to   or "").strip()
+    if df and dt and df > dt:
+        raise ValueError(f"date_from {df!r} is after date_to {dt!r}")
+
+    contractor_condition = (
+        f"<condition><field>contractor_id</field>"
+        f"<operator>eq</operator><value>{_esc(cid)}</value></condition>"
+    )
+    date_conditions = ""
+    if df:
+        date_conditions += (
+            f"<condition><field>date</field>"
+            f"<operator>ge</operator><value>{_esc(df)}</value></condition>"
+        )
+    if dt:
+        date_conditions += (
+            f"<condition><field>date</field>"
+            f"<operator>le</operator><value>{_esc(dt)}</value></condition>"
+        )
+
+    out: List[ET.Element] = []
+    start = 0
+    page_size = _INVOICE_LEDGER_PAGE_LIMIT
+    while True:
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<api><payments><parameters>'
+              '<conditions>'
+                f'{contractor_condition}'
+                f'{date_conditions}'
+              '</conditions>'
+              f'<page><start>{start}</start><limit>{page_size}</limit></page>'
+            '</parameters></payments></api>'
+        )
+        http_status, response_text = _http_request(
+            "GET", "payments", "find", body)
+        if http_status >= 400:
+            raise RuntimeError(
+                f"payments/find HTTP {http_status} (start={start}): "
+                f"{response_text[:200]}"
+            )
+        code, desc = _parse_status(response_text)
+        if code != "OK":
+            raise RuntimeError(
+                f"payments/find wFirma status={code}: {desc}"
+            )
+        try:
+            root = ET.fromstring(response_text)
+        except ET.ParseError as exc:
+            raise RuntimeError(
+                f"payments/find: malformed XML at start={start}: {exc}"
+            ) from exc
+        payments = root.findall("payments/payment")
+        if not payments:
+            break
+        out.extend(payments)
+        if len(payments) < page_size:
+            break
+        start += page_size
+        if start >= _INVOICE_LEDGER_SAFETY_CAP:
+            break
+    return out
+
+
 def fetch_invoice_xml(invoice_id: str) -> str:
     """
     Read a single invoice (or proforma) by id.
+
+    Uses path-based ``GET invoices/get/{id}``. The earlier implementation
+    used ``invoices/find`` with a ``<condition><field>id eq …>`` body,
+    but wFirma silently ignores unsupported filterable fields on its
+    ``find`` operations and returns the first-1000 collection — the
+    parser then took the first node and returned an unrelated invoice.
+    Same anti-pattern was fixed for ``fetch_warehouse_pz`` previously.
 
     Returns the full XML response text (so callers can extract the
     <invoicecontents> verbatim for round-trip restate edits).
@@ -1661,26 +2099,115 @@ def fetch_invoice_xml(invoice_id: str) -> str:
     """
     if not (invoice_id or "").strip():
         raise ValueError("invoice_id is required")
-    body = f"""<?xml version="1.0" encoding="UTF-8"?>
-<api>
-  <invoices>
-    <parameters>
-      <conditions>
-        <condition><field>id</field><operator>eq</operator><value>{_esc(invoice_id)}</value></condition>
-      </conditions>
-    </parameters>
-  </invoices>
-</api>"""
-    http_status, response_text = _http_request("GET", "invoices", "find", body)
+    safe_id = _esc(invoice_id).strip()
+    # Path-based id lookup — empty body, the id rides in the URL.
+    http_status, response_text = _http_request(
+        "GET", "invoices", f"get/{safe_id}", "")
+    if http_status == 404:
+        raise RuntimeError(
+            f"invoices/get: invoice {invoice_id!r} not found")
     if http_status >= 400:
-        raise RuntimeError(f"invoices/find HTTP {http_status}: {response_text[:200]}")
+        raise RuntimeError(
+            f"invoices/get HTTP {http_status}: {response_text[:200]}")
     code, desc = _parse_status(response_text)
     if code != "OK":
-        raise RuntimeError(f"invoices/find wFirma status={code}: {desc}")
+        raise RuntimeError(f"invoices/get wFirma status={code}: {desc}")
     root = ET.fromstring(response_text)
     if root.find(".//invoice") is None:
-        raise RuntimeError(f"invoices/find: no <invoice> in response for id={invoice_id}")
+        raise RuntimeError(
+            f"invoices/get: no <invoice> in response for id={invoice_id}")
     return response_text
+
+
+def fetch_invoice_pdf(invoice_id: str) -> bytes:
+    """Fetch the PDF bytes for a wFirma invoice / proforma.
+
+    READ-ONLY. Uses path-based ``GET invoices/download/{id}`` (confirmed
+    in ``docs/WFIRMA_API_VALIDATED_MAP.md``). wFirma returns one of two
+    response shapes:
+
+      a) **XML envelope with base64 file** — the dbojdo / webit SDK
+         shape. We parse the XML, look for a base64-encoded blob in
+         common field names (``file``, ``pdf``, ``content``,
+         ``invoice``) and decode it.
+      b) **Raw PDF bytes** — some installations stream binary directly.
+         We detect this by the ``%PDF-`` magic header.
+
+    Raises:
+      ValueError      — empty / whitespace ``invoice_id``
+      RuntimeError    — HTTP ≥ 400, wFirma status != OK, missing PDF
+                        payload in response
+      ConnectionError — network failure (propagated from _http_request)
+
+    Never calls ``invoices/add``, ``invoices/edit``, ``invoices/send``,
+    ``invoices/fiscalise`` or any other write/state-changing endpoint.
+    """
+    if not (invoice_id or "").strip():
+        raise ValueError("invoice_id is required")
+    safe_id = _esc(invoice_id).strip()
+    http_status, response_text = _http_request(
+        "GET", "invoices", f"download/{safe_id}", "")
+    if http_status == 404:
+        raise RuntimeError(
+            f"invoices/download: invoice {invoice_id!r} not found")
+    if http_status >= 400:
+        raise RuntimeError(
+            f"invoices/download HTTP {http_status}: {response_text[:200]}")
+
+    # Shape (b): raw PDF bytes streamed directly. ``response_text`` is
+    # whatever requests decoded the body as, but the magic header is
+    # detectable in the first ~16 chars regardless of decoding.
+    if (response_text or "").startswith("%PDF-"):
+        return response_text.encode("latin-1", errors="ignore")
+
+    # Shape (a): XML envelope. Confirm OK first, then hunt for a base64 blob.
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(
+            f"invoices/download wFirma status={code}: {desc}")
+    try:
+        root = ET.fromstring(response_text)
+    except ET.ParseError as exc:
+        raise RuntimeError(
+            f"invoices/download: response is neither PDF nor parseable XML: {exc}"
+        ) from exc
+
+    # Search common field names. wFirma SDKs use <file> most often. We
+    # try each in turn, attempt base64 decode, and accept the first one
+    # whose decoded bytes carry the PDF magic header. This is more
+    # robust than length-heuristics — a tiny PDF may decode to <100
+    # bytes and a non-PDF text field may be arbitrarily long.
+    import base64
+    candidates = ("file", "pdf", "content", "data", "invoice")
+    decoded_bytes: Optional[bytes] = None
+    last_error: Optional[str] = None
+    for tag in candidates:
+        for node in root.iter(tag):
+            blob = (node.text or "").strip()
+            if not blob:
+                continue
+            # Strip whitespace/newlines that some installations inject.
+            cleaned = "".join(blob.split())
+            try:
+                trial = base64.b64decode(cleaned, validate=False)
+            except Exception as exc:
+                last_error = f"{tag}: decode failed ({exc})"
+                continue
+            if trial.startswith(b"%PDF-"):
+                decoded_bytes = trial
+                break
+            last_error = (f"{tag}: decoded {len(trial)} bytes, "
+                          f"magic={trial[:8]!r} (not %PDF-)")
+        if decoded_bytes is not None:
+            break
+
+    if decoded_bytes is None:
+        raise RuntimeError(
+            f"invoices/download: no base64 PDF payload found in response for "
+            f"id={invoice_id} — fields tried: {candidates}"
+            + (f"; last error: {last_error}" if last_error else "")
+        )
+    return decoded_bytes
 
 
 def edit_invoice_line_name(invoice_id: str,
