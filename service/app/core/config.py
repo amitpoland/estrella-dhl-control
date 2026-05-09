@@ -202,6 +202,32 @@ class Settings(BaseSettings):
     wfirma_create_invoice_allowed:  bool = Field(default=False, env="WFIRMA_CREATE_INVOICE_ALLOWED")
     wfirma_supplier_contractor_id:  str  = Field(default="",    env="WFIRMA_SUPPLIER_CONTRACTOR_ID")
 
+    # ── Carrier subsystem (DHL Express outbound shipping) ────────────────────
+    # Status gate — controls carrier API adapter selection.
+    # "pending" (default): all carrier routes return 503; no API calls possible.
+    # "shadow":            DhlExpressShadowAdapter used; responses are simulated.
+    # "live":              DhlExpressLiveAdapter used; requires allowlist entry.
+    carrier_api_status: str = Field(default="pending", env="CARRIER_API_STATUS")
+
+    # PLT (Paperless Trade) gate — independent of carrier_api_status.
+    carrier_plt_status: str = Field(default="pending", env="CARRIER_PLT_STATUS")
+
+    # Comma-separated batch_ids allowed for live carrier calls.
+    # Empty = no live calls permitted even when carrier_api_status=live.
+    carrier_live_allowlist: str = Field(default="", env="CARRIER_LIVE_ALLOWLIST")
+
+    # DHL Express API credentials — all None by default (no live capability).
+    dhl_express_api_key:        Optional[str] = Field(default=None, env="DHL_EXPRESS_API_KEY")
+    dhl_express_api_secret:     Optional[str] = Field(default=None, env="DHL_EXPRESS_API_SECRET")
+    dhl_express_api_url:        str           = Field(default="https://express.api.dhl.com", env="DHL_EXPRESS_API_URL")
+    dhl_express_account_number: Optional[str] = Field(default=None, env="DHL_EXPRESS_ACCOUNT_NUMBER")
+
+    # DHL webhook HMAC secret. None = webhook endpoint returns 503 (never silently open).
+    dhl_webhook_secret: Optional[str] = Field(default=None, env="DHL_WEBHOOK_SECRET")
+
+    # Carrier file storage root. None = defaults to storage_root / "carrier" at runtime.
+    carrier_storage_root: Optional[Path] = Field(default=None, env="CARRIER_STORAGE_ROOT")
+
     # ── Cliq bot batch collection ─────────────────────────────────────────────
     # Expire an incomplete (missing files) session after N minutes of inactivity
     batch_session_timeout_minutes: int = 30
