@@ -83,6 +83,26 @@ _SUPPORTED_LABEL_FMTS = frozenset({"pdf", "zpl"})
 #: 5-second SLA the route caller may impose.
 _RETRY_BACKOFF: Tuple[float, ...] = (0.25, 0.5, 1.0)
 
+#: DL-F3.5b — keys whose values are scrubbed in _summarise() before
+#: error messages reach operator surfaces or shadow-log
+#: live_error_summary columns. DHL response echoes can include any
+#: of these, plus credential variants. Comparison is lowercased.
+_SENSITIVE_KEYS_LOWER: frozenset = frozenset({
+    "authorization",
+    "password",
+    "secret",
+    "accountnumber",
+    "account_number",
+    "content",          # PLT base64 sits here in documentImages[]
+    "documentimages",   # the wrapping list itself
+    "apikey",
+    "api_key",
+    "x-api-key",
+    "signaturename",
+    "signature_name",
+    "signature",
+})
+
 
 def _filename_only(path: str) -> str:
     """Defensive basename extraction for the PLT manifest field.
@@ -571,14 +591,63 @@ class DHLExpressLiveAdapter:
     @staticmethod
     def _summarise(payload: Any) -> str:
         """Tight one-line summary of a 4xx body for error messages.
-        Truncates at 200 chars so log lines stay scannable."""
+
+        DL-F3.5b — redacts sensitive keys before stringifying. DHL
+        4xx/5xx error bodies sometimes echo the request — including
+        Authorization, account_number, and (for PLT) the base64
+        documentImages content. Those values must NEVER appear in
+        operator-facing error strings or shadow-log error_summary
+        columns.
+
+        Strategy:
+          * If the payload is a dict, recursively scrub keys that
+            match the deny set, replacing values with "<redacted>".
+          * If the payload is a list, recurse into items.
+          * If the payload is a string longer than 200 chars, the
+            outer truncation still applies.
+
+        After scrubbing, JSON-encode and truncate at 200 chars.
+        """
+        scrubbed = DHLExpressLiveAdapter._scrub_sensitive(payload)
         try:
-            s = json.dumps(payload, default=str, sort_keys=True)
+            s = json.dumps(scrubbed, default=str, sort_keys=True)
         except Exception:
-            s = str(payload)
+            s = str(scrubbed)
         if len(s) > 200:
             s = s[:197] + "..."
         return s
+
+    @staticmethod
+    def _scrub_sensitive(value: Any, _depth: int = 0) -> Any:
+        """Recursively replace values under sensitive keys with
+        "<redacted>". Bounded recursion (depth ≤ 6) so a malformed
+        response cannot cause unbounded recursion.
+
+        Sensitive keys (case-insensitive): Authorization, password,
+        secret, accountNumber / account_number, content (PLT base64),
+        documentImages, apiKey / api_key, signatureName / signature.
+        Operator account number masks would still be informative
+        without the full value, but for safety we redact entirely.
+        """
+        if _depth >= 6:
+            return value
+        deny = _SENSITIVE_KEYS_LOWER
+        if isinstance(value, dict):
+            out: Dict[str, Any] = {}
+            for k, v in value.items():
+                if isinstance(k, str) and k.lower() in deny:
+                    out[k] = "<redacted>"
+                else:
+                    out[k] = DHLExpressLiveAdapter._scrub_sensitive(
+                        v, _depth + 1,
+                    )
+            return out
+        if isinstance(value, list):
+            return [
+                DHLExpressLiveAdapter._scrub_sensitive(item, _depth + 1)
+                for item in value
+            ]
+        return value
 
     # ── Parse a single-shipment webhook body ───────────────────────────────
 
@@ -710,6 +779,14 @@ class DHLExpressLiveAdapter:
                 "live":         True,
                 "carrier":      CARRIER_DHL,
                 "headers_seen": raw_headers,
-                "shipment":     dict(shipment),
+                # DL-F3.5b — DO NOT persist the full shipment dict.
+                # DHL push payloads carry recipient addresses,
+                # declared values, and trace fields that, once
+                # written into carrier_events.db raw_json, become a
+                # parallel PII store. The parsed (awb, status_code,
+                # timestamp, location, description) tuple is the
+                # entire operator-relevant subset; the full body
+                # stays in the request-handling memory only.
+                "service":      (shipment.get("service") or ""),
             },
         )
