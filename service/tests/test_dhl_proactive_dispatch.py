@@ -40,16 +40,28 @@ _ROOT = Path(__file__).parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-os.environ.setdefault("API_KEY", "test-key")
+# NOTE: do NOT do `os.environ.setdefault("API_KEY", ...)` at module-import
+# time. pytest collects this file before app.core.config.settings is
+# instantiated; a module-level env mutation here pollutes os.environ for the
+# entire pytest session, and pydantic then reads it as the singleton baseline
+# — leaking `settings.api_key="test-key"` into every subsequent test in the
+# session (e.g. ZC429 dashboard tests then start failing with 401). The
+# `dhl_env` fixture below already monkeypatches `settings.api_key` per-test.
 
 
 # ── Autouse fixtures ─────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
 def _isolate_storage(tmp_path, monkeypatch):
-    """Point storage_root at tmp_path; reset proposal locks between tests."""
+    """Point storage_root at tmp_path; reset proposal locks between tests.
+
+    Also scopes the API_KEY env var to per-test (via monkeypatch.setenv)
+    rather than relying on a module-level os.environ mutation that would
+    pollute settings.api_key across the whole pytest session.
+    """
     from app.core.config import settings
     monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setenv("API_KEY", "test-key")
     from app.api import routes_action_proposals
     from app.services import action_email_builder
     for mod in (routes_action_proposals, action_email_builder):
@@ -76,6 +88,32 @@ def dhl_env(monkeypatch):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def _render_minimal_valid_polish_desc(path: Path, *, awb: str) -> None:
+    """Render a minimal Polish customs description PDF that satisfies the
+    format validator. Used by all _make_batch invocations so the new
+    approve/queue gate (services.polish_desc_validator) can read real text.
+    Synthetic refs are AWB-derived so legacy tests (audit lacks
+    invoice_names) still produce a structurally complete PDF."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph
+    from reportlab.lib.styles import getSampleStyleSheet
+    styles = getSampleStyleSheet()
+    n = styles["Normal"]
+    doc = SimpleDocTemplate(str(path), pagesize=A4)
+    doc.build([
+        Paragraph(f"AWB / Nr listu: {awb}", n),
+        Paragraph(f"FAKTURA / INVOICE: EJL/26-27/{awb[-3:] if len(awb) >= 3 else '001'}", n),
+        Paragraph("14-karatowe złoto próby 585", n),
+        Paragraph("Razem CIF faktury / Invoice CIF total: USD 100.00", n),
+        Paragraph("PODSUMOWANIE / CONSOLIDATED CUSTOMS SUMMARY", n),
+        Paragraph("Razem ilość / Total quantity: 1 PCS · 0 PRS", n),
+        Paragraph("Razem FOB / Total FOB: USD 100.00", n),
+        Paragraph("Fracht / Freight: USD 0.00", n),
+        Paragraph("Ubezpieczenie / Insurance: USD 0.00", n),
+        Paragraph("RAZEM CIF / TOTAL CIF (customs value): USD 100.00", n),
+    ])
+
+
 def _make_batch(
     root: Path,
     *,
@@ -92,10 +130,15 @@ def _make_batch(
     (batch_dir / "source" / "invoices").mkdir(parents=True, exist_ok=True)
     (batch_dir / "source" / "awb").mkdir(parents=True, exist_ok=True)
 
-    # Polish description PDF lives at storage_root/polish_descriptions/
+    # Polish description PDF lives at storage_root/polish_descriptions/.
+    # Render a real PDF (not a stub byte string) so the polish-desc format
+    # validator can extract text and find the required structural markers.
     if polish_desc:
         (root / "polish_descriptions").mkdir(parents=True, exist_ok=True)
-        (root / "polish_descriptions" / f"POLISH_DESC_{bid}.pdf").write_bytes(b"%PDF-1.4 polish")
+        _render_minimal_valid_polish_desc(
+            root / "polish_descriptions" / f"POLISH_DESC_{bid}.pdf",
+            awb=awb,
+        )
 
     # Invoices
     for i in range(invoices):
