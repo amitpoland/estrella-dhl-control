@@ -237,10 +237,15 @@ def test_app_router_uses_real_page(html: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 13. Phase A placeholders for `proposals` and `broker` stay placeholders
+# 13. The remaining nav placeholders stay placeholders
+#
+# `proposals` was removed from this list when Phase D replaced it with
+# the real ActionProposalsCrossBatchPage. The Phase D test
+# (test_dashboard_action_proposals_cross_batch.py) covers the new
+# page instead. Only `broker` remains a placeholder, awaiting Phase E.
 # ──────────────────────────────────────────────────────────────────────
 
-REMAINING_PLACEHOLDERS = ["proposals", "broker"]
+REMAINING_PLACEHOLDERS = ["broker"]
 
 
 @pytest.mark.parametrize("nav_id", REMAINING_PLACEHOLDERS)

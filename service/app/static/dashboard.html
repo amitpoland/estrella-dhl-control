@@ -12752,6 +12752,198 @@ function CustomerStatementsPickerPage({ onToast }) {
 }
 
 // ══════════════════════════════════════════════════════════
+// ACTION PROPOSALS — CROSS-BATCH READ-ONLY LIST
+// ══════════════════════════════════════════════════════════
+//
+// Cross-batch listing of pending action proposals. Read-only: the
+// per-proposal write actions (status transitions to approved /
+// rejected / queued, and execution) live in the per-batch panel
+// inside BatchDetailPage. The cross-batch view only surfaces the
+// list — operators click "Open batch" to act on a row.
+//
+// Endpoints used by THIS component:
+//   apiFetch('/dashboard/batches?all=1')
+//   apiFetch('/api/v1/action-proposals/' + batch_id)
+//
+// No write endpoints. No auto-poll. Refresh button only.
+
+function ActionProposalsCrossBatchPage({ onViewBatch, onToast }) {
+  const [proposals, setProposals] = React.useState([]);
+  const [loading, setLoading]     = React.useState(true);
+  const [error, setError]         = React.useState(null);
+  const [lastLoaded, setLastLoaded] = React.useState(null);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // 1. Fetch the batch list. Same endpoint App already uses.
+      const batchList = await apiFetch('/dashboard/batches?all=1');
+      const list = Array.isArray(batchList) ? batchList : [];
+
+      // 2. Fetch proposals per batch in parallel. Per-batch failures
+      //    are tolerated so one bad batch doesn't blank the whole
+      //    page.
+      const all = [];
+      await Promise.all(list.map(async (b) => {
+        const bid = b && (b.batch_id || b.id);
+        if (!bid) return;
+        try {
+          const data = await apiFetch(
+            '/api/v1/action-proposals/' + encodeURIComponent(bid)
+          );
+          const dr = (data && Array.isArray(data.proposals)) ? data.proposals : [];
+          for (const p of dr) {
+            all.push({ ...p, _batch_summary: b });
+          }
+        } catch (_perBatch) {
+          // Tolerate — keep loading the rest. A real auth/network
+          // failure will be caught on the outer fetch.
+        }
+      }));
+
+      // Sort: newest first using updated_at then created_at.
+      // Defensive on missing fields — never crash on null timestamps.
+      all.sort((a, b) => {
+        const av = a.updated_at || a.created_at || '';
+        const bv = b.updated_at || b.created_at || '';
+        return bv.localeCompare(av);
+      });
+      setProposals(all);
+      setLastLoaded(new Date().toLocaleTimeString());
+    } catch (e) {
+      setError(String((e && e.message) || e || 'Unknown error'));
+      if (onToast) onToast('Failed to load proposals: ' + String(e.message || e), 'error');
+    }
+    setLoading(false);
+  }, [onToast]);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  const handleOpen = React.useCallback((batchId) => {
+    if (onViewBatch && batchId) onViewBatch({ batch_id: batchId });
+  }, [onViewBatch]);
+
+  return (
+    <div data-testid="action-proposals-cross-batch"
+         style={{ flex: 1, padding: '20px 32px 40px', overflow: 'auto' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, fontFamily: '"DM Serif Display",serif', color: 'var(--text)' }}>
+            Action Proposals
+          </h2>
+          <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-3)' }}>
+            Read-only cross-batch list. Composed from <code style={{ fontFamily: 'monospace', fontSize: 10, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>/dashboard/batches</code>
+            {' '}and{' '}
+            <code style={{ fontFamily: 'monospace', fontSize: 10, background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>/api/v1/action-proposals/&#123;batch_id&#125;</code>.
+            Use <em>Open batch</em> to take action on a proposal — status
+            transitions live in the per-batch panel.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {lastLoaded && !loading && (
+            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Loaded {lastLoaded}</span>
+          )}
+          <Btn small variant="outline" onClick={load} disabled={loading}
+               data-testid="btn-action-proposals-refresh">
+            {loading ? 'Loading…' : '↻ Refresh'}
+          </Btn>
+        </div>
+      </div>
+
+      {loading && (
+        <Card>
+          <div data-testid="action-proposals-loading"
+               style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+            Loading proposals across all batches…
+          </div>
+        </Card>
+      )}
+
+      {!loading && error && (
+        <Card>
+          <div data-testid="action-proposals-error"
+               style={{ padding: 12, fontSize: 12, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 4 }}>
+            <b>Failed to load proposals:</b> {error}
+          </div>
+        </Card>
+      )}
+
+      {!loading && !error && proposals.length === 0 && (
+        <Card>
+          <div data-testid="action-proposals-empty"
+               style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+            No proposals in flight. Proposals appear here once a batch
+            has at least one pending action proposal.
+          </div>
+        </Card>
+      )}
+
+      {!loading && !error && proposals.length > 0 && (
+        <Card>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-subtle)' }}>
+                {['Batch', 'Proposal id', 'Type', 'Status', 'Risk / reason', 'Updated', ''].map((h) => (
+                  <th key={h} style={{ padding: '8px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', borderBottom: '1px solid var(--border)' }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {proposals.map((p, idx) => {
+                const bid = (p._batch_summary && (p._batch_summary.batch_id || p._batch_summary.id)) || p.batch_id || '';
+                const pid = p.proposal_id || p.id || '—';
+                const ptype = p.type || p.action || '—';
+                const pstatus = p.status || '—';
+                const prisk = p.risk_level || p.risk || p.reason || '—';
+                const pupdated = p.updated_at || p.created_at || '—';
+                const key = pid && pid !== '—' ? String(pid) : `row-${idx}`;
+                return (
+                  <tr key={key} data-testid="action-proposals-row"
+                      style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '8px 8px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10 }}>
+                      {bid || '—'}
+                    </td>
+                    <td style={{ padding: '8px 8px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10 }}>
+                      {pid}
+                    </td>
+                    <td style={{ padding: '8px 8px', color: 'var(--text)' }}>
+                      {ptype}
+                    </td>
+                    <td style={{ padding: '8px 8px' }}>
+                      <span style={{ display: 'inline-block', fontSize: 10, padding: '2px 8px', borderRadius: 4, fontWeight: 600, background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)', border: '1px solid var(--badge-blue-border)' }}>
+                        {pstatus}
+                      </span>
+                    </td>
+                    <td style={{ padding: '8px 8px', color: 'var(--text-2)', fontSize: 10 }}>
+                      {prisk}
+                    </td>
+                    <td style={{ padding: '8px 8px', color: 'var(--text-3)', fontSize: 10 }}>
+                      {pupdated}
+                    </td>
+                    <td style={{ padding: '8px 8px', textAlign: 'right' }}>
+                      <Btn small variant="outline" onClick={() => handleOpen(bid)} disabled={!bid}
+                           data-testid="btn-action-proposals-open-batch">
+                        Open batch
+                      </Btn>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ padding: '8px 12px', fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)' }}>
+            {proposals.length} proposal{proposals.length === 1 ? '' : 's'} across all batches.
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
 // LEARNING PAGE
 // ══════════════════════════════════════════════════════════
 
@@ -14047,8 +14239,10 @@ function App() {
         {/* Phase C — customer statements picker (opens existing drawer). */}
         {page === 'statements' && <CustomerStatementsPickerPage onToast={notify} />}
 
+        {/* Phase D — action proposals cross-batch read-only list. */}
+        {page === 'proposals'  && <ActionProposalsCrossBatchPage onViewBatch={viewShipment} onToast={notify} />}
+
         {/* Design refresh placeholders. Backend verified; UI pages deferred. */}
-        {page === 'proposals'  && <PlaceholderPage title="Action Proposals"    icon="⚐" desc="Backend exists; page implementation is planned." />}
         {page === 'broker'     && <PlaceholderPage title="Broker Follow-ups"   icon="✉" desc="Backend exists; page implementation is planned." />}
       </div>
 

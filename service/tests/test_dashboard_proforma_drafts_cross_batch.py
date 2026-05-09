@@ -229,11 +229,15 @@ def test_proforma_draft_panel_unchanged(html: str) -> None:
 # `statements` was removed from this list when Phase C replaced it with
 # the real CustomerStatementsPickerPage. The Phase C test
 # (test_dashboard_customer_statements_picker.py) asserts `statements`
-# now renders the real page. The remaining two ids — proposals, broker —
-# stay placeholders until their own Phase D/E lands.
+# now renders the real page.
+#
+# `proposals` was removed from this list when Phase D replaced it with
+# the real ActionProposalsCrossBatchPage. The Phase D test
+# (test_dashboard_action_proposals_cross_batch.py) covers the new
+# page instead. Only `broker` remains a placeholder, awaiting Phase E.
 # ──────────────────────────────────────────────────────────────────────
 
-REMAINING_PLACEHOLDERS = ["proposals", "broker"]
+REMAINING_PLACEHOLDERS = ["broker"]
 
 
 @pytest.mark.parametrize("nav_id", REMAINING_PLACEHOLDERS)
