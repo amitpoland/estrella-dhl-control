@@ -55,6 +55,7 @@ Public API
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import uuid
@@ -277,6 +278,48 @@ def get_by_batch(batch_id: str) -> List[Dict[str, Any]]:
             (batch_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_by_batch_and_reference(
+    batch_id: str,
+    reference: str,
+) -> Optional[Dict[str, Any]]:
+    """Find the shipment row in *batch_id* whose manifest's
+    ``request.reference`` matches *reference*.
+
+    DL-F3.5a — idempotency lookup. Empty *reference* returns None
+    (does NOT collapse all batches into one). Empty *batch_id*
+    returns None.
+
+    The shipments table itself does not store the operator-supplied
+    reference (it lives in the per-AWB manifest JSON written by
+    ``carrier_label_store.write_manifest``). This helper scans the
+    batch's rows and reads each manifest_path to find the match.
+    Typical batch carries 1-3 shipments; the scan is cheap.
+
+    A row whose ``manifest_path`` is missing on disk or whose
+    manifest JSON is corrupt is skipped silently — the caller's
+    coordinator path then falls through to a fresh adapter call,
+    which re-creates the manifest cleanly.
+    """
+    if not (batch_id or "").strip() or not (reference or "").strip():
+        return None
+    rows = get_by_batch(batch_id)
+    for row in rows:
+        manifest_path = (row.get("manifest_path") or "").strip()
+        if not manifest_path:
+            continue
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        existing_ref = (
+            (payload.get("request") or {}).get("reference") or ""
+        )
+        if existing_ref == reference:
+            return row
+    return None
 
 
 def list_all(

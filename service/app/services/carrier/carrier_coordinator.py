@@ -145,6 +145,22 @@ class CarrierCoordinator:
         if not (batch_id or "").strip():
             raise ValueError("batch_id is required")
 
+        # DL-F3.5a — idempotency lookup BEFORE the adapter call.
+        # Same (batch_id, reference) retried after a transient failure
+        # MUST NOT issue a second AWB. Stub: would dedupe at the DB's
+        # UNIQUE(carrier, awb) but still append duplicate transitions.
+        # Live: would burn quota and create two real DHL shipments.
+        # The lookup is keyed on the operator-supplied reference; an
+        # empty reference returns None, so requests without a
+        # reference proceed to a fresh adapter call (no idempotency
+        # claim made).
+        existing_row = csdb.get_by_batch_and_reference(
+            batch_id=batch_id,
+            reference=request.reference or "",
+        )
+        if existing_row is not None:
+            return self._idempotent_replay_envelope(existing_row)
+
         # 1. adapter call (only network/HTTP boundary)
         rsp: RawShipmentResponse = self._adapter.create_shipment(request)
         if not rsp.awb or not rsp.carrier:
@@ -263,11 +279,36 @@ class CarrierCoordinator:
         })
 
         return {
-            "shipment":      row,
-            "label_sha256":  artefact.sha256,
-            "manifest_path": str(manifest_path),
-            "transitions":   [t1, t2],
-            "raw_response":  dict(rsp.raw or {}),
+            "shipment":          row,
+            "label_sha256":      artefact.sha256,
+            "manifest_path":     str(manifest_path),
+            "transitions":       [t1, t2],
+            "raw_response":      dict(rsp.raw or {}),
+            "idempotent_replay": False,
+        }
+
+    # ── DL-F3.5a — idempotent-replay envelope (no adapter call) ─────────────
+
+    def _idempotent_replay_envelope(
+        self,
+        existing_row: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Build the envelope returned when (batch_id, reference) has
+        already produced a shipment. Adapter is NOT called; no
+        transitions are appended; the label store is NOT touched.
+
+        Caller is the route layer, which then surfaces the
+        ``idempotent_replay=True`` flag to the operator. The envelope
+        carries the same keys as the happy path so downstream code
+        does not need to special-case the replay shape.
+        """
+        return {
+            "shipment":          dict(existing_row),
+            "label_sha256":      str(existing_row.get("label_sha256") or ""),
+            "manifest_path":     str(existing_row.get("manifest_path") or ""),
+            "transitions":       [],
+            "raw_response":      {},
+            "idempotent_replay": True,
         }
 
     # ── cancel_shipment ─────────────────────────────────────────────────────

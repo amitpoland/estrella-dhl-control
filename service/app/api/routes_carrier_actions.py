@@ -409,6 +409,50 @@ def execute_create_shipment(body: CreateShipmentBody) -> Dict[str, Any]:
         # This is the source of truth for whether the action is legal
         # right now and for the canonical proposal_id.
         csdb.init_db(_carrier_db_path())  # idempotent
+
+        # DL-F3.5a — idempotency pre-check. Must run BEFORE the
+        # proposal-blocked gate, because that gate would otherwise
+        # 409 every legitimate retry as "active_shipment_exists".
+        # Same (batch_id, reference) retried after a transient
+        # failure returns the existing shipment with
+        # idempotent_replay=True instead of a duplicate AWB.
+        # Empty reference returns None → no idempotency claim;
+        # request proceeds to the normal gate stack.
+        request = _payload_to_request(body.request)
+        existing_idem = csdb.get_by_batch_and_reference(
+            batch_id=batch_id,
+            reference=(request.reference or ""),
+        )
+        if existing_idem is not None:
+            outcome = {
+                "shipment":          dict(existing_idem),
+                "label_sha256":      str(existing_idem.get("label_sha256") or ""),
+                "manifest_path":     str(existing_idem.get("manifest_path") or ""),
+                "transitions":       [],
+                "raw_response":      {},
+                "idempotent_replay": True,
+            }
+            tl.log_event(
+                _audit_path_for(batch_id),
+                tl.EV_CARRIER_SHIPMENT_CREATED,
+                "admin",
+                actor=actor,
+                detail={
+                    "action":       "create_shipment",
+                    "proposal_id":  body.proposal_id,
+                    "carrier":      existing_idem.get("carrier", ""),
+                    "awb":          existing_idem.get("awb", ""),
+                    "label_sha256": existing_idem.get("label_sha256", ""),
+                    "replay":       True,
+                },
+            )
+            return _envelope(
+                executed          = False,
+                proposal_id       = body.proposal_id,
+                result            = outcome,
+                idempotent_replay = True,
+            )
+
         existing = csdb.get_by_batch(batch_id)
         proposal = pb.build_create_shipment_proposal(
             batch_id, existing_shipments=existing, carrier=body.carrier,
@@ -445,8 +489,9 @@ def execute_create_shipment(body: CreateShipmentBody) -> Dict[str, Any]:
             })
 
         # Coordinator does the actual work. Adapter is the stub.
+        # `request` was already built above for the idempotency check;
+        # reuse it here.
         coord = _make_coordinator(actor=actor)
-        request = _payload_to_request(body.request)
         try:
             outcome = coord.create_shipment(
                 batch_id = batch_id,
@@ -466,7 +511,13 @@ def execute_create_shipment(body: CreateShipmentBody) -> Dict[str, Any]:
                 "error": str(exc),
             })
 
-    # Successful execute — log and return envelope.
+    # DL-F3.5a — idempotent replay returns 200 with executed=False
+    # and the existing shipment row. The adapter was NOT called and
+    # no new transitions were appended. The timeline still emits
+    # EV_CARRIER_SHIPMENT_CREATED with a replay=True marker so an
+    # operator scanning the audit can see the retry happened.
+    is_replay = bool(outcome.get("idempotent_replay"))
+
     tl.log_event(
         _audit_path_for(batch_id),
         tl.EV_CARRIER_SHIPMENT_CREATED,
@@ -478,12 +529,14 @@ def execute_create_shipment(body: CreateShipmentBody) -> Dict[str, Any]:
             "carrier":      outcome["shipment"]["carrier"],
             "awb":          outcome["shipment"]["awb"],
             "label_sha256": outcome["label_sha256"],
+            "replay":       is_replay,
         },
     )
     return _envelope(
-        executed    = True,
-        proposal_id = body.proposal_id,
-        result      = outcome,
+        executed          = (not is_replay),
+        proposal_id       = body.proposal_id,
+        result            = outcome,
+        idempotent_replay = is_replay,
     )
 
 
