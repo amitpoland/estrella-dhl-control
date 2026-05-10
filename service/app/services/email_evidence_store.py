@@ -24,12 +24,19 @@ This module is read-only over audit.json. It NEVER touches:
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+if sys.platform == "win32":
+    import threading as _threading
+    _awb_locks: dict = {}
+    _awb_locks_guard = _threading.Lock()
+else:
+    import fcntl as _fcntl
 
 from ..core.config import settings
 from ..core.logging import get_logger
@@ -64,19 +71,30 @@ def _ensure_dirs() -> None:
 
 @contextlib.contextmanager
 def _awb_lock(awb: str):
-    """fcntl.flock per AWB. Lock file == evidence file (created if absent)."""
+    """Per-AWB exclusive lock. POSIX: fcntl.flock. Windows: threading.Lock."""
     _ensure_dirs()
     p = _by_awb_dir() / f"{_safe_awb(awb)}.json"
     if not p.exists():
         p.write_text("{}", encoding="utf-8")
-    f = open(p, "r+")
-    try:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        yield p
-    finally:
-        try: fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        except Exception: pass
-        f.close()
+    if sys.platform == "win32":
+        with _awb_locks_guard:
+            if awb not in _awb_locks:
+                _awb_locks[awb] = _threading.Lock()
+            lock = _awb_locks[awb]
+        lock.acquire()
+        try:
+            yield p
+        finally:
+            lock.release()
+    else:
+        f = open(p, "r+")
+        try:
+            _fcntl.flock(f.fileno(), _fcntl.LOCK_EX)
+            yield p
+        finally:
+            try: _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
+            except Exception: pass
+            f.close()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
