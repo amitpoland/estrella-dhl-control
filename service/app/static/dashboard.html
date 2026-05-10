@@ -2939,7 +2939,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     <div data-testid="closure-eval-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
                       Checks hard blockers for closure: customs documents received and PZ generated.
                       Service invoices are accounting signals only — not closure blockers.
-                      Evaluation only — does not close the shipment.
+                      Evaluation only — does not close the shipment. Read-only endpoint: /check.
                     </div>
 
                     {cc && (
@@ -3050,6 +3050,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
                       {/* ── Confirm Closure — execution engine write path ── */}
                       <div data-testid="closure-confirm-section" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--border-subtle)' }}>
+                        {/* On success this section refreshes the audit card via load() and the readiness banner via loadBatchReadiness(). */}
                         {closureConfirmResult && (
                           <div style={{ marginBottom: 8 }}>
                             <div
@@ -3108,14 +3109,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                             cursor:  (closureEvalDisabled || !(closureCheck && closureCheck.ready && !closureCheck.already_completed)) && !closureConfirmBusy ? 'not-allowed' : 'pointer',
                           }}
                           onClick={async () => {
-                            const approvedBy = (prompt('Confirm closure — enter operator name:', 'operator') || '').trim() || 'operator';
+                            const approved_by = (prompt('Confirm closure — enter operator name:', 'operator') || '').trim() || 'operator';
                             setClosureConfirmBusy(true);
                             setClosureConfirmResult(null);
                             try {
                               const d = await apiFetch('/api/v1/execute/closure_confirm', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ batch_id: batchId, payload: { approved_by: approvedBy } }),
+                                body: JSON.stringify({ batch_id: batchId, approved_by: approved_by, payload: {} }),
                               });
                               setClosureConfirmResult(d);
                               if (d.ok) {
