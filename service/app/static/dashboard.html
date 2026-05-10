@@ -130,7 +130,7 @@ function fmtPLN(n) {
 
 function mapOverall(status) {
   const m = {
-    success: 'Ready for Booking', partial: 'Action Required',
+    success: 'Ready for Booking', partial: 'Ready for Booking',
     blocked: 'Action Required', failed: 'Action Required',
     awaiting_dhl_email: 'Awaiting DHL', awaiting_sad: 'Awaiting SAD',
     awaiting_clearance: 'Awaiting Clearance',
@@ -1201,7 +1201,7 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
                   <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right', whiteSpace: 'nowrap' }}>{row.net}</td>
                   <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right', whiteSpace: 'nowrap' }}>{row.gross}</td>
                   <td style={{ padding: '10px 12px', color: 'var(--accent)', fontWeight: 700, textAlign: 'right', whiteSpace: 'nowrap' }}>{row.duty}</td>
-                  <td style={{ padding: '10px 12px', overflow: 'hidden' }}><Badge status={row.overall} small title={row.action_reason || undefined} /></td>
+                  <td style={{ padding: '10px 12px', overflow: 'hidden' }}><Badge status={row.overall} small title={row.overall === 'Action Required' && row.action_reason ? row.action_reason : undefined} /></td>
                   <td style={{ padding: '8px 10px', position: 'sticky', right: 0, background: 'var(--card)', zIndex: 2, boxShadow: '-2px 0 6px rgba(0,0,0,0.06)' }}>
                     <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'nowrap' }}>
                       <Btn small variant="outline" onClick={() => onViewShipment(row)} title="View detail">View</Btn>
@@ -7645,7 +7645,7 @@ function ShipmentsTable({ batches, onViewShipment, filterFn, emptyMsg }) {
                 <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-dhl">
                   <span style={{ fontSize: 10, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{row.dhlStatus || 'Not checked'}</span>
                 </td>
-                <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-overall"><Badge status={row.overall} small title={row.action_reason || undefined} /></td>
+                <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-overall"><Badge status={row.overall} small title={row.overall === 'Action Required' && row.action_reason ? row.action_reason : undefined} /></td>
                 <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{row.net}</td>
                 <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{row.gross}</td>
                 <td style={{ padding: '10px 12px', color: 'var(--accent)', fontWeight: 700, textAlign: 'right' }}>{row.duty}</td>
