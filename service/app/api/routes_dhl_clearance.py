@@ -57,7 +57,10 @@ if _engine_dir not in sys.path:
 
 # ── Output directories ────────────────────────────────────────────────────────
 _DSK_OUTPUT_DIR = (
-    Path.home() / "Library" / "Application Support"
+    Path(os.environ.get("APPDATA", ""))
+    / "estrellajewels" / "storage" / "dsk_outputs"
+    if os.name == "nt"
+    else Path.home() / "Library" / "Application Support"
     / "estrellajewels" / "storage" / "dsk_outputs"
 )
 if not _DSK_OUTPUT_DIR.parent.exists():

@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import fcntl
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,6 +25,9 @@ from typing import Any, Dict
 from unittest.mock import patch, MagicMock
 
 import pytest
+
+# POSIX-only: entire module requires fcntl for cross-process lock simulation.
+fcntl = pytest.importorskip("fcntl")
 
 # ── Path + env setup ──────────────────────────────────────────────────────────
 _ROOT = Path(__file__).parents[1]
