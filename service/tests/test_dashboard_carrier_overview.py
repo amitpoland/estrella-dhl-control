@@ -244,17 +244,27 @@ def test_carrier_overview_read_only_mode_note_present():
 # ── 6. No invented carrier endpoints ────────────────────────────────────────
 
 def test_carrier_overview_does_not_invent_endpoints():
-    """The only carrier endpoint the W-2.1 block may reference is the
-    read-only by-batch list. Any /api/v1/carrier/* path appearing in
-    the block must start with the allowed prefix."""
-    snippet = _carrier_tab_snippet(_src(), size=8000)
+    """Every /api/v1/carrier/* path appearing inside the carrier-
+    actions-tab must match the campaign-approved read-only allowlist.
+
+    The allowlist grows phase by phase. W-2.1 added the by-batch
+    list. W-2.2 added the per-shipment transitions list and the
+    label-artifact download. New phases must update this allowlist
+    explicitly — that's the gate this test enforces.
+    """
+    snippet = _carrier_tab_snippet(_src(), size=14000)
     import re
     paths = re.findall(r"/api/v1/carrier/[A-Za-z0-9_/-]*", snippet)
-    allowed_prefix = "/api/v1/carrier/shipments/by-batch/"
+    allowed_prefixes = (
+        "/api/v1/carrier/shipments/by-batch/",   # W-2.1
+        "/api/v1/carrier/shipments/",            # W-2.2 — covers /{id}/transitions
+        "/api/v1/carrier/labels/",               # W-2.2 — read-only label download
+    )
     for p in paths:
-        assert p.startswith(allowed_prefix), (
-            f"carrier endpoint {p!r} appears in carrier-actions-tab "
-            f"but only {allowed_prefix!r} is allowed in W-2.1"
+        assert any(p.startswith(prefix) for prefix in allowed_prefixes), (
+            f"carrier endpoint {p!r} appears in carrier-actions-tab but is "
+            f"not in the campaign allowlist {allowed_prefixes!r}. New phases "
+            f"must update this allowlist explicitly."
         )
 
 

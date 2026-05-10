@@ -2261,6 +2261,13 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [carrierShipments, setCarrierShipments] = React.useState([]);
   const [carrierShipmentsLoading, setCarrierShipmentsLoading] = React.useState(false);
   const [carrierShipmentsError, setCarrierShipmentsError] = React.useState('');
+  // W-2.2 — read-only DHL Express timeline + label evidence view.
+  // Reads only GET /api/v1/carrier/shipments/{shipment_id}/transitions and
+  // /api/v1/carrier/labels/{sha256}. No write paths.
+  const [selectedShipmentId, setSelectedShipmentId] = React.useState(null);
+  const [carrierTransitions, setCarrierTransitions] = React.useState([]);
+  const [carrierTransitionsLoading, setCarrierTransitionsLoading] = React.useState(false);
+  const [carrierTransitionsError, setCarrierTransitionsError] = React.useState('');
   const [warehouseAudit, setWarehouseAudit] = React.useState(null);    // null | full audit response
   const [warehouseAuditLoading, setWarehouseAuditLoading] = React.useState(false);
   const [salesLinkage, setSalesLinkage] = React.useState(null);        // null | linkage response
@@ -2397,10 +2404,31 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
       setCarrierShipments(Array.isArray(d.shipments) ? d.shipments : []);
     } catch (e) {
       setCarrierShipments([]);
-      setCarrierShipmentsError(e.message || 'Failed to load carrier shipments');
+      setCarrierShipmentsError(e.message || 'Failed to load DHL Express shipments');
     }
     setCarrierShipmentsLoading(false);
   }, [batchId]);
+
+  // W-2.2 — load transitions for the currently selected DHL Express shipment.
+  // Endpoint: GET /api/v1/carrier/shipments/{shipment_id}/transitions.
+  // No write paths. Selecting a shipment is a UI-state change only.
+  const loadCarrierTransitions = React.useCallback(async (shipmentId) => {
+    if (!shipmentId) {
+      setCarrierTransitions([]);
+      setCarrierTransitionsError('');
+      return;
+    }
+    setCarrierTransitionsLoading(true);
+    setCarrierTransitionsError('');
+    try {
+      const d = await apiFetch(`/api/v1/carrier/shipments/${encodeURIComponent(shipmentId)}/transitions`);
+      setCarrierTransitions(Array.isArray(d.transitions) ? d.transitions : []);
+    } catch (e) {
+      setCarrierTransitions([]);
+      setCarrierTransitionsError(e.message || 'Failed to load DHL Express transitions');
+    }
+    setCarrierTransitionsLoading(false);
+  }, []);
 
   const loadWarehouseAudit = React.useCallback(async () => {
     setWarehouseAuditLoading(true);
@@ -2705,6 +2733,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   // Fetch proposals when tab is activated
   React.useEffect(() => { if (activeTab === 'Proposals') loadProposals(); }, [activeTab]);
   React.useEffect(() => { if (activeTab === 'DHL Express') loadCarrierShipments(); }, [activeTab]);
+  React.useEffect(() => { loadCarrierTransitions(selectedShipmentId); }, [selectedShipmentId, loadCarrierTransitions]);
   // Fetch warehouse audit when tab is activated
   React.useEffect(() => { if (activeTab === 'Warehouse' && !warehouseAudit) loadWarehouseAudit(); }, [activeTab]);
   // Fetch sales linkage when tab is activated
@@ -4105,12 +4134,15 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           if (!ts) return '—';
                           try { return new Date(ts).toLocaleString('pl-PL'); } catch { return ts; }
                         };
+                        const isSelected = selectedShipmentId === s.id;
                         return (
                           <tr
                             key={s.id || s.awb || i}
                             data-testid="carrier-shipment-row"
                             data-shipment-state={state}
-                            style={{ borderTop: '1px solid var(--border-subtle)' }}
+                            data-shipment-selected={isSelected ? 'true' : 'false'}
+                            onClick={() => setSelectedShipmentId(isSelected ? null : (s.id || null))}
+                            style={{ borderTop: '1px solid var(--border-subtle)', cursor: s.id ? 'pointer' : 'default', background: isSelected ? 'var(--bg-2)' : 'transparent' }}
                           >
                             <td style={{ padding: '8px 12px', color: 'var(--text)', fontWeight: 600 }}>{(s.carrier === 'DHL' ? 'DHL Express' : s.carrier) || '—'}</td>
                             <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--text)' }}>{s.awb || '—'}</td>
@@ -4138,6 +4170,135 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 </div>
               )}
             </Card>
+
+            {/* ── W-2.2: read-only DHL Express shipment detail ──────────
+                Shown only when an operator has clicked a row above to
+                select a shipment. Read-only by design:
+                  - GET /api/v1/carrier/shipments/{id}/transitions
+                  - GET /api/v1/carrier/labels/{sha256}
+                No write paths. No POST/PUT/PATCH/DELETE in this block.
+            */}
+            {selectedShipmentId && (() => {
+              const sel = carrierShipments.find(x => x.id === selectedShipmentId) || {};
+              const labelSha = sel.label_sha256 || '';
+              const fmtTs = (ts) => {
+                if (!ts) return '—';
+                try { return new Date(ts).toLocaleString('pl-PL'); } catch { return ts; }
+              };
+              return (
+                <div data-testid="carrier-shipment-detail" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div data-testid="carrier-shipment-detail-header" style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                      Selected DHL Express shipment: <span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{sel.awb || sel.id || selectedShipmentId}</span>
+                    </div>
+                    <Btn
+                      small
+                      variant="outline"
+                      data-testid="carrier-shipment-detail-clear-btn"
+                      onClick={() => setSelectedShipmentId(null)}
+                    >
+                      ✕ Clear selection
+                    </Btn>
+                  </div>
+
+                  {/* Timeline card */}
+                  <Card data-testid="carrier-shipment-timeline" style={{ padding: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)' }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>🕒 DHL Express Transitions</div>
+                      <Btn
+                        small
+                        variant="outline"
+                        data-testid="carrier-transitions-refresh-btn"
+                        onClick={() => loadCarrierTransitions(selectedShipmentId)}
+                        disabled={carrierTransitionsLoading}
+                      >
+                        {carrierTransitionsLoading ? 'Loading…' : '↺ Refresh'}
+                      </Btn>
+                    </div>
+
+                    {carrierTransitionsLoading && carrierTransitions.length === 0 && (
+                      <div data-testid="carrier-transitions-loading" style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                        Loading DHL Express transitions…
+                      </div>
+                    )}
+
+                    {!carrierTransitionsLoading && carrierTransitionsError && (
+                      <div data-testid="carrier-transitions-error" style={{ padding: 14, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', fontSize: 12 }}>
+                        Failed to load DHL Express transitions: {carrierTransitionsError}
+                      </div>
+                    )}
+
+                    {!carrierTransitionsLoading && !carrierTransitionsError && carrierTransitions.length === 0 && (
+                      <div data-testid="carrier-transitions-empty" style={{ padding: 24, textAlign: 'center' }}>
+                        <div style={{ fontSize: 12, color: 'var(--text-2)', fontWeight: 600 }}>No transitions yet</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+                          This DHL Express shipment has no recorded state transitions.
+                        </div>
+                      </div>
+                    )}
+
+                    {carrierTransitions.length > 0 && (
+                      <div data-testid="carrier-transitions-list">
+                        {carrierTransitions.map((t, i) => (
+                          <div
+                            key={t.id || i}
+                            data-testid="carrier-transition-row"
+                            style={{ padding: '10px 14px', borderTop: i === 0 ? 'none' : '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', gap: 2 }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+                              <span style={{ fontFamily: 'monospace', color: 'var(--text-3)' }}>{t.from_state || '∅'}</span>
+                              <span style={{ color: 'var(--text-3)' }}>→</span>
+                              <span style={{ fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{t.to_state || '—'}</span>
+                              <span style={{ color: 'var(--text-3)', marginLeft: 'auto', fontSize: 10 }}>{fmtTs(t.created_at)}</span>
+                            </div>
+                            {(t.reason || t.actor) && (
+                              <div style={{ fontSize: 10, color: 'var(--text-3)', display: 'flex', gap: 10 }}>
+                                {t.actor && <span>by <span style={{ color: 'var(--text-2)' }}>{t.actor}</span></span>}
+                                {t.reason && <span>· {t.reason}</span>}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+
+                  {/* Label evidence card — only when a label sha is on file */}
+                  {labelSha ? (
+                    <Card data-testid="carrier-shipment-label-evidence" style={{ padding: '12px 14px' }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>📄 DHL Express Label Evidence</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11 }}>
+                        <div>
+                          <span style={{ color: 'var(--text-3)', display: 'inline-block', minWidth: 100 }}>Label sha256:</span>
+                          <span data-testid="carrier-label-sha256" style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{labelSha}</span>
+                        </div>
+                        <div>
+                          <span style={{ color: 'var(--text-3)', display: 'inline-block', minWidth: 100 }}>Manifest:</span>
+                          <span style={{ fontFamily: 'monospace', color: sel.manifest_path ? 'var(--text-2)' : 'var(--text-3)' }}>
+                            {sel.manifest_path ? '✓ on disk' : '—'}
+                          </span>
+                        </div>
+                        <div style={{ marginTop: 6 }}>
+                          <a
+                            data-testid="carrier-label-download-link"
+                            href={`/api/v1/carrier/labels/${encodeURIComponent(labelSha)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ fontSize: 11, color: 'var(--badge-blue-text)', textDecoration: 'underline' }}
+                          >
+                            Open DHL Express label (read-only download)
+                          </a>
+                        </div>
+                      </div>
+                    </Card>
+                  ) : (
+                    <Card data-testid="carrier-shipment-label-evidence-missing" style={{ padding: '10px 14px', fontSize: 11, color: 'var(--text-3)' }}>
+                      No DHL Express label artifact recorded for this shipment yet.
+                    </Card>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
 
