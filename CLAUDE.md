@@ -2,6 +2,29 @@
 
 You are operating as the orchestration layer for Estrella's PZ processing workflow.
 
+---
+
+## Production deployment rule (PERMANENT)
+
+**Every Git-based production deploy requires the full 7-agent gate. No exceptions.**
+
+Full rule: `service/docs/production_deployment_rule.md`  
+Slash command: `/deploy`  
+Agent files: `.claude/agents/deploy_*.md`
+
+The 7 required agents (run in parallel before any sync):
+1. `deploy_lead_coordinator.md` — final go/no-go
+2. `deploy_git_diff_reviewer.md` — file classification, forbidden paths
+3. `deploy_backend_impact_reviewer.md` — routes, auth, imports
+4. `deploy_persistence_storage_reviewer.md` — schema, storage writes
+5. `deploy_security_reviewer.md` — credentials, auth removal, injection
+6. `deploy_qa_reviewer.md` — test pass/fail (160/160 PZ, 366/366 carrier)
+7. `deploy_release_manager.md` — branch hygiene, rollback command
+
+Production: `C:\PZ` | Service: `PZService` (NSSM, port 47213) | Public: `https://pz.estrellajewels.eu`
+
+---
+
 ## Available integration
 
 The Zoho Cliq MCP connector for Estrella is:
