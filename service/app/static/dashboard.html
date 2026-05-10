@@ -1099,6 +1099,186 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
         )}
       </div>
 
+      {/* ── UI-3.1b: cross-batch warehouse operations card ──────────────────
+          Read-only summary derived from existing batch-list payload only.
+          Aggregates warehouse_status_hint × pz_status into operator-readable
+          lifecycle buckets, then surfaces the subset of batches that need
+          attention. Uses the same label-map discipline as UI-3.1a.
+
+          Source fields (already present on every list row):
+            row.warehouseHint  ← batch.warehouse_status_hint (clean|partial|empty|n/a)
+            row.pzStatus       ← mapPzStatus(batch.pz_status)
+            row.wfirmaHint     ← batch.wfirma_status_hint
+            row.salesHint      ← batch.sales_status_hint
+            row.awb, row.doc_no, row.timestamp, row.id
+
+          The "Dispatched" and "Partial dispatch" UI-3.1a states are NOT
+          surfaceable here because cross-batch payload omits per-row
+          dispatched_items / scanned_items counts. We omit those keys
+          rather than fake them. Operator must open the Warehouse tab on
+          a specific batch to see the full UI-3.1a 7-state badge. */}
+      {viewMode === 'active' && (() => {
+        const xbatchLifecycleLabel = {
+          unknown:          'No packing list',
+          awaiting:         'Awaiting receipt',
+          partial_received: 'Partially received',
+          in_warehouse:     'In warehouse',
+          reserved:         'Reserved (PZ created)',
+        };
+        const xbatchLifecycleTone = {
+          unknown:          { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+          awaiting:         { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+          partial_received: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+          in_warehouse:     { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+          reserved:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+        };
+        const xbatchDeriveLifecycle = (row) => {
+          const wh = (row.warehouseHint || 'n/a');
+          const pz = (row.pzStatus || '');
+          if (wh === 'n/a')     return 'unknown';
+          if (wh === 'empty')   return 'awaiting';
+          if (wh === 'partial') return 'partial_received';
+          if (wh === 'clean') {
+            const pzKey = pz.toLowerCase();
+            if (pzKey === 'exported' || pzKey === 'generated') return 'reserved';
+            return 'in_warehouse';
+          }
+          return 'unknown';
+        };
+        const ATTENTION_KEYS = ['awaiting', 'partial_received'];
+        const enriched = batches.map(b => ({ row: b, lifecycle: xbatchDeriveLifecycle(b) }));
+        const counts = {
+          unknown:          enriched.filter(e => e.lifecycle === 'unknown').length,
+          awaiting:         enriched.filter(e => e.lifecycle === 'awaiting').length,
+          partial_received: enriched.filter(e => e.lifecycle === 'partial_received').length,
+          in_warehouse:     enriched.filter(e => e.lifecycle === 'in_warehouse').length,
+          reserved:         enriched.filter(e => e.lifecycle === 'reserved').length,
+        };
+        const attention = enriched
+          .filter(e => ATTENTION_KEYS.includes(e.lifecycle))
+          .sort((a, b) => {
+            const at = (a.row._raw && a.row._raw.timestamp) || a.row.timestamp || '';
+            const bt = (b.row._raw && b.row._raw.timestamp) || b.row.timestamp || '';
+            return at < bt ? 1 : at > bt ? -1 : 0;
+          });
+        return (
+          <Card
+            data-testid="warehouse-operations-card"
+            style={{ padding: 16, marginBottom: 16 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 Warehouse Operations</div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                  Cross-batch warehouse lifecycle — derived read-only from existing batch-list payload. Open a batch for full detail.
+                </div>
+              </div>
+            </div>
+
+            {/* Lifecycle bucket counts */}
+            <div
+              data-testid="warehouse-operations-buckets"
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, marginBottom: 14 }}
+            >
+              {['awaiting', 'partial_received', 'in_warehouse', 'reserved', 'unknown'].map(key => {
+                const tone = xbatchLifecycleTone[key];
+                return (
+                  <div
+                    key={key}
+                    data-testid={`warehouse-operations-bucket-${key}`}
+                    data-lifecycle-state={key}
+                    style={{ padding: '10px 12px', border: `1px solid ${tone.border}`, background: tone.bg, borderRadius: 6 }}
+                  >
+                    <div style={{ fontSize: 10, fontWeight: 700, color: tone.text, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                      {xbatchLifecycleLabel[key]}
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: tone.text, fontFamily: '"DM Serif Display",serif', marginTop: 2 }}>
+                      {loading ? '…' : counts[key]}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Attention list — only the buckets that need operator attention */}
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>
+                Needs warehouse attention <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>(awaiting + partially received)</span>
+              </div>
+              {loading && (
+                <div data-testid="warehouse-operations-attention-loading" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  Loading shipments…
+                </div>
+              )}
+              {!loading && attention.length === 0 && (
+                <div data-testid="warehouse-operations-attention-empty" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  No batches need warehouse attention.
+                </div>
+              )}
+              {!loading && attention.length > 0 && (
+                <table
+                  data-testid="warehouse-operations-attention-table"
+                  style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}
+                >
+                  <thead>
+                    <tr>
+                      {['Shipment', 'Lifecycle', 'Warehouse Hint', 'PZ Status', 'Last activity'].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {attention.slice(0, 25).map(e => {
+                      const tone = xbatchLifecycleTone[e.lifecycle];
+                      const label = xbatchLifecycleLabel[e.lifecycle];
+                      const ts = (e.row._raw && e.row._raw.timestamp) || e.row.timestamp || '—';
+                      return (
+                        <tr
+                          key={e.row.id}
+                          data-testid="warehouse-operations-attention-row"
+                          data-batch-id={e.row.id}
+                          data-lifecycle-state={e.lifecycle}
+                        >
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <button
+                              onClick={() => onViewShipment(e.row)}
+                              data-testid="warehouse-operations-attention-open"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--badge-blue-text)', fontSize: 11, fontWeight: 600, fontFamily: 'monospace', textDecoration: 'underline', textDecorationStyle: 'dotted', padding: 0 }}
+                              title="Open shipment detail (read-only)"
+                            >
+                              {e.row.awb}
+                            </button>
+                            {e.row.doc_no && (
+                              <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 1 }}>{e.row.doc_no}</div>
+                            )}
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <span
+                              data-testid="warehouse-operations-attention-lifecycle-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: tone.bg, color: tone.text, border: `1px solid ${tone.border}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {label}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>{e.row.warehouseHint || 'n/a'}</td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>{e.row.pzStatus || '—'}</td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-3)', fontFamily: 'monospace' }}>{ts}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+              {!loading && attention.length > 25 && (
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>
+                  Showing first 25 of {attention.length}. Use the shipments table below to scroll the full list.
+                </div>
+              )}
+            </div>
+          </Card>
+        );
+      })()}
+
       {/* ── Archived view ── */}
       {viewMode === 'archived' && (
         <Card style={{ overflow: 'hidden' }}>
