@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS shadow_log (
@@ -77,6 +77,29 @@ def get_entries_for_batch(db_path: Path, batch_id: str) -> list:
             "SELECT * FROM shadow_log WHERE batch_id = ? ORDER BY id ASC",
             (batch_id,),
         ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_entries(db_path: Path, batch_id: Optional[str] = None, limit: int = 100) -> list:
+    """Return summary rows (no JSON blobs) ordered newest-first, up to limit.
+
+    If batch_id is given, filters to that batch only.
+    Intentionally excludes request_json and response_json — callers get
+    id, batch_id, idempotency_key, created_at only.
+    """
+    with _connect(db_path) as conn:
+        if batch_id is not None:
+            rows = conn.execute(
+                "SELECT id, batch_id, idempotency_key, created_at "
+                "FROM shadow_log WHERE batch_id = ? ORDER BY id DESC LIMIT ?",
+                (batch_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, batch_id, idempotency_key, created_at "
+                "FROM shadow_log ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 

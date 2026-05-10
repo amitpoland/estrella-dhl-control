@@ -95,6 +95,16 @@ def get_shipment(db_path: Path, idempotency_key: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def get_shipment_by_batch_id(db_path: Path, batch_id: str) -> Optional[dict]:
+    """Return the most recent shipment row for the given batch_id, or None."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM carrier_shipments WHERE batch_id = ? ORDER BY created_at DESC LIMIT 1",
+            (batch_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def update_state(
     db_path: Path,
     idempotency_key: str,
