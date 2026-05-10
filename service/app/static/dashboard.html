@@ -2316,6 +2316,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [carrierConfirmDrawer, setCarrierConfirmDrawer] = React.useState(null);
     // shape when open: { proposal, actor, reason, busy, error }
   const [carrierExecuteResult, setCarrierExecuteResult] = React.useState(null);
+  // UI-GAP-1.3 — read-only DHL Express shadow log review.
+  // Reads:  GET /api/v1/carrier/shadow/summary
+  //         GET /api/v1/carrier/shadow/recent
+  // No write paths. Backend already strips raw DHL response bytes,
+  // credentials, label bytes, and documentImages via _ROW_KEY_ALLOWLIST;
+  // the dashboard simply renders the operator-safe projection.
+  const [carrierShadowSummary, setCarrierShadowSummary] = React.useState(null);
+  const [carrierShadowRecent, setCarrierShadowRecent] = React.useState([]);
+  const [carrierShadowLoading, setCarrierShadowLoading] = React.useState(false);
+  const [carrierShadowError, setCarrierShadowError] = React.useState('');
   const [warehouseAudit, setWarehouseAudit] = React.useState(null);    // null | full audit response
   const [warehouseAuditLoading, setWarehouseAuditLoading] = React.useState(false);
   const [salesLinkage, setSalesLinkage] = React.useState(null);        // null | linkage response
@@ -2492,6 +2502,30 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     }
     setCarrierProposalsLoading(false);
   }, [batchId]);
+
+  // UI-GAP-1.3 — load DHL Express shadow log (summary + recent rows).
+  // Read-only. Endpoints:
+  //   GET /api/v1/carrier/shadow/summary  → { days, total_rows_window, total_rows_lifetime, buckets: [{method, diff_outcome, count}] }
+  //   GET /api/v1/carrier/shadow/recent   → { rows: [...operator-safe projection...], count }
+  // Both endpoints are operator-safe by design — the backend strips raw
+  // DHL response bytes / credentials / label bytes via _ROW_KEY_ALLOWLIST.
+  const loadCarrierShadow = React.useCallback(async () => {
+    setCarrierShadowLoading(true);
+    setCarrierShadowError('');
+    try {
+      const [summary, recent] = await Promise.all([
+        apiFetch('/api/v1/carrier/shadow/summary'),
+        apiFetch('/api/v1/carrier/shadow/recent'),
+      ]);
+      setCarrierShadowSummary(summary || null);
+      setCarrierShadowRecent(Array.isArray(recent && recent.rows) ? recent.rows : []);
+    } catch (e) {
+      setCarrierShadowSummary(null);
+      setCarrierShadowRecent([]);
+      setCarrierShadowError(e.message || 'Failed to load DHL Express shadow log');
+    }
+    setCarrierShadowLoading(false);
+  }, []);
 
   // W-2.3 — action → execute-endpoint map. create_shipment is intentionally
   // ABSENT — it requires a data-entry form (W-2.3b), not a confirmation drawer.
@@ -2876,6 +2910,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   React.useEffect(() => { if (activeTab === 'Proposals') loadProposals(); }, [activeTab]);
   React.useEffect(() => { if (activeTab === 'DHL Express') loadCarrierShipments(); }, [activeTab]);
   React.useEffect(() => { if (activeTab === 'DHL Express') loadCarrierProposals(); }, [activeTab]);
+  React.useEffect(() => { if (activeTab === 'DHL Express') loadCarrierShadow(); }, [activeTab]);
   React.useEffect(() => { loadCarrierTransitions(selectedShipmentId); }, [selectedShipmentId, loadCarrierTransitions]);
   // Fetch warehouse audit when tab is activated
   React.useEffect(() => { if (activeTab === 'Warehouse' && !warehouseAudit) loadWarehouseAudit(); }, [activeTab]);
@@ -4708,6 +4743,140 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 </Card>
               );
             })()}
+
+            {/* ── UI-GAP-1.3: DHL Express shadow log review (read-only) ──
+                Surfaces evidence from the existing shadow-mode adapter
+                wrapper (DL-F2). Read-only — no execute path. The two
+                endpoints called here are operator-safe by design: the
+                backend strips raw DHL response bytes, credentials,
+                label bytes, and documentImages via _ROW_KEY_ALLOWLIST.
+                No POST / PUT / PATCH / DELETE in this block.
+            */}
+            <div data-testid="carrier-shadow-panel" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>🔍 DHL Express Shadow Review</div>
+                <Btn
+                  small
+                  variant="outline"
+                  data-testid="carrier-shadow-refresh-btn"
+                  onClick={loadCarrierShadow}
+                  disabled={carrierShadowLoading}
+                >
+                  {carrierShadowLoading ? 'Loading…' : '↺ Refresh'}
+                </Btn>
+              </div>
+
+              <div data-testid="carrier-shadow-explanation" style={{ fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+                Shadow mode compares DHL Express live responses against the stub while preserving the stub as the operator-facing result. This panel surfaces diff outcomes for operator review during the sandbox-shadow window — no live shipments are issued from this view.
+              </div>
+
+              {carrierShadowLoading && !carrierShadowSummary && carrierShadowRecent.length === 0 && (
+                <div data-testid="carrier-shadow-loading" style={{ padding: 16, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                  Loading DHL Express shadow log…
+                </div>
+              )}
+
+              {!carrierShadowLoading && carrierShadowError && (
+                <div data-testid="carrier-shadow-error" style={{ padding: 14, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', borderRadius: 4, fontSize: 12 }}>
+                  Failed to load DHL Express shadow log: {carrierShadowError}
+                </div>
+              )}
+
+              {/* Summary buckets card */}
+              <Card data-testid="carrier-shadow-summary-card" style={{ padding: '12px 14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Summary by method × diff_outcome</div>
+                  {carrierShadowSummary && (
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                      window: <span data-testid="carrier-shadow-summary-window" style={{ fontWeight: 600, color: 'var(--text-2)' }}>{carrierShadowSummary.total_rows_window}</span>
+                      {' · '}lifetime: <span data-testid="carrier-shadow-summary-lifetime" style={{ fontWeight: 600, color: 'var(--text-2)' }}>{carrierShadowSummary.total_rows_lifetime}</span>
+                    </div>
+                  )}
+                </div>
+
+                {!carrierShadowLoading && (!carrierShadowSummary || !Array.isArray(carrierShadowSummary.buckets) || carrierShadowSummary.buckets.length === 0) && (
+                  <div data-testid="carrier-shadow-summary-empty" style={{ padding: 12, textAlign: 'center', color: 'var(--text-3)', fontSize: 11 }}>
+                    No DHL Express shadow events recorded yet.
+                  </div>
+                )}
+
+                {carrierShadowSummary && Array.isArray(carrierShadowSummary.buckets) && carrierShadowSummary.buckets.length > 0 && (
+                  <table data-testid="carrier-shadow-summary-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: 'var(--bg-2)' }}>
+                        {['Method', 'Diff outcome', 'Count'].map(h => (
+                          <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {carrierShadowSummary.buckets.map((b, i) => (
+                        <tr key={i} data-testid="carrier-shadow-summary-bucket" data-bucket-method={b.method || ''} data-bucket-diff={b.diff_outcome || ''} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                          <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text)' }}>{b.method || '—'}</td>
+                          <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text-2)' }}>{b.diff_outcome || '—'}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 600, color: 'var(--text)' }}>{b.count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </Card>
+
+              {/* Recent rows card */}
+              <Card data-testid="carrier-shadow-recent-card" style={{ padding: 0 }}>
+                <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>
+                  Recent shadow events
+                </div>
+
+                {!carrierShadowLoading && carrierShadowRecent.length === 0 && (
+                  <div data-testid="carrier-shadow-recent-empty" style={{ padding: 18, textAlign: 'center', color: 'var(--text-3)', fontSize: 11 }}>
+                    No DHL Express shadow events yet.
+                  </div>
+                )}
+
+                {carrierShadowRecent.length > 0 && (
+                  <table data-testid="carrier-shadow-recent-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: 'var(--bg-2)' }}>
+                        {['Created', 'Method', 'Diff', 'Live status', 'Stub status', 'Live error class', 'Live ms'].map(h => (
+                          <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {carrierShadowRecent.map((r, i) => {
+                        const fmtTs = (ts) => {
+                          if (!ts) return '—';
+                          try { return new Date(ts).toLocaleString('pl-PL'); } catch { return ts; }
+                        };
+                        const diffColor = {
+                          match:           { bg: 'var(--badge-green-bg)', text: 'var(--badge-green-text)' },
+                          shape_mismatch:  { bg: 'var(--badge-amber-bg)', text: 'var(--badge-amber-text)' },
+                          live_only_error: { bg: 'var(--badge-red-bg)',   text: 'var(--badge-red-text)' },
+                          stub_only_error: { bg: 'var(--badge-blue-bg)',  text: 'var(--badge-blue-text)' },
+                          both_error:      { bg: 'var(--badge-purple-bg)', text: 'var(--badge-purple-text)' },
+                        }[r.diff_outcome] || { bg: 'var(--bg-2)', text: 'var(--text-3)' };
+                        return (
+                          <tr key={r.id || i} data-testid="carrier-shadow-recent-row" data-row-method={r.method || ''} data-row-diff={r.diff_outcome || ''} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                            <td style={{ padding: '6px 10px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{fmtTs(r.created_at)}</td>
+                            <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text)' }}>{r.method || '—'}</td>
+                            <td style={{ padding: '6px 10px' }}>
+                              <span data-testid="carrier-shadow-diff-badge" style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: diffColor.bg, color: diffColor.text }}>
+                                {r.diff_outcome || '—'}
+                              </span>
+                            </td>
+                            <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text-2)' }}>{r.live_status || '—'}</td>
+                            <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text-2)' }}>{r.stub_status || '—'}</td>
+                            <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: r.live_error_class ? 'var(--badge-red-text)' : 'var(--text-3)' }}>{r.live_error_class || '—'}</td>
+                            <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text-2)' }}>{r.live_duration_ms != null ? r.live_duration_ms : '—'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </Card>
+            </div>
           </div>
         )}
 
