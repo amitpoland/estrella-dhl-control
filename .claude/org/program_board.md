@@ -134,14 +134,14 @@ note explaining why.
 
 | Field | Value |
 |---|---|
-| State | `pre-impl` — captured during the F3.5 audit pass; unrelated to carrier campaign |
+| State | `closed` — repaired across B1.a + B1.b + B1.c on 2026-05-10 |
 | Owner | Implementation Engineer, QA Lead |
-| Tests | `red` — failures pre-date the F3.5 baseline (`f4a49a8`) |
+| Tests | `green` — 875/875 dashboard suite at `37fda67` |
 | Telemetry | n/a |
 | UI | n/a |
-| Debt | tracks itself |
+| Debt | none (D-4 closed by W-7) |
 | Live-risk gate | none (not a live-flag-bearing surface) |
-| Last commit | n/a |
+| Last commit | `37fda67` (B1.c card-wiring repair) |
 
 ---
 
@@ -169,9 +169,7 @@ Coordinator pulls from this list when deciding the next campaign.
 |---|---|---|---|
 | D-1 | DHL webhook activate-call has no per-event HMAC because DHL doesn't sign — IP allowlist is the only structural mitigation (ADR-009 caveat) | Security Reviewer | P1 — review before live-prod |
 | D-2 | Operator dashboard has no carrier-actions UI; create-shipment / cancel-shipment must be invoked via API | Implementation Engineer + Dashboard Reviewer | P2 |
-| D-4 | Pre-existing dashboard test failures predate F3.5 — `tests/test_dashboard_*.py` partials | QA Lead | P2 |
 | D-5 | Operator click events not structured-logged; click-path observability is gap | Observability Engineer | P3 |
-| D-7 | `engineering/charter.md` lists 23 roles; `org/roles.md` lists matching set but several roles have no agent definition file yet (Backend Architect, Customs Compliance, Audit Evidence, Operator Safety, Production Readiness, Gap Hunter, ADR Historian, etc.) — they execute as Coordinator passes for now | Coordinator | P3 |
 
 ---
 
