@@ -5040,6 +5040,45 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           const badge        = (n, color) => (
             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: n === 0 ? 'var(--badge-green-bg)' : color.bg, color: n === 0 ? 'var(--badge-green-text)' : color.text }}>{n}</span>
           );
+          // UI-3.1a: derive operator-readable inventory lifecycle from existing payload.
+          // Inputs are purely existing backend fields — no new endpoints, no new allowlist.
+          //   warehouseAudit.summary.{total_items, scanned_items, dispatched_items, missing_items}
+          //   audit.wfirma_export.wfirma_pz_doc_id  → reserved signal
+          // Operator-readable labels live in a map; technical key is exposed via data-lifecycle-state.
+          const wfExp = (audit && audit.wfirma_export) || {};
+          const hasPzDocId = !!(wfExp.wfirma_pz_doc_id && String(wfExp.wfirma_pz_doc_id).trim());
+          const lifecycleState = (() => {
+            if (!wa || isErr) return 'unknown';
+            const total      = Number(summary.total_items      || 0);
+            const scanned    = Number(summary.scanned_items    || 0);
+            const dispatched = Number(summary.dispatched_items || 0);
+            if (total === 0) return 'unknown';
+            if (dispatched > 0 && dispatched >= total) return 'dispatched';
+            if (dispatched > 0)                        return 'partial_dispatch';
+            if (scanned === 0)                         return 'awaiting';
+            if (scanned < total)                       return 'partial_received';
+            if (hasPzDocId)                            return 'reserved';
+            return 'in_warehouse';
+          })();
+          const lifecycleLabel = {
+            unknown:          'No packing list',
+            awaiting:         'Awaiting receipt',
+            partial_received: 'Partially received',
+            in_warehouse:     'In warehouse',
+            reserved:         'Reserved (PZ created)',
+            partial_dispatch: 'Partial dispatch',
+            dispatched:       'Dispatched',
+          }[lifecycleState] || 'No packing list';
+          const lifecycleTone = {
+            unknown:          { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+            awaiting:         { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+            partial_received: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+            in_warehouse:     { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+            reserved:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+            partial_dispatch: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+            dispatched:       { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          }[lifecycleState] || { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
+
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {/* Phase 2: Readiness banner */}
@@ -5052,6 +5091,23 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 loading={batchReadinessLoading && !batchReadiness}
                 error={batchReadinessError}
               />
+              {/* UI-3.1a: operator-readable inventory lifecycle badge (read-only, derived). */}
+              <div
+                data-testid="warehouse-inventory-lifecycle-badge"
+                data-lifecycle-state={lifecycleState}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-2)' }}
+              >
+                <span style={{ color: 'var(--text-3)' }}>Inventory lifecycle:</span>
+                <span
+                  data-testid="warehouse-inventory-lifecycle-pill"
+                  style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: lifecycleTone.bg, color: lifecycleTone.text, border: `1px solid ${lifecycleTone.border}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                >
+                  {lifecycleLabel}
+                </span>
+                <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                  Derived from warehouse audit + wFirma PZ state — no manual control.
+                </span>
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 Warehouse Audit</div>
                 <Btn small variant="outline" onClick={loadWarehouseAudit} disabled={warehouseAuditLoading}>
