@@ -211,8 +211,8 @@ def test_carrier_overview_has_no_action_button_markers(forbidden_marker):
 def test_carrier_overview_empty_state_text_present():
     snippet = _carrier_tab_snippet(_src())
     assert (
-        "No carrier shipments yet" in snippet
-    ), "carrier overview empty-state copy not found"
+        "No DHL Express shipments yet" in snippet
+    ), "DHL Express empty-state copy not found"
 
 
 def test_carrier_overview_state_badge_renders_via_color_map():
@@ -262,24 +262,92 @@ def test_carrier_overview_does_not_invent_endpoints():
 
 def test_carrier_tab_registered_in_detail_tabs():
     src = _src()
-    # The tab list defines DETAIL_TABS = [..., 'Carrier'].
+    # The tab list defines DETAIL_TABS = [..., 'DHL Express'].
+    # Operator-visible label is "DHL Express", not generic "Carrier".
+    assert "DETAIL_TABS" in src, "DETAIL_TABS array not found"
     assert (
-        "'Carrier'" in src and "DETAIL_TABS" in src
-    ), "Carrier tab not registered in DETAIL_TABS"
+        "'DHL Express'" in src
+    ), "DHL Express tab not registered in DETAIL_TABS"
 
 
-def test_carrier_tab_renders_under_carrier_active_tab():
+def test_carrier_tab_renders_under_dhl_express_active_tab():
     src = _src()
     assert (
-        "activeTab === 'Carrier'" in src
-    ), "carrier-actions-tab not gated by activeTab === 'Carrier'"
+        "activeTab === 'DHL Express'" in src
+    ), "carrier-actions-tab not gated by activeTab === 'DHL Express'"
 
 
 def test_carrier_tab_use_effect_triggers_load():
     src = _src()
-    # The useEffect that fires loadCarrierShipments when the Carrier
-    # tab activates must be present.
+    # The useEffect that fires loadCarrierShipments when the DHL
+    # Express tab activates must be present.
     assert (
-        "activeTab === 'Carrier'" in src
+        "activeTab === 'DHL Express'" in src
         and "loadCarrierShipments" in src
-    ), "carrier-tab useEffect or loader missing"
+    ), "DHL Express tab useEffect or loader missing"
+
+
+# ── 8. W-2.1a — operator-visible "DHL Express" wording ──────────────────────
+
+def test_carrier_overview_uses_dhl_express_wording():
+    """Operator-visible labels must say 'DHL Express', not generic
+    'Carrier Shipments'. Estrella is a Polish DHL Express only
+    integration; the UI must not imply multi-carrier capability."""
+    snippet = _carrier_tab_snippet(_src(), size=8000)
+    assert "DHL Express" in snippet, (
+        "operator-visible 'DHL Express' wording not found in W-2.1 panel"
+    )
+
+
+def test_carrier_overview_does_not_use_generic_carrier_shipments_copy():
+    """The exact phrase 'Carrier Shipments' (operator-visible header
+    that previously appeared) must not be present anywhere in the
+    panel. The technical column header 'Carrier' may still appear in
+    the table column-header row — that renders the backend technical
+    field. The forbidden form is the title-case header phrase."""
+    snippet = _carrier_tab_snippet(_src(), size=8000)
+    assert "Carrier Shipments" not in snippet, (
+        "'Carrier Shipments' generic header still present — should be "
+        "'DHL Express Shipments'"
+    )
+
+
+def test_carrier_overview_does_not_use_generic_carrier_shipments_lowercase():
+    """The lowercase phrases ('carrier shipments', 'No carrier
+    shipments', 'Loading carrier shipments', 'Failed to load carrier
+    shipments') are operator-visible copy and must be replaced."""
+    snippet = _carrier_tab_snippet(_src(), size=8000)
+    for forbidden in (
+        "No carrier shipments",
+        "Loading carrier shipments",
+        "Failed to load carrier shipments",
+        "Read-only view of carrier shipments",
+    ):
+        assert forbidden not in snippet, (
+            f"operator-visible generic copy {forbidden!r} still present"
+        )
+
+
+@pytest.mark.parametrize("forbidden", ["FedEx", "UPS", "fedex", "ups "])
+def test_carrier_overview_does_not_mention_other_carriers(forbidden):
+    """Estrella scope is Polish DHL Express only. The carrier UI must
+    not introduce wording for FedEx / UPS / multi-carrier marketplace
+    behaviour."""
+    snippet = _carrier_tab_snippet(_src(), size=8000)
+    assert forbidden not in snippet, (
+        f"out-of-scope carrier reference {forbidden!r} found in carrier-actions-tab"
+    )
+
+
+def test_carrier_overview_renders_dhl_as_dhl_express_in_row():
+    """Row-render must map the technical `carrier === 'DHL'` value to
+    the operator-visible 'DHL Express'. The literal string 'DHL' as a
+    JS comparison is fine; what we check is that the conditional
+    expression renders 'DHL Express' as the displayed value."""
+    snippet = _carrier_tab_snippet(_src(), size=8000)
+    assert "s.carrier === 'DHL'" in snippet, (
+        "row render must check s.carrier === 'DHL' to map to 'DHL Express'"
+    )
+    assert "'DHL Express'" in snippet, (
+        "'DHL Express' literal not present in row render branch"
+    )

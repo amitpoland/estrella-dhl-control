@@ -2212,7 +2212,7 @@ function OverallReadinessCard({ batchReadiness, loading, error, decisionData, de
 // BATCH DETAIL PAGE (real API)
 // ══════════════════════════════════════════════════════════
 
-const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals', 'Carrier'];
+const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals', 'DHL Express'];
 
 function BatchDetailPage({ batchId, onBack, onToast }) {
   const [audit, setAudit] = React.useState(null);
@@ -2704,7 +2704,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   React.useEffect(() => { if (activeTab === 'Intelligence' && !intelData) loadIntelligence(); }, [activeTab]);
   // Fetch proposals when tab is activated
   React.useEffect(() => { if (activeTab === 'Proposals') loadProposals(); }, [activeTab]);
-  React.useEffect(() => { if (activeTab === 'Carrier') loadCarrierShipments(); }, [activeTab]);
+  React.useEffect(() => { if (activeTab === 'DHL Express') loadCarrierShipments(); }, [activeTab]);
   // Fetch warehouse audit when tab is activated
   React.useEffect(() => { if (activeTab === 'Warehouse' && !warehouseAudit) loadWarehouseAudit(); }, [activeTab]);
   // Fetch sales linkage when tab is activated
@@ -4027,16 +4027,18 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           </div>
         )}
 
-        {/* ── W-2.1: read-only carrier overview ─────────────────────────
+        {/* ── W-2.1: read-only DHL Express shipment overview ───────────
             Read-only by design. No write actions, no create-shipment,
             no label-print, no cancel — those land in W-2.3 / W-2.4.
             Endpoint: GET /api/v1/carrier/shipments/by-batch/{batch_id}.
+            (Backend `carrier` field is technical; operator copy says
+             "DHL Express" — Estrella's only carrier integration.)
             No POST/PUT/PATCH/DELETE in this block.
         */}
-        {activeTab === 'Carrier' && (
+        {activeTab === 'DHL Express' && (
           <div data-testid="carrier-actions-tab" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 Carrier Shipments</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 DHL Express Shipments</div>
               <Btn
                 small
                 variant="outline"
@@ -4049,27 +4051,27 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
             </div>
 
             <div data-testid="carrier-overview-mode-note" style={{ fontSize: 11, color: 'var(--text-3)' }}>
-              Read-only view of carrier shipments registered for this batch.
+              Read-only view of DHL Express shipments registered for this batch.
               Operator actions (create, print, hand over, cancel) are not available here yet.
             </div>
 
             <Card data-testid="carrier-shipment-panel" style={{ padding: 0 }}>
               {carrierShipmentsLoading && carrierShipments.length === 0 && (
                 <div data-testid="carrier-shipments-loading" style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
-                  Loading carrier shipments…
+                  Loading DHL Express shipments…
                 </div>
               )}
 
               {!carrierShipmentsLoading && carrierShipmentsError && (
                 <div data-testid="carrier-shipments-error" style={{ padding: 16, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', borderRadius: 4, fontSize: 12 }}>
-                  Failed to load carrier shipments: {carrierShipmentsError}
+                  Failed to load DHL Express shipments: {carrierShipmentsError}
                 </div>
               )}
 
               {!carrierShipmentsLoading && !carrierShipmentsError && carrierShipments.length === 0 && (
                 <div data-testid="carrier-shipments-empty" style={{ padding: 28, textAlign: 'center' }}>
                   <div style={{ fontSize: 28, marginBottom: 8 }}>📭</div>
-                  <div style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 600 }}>No carrier shipments yet</div>
+                  <div style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 600 }}>No DHL Express shipments yet</div>
                   <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
                     No shipments have been registered for this batch.
                   </div>
@@ -4110,7 +4112,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                             data-shipment-state={state}
                             style={{ borderTop: '1px solid var(--border-subtle)' }}
                           >
-                            <td style={{ padding: '8px 12px', color: 'var(--text)', fontWeight: 600 }}>{s.carrier || '—'}</td>
+                            <td style={{ padding: '8px 12px', color: 'var(--text)', fontWeight: 600 }}>{(s.carrier === 'DHL' ? 'DHL Express' : s.carrier) || '—'}</td>
                             <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--text)' }}>{s.awb || '—'}</td>
                             <td style={{ padding: '8px 12px' }}>
                               <span
