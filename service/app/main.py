@@ -47,6 +47,9 @@ from .api.routes_batch_readiness import router as batch_readiness_router
 from .api.routes_tracking_db import router as tracking_db_router
 from .api.routes_correction_registry import router as correction_registry_router
 from .api.routes_ledgers import router as ledgers_router
+from .api.routes_carrier_webhook import router as carrier_webhook_router
+from .api.routes_carrier_shadow import router as carrier_shadow_router
+from .api.routes_carrier_actions import router as carrier_actions_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -212,6 +215,9 @@ app.include_router(batch_readiness_router)
 app.include_router(tracking_db_router)  # /events/* before tracking_router's /{tracking_no}
 app.include_router(correction_registry_router)
 app.include_router(ledgers_router)
+app.include_router(carrier_webhook_router)
+app.include_router(carrier_shadow_router)   # static paths (shadow/log, status) before dynamic
+app.include_router(carrier_actions_router)  # dynamic paths ({batch_id}/shipment)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
