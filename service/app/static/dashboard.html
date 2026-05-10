@@ -5854,10 +5854,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           const blockingReasons = rp && !isErr ? (rp.blocking_reasons || []) : [];
           const ready = rp && !isErr && !!rp.ready_to_create;
 
-          const sectionStyle = { padding: 14, marginBottom: 12 };
+          // UI-2a — chrome restyle aligned to Estrella design tokens.
+          // Values only; logic, copy, endpoints and testids unchanged.
+          const sectionStyle = { padding: '14px 18px', marginBottom: 14 };
           const tblStyle = { width: '100%', borderCollapse: 'collapse', fontSize: 11 };
-          const thStyle  = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' };
-          const tdStyle  = { padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' };
+          const thStyle  = { textAlign: 'left', padding: '8px 12px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.06em' };
+          const tdStyle  = { padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' };
 
           const pillStyle = (kind) => {
             const map = {
@@ -8913,7 +8915,7 @@ function WfirmaExportPage({ batches, onViewShipment }) {
           <FormField label="wFirma Customer ID" hint="From wFirma — leave blank if not yet known">
             <Inp value={editingCustomer.wfirma_customer_id || ''} onChange={e => setEditingCustomer({ ...editingCustomer, wfirma_customer_id: e.target.value })} placeholder="e.g. 12345678" />
           </FormField>
-          <div data-testid="customer-search-row" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+          <div data-testid="customer-search-row" style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14 }}>
             <Btn small variant="ghost"
                  disabled={searchBusy || !editingCustomer.client_name?.trim()}
                  onClick={searchWfirmaCustomer}
@@ -8973,7 +8975,7 @@ function WfirmaExportPage({ batches, onViewShipment }) {
           <FormField label="wFirma Product ID" hint="From wFirma — leave blank if not yet known">
             <Inp value={editingProduct.wfirma_product_id || ''} onChange={e => setEditingProduct({ ...editingProduct, wfirma_product_id: e.target.value })} placeholder="e.g. 222111000" />
           </FormField>
-          <div data-testid="product-search-row" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+          <div data-testid="product-search-row" style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14 }}>
             <Btn small variant="ghost"
                  disabled={searchBusy || !editingProduct.product_code?.trim()}
                  onClick={searchWfirmaProduct}
