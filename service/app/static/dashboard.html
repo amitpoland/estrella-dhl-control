@@ -6061,7 +6061,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                             : !rp.reservation_supported ? 'Reservation not supported'
                             : (d.blocking_reasons || [])[0] || 'Document not ready');
                         return (<>
-                          <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                          <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
                             <div style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 0, flex: 1 }}>
                               {alreadyCreated && (
                                 <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 4 }}>
@@ -8341,20 +8341,20 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         return (
           <Modal title="Confirm wFirma Reservation" onClose={() => !createBusy && setCreateConfirm(null)}>
             <div data-testid="wfirma-confirm-modal">
-            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 12, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 14, lineHeight: 1.5 }}>
               You are about to submit <b>one</b> reservation to wFirma. This action calls the wFirma API and reserves stock against this client's order.
             </div>
-            <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', marginBottom: 14, fontSize: 12, lineHeight: 1.6 }}>
+            <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', marginBottom: 14, fontSize: 12, lineHeight: 1.6 }}>
               <div><span style={{ color: 'var(--text-3)' }}>Client:</span> <b style={{ color: 'var(--text)' }}>{createConfirm.client_name}</b></div>
               <div><span style={{ color: 'var(--text-3)' }}>Document:</span> <b style={{ color: 'var(--text)' }}>{d.sales_doc_no || '—'}</b></div>
               {d.client_ref && <div><span style={{ color: 'var(--text-3)' }}>Ref:</span> <b style={{ color: 'var(--text)' }}>{d.client_ref}</b></div>}
               <div><span style={{ color: 'var(--text-3)' }}>Lines:</span> <b style={{ color: 'var(--text)' }}>{lines.length}</b></div>
               <div><span style={{ color: 'var(--text-3)' }}>Total value:</span> <b style={{ color: 'var(--text)' }}>{total != null ? Number(total).toLocaleString('pl-PL', { minimumFractionDigits: 2 }) + ' ' + ccy : '—'}</b></div>
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 14 }}>
               The system will re-run the live wFirma diagnostic before submission. If anything has changed since the preview, the request will be blocked.
             </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <Btn small variant="ghost" disabled={createBusy} onClick={() => setCreateConfirm(null)}>Cancel</Btn>
               <Btn small variant="default" disabled={createBusy}
                 data-testid="wfirma-confirm-submit-btn"
@@ -8927,7 +8927,7 @@ function WfirmaExportPage({ batches, onViewShipment }) {
           {searchInfo && (
             <div data-testid={`customer-search-${searchInfo.kind}`}
                  style={{
-                   fontSize: 11, padding: '6px 10px', borderRadius: 6, marginBottom: 12,
+                   fontSize: 11, padding: '8px 12px', borderRadius: 6, marginBottom: 14,
                    color:      searchInfo.kind === 'hit'  ? 'var(--badge-green-text)'
                             :   searchInfo.kind === 'miss' ? 'var(--text-2)'
                             :                                'var(--badge-red-text)',
@@ -8987,7 +8987,7 @@ function WfirmaExportPage({ batches, onViewShipment }) {
           {searchInfo && (
             <div data-testid={`product-search-${searchInfo.kind}`}
                  style={{
-                   fontSize: 11, padding: '6px 10px', borderRadius: 6, marginBottom: 12,
+                   fontSize: 11, padding: '8px 12px', borderRadius: 6, marginBottom: 14,
                    color:      searchInfo.kind === 'hit'  ? 'var(--badge-green-text)'
                             :   searchInfo.kind === 'miss' ? 'var(--text-2)'
                             :                                'var(--badge-red-text)',
