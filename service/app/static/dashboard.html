@@ -196,6 +196,7 @@ function transformBatch(b) {
     gross:     fmtPLN(b.gross),
     duty:      fmtPLN(b.duty),
     overall:   mapOverall(b.status),
+    action_reason: b.action_reason || '',
     doc_no:    b.doc_no || '',
     timestamp: b.timestamp || '',
     has_sad:   b.has_sad,
@@ -295,14 +296,15 @@ function SessionBanner({ type, onDismiss }) {
 // BASE COMPONENTS
 // ══════════════════════════════════════════════════════════
 
-function Badge({ status, small }) {
+function Badge({ status, small, title }) {
   const s = STATUS_MAP[status] || { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
   return (
-    <span style={{
+    <span title={title || undefined} style={{
       display: 'inline-flex', alignItems: 'center',
       background: s.bg, color: s.text, border: `1px solid ${s.border}`,
       borderRadius: 4, padding: small ? '1px 6px' : '2px 8px',
       fontSize: small ? 10 : 11, fontWeight: 600, letterSpacing: '0.03em', whiteSpace: 'nowrap',
+      cursor: title ? 'help' : undefined,
     }}>{status || 'Unknown'}</span>
   );
 }
@@ -1199,7 +1201,7 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
                   <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right', whiteSpace: 'nowrap' }}>{row.net}</td>
                   <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right', whiteSpace: 'nowrap' }}>{row.gross}</td>
                   <td style={{ padding: '10px 12px', color: 'var(--accent)', fontWeight: 700, textAlign: 'right', whiteSpace: 'nowrap' }}>{row.duty}</td>
-                  <td style={{ padding: '10px 12px', overflow: 'hidden' }}><Badge status={row.overall} small /></td>
+                  <td style={{ padding: '10px 12px', overflow: 'hidden' }}><Badge status={row.overall} small title={row.action_reason || undefined} /></td>
                   <td style={{ padding: '8px 10px', position: 'sticky', right: 0, background: 'var(--card)', zIndex: 2, boxShadow: '-2px 0 6px rgba(0,0,0,0.06)' }}>
                     <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'nowrap' }}>
                       <Btn small variant="outline" onClick={() => onViewShipment(row)} title="View detail">View</Btn>
@@ -7643,7 +7645,7 @@ function ShipmentsTable({ batches, onViewShipment, filterFn, emptyMsg }) {
                 <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-dhl">
                   <span style={{ fontSize: 10, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{row.dhlStatus || 'Not checked'}</span>
                 </td>
-                <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-overall"><Badge status={row.overall} small /></td>
+                <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-overall"><Badge status={row.overall} small title={row.action_reason || undefined} /></td>
                 <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{row.net}</td>
                 <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{row.gross}</td>
                 <td style={{ padding: '10px 12px', color: 'var(--accent)', fontWeight: 700, textAlign: 'right' }}>{row.duty}</td>
