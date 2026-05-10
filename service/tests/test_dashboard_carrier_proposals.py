@@ -268,7 +268,10 @@ def test_create_shipment_info_note_present():
     assert note_idx != -1
     snippet = src[note_idx : note_idx + 600]
     assert "shipper, recipient, package" in snippet
-    assert "W-2.3b" in snippet
+    # Per UI-2c-copy (operator review pass 5185f19): internal phase
+    # code "W-2.3b" was replaced with operator-facing language; pin
+    # the new phrase that signals create_shipment remains deferred.
+    assert "informational only" in snippet
 
 
 def test_create_shipment_has_no_execute_button():

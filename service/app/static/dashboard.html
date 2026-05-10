@@ -4258,8 +4258,9 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
             </div>
 
             <div data-testid="carrier-overview-mode-note" style={{ fontSize: 11, color: 'var(--text-3)' }}>
-              Read-only view of DHL Express shipments registered for this batch.
-              Operator actions (create, print, hand over, cancel) are not available here yet.
+              Read-only summary of DHL Express shipments registered for this batch.
+              Mark label printed, mark handed to carrier, and cancel actions live in the Proposals panel below.
+              Creating a new shipment is not yet available from the dashboard.
             </div>
 
             <Card data-testid="carrier-shipment-panel" style={{ padding: 0 }}>
@@ -4576,14 +4577,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         )}
                         {isCreate && (
                           <div data-testid="carrier-proposal-create-info-note" style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
-                            Create shipment requires shipper, recipient, package, value, and service data. Data-entry form lands in W-2.3b.
+                            Creating a new DHL Express shipment requires shipper, recipient, package, value, and service data. A dedicated form is planned; until then this proposal is informational only.
                           </div>
                         )}
                       </div>
                       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
                         {isCreate && (
                           <span data-testid="carrier-proposal-create-disabled-badge" style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'var(--bg-2)', color: 'var(--text-3)', fontWeight: 600 }}>
-                            Awaiting W-2.3b
+                            Form pending
                           </span>
                         )}
                         {!isCreate && isSimple && isEnabled && (
@@ -4856,13 +4857,22 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           stub_only_error: { bg: 'var(--badge-blue-bg)',  text: 'var(--badge-blue-text)' },
                           both_error:      { bg: 'var(--badge-purple-bg)', text: 'var(--badge-purple-text)' },
                         }[r.diff_outcome] || { bg: 'var(--bg-2)', text: 'var(--text-3)' };
+                        // UI-2c-copy — operator-readable label per diff outcome.
+                        // Technical value stays on data-row-diff for tests and filters.
+                        const diffLabel = {
+                          match:           'Match',
+                          shape_mismatch:  'Shape mismatch',
+                          live_only_error: 'Live response error',
+                          stub_only_error: 'Stub response error',
+                          both_error:      'Both responses errored',
+                        }[r.diff_outcome] || (r.diff_outcome || '—');
                         return (
                           <tr key={r.id || i} data-testid="carrier-shadow-recent-row" data-row-method={r.method || ''} data-row-diff={r.diff_outcome || ''} style={{ borderTop: '1px solid var(--border-subtle)' }}>
                             <td style={{ padding: '6px 10px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{fmtTs(r.created_at)}</td>
                             <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text)' }}>{r.method || '—'}</td>
                             <td style={{ padding: '6px 10px' }}>
-                              <span data-testid="carrier-shadow-diff-badge" style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: diffColor.bg, color: diffColor.text }}>
-                                {r.diff_outcome || '—'}
+                              <span data-testid="carrier-shadow-diff-badge" data-diff-value={r.diff_outcome || ''} style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: diffColor.bg, color: diffColor.text }}>
+                                {diffLabel}
                               </span>
                             </td>
                             <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: 'var(--text-2)' }}>{r.live_status || '—'}</td>
