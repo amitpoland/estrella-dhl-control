@@ -2212,7 +2212,7 @@ function OverallReadinessCard({ batchReadiness, loading, error, decisionData, de
 // BATCH DETAIL PAGE (real API)
 // ══════════════════════════════════════════════════════════
 
-const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals'];
+const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals', 'Carrier'];
 
 function BatchDetailPage({ batchId, onBack, onToast }) {
   const [audit, setAudit] = React.useState(null);
@@ -2256,6 +2256,11 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [proposals, setProposals] = React.useState([]);          // action proposals list
   const [proposalsBusy, setProposalsBusy] = React.useState({});  // proposal_id → bool
   const [proposalsLoading, setProposalsLoading] = React.useState(false);
+  // W-2.1 — read-only carrier overview (carrier-actions-tab + carrier-shipment-panel).
+  // Reads only GET /api/v1/carrier/shipments/by-batch/{batch_id}. No write paths.
+  const [carrierShipments, setCarrierShipments] = React.useState([]);
+  const [carrierShipmentsLoading, setCarrierShipmentsLoading] = React.useState(false);
+  const [carrierShipmentsError, setCarrierShipmentsError] = React.useState('');
   const [warehouseAudit, setWarehouseAudit] = React.useState(null);    // null | full audit response
   const [warehouseAuditLoading, setWarehouseAuditLoading] = React.useState(false);
   const [salesLinkage, setSalesLinkage] = React.useState(null);        // null | linkage response
@@ -2378,6 +2383,23 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
       setProposals(d.proposals || []);
     } catch (e) { setProposals([]); }
     setProposalsLoading(false);
+  }, [batchId]);
+
+  // W-2.1 — read-only carrier shipments for the current batch.
+  // Endpoint: GET /api/v1/carrier/shipments/by-batch/{batch_id}.
+  // No write paths. No POST/PUT/PATCH/DELETE. No action buttons in the
+  // carrier overview panel — write actions stay in subsequent W-2.x phases.
+  const loadCarrierShipments = React.useCallback(async () => {
+    setCarrierShipmentsLoading(true);
+    setCarrierShipmentsError('');
+    try {
+      const d = await apiFetch(`/api/v1/carrier/shipments/by-batch/${encodeURIComponent(batchId)}`);
+      setCarrierShipments(Array.isArray(d.shipments) ? d.shipments : []);
+    } catch (e) {
+      setCarrierShipments([]);
+      setCarrierShipmentsError(e.message || 'Failed to load carrier shipments');
+    }
+    setCarrierShipmentsLoading(false);
   }, [batchId]);
 
   const loadWarehouseAudit = React.useCallback(async () => {
@@ -2682,6 +2704,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   React.useEffect(() => { if (activeTab === 'Intelligence' && !intelData) loadIntelligence(); }, [activeTab]);
   // Fetch proposals when tab is activated
   React.useEffect(() => { if (activeTab === 'Proposals') loadProposals(); }, [activeTab]);
+  React.useEffect(() => { if (activeTab === 'Carrier') loadCarrierShipments(); }, [activeTab]);
   // Fetch warehouse audit when tab is activated
   React.useEffect(() => { if (activeTab === 'Warehouse' && !warehouseAudit) loadWarehouseAudit(); }, [activeTab]);
   // Fetch sales linkage when tab is activated
@@ -4001,6 +4024,118 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 </Card>
               );
             })}
+          </div>
+        )}
+
+        {/* ── W-2.1: read-only carrier overview ─────────────────────────
+            Read-only by design. No write actions, no create-shipment,
+            no label-print, no cancel — those land in W-2.3 / W-2.4.
+            Endpoint: GET /api/v1/carrier/shipments/by-batch/{batch_id}.
+            No POST/PUT/PATCH/DELETE in this block.
+        */}
+        {activeTab === 'Carrier' && (
+          <div data-testid="carrier-actions-tab" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 Carrier Shipments</div>
+              <Btn
+                small
+                variant="outline"
+                data-testid="carrier-shipments-refresh-btn"
+                onClick={loadCarrierShipments}
+                disabled={carrierShipmentsLoading}
+              >
+                {carrierShipmentsLoading ? 'Loading…' : '↺ Refresh'}
+              </Btn>
+            </div>
+
+            <div data-testid="carrier-overview-mode-note" style={{ fontSize: 11, color: 'var(--text-3)' }}>
+              Read-only view of carrier shipments registered for this batch.
+              Operator actions (create, print, hand over, cancel) are not available here yet.
+            </div>
+
+            <Card data-testid="carrier-shipment-panel" style={{ padding: 0 }}>
+              {carrierShipmentsLoading && carrierShipments.length === 0 && (
+                <div data-testid="carrier-shipments-loading" style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                  Loading carrier shipments…
+                </div>
+              )}
+
+              {!carrierShipmentsLoading && carrierShipmentsError && (
+                <div data-testid="carrier-shipments-error" style={{ padding: 16, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', borderRadius: 4, fontSize: 12 }}>
+                  Failed to load carrier shipments: {carrierShipmentsError}
+                </div>
+              )}
+
+              {!carrierShipmentsLoading && !carrierShipmentsError && carrierShipments.length === 0 && (
+                <div data-testid="carrier-shipments-empty" style={{ padding: 28, textAlign: 'center' }}>
+                  <div style={{ fontSize: 28, marginBottom: 8 }}>📭</div>
+                  <div style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 600 }}>No carrier shipments yet</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
+                    No shipments have been registered for this batch.
+                  </div>
+                </div>
+              )}
+
+              {carrierShipments.length > 0 && (
+                <div data-testid="carrier-shipments-list">
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: 'var(--bg-2)', textAlign: 'left' }}>
+                        {['Carrier', 'AWB', 'State', 'Label', 'Manifest', 'Created', 'Updated'].map(h => (
+                          <th key={h} style={{ padding: '8px 12px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {carrierShipments.map((s, i) => {
+                        const state = s.state || '—';
+                        const stateColor = {
+                          created:           { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)' },
+                          label_created:     { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)' },
+                          label_printed:     { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)' },
+                          handed_to_carrier: { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)' },
+                          delivered:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)' },
+                          voided:            { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)' },
+                        }[state] || { bg: 'var(--bg-2)', text: 'var(--text-3)' };
+                        const sha = (s.label_sha256 || '').slice(0, 12);
+                        const labelAvailable = !!s.label_sha256;
+                        const fmt = (ts) => {
+                          if (!ts) return '—';
+                          try { return new Date(ts).toLocaleString('pl-PL'); } catch { return ts; }
+                        };
+                        return (
+                          <tr
+                            key={s.id || s.awb || i}
+                            data-testid="carrier-shipment-row"
+                            data-shipment-state={state}
+                            style={{ borderTop: '1px solid var(--border-subtle)' }}
+                          >
+                            <td style={{ padding: '8px 12px', color: 'var(--text)', fontWeight: 600 }}>{s.carrier || '—'}</td>
+                            <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--text)' }}>{s.awb || '—'}</td>
+                            <td style={{ padding: '8px 12px' }}>
+                              <span
+                                data-testid="carrier-shipment-state-badge"
+                                style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: stateColor.bg, color: stateColor.text }}
+                              >
+                                {state}
+                              </span>
+                            </td>
+                            <td style={{ padding: '8px 12px', color: labelAvailable ? 'var(--text)' : 'var(--text-3)', fontFamily: 'monospace', fontSize: 11 }}>
+                              {labelAvailable ? sha + '…' : 'no label'}
+                            </td>
+                            <td style={{ padding: '8px 12px', color: s.manifest_path ? 'var(--text-2)' : 'var(--text-3)', fontFamily: 'monospace', fontSize: 11 }}>
+                              {s.manifest_path ? '✓ on disk' : '—'}
+                            </td>
+                            <td style={{ padding: '8px 12px', color: 'var(--text-3)' }}>{fmt(s.created_at)}</td>
+                            <td style={{ padding: '8px 12px', color: 'var(--text-3)' }}>{fmt(s.updated_at)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
           </div>
         )}
 
