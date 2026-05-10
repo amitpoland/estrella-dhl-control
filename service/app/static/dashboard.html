@@ -2268,6 +2268,21 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [carrierTransitions, setCarrierTransitions] = React.useState([]);
   const [carrierTransitionsLoading, setCarrierTransitionsLoading] = React.useState(false);
   const [carrierTransitionsError, setCarrierTransitionsError] = React.useState('');
+  // W-2.3 — DHL Express action proposals + confirmation drawer.
+  // Reads:  GET /api/v1/carrier/proposals/by-batch/{batch_id}.
+  // Writes: POST /api/v1/carrier/actions/mark-label-printed/execute
+  //         POST /api/v1/carrier/actions/mark-handed-to-carrier/execute
+  //         POST /api/v1/carrier/actions/cancel-shipment/execute
+  // Forbidden in this phase: POST /api/v1/carrier/actions/create-shipment/execute
+  // (create-shipment requires a full data-entry form — lands in W-2.3b).
+  // All POSTs are gated behind carrierConfirmDrawer.proposal !== null and
+  // happen only inside executeCarrierProposal — never from the proposal list.
+  const [carrierProposals, setCarrierProposals] = React.useState([]);
+  const [carrierProposalsLoading, setCarrierProposalsLoading] = React.useState(false);
+  const [carrierProposalsError, setCarrierProposalsError] = React.useState('');
+  const [carrierConfirmDrawer, setCarrierConfirmDrawer] = React.useState(null);
+    // shape when open: { proposal, actor, reason, busy, error }
+  const [carrierExecuteResult, setCarrierExecuteResult] = React.useState(null);
   const [warehouseAudit, setWarehouseAudit] = React.useState(null);    // null | full audit response
   const [warehouseAuditLoading, setWarehouseAuditLoading] = React.useState(false);
   const [salesLinkage, setSalesLinkage] = React.useState(null);        // null | linkage response
@@ -2429,6 +2444,100 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     }
     setCarrierTransitionsLoading(false);
   }, []);
+
+  // W-2.3 — load DHL Express action proposals for this batch.
+  // Read-only. Endpoint: GET /api/v1/carrier/proposals/by-batch/{batch_id}.
+  const loadCarrierProposals = React.useCallback(async () => {
+    setCarrierProposalsLoading(true);
+    setCarrierProposalsError('');
+    try {
+      const d = await apiFetch(`/api/v1/carrier/proposals/by-batch/${encodeURIComponent(batchId)}`);
+      setCarrierProposals(Array.isArray(d.proposals) ? d.proposals : []);
+    } catch (e) {
+      setCarrierProposals([]);
+      setCarrierProposalsError(e.message || 'Failed to load DHL Express proposals');
+    }
+    setCarrierProposalsLoading(false);
+  }, [batchId]);
+
+  // W-2.3 — action → execute-endpoint map. create_shipment is intentionally
+  // ABSENT — it requires a data-entry form (W-2.3b), not a confirmation drawer.
+  // Any future caller asking for create_shipment via this map will receive
+  // null and the drawer-open helper refuses to open.
+  const carrierExecuteEndpointFor = React.useCallback((action) => {
+    if (action === 'mark_label_printed')      return '/api/v1/carrier/actions/mark-label-printed/execute';
+    if (action === 'mark_handed_to_carrier')  return '/api/v1/carrier/actions/mark-handed-to-carrier/execute';
+    if (action === 'cancel_shipment')         return '/api/v1/carrier/actions/cancel-shipment/execute';
+    return null;
+  }, []);
+
+  // W-2.3 — open the confirmation drawer. Refuses to open for proposals
+  // whose action is not in the simple-actions allowlist (i.e., refuses
+  // create_shipment) or whose enabled flag is false. This is the only
+  // path that can arm an execute POST.
+  const openCarrierConfirmDrawer = React.useCallback((proposal) => {
+    if (!proposal || !proposal.enabled) return;
+    if (!carrierExecuteEndpointFor(proposal.action)) return;
+    setCarrierConfirmDrawer({
+      proposal,
+      actor:  '',
+      reason: '',
+      busy:   false,
+      error:  '',
+    });
+    setCarrierExecuteResult(null);
+  }, [carrierExecuteEndpointFor]);
+
+  const closeCarrierConfirmDrawer = React.useCallback(() => {
+    setCarrierConfirmDrawer(null);
+  }, []);
+
+  // W-2.3 — execute a confirmed DHL Express action. Single POST site. Body
+  // shape matches _ShipmentActionBody on the backend:
+  //   { carrier, awb, proposal_id, actor, reason }
+  // On success refreshes proposals + DHL Express shipment list + the
+  // selected shipment's transitions if any.
+  const executeCarrierProposal = React.useCallback(async () => {
+    const drawer = carrierConfirmDrawer;
+    if (!drawer || !drawer.proposal) return;
+    const proposal = drawer.proposal;
+    const url = carrierExecuteEndpointFor(proposal.action);
+    if (!url) return;
+    const actor  = (drawer.actor  || '').trim();
+    const reason = (drawer.reason || '').trim();
+    if (!actor) {
+      setCarrierConfirmDrawer({ ...drawer, error: 'Operator name (actor) is required' });
+      return;
+    }
+    setCarrierConfirmDrawer({ ...drawer, busy: true, error: '' });
+    setCarrierExecuteResult(null);
+    try {
+      const body = {
+        carrier:     proposal.carrier || 'DHL',
+        awb:         proposal.awb     || '',
+        proposal_id: proposal.proposal_id,
+        actor:       actor,
+        reason:      reason,
+      };
+      const d = await apiFetch(url, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      setCarrierExecuteResult({ ok: true, action: proposal.action, response: d });
+      setCarrierConfirmDrawer(null);
+      // Refresh: proposals, shipments, and the selected shipment's
+      // transitions if a shipment is currently selected.
+      await Promise.all([
+        loadCarrierProposals(),
+        loadCarrierShipments(),
+        selectedShipmentId ? loadCarrierTransitions(selectedShipmentId) : Promise.resolve(),
+      ]);
+    } catch (e) {
+      setCarrierConfirmDrawer({ ...drawer, busy: false, error: e.message || 'Execute failed' });
+      setCarrierExecuteResult({ ok: false, action: proposal.action, error: e.message || 'Execute failed' });
+    }
+  }, [carrierConfirmDrawer, carrierExecuteEndpointFor, loadCarrierProposals, loadCarrierShipments, loadCarrierTransitions, selectedShipmentId]);
 
   const loadWarehouseAudit = React.useCallback(async () => {
     setWarehouseAuditLoading(true);
@@ -2733,6 +2842,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   // Fetch proposals when tab is activated
   React.useEffect(() => { if (activeTab === 'Proposals') loadProposals(); }, [activeTab]);
   React.useEffect(() => { if (activeTab === 'DHL Express') loadCarrierShipments(); }, [activeTab]);
+  React.useEffect(() => { if (activeTab === 'DHL Express') loadCarrierProposals(); }, [activeTab]);
   React.useEffect(() => { loadCarrierTransitions(selectedShipmentId); }, [selectedShipmentId, loadCarrierTransitions]);
   // Fetch warehouse audit when tab is activated
   React.useEffect(() => { if (activeTab === 'Warehouse' && !warehouseAudit) loadWarehouseAudit(); }, [activeTab]);
@@ -4297,6 +4407,272 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     </Card>
                   )}
                 </div>
+              );
+            })()}
+
+            {/* ── W-2.3: DHL Express action proposals + confirmation drawer ──
+                The proposal panel itself is a read-only render of every
+                proposal the backend builder emits. It contains NO POST.
+                The "Review action" button OPENS the confirmation drawer
+                only — it does not POST.
+                The single POST site lives inside executeCarrierProposal
+                (declared above) and fires only for the three simple
+                actions (mark_label_printed / mark_handed_to_carrier /
+                cancel_shipment). create_shipment renders read-only with
+                an explicit info note pointing at the future W-2.3b
+                data-entry form.
+            */}
+            <div data-testid="carrier-proposals-panel" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>⚡ DHL Express Action Proposals</div>
+                <Btn
+                  small
+                  variant="outline"
+                  data-testid="carrier-proposals-refresh-btn"
+                  onClick={loadCarrierProposals}
+                  disabled={carrierProposalsLoading}
+                >
+                  {carrierProposalsLoading ? 'Loading…' : '↺ Refresh'}
+                </Btn>
+              </div>
+
+              {carrierProposalsLoading && carrierProposals.length === 0 && (
+                <div data-testid="carrier-proposals-loading" style={{ padding: 16, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                  Loading DHL Express proposals…
+                </div>
+              )}
+
+              {!carrierProposalsLoading && carrierProposalsError && (
+                <div data-testid="carrier-proposals-error" style={{ padding: 14, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', borderRadius: 4, fontSize: 12 }}>
+                  Failed to load DHL Express proposals: {carrierProposalsError}
+                </div>
+              )}
+
+              {!carrierProposalsLoading && !carrierProposalsError && carrierProposals.length === 0 && (
+                <div data-testid="carrier-proposals-empty" style={{ padding: 18, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                  No DHL Express action proposals for this batch.
+                </div>
+              )}
+
+              {carrierProposals.map((p, i) => {
+                const isCreate     = p.action === 'create_shipment';
+                const isSimple     = !!carrierExecuteEndpointFor(p.action);
+                const isCancel     = p.action === 'cancel_shipment';
+                const isHandover   = p.action === 'mark_handed_to_carrier';
+                const isEnabled    = !!p.enabled;
+                const sevBg = {
+                  blocked:  'var(--badge-red-bg)',
+                  warn:     'var(--badge-amber-bg)',
+                  warning:  'var(--badge-amber-bg)',
+                  info:     'var(--badge-blue-bg)',
+                  ok:       'var(--badge-green-bg)',
+                }[p.severity] || 'var(--bg-2)';
+                const sevText = {
+                  blocked:  'var(--badge-red-text)',
+                  warn:     'var(--badge-amber-text)',
+                  warning:  'var(--badge-amber-text)',
+                  info:     'var(--badge-blue-text)',
+                  ok:       'var(--badge-green-text)',
+                }[p.severity] || 'var(--text-3)';
+                return (
+                  <Card
+                    key={p.proposal_id || i}
+                    data-testid="carrier-proposal-row"
+                    data-proposal-action={p.action || ''}
+                    data-proposal-enabled={isEnabled ? 'true' : 'false'}
+                    style={{ padding: '12px 14px' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, justifyContent: 'space-between' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>
+                          {p.title || p.action || 'DHL Express action'}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-3)', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                          <span data-testid="carrier-proposal-action">{p.action || '—'}</span>
+                          {p.awb && <span>AWB: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{p.awb}</span></span>}
+                          {p.state && <span>State: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{p.state}</span></span>}
+                          <span
+                            data-testid="carrier-proposal-severity-badge"
+                            style={{ display: 'inline-block', padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 700, background: sevBg, color: sevText }}
+                          >
+                            {p.severity || 'info'}
+                          </span>
+                        </div>
+                        {p.reason && (
+                          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{p.reason}</div>
+                        )}
+                        {!isEnabled && Array.isArray(p.blocking_reasons) && p.blocking_reasons.length > 0 && (
+                          <div data-testid="carrier-proposal-blocking-reasons" style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>
+                            {p.blocking_reasons.map((br, j) => <div key={j}>• {br}</div>)}
+                          </div>
+                        )}
+                        {isCreate && (
+                          <div data-testid="carrier-proposal-create-info-note" style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+                            Create shipment requires shipper, recipient, package, value, and service data. Data-entry form lands in W-2.3b.
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                        {isCreate && (
+                          <span data-testid="carrier-proposal-create-disabled-badge" style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'var(--bg-2)', color: 'var(--text-3)', fontWeight: 600 }}>
+                            Awaiting W-2.3b
+                          </span>
+                        )}
+                        {!isCreate && isSimple && isEnabled && (
+                          <Btn
+                            small
+                            variant="primary"
+                            data-testid="carrier-proposal-review-btn"
+                            data-proposal-action-target={p.action}
+                            onClick={() => openCarrierConfirmDrawer(p)}
+                          >
+                            {isCancel ? 'Review cancel' : isHandover ? 'Review handover' : 'Review action'}
+                          </Btn>
+                        )}
+                        {!isCreate && isSimple && !isEnabled && (
+                          <span data-testid="carrier-proposal-disabled-note" style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                            Disabled
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </Card>
+                );
+              })}
+
+              {carrierExecuteResult && carrierExecuteResult.ok && (
+                <div data-testid="carrier-execute-success" style={{ padding: 10, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', borderRadius: 4, fontSize: 11 }}>
+                  ✓ DHL Express action <span style={{ fontFamily: 'monospace' }}>{carrierExecuteResult.action}</span> executed.
+                </div>
+              )}
+              {carrierExecuteResult && !carrierExecuteResult.ok && (
+                <div data-testid="carrier-execute-failure" style={{ padding: 10, background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', borderRadius: 4, fontSize: 11 }}>
+                  ✕ DHL Express action <span style={{ fontFamily: 'monospace' }}>{carrierExecuteResult.action}</span> failed: {carrierExecuteResult.error}
+                </div>
+              )}
+            </div>
+
+            {/* ── W-2.3: confirmation drawer ──────────────────────────────
+                Single armed POST site. The drawer is gated on
+                carrierConfirmDrawer.proposal !== null AND on the
+                action being in the simple-actions allowlist (enforced
+                by openCarrierConfirmDrawer above and by
+                carrierExecuteEndpointFor inside executeCarrierProposal).
+                create_shipment can never reach this drawer.
+            */}
+            {carrierConfirmDrawer && carrierConfirmDrawer.proposal && (() => {
+              const p = carrierConfirmDrawer.proposal;
+              const isCancel   = p.action === 'cancel_shipment';
+              const isHandover = p.action === 'mark_handed_to_carrier';
+              const isPrint    = p.action === 'mark_label_printed';
+              const headerText = isCancel
+                ? 'Confirm DHL Express shipment cancellation'
+                : isHandover
+                  ? 'Confirm DHL Express handover'
+                  : isPrint
+                    ? 'Confirm DHL Express label printed'
+                    : 'Confirm DHL Express action';
+              return (
+                <Card data-testid="carrier-confirm-drawer" data-confirm-action={p.action} style={{ padding: 14, borderLeft: '4px solid var(--badge-blue-border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <div data-testid="carrier-confirm-drawer-header" style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{headerText}</div>
+                    <Btn
+                      small
+                      variant="outline"
+                      data-testid="carrier-confirm-drawer-cancel-btn"
+                      onClick={closeCarrierConfirmDrawer}
+                      disabled={carrierConfirmDrawer.busy}
+                    >
+                      ✕ Cancel
+                    </Btn>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, marginBottom: 10 }}>
+                    <div>
+                      <span style={{ color: 'var(--text-3)', display: 'inline-block', minWidth: 110 }}>DHL Express action:</span>
+                      <span data-testid="carrier-confirm-drawer-action" style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{p.action}</span>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-3)', display: 'inline-block', minWidth: 110 }}>AWB:</span>
+                      <span data-testid="carrier-confirm-drawer-awb" style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{p.awb || '—'}</span>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-3)', display: 'inline-block', minWidth: 110 }}>Current state:</span>
+                      <span data-testid="carrier-confirm-drawer-state" style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{p.state || '—'}</span>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-3)', display: 'inline-block', minWidth: 110 }}>Proposal id:</span>
+                      <span data-testid="carrier-confirm-drawer-proposal-id" style={{ fontFamily: 'monospace', color: 'var(--text-3)', fontSize: 10 }}>{p.proposal_id}</span>
+                    </div>
+                  </div>
+
+                  {isHandover && (
+                    <div data-testid="carrier-confirm-drawer-handover-note" style={{ padding: 8, background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)', borderRadius: 4, fontSize: 11, marginBottom: 10 }}>
+                      📦 DHL Express handover — once confirmed, the shipment is recorded as handed to DHL Express. Track via the standard MyDHL API channel.
+                    </div>
+                  )}
+
+                  {isCancel && (
+                    <div data-testid="carrier-confirm-drawer-cancel-warning" style={{ padding: 8, background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', borderRadius: 4, fontSize: 11, marginBottom: 10, fontWeight: 600 }}>
+                      ⚠ Irreversible: cancelling a DHL Express shipment voids the AWB. This action cannot be undone from the dashboard. Confirm only after verifying the shipment has not been physically handed over.
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700 }}>Operator (actor) — required</label>
+                    <input
+                      type="text"
+                      data-testid="carrier-confirm-drawer-actor-input"
+                      value={carrierConfirmDrawer.actor}
+                      onChange={(e) => setCarrierConfirmDrawer({ ...carrierConfirmDrawer, actor: e.target.value })}
+                      placeholder="Operator name (e.g. amit.gupta)"
+                      disabled={carrierConfirmDrawer.busy}
+                      style={{ padding: '6px 10px', fontSize: 12, border: '1px solid var(--border-subtle)', borderRadius: 4, fontFamily: 'inherit' }}
+                    />
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700, marginTop: 4 }}>Reason (optional)</label>
+                    <input
+                      type="text"
+                      data-testid="carrier-confirm-drawer-reason-input"
+                      value={carrierConfirmDrawer.reason}
+                      onChange={(e) => setCarrierConfirmDrawer({ ...carrierConfirmDrawer, reason: e.target.value })}
+                      placeholder="Free text — written to the audit trail"
+                      disabled={carrierConfirmDrawer.busy}
+                      style={{ padding: '6px 10px', fontSize: 12, border: '1px solid var(--border-subtle)', borderRadius: 4, fontFamily: 'inherit' }}
+                    />
+                  </div>
+
+                  {carrierConfirmDrawer.error && (
+                    <div data-testid="carrier-confirm-drawer-error" style={{ padding: 8, background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', borderRadius: 4, fontSize: 11, marginBottom: 8 }}>
+                      {carrierConfirmDrawer.error}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                    <Btn
+                      small
+                      variant="outline"
+                      data-testid="carrier-confirm-drawer-back-btn"
+                      onClick={closeCarrierConfirmDrawer}
+                      disabled={carrierConfirmDrawer.busy}
+                    >
+                      Back
+                    </Btn>
+                    <Btn
+                      small
+                      variant={isCancel ? 'danger' : 'primary'}
+                      data-testid="carrier-confirm-drawer-execute-btn"
+                      onClick={executeCarrierProposal}
+                      disabled={carrierConfirmDrawer.busy || !(carrierConfirmDrawer.actor || '').trim()}
+                    >
+                      {carrierConfirmDrawer.busy
+                        ? '⟳ Executing…'
+                        : isCancel ? 'Confirm cancellation'
+                        : isHandover ? 'Confirm handover'
+                        : isPrint ? 'Confirm label printed'
+                        : 'Confirm'}
+                    </Btn>
+                  </div>
+                </Card>
               );
             })()}
           </div>
