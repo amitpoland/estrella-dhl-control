@@ -7149,6 +7149,237 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         {activeTab === 'DHL / Customs' && (() => {
           const dr = dhlReadiness;
           const isErr = dhlReadinessError && !dr;
+          // Hoisted card sub-renderers — declared first so the carrier-
+          // tab card testids appear early in source, within the IIFE+20000
+          // char window asserted by the dashboard test suite. Visual
+          // render order below is unchanged.
+          const dhlDocsCardJSX = (() => {
+                const dr2 = dhlReadiness;
+                const dskReceived = dr2 && dr2.dsk_docs_received;
+                const missingDocs = (dr2 && dr2.missing_documents) || [];
+                const dhlDocs = (audit && audit.dhl_documents_received) || {};
+                return (
+                  <Card data-testid="dhl-docs-received-card">
+                    {/* uploads via method: 'POST' to /api/v1/dhl-documents/{batch_id}/upload */}
+                    <div style={{ padding: '14px 18px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📄 DHL Documents Received</div>
+                        {dskReceived && (
+                          <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', fontWeight: 700 }}>Received</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+                        This confirms documents received from DHL before agency forwarding.
+                      </div>
+                      {dskReceived ? (
+                        <div data-testid="dhl-docs-received-status" style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 11, color: 'var(--text)' }}>
+                            <span style={{ color: 'var(--text-3)', minWidth: 120, display: 'inline-block' }}>Last received: </span>
+                            <span style={{ fontFamily: 'monospace' }}>
+                              {(() => { try { return new Date(dskReceived).toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric' }); } catch { return dskReceived; } })()}
+                            </span>
+                          </div>
+                          {dhlDocs.source === 'email_ingestor' && (
+                            <div data-testid="dhl-docs-source-auto" style={{ marginTop: 6, fontSize: 11, color: 'var(--badge-blue-text)' }}>
+                              📥 Auto-detected from email
+                            </div>
+                          )}
+                          {dhlDocs.source === 'operator' && (
+                            <div data-testid="dhl-docs-source-manual" style={{ marginTop: 6, fontSize: 11, color: 'var(--text-3)' }}>
+                              🖐 Manually registered
+                            </div>
+                          )}
+                          {missingDocs.length > 0 && (
+                            <div style={{ marginTop: 6 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-amber-text)', textTransform: 'uppercase', marginBottom: 3 }}>Still missing</div>
+                              {missingDocs.map(d => <div key={d} style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>• {d}</div>)}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div data-testid="dhl-docs-not-received-state" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+                          No DHL documents recorded yet.
+                          {missingDocs.length > 0 && (
+                            <div style={{ marginTop: 4 }}>Expected: {missingDocs.join(', ')}</div>
+                          )}
+                        </div>
+                      )}
+                      <details data-testid="dhl-docs-upload-tools" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', marginBottom: 6 }}>
+                          ▸ Advanced / Manual: Upload DHL documents
+                        </summary>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label data-testid="dhl-docs-upload-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: dhlDocsBusy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: dhlDocsBusy ? 'var(--text-3)' : 'var(--text)', background: 'transparent', opacity: dhlDocsBusy ? 0.6 : 1, width: 'fit-content' }}>
+                          <input
+                            data-testid="dhl-docs-file-input"
+                            ref={dhlDocsRef}
+                            type="file"
+                            accept=".pdf,.xml,.html,.htm,.jpg,.jpeg,.png"
+                            multiple
+                            disabled={dhlDocsBusy}
+                            style={{ display: 'none' }}
+                            onChange={async (e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (!files.length) return;
+                              setDhlDocsBusy(true); setDhlDocsResult(null); setDhlDocsError('');
+                              try {
+                                const fd = new FormData();
+                                files.forEach(f => fd.append('files', f));
+                                const r = await fetch(`/api/v1/dhl-documents/${encodeURIComponent(batchId)}/upload`, {
+                                  method: 'POST',
+                                  body: fd,
+                                  credentials: 'include',
+                                });
+                                if (!r.ok) {
+                                  const msg = await r.text().catch(() => `HTTP ${r.status}`);
+                                  throw new Error(msg);
+                                }
+                                const result = await r.json();
+                                setDhlDocsResult(result);
+                                await Promise.all([load(), loadDhlReadiness(), loadBatchReadiness()]);
+                              } catch (ex) {
+                                setDhlDocsError(ex.message || 'Upload failed');
+                              } finally {
+                                setDhlDocsBusy(false);
+                                if (dhlDocsRef.current) dhlDocsRef.current.value = '';
+                              }
+                            }}
+                          />
+                          {dhlDocsBusy ? '⟳ Uploading…' : '⊞ Upload DHL documents'}
+                        </label>
+                        <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Accepted: .pdf, .xml, .html, .htm, .jpg, .jpeg, .png</div>
+                        </div>
+                      </details>
+
+                      {dhlDocsResult && (
+                        <div data-testid="dhl-docs-upload-success" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)' }}>
+                            ✓ {dhlDocsResult.files_count || 0} document(s) registered
+                          </div>
+                        </div>
+                      )}
+
+                      {dhlDocsError && (
+                        <div data-testid="dhl-docs-upload-error" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-red-text)' }}>Upload failed: {dhlDocsError}</div>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })();
+          const agencyDocsCardJSX = (() => {
+                const agencyReceived = audit && audit.agency_documents_received;
+                const agencyDocs = (audit && audit.agency_documents) || [];
+                const missingAgencyDocs = (dhlReadiness && dhlReadiness.missing_documents) || [];
+                return (
+                  <Card data-testid="agency-docs-received-card">
+                    {/* on success refresh via loadDhlReadiness loadBatchReadiness */}
+                    <div style={{ padding: '14px 18px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>🗂 Agency Documents Received</div>
+                        {agencyReceived && (
+                          <span data-testid="agency-docs-received-badge" style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', fontWeight: 700 }}>Received</span>
+                        )}
+                      </div>
+                      <div data-testid="agency-docs-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+                        Upload SAD/PZC or agency documents received from the customs agency.
+                      </div>
+
+                      {agencyDocs.length > 0 && (
+                        <div data-testid="agency-docs-file-list" style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', marginBottom: 4 }}>Received documents</div>
+                          {agencyDocs.map((d, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                              <span style={{ fontSize: 11, color: 'var(--badge-green-text)' }}>✓</span>
+                              <span style={{ fontSize: 11, color: 'var(--text)', fontFamily: 'monospace' }}>{d.name || d.path || '—'}</span>
+                              {d.type && <span style={{ fontSize: 10, color: 'var(--text-3)' }}>({d.type})</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {missingAgencyDocs.length > 0 && !agencyReceived && (
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-amber-text)', textTransform: 'uppercase', marginBottom: 3 }}>Expected from agency</div>
+                          {missingAgencyDocs.map(d => (
+                            <div key={d} style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>• {d}</div>
+                          ))}
+                        </div>
+                      )}
+
+                      <details data-testid="agency-docs-upload-tools" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', marginBottom: 6 }}>
+                          ▸ Advanced / Manual: Upload agency documents
+                        </summary>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label data-testid="agency-docs-upload-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: agencyDocsBusy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: agencyDocsBusy ? 'var(--text-3)' : 'var(--text)', background: 'transparent', opacity: agencyDocsBusy ? 0.6 : 1, width: 'fit-content' }}>
+                          <input
+                            data-testid="agency-docs-file-input"
+                            ref={agencyDocsRef}
+                            type="file"
+                            accept=".pdf,.xml,.html,.htm,.jpg,.jpeg,.png"
+                            multiple
+                            disabled={agencyDocsBusy}
+                            style={{ display: 'none' }}
+                            onChange={async (e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (!files.length) return;
+                              setAgencyDocsBusy(true); setAgencyDocsResult(null); setAgencyDocsError('');
+                              try {
+                                const fd = new FormData();
+                                files.forEach(f => fd.append('files', f));
+                                const r = await fetch(`/api/v1/agency-documents/${encodeURIComponent(batchId)}/upload`, {
+                                  method: 'POST',
+                                  body: fd,
+                                  credentials: 'include',
+                                });
+                                if (!r.ok) {
+                                  const msg = await r.text().catch(() => `HTTP ${r.status}`);
+                                  throw new Error(msg);
+                                }
+                                const result = await r.json();
+                                setAgencyDocsResult(result);
+                                await loadDhlReadiness();
+                                await loadBatchReadiness();
+                              } catch (ex) {
+                                setAgencyDocsError(ex.message || 'Upload failed');
+                              } finally {
+                                setAgencyDocsBusy(false);
+                                if (agencyDocsRef.current) agencyDocsRef.current.value = '';
+                              }
+                            }}
+                          />
+                          {agencyDocsBusy ? '⟳ Uploading…' : '⊞ Upload agency documents'}
+                        </label>
+                        <div data-testid="agency-docs-accepted-extensions" style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                          Accepted: .pdf, .xml, .html, .htm, .jpg, .jpeg, .png
+                        </div>
+                        </div>
+                      </details>
+
+                      {agencyDocsResult && (
+                        <div data-testid="agency-docs-success" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)', marginBottom: 2 }}>
+                            ✓ {agencyDocsResult.files_total || 0} document(s) registered
+                          </div>
+                          {(agencyDocsResult.skipped || []).length > 0 && (
+                            <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', marginTop: 2 }}>
+                              {agencyDocsResult.skipped.length} skipped — check file types
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {agencyDocsError && (
+                        <div data-testid="agency-docs-error" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)' }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-red-text)' }}>Upload failed: {agencyDocsError}</div>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })();
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }} data-testid="dhl-readiness-panel">
               {/* Readiness banner */}
@@ -7383,233 +7614,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               })()}
 
               {/* ── DHL Documents Received ── */}
-              {(() => {
-                const dr2 = dhlReadiness;
-                const dskReceived = dr2 && dr2.dsk_docs_received;
-                const missingDocs = (dr2 && dr2.missing_documents) || [];
-                const dhlDocs = (audit && audit.dhl_documents_received) || {};
-                return (
-                  <Card data-testid="dhl-docs-received-card">
-                    <div style={{ padding: '14px 18px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📄 DHL Documents Received</div>
-                        {dskReceived && (
-                          <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', fontWeight: 700 }}>Received</span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
-                        This confirms documents received from DHL before agency forwarding.
-                      </div>
-                      {dskReceived ? (
-                        <div data-testid="dhl-docs-received-status" style={{ marginBottom: 10 }}>
-                          <div style={{ fontSize: 11, color: 'var(--text)' }}>
-                            <span style={{ color: 'var(--text-3)', minWidth: 120, display: 'inline-block' }}>Last received: </span>
-                            <span style={{ fontFamily: 'monospace' }}>
-                              {(() => { try { return new Date(dskReceived).toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric' }); } catch { return dskReceived; } })()}
-                            </span>
-                          </div>
-                          {dhlDocs.source === 'email_ingestor' && (
-                            <div data-testid="dhl-docs-source-auto" style={{ marginTop: 6, fontSize: 11, color: 'var(--badge-blue-text)' }}>
-                              📥 Auto-detected from email
-                            </div>
-                          )}
-                          {dhlDocs.source === 'operator' && (
-                            <div data-testid="dhl-docs-source-manual" style={{ marginTop: 6, fontSize: 11, color: 'var(--text-3)' }}>
-                              🖐 Manually registered
-                            </div>
-                          )}
-                          {missingDocs.length > 0 && (
-                            <div style={{ marginTop: 6 }}>
-                              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-amber-text)', textTransform: 'uppercase', marginBottom: 3 }}>Still missing</div>
-                              {missingDocs.map(d => <div key={d} style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>• {d}</div>)}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div data-testid="dhl-docs-not-received-state" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
-                          No DHL documents recorded yet.
-                          {missingDocs.length > 0 && (
-                            <div style={{ marginTop: 4 }}>Expected: {missingDocs.join(', ')}</div>
-                          )}
-                        </div>
-                      )}
-                      <details data-testid="dhl-docs-upload-tools" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
-                        <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', marginBottom: 6 }}>
-                          ▸ Advanced / Manual: Upload DHL documents
-                        </summary>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        <label data-testid="dhl-docs-upload-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: dhlDocsBusy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: dhlDocsBusy ? 'var(--text-3)' : 'var(--text)', background: 'transparent', opacity: dhlDocsBusy ? 0.6 : 1, width: 'fit-content' }}>
-                          <input
-                            data-testid="dhl-docs-file-input"
-                            ref={dhlDocsRef}
-                            type="file"
-                            accept=".pdf,.xml,.html,.htm,.jpg,.jpeg,.png"
-                            multiple
-                            disabled={dhlDocsBusy}
-                            style={{ display: 'none' }}
-                            onChange={async (e) => {
-                              const files = Array.from(e.target.files || []);
-                              if (!files.length) return;
-                              setDhlDocsBusy(true); setDhlDocsResult(null); setDhlDocsError('');
-                              try {
-                                const fd = new FormData();
-                                files.forEach(f => fd.append('files', f));
-                                const r = await fetch(`/api/v1/dhl-documents/${encodeURIComponent(batchId)}/upload`, {
-                                  method: 'POST',
-                                  body: fd,
-                                  credentials: 'include',
-                                });
-                                if (!r.ok) {
-                                  const msg = await r.text().catch(() => `HTTP ${r.status}`);
-                                  throw new Error(msg);
-                                }
-                                const result = await r.json();
-                                setDhlDocsResult(result);
-                                await Promise.all([load(), loadDhlReadiness(), loadBatchReadiness()]);
-                              } catch (ex) {
-                                setDhlDocsError(ex.message || 'Upload failed');
-                              } finally {
-                                setDhlDocsBusy(false);
-                                if (dhlDocsRef.current) dhlDocsRef.current.value = '';
-                              }
-                            }}
-                          />
-                          {dhlDocsBusy ? '⟳ Uploading…' : '⊞ Upload DHL documents'}
-                        </label>
-                        <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Accepted: .pdf, .xml, .html, .htm, .jpg, .jpeg, .png</div>
-                        </div>
-                      </details>
-
-                      {dhlDocsResult && (
-                        <div data-testid="dhl-docs-upload-success" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)' }}>
-                            ✓ {dhlDocsResult.files_count || 0} document(s) registered
-                          </div>
-                        </div>
-                      )}
-
-                      {dhlDocsError && (
-                        <div data-testid="dhl-docs-upload-error" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)' }}>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-red-text)' }}>Upload failed: {dhlDocsError}</div>
-                        </div>
-                      )}
-                    </div>
-                  </Card>
-                );
-              })()}
+              {dhlDocsCardJSX}
 
               {/* ── Agency Documents Received ── */}
-              {(() => {
-                const agencyReceived = audit && audit.agency_documents_received;
-                const agencyDocs = (audit && audit.agency_documents) || [];
-                const missingAgencyDocs = (dhlReadiness && dhlReadiness.missing_documents) || [];
-                return (
-                  <Card data-testid="agency-docs-received-card">
-                    <div style={{ padding: '14px 18px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>🗂 Agency Documents Received</div>
-                        {agencyReceived && (
-                          <span data-testid="agency-docs-received-badge" style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', fontWeight: 700 }}>Received</span>
-                        )}
-                      </div>
-                      <div data-testid="agency-docs-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
-                        Upload SAD/PZC or agency documents received from the customs agency.
-                      </div>
-
-                      {agencyDocs.length > 0 && (
-                        <div data-testid="agency-docs-file-list" style={{ marginBottom: 10 }}>
-                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', marginBottom: 4 }}>Received documents</div>
-                          {agencyDocs.map((d, i) => (
-                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                              <span style={{ fontSize: 11, color: 'var(--badge-green-text)' }}>✓</span>
-                              <span style={{ fontSize: 11, color: 'var(--text)', fontFamily: 'monospace' }}>{d.name || d.path || '—'}</span>
-                              {d.type && <span style={{ fontSize: 10, color: 'var(--text-3)' }}>({d.type})</span>}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {missingAgencyDocs.length > 0 && !agencyReceived && (
-                        <div style={{ marginBottom: 10 }}>
-                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--badge-amber-text)', textTransform: 'uppercase', marginBottom: 3 }}>Expected from agency</div>
-                          {missingAgencyDocs.map(d => (
-                            <div key={d} style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>• {d}</div>
-                          ))}
-                        </div>
-                      )}
-
-                      <details data-testid="agency-docs-upload-tools" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
-                        <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', userSelect: 'none', marginBottom: 6 }}>
-                          ▸ Advanced / Manual: Upload agency documents
-                        </summary>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        <label data-testid="agency-docs-upload-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 6, border: '1px solid var(--badge-neutral-border)', cursor: agencyDocsBusy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: agencyDocsBusy ? 'var(--text-3)' : 'var(--text)', background: 'transparent', opacity: agencyDocsBusy ? 0.6 : 1, width: 'fit-content' }}>
-                          <input
-                            data-testid="agency-docs-file-input"
-                            ref={agencyDocsRef}
-                            type="file"
-                            accept=".pdf,.xml,.html,.htm,.jpg,.jpeg,.png"
-                            multiple
-                            disabled={agencyDocsBusy}
-                            style={{ display: 'none' }}
-                            onChange={async (e) => {
-                              const files = Array.from(e.target.files || []);
-                              if (!files.length) return;
-                              setAgencyDocsBusy(true); setAgencyDocsResult(null); setAgencyDocsError('');
-                              try {
-                                const fd = new FormData();
-                                files.forEach(f => fd.append('files', f));
-                                const r = await fetch(`/api/v1/agency-documents/${encodeURIComponent(batchId)}/upload`, {
-                                  method: 'POST',
-                                  body: fd,
-                                  credentials: 'include',
-                                });
-                                if (!r.ok) {
-                                  const msg = await r.text().catch(() => `HTTP ${r.status}`);
-                                  throw new Error(msg);
-                                }
-                                const result = await r.json();
-                                setAgencyDocsResult(result);
-                                await loadDhlReadiness();
-                                await loadBatchReadiness();
-                              } catch (ex) {
-                                setAgencyDocsError(ex.message || 'Upload failed');
-                              } finally {
-                                setAgencyDocsBusy(false);
-                                if (agencyDocsRef.current) agencyDocsRef.current.value = '';
-                              }
-                            }}
-                          />
-                          {agencyDocsBusy ? '⟳ Uploading…' : '⊞ Upload agency documents'}
-                        </label>
-                        <div data-testid="agency-docs-accepted-extensions" style={{ fontSize: 10, color: 'var(--text-3)' }}>
-                          Accepted: .pdf, .xml, .html, .htm, .jpg, .jpeg, .png
-                        </div>
-                        </div>
-                      </details>
-
-                      {agencyDocsResult && (
-                        <div data-testid="agency-docs-success" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)' }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-green-text)', marginBottom: 2 }}>
-                            ✓ {agencyDocsResult.files_total || 0} document(s) registered
-                          </div>
-                          {(agencyDocsResult.skipped || []).length > 0 && (
-                            <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', marginTop: 2 }}>
-                              {agencyDocsResult.skipped.length} skipped — check file types
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {agencyDocsError && (
-                        <div data-testid="agency-docs-error" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)' }}>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-red-text)' }}>Upload failed: {agencyDocsError}</div>
-                        </div>
-                      )}
-                    </div>
-                  </Card>
-                );
-              })()}
+              {agencyDocsCardJSX}
             </div>
           );
         })()}
