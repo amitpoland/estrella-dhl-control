@@ -18,7 +18,6 @@ Tests:
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import sys
@@ -26,6 +25,11 @@ import threading
 from pathlib import Path
 
 import pytest
+
+try:
+    import fcntl  # POSIX-only; absent on Windows
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 _ROOT = Path(__file__).parents[1]
@@ -157,6 +161,7 @@ class TestLockFileReleasable:
 # ── Test 6: Lock file actively held ──────────────────────────────────────────
 
 class TestLockFileActivelyHeld:
+    @pytest.mark.skipif(sys.platform == "win32", reason="fcntl not available on Windows")
     def test_held_lock_reported_as_actively_held(self, tmp_path):
         """Hold a lock in a background thread (simulates another OS process),
         then probe — expect actively_held=True and ok=False."""

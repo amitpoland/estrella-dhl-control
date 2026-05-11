@@ -26,11 +26,14 @@ macOS / same-process caveat:
 """
 from __future__ import annotations
 
-import fcntl
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+
+if sys.platform != "win32":
+    import fcntl as _fcntl
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +42,10 @@ _PROBE_NOTE = (
     "actively_held=True reliably detects locks held by OTHER OS processes only "
     "(e.g. crashed or concurrent uvicorn workers). "
     "Same-process threads always appear releasable."
+)
+_PROBE_NOTE_WINDOWS = (
+    "Windows: fcntl not available. Cross-process lock detection is skipped. "
+    "actively_held is always False on this platform."
 )
 
 
@@ -143,13 +150,18 @@ def probe_lock(batch_id: str, outputs_dir: Path) -> Dict[str, Any]:
 
     result["lock_file_exists"] = True
 
+    if sys.platform == "win32":
+        # fcntl not available on Windows; threading.Lock is in-process only
+        # so cross-process lock detection is not meaningful here.
+        return result
+
     try:
         # Open read-only — will NOT create the file if it doesn't exist.
         fd = open(lock_path, "r")
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
             # Acquired — not held by another process; release immediately.
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _fcntl.flock(fd, _fcntl.LOCK_UN)
             result["actively_held"] = False
         except (BlockingIOError, OSError):
             # Lock is held by another OS process.
@@ -180,7 +192,7 @@ def scan_locks(outputs_dir: Path) -> Dict[str, Any]:
         "actively_held":    0,
         "releasable":       0,
         "details":          [],
-        "probe_note":       _PROBE_NOTE,
+        "probe_note":       _PROBE_NOTE_WINDOWS if sys.platform == "win32" else _PROBE_NOTE,
     }
 
     if not outputs_dir.is_dir():
@@ -260,7 +272,7 @@ def storage_health_snapshot(storage_root: Path) -> Dict[str, Any]:
             "actively_held":    0,
             "releasable":       0,
             "details":          [],
-            "probe_note":       _PROBE_NOTE,
+            "probe_note":       _PROBE_NOTE_WINDOWS if sys.platform == "win32" else _PROBE_NOTE,
         }
 
     # ── Warnings ──────────────────────────────────────────────────────────────

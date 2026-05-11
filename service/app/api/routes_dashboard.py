@@ -182,6 +182,28 @@ def _derive_status(a: Dict[str, Any]) -> str:
     New business statuses: draft, ready, processing are passed through as-is.
     """
     stored = a.get("status")
+    # "failed" with no real failures and PZ output present means the engine crashed
+    # in a post-generation step — infer true status from evidence instead of surfacing
+    # a misleading "Action Required" badge for a complete batch.
+    if stored == "failed":
+        fc = a.get("failed_checks") or []
+        pz_files_exist = bool(
+            a.get("pz_output", {}).get("generated_at")
+            or (a.get("files", {}).get("pdf") or {}).get("sha256")
+        )
+        if not fc and pz_files_exist:
+            # Re-derive from verification / corrections like legacy audits
+            v = a.get("verification", {})
+            hard_fails = [k for k, val in v.items() if not isinstance(val, list) and val is False]
+            if hard_fails:
+                return "blocked"
+            corrections = a.get("corrections_log", [])
+            has_gaps = any(c.startswith("[VERIFY-GAP]") for c in corrections)
+            if has_gaps:
+                return "partial"
+            if v:
+                return "success"
+            return "partial"  # files exist, no hard failures → treat as partial
     # Pass new lifecycle states straight through
     if stored in ("draft", "ready", "processing", "in_preparation",
                   "success", "partial", "blocked", "failed"):
@@ -201,6 +223,22 @@ def _derive_status(a: Dict[str, Any]) -> str:
     if v:
         return "success"
     return "unknown"
+
+
+def _derive_action_reason(a: Dict[str, Any]) -> str:
+    """Return a short human-readable reason for Action Required status, or empty string."""
+    fc = a.get("failed_checks") or []
+    if fc:
+        return fc[0]
+    err = a.get("engine_error") or ""
+    if err:
+        # Truncate long errors to a badge-friendly length
+        return err[:120]
+    v = a.get("verification", {})
+    hard_fails = [k for k, val in v.items() if not isinstance(val, list) and val is False]
+    if hard_fails:
+        return f"Verification failed: {hard_fails[0]}"
+    return ""
 
 
 def _derive_failed_checks(a: Dict[str, Any]) -> List[str]:
@@ -357,6 +395,7 @@ def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
         "total_gross":           t.get("gross"),
         "mrn":                   mrn,
         "failed_checks":         _derive_failed_checks(a),
+        "action_reason":         _derive_action_reason(a),
         "invoice_refs":          invoice_refs,
         "run_count":             1,   # populated by dedup logic
         "has_sad":               _derive_sad_status(a) != "missing",
@@ -741,6 +780,12 @@ def batch_detail(batch_id: str) -> Dict[str, Any]:
                               audit["duty_a00_pln"])
         except Exception as _pz_err:
             log.debug("[%s] pz_rows totals injection (non-fatal): %s", batch_id, _pz_err)
+
+    # UI-3.6: BatchDetailPage Pipeline Summary needs sales_status_hint.
+    # audit.json never carries this field — the documents DB is the only
+    # source of truth for sales packing-line presence. _sales_hint() already
+    # fails silently to 'n/a', so no extra try/except is needed here.
+    audit["sales_status_hint"] = _sales_hint(batch_id)
 
     return audit
 
@@ -1763,7 +1808,12 @@ def email_evidence_for_batch(batch_id: str) -> Dict[str, Any]:
 
     doc      = evs.get_by_awb(awb)
     summary  = doc.get("summary", {})
-    pz_done  = audit.get("status") in {"success", "partial"} or audit.get("pz_generated") is True
+    pz_done  = (
+        _derive_status(audit) in {"success", "partial"}
+        or audit.get("pz_generated") is True
+        or bool((audit.get("files", {}).get("pdf") or {}).get("sha256"))
+        or bool(audit.get("pz_output", {}).get("generated_at"))
+    )
     archived = bool(audit.get("archived"))
 
     # Fixed 9-stage timeline. Outgoing stages distinguish queued vs sent.

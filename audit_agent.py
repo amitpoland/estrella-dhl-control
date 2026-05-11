@@ -929,7 +929,14 @@ def build_audit_report(
     score         = scoring["score"]
     risk_level    = scoring["risk_level"]
     failed_checks = scoring["failed_checks"]
-    audit_status  = scoring.get("status")  # only present in hardening path
+    audit_status  = scoring.get("status")  # only present in hardening-active path
+    # Shadow telemetry forwarded from score_batch when the feature flag is
+    # OFF. These fields describe what hardening WOULD have done without
+    # affecting the returned score / risk_level. Existing readers of
+    # audit_data are unaffected (purely additive informational keys).
+    audit_shadow_status  = scoring.get("shadow_status")
+    audit_shadow_score   = scoring.get("shadow_score")
+    audit_shadow_blocked = scoring.get("shadow_blocked")
 
     # ── Determine overall assessment strings (for PDF) ─────────────────────────
     _, overall_en, overall_pl = _overall_status(c1, c2, c3, c4, c5, c6)
@@ -990,6 +997,12 @@ def build_audit_report(
     # keys, so consumers pinned to the legacy shape are unaffected.
     if audit_status is not None:
         audit_data["status"] = audit_status
+    # Shadow telemetry — additive informational fields when the feature
+    # flag is OFF. Same purity guarantee as `status` above.
+    if audit_shadow_status is not None:
+        audit_data["shadow_status"]  = audit_shadow_status
+        audit_data["shadow_score"]   = audit_shadow_score
+        audit_data["shadow_blocked"] = audit_shadow_blocked
 
     out = {
         "en":              en_path,
@@ -1004,4 +1017,8 @@ def build_audit_report(
     }
     if audit_status is not None:
         out["status"] = audit_status
+    if audit_shadow_status is not None:
+        out["shadow_status"]  = audit_shadow_status
+        out["shadow_score"]   = audit_shadow_score
+        out["shadow_blocked"] = audit_shadow_blocked
     return out

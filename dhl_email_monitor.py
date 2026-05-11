@@ -18,8 +18,10 @@ Subject format (example):
 """
 from __future__ import annotations
 
-import fcntl
 import json
+import sys
+if sys.platform != "win32":
+    import fcntl as _fcntl
 import logging
 import os
 import re
@@ -938,14 +940,16 @@ def load_conversation_log(storage_root: str) -> dict:
     lock_path = log_path.with_suffix(_CONV_LOG_LOCK_SUFFIX)
     try:
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_SH)
+            if sys.platform != "win32":
+                _fcntl.flock(lock_f, _fcntl.LOCK_SH)
             try:
                 data = json.loads(log_path.read_text(encoding="utf-8"))
                 return data if isinstance(data, dict) else {}
             except Exception:
                 return {}
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                if sys.platform != "win32":
+                    _fcntl.flock(lock_f, _fcntl.LOCK_UN)
     except Exception:
         return {}
 
@@ -996,7 +1000,8 @@ def record_email_in_conversation(
 
     try:
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            if sys.platform != "win32":
+                _fcntl.flock(lock_f, _fcntl.LOCK_EX)
             try:
                 # Load existing log
                 if log_path.exists():
@@ -1066,7 +1071,8 @@ def record_email_in_conversation(
                 tmp.replace(log_path)
 
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                if sys.platform != "win32":
+                    _fcntl.flock(lock_f, _fcntl.LOCK_UN)
     except Exception:
         pass   # non-fatal — conversation log must never crash the handler
 

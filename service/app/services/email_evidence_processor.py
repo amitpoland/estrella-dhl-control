@@ -14,10 +14,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+if sys.platform == "win32":
+    import threading as _threading
+    _awb_file_locks: dict = {}
+    _awb_file_locks_guard = _threading.Lock()
+else:
+    import fcntl as _fcntl
 
 from ..core.logging import get_logger
 from . import email_evidence_store as evs
@@ -46,18 +53,30 @@ def _get_async_lock(awb: str) -> asyncio.Lock:
 
 @contextlib.contextmanager
 def _file_lock(awb: str):
+    """Per-AWB exclusive lock. POSIX: fcntl.flock. Windows: threading.Lock."""
     lock_dir = _lock_dir()
     lock_dir.mkdir(parents=True, exist_ok=True)
     p = lock_dir / f"{awb}.lock"
     p.touch(exist_ok=True)
-    f = open(p, "r+")
-    try:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        yield
-    finally:
-        try: fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        except Exception: pass
-        f.close()
+    if sys.platform == "win32":
+        with _awb_file_locks_guard:
+            if awb not in _awb_file_locks:
+                _awb_file_locks[awb] = _threading.Lock()
+            lock = _awb_file_locks[awb]
+        lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
+    else:
+        f = open(p, "r+")
+        try:
+            _fcntl.flock(f.fileno(), _fcntl.LOCK_EX)
+            yield
+        finally:
+            try: _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
+            except Exception: pass
+            f.close()
 
 
 def _now_iso() -> str:
