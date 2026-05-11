@@ -7,14 +7,19 @@ POST /api/v1/tracking/events/export       → regenerate master XLSX
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from ..core.config import settings
+from ..core.security import require_api_key
 from ..services import tracking_db as tdb
 from ..services.tracking_master_export import export_master_xlsx, get_master_xlsx_path
 
-router = APIRouter(prefix="/api/v1/tracking", tags=["tracking-db"])
+router = APIRouter(
+    prefix="/api/v1/tracking",
+    tags=["tracking-db"],
+    dependencies=[Depends(require_api_key)],
+)
 
 
 @router.get("/events/{batch_id}")
