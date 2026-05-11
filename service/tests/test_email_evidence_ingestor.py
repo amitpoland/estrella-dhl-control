@@ -31,6 +31,17 @@ if str(_ROOT) not in sys.path:
 os.environ.setdefault("API_KEY",      "test-key")
 # NOTE: no STORAGE_ROOT setdefault — tests use tmp_path for isolation
 
+# Windows doesn't have fcntl; stub it so email_evidence_store can be imported.
+# No-op on Linux/Mac where the real module is already present.
+import types as _types
+if "fcntl" not in sys.modules:
+    _fcntl_stub = _types.ModuleType("fcntl")
+    _fcntl_stub.LOCK_EX = 2   # type: ignore[attr-defined]
+    _fcntl_stub.LOCK_SH = 1   # type: ignore[attr-defined]
+    _fcntl_stub.LOCK_UN = 8   # type: ignore[attr-defined]
+    _fcntl_stub.flock = lambda *a, **kw: None  # type: ignore[attr-defined]
+    sys.modules["fcntl"] = _fcntl_stub
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -841,3 +852,246 @@ class TestIdentityAlreadyStoredPath:
         idents = saved.get("email_identities") or {}
         assert "odprawacelna@dhl.com" in (idents.get("dhl") or [])
         assert "import@estrellajewels.eu" in (idents.get("internal") or [])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug fixes: SAD filename keywords (DS_, DSK, polish_desc) + folderId URL
+# Validated against AWB 1012178215 DHL cesja email (messageId 1777448181818110100)
+# staging_inspection.md / staging_runtime_validation.md 2026-05-09
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSadFilenameKeywords:
+    """_is_valid_agency_sad_attachment must match real DHL WinSADMS filenames."""
+
+    def _check(self, filename):
+        from app.services.email_evidence_ingestor import _is_valid_agency_sad_attachment
+        return _is_valid_agency_sad_attachment({"filename": filename})
+
+    def test_ds_prefix_sad_is_valid(self):
+        """WinSADMS DS_ SAD file must pass the filter."""
+        assert self._check("DS_26PL44302D009ZN4U0_20263029_093018.PDF") is True
+
+    def test_ds_prefix_lowercase(self):
+        assert self._check("ds_26pl44302d009zn4u0_20263029_093018.pdf") is True
+
+    def test_dsk_filename_is_valid(self):
+        """DSK (customs release code) must be staged."""
+        assert self._check("1012178215_DSK.pdf") is True
+
+    def test_dsk_uppercase(self):
+        assert self._check("1012178215_DSK.PDF") is True
+
+    def test_polish_desc_is_valid(self):
+        """Polish customs description must be staged."""
+        assert self._check("POLISH_DESC_AWB_1012178215_20260429.pdf") is True
+
+    def test_commercial_invoice_still_rejected(self):
+        """Commercial invoices must NOT pass the filter."""
+        assert self._check("100_Invoice_EJL-26-27-100-25-04-26.pdf") is False
+
+    def test_invoice_with_number_rejected(self):
+        assert self._check("101_Invoice_EJL-26-27-101-25-04-26.pdf") is False
+
+    def test_zc429_still_matched(self):
+        """Existing ZC429 filenames must still be accepted after the keyword extension."""
+        assert self._check("ZC429_26PL44302D009ZN4U0_20260429_PL.pdf") is True
+
+    def test_sad_keyword_still_matched(self):
+        assert self._check("customs_sad_document.pdf") is True
+
+    def test_doc_type_sad_always_passes(self):
+        """document_type='sad' takes priority — filename doesn't matter."""
+        from app.services.email_evidence_ingestor import _is_valid_agency_sad_attachment
+        assert _is_valid_agency_sad_attachment({"filename": "anything.pdf", "document_type": "sad"}) is True
+
+
+class TestDownloadOneAttachmentUrl:
+    """_download_one_attachment must use folder-path URL when folder_id is provided."""
+
+    def _call(self, folder_id, status_code=200, content=b"pdfbytes"):
+        from unittest.mock import patch, MagicMock
+        from app.services.email_evidence_ingestor import _download_one_attachment
+        import tempfile, pathlib
+
+        captured = {}
+
+        def fake_get(url, **kwargs):
+            captured["url"] = url
+            resp = MagicMock()
+            resp.status_code = status_code
+            resp.content = content
+            return resp
+
+        with tempfile.TemporaryDirectory() as td:
+            dest = pathlib.Path(td) / "out.pdf"
+            with patch("requests.get", side_effect=fake_get):
+                ok = _download_one_attachment(
+                    token="tok",
+                    account_id="ACC123",
+                    message_id="MSG456",
+                    att_id="ATT789",
+                    dest=dest,
+                    api_base="https://mail.zoho.in/api",
+                    folder_id=folder_id,
+                )
+        return ok, captured.get("url", "")
+
+    def test_url_includes_folder_id_when_provided(self):
+        ok, url = self._call(folder_id="2261204000000002014")
+        assert ok is True
+        assert "/folders/2261204000000002014/" in url
+        assert "/messages/MSG456/attachments/ATT789" in url
+
+    def test_url_excludes_folder_segment_when_empty(self):
+        ok, url = self._call(folder_id="")
+        assert "/folders/" not in url
+        assert "/messages/MSG456/attachments/ATT789" in url
+
+    def test_returns_false_on_404(self):
+        ok, _ = self._call(folder_id="2261204000000002014", status_code=404, content=b"")
+        assert ok is False
+
+
+class TestFetchAttachmentIdsUrl:
+    """_fetch_message_attachment_ids must use folder-path URL when folder_id is provided."""
+
+    def _call(self, folder_id, response_data=None):
+        from unittest.mock import patch, MagicMock
+        from app.services.email_evidence_ingestor import _fetch_message_attachment_ids
+
+        captured = {}
+
+        def fake_get(url, **kwargs):
+            captured["url"] = url
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = response_data or {
+                "data": {"attachments": [{"attachmentId": "A1", "attachmentName": "file.pdf"}]}
+            }
+            return resp
+
+        with patch("requests.get", side_effect=fake_get):
+            result = _fetch_message_attachment_ids(
+                token="tok",
+                account_id="ACC123",
+                message_id="MSG456",
+                api_base="https://mail.zoho.in/api",
+                folder_id=folder_id,
+            )
+        return result, captured.get("url", "")
+
+    def test_url_includes_folder_id_when_provided(self):
+        result, url = self._call(folder_id="2261204000000002014")
+        assert "/folders/2261204000000002014/" in url
+        assert "/messages/MSG456/attachments" in url
+        assert len(result) == 1
+        assert result[0]["attachmentId"] == "A1"
+
+    def test_url_excludes_folder_segment_when_empty(self):
+        _, url = self._call(folder_id="")
+        assert "/folders/" not in url
+        assert "/messages/MSG456/attachments" in url
+
+    def test_returns_empty_on_non_200(self):
+        from unittest.mock import patch, MagicMock
+        from app.services.email_evidence_ingestor import _fetch_message_attachment_ids
+
+        def fake_get(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 404
+            return resp
+
+        with patch("requests.get", side_effect=fake_get):
+            result = _fetch_message_attachment_ids("tok", "ACC", "MSG", "https://x", "FOLDER")
+        assert result == []
+
+    def test_url_ends_with_attachments_sub_resource(self):
+        """URL must use /attachments sub-resource, not message-detail endpoint (bug #3 regression)."""
+        _, url = self._call(folder_id="2261204000000002014")
+        assert url.endswith("/attachments"), (
+            f"URL must end with /attachments sub-resource, got: {url}"
+        )
+
+    def test_data_as_list_response(self):
+        """Handles Zoho response where data is a list (not a dict with 'attachments' key)."""
+        result, _ = self._call(
+            folder_id="FOLDER1",
+            response_data={"data": [{"attachmentId": "B1", "attachmentName": "b.pdf"}]},
+        )
+        assert len(result) == 1
+        assert result[0]["attachmentId"] == "B1"
+
+
+class TestFolderIdThreadedThroughIngest:
+    """folderId from the scan result email is passed to _ingest_sad_attachments."""
+
+    def test_folder_id_forwarded_to_download(self, tmp_path):
+        """When email has folderId, _download_one_attachment must receive it."""
+        from unittest.mock import patch, MagicMock, call
+        from app.services.email_evidence_ingestor import scan_and_ingest
+
+        ap, audit = _fake_audit_path(tmp_path)
+        audit["awb"] = "1012178215"
+        ap.write_text(json.dumps(audit))
+
+        emails = [{
+            "message_id": "MSG_DHL_001",
+            "folderId":   "2261204000000002014",
+            "subject":    "Fwd: [T#1WA2604290000028] AWB 1012178215",
+            "from":       "odprawacelna@dhl.com",
+            "received_at": "2026-04-29T02:46:18+00:00",
+            "body_text":  "cesja AWB 1012178215",
+            "attachments": [
+                {"filename": "DS_26PL44302D009ZN4U0_20263029_093018.PDF",
+                 "document_type": "other", "size": 348761},
+            ],
+        }]
+
+        scan_result = {"emails": emails, "scanned": 1,
+                       "query_used": "q", "scan_method": "rest_api_search"}
+        fake_scan = MagicMock(return_value=scan_result)
+
+        download_calls = []
+
+        def fake_download(token, account_id, message_id, att_id, dest, api_base,
+                          folder_id=""):
+            download_calls.append(folder_id)
+            dest.write_bytes(b"fake_pdf")
+            return True
+
+        def fake_fetch_ids(token, account_id, message_id, api_base, folder_id=""):
+            return [{"attachmentId": "ATT001", "attachmentName":
+                     "DS_26PL44302D009ZN4U0_20263029_093018.PDF"}]
+
+        store_doc = {"awb": "1012178215", "batch_ids": [], "threads": [], "summary": _summary()}
+
+        from unittest.mock import patch, MagicMock
+
+        fake_settings = MagicMock()
+        fake_settings.zoho_mail_api_base   = "https://mail.zoho.in/api"
+        fake_settings.zoho_mail_account_id = "2261204000000002002"
+        fake_settings.engine_dir           = ap.parent
+
+        with patch("app.core.config.settings", fake_settings), \
+             patch("app.services.email_evidence_store.save_message",
+                   return_value={"action": "inserted"}), \
+             patch("app.services.email_evidence_store.get_by_awb", return_value=store_doc), \
+             patch("app.services.email_evidence_store.link_batch"), \
+             patch("app.services.email_evidence_store.update_scan_cursor"), \
+             patch("app.services.email_evidence_ingestor._fetch_message_attachment_ids",
+                   side_effect=fake_fetch_ids), \
+             patch("app.services.email_evidence_ingestor._download_one_attachment",
+                   side_effect=fake_download), \
+             patch("app.services.email_evidence_ingestor._write_agency_receipt_to_audit"):
+            result = scan_and_ingest(
+                "1012178215", "BATCH_TEST", ap, audit,
+                token_provider=lambda: "tok",
+                scan_fn=fake_scan,
+            )
+
+        assert result["ok"] is True
+        assert result["ingested"] == 1
+        assert download_calls, "download must have been called"
+        assert download_calls[0] == "2261204000000002014", (
+            f"Expected folderId '2261204000000002014', got {download_calls[0]!r}"
+        )

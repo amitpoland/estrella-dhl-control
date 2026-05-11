@@ -164,7 +164,20 @@ Netto per line × 1.23
 ## Dependencies
 
 ```bash
-pip3 install pdfplumber requests
+pip install -r service/requirements.txt
+```
+
+Or, for the engine only (no service):
+
+```bash
+pip install pdfplumber==0.10.4 "pdfminer.six==20221105" "cryptography>=36.0,<42" requests reportlab openpyxl pymupdf
 ```
 
 Python ≥ 3.9 required.
+
+### Windows (Python 3.9)
+
+`cryptography` 42+ ships a Rust DLL that fails to load on Python 3.9 Windows.
+`bcrypt` 5.x has the same issue. `requirements.txt` already pins the last working
+versions (`cryptography<42`, `bcrypt==4.0.1`) so `pip install -r service/requirements.txt`
+works on Windows without extra steps.
