@@ -3663,10 +3663,9 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 wfirmaHint:  (wf.wfirma_pz_doc_id || (audit && audit.wfirma_reservation_id))
                   ? 'preview_built'
                   : 'n/a',
-                // Sales hint cannot be derived from audit alone — backend
-                // computes it against the documents DB. Mark 'n/a' rather
-                // than invent a state.
-                salesHint:   'n/a',
+                // UI-3.6: batch detail now injects sales_status_hint so
+                // Pipeline Summary reflects true packing-line presence.
+                salesHint: (audit && audit.sales_status_hint) || 'n/a',
                 has_sad:     hasSadDerived,
                 mrn:         (audit && audit.mrn) || inp.zc429_mrn || '',
                 _raw: {

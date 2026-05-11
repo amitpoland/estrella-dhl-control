@@ -781,6 +781,12 @@ def batch_detail(batch_id: str) -> Dict[str, Any]:
         except Exception as _pz_err:
             log.debug("[%s] pz_rows totals injection (non-fatal): %s", batch_id, _pz_err)
 
+    # UI-3.6: BatchDetailPage Pipeline Summary needs sales_status_hint.
+    # audit.json never carries this field — the documents DB is the only
+    # source of truth for sales packing-line presence. _sales_hint() already
+    # fails silently to 'n/a', so no extra try/except is needed here.
+    audit["sales_status_hint"] = _sales_hint(batch_id)
+
     return audit
 
 
