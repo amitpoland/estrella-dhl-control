@@ -2,7 +2,7 @@
 
 This document is the per-state source-of-truth ledger that accompanies **Doc 1 v2** (the extend-existing inventory state architecture) and **Doc 2** (the lifecycle transition catalogue). For every inventory state and every Stage 2 aggregate category that the dashboard surfaces, it records exactly which table column, derived expression, or external API the count comes from; the SQL (or pseudocode) that produces it; the index that supports it; and whether the data source exists in production today or is pending implementation of Doc 1 v2 §3.
 
-Two important caveats up front. First, several artifacts named in the task brief — `service/app/services/inventory_stage2_aggregator.py`, `service/app/api/routes_inventory.py`, the `/api/v1/inventory/stage2/aggregate` endpoint, and the 5-bucket payload — **do not exist in the repository today**. They are part of Doc 1 v2's proposed extension. Where this document references them it does so as PENDING. Second, the four databases that participate in the lifecycle bridge (`warehouse.db`, `reservations.db`, `wfirma.db`, `proforma_links.db`) live in separate SQLite files; cross-DB FK constraints are physically impossible there. The integrity caveat at the end of the document spells out the consequence.
+Two important caveats up front. First, the Stage 2 aggregator and its router **are live on main as of Path 2 (merge commit `07f41ad`, deployed to production on 2026-05-11)**. Specifically: `service/app/services/inventory_stage2_aggregator.py` and `service/app/api/routes_inventory.py` ship the `/api/v1/inventory/stage2/aggregate` endpoint with the 5-bucket payload — `final_stock` is wired live; `samples` / `returns` / `consignment` / `unknown` return `null` with `limitations[]` entries because no source table exists for them yet. The `final_stock` row below reflects that; the other four buckets remain PENDING. Second, the four databases that participate in the lifecycle bridge (`warehouse.db`, `reservations.db`, `wfirma.db`, `proforma_links.db`) live in separate SQLite files; cross-DB FK constraints are physically impossible there. The integrity caveat at the end of the document spells out the consequence.
 
 All file:line citations are against the working tree at branch `claude/zealous-johnson-6d6d34`.
 
@@ -38,8 +38,8 @@ All file:line citations are against the working tree at branch `claude/zealous-j
 | Query (list) | `SELECT * FROM inventory_state WHERE state='WAREHOUSE_STOCK'` (`inventory_state_engine.py:170-173`) |
 | Index supporting count query | `idx_invstate_state` at `warehouse_db.py:148-149` |
 | Index supporting list query | same |
-| Used by | `count_by_state` / `list_by_state` in `inventory_state_engine.py`; this is the value Doc 1 v2 maps onto the Stage 2 `final_stock` bucket. |
-| Frontend tile | `data-testid="inventory-stage2-final-stock"` (planned — endpoint not yet built). |
+| Used by | `count_by_state` / `list_by_state` in `inventory_state_engine.py`; surfaced through the Stage 2 aggregator as the `final_stock` bucket via `inventory_stage2_aggregator.aggregate_stage2()` (live since Path 2 merge `07f41ad`). |
+| Frontend tile | `data-testid="inventory-stage2-final"` at `service/app/static/dashboard.html:1443` (live). |
 | Notes | Enters via `PURCHASE_TRANSIT → WAREHOUSE_STOCK` (`warehouse_receive`) at `inventory_state_engine.py:90, 101`. Eligible for Proforma per `PROFORMA_ELIGIBLE_STATES` at lines 113-115. |
 
 ---
@@ -156,17 +156,20 @@ All file:line citations are against the working tree at branch `claude/zealous-j
 
 | Field | Value |
 |---|---|
-| Status | EXISTS — but the aggregator endpoint that publishes it does NOT exist today |
-| Source of truth | `final_stock = count(inventory_state WHERE state='WAREHOUSE_STOCK')`. Direct alias of the WAREHOUSE_STOCK count above. |
+| Status | **LIVE** (since Path 2 deploy on 2026-05-11; merge commit `07f41ad`) |
+| Source of truth | `inventory_state_engine.count_by_state()['WAREHOUSE_STOCK']`. Direct alias of the WAREHOUSE_STOCK count above. |
 | Storage backend | SQLite, `storage_root/warehouse.db` |
-| Schema declaration | `warehouse_db.py:136-146` |
+| Schema declaration | `service/app/services/warehouse_db.py:136-146` |
+| Implementation file | `service/app/services/inventory_stage2_aggregator.py` (`aggregate_stage2(as_of=...)`) |
+| Router file | `service/app/api/routes_inventory.py` (`GET /api/v1/inventory/stage2/aggregate`, line 42) |
+| Live endpoint | `GET /api/v1/inventory/stage2/aggregate` — returns 5-bucket payload including `final_stock` |
 | Query (count) | identical to WAREHOUSE_STOCK count query above |
 | Query (list) | n/a at aggregate level |
 | Index supporting count query | `idx_invstate_state` at `warehouse_db.py:148-149` |
 | Index supporting list query | n/a |
-| Used by | Will be used by the proposed `/api/v1/inventory/stage2/aggregate` (PENDING — no `routes_inventory.py` exists in tree). |
-| Frontend tile | `data-testid="inventory-stage2-final-stock"` (planned). |
-| Notes | This is the only Stage 2 bucket whose numerator is wired in production data today. The other four (`samples`, `returns`, `consignment`, `unknown`) have no source table at all. |
+| Used by | `inventory_stage2_aggregator.aggregate_stage2()` (live); surfaced in the dashboard InventoryPage Stage 2 grid (`service/app/static/dashboard.html:1438-1484`). |
+| Frontend tile | `data-testid="inventory-stage2-final"` at `service/app/static/dashboard.html:1443` (live). |
+| Notes | This is the only Stage 2 bucket whose numerator is wired today. The other four (`samples`, `returns`, `consignment`, `unknown`) return `count=null` plus a corresponding entry in the response's `limitations[]` array — see the per-bucket rows below. Honest-zero vs honest-null distinction preserved by the aggregator: if `count_by_state()` raises, `final_stock` is downgraded to `null` and response `status="degraded"` (200, never 500). |
 
 ---
 
