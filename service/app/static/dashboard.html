@@ -1039,47 +1039,74 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
       ? null
       : { card, key, label });
   }, []);
-  // Shared bucket→predicate map. Predicates are intentionally re-stated
-  // here rather than lifted from each card's IIFE because the IIFEs
-  // are scoped and these need to be reachable from the table filter.
+  // ── UI-3.3a: shared label/key sets — single source of truth used by
+  // both card-internal rendering (counts, tones, pill colour) AND the
+  // OP_PREDICATES filter map. Lifted out of the per-card IIFEs so that
+  // card counts and table filtering cannot drift apart.
+  const PZ_DONE_LABELS     = new Set(['Generated', 'Exported']);
+  const PZ_PENDING_LABELS  = new Set(['Ready for PZ', 'Locked']);
+  const SAD_CLEARED_KEYS   = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
+  const TRACK_ATTENTION    = new Set(['exception', 'customs']);
+  const DHL_FLOW_LIVE_KEYS = new Set([
+    'dhl_email_received', 'reply_queued', 'reply_sent',
+    'reply_package_prepared', 'pre_check_pending', 'pre_check_completed',
+  ]);
+  // Shared bucket→predicate map. Card IIFEs alias into this map so that
+  // their internal helpers (xbatchDeriveLifecycle, acctSalesMissing,
+  // dcSadCleared, etc.) and the active-table filter share one source.
   // Logic mirrors UI-3.1b / UI-3.2a / UI-3.2b derivation discipline.
   const OP_PREDICATES = {
     warehouse: {
       unknown:          (r) => (r.warehouseHint || 'n/a') === 'n/a',
       awaiting:         (r) => r.warehouseHint === 'empty',
       partial_received: (r) => r.warehouseHint === 'partial',
-      in_warehouse:     (r) => r.warehouseHint === 'clean'
-                                && r.pzStatus !== 'Generated'
-                                && r.pzStatus !== 'Exported',
-      reserved:         (r) => r.warehouseHint === 'clean'
-                                && (r.pzStatus === 'Generated' || r.pzStatus === 'Exported'),
+      in_warehouse:     (r) => r.warehouseHint === 'clean' && !PZ_DONE_LABELS.has(r.pzStatus || ''),
+      reserved:         (r) => r.warehouseHint === 'clean' &&  PZ_DONE_LABELS.has(r.pzStatus || ''),
     },
     sales_accounting: {
       sales_ready:    (r) => (r.salesHint || 'n/a') === 'present',
       sales_missing:  (r) => { const h = r.salesHint || 'n/a'; return h === 'none' || h === 'n/a'; },
       wfirma_preview: (r) => (r.wfirmaHint || 'n/a') === 'preview_built',
       wfirma_pending: (r) => { const h = r.wfirmaHint || 'n/a'; return h === 'none' || h === 'n/a'; },
-      pz_done:        (r) => r.pzStatus === 'Generated' || r.pzStatus === 'Exported',
-      pz_pending:     (r) => !(r.pzStatus === 'Generated' || r.pzStatus === 'Exported'),
+      pz_done:        (r) =>  PZ_DONE_LABELS.has(r.pzStatus || ''),
+      pz_pending:     (r) => !PZ_DONE_LABELS.has(r.pzStatus || ''),
     },
     dhl_customs: {
-      awaiting_customs_docs: (r) => {
-        const dhl = (r._raw && r._raw.dhl_status) || '';
-        const live = new Set(['dhl_email_received', 'reply_queued', 'reply_sent',
-                              'reply_package_prepared', 'pre_check_pending',
-                              'pre_check_completed']);
-        return !r.has_sad && live.has(dhl);
-      },
+      awaiting_customs_docs: (r) => !r.has_sad && DHL_FLOW_LIVE_KEYS.has((r._raw && r._raw.dhl_status) || ''),
       sad_present:     (r) => !!r.has_sad,
       sad_missing:     (r) => !r.has_sad,
-      customs_cleared: (r) => {
-        const sad = (r._raw && r._raw.sad_status) || '';
-        const cleared = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
-        return !!r.has_sad && cleared.has(sad);
-      },
+      customs_cleared: (r) => !!r.has_sad && SAD_CLEARED_KEYS.has((r._raw && r._raw.sad_status) || ''),
       dhl_in_transit:  (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'in_transit',
       dhl_delivered:   (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'delivered',
     },
+  };
+  // Shared warehouse lifecycle derivation — single source for the
+  // per-row attention pill label and any future per-batch consumer.
+  // The five keys are mutually exclusive given warehouseHint × pzStatus.
+  const WAREHOUSE_LIFECYCLE_KEYS = ['unknown', 'awaiting', 'partial_received', 'in_warehouse', 'reserved'];
+  const deriveWarehouseLifecycle = (row) => {
+    for (const k of WAREHOUSE_LIFECYCLE_KEYS) {
+      if (OP_PREDICATES.warehouse[k](row)) return k;
+    }
+    return 'unknown';
+  };
+  // Shared "needs attention" predicates per card. Built from
+  // OP_PREDICATES bucket predicates + a few raw-field conditions
+  // (dhl_email_received pending + tracking exception/customs) that
+  // do not map to any displayed bucket key.
+  const ATTENTION_PREDICATES = {
+    warehouse:        (r) =>
+      OP_PREDICATES.warehouse.awaiting(r) ||
+      OP_PREDICATES.warehouse.partial_received(r),
+    sales_accounting: (r) =>
+      OP_PREDICATES.sales_accounting.sales_missing(r) ||
+      OP_PREDICATES.sales_accounting.wfirma_pending(r) ||
+      OP_PREDICATES.sales_accounting.pz_pending(r),
+    dhl_customs:      (r) =>
+      OP_PREDICATES.dhl_customs.awaiting_customs_docs(r) ||
+      (((r._raw && r._raw.sad_status)         || '') === 'missing') ||
+      (((r._raw && r._raw.dhl_status)         || '') === 'dhl_email_received') ||
+      TRACK_ATTENTION.has((r._raw && r._raw.tracking_status_key) || ''),
   };
   const opPredicate = (row) => {
     if (!opFilter) return true;
@@ -1228,30 +1255,19 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
           in_warehouse:     { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
           reserved:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
         };
-        const xbatchDeriveLifecycle = (row) => {
-          const wh = (row.warehouseHint || 'n/a');
-          const pz = (row.pzStatus || '');
-          if (wh === 'n/a')     return 'unknown';
-          if (wh === 'empty')   return 'awaiting';
-          if (wh === 'partial') return 'partial_received';
-          if (wh === 'clean') {
-            const pzKey = pz.toLowerCase();
-            if (pzKey === 'exported' || pzKey === 'generated') return 'reserved';
-            return 'in_warehouse';
-          }
-          return 'unknown';
-        };
-        const ATTENTION_KEYS = ['awaiting', 'partial_received'];
+        // UI-3.3a: alias to the shared derivation so card-internal
+        // consumers and the OP_PREDICATES filter map cannot drift.
+        const xbatchDeriveLifecycle = deriveWarehouseLifecycle;
         const enriched = batches.map(b => ({ row: b, lifecycle: xbatchDeriveLifecycle(b) }));
         const counts = {
-          unknown:          enriched.filter(e => e.lifecycle === 'unknown').length,
-          awaiting:         enriched.filter(e => e.lifecycle === 'awaiting').length,
-          partial_received: enriched.filter(e => e.lifecycle === 'partial_received').length,
-          in_warehouse:     enriched.filter(e => e.lifecycle === 'in_warehouse').length,
-          reserved:         enriched.filter(e => e.lifecycle === 'reserved').length,
+          unknown:          batches.filter(OP_PREDICATES.warehouse.unknown).length,
+          awaiting:         batches.filter(OP_PREDICATES.warehouse.awaiting).length,
+          partial_received: batches.filter(OP_PREDICATES.warehouse.partial_received).length,
+          in_warehouse:     batches.filter(OP_PREDICATES.warehouse.in_warehouse).length,
+          reserved:         batches.filter(OP_PREDICATES.warehouse.reserved).length,
         };
         const attention = enriched
-          .filter(e => ATTENTION_KEYS.includes(e.lifecycle))
+          .filter(e => ATTENTION_PREDICATES.warehouse(e.row))
           .sort((a, b) => {
             const at = (a.row._raw && a.row._raw.timestamp) || a.row.timestamp || '';
             const bt = (b.row._raw && b.row._raw.timestamp) || b.row.timestamp || '';
@@ -1426,8 +1442,9 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
           pz_done:        { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
           pz_pending:     { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
         };
-        const PZ_DONE_LABELS    = new Set(['Generated', 'Exported']);
-        const PZ_PENDING_LABELS = new Set(['Ready for PZ', 'Locked']);
+        // Display helpers (string mappers for the per-row pills).
+        // These are display-only; predicate logic lives in the
+        // shared OP_PREDICATES / ATTENTION_PREDICATES.
         const acctSalesLabel = (row) => {
           const h = row.salesHint || 'n/a';
           if (h === 'present') return 'Linked';
@@ -1440,29 +1457,20 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
           if (h === 'none')          return 'Not prepared';
           return 'Unknown';
         };
-        const acctSalesMissing = (row) => {
-          const h = row.salesHint || 'n/a';
-          return h === 'none' || h === 'n/a';
-        };
-        const acctWfirmaMissing = (row) => {
-          const h = row.wfirmaHint || 'n/a';
-          return h === 'none' || h === 'n/a';
-        };
-        const acctPzPending = (row) => {
-          const p = row.pzStatus || '';
-          // pending = anything that is NOT one of the done states
-          return !PZ_DONE_LABELS.has(p);
-        };
-        const acctNeedsAttention = (row) =>
-          acctSalesMissing(row) || acctWfirmaMissing(row) || acctPzPending(row);
+        // UI-3.3a: predicate aliases — single source of truth via
+        // OP_PREDICATES / ATTENTION_PREDICATES. Anchors preserved.
+        const acctSalesMissing   = OP_PREDICATES.sales_accounting.sales_missing;
+        const acctWfirmaMissing  = OP_PREDICATES.sales_accounting.wfirma_pending;
+        const acctPzPending      = OP_PREDICATES.sales_accounting.pz_pending;
+        const acctNeedsAttention = ATTENTION_PREDICATES.sales_accounting;
 
         const acctCounts = {
-          sales_ready:    batches.filter(r => (r.salesHint || 'n/a') === 'present').length,
-          sales_missing:  batches.filter(acctSalesMissing).length,
-          wfirma_preview: batches.filter(r => (r.wfirmaHint || 'n/a') === 'preview_built').length,
-          wfirma_pending: batches.filter(acctWfirmaMissing).length,
-          pz_done:        batches.filter(r => PZ_DONE_LABELS.has(r.pzStatus || '')).length,
-          pz_pending:     batches.filter(r => PZ_PENDING_LABELS.has(r.pzStatus || '') || (!PZ_DONE_LABELS.has(r.pzStatus || '') && !PZ_PENDING_LABELS.has(r.pzStatus || ''))).length,
+          sales_ready:    batches.filter(OP_PREDICATES.sales_accounting.sales_ready).length,
+          sales_missing:  batches.filter(OP_PREDICATES.sales_accounting.sales_missing).length,
+          wfirma_preview: batches.filter(OP_PREDICATES.sales_accounting.wfirma_preview).length,
+          wfirma_pending: batches.filter(OP_PREDICATES.sales_accounting.wfirma_pending).length,
+          pz_done:        batches.filter(OP_PREDICATES.sales_accounting.pz_done).length,
+          pz_pending:     batches.filter(OP_PREDICATES.sales_accounting.pz_pending).length,
         };
         const acctAttention = batches
           .filter(acctNeedsAttention)
@@ -1671,34 +1679,32 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
           dhl_in_transit:        { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
           dhl_delivered:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
         };
-        const SAD_CLEARED_KEYS  = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
-        const TRACK_ATTENTION   = new Set(['exception', 'customs']);
-        const DHL_FLOW_LIVE_KEYS = new Set([
-          'dhl_email_received', 'reply_queued', 'reply_sent',
-          'reply_package_prepared', 'pre_check_pending',
-          'pre_check_completed',
-        ]);
+        // Display helpers (raw-field readers used for pill text +
+        // data-* attributes). Display-only — predicate logic lives
+        // in the shared OP_PREDICATES / ATTENTION_PREDICATES.
         const dcRawDhl     = (row) => (row._raw && row._raw.dhl_status)        || '';
         const dcRawSad     = (row) => (row._raw && row._raw.sad_status)        || '';
         const dcTrackKey   = (row) => (row._raw && row._raw.tracking_status_key) || '';
         const dcTrackLabel = (row) => (row._raw && row._raw.tracking_status)     || '';
-        const dcSadCleared       = (row) => !!row.has_sad && SAD_CLEARED_KEYS.has(dcRawSad(row));
-        const dcAwaitingCustoms  = (row) => !row.has_sad && DHL_FLOW_LIVE_KEYS.has(dcRawDhl(row));
+        // UI-3.3a: predicate aliases — single source of truth.
+        // Anchors preserved for existing tests + downstream wrappers.
+        const dcSadCleared       = OP_PREDICATES.dhl_customs.customs_cleared;
+        const dcAwaitingCustoms  = OP_PREDICATES.dhl_customs.awaiting_customs_docs;
+        // dcDhlActionPending / dcTrackAttention drive per-row pill
+        // tone and are NOT bucket predicates — they remain display
+        // helpers that mirror the conditions baked into
+        // ATTENTION_PREDICATES.dhl_customs.
         const dcDhlActionPending = (row) => dcRawDhl(row) === 'dhl_email_received';
         const dcTrackAttention   = (row) => TRACK_ATTENTION.has(dcTrackKey(row));
-        const dcNeedsAttention   = (row) =>
-          dcAwaitingCustoms(row)
-          || (dcRawSad(row) === 'missing')
-          || dcDhlActionPending(row)
-          || dcTrackAttention(row);
+        const dcNeedsAttention   = ATTENTION_PREDICATES.dhl_customs;
 
         const dcCounts = {
-          awaiting_customs_docs: batches.filter(dcAwaitingCustoms).length,
-          sad_present:           batches.filter(r => !!r.has_sad).length,
-          sad_missing:           batches.filter(r => !r.has_sad).length,
-          customs_cleared:       batches.filter(dcSadCleared).length,
-          dhl_in_transit:        batches.filter(r => dcTrackKey(r) === 'in_transit').length,
-          dhl_delivered:         batches.filter(r => dcTrackKey(r) === 'delivered').length,
+          awaiting_customs_docs: batches.filter(OP_PREDICATES.dhl_customs.awaiting_customs_docs).length,
+          sad_present:           batches.filter(OP_PREDICATES.dhl_customs.sad_present).length,
+          sad_missing:           batches.filter(OP_PREDICATES.dhl_customs.sad_missing).length,
+          customs_cleared:       batches.filter(OP_PREDICATES.dhl_customs.customs_cleared).length,
+          dhl_in_transit:        batches.filter(OP_PREDICATES.dhl_customs.dhl_in_transit).length,
+          dhl_delivered:         batches.filter(OP_PREDICATES.dhl_customs.dhl_delivered).length,
         };
         const dcAttention = batches
           .filter(dcNeedsAttention)

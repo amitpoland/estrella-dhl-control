@@ -231,31 +231,31 @@ def test_derivations_use_existing_list_payload_fields():
 
 
 def test_pz_done_labels_set_anchor_present():
+    """UI-3.3a: PZ_DONE_LABELS lives at DashboardPage scope so the
+    card counts and OP_PREDICATES.sales_accounting share one source."""
     src = _src()
-    block = _card_block(src)
-    assert "PZ_DONE_LABELS" in block, "PZ_DONE_LABELS set must be declared"
+    assert "PZ_DONE_LABELS" in src, "PZ_DONE_LABELS set must be declared"
 
 
 def test_pz_pending_labels_set_anchor_present():
     src = _src()
-    block = _card_block(src)
-    assert "PZ_PENDING_LABELS" in block, "PZ_PENDING_LABELS set must be declared"
+    assert "PZ_PENDING_LABELS" in src, "PZ_PENDING_LABELS set must be declared"
 
 
 @pytest.mark.parametrize("label", ["Generated", "Exported"])
-def test_pz_done_label_string_in_block(label):
+def test_pz_done_label_string_in_source(label):
+    """UI-3.3a: the literal strings live in the shared PZ_DONE_LABELS
+    Set at DashboardPage scope, not inside the card IIFE."""
     src = _src()
-    block = _card_block(src)
-    assert f"'{label}'" in block, (
+    assert f"'{label}'" in src, (
         f"PZ done label {label!r} must be enumerated in source"
     )
 
 
 @pytest.mark.parametrize("label", ["Ready for PZ", "Locked"])
-def test_pz_pending_label_string_in_block(label):
+def test_pz_pending_label_string_in_source(label):
     src = _src()
-    block = _card_block(src)
-    assert f"'{label}'" in block, (
+    assert f"'{label}'" in src, (
         f"PZ pending label {label!r} must be enumerated in source"
     )
 

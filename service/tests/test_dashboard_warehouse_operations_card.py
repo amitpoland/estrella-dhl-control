@@ -225,17 +225,25 @@ def test_lifecycle_label_map_matches_ui_3_1a_for_shared_keys():
 
 def test_lifecycle_derivation_uses_existing_list_payload_fields():
     """Derivation must read only from row.warehouseHint + row.pzStatus
-    — the two fields already present on every list row."""
+    — the two fields already present on every list row.
+
+    UI-3.3a: the per-card xbatchDeriveLifecycle anchor is now a thin
+    alias to the DashboardPage-scope `deriveWarehouseLifecycle` which
+    consults OP_PREDICATES.warehouse. Both must reference the two
+    payload fields somewhere in source."""
     src = _src()
-    idx = src.find("const xbatchDeriveLifecycle")
+    # Per-card alias anchor still exists.
+    assert "const xbatchDeriveLifecycle" in src
+    # Shared derivation anchor exists.
+    assert "const deriveWarehouseLifecycle" in src
+    # OP_PREDICATES.warehouse predicates reference both fields.
+    idx = src.find("const OP_PREDICATES")
     assert idx != -1
-    body = src[idx : idx + 800]
-    assert "warehouseHint" in body, (
-        "derivation must read row.warehouseHint"
-    )
-    assert "pzStatus" in body, (
-        "derivation must read row.pzStatus (for reserved-vs-in_warehouse)"
-    )
+    pred_body = src[idx : idx + 2000]
+    for field in ("warehouseHint", "pzStatus"):
+        assert field in pred_body, (
+            f"OP_PREDICATES.warehouse must reference row.{field}"
+        )
 
 
 def test_lifecycle_derivation_does_not_invent_dispatch_states():

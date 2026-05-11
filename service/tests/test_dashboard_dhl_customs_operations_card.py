@@ -151,21 +151,20 @@ def test_bucket_tone_map_anchor_present():
 
 
 def test_sad_cleared_keys_set_anchor_present():
+    """UI-3.3a: SAD_CLEARED_KEYS lives at DashboardPage scope so the
+    card counts + OP_PREDICATES + ATTENTION_PREDICATES share one source."""
     src = _src()
-    block = _card_block(src)
-    assert "SAD_CLEARED_KEYS" in block
+    assert "SAD_CLEARED_KEYS" in src
 
 
 def test_track_attention_set_anchor_present():
     src = _src()
-    block = _card_block(src)
-    assert "TRACK_ATTENTION" in block
+    assert "TRACK_ATTENTION" in src
 
 
 def test_dhl_flow_live_keys_set_anchor_present():
     src = _src()
-    block = _card_block(src)
-    assert "DHL_FLOW_LIVE_KEYS" in block
+    assert "DHL_FLOW_LIVE_KEYS" in src
 
 
 @pytest.mark.parametrize(
@@ -190,16 +189,15 @@ def test_bucket_operator_label_present(label):
     ["uploaded_parsed", "customs_parsed", "customs_verified"],
 )
 def test_sad_cleared_key_enumerated(key):
+    """UI-3.3a: enumerated in SAD_CLEARED_KEYS at DashboardPage scope."""
     src = _src()
-    block = _card_block(src)
-    assert f"'{key}'" in block
+    assert f"'{key}'" in src
 
 
 @pytest.mark.parametrize("key", ["exception", "customs"])
 def test_track_attention_key_enumerated(key):
     src = _src()
-    block = _card_block(src)
-    assert f"'{key}'" in block
+    assert f"'{key}'" in src
 
 
 @pytest.mark.parametrize(
@@ -215,15 +213,13 @@ def test_track_attention_key_enumerated(key):
 )
 def test_dhl_flow_live_key_enumerated(key):
     src = _src()
-    block = _card_block(src)
-    assert f"'{key}'" in block
+    assert f"'{key}'" in src
 
 
 @pytest.mark.parametrize("key", ["in_transit", "delivered"])
 def test_tracking_status_key_in_bucket_filter(key):
     src = _src()
-    block = _card_block(src)
-    assert f"'{key}'" in block
+    assert f"'{key}'" in src
 
 
 # ── Derivation source discipline ──────────────────────────────────────────
