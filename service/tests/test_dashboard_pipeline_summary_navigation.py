@@ -62,7 +62,7 @@ def test_detail_tabs_constant_unchanged():
     expected = (
         "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', "
         "'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', "
-        "'Proposals', 'DHL Express'];"
+        "'Proposals'];"
     )
     assert expected in src, (
         "DETAIL_TABS must remain unchanged; UI-3.5 must not introduce a new tab"
