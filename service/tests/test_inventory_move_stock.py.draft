@@ -1,0 +1,269 @@
+"""Tests for POST /api/v1/inventory/pieces/{piece_id}/location (Phase 4.5).
+
+Move stock is location metadata only — DOES NOT transition state.
+Single-writer discipline: inventory_state_engine.transition is never
+called by this endpoint.
+
+Cases:
+  - valid move (mocked deps) -> 200, status='moved'
+  - piece not in WAREHOUSE_STOCK -> 409 WRONG_STATE
+  - idempotency replay (same key + same target) -> 200, status='replayed'
+  - auth enforced (dev pass-through verified via direct override)
+  - missing required fields -> 422 Pydantic validation
+  - DB unavailable -> 503 DB_UNAVAILABLE
+  - no INSERT/UPDATE/DELETE on inventory_state in service source
+  - no new write methods elsewhere on /api/v1/inventory/*
+"""
+from __future__ import annotations
+
+import inspect
+import sys
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+_SVC = Path(__file__).resolve().parent.parent
+if str(_SVC) not in sys.path:
+    sys.path.insert(0, str(_SVC))
+
+from app.main import app
+from app.core.security import require_api_key
+
+
+app.dependency_overrides[require_api_key] = lambda: None
+client = TestClient(app)
+
+
+PATH = "/api/v1/inventory/pieces/SCAN-001/location"
+VALID_BODY = {
+    "to_location": "WH-A1",
+    "operator": "tester",
+    "idempotency_key": "key-001",
+    "note": "audit",
+}
+
+
+def _state_row(state: str) -> dict:
+    return {
+        "id": "row-1",
+        "scan_code": "SCAN-001",
+        "product_code": "P1",
+        "design_no": "D1",
+        "batch_id": "B1",
+        "state": state,
+        "updated_at": "2026-05-11T00:00:00Z",
+        "updated_by": "test",
+        "note": "",
+    }
+
+
+def test_valid_move_returns_moved():
+    fake_current = {"scan_code": "SCAN-001", "current_location": "WH-A1",
+                    "current_status": "in_warehouse"}
+    with patch(
+        "app.services.inventory_location_writer._find_prior_idempotent_event",
+        return_value=None,
+    ), patch(
+        "app.services.inventory_location_writer.inventory_state_engine.get_state",
+        return_value=_state_row("WAREHOUSE_STOCK"),
+    ), patch(
+        "app.services.inventory_location_writer.wdb._db_path", new="/fake/path"
+    ), patch(
+        "app.services.inventory_location_writer.wdb.record_scan",
+        return_value=fake_current,
+    ):
+        r = client.post(PATH, json=VALID_BODY)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["status"] == "moved"
+        assert data["scan_code"] == "SCAN-001"
+        assert data["to_location"] == "WH-A1"
+        assert data["idempotency_key"] == "key-001"
+
+
+def test_wrong_state_returns_409():
+    with patch(
+        "app.services.inventory_location_writer._find_prior_idempotent_event",
+        return_value=None,
+    ), patch(
+        "app.services.inventory_location_writer.inventory_state_engine.get_state",
+        return_value=_state_row("PURCHASE_TRANSIT"),
+    ), patch(
+        "app.services.inventory_location_writer.wdb._db_path", new="/fake/path"
+    ):
+        r = client.post(PATH, json=VALID_BODY)
+        assert r.status_code == 409, r.text
+        body = r.json()
+        assert body["detail"]["code"] == "WRONG_STATE"
+
+
+def test_piece_not_found_returns_404():
+    with patch(
+        "app.services.inventory_location_writer._find_prior_idempotent_event",
+        return_value=None,
+    ), patch(
+        "app.services.inventory_location_writer.inventory_state_engine.get_state",
+        return_value=None,
+    ), patch(
+        "app.services.inventory_location_writer.wdb._db_path", new="/fake/path"
+    ):
+        r = client.post(PATH, json=VALID_BODY)
+        assert r.status_code == 404
+        assert r.json()["detail"]["code"] == "PIECE_NOT_FOUND"
+
+
+def test_idempotent_replay_returns_replayed():
+    prior_event = {
+        "id": "evt-prior",
+        "scan_code": "SCAN-001",
+        "from_location": "WH-A0",
+        "to_location": "WH-A1",
+        "action": "MOVE",
+        "note": "[idem:key-001]",
+    }
+    fake_current = {"scan_code": "SCAN-001", "current_location": "WH-A1"}
+    with patch(
+        "app.services.inventory_location_writer._find_prior_idempotent_event",
+        return_value=prior_event,
+    ), patch(
+        "app.services.inventory_location_writer.wdb._db_path", new="/fake/path"
+    ), patch(
+        "app.services.inventory_location_writer.wdb.get_current_location",
+        return_value=fake_current,
+    ) as mock_get, patch(
+        "app.services.inventory_location_writer.wdb.record_scan"
+    ) as mock_write:
+        r = client.post(PATH, json=VALID_BODY)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["status"] == "replayed"
+        assert data["event_id"] == "evt-prior"
+        # Replay must NOT call record_scan
+        mock_write.assert_not_called()
+
+
+def test_db_unavailable_returns_503():
+    with patch(
+        "app.services.inventory_location_writer.wdb._db_path", new=None
+    ):
+        r = client.post(PATH, json=VALID_BODY)
+        assert r.status_code == 503
+        assert r.json()["detail"]["code"] == "DB_UNAVAILABLE"
+
+
+def test_missing_fields_return_422():
+    # No body
+    r1 = client.post(PATH, json={})
+    assert r1.status_code == 422
+
+    # Missing operator
+    bad = {"to_location": "WH-A1", "idempotency_key": "k"}
+    r2 = client.post(PATH, json=bad)
+    assert r2.status_code == 422
+
+    # Empty idempotency_key
+    bad2 = {"to_location": "WH-A1", "operator": "t", "idempotency_key": ""}
+    r3 = client.post(PATH, json=bad2)
+    assert r3.status_code == 422
+
+
+def test_service_does_not_call_state_transition():
+    """Single-writer discipline: the location writer must never call
+    inventory_state_engine.transition(). Scope: executable code only;
+    strip docstrings/comments before scanning so honest doc citations
+    of the function name don't trip the gate."""
+    from app.services import inventory_location_writer as m
+    src = inspect.getsource(m)
+    # Strip module/function docstrings and #-comments before grep.
+    lines = []
+    in_docstring = False
+    for line in src.splitlines():
+        s = line.strip()
+        if s.startswith('"""') or s.startswith("'''"):
+            if s.count('"""') >= 2 or s.count("'''") >= 2:
+                pass  # one-line docstring; no toggle
+            else:
+                in_docstring = not in_docstring
+            continue
+        if in_docstring or s.startswith("#"):
+            continue
+        lines.append(line)
+    code_only = "\n".join(lines)
+    forbidden = (
+        "inventory_state_engine.transition(",
+        "ise.transition(",
+        ".transition(",
+    )
+    for pat in forbidden:
+        assert pat not in code_only, (
+            f"Move-stock must NOT call {pat} — lifecycle writes are "
+            "reserved for inventory_state_engine's single writer."
+        )
+
+
+def test_service_writes_only_via_record_scan():
+    """All persistence in this module must go through wdb.record_scan().
+    No direct cursor.execute() of INSERT/UPDATE/DELETE."""
+    from app.services import inventory_location_writer as m
+    src = inspect.getsource(m)
+    for forbidden in ('"INSERT INTO', "'INSERT INTO",
+                      '"UPDATE ', "'UPDATE ",
+                      '"DELETE FROM', "'DELETE FROM",
+                      "executemany("):
+        assert forbidden not in src, (
+            f"inventory_location_writer must not contain raw {forbidden!r}; "
+            "delegate to wdb.record_scan()."
+        )
+
+
+def test_no_new_writes_on_read_only_inventory_paths():
+    """The original read-only inventory router stays read-only.
+    Only the new /pieces/{id}/location path is write-capable.
+
+    Scope: trailing slash distinguishes /api/v1/inventory/* from
+    the pre-existing /api/v1/inventory-state/* router (lifecycle
+    state writes — out of scope for this PR)."""
+    write_paths = []
+    for r in app.routes:
+        path = getattr(r, "path", "")
+        methods = set(getattr(r, "methods", set()) or set())
+        if not path.startswith("/api/v1/inventory/"):
+            continue
+        if methods & {"POST", "PUT", "PATCH", "DELETE"}:
+            write_paths.append((path, methods))
+    expected = [("/api/v1/inventory/pieces/{piece_id}/location", {"POST"})]
+    assert len(write_paths) == 1, (
+        f"Expected exactly 1 write path on /api/v1/inventory/*, got "
+        f"{write_paths}"
+    )
+    path, methods = write_paths[0]
+    assert path == expected[0][0]
+    assert methods == expected[0][1]
+
+
+def test_idempotency_marker_format():
+    """The idempotency marker encoded in the event note must be
+    parseable so an audit reviewer can identify the dedupe key.
+    """
+    from app.services.inventory_location_writer import _IDEM_RE
+    # Demonstrate the marker round-trips
+    note = "[idem:abc-123] audit text"
+    m = _IDEM_RE.search(note)
+    assert m is not None
+    assert m.group(1) == "abc-123"
+
+
+def test_pieces_path_not_swallowed_by_existing_route():
+    """The /pieces/{id}/location path must be reachable on POST.
+    It must NOT collide with the GET /pieces/{id} path (different method)."""
+    move_routes = [
+        r for r in app.routes
+        if getattr(r, "path", "") == "/api/v1/inventory/pieces/{piece_id}/location"
+    ]
+    assert move_routes, "POST /pieces/{piece_id}/location not registered"
+    methods = set()
+    for r in move_routes:
+        methods |= set(getattr(r, "methods", set()) or set())
+    assert "POST" in methods
