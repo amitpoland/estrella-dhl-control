@@ -1,0 +1,148 @@
+"""Move-stock service — location metadata writes only.
+
+DOES NOT change inventory_state. Lifecycle state stays unchanged. The
+piece must already be in WAREHOUSE_STOCK; transitions remain the
+exclusive domain of inventory_state_engine.transition() (single-writer
+discipline, per Doc 1 v2).
+
+Idempotency: callers supply an idempotency_key. We encode it as a
+structured marker in inventory_movement_events.note as `[idem:KEY]`.
+On replay with the same key for the same (scan_code, to_location), we
+return the prior result without writing again.
+
+Side effects (delegated to warehouse_db.record_scan, action="MOVE"):
+  • updates inventory_current_location (one row per scan_code)
+  • appends inventory_movement_events (append-only audit)
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, Optional
+
+from . import inventory_state_engine
+from . import warehouse_db as wdb
+
+
+WAREHOUSE_STOCK = inventory_state_engine.WAREHOUSE_STOCK
+
+# Idempotency markers must not contain ']' to keep parsing trivial.
+_IDEM_RE = re.compile(r"\[idem:([^\]]+)\]")
+
+
+class MoveStockError(Exception):
+    """Raised by move_piece() for guard-rail failures. Mapped to HTTP 4xx
+    at the route layer. Never raised on missing piece (returns None instead)
+    or on idempotent replay (returns prior result)."""
+
+    def __init__(self, code: str, detail: str):
+        self.code = code
+        self.detail = detail
+        super().__init__(f"{code}: {detail}")
+
+
+def _find_prior_idempotent_event(
+    scan_code: str, to_location: str, idempotency_key: str
+) -> Optional[Dict[str, Any]]:
+    """Return the most recent movement event matching the idempotency key
+    for this scan_code+to_location, or None.
+
+    Read-only. Never raises. Returns the event row as a dict so the route
+    layer can echo a deterministic shape on replay.
+    """
+    if wdb._db_path is None:
+        return None
+    marker = f"[idem:{idempotency_key}]"
+    with wdb._connect() as con:
+        row = con.execute(
+            """SELECT * FROM inventory_movement_events
+               WHERE scan_code=? AND to_location=? AND action='MOVE'
+                 AND note LIKE ?
+               ORDER BY event_time DESC LIMIT 1""",
+            (scan_code, to_location, f"%{marker}%"),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def move_piece(
+    *,
+    scan_code: str,
+    to_location: str,
+    operator: str,
+    idempotency_key: str,
+    note: str = "",
+) -> Dict[str, Any]:
+    """Move a piece to a new physical location.
+
+    Raises MoveStockError on validation failure:
+      - INVALID_INPUT       missing scan_code, to_location, operator, or key
+      - PIECE_NOT_FOUND     scan_code unknown to packing_lines
+      - WRONG_STATE         piece is not in WAREHOUSE_STOCK
+      - DB_UNAVAILABLE      warehouse_db not initialised
+    """
+    if not scan_code:
+        raise MoveStockError("INVALID_INPUT", "scan_code is required")
+    if not to_location:
+        raise MoveStockError("INVALID_INPUT", "to_location is required")
+    if not operator:
+        raise MoveStockError("INVALID_INPUT", "operator is required")
+    if not idempotency_key:
+        raise MoveStockError("INVALID_INPUT", "idempotency_key is required")
+
+    if wdb._db_path is None:
+        raise MoveStockError("DB_UNAVAILABLE", "warehouse_db not initialised")
+
+    # 1. Idempotency check — replay returns prior result without writing.
+    prior = _find_prior_idempotent_event(scan_code, to_location, idempotency_key)
+    if prior is not None:
+        current = wdb.get_current_location(scan_code) or {}
+        return {
+            "status": "replayed",
+            "scan_code": scan_code,
+            "to_location": to_location,
+            "from_location": prior.get("from_location", ""),
+            "event_id": prior.get("id"),
+            "idempotency_key": idempotency_key,
+            "current_location": current,
+        }
+
+    # 2. State gate — Doc 2 rule: piece must be in WAREHOUSE_STOCK.
+    state_row = inventory_state_engine.get_state(scan_code)
+    if state_row is None:
+        raise MoveStockError(
+            "PIECE_NOT_FOUND",
+            f"scan_code {scan_code!r} not in inventory_state",
+        )
+    if state_row.get("state") != WAREHOUSE_STOCK:
+        raise MoveStockError(
+            "WRONG_STATE",
+            f"piece is in {state_row.get('state')!r}, expected {WAREHOUSE_STOCK!r}",
+        )
+
+    # 3. Write — delegate to record_scan(action='MOVE').
+    # Encode idempotency marker in the note. The marker survives the
+    # UNKNOWN_LOCATION prefix that record_scan may add.
+    marker = f"[idem:{idempotency_key}]"
+    final_note = f"{marker} {note}".strip() if note else marker
+    result = wdb.record_scan(
+        scan_code=scan_code,
+        action="MOVE",
+        to_location=to_location,
+        operator=operator,
+        note=final_note,
+    )
+    if result is None:
+        # record_scan returns None when scan_code is unknown to packing_lines.
+        raise MoveStockError(
+            "PIECE_NOT_FOUND",
+            f"scan_code {scan_code!r} not in packing_lines",
+        )
+
+    return {
+        "status": "moved",
+        "scan_code": scan_code,
+        "to_location": to_location,
+        "from_location": "",  # record_scan upserts; from_location is in event
+        "event_id": None,     # record_scan doesn't return the event id
+        "idempotency_key": idempotency_key,
+        "current_location": result,
+    }
