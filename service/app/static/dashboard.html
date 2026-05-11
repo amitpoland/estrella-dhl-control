@@ -4016,36 +4016,65 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     Read-only operational snapshot for this batch — same lifecycle lenses as the cross-batch cards, derived from the existing batch payload. Open any tab for full detail.
                   </div>
 
+                  {/* UI-3.5: each pill below is a <button> that navigates
+                      to the corresponding existing tab via the existing
+                      setActiveTab setter — pure frontend navigation, no
+                      new API calls, no write actions, no new tabs. */}
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
 
                     {/* Warehouse */}
                     <div data-testid="pipeline-summary-warehouse" data-lifecycle-state={warehouseLifecycle} style={sectionStyle}>
                       <div style={sectionHeadStyle}>Warehouse</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                        <span
+                        <button
+                          type="button"
                           data-testid="pipeline-summary-warehouse-lifecycle-pill"
                           data-lifecycle-state={warehouseLifecycle}
-                          style={lifecycleTone}
+                          data-nav-target="Warehouse"
+                          onClick={() => setActiveTab('Warehouse')}
+                          title="Open Warehouse tab"
+                          aria-label={`${warehouseLifecycleLabel} — open Warehouse tab`}
+                          style={{ ...lifecycleTone, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                         >
                           {warehouseLifecycleLabel}
-                        </span>
+                        </button>
                         {batchReadiness && batchReadiness.warehouse && (
-                          <span
+                          <button
+                            type="button"
                             data-testid="pipeline-summary-warehouse-readiness-pill"
                             data-readiness-status={batchReadiness.warehouse.status || ''}
-                            style={pillNeutral}
+                            data-nav-target="Warehouse"
+                            onClick={() => setActiveTab('Warehouse')}
+                            title="Open Warehouse tab"
+                            aria-label={`Warehouse readiness ${batchReadiness.warehouse.status || 'unknown'} — open Warehouse tab`}
+                            style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                           >
                             Readiness: {batchReadiness.warehouse.status || 'unknown'}
-                          </span>
+                          </button>
                         )}
-                        <span
+                        <button
+                          type="button"
                           data-testid="pipeline-summary-warehouse-packing-list-pill"
-                          style={pillNeutral}
+                          data-nav-target="Warehouse"
+                          onClick={() => setActiveTab('Warehouse')}
+                          title="Open Warehouse tab"
+                          aria-label="Packing list status — open Warehouse tab"
+                          style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                         >
                           Packing list: {pipelineRow.warehouseHint === 'n/a' ? 'absent' : 'present'}
-                        </span>
+                        </button>
                         {warehouseAttention && (
-                          <span data-testid="pipeline-summary-warehouse-attention" style={pillAmber}>⚠ Needs attention</span>
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-warehouse-attention"
+                            data-nav-target="Warehouse"
+                            onClick={() => setActiveTab('Warehouse')}
+                            title="Open Warehouse tab"
+                            aria-label="Warehouse needs attention — open Warehouse tab"
+                            style={{ ...pillAmber, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            ⚠ Needs attention
+                          </button>
                         )}
                       </div>
                     </div>
@@ -4054,33 +4083,58 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     <div data-testid="pipeline-summary-sales-accounting" style={sectionStyle}>
                       <div style={sectionHeadStyle}>Sales &amp; Accounting</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                        <span
+                        <button
+                          type="button"
                           data-testid="pipeline-summary-sales-pill"
                           data-sales-hint={pipelineRow.salesHint}
-                          style={pillNeutral}
+                          data-nav-target="Sales"
+                          onClick={() => setActiveTab('Sales')}
+                          title="Open Sales tab"
+                          aria-label="Sales linkage — open Sales tab"
+                          style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                         >
                           Sales: {pipelineRow.salesHint === 'present'
                             ? 'Linked'
                             : 'See Sales tab'}
-                        </span>
-                        <span
+                        </button>
+                        <button
+                          type="button"
                           data-testid="pipeline-summary-wfirma-pill"
                           data-wfirma-hint={pipelineRow.wfirmaHint}
-                          style={pipelineRow.wfirmaHint === 'preview_built' ? pillBlue : pillNeutral}
+                          data-nav-target="PZ / wFirma"
+                          onClick={() => setActiveTab('PZ / wFirma')}
+                          title="Open PZ / wFirma tab"
+                          aria-label="wFirma preview status — open PZ / wFirma tab"
+                          style={{ ...(pipelineRow.wfirmaHint === 'preview_built' ? pillBlue : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                         >
                           wFirma: {pipelineRow.wfirmaHint === 'preview_built'
                             ? 'Preview built'
                             : 'Not prepared'}
-                        </span>
-                        <span
+                        </button>
+                        <button
+                          type="button"
                           data-testid="pipeline-summary-pz-pill"
                           data-pz-status={pipelineRow.pzStatus}
-                          style={PZ_DONE_LABELS.has(pipelineRow.pzStatus) ? pillGreen : pillNeutral}
+                          data-nav-target="PZ / wFirma"
+                          onClick={() => setActiveTab('PZ / wFirma')}
+                          title="Open PZ / wFirma tab"
+                          aria-label={`PZ status ${pipelineRow.pzStatus || 'unknown'} — open PZ / wFirma tab`}
+                          style={{ ...(PZ_DONE_LABELS.has(pipelineRow.pzStatus) ? pillGreen : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                         >
                           PZ: {pipelineRow.pzStatus || '—'}
-                        </span>
+                        </button>
                         {salesAttention && (
-                          <span data-testid="pipeline-summary-sales-attention" style={pillAmber}>⚠ Needs attention</span>
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-sales-attention"
+                            data-nav-target="Sales"
+                            onClick={() => setActiveTab('Sales')}
+                            title="Open Sales tab"
+                            aria-label="Sales & Accounting needs attention — open Sales tab"
+                            style={{ ...pillAmber, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            ⚠ Needs attention
+                          </button>
                         )}
                       </div>
                     </div>
@@ -4089,45 +4143,78 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     <div data-testid="pipeline-summary-dhl-customs" style={sectionStyle}>
                       <div style={sectionHeadStyle}>DHL &amp; Customs</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                        <span
+                        <button
+                          type="button"
                           data-testid="pipeline-summary-dhl-status-pill"
                           data-dhl-status={pipelineRow._raw.dhl_status}
-                          style={pipelineRow._raw.dhl_status === 'dhl_email_received' ? pillAmber : pillNeutral}
+                          data-nav-target="DHL / Customs"
+                          onClick={() => setActiveTab('DHL / Customs')}
+                          title="Open DHL / Customs tab"
+                          aria-label={`DHL status — open DHL / Customs tab`}
+                          style={{ ...(pipelineRow._raw.dhl_status === 'dhl_email_received' ? pillAmber : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                         >
                           DHL: {mapDhlStatus(pipelineRow._raw.dhl_status) || '—'}
-                        </span>
-                        <span
+                        </button>
+                        <button
+                          type="button"
                           data-testid="pipeline-summary-sad-pill"
                           data-sad-status={pipelineRow._raw.sad_status}
                           data-has-sad={pipelineRow.has_sad ? 'true' : 'false'}
-                          style={pipelineRow.has_sad ? pillGreen : pillRed}
+                          data-nav-target="DHL / Customs"
+                          onClick={() => setActiveTab('DHL / Customs')}
+                          title="Open DHL / Customs tab"
+                          aria-label="SAD status — open DHL / Customs tab"
+                          style={{ ...(pipelineRow.has_sad ? pillGreen : pillRed), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                         >
                           SAD: {pipelineRow.has_sad
                             ? mapSadStatus(pipelineRow._raw.sad_status)
                             : 'SAD missing'}
-                        </span>
+                        </button>
                         {pipelineRow.mrn && (
-                          <span data-testid="pipeline-summary-mrn-pill" style={pillNeutral}>
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-mrn-pill"
+                            data-nav-target="DHL / Customs"
+                            onClick={() => setActiveTab('DHL / Customs')}
+                            title="Open DHL / Customs tab"
+                            aria-label="Customs MRN — open DHL / Customs tab"
+                            style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
                             MRN: <span style={{ fontFamily: 'monospace' }}>{pipelineRow.mrn}</span>
-                          </span>
+                          </button>
                         )}
                         {(pipelineRow._raw.tracking_status_key || pipelineRow._raw.tracking_status) && (
-                          <span
+                          <button
+                            type="button"
                             data-testid="pipeline-summary-tracking-pill"
                             data-tracking-key={pipelineRow._raw.tracking_status_key}
-                            style={pipelineRow._raw.tracking_status_key === 'delivered'
+                            data-nav-target="DHL / Customs"
+                            onClick={() => setActiveTab('DHL / Customs')}
+                            title="Open DHL / Customs tab"
+                            aria-label="Carrier tracking — open DHL / Customs tab"
+                            style={{ ...(pipelineRow._raw.tracking_status_key === 'delivered'
                               ? pillGreen
                               : pipelineRow._raw.tracking_status_key === 'in_transit'
                               ? pillBlue
                               : TRACK_ATTENTION.has(pipelineRow._raw.tracking_status_key)
                               ? pillRed
-                              : pillNeutral}
+                              : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                           >
                             Tracking: {pipelineRow._raw.tracking_status || pipelineRow._raw.tracking_status_key}
-                          </span>
+                          </button>
                         )}
                         {dhlAttention && (
-                          <span data-testid="pipeline-summary-dhl-attention" style={pillAmber}>⚠ Needs attention</span>
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-dhl-attention"
+                            data-nav-target="DHL / Customs"
+                            onClick={() => setActiveTab('DHL / Customs')}
+                            title="Open DHL / Customs tab"
+                            aria-label="DHL & Customs needs attention — open DHL / Customs tab"
+                            style={{ ...pillAmber, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            ⚠ Needs attention
+                          </button>
                         )}
                       </div>
                     </div>
