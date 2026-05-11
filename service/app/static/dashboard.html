@@ -1263,6 +1263,35 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
   const [stage2Loading, setStage2Loading] = React.useState(true);
   const [stage2Error,   setStage2Error]   = React.useState(null);
 
+  // ── Phase 4.4: piece detail drawer (read-only) ─────────────────────────
+  const [pieceLookupCode, setPieceLookupCode] = React.useState('');
+  const [pieceDetail,        setPieceDetail]        = React.useState(null);
+  const [pieceDetailLoading, setPieceDetailLoading] = React.useState(false);
+  const [pieceDetailError,   setPieceDetailError]   = React.useState('');
+  const [drawerOpen,         setDrawerOpen]         = React.useState(false);
+
+  const lookupPiece = React.useCallback(async () => {
+    const code = (pieceLookupCode || '').trim();
+    if (!code) return;
+    setPieceDetailLoading(true);
+    setPieceDetailError('');
+    setDrawerOpen(true);
+    try {
+      const d = await apiFetch(`/api/v1/inventory/pieces/${encodeURIComponent(code)}`);
+      setPieceDetail(d);
+    } catch (e) {
+      setPieceDetailError((e && e.message) || String(e));
+      setPieceDetail(null);
+    }
+    setPieceDetailLoading(false);
+  }, [pieceLookupCode]);
+
+  const closeDrawer = React.useCallback(() => {
+    setDrawerOpen(false);
+    setPieceDetail(null);
+    setPieceDetailError('');
+  }, []);
+
   React.useEffect(() => {
     let cancelled = false;
     setStage2Loading(true);
@@ -1525,6 +1554,129 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
         <span data-testid="inventory-preview-pending-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10, fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
         <span>Move-stock / Sample-out / Sample-return / Goods-return / Return-to-producer require server-side writes that don't exist. Per-batch warehouse audit and scan operations live on the Warehouse tab inside each batch, and the Warehouse Scanner external page covers mobile-safe scans.</span>
       </div>
+
+      {/* ── Phase 4.4: Piece lookup + detail drawer (read-only) ──
+          Wires GET /api/v1/inventory/pieces/{scan_code}.
+          Honest empty / loading / error states. No writes. */}
+      <div
+        data-testid="inventory-piece-lookup"
+        style={{
+          marginTop: 14, padding: '10px 14px',
+          background: 'var(--card)', border: '1px solid var(--border)',
+          borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+        <strong style={{ fontSize: 12, color: 'var(--text-2)' }}>Piece lookup</strong>
+        <input
+          data-testid="inventory-piece-lookup-input"
+          type="text"
+          value={pieceLookupCode}
+          onChange={(e) => setPieceLookupCode(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') lookupPiece(); }}
+          placeholder="scan_code"
+          style={{
+            flex: 1, padding: '4px 8px', fontSize: 12,
+            border: '1px solid var(--border)', borderRadius: 4,
+          }}
+        />
+        <button
+          data-testid="inventory-piece-lookup-btn"
+          onClick={lookupPiece}
+          disabled={!pieceLookupCode || !pieceLookupCode.trim()}
+          style={{
+            padding: '4px 12px', fontSize: 12,
+            background: 'var(--accent)', color: '#fff',
+            border: 'none', borderRadius: 4,
+            cursor: pieceLookupCode.trim() ? 'pointer' : 'not-allowed',
+            opacity: pieceLookupCode.trim() ? 1 : 0.5,
+          }}>
+          Look up
+        </button>
+      </div>
+
+      {drawerOpen && (
+        <div
+          data-testid="inventory-piece-drawer"
+          style={{
+            position: 'fixed', top: 0, right: 0, width: '420px', height: '100vh',
+            background: 'var(--card)', borderLeft: '1px solid var(--border)',
+            boxShadow: '-2px 0 8px rgba(0,0,0,0.06)', zIndex: 1000,
+            overflowY: 'auto', padding: 16,
+          }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between',
+                        alignItems: 'baseline', marginBottom: 10 }}>
+            <strong style={{ fontSize: 14 }}>Piece detail</strong>
+            <button
+              data-testid="inventory-piece-drawer-close"
+              onClick={closeDrawer}
+              style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                fontSize: 18, color: 'var(--text-3)',
+              }}>×</button>
+          </div>
+
+          {pieceDetailLoading && (
+            <div data-testid="inventory-piece-drawer-loading"
+                 style={{ fontSize: 12, color: 'var(--text-3)' }}>…</div>
+          )}
+
+          {pieceDetailError && (
+            <div data-testid="inventory-piece-drawer-error"
+                 style={{
+                   padding: '6px 10px', background: 'var(--badge-red-bg)',
+                   color: 'var(--badge-red-text)',
+                   border: '1px solid var(--badge-red-border)',
+                   borderRadius: 4, fontSize: 11,
+                 }}>
+              ⚠ {pieceDetailError}
+            </div>
+          )}
+
+          {!pieceDetailLoading && !pieceDetailError && pieceDetail
+              && pieceDetail.found === false && (
+            <div data-testid="inventory-piece-drawer-empty"
+                 style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}>
+              No record for <code>{pieceDetail.piece_id}</code>.
+            </div>
+          )}
+
+          {!pieceDetailLoading && !pieceDetailError && pieceDetail
+              && pieceDetail.found === true && pieceDetail.state && (
+            <div data-testid="inventory-piece-drawer-found">
+              <div style={{ fontSize: 12, marginBottom: 8 }}>
+                <div><strong>scan_code:</strong> {pieceDetail.state.scan_code}</div>
+                <div><strong>state:</strong> {pieceDetail.state.state}</div>
+                <div><strong>batch:</strong> {pieceDetail.state.batch_id || '—'}</div>
+                <div><strong>product:</strong> {pieceDetail.state.product_code || '—'}</div>
+                <div><strong>design:</strong> {pieceDetail.state.design_no || '—'}</div>
+                <div><strong>updated:</strong> {pieceDetail.state.updated_at || '—'}</div>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)',
+                            textTransform: 'uppercase', letterSpacing: '0.06em',
+                            margin: '12px 0 6px' }}>History</div>
+              {(!pieceDetail.history || pieceDetail.history.length === 0) ? (
+                <div data-testid="inventory-piece-drawer-history-empty"
+                     style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  No events.
+                </div>
+              ) : (
+                <ul data-testid="inventory-piece-drawer-history"
+                    style={{ margin: 0, padding: '0 0 0 16px', fontSize: 11,
+                             color: 'var(--text-2)' }}>
+                  {pieceDetail.history.map((ev) => (
+                    <li key={ev.id} style={{ marginBottom: 4 }}>
+                      <strong>{ev.to_state}</strong>
+                      {' · '}
+                      <span style={{ color: 'var(--text-3)' }}>{ev.trigger}</span>
+                      {' · '}
+                      <span style={{ color: 'var(--text-3)' }}>{ev.occurred_at}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
