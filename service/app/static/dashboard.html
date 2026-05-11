@@ -1024,8 +1024,74 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
 
   React.useEffect(() => { if (viewMode === 'archived') loadArchived(); }, [viewMode]);
 
+  // ── UI-3.3: clickable operational bucket filter ────────────────────────
+  // opFilter = null | { card, key, label }
+  //   card  ∈ { 'warehouse', 'sales_accounting', 'dhl_customs' }
+  //   key   = bucket key from the matching card's iteration array
+  //   label = operator-readable bucket label (matches the card)
+  // Only one operational bucket can be active at a time. Existing
+  // overall-status `filter` AND the operational predicate are both
+  // applied (AND semantics) — documented in the active-filter chip copy.
+  const [opFilter, setOpFilter] = React.useState(null);
+  const clearOpFilter = React.useCallback(() => setOpFilter(null), []);
+  const toggleOpFilter = React.useCallback((card, key, label) => {
+    setOpFilter(prev => (prev && prev.card === card && prev.key === key)
+      ? null
+      : { card, key, label });
+  }, []);
+  // Shared bucket→predicate map. Predicates are intentionally re-stated
+  // here rather than lifted from each card's IIFE because the IIFEs
+  // are scoped and these need to be reachable from the table filter.
+  // Logic mirrors UI-3.1b / UI-3.2a / UI-3.2b derivation discipline.
+  const OP_PREDICATES = {
+    warehouse: {
+      unknown:          (r) => (r.warehouseHint || 'n/a') === 'n/a',
+      awaiting:         (r) => r.warehouseHint === 'empty',
+      partial_received: (r) => r.warehouseHint === 'partial',
+      in_warehouse:     (r) => r.warehouseHint === 'clean'
+                                && r.pzStatus !== 'Generated'
+                                && r.pzStatus !== 'Exported',
+      reserved:         (r) => r.warehouseHint === 'clean'
+                                && (r.pzStatus === 'Generated' || r.pzStatus === 'Exported'),
+    },
+    sales_accounting: {
+      sales_ready:    (r) => (r.salesHint || 'n/a') === 'present',
+      sales_missing:  (r) => { const h = r.salesHint || 'n/a'; return h === 'none' || h === 'n/a'; },
+      wfirma_preview: (r) => (r.wfirmaHint || 'n/a') === 'preview_built',
+      wfirma_pending: (r) => { const h = r.wfirmaHint || 'n/a'; return h === 'none' || h === 'n/a'; },
+      pz_done:        (r) => r.pzStatus === 'Generated' || r.pzStatus === 'Exported',
+      pz_pending:     (r) => !(r.pzStatus === 'Generated' || r.pzStatus === 'Exported'),
+    },
+    dhl_customs: {
+      awaiting_customs_docs: (r) => {
+        const dhl = (r._raw && r._raw.dhl_status) || '';
+        const live = new Set(['dhl_email_received', 'reply_queued', 'reply_sent',
+                              'reply_package_prepared', 'pre_check_pending',
+                              'pre_check_completed']);
+        return !r.has_sad && live.has(dhl);
+      },
+      sad_present:     (r) => !!r.has_sad,
+      sad_missing:     (r) => !r.has_sad,
+      customs_cleared: (r) => {
+        const sad = (r._raw && r._raw.sad_status) || '';
+        const cleared = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
+        return !!r.has_sad && cleared.has(sad);
+      },
+      dhl_in_transit:  (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'in_transit',
+      dhl_delivered:   (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'delivered',
+    },
+  };
+  const opPredicate = (row) => {
+    if (!opFilter) return true;
+    const fn = (OP_PREDICATES[opFilter.card] || {})[opFilter.key];
+    return fn ? fn(row) : true;
+  };
+  const isOpActive = (card, key) =>
+    !!opFilter && opFilter.card === card && opFilter.key === key;
+
   const filters = ['all', 'Ready for PZ', 'Awaiting DHL', 'Awaiting SAD', 'Action Required', 'Ready for Booking', 'Exported'];
-  const filtered = filter === 'all' ? batches : batches.filter(s => s.overall === filter);
+  const baseFiltered = filter === 'all' ? batches : batches.filter(s => s.overall === filter);
+  const filtered     = opFilter ? baseFiltered.filter(opPredicate) : baseFiltered;
   const sorted = [...filtered].sort((a, b) => {
     const av = a._raw?.[sortCol] || a[sortCol] || '';
     const bv = b._raw?.[sortCol] || b[sortCol] || '';
@@ -1098,6 +1164,36 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
           <Btn small variant="ghost" onClick={loadArchived} style={{ marginLeft: 4 }}>↻ Refresh</Btn>
         )}
       </div>
+
+      {/* UI-3.3: active operational bucket filter chip.
+          Visible only when an operational bucket is selected. Combines
+          AND-style with the overall-status filter above. */}
+      {viewMode === 'active' && opFilter && (
+        <div
+          data-testid="op-filter-active-chip"
+          data-op-card={opFilter.card}
+          data-op-key={opFilter.key}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, padding: '6px 10px', background: 'var(--accent-subtle)', border: '1px solid var(--accent)', borderRadius: 6, fontSize: 11, color: 'var(--text)' }}
+        >
+          <span style={{ fontWeight: 700, color: 'var(--text-2)' }}>Operational filter:</span>
+          <span data-testid="op-filter-active-label" style={{ fontWeight: 700 }}>{opFilter.label}</span>
+          <span style={{ color: 'var(--text-3)' }}>
+            ({opFilter.card === 'warehouse'        ? 'Warehouse'
+              : opFilter.card === 'sales_accounting' ? 'Sales & Accounting'
+              : opFilter.card === 'dhl_customs'      ? 'DHL & Customs'
+              : opFilter.card}
+            {' '}— combined AND with the status filter above)
+          </span>
+          <button
+            data-testid="op-filter-clear-btn"
+            onClick={clearOpFilter}
+            style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-2)', fontSize: 11, padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontFamily: 'inherit' }}
+            title="Clear operational filter only — status filter and search are unaffected"
+          >
+            Clear operational filter
+          </button>
+        </div>
+      )}
 
       {/* ── UI-3.1b: cross-batch warehouse operations card ──────────────────
           Read-only summary derived from existing batch-list payload only.
@@ -1181,13 +1277,19 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
               style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, marginBottom: 14 }}
             >
               {['awaiting', 'partial_received', 'in_warehouse', 'reserved', 'unknown'].map(key => {
-                const tone = xbatchLifecycleTone[key];
+                const tone   = xbatchLifecycleTone[key];
+                const active = isOpActive('warehouse', key);
                 return (
-                  <div
+                  <button
                     key={key}
+                    type="button"
                     data-testid={`warehouse-operations-bucket-${key}`}
                     data-lifecycle-state={key}
-                    style={{ padding: '10px 12px', border: `1px solid ${tone.border}`, background: tone.bg, borderRadius: 6 }}
+                    data-op-active={active ? 'true' : 'false'}
+                    aria-pressed={active}
+                    onClick={() => toggleOpFilter('warehouse', key, xbatchLifecycleLabel[key])}
+                    title={active ? 'Click to clear operational filter' : `Filter the shipments table by ${xbatchLifecycleLabel[key]}`}
+                    style={{ textAlign: 'left', padding: '10px 12px', border: `${active ? 2 : 1}px solid ${active ? 'var(--accent)' : tone.border}`, background: tone.bg, borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', boxShadow: active ? '0 0 0 2px var(--accent-subtle)' : 'none' }}
                   >
                     <div style={{ fontSize: 10, fontWeight: 700, color: tone.text, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
                       {xbatchLifecycleLabel[key]}
@@ -1195,7 +1297,7 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
                     <div style={{ fontSize: 22, fontWeight: 700, color: tone.text, fontFamily: '"DM Serif Display",serif', marginTop: 2 }}>
                       {loading ? '…' : counts[key]}
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -1389,13 +1491,19 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
               style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8, marginBottom: 14 }}
             >
               {['sales_ready', 'sales_missing', 'wfirma_preview', 'wfirma_pending', 'pz_done', 'pz_pending'].map(key => {
-                const tone = acctBucketTone[key];
+                const tone   = acctBucketTone[key];
+                const active = isOpActive('sales_accounting', key);
                 return (
-                  <div
+                  <button
                     key={key}
+                    type="button"
                     data-testid={`sales-accounting-operations-bucket-${key}`}
                     data-bucket-key={key}
-                    style={{ padding: '10px 12px', border: `1px solid ${tone.border}`, background: tone.bg, borderRadius: 6 }}
+                    data-op-active={active ? 'true' : 'false'}
+                    aria-pressed={active}
+                    onClick={() => toggleOpFilter('sales_accounting', key, acctBucketLabel[key])}
+                    title={active ? 'Click to clear operational filter' : `Filter the shipments table by ${acctBucketLabel[key]}`}
+                    style={{ textAlign: 'left', padding: '10px 12px', border: `${active ? 2 : 1}px solid ${active ? 'var(--accent)' : tone.border}`, background: tone.bg, borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', boxShadow: active ? '0 0 0 2px var(--accent-subtle)' : 'none' }}
                   >
                     <div style={{ fontSize: 10, fontWeight: 700, color: tone.text, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
                       {acctBucketLabel[key]}
@@ -1403,7 +1511,7 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
                     <div style={{ fontSize: 22, fontWeight: 700, color: tone.text, fontFamily: '"DM Serif Display",serif', marginTop: 2 }}>
                       {loading ? '…' : acctCounts[key]}
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -1619,13 +1727,19 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
               style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8, marginBottom: 14 }}
             >
               {['awaiting_customs_docs', 'sad_missing', 'sad_present', 'customs_cleared', 'dhl_in_transit', 'dhl_delivered'].map(key => {
-                const tone = dcBucketTone[key];
+                const tone   = dcBucketTone[key];
+                const active = isOpActive('dhl_customs', key);
                 return (
-                  <div
+                  <button
                     key={key}
+                    type="button"
                     data-testid={`dhl-customs-operations-bucket-${key}`}
                     data-bucket-key={key}
-                    style={{ padding: '10px 12px', border: `1px solid ${tone.border}`, background: tone.bg, borderRadius: 6 }}
+                    data-op-active={active ? 'true' : 'false'}
+                    aria-pressed={active}
+                    onClick={() => toggleOpFilter('dhl_customs', key, dcBucketLabel[key])}
+                    title={active ? 'Click to clear operational filter' : `Filter the shipments table by ${dcBucketLabel[key]}`}
+                    style={{ textAlign: 'left', padding: '10px 12px', border: `${active ? 2 : 1}px solid ${active ? 'var(--accent)' : tone.border}`, background: tone.bg, borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', boxShadow: active ? '0 0 0 2px var(--accent-subtle)' : 'none' }}
                   >
                     <div style={{ fontSize: 10, fontWeight: 700, color: tone.text, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
                       {dcBucketLabel[key]}
@@ -1633,7 +1747,7 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
                     <div style={{ fontSize: 22, fontWeight: 700, color: tone.text, fontFamily: '"DM Serif Display",serif', marginTop: 2 }}>
                       {loading ? '…' : dcCounts[key]}
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -1886,7 +2000,13 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
                 <tr><td colSpan={14} style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>Loading shipments…</td></tr>
               )}
               {!loading && sorted.length === 0 && (
-                <tr><td colSpan={14} style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>No shipments found</td></tr>
+                <tr>
+                  <td colSpan={14} style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }} data-testid="active-table-empty-state">
+                    No shipments found{opFilter
+                      ? <span data-testid="active-table-empty-op-filter-note"> — operational filter <b>{opFilter.label}</b> is active. <a onClick={clearOpFilter} style={{ color: 'var(--badge-blue-text)', cursor: 'pointer', textDecoration: 'underline' }} title="Clear operational filter">clear filter</a></span>
+                      : null}
+                  </td>
+                </tr>
               )}
               {!loading && sorted.map(row => {
                 // Short labels for long DHL status values — full text in title tooltip
