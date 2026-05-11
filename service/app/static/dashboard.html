@@ -1279,6 +1279,231 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
         );
       })()}
 
+      {/* ── UI-3.2a: cross-batch sales & accounting operations card ─────────
+          Read-only sibling to the UI-3.1b warehouse card. Aggregates the
+          existing batch-list payload into operator-readable sales / wFirma /
+          PZ buckets, then surfaces the subset of batches that need
+          accounting attention.
+
+          Source fields (all already on every list row):
+            row.salesHint   ← batch.sales_status_hint   (present|none|n/a)
+            row.wfirmaHint  ← batch.wfirma_status_hint  (preview_built|none|n/a)
+            row.pzStatus    ← mapPzStatus(batch.pz_status)
+                              (Locked|Ready for PZ|Generated|Exported)
+            row.awb / row.doc_no / row.timestamp / row.id
+
+          Attention rule per spec:
+            sales missing  (none or n/a)
+            OR wfirma missing  (none or n/a)
+            OR pzStatus NOT in {Ready for PZ, Generated, Exported}.
+
+          Buckets exposed (six counts):
+            sales_ready, sales_missing,
+            wfirma_preview, wfirma_pending,
+            pz_done, pz_pending.
+
+          Same read-only discipline as UI-3.1b: no fetch helper, no
+          button primitive, no form, no execute endpoint, no carrier
+          leakage. The only interactive element is the existing
+          onViewShipment navigation.
+       */}
+      {viewMode === 'active' && (() => {
+        const acctBucketLabel = {
+          sales_ready:    'Sales ready',
+          sales_missing:  'Sales missing',
+          wfirma_preview: 'wFirma preview built',
+          wfirma_pending: 'wFirma not prepared',
+          pz_done:        'PZ generated/exported',
+          pz_pending:     'PZ ready/locked',
+        };
+        const acctBucketTone = {
+          sales_ready:    { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          sales_missing:  { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+          wfirma_preview: { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+          wfirma_pending: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+          pz_done:        { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          pz_pending:     { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+        };
+        const PZ_DONE_LABELS    = new Set(['Generated', 'Exported']);
+        const PZ_PENDING_LABELS = new Set(['Ready for PZ', 'Locked']);
+        const acctSalesLabel = (row) => {
+          const h = row.salesHint || 'n/a';
+          if (h === 'present') return 'Linked';
+          if (h === 'none')    return 'Not linked';
+          return 'Unknown';
+        };
+        const acctWfirmaLabel = (row) => {
+          const h = row.wfirmaHint || 'n/a';
+          if (h === 'preview_built') return 'Preview built';
+          if (h === 'none')          return 'Not prepared';
+          return 'Unknown';
+        };
+        const acctSalesMissing = (row) => {
+          const h = row.salesHint || 'n/a';
+          return h === 'none' || h === 'n/a';
+        };
+        const acctWfirmaMissing = (row) => {
+          const h = row.wfirmaHint || 'n/a';
+          return h === 'none' || h === 'n/a';
+        };
+        const acctPzPending = (row) => {
+          const p = row.pzStatus || '';
+          // pending = anything that is NOT one of the done states
+          return !PZ_DONE_LABELS.has(p);
+        };
+        const acctNeedsAttention = (row) =>
+          acctSalesMissing(row) || acctWfirmaMissing(row) || acctPzPending(row);
+
+        const acctCounts = {
+          sales_ready:    batches.filter(r => (r.salesHint || 'n/a') === 'present').length,
+          sales_missing:  batches.filter(acctSalesMissing).length,
+          wfirma_preview: batches.filter(r => (r.wfirmaHint || 'n/a') === 'preview_built').length,
+          wfirma_pending: batches.filter(acctWfirmaMissing).length,
+          pz_done:        batches.filter(r => PZ_DONE_LABELS.has(r.pzStatus || '')).length,
+          pz_pending:     batches.filter(r => PZ_PENDING_LABELS.has(r.pzStatus || '') || (!PZ_DONE_LABELS.has(r.pzStatus || '') && !PZ_PENDING_LABELS.has(r.pzStatus || ''))).length,
+        };
+        const acctAttention = batches
+          .filter(acctNeedsAttention)
+          .sort((a, b) => {
+            const at = (a._raw && a._raw.timestamp) || a.timestamp || '';
+            const bt = (b._raw && b._raw.timestamp) || b.timestamp || '';
+            return at < bt ? 1 : at > bt ? -1 : 0;
+          });
+        return (
+          <Card
+            data-testid="sales-accounting-operations-card"
+            style={{ padding: 16, marginBottom: 16 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📑 Sales & Accounting Operations</div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                  Cross-batch sales / wFirma / PZ status — derived read-only from existing batch-list payload. Open a batch for full detail.
+                </div>
+              </div>
+            </div>
+
+            {/* Bucket counts */}
+            <div
+              data-testid="sales-accounting-operations-buckets"
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8, marginBottom: 14 }}
+            >
+              {['sales_ready', 'sales_missing', 'wfirma_preview', 'wfirma_pending', 'pz_done', 'pz_pending'].map(key => {
+                const tone = acctBucketTone[key];
+                return (
+                  <div
+                    key={key}
+                    data-testid={`sales-accounting-operations-bucket-${key}`}
+                    data-bucket-key={key}
+                    style={{ padding: '10px 12px', border: `1px solid ${tone.border}`, background: tone.bg, borderRadius: 6 }}
+                  >
+                    <div style={{ fontSize: 10, fontWeight: 700, color: tone.text, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                      {acctBucketLabel[key]}
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: tone.text, fontFamily: '"DM Serif Display",serif', marginTop: 2 }}>
+                      {loading ? '…' : acctCounts[key]}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Attention table */}
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>
+                Needs accounting attention <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>(sales missing, wFirma not prepared, or PZ not yet generated)</span>
+              </div>
+              {loading && (
+                <div data-testid="sales-accounting-operations-attention-loading" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  Loading shipments…
+                </div>
+              )}
+              {!loading && acctAttention.length === 0 && (
+                <div data-testid="sales-accounting-operations-attention-empty" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  No batches need accounting attention.
+                </div>
+              )}
+              {!loading && acctAttention.length > 0 && (
+                <table
+                  data-testid="sales-accounting-operations-attention-table"
+                  style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}
+                >
+                  <thead>
+                    <tr>
+                      {['Shipment', 'Sales', 'wFirma', 'PZ', 'Last activity'].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {acctAttention.slice(0, 25).map(row => {
+                      const ts = (row._raw && row._raw.timestamp) || row.timestamp || '—';
+                      const salesLabel  = acctSalesLabel(row);
+                      const wfirmaLabel = acctWfirmaLabel(row);
+                      const pzLabel     = row.pzStatus || '—';
+                      return (
+                        <tr
+                          key={row.id}
+                          data-testid="sales-accounting-operations-attention-row"
+                          data-batch-id={row.id}
+                          data-sales-hint={row.salesHint || 'n/a'}
+                          data-wfirma-hint={row.wfirmaHint || 'n/a'}
+                          data-pz-status={row.pzStatus || ''}
+                        >
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <button
+                              onClick={() => onViewShipment(row)}
+                              data-testid="sales-accounting-operations-attention-open"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--badge-blue-text)', fontSize: 11, fontWeight: 600, fontFamily: 'monospace', textDecoration: 'underline', textDecorationStyle: 'dotted', padding: 0 }}
+                              title="Open shipment detail (read-only)"
+                            >
+                              {row.awb}
+                            </button>
+                            {row.doc_no && (
+                              <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 1 }}>{row.doc_no}</div>
+                            )}
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>
+                            <span
+                              data-testid="sales-accounting-operations-attention-sales-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: acctSalesMissing(row) ? 'var(--badge-red-bg)' : 'var(--badge-green-bg)', color: acctSalesMissing(row) ? 'var(--badge-red-text)' : 'var(--badge-green-text)', border: `1px solid ${acctSalesMissing(row) ? 'var(--badge-red-border)' : 'var(--badge-green-border)'}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {salesLabel}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>
+                            <span
+                              data-testid="sales-accounting-operations-attention-wfirma-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: acctWfirmaMissing(row) ? 'var(--badge-amber-bg)' : 'var(--badge-blue-bg)', color: acctWfirmaMissing(row) ? 'var(--badge-amber-text)' : 'var(--badge-blue-text)', border: `1px solid ${acctWfirmaMissing(row) ? 'var(--badge-amber-border)' : 'var(--badge-blue-border)'}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {wfirmaLabel}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>
+                            <span
+                              data-testid="sales-accounting-operations-attention-pz-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: acctPzPending(row) ? 'var(--badge-amber-bg)' : 'var(--badge-green-bg)', color: acctPzPending(row) ? 'var(--badge-amber-text)' : 'var(--badge-green-text)', border: `1px solid ${acctPzPending(row) ? 'var(--badge-amber-border)' : 'var(--badge-green-border)'}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {pzLabel}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-3)', fontFamily: 'monospace' }}>{ts}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+              {!loading && acctAttention.length > 25 && (
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>
+                  Showing first 25 of {acctAttention.length}. Use the shipments table below to scroll the full list.
+                </div>
+              )}
+            </div>
+          </Card>
+        );
+      })()}
+
       {/* ── Archived view ── */}
       {viewMode === 'archived' && (
         <Card style={{ overflow: 'hidden' }}>
