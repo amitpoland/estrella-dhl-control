@@ -83,11 +83,22 @@ def test_op_predicates_map_has_each_card(card):
     ["unknown", "awaiting", "partial_received", "in_warehouse", "reserved"],
 )
 def test_warehouse_predicate_key_present(key):
-    src = _src()
-    idx = src.find("warehouse:")
-    sub = src[idx : idx + 1500]
+    text = _src()
+    op_predicates_idx = text.find("const OP_PREDICATES")
+    assert op_predicates_idx != -1, (
+        "OP_PREDICATES declaration not found in dashboard.html — "
+        "this indicates a real regression, not a brittle test."
+    )
+    warehouse_block_idx = text.find("warehouse:", op_predicates_idx)
+    assert warehouse_block_idx != -1, (
+        "warehouse: predicate block not found inside OP_PREDICATES — "
+        "this indicates a real regression."
+    )
+    sub = text[warehouse_block_idx : warehouse_block_idx + 2000]
     assert f"{key}:" in sub, (
-        f"warehouse predicate key {key!r} missing from OP_PREDICATES"
+        f"Predicate key '{key}:' not found inside the OP_PREDICATES.warehouse "
+        f"block. This is a REAL regression — the production code's warehouse "
+        f"predicate map no longer contains the '{key}' key."
     )
 
 
