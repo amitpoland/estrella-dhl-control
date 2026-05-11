@@ -483,6 +483,153 @@ def get_current_location(scan_code: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+# ── Idempotent-write helpers (Option A — DB-level UNIQUE constraint) ─────
+#
+# Used by service/app/services/inventory_location_writer.py for Move stock.
+# Requires the migration in
+# service/app/db/migrations/draft_20260512_002516_idempotency_key.py.draft
+# to have been applied (column + partial UNIQUE index present).
+#
+# Discipline: these helpers do NOT call inventory_state_engine.transition().
+# Lifecycle state is the engine's single-writer domain. These write only
+# physical movement metadata.
+
+def record_scan_with_idempotency(
+    *,
+    scan_code:        str,
+    action:           str,
+    to_location:      str,
+    operator:         str,
+    idempotency_key:  str,
+    note:             str = "",
+    batch_id:         Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Like ``record_scan`` but persists an ``idempotency_key`` on the
+    movement event. Raises ``sqlite3.IntegrityError`` if the partial
+    UNIQUE index on (scan_code, idempotency_key) catches a duplicate;
+    callers should treat that as the replay signal and look up the
+    existing event with ``find_movement_event_by_idempotency``.
+
+    No app-level lock. The database UNIQUE constraint serialises
+    duplicate writes under SQLite WAL — exactly one INSERT wins.
+
+    Returns the resulting current-location row dict (augmented with
+    ``unknown_location: bool``), or ``None`` if the scan_code is
+    unknown to packing_lines (caller should respond 404).
+    """
+    if _db_path is None:
+        raise RuntimeError("warehouse_db not initialised")
+    if not scan_code:
+        return None
+    if not idempotency_key:
+        raise ValueError("idempotency_key is required for record_scan_with_idempotency")
+    action = (action or "").upper().strip()
+    if action not in ALLOWED_ACTIONS:
+        raise ValueError(
+            f"Unknown action {action!r}. Allowed: {sorted(ALLOWED_ACTIONS)}"
+        )
+
+    pl = find_packing_line_by_scan_code(scan_code, batch_id=batch_id)
+    if not pl:
+        return None
+
+    new_status   = _status_for_action(action)
+    now          = _now()
+    batch_id     = pl.get("batch_id", "")
+    product_code = pl.get("product_code", "")
+    design_no    = pl.get("design_no", "")
+    bag_id       = pl.get("bag_id", "")
+    pack_sr      = pl.get("pack_sr")
+
+    with _connect() as con:
+        # Soft location validation
+        unknown_location = False
+        if to_location:
+            loc_row = con.execute(
+                "SELECT id FROM warehouse_locations WHERE location_code=? AND active=1",
+                (to_location,),
+            ).fetchone()
+            if loc_row is None:
+                unknown_location = True
+                warn = f"[UNKNOWN_LOCATION: {to_location!r}]"
+                note = f"{warn} {note}".strip() if note else warn
+
+        # Read current state for from_location
+        prev = con.execute(
+            "SELECT * FROM inventory_current_location WHERE scan_code=?",
+            (scan_code,),
+        ).fetchone()
+        from_location = prev["current_location"] if prev else ""
+
+        # Single transaction: INSERT event first (the UNIQUE constraint
+        # acts here). If it raises, the transaction rolls back and the
+        # location upsert never happens — the caller handles replay.
+        evt_id = str(uuid.uuid4())
+        con.execute(
+            """INSERT INTO inventory_movement_events
+               (id, batch_id, scan_code, action, from_location, to_location,
+                operator, event_time, note, created_at, idempotency_key)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (evt_id, batch_id, scan_code, action, from_location, to_location,
+             operator, now, note, now, idempotency_key),
+        )
+
+        # Insert succeeded — proceed with location upsert in the same txn.
+        if prev:
+            con.execute(
+                """UPDATE inventory_current_location
+                   SET current_location=?, current_status=?,
+                       updated_at=?, updated_by=?
+                   WHERE id=?""",
+                (to_location, new_status, now, operator, prev["id"]),
+            )
+            icl_id = prev["id"]
+        else:
+            icl_id = str(uuid.uuid4())
+            con.execute(
+                """INSERT INTO inventory_current_location
+                   (id, batch_id, product_code, design_no, bag_id, pack_sr,
+                    scan_code, current_location, current_status,
+                    updated_at, updated_by)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (icl_id, batch_id, product_code, design_no, bag_id, pack_sr,
+                 scan_code, to_location, new_status, now, operator),
+            )
+
+        con.commit()
+
+        row = con.execute(
+            "SELECT * FROM inventory_current_location WHERE id=?",
+            (icl_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["unknown_location"] = unknown_location
+        result["event_id"] = evt_id
+        result["from_location"] = from_location
+        return result
+
+
+def find_movement_event_by_idempotency(
+    scan_code: str, idempotency_key: str
+) -> Optional[Dict[str, Any]]:
+    """Return the movement event matching ``(scan_code, idempotency_key)``,
+    or ``None``. Read-only; used by the replay path in the Move stock
+    writer after an ``IntegrityError`` from
+    ``record_scan_with_idempotency``.
+    """
+    if _db_path is None or not scan_code or not idempotency_key:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            "SELECT * FROM inventory_movement_events "
+            "WHERE scan_code=? AND idempotency_key=?",
+            (scan_code, idempotency_key),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def get_movement_history(scan_code: str) -> List[Dict[str, Any]]:
     if _db_path is None or not scan_code:
         return []
