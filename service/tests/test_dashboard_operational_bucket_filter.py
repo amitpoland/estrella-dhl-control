@@ -322,7 +322,9 @@ def test_no_new_apifetch_in_op_filter_regions():
     predicate map, active chip, or empty-state additions."""
     src = _src()
     for anchor, span in (
-        ("const OP_PREDICATES",            6000),
+        # UI-3.4: OP_PREDICATES lifted to module scope; narrow window
+        # to the predicate map itself (declaration through closing brace).
+        ("const OP_PREDICATES",            2800),
         ("const toggleOpFilter",            600),
         ("const clearOpFilter",             400),
         ("const isOpActive",                400),
