@@ -884,6 +884,81 @@ function NewShipmentModal({ onClose, onCreated }) {
 }
 
 // ══════════════════════════════════════════════════════════
+// UI-3.x SHARED OPERATIONAL PREDICATES (module scope)
+// ──────────────────────────────────────────────────────────
+// Single source of truth for bucket logic, used by:
+//   - DashboardPage cross-batch cards (UI-3.1b / UI-3.2a / UI-3.2b)
+//   - DashboardPage active-table filter (UI-3.3)
+//   - BatchDetailPage per-batch Pipeline Summary (UI-3.4)
+// Lifted out of DashboardPage in UI-3.4 so per-batch and cross-batch
+// surfaces consume the SAME predicate set. React state (opFilter and
+// its setter/handlers) intentionally remains inside DashboardPage.
+// ══════════════════════════════════════════════════════════
+const PZ_DONE_LABELS     = new Set(['Generated', 'Exported']);
+const PZ_PENDING_LABELS  = new Set(['Ready for PZ', 'Locked']);
+const SAD_CLEARED_KEYS   = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
+const TRACK_ATTENTION    = new Set(['exception', 'customs']);
+const DHL_FLOW_LIVE_KEYS = new Set([
+  'dhl_email_received', 'reply_queued', 'reply_sent',
+  'reply_package_prepared', 'pre_check_pending', 'pre_check_completed',
+]);
+const OP_PREDICATES = {
+  warehouse: {
+    unknown:          (r) => (r.warehouseHint || 'n/a') === 'n/a',
+    awaiting:         (r) => r.warehouseHint === 'empty',
+    partial_received: (r) => r.warehouseHint === 'partial',
+    in_warehouse:     (r) => r.warehouseHint === 'clean' && !PZ_DONE_LABELS.has(r.pzStatus || ''),
+    reserved:         (r) => r.warehouseHint === 'clean' &&  PZ_DONE_LABELS.has(r.pzStatus || ''),
+  },
+  sales_accounting: {
+    sales_ready:    (r) => (r.salesHint || 'n/a') === 'present',
+    sales_missing:  (r) => { const h = r.salesHint || 'n/a'; return h === 'none' || h === 'n/a'; },
+    wfirma_preview: (r) => (r.wfirmaHint || 'n/a') === 'preview_built',
+    wfirma_pending: (r) => { const h = r.wfirmaHint || 'n/a'; return h === 'none' || h === 'n/a'; },
+    pz_done:        (r) =>  PZ_DONE_LABELS.has(r.pzStatus || ''),
+    pz_pending:     (r) => !PZ_DONE_LABELS.has(r.pzStatus || ''),
+  },
+  dhl_customs: {
+    awaiting_customs_docs: (r) => !r.has_sad && DHL_FLOW_LIVE_KEYS.has((r._raw && r._raw.dhl_status) || ''),
+    sad_present:     (r) => !!r.has_sad,
+    sad_missing:     (r) => !r.has_sad,
+    customs_cleared: (r) => !!r.has_sad && SAD_CLEARED_KEYS.has((r._raw && r._raw.sad_status) || ''),
+    dhl_in_transit:  (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'in_transit',
+    dhl_delivered:   (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'delivered',
+  },
+};
+const WAREHOUSE_LIFECYCLE_KEYS = ['unknown', 'awaiting', 'partial_received', 'in_warehouse', 'reserved'];
+const deriveWarehouseLifecycle = (row) => {
+  for (const k of WAREHOUSE_LIFECYCLE_KEYS) {
+    if (OP_PREDICATES.warehouse[k](row)) return k;
+  }
+  return 'unknown';
+};
+const ATTENTION_PREDICATES = {
+  warehouse:        (r) =>
+    OP_PREDICATES.warehouse.awaiting(r) ||
+    OP_PREDICATES.warehouse.partial_received(r),
+  sales_accounting: (r) =>
+    OP_PREDICATES.sales_accounting.sales_missing(r) ||
+    OP_PREDICATES.sales_accounting.wfirma_pending(r) ||
+    OP_PREDICATES.sales_accounting.pz_pending(r),
+  dhl_customs:      (r) =>
+    OP_PREDICATES.dhl_customs.awaiting_customs_docs(r) ||
+    (((r._raw && r._raw.sad_status)         || '') === 'missing') ||
+    (((r._raw && r._raw.dhl_status)         || '') === 'dhl_email_received') ||
+    TRACK_ATTENTION.has((r._raw && r._raw.tracking_status_key) || ''),
+};
+// Lifecycle label/tone tables — shared so cross-batch (UI-3.1b) and
+// per-batch (UI-3.4) surfaces use identical operator-readable copy.
+const WAREHOUSE_LIFECYCLE_LABEL = {
+  unknown:          'No packing list',
+  awaiting:         'Awaiting receipt',
+  partial_received: 'Partially received',
+  in_warehouse:     'In warehouse',
+  reserved:         'Reserved (PZ created)',
+};
+
+// ══════════════════════════════════════════════════════════
 // DASHBOARD PAGE (real API)
 // ══════════════════════════════════════════════════════════
 
@@ -926,75 +1001,11 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
       ? null
       : { card, key, label });
   }, []);
-  // ── UI-3.3a: shared label/key sets — single source of truth used by
-  // both card-internal rendering (counts, tones, pill colour) AND the
-  // OP_PREDICATES filter map. Lifted out of the per-card IIFEs so that
-  // card counts and table filtering cannot drift apart.
-  const PZ_DONE_LABELS     = new Set(['Generated', 'Exported']);
-  const PZ_PENDING_LABELS  = new Set(['Ready for PZ', 'Locked']);
-  const SAD_CLEARED_KEYS   = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
-  const TRACK_ATTENTION    = new Set(['exception', 'customs']);
-  const DHL_FLOW_LIVE_KEYS = new Set([
-    'dhl_email_received', 'reply_queued', 'reply_sent',
-    'reply_package_prepared', 'pre_check_pending', 'pre_check_completed',
-  ]);
-  // Shared bucket→predicate map. Card IIFEs alias into this map so that
-  // their internal helpers (xbatchDeriveLifecycle, acctSalesMissing,
-  // dcSadCleared, etc.) and the active-table filter share one source.
-  // Logic mirrors UI-3.1b / UI-3.2a / UI-3.2b derivation discipline.
-  const OP_PREDICATES = {
-    warehouse: {
-      unknown:          (r) => (r.warehouseHint || 'n/a') === 'n/a',
-      awaiting:         (r) => r.warehouseHint === 'empty',
-      partial_received: (r) => r.warehouseHint === 'partial',
-      in_warehouse:     (r) => r.warehouseHint === 'clean' && !PZ_DONE_LABELS.has(r.pzStatus || ''),
-      reserved:         (r) => r.warehouseHint === 'clean' &&  PZ_DONE_LABELS.has(r.pzStatus || ''),
-    },
-    sales_accounting: {
-      sales_ready:    (r) => (r.salesHint || 'n/a') === 'present',
-      sales_missing:  (r) => { const h = r.salesHint || 'n/a'; return h === 'none' || h === 'n/a'; },
-      wfirma_preview: (r) => (r.wfirmaHint || 'n/a') === 'preview_built',
-      wfirma_pending: (r) => { const h = r.wfirmaHint || 'n/a'; return h === 'none' || h === 'n/a'; },
-      pz_done:        (r) =>  PZ_DONE_LABELS.has(r.pzStatus || ''),
-      pz_pending:     (r) => !PZ_DONE_LABELS.has(r.pzStatus || ''),
-    },
-    dhl_customs: {
-      awaiting_customs_docs: (r) => !r.has_sad && DHL_FLOW_LIVE_KEYS.has((r._raw && r._raw.dhl_status) || ''),
-      sad_present:     (r) => !!r.has_sad,
-      sad_missing:     (r) => !r.has_sad,
-      customs_cleared: (r) => !!r.has_sad && SAD_CLEARED_KEYS.has((r._raw && r._raw.sad_status) || ''),
-      dhl_in_transit:  (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'in_transit',
-      dhl_delivered:   (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'delivered',
-    },
-  };
-  // Shared warehouse lifecycle derivation — single source for the
-  // per-row attention pill label and any future per-batch consumer.
-  // The five keys are mutually exclusive given warehouseHint × pzStatus.
-  const WAREHOUSE_LIFECYCLE_KEYS = ['unknown', 'awaiting', 'partial_received', 'in_warehouse', 'reserved'];
-  const deriveWarehouseLifecycle = (row) => {
-    for (const k of WAREHOUSE_LIFECYCLE_KEYS) {
-      if (OP_PREDICATES.warehouse[k](row)) return k;
-    }
-    return 'unknown';
-  };
-  // Shared "needs attention" predicates per card. Built from
-  // OP_PREDICATES bucket predicates + a few raw-field conditions
-  // (dhl_email_received pending + tracking exception/customs) that
-  // do not map to any displayed bucket key.
-  const ATTENTION_PREDICATES = {
-    warehouse:        (r) =>
-      OP_PREDICATES.warehouse.awaiting(r) ||
-      OP_PREDICATES.warehouse.partial_received(r),
-    sales_accounting: (r) =>
-      OP_PREDICATES.sales_accounting.sales_missing(r) ||
-      OP_PREDICATES.sales_accounting.wfirma_pending(r) ||
-      OP_PREDICATES.sales_accounting.pz_pending(r),
-    dhl_customs:      (r) =>
-      OP_PREDICATES.dhl_customs.awaiting_customs_docs(r) ||
-      (((r._raw && r._raw.sad_status)         || '') === 'missing') ||
-      (((r._raw && r._raw.dhl_status)         || '') === 'dhl_email_received') ||
-      TRACK_ATTENTION.has((r._raw && r._raw.tracking_status_key) || ''),
-  };
+  // UI-3.4: shared OP_PREDICATES / ATTENTION_PREDICATES / supporting
+  // Sets + deriveWarehouseLifecycle live at module scope above so the
+  // per-batch Pipeline Summary panel (BatchDetailPage) consumes the
+  // exact same predicate set as the cross-batch cards. Only React
+  // state and React-derived helpers stay here.
   const opPredicate = (row) => {
     if (!opFilter) return true;
     const fn = (OP_PREDICATES[opFilter.card] || {})[opFilter.key];
@@ -3377,6 +3388,17 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   React.useEffect(() => { if (activeTab === 'Proposals') loadProposals(); }, [activeTab]);
   // Fetch warehouse audit when tab is activated
   React.useEffect(() => { if (activeTab === 'Warehouse' && !warehouseAudit) loadWarehouseAudit(); }, [activeTab]);
+  // UI-3.4: Pipeline Summary on the batch overview tab consumes
+  // warehouseAudit for the Warehouse lifecycle pill. Trigger the same
+  // existing load when entering the overview view (no new endpoint —
+  // just earlier activation). A separate useEffect (not merged into
+  // the Warehouse one above) so prior tab-locator tests that count
+  // literal tab-equality substrings in dashboard.html are unaffected.
+  React.useEffect(() => {
+    if (activeTab && activeTab.toLowerCase() === 'overview' && !warehouseAudit) {
+      loadWarehouseAudit();
+    }
+  }, [activeTab]);
   // Fetch sales linkage when tab is activated
   React.useEffect(() => { if (activeTab === 'Sales' && !salesLinkage) loadSalesLinkage(); }, [activeTab]);
   // Fetch wFirma reservation preview and PZ preview when tab is activated
@@ -3589,6 +3611,224 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               decisionData={decisionData}
               decisionLoading={decisionLoading}
             />
+
+            {/* ── UI-3.4: Per-Batch Pipeline Summary ─────────────────────────
+                Read-only three-section snapshot mirroring the cross-batch
+                operational triptych at single-batch scope. Consumes the
+                module-scope shared helpers (OP_PREDICATES, ATTENTION_PREDICATES,
+                deriveWarehouseLifecycle, WAREHOUSE_LIFECYCLE_LABEL) — the
+                exact same predicate set as UI-3.1b / UI-3.2a / UI-3.2b.
+
+                Source data (all already loaded by BatchDetailPage):
+                  audit.*                — batch audit JSON from
+                                           GET /dashboard/batches/{id}
+                  warehouseAudit.summary — from GET /api/v1/warehouse/audit/{id}
+                                           (eager-loaded on Overview via the
+                                           useEffect above; no new endpoint)
+                  batchReadiness.*       — already loaded for the readiness banners
+                  mapPzStatus / mapDhlStatus / mapSadStatus — existing helpers.
+
+                Sales hint is NOT surfaced here as a derived bucket because
+                the cross-batch sales_status_hint backend derivation runs
+                against the documents DB that BatchDetailPage does not query.
+                We label this honestly rather than inventing a state.
+            */}
+            {(() => {
+              const inp = (audit && audit.inputs) || {};
+              const wf  = (audit && audit.wfirma_export) || {};
+              const tk  = (audit && audit.tracking) || {};
+              const SAD_DERIVED_KEYS = ['sad_uploaded', 'customs_parsed', 'customs_verified', 'verification_needed'];
+              const hasSadDerived =
+                !!inp.zc429 || SAD_DERIVED_KEYS.includes((audit && audit.sad_status) || '');
+              // Row-like object consumed by shared predicates. Field names
+              // match the cross-batch row shape so OP_PREDICATES applies
+              // without duplication.
+              const pipelineRow = {
+                warehouseHint: (() => {
+                  const wa = warehouseAudit;
+                  if (!wa || wa.error) return 'n/a';
+                  const s = wa.summary || {};
+                  const total   = Number(s.total_items   || 0);
+                  const scanned = Number(s.scanned_items || 0);
+                  const missing = Number(s.missing_items || 0);
+                  if (total === 0) return 'n/a';
+                  if (missing === 0 && scanned > 0) return 'clean';
+                  if (scanned > 0)                  return 'partial';
+                  return 'empty';
+                })(),
+                pzStatus:    mapPzStatus(audit && audit.pz_status),
+                // wFirma surfaces "preview built" when any wFirma artifact
+                // exists in the audit — same field the per-batch UI-3.1a
+                // badge uses for the "Reserved" lifecycle key.
+                wfirmaHint:  (wf.wfirma_pz_doc_id || (audit && audit.wfirma_reservation_id))
+                  ? 'preview_built'
+                  : 'n/a',
+                // Sales hint cannot be derived from audit alone — backend
+                // computes it against the documents DB. Mark 'n/a' rather
+                // than invent a state.
+                salesHint:   'n/a',
+                has_sad:     hasSadDerived,
+                mrn:         (audit && audit.mrn) || inp.zc429_mrn || '',
+                _raw: {
+                  dhl_status:          (audit && audit.dhl_status) || (audit && audit.clearance_status) || '',
+                  sad_status:          (audit && audit.sad_status) || '',
+                  tracking_status_key: tk.status       || '',
+                  tracking_status:     tk.status_label || '',
+                  timestamp:           (audit && audit.timestamp) || '',
+                },
+              };
+              const warehouseLifecycle      = deriveWarehouseLifecycle(pipelineRow);
+              const warehouseLifecycleLabel = WAREHOUSE_LIFECYCLE_LABEL[warehouseLifecycle];
+              const warehouseAttention      = ATTENTION_PREDICATES.warehouse(pipelineRow);
+              const salesAttention          = ATTENTION_PREDICATES.sales_accounting(pipelineRow);
+              const dhlAttention            = ATTENTION_PREDICATES.dhl_customs(pipelineRow);
+
+              const pillBase = { fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, display: 'inline-block', whiteSpace: 'nowrap', border: '1px solid var(--border)' };
+              const pillNeutral = { ...pillBase, background: 'var(--badge-neutral-bg)', color: 'var(--badge-neutral-text)', borderColor: 'var(--badge-neutral-border)' };
+              const pillAmber   = { ...pillBase, background: 'var(--badge-amber-bg)',   color: 'var(--badge-amber-text)',   borderColor: 'var(--badge-amber-border)' };
+              const pillGreen   = { ...pillBase, background: 'var(--badge-green-bg)',   color: 'var(--badge-green-text)',   borderColor: 'var(--badge-green-border)' };
+              const pillBlue    = { ...pillBase, background: 'var(--badge-blue-bg)',    color: 'var(--badge-blue-text)',    borderColor: 'var(--badge-blue-border)' };
+              const pillRed     = { ...pillBase, background: 'var(--badge-red-bg)',    color: 'var(--badge-red-text)',    borderColor: 'var(--badge-red-border)' };
+              const lifecycleTone =
+                  warehouseLifecycle === 'reserved'         ? pillGreen
+                : warehouseLifecycle === 'in_warehouse'     ? pillBlue
+                : warehouseLifecycle === 'partial_received' ? pillAmber
+                : warehouseLifecycle === 'awaiting'         ? pillRed
+                : pillNeutral;
+              const sectionStyle = { padding: 12, background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' };
+              const sectionHeadStyle = { fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6, letterSpacing: '0.04em', textTransform: 'uppercase' };
+
+              return (
+                <Card
+                  data-testid="pipeline-summary-panel"
+                  style={{ padding: 16, marginBottom: 16 }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>📋 Pipeline Summary</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 12 }}>
+                    Read-only operational snapshot for this batch — same lifecycle lenses as the cross-batch cards, derived from the existing batch payload. Open any tab for full detail.
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+
+                    {/* Warehouse */}
+                    <div data-testid="pipeline-summary-warehouse" data-lifecycle-state={warehouseLifecycle} style={sectionStyle}>
+                      <div style={sectionHeadStyle}>Warehouse</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <span
+                          data-testid="pipeline-summary-warehouse-lifecycle-pill"
+                          data-lifecycle-state={warehouseLifecycle}
+                          style={lifecycleTone}
+                        >
+                          {warehouseLifecycleLabel}
+                        </span>
+                        {batchReadiness && batchReadiness.warehouse && (
+                          <span
+                            data-testid="pipeline-summary-warehouse-readiness-pill"
+                            data-readiness-status={batchReadiness.warehouse.status || ''}
+                            style={pillNeutral}
+                          >
+                            Readiness: {batchReadiness.warehouse.status || 'unknown'}
+                          </span>
+                        )}
+                        <span
+                          data-testid="pipeline-summary-warehouse-packing-list-pill"
+                          style={pillNeutral}
+                        >
+                          Packing list: {pipelineRow.warehouseHint === 'n/a' ? 'absent' : 'present'}
+                        </span>
+                        {warehouseAttention && (
+                          <span data-testid="pipeline-summary-warehouse-attention" style={pillAmber}>⚠ Needs attention</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Sales & Accounting */}
+                    <div data-testid="pipeline-summary-sales-accounting" style={sectionStyle}>
+                      <div style={sectionHeadStyle}>Sales &amp; Accounting</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <span
+                          data-testid="pipeline-summary-sales-pill"
+                          data-sales-hint={pipelineRow.salesHint}
+                          style={pillNeutral}
+                        >
+                          Sales: {pipelineRow.salesHint === 'present'
+                            ? 'Linked'
+                            : 'See Sales tab'}
+                        </span>
+                        <span
+                          data-testid="pipeline-summary-wfirma-pill"
+                          data-wfirma-hint={pipelineRow.wfirmaHint}
+                          style={pipelineRow.wfirmaHint === 'preview_built' ? pillBlue : pillNeutral}
+                        >
+                          wFirma: {pipelineRow.wfirmaHint === 'preview_built'
+                            ? 'Preview built'
+                            : 'Not prepared'}
+                        </span>
+                        <span
+                          data-testid="pipeline-summary-pz-pill"
+                          data-pz-status={pipelineRow.pzStatus}
+                          style={PZ_DONE_LABELS.has(pipelineRow.pzStatus) ? pillGreen : pillNeutral}
+                        >
+                          PZ: {pipelineRow.pzStatus || '—'}
+                        </span>
+                        {salesAttention && (
+                          <span data-testid="pipeline-summary-sales-attention" style={pillAmber}>⚠ Needs attention</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* DHL & Customs */}
+                    <div data-testid="pipeline-summary-dhl-customs" style={sectionStyle}>
+                      <div style={sectionHeadStyle}>DHL &amp; Customs</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <span
+                          data-testid="pipeline-summary-dhl-status-pill"
+                          data-dhl-status={pipelineRow._raw.dhl_status}
+                          style={pipelineRow._raw.dhl_status === 'dhl_email_received' ? pillAmber : pillNeutral}
+                        >
+                          DHL: {mapDhlStatus(pipelineRow._raw.dhl_status) || '—'}
+                        </span>
+                        <span
+                          data-testid="pipeline-summary-sad-pill"
+                          data-sad-status={pipelineRow._raw.sad_status}
+                          data-has-sad={pipelineRow.has_sad ? 'true' : 'false'}
+                          style={pipelineRow.has_sad ? pillGreen : pillRed}
+                        >
+                          SAD: {pipelineRow.has_sad
+                            ? mapSadStatus(pipelineRow._raw.sad_status)
+                            : 'SAD missing'}
+                        </span>
+                        {pipelineRow.mrn && (
+                          <span data-testid="pipeline-summary-mrn-pill" style={pillNeutral}>
+                            MRN: <span style={{ fontFamily: 'monospace' }}>{pipelineRow.mrn}</span>
+                          </span>
+                        )}
+                        {(pipelineRow._raw.tracking_status_key || pipelineRow._raw.tracking_status) && (
+                          <span
+                            data-testid="pipeline-summary-tracking-pill"
+                            data-tracking-key={pipelineRow._raw.tracking_status_key}
+                            style={pipelineRow._raw.tracking_status_key === 'delivered'
+                              ? pillGreen
+                              : pipelineRow._raw.tracking_status_key === 'in_transit'
+                              ? pillBlue
+                              : TRACK_ATTENTION.has(pipelineRow._raw.tracking_status_key)
+                              ? pillRed
+                              : pillNeutral}
+                          >
+                            Tracking: {pipelineRow._raw.tracking_status || pipelineRow._raw.tracking_status_key}
+                          </span>
+                        )}
+                        {dhlAttention && (
+                          <span data-testid="pipeline-summary-dhl-attention" style={pillAmber}>⚠ Needs attention</span>
+                        )}
+                      </div>
+                    </div>
+
+                  </div>
+                </Card>
+              );
+            })()}
+
             <MissingFunctionsMatrix />
 
             {/* ── Closure Evaluation ── */}
