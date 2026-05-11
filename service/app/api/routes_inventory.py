@@ -13,6 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..core.security import require_api_key
+from ..services.inventory_piece_view import get_piece_detail
 from ..services.inventory_stage2_aggregator import aggregate_stage2
 
 
@@ -50,3 +51,20 @@ def get_stage2_aggregate(
     """Read-only Stage 2 aggregation. GET only."""
     validated = _validate_as_of(as_of)
     return aggregate_stage2(as_of=validated)
+
+
+@router.get("/pieces/{piece_id}")
+def get_inventory_piece_detail(
+    piece_id: str,
+    as_of: Optional[str] = Query(
+        None,
+        description="Optional ISO 8601 timestamp. Echoed verbatim. "
+                    "If omitted, server uses current UTC time.",
+    ),
+) -> dict:
+    """Read-only per-piece inventory detail. Returns state row + history.
+
+    Honest empty: unknown piece_id yields found=False (HTTP 200, not 404).
+    """
+    validated = _validate_as_of(as_of)
+    return get_piece_detail(piece_id, as_of=validated)
