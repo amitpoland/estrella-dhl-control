@@ -1504,6 +1504,246 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
         );
       })()}
 
+      {/* ── UI-3.2b: cross-batch DHL & customs operations card ──────────────
+          Read-only sibling to the UI-3.1b warehouse + UI-3.2a sales cards.
+          Aggregates the existing batch-list payload into operator-readable
+          DHL / SAD / tracking buckets and surfaces the subset of batches
+          that need customs attention.
+
+          Source fields (all verified to exist on every list row — pre-check
+          rejected inventing additional customs / agency status fields
+          that are not in the batch-list payload):
+            row.dhlStatus            ← mapDhlStatus(batch.dhl_status)
+            row._raw.dhl_status      ← raw key (awaiting_dhl_email | dhl_email_received | …)
+            row.sadStatus            ← mapSadStatus(batch.sad_status)
+            row._raw.sad_status      ← raw key (missing | uploaded | uploaded_parsed | …)
+            row.has_sad              ← boolean
+            row.mrn                  ← customs MRN string
+            row._raw.tracking_status_key ← in_transit | delivered | out_for_delivery
+                                          | customs | exception | unknown | null
+            row._raw.tracking_status     ← display label, may be null
+            row.awb / row.doc_no / row.timestamp / row.id
+
+          Attention rule (per spec):
+            SAD missing (has_sad === false) when DHL flow has started
+            OR raw sad_status === 'missing'
+            OR tracking_status_key ∈ {'exception', 'customs'}
+            OR raw dhl_status === 'dhl_email_received'
+               (operator action required: customs reply pending)
+
+          Buckets exposed (six counts):
+            awaiting_customs_docs (sad missing AND dhl flow live),
+            sad_present, sad_missing,
+            customs_cleared (sad parsed/verified),
+            dhl_in_transit, dhl_delivered.
+
+          Same read-only discipline as UI-3.1b / UI-3.2a: no fetch helper,
+          no button primitive, no form, no execute endpoint, no
+          reply/send/customs action. Only interactive element is the
+          existing onViewShipment navigation. DHL Express wording is
+          preserved at the per-row carrier column (already rendered in
+          the existing shipments table); this card stays carrier-neutral
+          in copy except for the title which names DHL because that is
+          the only carrier in operator scope for this app.
+       */}
+      {viewMode === 'active' && (() => {
+        const dcBucketLabel = {
+          awaiting_customs_docs: 'Awaiting customs docs',
+          sad_present:           'SAD present',
+          sad_missing:           'SAD missing',
+          customs_cleared:       'Customs cleared',
+          dhl_in_transit:        'DHL in transit',
+          dhl_delivered:         'DHL delivered',
+        };
+        const dcBucketTone = {
+          awaiting_customs_docs: { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+          sad_present:           { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          sad_missing:           { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+          customs_cleared:       { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          dhl_in_transit:        { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+          dhl_delivered:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+        };
+        const SAD_CLEARED_KEYS  = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
+        const TRACK_ATTENTION   = new Set(['exception', 'customs']);
+        const DHL_FLOW_LIVE_KEYS = new Set([
+          'dhl_email_received', 'reply_queued', 'reply_sent',
+          'reply_package_prepared', 'pre_check_pending',
+          'pre_check_completed',
+        ]);
+        const dcRawDhl     = (row) => (row._raw && row._raw.dhl_status)        || '';
+        const dcRawSad     = (row) => (row._raw && row._raw.sad_status)        || '';
+        const dcTrackKey   = (row) => (row._raw && row._raw.tracking_status_key) || '';
+        const dcTrackLabel = (row) => (row._raw && row._raw.tracking_status)     || '';
+        const dcSadCleared       = (row) => !!row.has_sad && SAD_CLEARED_KEYS.has(dcRawSad(row));
+        const dcAwaitingCustoms  = (row) => !row.has_sad && DHL_FLOW_LIVE_KEYS.has(dcRawDhl(row));
+        const dcDhlActionPending = (row) => dcRawDhl(row) === 'dhl_email_received';
+        const dcTrackAttention   = (row) => TRACK_ATTENTION.has(dcTrackKey(row));
+        const dcNeedsAttention   = (row) =>
+          dcAwaitingCustoms(row)
+          || (dcRawSad(row) === 'missing')
+          || dcDhlActionPending(row)
+          || dcTrackAttention(row);
+
+        const dcCounts = {
+          awaiting_customs_docs: batches.filter(dcAwaitingCustoms).length,
+          sad_present:           batches.filter(r => !!r.has_sad).length,
+          sad_missing:           batches.filter(r => !r.has_sad).length,
+          customs_cleared:       batches.filter(dcSadCleared).length,
+          dhl_in_transit:        batches.filter(r => dcTrackKey(r) === 'in_transit').length,
+          dhl_delivered:         batches.filter(r => dcTrackKey(r) === 'delivered').length,
+        };
+        const dcAttention = batches
+          .filter(dcNeedsAttention)
+          .sort((a, b) => {
+            const at = (a._raw && a._raw.timestamp) || a.timestamp || '';
+            const bt = (b._raw && b._raw.timestamp) || b.timestamp || '';
+            return at < bt ? 1 : at > bt ? -1 : 0;
+          });
+        return (
+          <Card
+            data-testid="dhl-customs-operations-card"
+            style={{ padding: 16, marginBottom: 16 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📨 DHL &amp; Customs Operations</div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                  Cross-batch DHL Express / SAD / tracking status — derived read-only from existing batch-list payload. Open a batch for full detail.
+                </div>
+              </div>
+            </div>
+
+            {/* Bucket counts */}
+            <div
+              data-testid="dhl-customs-operations-buckets"
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8, marginBottom: 14 }}
+            >
+              {['awaiting_customs_docs', 'sad_missing', 'sad_present', 'customs_cleared', 'dhl_in_transit', 'dhl_delivered'].map(key => {
+                const tone = dcBucketTone[key];
+                return (
+                  <div
+                    key={key}
+                    data-testid={`dhl-customs-operations-bucket-${key}`}
+                    data-bucket-key={key}
+                    style={{ padding: '10px 12px', border: `1px solid ${tone.border}`, background: tone.bg, borderRadius: 6 }}
+                  >
+                    <div style={{ fontSize: 10, fontWeight: 700, color: tone.text, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                      {dcBucketLabel[key]}
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: tone.text, fontFamily: '"DM Serif Display",serif', marginTop: 2 }}>
+                      {loading ? '…' : dcCounts[key]}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Attention table */}
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>
+                Needs customs attention <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>(SAD missing, customs unresolved, or tracking exception)</span>
+              </div>
+              {loading && (
+                <div data-testid="dhl-customs-operations-attention-loading" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  Loading shipments…
+                </div>
+              )}
+              {!loading && dcAttention.length === 0 && (
+                <div data-testid="dhl-customs-operations-attention-empty" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  No batches need customs attention.
+                </div>
+              )}
+              {!loading && dcAttention.length > 0 && (
+                <table
+                  data-testid="dhl-customs-operations-attention-table"
+                  style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}
+                >
+                  <thead>
+                    <tr>
+                      {['Shipment', 'DHL Status', 'SAD', 'MRN', 'Tracking', 'Last activity'].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dcAttention.slice(0, 25).map(row => {
+                      const ts        = (row._raw && row._raw.timestamp) || row.timestamp || '—';
+                      const dhlLabel  = row.dhlStatus || '—';
+                      const sadLabel  = row.sadStatus || '—';
+                      const mrnLabel  = (row.mrn && row.mrn !== '—') ? row.mrn : '—';
+                      const trackKey  = dcTrackKey(row);
+                      const trackLbl  = dcTrackLabel(row) || (trackKey || '—');
+                      const sadTone   = row.has_sad ? 'var(--badge-green' : 'var(--badge-red';
+                      const trackTone =
+                          trackKey === 'delivered'  ? 'var(--badge-green'
+                        : trackKey === 'in_transit' ? 'var(--badge-blue'
+                        : TRACK_ATTENTION.has(trackKey) ? 'var(--badge-red'
+                        : 'var(--badge-neutral';
+                      return (
+                        <tr
+                          key={row.id}
+                          data-testid="dhl-customs-operations-attention-row"
+                          data-batch-id={row.id}
+                          data-dhl-status={dcRawDhl(row)}
+                          data-sad-status={dcRawSad(row)}
+                          data-has-sad={row.has_sad ? 'true' : 'false'}
+                          data-tracking-key={trackKey}
+                        >
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <button
+                              onClick={() => onViewShipment(row)}
+                              data-testid="dhl-customs-operations-attention-open"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--badge-blue-text)', fontSize: 11, fontWeight: 600, fontFamily: 'monospace', textDecoration: 'underline', textDecorationStyle: 'dotted', padding: 0 }}
+                              title="Open shipment detail (read-only)"
+                            >
+                              {row.awb}
+                            </button>
+                            {row.doc_no && (
+                              <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 1 }}>{row.doc_no}</div>
+                            )}
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <span
+                              data-testid="dhl-customs-operations-attention-dhl-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: dcDhlActionPending(row) ? 'var(--badge-amber-bg)' : 'var(--badge-neutral-bg)', color: dcDhlActionPending(row) ? 'var(--badge-amber-text)' : 'var(--badge-neutral-text)', border: `1px solid ${dcDhlActionPending(row) ? 'var(--badge-amber-border)' : 'var(--badge-neutral-border)'}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {dhlLabel}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <span
+                              data-testid="dhl-customs-operations-attention-sad-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: `${sadTone}-bg)`, color: `${sadTone}-text)`, border: `1px solid ${sadTone}-border)`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {sadLabel}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)', fontFamily: 'monospace', fontSize: 10 }}>{mrnLabel}</td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <span
+                              data-testid="dhl-customs-operations-attention-tracking-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: `${trackTone}-bg)`, color: `${trackTone}-text)`, border: `1px solid ${trackTone}-border)`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {trackLbl}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-3)', fontFamily: 'monospace' }}>{ts}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+              {!loading && dcAttention.length > 25 && (
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>
+                  Showing first 25 of {dcAttention.length}. Use the shipments table below to scroll the full list.
+                </div>
+              )}
+            </div>
+          </Card>
+        );
+      })()}
+
       {/* ── Archived view ── */}
       {viewMode === 'archived' && (
         <Card style={{ overflow: 'hidden' }}>
