@@ -3,23 +3,33 @@ test_proforma_adopt_issued.py — unit + source-grep tests for routes_proforma_a
 
 Tests:
   Source checks (grep on source):
-    1. No wFirma API calls in module
-    2. draft_state = 'adopted_from_audit' is written
-    3. status = 'created' is written
-    4. posted_at column is written
-    5. proforma_draft_events event = 'adopted_from_audit'
+    1. draft_state = 'adopted_from_audit' is written
+    2. status = 'created' is written
+    3. posted_at column is written
+    4. proforma_draft_events event = 'adopted_from_audit'
+    5. Phase 2: wFirma guard present (503 path)
+    6. Phase 2: fullnumber_enriched event present
 
-  Logic tests (in-memory SQLite):
-    6.  confirmed=False → 400
-    7.  confirmed=True, dry_run=True → preview, no DB rows
-    8.  Normal insert → adopted row in proforma_drafts with correct columns
-    9.  Normal insert → proforma_draft_events row written
-   10.  Idempotency: same (batch_id, wfirma_proforma_id) → skipped, no duplicate
-   11.  Conflict: same (batch_id, client_name) different ID → 409, zero rows written
-   12.  Atomicity: conflict present alongside new entry → 409, still zero rows written
-   13.  Missing proforma_issued → 422
-   14.  posted_at / posted_by pulled from timeline
-   15.  Entries with missing client_name or wfirma_proforma_id are silently skipped
+  Adopt logic tests (in-memory SQLite):
+    7.  confirmed=False → 400
+    8.  confirmed=True, dry_run=True → preview, no DB rows
+    9.  Normal insert → adopted row in proforma_drafts with correct columns
+   10.  Normal insert → proforma_draft_events row written
+   11.  Idempotency: same (batch_id, wfirma_proforma_id) → skipped, no duplicate
+   12.  Conflict: same (batch_id, client_name) different ID → 409, zero rows written
+   13.  Atomicity: conflict present alongside new entry → 409, still zero rows written
+   14.  Missing proforma_issued → 422
+   15.  posted_at / posted_by pulled from timeline
+   16.  Entries with missing client_name or wfirma_proforma_id are silently skipped
+
+  Enrich logic tests (in-memory SQLite + mocked wfirma_client):
+   17.  confirmed=False → 400
+   18.  wFirma not configured → 503
+   19.  dry_run=True → preview with would_update, no DB writes
+   20.  Successful enrich → fullnumber written, event inserted
+   21.  Already-set rows are skipped (idempotent)
+   22.  Fetch failure → reported in 'failed', other rows still processed
+   23.  No blank rows → 200 with empty enriched list
 """
 from __future__ import annotations
 
@@ -167,22 +177,6 @@ class TestSourceChecks:
     def test_module_file_exists(self):
         assert _SRC_FILE.exists()
 
-    def test_no_wfirma_api_calls(self):
-        src = _src()
-        forbidden = [
-            "fetch_invoice_xml",
-            "invoices/get",
-            "wfirma_client",
-            "wfirma_api",
-            "requests.get",
-            "requests.post",
-            "httpx",
-        ]
-        for term in forbidden:
-            assert term not in src, (
-                f"Found forbidden wFirma/HTTP call pattern {term!r} in routes_proforma_adopt.py"
-            )
-
     def test_draft_state_adopted_from_audit(self):
         assert "'adopted_from_audit'" in _src()
 
@@ -196,6 +190,15 @@ class TestSourceChecks:
         src = _src()
         assert "'adopted_from_audit'" in src
         assert "proforma_draft_events" in src
+
+    def test_phase2_wfirma_guard_503_path(self):
+        src = _src()
+        assert "wfirma_not_configured" in src
+        assert "503" in src
+
+    def test_phase2_fullnumber_enriched_event(self):
+        src = _src()
+        assert "'fullnumber_enriched'" in src
 
 
 # ── Logic tests ───────────────────────────────────────────────────────────────
@@ -404,3 +407,324 @@ class TestAdoptLogic:
             body = r.json()
             assert len(body["adopted"]) == 1
             assert body["adopted"][0]["client_name"] == "Client OK"
+
+
+# ── Phase 2: enrich-fullnumber tests ─────────────────────────────────────────
+
+_ENRICH_BATCH = "TEST_BATCH_ENRICH_001"
+
+# Minimal XML wFirma returns for a proforma fetch
+_XML_ALPHA = """<?xml version="1.0"?>
+<api><status><code>OK</code></status>
+<invoices><invoice><id>111</id><fullnumber>PRO 1/05/2026</fullnumber></invoice></invoices>
+</api>"""
+
+_XML_BETA = """<?xml version="1.0"?>
+<api><status><code>OK</code></status>
+<invoices><invoice><id>222</id><fullnumber>PRO 2/05/2026</fullnumber></invoice></invoices>
+</api>"""
+
+
+def _make_db_with_adopted_rows(tmp: Path, batch_id: str = _ENRICH_BATCH) -> Path:
+    """Create proforma_links.db with two adopted rows (fullnumber blank)."""
+    db = tmp / "proforma_links.db"
+    con = sqlite3.connect(str(db))
+    con.executescript("""
+        CREATE TABLE proforma_drafts (
+            id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id                   TEXT NOT NULL,
+            client_name                TEXT NOT NULL,
+            status                     TEXT NOT NULL,
+            currency                   TEXT NOT NULL DEFAULT '',
+            source_lines_json          TEXT NOT NULL DEFAULT '[]',
+            wfirma_proforma_id         TEXT,
+            notes                      TEXT,
+            created_at                 TEXT NOT NULL,
+            updated_at                 TEXT NOT NULL,
+            draft_state                TEXT NOT NULL DEFAULT 'adopted_from_audit',
+            draft_version              INTEGER NOT NULL DEFAULT 1,
+            wfirma_proforma_fullnumber TEXT NOT NULL DEFAULT '',
+            buyer_override_json        TEXT NOT NULL DEFAULT '{}',
+            ship_to_override_json      TEXT NOT NULL DEFAULT '{}',
+            payment_terms_json         TEXT NOT NULL DEFAULT '{}',
+            remarks                    TEXT NOT NULL DEFAULT '',
+            editable_lines_json        TEXT NOT NULL DEFAULT '[]',
+            service_charges_json       TEXT NOT NULL DEFAULT '[]',
+            posted_at                  TEXT,
+            posted_by                  TEXT,
+            UNIQUE(batch_id, client_name)
+        );
+        CREATE TABLE proforma_draft_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            draft_id    INTEGER NOT NULL,
+            event       TEXT NOT NULL,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            operator    TEXT NOT NULL DEFAULT '',
+            occurred_at TEXT NOT NULL
+        );
+    """)
+    con.execute(
+        "INSERT INTO proforma_drafts (batch_id, client_name, status, wfirma_proforma_id, "
+        "wfirma_proforma_fullnumber, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+        (batch_id, "Client Alpha", "created", "111", "", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+    )
+    con.execute(
+        "INSERT INTO proforma_drafts (batch_id, client_name, status, wfirma_proforma_id, "
+        "wfirma_proforma_fullnumber, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+        (batch_id, "Client Beta", "created", "222", "", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+    )
+    con.commit()
+    con.close()
+    return db
+
+
+def _enrich_env(tmp: Path, wfirma_configured: bool = True):
+    """Context manager: set up DB with blank fullnumbers, patch settings + wfirma_client."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _inner():
+        db = _make_db_with_adopted_rows(tmp)
+
+        def _fake_fetch(invoice_id: str) -> str:
+            mapping = {"111": _XML_ALPHA, "222": _XML_BETA}
+            if invoice_id in mapping:
+                return mapping[invoice_id]
+            raise RuntimeError(f"not found: {invoice_id}")
+
+        with patch("service.app.api.routes_proforma_adopt.settings") as ms, \
+             patch("service.app.api.routes_proforma_adopt._wfirma.fetch_invoice_xml",
+                   side_effect=_fake_fetch):
+            ms.storage_root = tmp
+            ms.wfirma_access_key = "key" if wfirma_configured else ""
+            ms.wfirma_secret_key = "sec" if wfirma_configured else ""
+            ms.wfirma_app_key    = "app" if wfirma_configured else ""
+
+            from fastapi import FastAPI
+            from fastapi.testclient import TestClient
+            from service.app.api.routes_proforma_adopt import router
+            from service.app.core.security import require_api_key
+
+            mini = FastAPI()
+            mini.include_router(router)
+            mini.dependency_overrides[require_api_key] = lambda: None
+            client = TestClient(mini, raise_server_exceptions=False)
+            yield client, db
+
+    return _inner()
+
+
+class TestEnrichFullnumber:
+    """Phase 2 enrichment endpoint tests."""
+
+    @pytest.fixture()
+    def env(self, tmp_path):
+        with _enrich_env(tmp_path) as ctx:
+            yield ctx
+
+    @pytest.fixture()
+    def env_unconfigured(self, tmp_path):
+        with _enrich_env(tmp_path, wfirma_configured=False) as ctx:
+            yield ctx
+
+    def test_confirmed_false_returns_400(self, env):
+        client, _ = env
+        r = client.post(f"/api/v1/proforma/enrich-fullnumber/{_ENRICH_BATCH}",
+                        json={"confirmed": False})
+        assert r.status_code == 400
+
+    def test_wfirma_not_configured_returns_503(self, env_unconfigured):
+        client, _ = env_unconfigured
+        r = client.post(f"/api/v1/proforma/enrich-fullnumber/{_ENRICH_BATCH}",
+                        json={"confirmed": True})
+        assert r.status_code == 503
+        body = r.json()
+        detail = body.get("detail", body)
+        assert "wfirma_not_configured" in str(detail)
+
+    def test_dry_run_no_db_writes(self, env):
+        client, db = env
+        r = client.post(f"/api/v1/proforma/enrich-fullnumber/{_ENRICH_BATCH}",
+                        json={"confirmed": True, "dry_run": True})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["dry_run"] is True
+        assert len(body["enriched"]) == 2
+        assert all(e["action"] == "would_update" for e in body["enriched"])
+        assert len(body["failed"]) == 0
+        # DB must still have blank fullnumbers
+        con = sqlite3.connect(str(db))
+        blanks = con.execute(
+            "SELECT COUNT(*) FROM proforma_drafts WHERE wfirma_proforma_fullnumber = ''"
+        ).fetchone()[0]
+        con.close()
+        assert blanks == 2
+
+    def test_successful_enrich_writes_fullnumber(self, env):
+        client, db = env
+        r = client.post(f"/api/v1/proforma/enrich-fullnumber/{_ENRICH_BATCH}",
+                        json={"confirmed": True, "operator": "tester"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["dry_run"] is False
+        assert len(body["enriched"]) == 2
+        assert len(body["failed"]) == 0
+        assert all(e["action"] == "updated" for e in body["enriched"])
+
+        con = sqlite3.connect(str(db))
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT client_name, wfirma_proforma_fullnumber FROM proforma_drafts "
+            "WHERE batch_id=? ORDER BY client_name",
+            (_ENRICH_BATCH,),
+        ).fetchall()
+        con.close()
+        by_name = {r["client_name"]: r["wfirma_proforma_fullnumber"] for r in rows}
+        assert by_name["Client Alpha"] == "PRO 1/05/2026"
+        assert by_name["Client Beta"]  == "PRO 2/05/2026"
+
+    def test_successful_enrich_writes_event(self, env):
+        client, db = env
+        r = client.post(f"/api/v1/proforma/enrich-fullnumber/{_ENRICH_BATCH}",
+                        json={"confirmed": True, "operator": "tester"})
+        assert r.status_code == 200
+
+        con = sqlite3.connect(str(db))
+        events = con.execute(
+            "SELECT event, detail_json, operator FROM proforma_draft_events"
+        ).fetchall()
+        con.close()
+        assert len(events) == 2
+        for ev in events:
+            assert ev[0] == "fullnumber_enriched"
+            assert ev[2] == "tester"
+            detail = json.loads(ev[1])
+            assert "wfirma_proforma_fullnumber" in detail
+
+    def test_already_set_rows_are_skipped(self, tmp_path):
+        """Rows where fullnumber is already populated must not be overwritten."""
+        db = _make_db_with_adopted_rows(tmp_path)
+        # Pre-populate Alpha's fullnumber
+        con = sqlite3.connect(str(db))
+        con.execute(
+            "UPDATE proforma_drafts SET wfirma_proforma_fullnumber='PRO EXISTING' "
+            "WHERE client_name='Client Alpha'"
+        )
+        con.commit()
+        con.close()
+
+        def _fake_fetch(invoice_id: str) -> str:
+            return _XML_BETA if invoice_id == "222" else _XML_ALPHA
+
+        with patch("service.app.api.routes_proforma_adopt.settings") as ms, \
+             patch("service.app.api.routes_proforma_adopt._wfirma.fetch_invoice_xml",
+                   side_effect=_fake_fetch):
+            ms.storage_root = tmp_path
+            ms.wfirma_access_key = "k"
+            ms.wfirma_secret_key = "s"
+            ms.wfirma_app_key    = "a"
+
+            from fastapi import FastAPI
+            from fastapi.testclient import TestClient
+            from service.app.api.routes_proforma_adopt import router
+            from service.app.core.security import require_api_key
+
+            mini = FastAPI()
+            mini.include_router(router)
+            mini.dependency_overrides[require_api_key] = lambda: None
+            client = TestClient(mini, raise_server_exceptions=False)
+
+            r = client.post(f"/api/v1/proforma/enrich-fullnumber/{_ENRICH_BATCH}",
+                            json={"confirmed": True})
+            assert r.status_code == 200
+            body = r.json()
+            # Only Beta should be enriched — Alpha was already set
+            assert len(body["enriched"]) == 1
+            assert body["enriched"][0]["client_name"] == "Client Beta"
+
+        # Alpha must still have the original value
+        con = sqlite3.connect(str(db))
+        val = con.execute(
+            "SELECT wfirma_proforma_fullnumber FROM proforma_drafts WHERE client_name='Client Alpha'"
+        ).fetchone()[0]
+        con.close()
+        assert val == "PRO EXISTING"
+
+    def test_fetch_failure_reported_others_proceed(self, tmp_path):
+        """If one row's wFirma fetch fails, it goes to 'failed'; others still write."""
+        db = _make_db_with_adopted_rows(tmp_path)
+
+        def _failing_fetch(invoice_id: str) -> str:
+            if invoice_id == "111":
+                raise RuntimeError("network timeout")
+            return _XML_BETA  # Beta succeeds
+
+        with patch("service.app.api.routes_proforma_adopt.settings") as ms, \
+             patch("service.app.api.routes_proforma_adopt._wfirma.fetch_invoice_xml",
+                   side_effect=_failing_fetch):
+            ms.storage_root = tmp_path
+            ms.wfirma_access_key = "k"
+            ms.wfirma_secret_key = "s"
+            ms.wfirma_app_key    = "a"
+
+            from fastapi import FastAPI
+            from fastapi.testclient import TestClient
+            from service.app.api.routes_proforma_adopt import router
+            from service.app.core.security import require_api_key
+
+            mini = FastAPI()
+            mini.include_router(router)
+            mini.dependency_overrides[require_api_key] = lambda: None
+            client = TestClient(mini, raise_server_exceptions=False)
+
+            r = client.post(f"/api/v1/proforma/enrich-fullnumber/{_ENRICH_BATCH}",
+                            json={"confirmed": True})
+            assert r.status_code == 200
+            body = r.json()
+            assert len(body["failed"])   == 1
+            assert len(body["enriched"]) == 1
+            assert body["failed"][0]["client_name"]   == "Client Alpha"
+            assert body["enriched"][0]["client_name"] == "Client Beta"
+
+        # Beta must be written, Alpha still blank
+        con = sqlite3.connect(str(db))
+        con.row_factory = sqlite3.Row
+        rows = {r["client_name"]: r["wfirma_proforma_fullnumber"]
+                for r in con.execute(
+                    "SELECT client_name, wfirma_proforma_fullnumber FROM proforma_drafts"
+                ).fetchall()}
+        con.close()
+        assert rows["Client Beta"]  == "PRO 2/05/2026"
+        assert rows["Client Alpha"] == ""
+
+    def test_no_blank_rows_returns_empty(self, tmp_path):
+        """If all rows already have fullnumbers, returns empty enriched list."""
+        db = _make_db_with_adopted_rows(tmp_path)
+        con = sqlite3.connect(str(db))
+        con.execute("UPDATE proforma_drafts SET wfirma_proforma_fullnumber='PRO X'")
+        con.commit()
+        con.close()
+
+        with patch("service.app.api.routes_proforma_adopt.settings") as ms, \
+             patch("service.app.api.routes_proforma_adopt._wfirma.fetch_invoice_xml") as _mf:
+            ms.storage_root = tmp_path
+            ms.wfirma_access_key = "k"
+            ms.wfirma_secret_key = "s"
+            ms.wfirma_app_key    = "a"
+
+            from fastapi import FastAPI
+            from fastapi.testclient import TestClient
+            from service.app.api.routes_proforma_adopt import router
+            from service.app.core.security import require_api_key
+
+            mini = FastAPI()
+            mini.include_router(router)
+            mini.dependency_overrides[require_api_key] = lambda: None
+            client = TestClient(mini, raise_server_exceptions=False)
+
+            r = client.post(f"/api/v1/proforma/enrich-fullnumber/{_ENRICH_BATCH}",
+                            json={"confirmed": True})
+            assert r.status_code == 200
+            body = r.json()
+            assert body["enriched"] == []
+            _mf.assert_not_called()  # no wFirma fetches needed

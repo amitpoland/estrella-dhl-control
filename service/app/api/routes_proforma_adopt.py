@@ -1,13 +1,16 @@
 """
-routes_proforma_adopt.py — Phase 1 adoption of already-issued wFirma proformas.
+routes_proforma_adopt.py — Adoption and enrichment of already-issued wFirma proformas.
 
-POST /api/v1/proforma/adopt-issued/{batch_id}
+POST /api/v1/proforma/adopt-issued/{batch_id}   — Phase 1: insert adopted rows
+POST /api/v1/proforma/enrich-fullnumber/{batch_id} — Phase 2: backfill fullnumber from wFirma
 
-Reads audit.proforma_issued[] and inserts rows into proforma_drafts so the
+Phase 1: Reads audit.proforma_issued[] and inserts rows into proforma_drafts so the
 app can track existing wFirma proformas that were created outside the draft
 lifecycle (e.g. via a different client or session).
 
-Phase 1 only — no wFirma API calls, no enrichment, no invoice conversion.
+Phase 2: For rows where wfirma_proforma_fullnumber is blank, fetches the canonical
+proforma number from wFirma API (read-only GET invoices/get/{id}) and writes it back.
+Requires WFIRMA_ACCESS_KEY, WFIRMA_SECRET_KEY, WFIRMA_APP_KEY, WFIRMA_COMPANY_ID.
 
 Idempotency
 -----------
@@ -27,6 +30,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from xml.etree import ElementTree as ET
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -35,6 +39,7 @@ from pydantic import BaseModel
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..services import wfirma_client as _wfirma
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/proforma", tags=["proforma"])
@@ -316,4 +321,209 @@ def adopt_issued_proformas(batch_id: str, body: AdoptRequest) -> JSONResponse:
         "dry_run":  False,
         "adopted":  inserted,
         "skipped":  to_skip,
+    })
+
+
+# ── Phase 2: fullnumber enrichment ────────────────────────────────────────────
+
+class EnrichRequest(BaseModel):
+    confirmed: bool = False
+    operator:  str  = ""
+    dry_run:   bool = False
+
+
+@router.post("/enrich-fullnumber/{batch_id}", dependencies=[_auth])
+def enrich_proforma_fullnumbers(batch_id: str, body: EnrichRequest) -> JSONResponse:
+    """
+    Phase 2 enrichment: for each proforma_draft row in this batch where
+    wfirma_proforma_fullnumber is blank, fetch the canonical proforma number
+    from wFirma API (read-only GET invoices/get/{id}) and write it back.
+
+    Requires WFIRMA_ACCESS_KEY, WFIRMA_SECRET_KEY, WFIRMA_APP_KEY,
+    WFIRMA_COMPANY_ID to be set in .env — returns 503 if not configured.
+
+    confirmed=true required; returns 400 otherwise.
+    dry_run=true previews without writing.
+
+    Idempotent: rows that already have a fullnumber are skipped.
+    Per-row fetch errors are reported in 'failed' list; other rows still proceed.
+    """
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    if not body.confirmed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirmed must be true. Run with dry_run=true first to preview "
+                "which fullnumbers would be fetched, then re-submit with confirmed=true."
+            ),
+        )
+
+    # Guard: wFirma must be configured
+    if not (settings.wfirma_access_key and settings.wfirma_secret_key
+            and settings.wfirma_app_key):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error":   "wfirma_not_configured",
+                "message": (
+                    "Set WFIRMA_ACCESS_KEY, WFIRMA_SECRET_KEY, WFIRMA_APP_KEY, "
+                    "WFIRMA_COMPANY_ID in .env and restart the service."
+                ),
+            },
+        )
+
+    db_path = _proforma_db()
+    if not db_path.exists():
+        raise HTTPException(status_code=503, detail="proforma_links.db not found.")
+
+    operator = (body.operator or "").strip()
+    now      = _now_iso()
+
+    # Load all rows for this batch that still have a blank fullnumber.
+    with sqlite3.connect(str(db_path), check_same_thread=False) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            """
+            SELECT id, client_name, wfirma_proforma_id
+            FROM proforma_drafts
+            WHERE batch_id = ?
+              AND (wfirma_proforma_fullnumber IS NULL
+                   OR wfirma_proforma_fullnumber = '')
+            """,
+            (batch_id,),
+        ).fetchall()
+
+    if not rows:
+        return JSONResponse({
+            "batch_id":  batch_id,
+            "dry_run":   body.dry_run,
+            "message":   "No rows with blank wfirma_proforma_fullnumber found. Nothing to enrich.",
+            "enriched":  [],
+            "skipped":   [],
+            "failed":    [],
+        })
+
+    # Fetch fullnumber from wFirma for each row (read-only).
+    preview:  List[Dict[str, Any]] = []
+    to_write: List[Dict[str, Any]] = []
+    failed:   List[Dict[str, Any]] = []
+
+    for row in rows:
+        draft_id         = row["id"]
+        client_name      = row["client_name"]
+        wfirma_proforma_id = row["wfirma_proforma_id"]
+
+        if not wfirma_proforma_id:
+            failed.append({
+                "draft_id":           draft_id,
+                "client_name":        client_name,
+                "wfirma_proforma_id": wfirma_proforma_id,
+                "error":              "blank wfirma_proforma_id — cannot fetch",
+            })
+            continue
+
+        try:
+            xml_text = _wfirma.fetch_invoice_xml(wfirma_proforma_id)
+            root     = ET.fromstring(xml_text)
+            node     = root.find(".//invoice")
+            fullnumber = _wfirma._extract_fullnumber(node)
+        except Exception as exc:
+            log.warning(
+                "enrich-fullnumber %s/%s: fetch failed: %s",
+                batch_id, client_name, exc,
+            )
+            failed.append({
+                "draft_id":           draft_id,
+                "client_name":        client_name,
+                "wfirma_proforma_id": wfirma_proforma_id,
+                "error":              str(exc),
+            })
+            continue
+
+        if not fullnumber:
+            failed.append({
+                "draft_id":           draft_id,
+                "client_name":        client_name,
+                "wfirma_proforma_id": wfirma_proforma_id,
+                "error":              "wFirma returned no fullnumber field",
+            })
+            continue
+
+        entry = {
+            "draft_id":                 draft_id,
+            "client_name":              client_name,
+            "wfirma_proforma_id":       wfirma_proforma_id,
+            "wfirma_proforma_fullnumber": fullnumber,
+        }
+        preview.append({**entry, "action": "would_update"})
+        to_write.append(entry)
+
+    if body.dry_run:
+        return JSONResponse({
+            "batch_id": batch_id,
+            "dry_run":  True,
+            "enriched": preview,
+            "skipped":  [],
+            "failed":   failed,
+        })
+
+    # Write — only update rows that are still blank (idempotent guard).
+    written: List[Dict[str, Any]] = []
+
+    with sqlite3.connect(str(db_path), check_same_thread=False) as con:
+        con.row_factory = sqlite3.Row
+        for e in to_write:
+            rowcount = con.execute(
+                """
+                UPDATE proforma_drafts
+                SET wfirma_proforma_fullnumber = ?,
+                    updated_at                = ?
+                WHERE id = ?
+                  AND (wfirma_proforma_fullnumber IS NULL
+                       OR wfirma_proforma_fullnumber = '')
+                """,
+                (e["wfirma_proforma_fullnumber"], now, e["draft_id"]),
+            ).rowcount
+
+            if rowcount == 0:
+                # Already enriched by a concurrent request — treat as success.
+                log.info(
+                    "enrich-fullnumber %s/%s: row already enriched (concurrent write), skipping event.",
+                    batch_id, e["client_name"],
+                )
+                written.append({**e, "action": "already_set"})
+                continue
+
+            con.execute(
+                """
+                INSERT INTO proforma_draft_events
+                    (draft_id, event, detail_json, operator, occurred_at)
+                VALUES (?, 'fullnumber_enriched', ?, ?, ?)
+                """,
+                (
+                    e["draft_id"],
+                    json.dumps({
+                        "wfirma_proforma_fullnumber": e["wfirma_proforma_fullnumber"],
+                        "wfirma_proforma_id":         e["wfirma_proforma_id"],
+                        "source": "wfirma_api_fetch",
+                    }),
+                    operator,
+                    now,
+                ),
+            )
+            written.append({**e, "action": "updated"})
+
+    log.info(
+        "enrich-fullnumber %s: written=%d failed=%d operator=%r",
+        batch_id, len(written), len(failed), operator,
+    )
+
+    return JSONResponse({
+        "batch_id": batch_id,
+        "dry_run":  False,
+        "enriched": written,
+        "skipped":  [],
+        "failed":   failed,
     })
