@@ -20,17 +20,32 @@
   @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
+  @media (max-width: 1100px) {
+    .pz-sidebar { width: 52px !important; min-width: 52px !important; }
+    .pz-sidebar .pz-sidebar-label { display: none !important; }
+  }
+  @media (max-width: 900px) {
+    .pz-main-content { padding: 16px !important; }
+    .pz-topbar-search { max-width: 160px !important; }
+  }
+  @media (max-width: 600px) {
+    .pz-topbar { padding: 0 12px !important; gap: 8px !important; }
+    .pz-topbar-search { display: none !important; }
+    .pz-detail-header { padding: 10px 16px !important; }
+    .pz-workflow-strip { padding: 10px 16px !important; }
+  }
+
   :root {
-    --bg: #F5F2EE; --bg-subtle: #FAF8F4; --card: #FFFFFF;
-    --row-hover: #F8F5F0; --border: #E4DDD0; --border-subtle: #EEE8DE;
-    --text: #1E2D4A; --text-2: #4A5A70; --text-3: #8A9AB0;
-    --shadow: rgba(30,45,74,0.06); --shadow-heavy: rgba(30,45,74,0.16);
-    --overlay: rgba(20,30,55,0.6);
-    --accent: #C9A456; --accent-light: #E0BC74; --accent-text: #1E2D4A;
-    --accent-subtle: #FBF5E4; --accent-border: #DCBE7A;
-    --sidebar-bg: #1E2D4A; --sidebar-border: #28395E;
-    --sidebar-active: #2A3D5E; --sidebar-hover: #253558;
-    --sidebar-text: #F0EAE0; --sidebar-text-muted: #6A7A96; --sidebar-icon: #8A9AB6;
+    --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+    --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+    --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+    --shadow: rgba(27,37,56,0.06); --shadow-heavy: rgba(27,37,56,0.16);
+    --overlay: rgba(19,28,46,0.6);
+    --accent: #B89968; --accent-light: #D4B884; --accent-text: #1B2538;
+    --accent-subtle: #F8EFD8; --accent-border: #CFB178;
+    --sidebar-bg: #131C2E; --sidebar-border: #25334C;
+    --sidebar-active: #1F2A42; --sidebar-hover: #1A2438;
+    --sidebar-text: #F2EBD9; --sidebar-text-muted: #7C89A3; --sidebar-icon: #B89968;
     --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
     --badge-blue-bg: #E8EFF8; --badge-blue-text: #1A4A90; --badge-blue-border: #AABEE0;
     --badge-amber-bg: #FBF5E0; --badge-amber-text: #805A00; --badge-amber-border: #DEC870;
@@ -48,7 +63,7 @@
     --overlay: rgba(0,0,0,0.72);
     --accent: #D4AA5C; --accent-light: #ECC870; --accent-text: #111928;
     --accent-subtle: #1E2808; --accent-border: #5A4A18;
-    --sidebar-bg: #0E1828; --sidebar-border: #1A2840;
+    --sidebar-bg: #0E1A30; --sidebar-border: #1A2840;
     --sidebar-active: #1A2E48; --sidebar-hover: #162438;
     --sidebar-text: #EEE8DC; --sidebar-text-muted: #566478; --sidebar-icon: #6A7A96;
     --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
@@ -73,20 +88,53 @@
 const GOLD = 'var(--accent)';
 const SIDEBAR_W = 220;
 
-const NAV_ITEMS = [
-  { id: 'dashboard',  label: 'Dashboard',         icon: '▦' },
-  { id: 'shipments',  label: 'Shipments',          icon: '⬡' },
-  { id: 'dhl',        label: 'DHL Clearance',      icon: '✈' },
-  { id: 'customs',    label: 'Customs Documents',  icon: '⊟' },
-  { id: 'warehouse_scanner', label: 'Warehouse Scanner', icon: '⊡', href: '/dashboard/warehouse.html' },
-  { id: 'pz',         label: 'PZ / Accounting',    icon: '⊞' },
-  { id: 'wfirma',     label: 'wFirma',             icon: '↗' },
-  { id: 'reports',       label: 'Analytics',          icon: '≡' },
-  { id: 'intelligence',  label: 'Intelligence',       icon: '◈' },
-  { id: 'ai_bridge',    label: 'AI Bridge',          icon: '⇌' },
-  { id: 'learning',      label: 'Learning / Parser',  icon: '◎' },
-  { id: 'admin',         label: 'Admin / Settings',   icon: '⚙' },
+const NAV_TREE = [
+  { id: 'dashboard',  label: 'Dashboard',  icon: '▦' },
+  { id: 'inbox',      label: 'Inbox',      icon: '✉', badge: 'NEW' },
+  { id: 'shipments',  label: 'Shipments',  icon: '⬡' },
+  { id: 'documents',  label: 'Documents',  icon: '📄' },
+  { id: 'accounting', label: 'Accounting', icon: '⊞', badge: 'NEW' },
+  { id: 'inventory',  label: 'Inventory',  icon: '◫' },
+  { id: 'reports',    label: 'Reports',    icon: '≡' },
+  { id: 'g_setup', label: 'Setup', icon: '⚙', defaultId: 'admin', children: [
+    { id: 'admin',             label: 'Settings' },
+    { id: 'master',            label: 'Master Data' },
+    { id: 'carriers',          label: 'Carriers' },
+    { id: 'wfirma_setup',      label: 'wFirma' },
+    { id: 'api_status',        label: 'API Status' },
+    { id: 'diagnostics',       label: 'Diagnostics' },
+    { id: 'automation',        label: 'Automation' },
+    { id: 'intelligence_grp',  label: 'Parser / Learning' },
+    { id: 'coverage',          label: 'Coverage Matrix' },
+    { id: 'warehouse_scanner', label: 'Warehouse Scanner', href: '/dashboard/warehouse.html' },
+  ]},
 ];
+
+// Flat index for quick lookup: id → item (including children)
+const NAV_INDEX = {};
+(function buildIndex(tree) {
+  tree.forEach(n => { NAV_INDEX[n.id] = n; if (n.children) buildIndex(n.children); });
+})(NAV_TREE);
+
+// Legacy/alternate ids that map to a canonical id
+const ROUTE_REDIRECTS = {
+  'pz_accounting': 'accounting',
+  'pz': 'accounting',
+  'dhl_clearance': 'dhl',
+  'customs_documents': 'documents',
+  'customs': 'documents',
+  'wfirma': 'wfirma_setup',
+  'ai_bridge': 'automation',
+  'learning': 'intelligence_grp',
+};
+
+// Which group (if any) owns a given leaf id
+function navGroupOf(id) {
+  for (const n of NAV_TREE) {
+    if (n.children && n.children.some(c => c.id === id)) return n;
+  }
+  return null;
+}
 
 const STATUS_MAP = {
   'Draft':                 { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
@@ -115,6 +163,8 @@ const STATUS_MAP = {
   'Pending':               { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
   'Live':                  { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
   'Awaiting Clearance':    { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  'Processing':            { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  'Reply Package Prepared':{ bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
 };
 
 // ══════════════════════════════════════════════════════════
@@ -130,7 +180,7 @@ function fmtPLN(n) {
 
 function mapOverall(status) {
   const m = {
-    success: 'Ready for Booking', partial: 'Action Required',
+    success: 'Ready for Booking', partial: 'Ready for Booking',
     blocked: 'Action Required', failed: 'Action Required',
     awaiting_dhl_email: 'Awaiting DHL', awaiting_sad: 'Awaiting SAD',
     awaiting_clearance: 'Awaiting Clearance',
@@ -196,6 +246,7 @@ function transformBatch(b) {
     gross:     fmtPLN(b.gross),
     duty:      fmtPLN(b.duty),
     overall:   mapOverall(b.status),
+    action_reason: b.action_reason || '',
     doc_no:    b.doc_no || '',
     timestamp: b.timestamp || '',
     has_sad:   b.has_sad,
@@ -295,14 +346,15 @@ function SessionBanner({ type, onDismiss }) {
 // BASE COMPONENTS
 // ══════════════════════════════════════════════════════════
 
-function Badge({ status, small }) {
+function Badge({ status, small, title }) {
   const s = STATUS_MAP[status] || { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
   return (
-    <span style={{
+    <span title={title || undefined} style={{
       display: 'inline-flex', alignItems: 'center',
       background: s.bg, color: s.text, border: `1px solid ${s.border}`,
       borderRadius: 4, padding: small ? '1px 6px' : '2px 8px',
       fontSize: small ? 10 : 11, fontWeight: 600, letterSpacing: '0.03em', whiteSpace: 'nowrap',
+      cursor: title ? 'help' : undefined,
     }}>{status || 'Unknown'}</span>
   );
 }
@@ -435,7 +487,47 @@ function Toast({ msg, type }) {
 // SIDEBAR
 // ══════════════════════════════════════════════════════════
 
+function EstrellaMark({ size = 32 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40" style={{ flexShrink: 0 }}>
+      <path d="M20 3 L37 20 L20 37 L3 20 Z" fill="none" stroke="var(--accent)" strokeWidth="1.6"/>
+      <path d="M20 13 L27 20 L20 27 L13 20 Z" fill="var(--accent)"/>
+      <path d="M16.5 16.5 L23.5 16.5" stroke="var(--sidebar-bg)" strokeWidth="0.8" opacity="0.5"/>
+    </svg>
+  );
+}
+
+function SubTabStrip({ group, active, onNav }) {
+  if (!group || !group.children) return null;
+  return (
+    <div style={{ display: 'flex', gap: 2, padding: '0 32px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', flexShrink: 0, overflowX: 'auto' }}>
+      {group.children.map(child => {
+        const isActive = active === child.id;
+        return (
+          <button key={child.id} onClick={() => child.href ? (window.location.href = child.href) : onNav(child.id)} style={{
+            padding: '8px 14px', border: 'none', cursor: 'pointer',
+            background: 'transparent', fontFamily: 'inherit', fontSize: 12, fontWeight: isActive ? 600 : 400,
+            color: isActive ? 'var(--accent)' : 'var(--text-2)',
+            borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+            transition: 'color 0.15s', whiteSpace: 'nowrap',
+          }}>{child.label}</button>
+        );
+      })}
+    </div>
+  );
+}
+
 function Sidebar({ active, onNav, collapsed, onToggle }) {
+  const [openGroups, setOpenGroups] = React.useState(() => {
+    const init = {};
+    NAV_TREE.forEach(n => { if (n.children) { init[n.id] = n.children.some(c => c.id === active); } });
+    return init;
+  });
+
+  const toggleGroup = (id) => setOpenGroups(g => ({ ...g, [id]: !g[id] }));
+
+  const activeGroup = navGroupOf(active);
+
   return (
     <aside style={{
       width: collapsed ? 52 : SIDEBAR_W, minWidth: collapsed ? 52 : SIDEBAR_W,
@@ -443,32 +535,78 @@ function Sidebar({ active, onNav, collapsed, onToggle }) {
       transition: 'width 0.2s,min-width 0.2s', overflow: 'hidden', zIndex: 10,
       borderRight: '1px solid var(--sidebar-border)',
     }}>
-      <div style={{ padding: '20px 16px 16px', borderBottom: '1px solid var(--sidebar-border)', display: 'flex', alignItems: 'center', gap: 10, minHeight: 64 }}>
-        <div style={{ width: 28, height: 28, minWidth: 28, background: 'linear-gradient(135deg,var(--accent) 0%,var(--accent-light) 100%)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: 'var(--accent-text)', fontWeight: 900, fontFamily: 'serif' }}>✦</div>
+      <div style={{ padding: '16px 14px', borderBottom: '1px solid var(--sidebar-border)', display: 'flex', alignItems: 'center', gap: 10, minHeight: 60 }}>
+        <EstrellaMark size={collapsed ? 28 : 30} />
         {!collapsed && (
-          <div>
-            <div style={{ color: 'var(--sidebar-text)', fontSize: 13, fontWeight: 700, letterSpacing: '0.06em', fontFamily: '"DM Serif Display",serif' }}>ESTRELLA</div>
-            <div style={{ color: 'var(--accent)', fontSize: 9, letterSpacing: '0.14em', marginTop: 1 }}>PZ CUSTOMS</div>
+          <div style={{ overflow: 'hidden' }}>
+            <div style={{ color: 'var(--sidebar-text)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', fontFamily: '"DM Serif Display",serif', lineHeight: 1.2 }}>Estrella</div>
+            <div style={{ color: 'var(--accent)', fontSize: 9, letterSpacing: '0.12em', marginTop: 1, opacity: 0.85 }}>ATLAS</div>
           </div>
         )}
       </div>
-      <nav style={{ flex: 1, padding: '8px 0', overflowY: 'auto' }}>
-        {NAV_ITEMS.map(item => {
-          const isActive = active === item.id;
+      <nav style={{ flex: 1, padding: '6px 0', overflowY: 'auto' }}>
+        {NAV_TREE.map(item => {
+          const isLeafActive = active === item.id;
+          const isGroupActive = !!(item.children && item.children.some(c => c.id === active));
+          const isOpen = openGroups[item.id];
+
+          if (item.children) {
+            return (
+              <React.Fragment key={item.id}>
+                <button onClick={() => { toggleGroup(item.id); if (!isOpen && !isGroupActive) onNav(item.defaultId || item.children[0].id); }}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center',
+                    gap: 10, padding: collapsed ? '9px 14px' : '9px 16px',
+                    background: isGroupActive ? 'var(--sidebar-active)' : 'transparent',
+                    border: 'none', cursor: 'pointer', textAlign: 'left',
+                    borderLeft: isGroupActive ? '2px solid var(--accent)' : '2px solid transparent',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={e => { if (!isGroupActive) e.currentTarget.style.background = 'var(--sidebar-hover)'; }}
+                  onMouseLeave={e => { if (!isGroupActive) e.currentTarget.style.background = isGroupActive ? 'var(--sidebar-active)' : 'transparent'; }}
+                >
+                  <span style={{ color: isGroupActive ? 'var(--accent)' : 'var(--sidebar-icon)', fontSize: 14, minWidth: 18, textAlign: 'center' }}>{item.icon}</span>
+                  {!collapsed && <>
+                    <span style={{ flex: 1, color: isGroupActive ? 'var(--sidebar-text)' : 'var(--sidebar-text-muted)', fontSize: 12, fontWeight: isGroupActive ? 600 : 400 }}>{item.label}</span>
+                    <span style={{ color: 'var(--sidebar-text-muted)', fontSize: 10 }}>{isOpen ? '▾' : '▸'}</span>
+                  </>}
+                </button>
+                {!collapsed && isOpen && item.children.map(child => {
+                  const isChildActive = active === child.id;
+                  return (
+                    <button key={child.id} onClick={() => child.href ? (window.location.href = child.href) : onNav(child.id)} style={{
+                      width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '7px 16px 7px 42px',
+                      background: isChildActive ? 'var(--sidebar-active)' : 'transparent',
+                      border: 'none', cursor: 'pointer', textAlign: 'left',
+                      borderLeft: isChildActive ? '2px solid var(--accent)' : '2px solid transparent',
+                      transition: 'background 0.15s',
+                    }}
+                      onMouseEnter={e => { if (!isChildActive) e.currentTarget.style.background = 'var(--sidebar-hover)'; }}
+                      onMouseLeave={e => { if (!isChildActive) e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      <span style={{ color: isChildActive ? 'var(--sidebar-text)' : 'var(--sidebar-text-muted)', fontSize: 11, fontWeight: isChildActive ? 600 : 400 }}>{child.label}</span>
+                    </button>
+                  );
+                })}
+              </React.Fragment>
+            );
+          }
+
           return (
-            <button key={item.id} onClick={() => item.href ? (window.location.href = item.href) : onNav(item.id)} style={{
+            <button key={item.id} onClick={() => onNav(item.id)} style={{
               width: '100%', display: 'flex', alignItems: 'center',
               gap: 10, padding: collapsed ? '9px 14px' : '9px 16px',
-              background: isActive ? 'var(--sidebar-active)' : 'transparent',
+              background: isLeafActive ? 'var(--sidebar-active)' : 'transparent',
               border: 'none', cursor: 'pointer', textAlign: 'left',
-              borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+              borderLeft: isLeafActive ? '2px solid var(--accent)' : '2px solid transparent',
               transition: 'background 0.15s',
             }}
-              onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--sidebar-hover)'; }}
-              onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
+              onMouseEnter={e => { if (!isLeafActive) e.currentTarget.style.background = 'var(--sidebar-hover)'; }}
+              onMouseLeave={e => { if (!isLeafActive) e.currentTarget.style.background = 'transparent'; }}
             >
-              <span style={{ color: isActive ? 'var(--accent)' : 'var(--sidebar-icon)', fontSize: 14, minWidth: 18, textAlign: 'center' }}>{item.icon}</span>
-              {!collapsed && <span style={{ color: isActive ? 'var(--sidebar-text)' : 'var(--sidebar-text-muted)', fontSize: 12, fontWeight: isActive ? 600 : 400 }}>{item.label}</span>}
+              <span style={{ color: isLeafActive ? 'var(--accent)' : 'var(--sidebar-icon)', fontSize: 14, minWidth: 18, textAlign: 'center' }}>{item.icon}</span>
+              {!collapsed && <span style={{ color: isLeafActive ? 'var(--sidebar-text)' : 'var(--sidebar-text-muted)', fontSize: 12, fontWeight: isLeafActive ? 600 : 400 }}>{item.label}</span>}
             </button>
           );
         })}
@@ -485,15 +623,40 @@ function Sidebar({ active, onNav, collapsed, onToggle }) {
 // ══════════════════════════════════════════════════════════
 
 function TopBar({ onNewShipment, onToggleDark, isDark, user, onLogout }) {
+  const [searchOpen, setSearchOpen] = React.useState(false);
   const [search, setSearch] = React.useState('');
   const initials = user ? user.full_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() : 'U';
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setSearchOpen(o => !o); }
+      if (e.key === 'Escape') setSearchOpen(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   return (
-    <header style={{ height: 56, background: 'var(--card)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', padding: '0 24px', gap: 16, flexShrink: 0 }}>
-      <div style={{ position: 'relative', flex: 1, maxWidth: 360 }}>
-        <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)', fontSize: 13 }}>⌕</span>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search AWB, MRN, batch ID…"
-          style={{ width: '100%', padding: '7px 12px 7px 30px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, color: 'var(--text)', background: 'var(--bg-subtle)', outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' }} />
+    <>
+    {searchOpen && (
+      <div onClick={() => setSearchOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 8000, background: 'var(--overlay)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 120 }}>
+        <div onClick={e => e.stopPropagation()} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, boxShadow: '0 16px 48px var(--shadow-heavy)', width: '100%', maxWidth: 560, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+            <span style={{ color: 'var(--text-3)', fontSize: 16 }}>⌕</span>
+            <input autoFocus value={search} onChange={e => setSearch(e.target.value)} placeholder="Search AWB, MRN, batch ID…"
+              style={{ flex: 1, border: 'none', outline: 'none', fontSize: 14, color: 'var(--text)', background: 'transparent', fontFamily: 'inherit' }} />
+            <kbd style={{ fontSize: 10, color: 'var(--text-3)', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 4, padding: '2px 6px' }}>Esc</kbd>
+          </div>
+          <div style={{ padding: '8px 16px 12px', fontSize: 11, color: 'var(--text-3)' }}>Type to search shipments, AWBs, MRNs…</div>
+        </div>
       </div>
+    )}
+    <header style={{ height: 56, background: 'var(--card)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', padding: '0 24px', gap: 12, flexShrink: 0 }}>
+      <button onClick={() => setSearchOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-3)', fontSize: 12, fontFamily: 'inherit', flex: 1, maxWidth: 280, textAlign: 'left' }}>
+        <span style={{ fontSize: 14 }}>⌕</span>
+        <span style={{ flex: 1, color: 'var(--text-3)' }}>Search…</span>
+        <kbd style={{ fontSize: 10, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 4, padding: '1px 5px', color: 'var(--text-3)' }}>⌘K</kbd>
+      </button>
       <div style={{ flex: 1 }} />
       <button onClick={onToggleDark} title={isDark ? 'Light mode' : 'Dark mode'} style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', fontSize: 14, color: 'var(--text-2)', fontFamily: 'inherit' }}>
         {isDark ? '☀' : '🌿'}
@@ -516,6 +679,126 @@ function TopBar({ onNewShipment, onToggleDark, isDark, user, onLogout }) {
         </div>
       )}
     </header>
+    </>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// SECTION LABEL / PANEL CARD / STAT TILE
+// ══════════════════════════════════════════════════════════
+
+function SectionLabel({ children, style }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, ...style }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.12em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{children}</span>
+      <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+    </div>
+  );
+}
+
+function PanelCard({ title, subtitle, status, children, accent }) {
+  return (
+    <div style={{
+      background: 'var(--card)', borderRadius: 10,
+      boxShadow: '0 1px 2px var(--shadow)', overflow: 'hidden',
+      border: accent ? `1px solid var(--border)` : '1px solid var(--border)',
+      borderLeft: accent ? `3px solid ${accent}` : '1px solid var(--border)',
+    }}>
+      {(title || status) && (
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: 'var(--bg-subtle)' }}>
+          <div>
+            {title && <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{title}</div>}
+            {subtitle && <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{subtitle}</div>}
+          </div>
+          {status && <Badge status={status} />}
+        </div>
+      )}
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function StatTile({ label, value, sub, accent }) {
+  return (
+    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 20px', boxShadow: '0 1px 2px var(--shadow)' }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: accent || 'var(--text)', fontFamily: '"DM Serif Display",serif', letterSpacing: '-0.01em', lineHeight: 1 }}>{value ?? '—'}</div>
+      {sub && <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// STUB PAGE — placeholder for design-IA pages awaiting backend
+// ══════════════════════════════════════════════════════════
+
+const STUB_CONFIG = {
+  inbox: {
+    icon: '✉', heading: 'Unified Inbox',
+    body: 'A single queue for every operator action: DHL emails, customs replies, action proposals, approvals, reservations, and customs holds.',
+    next: [
+      { label: 'Open DHL Clearance', target: 'dhl' },
+      { label: 'View Intelligence',  target: 'intelligence' },
+      { label: 'Automation Center',  target: 'automation' },
+    ],
+  },
+  inventory: {
+    icon: '◫', heading: 'Inventory — two-stage architecture',
+    body: 'Stage 1: Temp Purchase / Warehouse / Sale. Stage 2: Final Stock, Samples, Returns. Backend wiring is pending — meanwhile, use Warehouse Scanner.',
+    next: [
+      { label: 'Warehouse Scanner', target: 'warehouse_scanner' },
+      { label: 'Shipments',         target: 'shipments' },
+    ],
+  },
+  master: {
+    icon: '⚙', heading: 'Master Data',
+    body: 'Create and edit master records — clients, suppliers, products, designs, HS codes, FX rates, users, roles.',
+    next: [{ label: 'Admin / Settings', target: 'admin' }],
+  },
+  carriers: {
+    icon: '✈', heading: 'Carriers',
+    body: 'Multi-carrier connections, webhooks, sessions, and audit logs.',
+    next: [{ label: 'API Status', target: 'api_status' }, { label: 'DHL', target: 'dhl' }],
+  },
+  api_status: {
+    icon: '◉', heading: 'API Status',
+    body: 'Consolidated health for every backend integration — carriers, accounting, customs, internal services, webhooks.',
+    next: [{ label: 'Admin / Settings', target: 'admin' }, { label: 'Diagnostics', target: 'diagnostics' }],
+  },
+  diagnostics: {
+    icon: '⚕', heading: 'System Diagnostics',
+    body: 'Health checks, storage, locks, and CLI diagnostic tools.',
+    next: [{ label: 'API Status', target: 'api_status' }, { label: 'Admin', target: 'admin' }],
+  },
+  coverage: {
+    icon: '▤', heading: 'Coverage Matrix',
+    body: 'Feature × status × API placeholders — wireframe coverage of existing and planned modules.',
+    next: [{ label: 'Admin', target: 'admin' }],
+  },
+};
+
+function StubPage({ page, onNav }) {
+  const cfg = STUB_CONFIG[page] || { icon: '◷', heading: 'Coming soon', body: 'This page is part of the new IA. Backend wiring is pending.', next: [] };
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '40px 32px', maxWidth: 720, margin: '0 auto', textAlign: 'center' }}>
+        <div style={{ fontSize: 36, color: 'var(--accent)', marginBottom: 14 }}>{cfg.icon}</div>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, fontFamily: '"DM Serif Display",serif', color: 'var(--text)', letterSpacing: '-0.01em' }}>{cfg.heading}</h2>
+        <p style={{ margin: '10px auto 0', fontSize: 13, color: 'var(--text-2)', maxWidth: 520, lineHeight: 1.55 }}>{cfg.body}</p>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 18, padding: '4px 10px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)', borderRadius: 12, fontSize: 10, fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+          Design IA · Backend pending
+        </div>
+        {cfg.next && cfg.next.length > 0 && (
+          <div style={{ marginTop: 24, display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {cfg.next.map(n => (
+              <button key={n.target} onClick={() => onNav(n.target)} style={{ padding: '8px 16px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, fontWeight: 600, color: 'var(--text)', cursor: 'pointer', fontFamily: 'inherit' }}>
+                {n.label} →
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -882,7 +1165,246 @@ function NewShipmentModal({ onClose, onCreated }) {
 }
 
 // ══════════════════════════════════════════════════════════
-// DASHBOARD PAGE (real API)
+// UI-3.x SHARED OPERATIONAL PREDICATES (module scope)
+// ──────────────────────────────────────────────────────────
+// Single source of truth for bucket logic, used by:
+//   - DashboardPage cross-batch cards (UI-3.1b / UI-3.2a / UI-3.2b)
+//   - DashboardPage active-table filter (UI-3.3)
+//   - BatchDetailPage per-batch Pipeline Summary (UI-3.4)
+// Lifted out of DashboardPage in UI-3.4 so per-batch and cross-batch
+// surfaces consume the SAME predicate set. React state (opFilter and
+// its setter/handlers) intentionally remains inside DashboardPage.
+// ══════════════════════════════════════════════════════════
+const PZ_DONE_LABELS     = new Set(['Generated', 'Exported']);
+const PZ_PENDING_LABELS  = new Set(['Ready for PZ', 'Locked']);
+const SAD_CLEARED_KEYS   = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
+const TRACK_ATTENTION    = new Set(['exception', 'customs']);
+const DHL_FLOW_LIVE_KEYS = new Set([
+  'dhl_email_received', 'reply_queued', 'reply_sent',
+  'reply_package_prepared', 'pre_check_pending', 'pre_check_completed',
+]);
+const OP_PREDICATES = {
+  warehouse: {
+    unknown:          (r) => (r.warehouseHint || 'n/a') === 'n/a',
+    awaiting:         (r) => r.warehouseHint === 'empty',
+    partial_received: (r) => r.warehouseHint === 'partial',
+    in_warehouse:     (r) => r.warehouseHint === 'clean' && !PZ_DONE_LABELS.has(r.pzStatus || ''),
+    reserved:         (r) => r.warehouseHint === 'clean' &&  PZ_DONE_LABELS.has(r.pzStatus || ''),
+  },
+  sales_accounting: {
+    sales_ready:    (r) => (r.salesHint || 'n/a') === 'present',
+    sales_missing:  (r) => { const h = r.salesHint || 'n/a'; return h === 'none' || h === 'n/a'; },
+    wfirma_preview: (r) => (r.wfirmaHint || 'n/a') === 'preview_built',
+    wfirma_pending: (r) => { const h = r.wfirmaHint || 'n/a'; return h === 'none' || h === 'n/a'; },
+    pz_done:        (r) =>  PZ_DONE_LABELS.has(r.pzStatus || ''),
+    pz_pending:     (r) => !PZ_DONE_LABELS.has(r.pzStatus || ''),
+  },
+  dhl_customs: {
+    awaiting_customs_docs: (r) => !r.has_sad && DHL_FLOW_LIVE_KEYS.has((r._raw && r._raw.dhl_status) || ''),
+    sad_present:     (r) => !!r.has_sad,
+    sad_missing:     (r) => !r.has_sad,
+    customs_cleared: (r) => !!r.has_sad && SAD_CLEARED_KEYS.has((r._raw && r._raw.sad_status) || ''),
+    dhl_in_transit:  (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'in_transit',
+    dhl_delivered:   (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'delivered',
+  },
+};
+const WAREHOUSE_LIFECYCLE_KEYS = ['unknown', 'awaiting', 'partial_received', 'in_warehouse', 'reserved'];
+const deriveWarehouseLifecycle = (row) => {
+  for (const k of WAREHOUSE_LIFECYCLE_KEYS) {
+    if (OP_PREDICATES.warehouse[k](row)) return k;
+  }
+  return 'unknown';
+};
+const ATTENTION_PREDICATES = {
+  warehouse:        (r) =>
+    OP_PREDICATES.warehouse.awaiting(r) ||
+    OP_PREDICATES.warehouse.partial_received(r),
+  sales_accounting: (r) =>
+    OP_PREDICATES.sales_accounting.sales_missing(r) ||
+    OP_PREDICATES.sales_accounting.wfirma_pending(r) ||
+    OP_PREDICATES.sales_accounting.pz_pending(r),
+  dhl_customs:      (r) =>
+    OP_PREDICATES.dhl_customs.awaiting_customs_docs(r) ||
+    (((r._raw && r._raw.sad_status)         || '') === 'missing') ||
+    (((r._raw && r._raw.dhl_status)         || '') === 'dhl_email_received') ||
+    TRACK_ATTENTION.has((r._raw && r._raw.tracking_status_key) || ''),
+};
+// Lifecycle label/tone tables — shared so cross-batch (UI-3.1b) and
+// per-batch (UI-3.4) surfaces use identical operator-readable copy.
+const WAREHOUSE_LIFECYCLE_LABEL = {
+  unknown:          'No packing list',
+  awaiting:         'Awaiting receipt',
+  partial_received: 'Partially received',
+  in_warehouse:     'In warehouse',
+  reserved:         'Reserved (PZ created)',
+};
+
+// ══════════════════════════════════════════════════════════
+// DASHBOARD KANBAN — workflow-first pipeline view (real batch data)
+// ══════════════════════════════════════════════════════════
+
+const KANBAN_LANES = [
+  { id: 'new',     label: 'New / Drafting',     hint: 'no PI yet',                color: 'var(--badge-neutral-text)', bg: 'var(--badge-neutral-bg)', border: 'var(--badge-neutral-border)' },
+  { id: 'docs',    label: 'Awaiting Documents', hint: 'DHL · SAD pending',        color: 'var(--badge-amber-text)',   bg: 'var(--badge-amber-bg)',   border: 'var(--badge-amber-border)' },
+  { id: 'customs', label: 'Customs Clearance',  hint: 'SAD · ZC429 in progress',  color: 'var(--badge-red-text)',     bg: 'var(--badge-red-bg)',     border: 'var(--badge-red-border)' },
+  { id: 'ready',   label: 'Ready for PZ',       hint: 'verified · awaiting PZ',   color: 'var(--badge-purple-text)',  bg: 'var(--badge-purple-bg)',  border: 'var(--badge-purple-border)' },
+  { id: 'booked',  label: 'PZ Generated',       hint: 'awaiting wFirma export',   color: 'var(--badge-blue-text)',    bg: 'var(--badge-blue-bg)',    border: 'var(--badge-blue-border)' },
+  { id: 'done',    label: 'Exported',           hint: 'wFirma booked · closed',   color: 'var(--badge-green-text)',   bg: 'var(--badge-green-bg)',   border: 'var(--badge-green-border)' },
+];
+
+function _batchLane(b) {
+  const pz = (b.pzStatus || '').toString();
+  const sad = (b.sadStatus || '').toString();
+  const dhl = (b.dhlStatus || '').toString();
+  const overall = (b.overall || '').toString();
+  if (pz === 'Exported' || overall === 'Completed') return 'done';
+  if (pz === 'Generated' || overall === 'Ready for Booking') return 'booked';
+  if (pz === 'Ready for PZ' || overall === 'Ready for PZ' || sad === 'Customs Verified') return 'ready';
+  if (sad === 'SAD Uploaded' || sad === 'Customs Parsed' || sad === 'Verification Needed' || overall === 'Awaiting Clearance') return 'customs';
+  if (dhl === 'DHL Email Received' || dhl === 'Reply Sent' || dhl === 'Reply Queued' || dhl === 'Reply Package Prepared' || overall === 'Awaiting SAD' || overall === 'Awaiting DHL' || sad === 'SAD Pending') return 'docs';
+  return 'new';
+}
+
+const QUICK_FLOWS = [
+  { id: 'inbound',  icon: '📥', label: 'Receive shipment',  hint: 'Inbound · PZ · SAD',     color: 'var(--badge-blue-text)',   bg: 'var(--badge-blue-bg)',   border: 'var(--badge-blue-border)' },
+  { id: 'outbound', icon: '📤', label: 'New shipment',       hint: 'AWB · Invoice · Pack',    color: 'var(--accent)',            bg: 'var(--accent-subtle)',   border: 'var(--accent-border)' },
+  { id: 'email',    icon: '✉',  label: 'Scan DHL inbox',     hint: 'Parse · Match · Reply',   color: 'var(--badge-purple-text)', bg: 'var(--badge-purple-bg)', border: 'var(--badge-purple-border)' },
+  { id: 'pz',       icon: '⊞', label: 'Generate PZ',        hint: 'Verify · Generate · Send',color: 'var(--badge-green-text)',  bg: 'var(--badge-green-bg)',  border: 'var(--badge-green-border)' },
+];
+
+function CompactKpi({ label, value, hint, accent }) {
+  return (
+    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px' }}>
+      <div style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: accent || 'var(--text)', marginTop: 4, fontFamily: '"DM Serif Display", serif' }}>{value}</div>
+      <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{hint}</div>
+    </div>
+  );
+}
+
+function KanbanCard({ batch, onClick }) {
+  const isUrgent = (batch.overall === 'Action Required' || batch.sadStatus === 'Verification Needed');
+  const isHigh   = (batch.overall === 'Awaiting DHL' || batch.overall === 'Awaiting SAD');
+  return (
+    <button onClick={onClick} style={{
+      background: 'var(--card)', border: '1px solid var(--border)',
+      borderRadius: 5, padding: '8px 10px', cursor: 'pointer', textAlign: 'left',
+      borderLeft: isUrgent ? '3px solid var(--badge-red-text)' : isHigh ? '3px solid var(--badge-amber-text)' : '1px solid var(--border)',
+      transition: 'transform 0.12s, box-shadow 0.12s',
+      display: 'flex', flexDirection: 'column', gap: 4, width: '100%',
+      fontFamily: 'inherit',
+    }}
+      onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 3px 10px var(--shadow)'; }}
+      onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 10, fontFamily: 'monospace', fontWeight: 700, color: 'var(--text)' }}>{batch.awb || batch.batch_id}</span>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 9.5, color: 'var(--text-3)' }}>{batch.carrier || '—'}</span>
+      </div>
+      <div style={{ fontSize: 10.5, color: 'var(--text-2)', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {batch.doc_no || batch.batch_id}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginTop: 2 }}>
+        <span style={{ fontSize: 10, color: 'var(--text-3)' }}>{batch.net && batch.net !== '—' ? batch.net : '—'}</span>
+        {(isUrgent || isHigh) && <span style={{ fontSize: 10, color: isUrgent ? 'var(--badge-red-text)' : 'var(--badge-amber-text)' }}>⚠ {batch.action_reason || (isUrgent ? 'urgent' : 'check')}</span>}
+      </div>
+    </button>
+  );
+}
+
+function KanbanLane({ lane, cards, onCardClick }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 220, background: 'var(--bg-subtle)', borderRadius: 8, border: '1px solid var(--border)' }}>
+      <div style={{ padding: '10px 12px', borderBottom: `2px solid ${lane.border}`, background: lane.bg, borderRadius: '8px 8px 0 0' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 2 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: lane.color, letterSpacing: '0.02em' }}>{lane.label}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: lane.color, fontFamily: 'monospace' }}>{cards.length}</span>
+        </div>
+        <div style={{ fontSize: 9.5, color: lane.color, opacity: 0.75 }}>{lane.hint}</div>
+      </div>
+      <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 6, minHeight: 200, maxHeight: 480, overflowY: 'auto' }}>
+        {cards.length === 0 && <div style={{ padding: 16, textAlign: 'center', fontSize: 10.5, color: 'var(--text-3)', fontStyle: 'italic' }}>—</div>}
+        {cards.map(c => <KanbanCard key={c.batch_id || c.id} batch={c} onClick={() => onCardClick && onCardClick(c)} />)}
+      </div>
+    </div>
+  );
+}
+
+function DashboardKanban({ batches, onViewShipment, onNav, onNewShipment, onOpenSearch }) {
+  const rows = (batches || []).map(transformBatch);
+  const byLane = KANBAN_LANES.reduce((acc, l) => { acc[l.id] = rows.filter(b => _batchLane(b) === l.id); return acc; }, {});
+  const active = rows.filter(b => _batchLane(b) !== 'done');
+  const urgentCount = active.filter(b => b.overall === 'Action Required' || b.sadStatus === 'Verification Needed').length;
+  const awaitingDhl = active.filter(b => b.overall === 'Awaiting DHL').length;
+  const awaitingSad = active.filter(b => b.overall === 'Awaiting SAD').length;
+  const readyForBooking = rows.filter(b => b.overall === 'Ready for Booking' || b.pzStatus === 'Generated').length;
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 32px 40px' }}>
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Start a workflow</div>
+        <div className="responsive-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+          {QUICK_FLOWS.map(f => (
+            <button key={f.id} onClick={() => {
+                if (f.id === 'outbound') onNewShipment && onNewShipment();
+                else if (f.id === 'email') onNav && onNav('dhl');
+                else if (f.id === 'inbound') onNav && onNav('shipments');
+                else if (f.id === 'pz') onNav && onNav('pz');
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', background: f.bg, border: `1px solid ${f.border}`, borderRadius: 8, cursor: 'pointer', textAlign: 'left', transition: 'transform 0.15s, box-shadow 0.15s', fontFamily: 'inherit' }}
+              onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 4px 12px var(--shadow)'; }}
+              onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}>
+              <span style={{ fontSize: 22 }}>{f.icon}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>{f.label}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{f.hint}</div>
+              </div>
+              <span style={{ fontSize: 14, color: f.color }}>→</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="responsive-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 18 }}>
+        <CompactKpi label="Active" value={active.length} hint="in pipeline" />
+        <CompactKpi label="Urgent" value={urgentCount} hint="needs attention now" accent="var(--badge-red-text)" />
+        <CompactKpi label="Awaiting DHL" value={awaitingDhl} hint="email not received" accent="var(--badge-amber-text)" />
+        <CompactKpi label="Awaiting SAD" value={awaitingSad} hint="customs document" accent="var(--badge-orange-text)" />
+        <CompactKpi label="Ready for booking" value={readyForBooking} hint="PZ → wFirma" accent="var(--accent)" />
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>Pipeline</h2>
+          <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-3)' }}>Each shipment shown in its current stage — click a card to open detail</p>
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {onOpenSearch && (
+            <button onClick={onOpenSearch} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg-subtle)', border: '1px solid var(--border)', color: 'var(--text-2)', borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+              ⌕ Search <span style={{ fontFamily: 'monospace', padding: '0px 5px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 3, fontSize: 9.5 }}>⌘K</span>
+            </button>
+          )}
+          <button onClick={() => onNav && onNav('shipments')} style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-2)', borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+            ⊟ List view
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(220px, 1fr))', gap: 12, overflowX: 'auto', paddingBottom: 4 }}>
+        {KANBAN_LANES.map(lane => (
+          <KanbanLane key={lane.id} lane={lane} cards={byLane[lane.id]} onCardClick={(b) => onViewShipment(b._raw || b)} />
+        ))}
+      </div>
+
+      <div style={{ marginTop: 18, padding: 12, background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 6, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.55 }}>
+        <strong style={{ color: 'var(--text)' }}>How this works:</strong> shipments move left-to-right as they progress through the workflow. Urgent items (red border, ⚠) need attention now — usually customs holds or missing documents. Use the quick-start cards above to begin a new workflow.
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// DASHBOARD PAGE (legacy table view — reachable via /shipments)
 // ══════════════════════════════════════════════════════════
 
 function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) {
@@ -909,8 +1431,37 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
 
   React.useEffect(() => { if (viewMode === 'archived') loadArchived(); }, [viewMode]);
 
+  // ── UI-3.3: clickable operational bucket filter ────────────────────────
+  // opFilter = null | { card, key, label }
+  //   card  ∈ { 'warehouse', 'sales_accounting', 'dhl_customs' }
+  //   key   = bucket key from the matching card's iteration array
+  //   label = operator-readable bucket label (matches the card)
+  // Only one operational bucket can be active at a time. Existing
+  // overall-status `filter` AND the operational predicate are both
+  // applied (AND semantics) — documented in the active-filter chip copy.
+  const [opFilter, setOpFilter] = React.useState(null);
+  const clearOpFilter = React.useCallback(() => setOpFilter(null), []);
+  const toggleOpFilter = React.useCallback((card, key, label) => {
+    setOpFilter(prev => (prev && prev.card === card && prev.key === key)
+      ? null
+      : { card, key, label });
+  }, []);
+  // UI-3.4: shared OP_PREDICATES / ATTENTION_PREDICATES / supporting
+  // Sets + deriveWarehouseLifecycle live at module scope above so the
+  // per-batch Pipeline Summary panel (BatchDetailPage) consumes the
+  // exact same predicate set as the cross-batch cards. Only React
+  // state and React-derived helpers stay here.
+  const opPredicate = (row) => {
+    if (!opFilter) return true;
+    const fn = (OP_PREDICATES[opFilter.card] || {})[opFilter.key];
+    return fn ? fn(row) : true;
+  };
+  const isOpActive = (card, key) =>
+    !!opFilter && opFilter.card === card && opFilter.key === key;
+
   const filters = ['all', 'Ready for PZ', 'Awaiting DHL', 'Awaiting SAD', 'Action Required', 'Ready for Booking', 'Exported'];
-  const filtered = filter === 'all' ? batches : batches.filter(s => s.overall === filter);
+  const baseFiltered = filter === 'all' ? batches : batches.filter(s => s.overall === filter);
+  const filtered     = opFilter ? baseFiltered.filter(opPredicate) : baseFiltered;
   const sorted = [...filtered].sort((a, b) => {
     const av = a._raw?.[sortCol] || a[sortCol] || '';
     const bv = b._raw?.[sortCol] || b[sortCol] || '';
@@ -983,6 +1534,680 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
           <Btn small variant="ghost" onClick={loadArchived} style={{ marginLeft: 4 }}>↻ Refresh</Btn>
         )}
       </div>
+
+
+      {/* UI-3.3: active operational bucket filter chip.
+          Visible only when an operational bucket is selected. Combines
+          AND-style with the overall-status filter above. */}
+      {viewMode === 'active' && opFilter && (
+        <div
+          data-testid="op-filter-active-chip"
+          data-op-card={opFilter.card}
+          data-op-key={opFilter.key}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, padding: '6px 10px', background: 'var(--accent-subtle)', border: '1px solid var(--accent)', borderRadius: 6, fontSize: 11, color: 'var(--text)' }}
+        >
+          <span style={{ fontWeight: 700, color: 'var(--text-2)' }}>Operational filter:</span>
+          <span data-testid="op-filter-active-label" style={{ fontWeight: 700 }}>{opFilter.label}</span>
+          <span style={{ color: 'var(--text-3)' }}>
+            ({opFilter.card === 'warehouse'        ? 'Warehouse'
+              : opFilter.card === 'sales_accounting' ? 'Sales & Accounting'
+              : opFilter.card === 'dhl_customs'      ? 'DHL & Customs'
+              : opFilter.card}
+            {' '}— combined AND with the status filter above)
+          </span>
+          <button
+            data-testid="op-filter-clear-btn"
+            onClick={clearOpFilter}
+            style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-2)', fontSize: 11, padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontFamily: 'inherit' }}
+            title="Clear operational filter only — status filter and search are unaffected"
+          >
+            Clear operational filter
+          </button>
+        </div>
+      )}
+
+      {/* ── UI-3.1b: cross-batch warehouse operations card ──────────────────
+          Read-only summary derived from existing batch-list payload only.
+          Aggregates warehouse_status_hint × pz_status into operator-readable
+          lifecycle buckets, then surfaces the subset of batches that need
+          attention. Uses the same label-map discipline as UI-3.1a.
+
+          Source fields (already present on every list row):
+            row.warehouseHint  ← batch.warehouse_status_hint (clean|partial|empty|n/a)
+            row.pzStatus       ← mapPzStatus(batch.pz_status)
+            row.wfirmaHint     ← batch.wfirma_status_hint
+            row.salesHint      ← batch.sales_status_hint
+            row.awb, row.doc_no, row.timestamp, row.id
+
+          The "Dispatched" and "Partial dispatch" UI-3.1a states are NOT
+          surfaceable here because cross-batch payload omits per-row
+          dispatched_items / scanned_items counts. We omit those keys
+          rather than fake them. Operator must open the Warehouse tab on
+          a specific batch to see the full UI-3.1a 7-state badge. */}
+      {viewMode === 'active' && (() => {
+        const xbatchLifecycleLabel = {
+          unknown:          'No packing list',
+          awaiting:         'Awaiting receipt',
+          partial_received: 'Partially received',
+          in_warehouse:     'In warehouse',
+          reserved:         'Reserved (PZ created)',
+        };
+        const xbatchLifecycleTone = {
+          unknown:          { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+          awaiting:         { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+          partial_received: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+          in_warehouse:     { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+          reserved:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+        };
+        // UI-3.3a: alias to the shared derivation so card-internal
+        // consumers and the OP_PREDICATES filter map cannot drift.
+        const xbatchDeriveLifecycle = deriveWarehouseLifecycle;
+        const enriched = batches.map(b => ({ row: b, lifecycle: xbatchDeriveLifecycle(b) }));
+        const counts = {
+          unknown:          batches.filter(OP_PREDICATES.warehouse.unknown).length,
+          awaiting:         batches.filter(OP_PREDICATES.warehouse.awaiting).length,
+          partial_received: batches.filter(OP_PREDICATES.warehouse.partial_received).length,
+          in_warehouse:     batches.filter(OP_PREDICATES.warehouse.in_warehouse).length,
+          reserved:         batches.filter(OP_PREDICATES.warehouse.reserved).length,
+        };
+        const attention = enriched
+          .filter(e => ATTENTION_PREDICATES.warehouse(e.row))
+          .sort((a, b) => {
+            const at = (a.row._raw && a.row._raw.timestamp) || a.row.timestamp || '';
+            const bt = (b.row._raw && b.row._raw.timestamp) || b.row.timestamp || '';
+            return at < bt ? 1 : at > bt ? -1 : 0;
+          });
+        return (
+          <Card
+            data-testid="warehouse-operations-card"
+            style={{ padding: 16, marginBottom: 16 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 Warehouse Operations</div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                  Cross-batch warehouse lifecycle — derived read-only from existing batch-list payload. Open a batch for full detail.
+                </div>
+              </div>
+            </div>
+
+            {/* Lifecycle bucket counts */}
+            <div
+              data-testid="warehouse-operations-buckets"
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, marginBottom: 14 }}
+            >
+              {['awaiting', 'partial_received', 'in_warehouse', 'reserved', 'unknown'].map(key => {
+                const tone   = xbatchLifecycleTone[key];
+                const active = isOpActive('warehouse', key);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    data-testid={`warehouse-operations-bucket-${key}`}
+                    data-lifecycle-state={key}
+                    data-op-active={active ? 'true' : 'false'}
+                    aria-pressed={active}
+                    onClick={() => toggleOpFilter('warehouse', key, xbatchLifecycleLabel[key])}
+                    title={active ? 'Click to clear operational filter' : `Filter the shipments table by ${xbatchLifecycleLabel[key]}`}
+                    style={{ textAlign: 'left', padding: '10px 12px', border: `${active ? 2 : 1}px solid ${active ? 'var(--accent)' : tone.border}`, background: tone.bg, borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', boxShadow: active ? '0 0 0 2px var(--accent-subtle)' : 'none' }}
+                  >
+                    <div style={{ fontSize: 10, fontWeight: 700, color: tone.text, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                      {xbatchLifecycleLabel[key]}
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: tone.text, fontFamily: '"DM Serif Display",serif', marginTop: 2 }}>
+                      {loading ? '…' : counts[key]}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Attention list — only the buckets that need operator attention */}
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>
+                Needs warehouse attention <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>(awaiting + partially received)</span>
+              </div>
+              {loading && (
+                <div data-testid="warehouse-operations-attention-loading" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  Loading shipments…
+                </div>
+              )}
+              {!loading && attention.length === 0 && (
+                <div data-testid="warehouse-operations-attention-empty" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  No batches need warehouse attention.
+                </div>
+              )}
+              {!loading && attention.length > 0 && (
+                <table
+                  data-testid="warehouse-operations-attention-table"
+                  style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}
+                >
+                  <thead>
+                    <tr>
+                      {['Shipment', 'Lifecycle', 'Warehouse Hint', 'PZ Status', 'Last activity'].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {attention.slice(0, 25).map(e => {
+                      const tone = xbatchLifecycleTone[e.lifecycle];
+                      const label = xbatchLifecycleLabel[e.lifecycle];
+                      const ts = (e.row._raw && e.row._raw.timestamp) || e.row.timestamp || '—';
+                      return (
+                        <tr
+                          key={e.row.id}
+                          data-testid="warehouse-operations-attention-row"
+                          data-batch-id={e.row.id}
+                          data-lifecycle-state={e.lifecycle}
+                        >
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <button
+                              onClick={() => onViewShipment(e.row)}
+                              data-testid="warehouse-operations-attention-open"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--badge-blue-text)', fontSize: 11, fontWeight: 600, fontFamily: 'monospace', textDecoration: 'underline', textDecorationStyle: 'dotted', padding: 0 }}
+                              title="Open shipment detail (read-only)"
+                            >
+                              {e.row.awb}
+                            </button>
+                            {e.row.doc_no && (
+                              <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 1 }}>{e.row.doc_no}</div>
+                            )}
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <span
+                              data-testid="warehouse-operations-attention-lifecycle-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: tone.bg, color: tone.text, border: `1px solid ${tone.border}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {label}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>{e.row.warehouseHint || 'n/a'}</td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>{e.row.pzStatus || '—'}</td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-3)', fontFamily: 'monospace' }}>{ts}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+              {!loading && attention.length > 25 && (
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>
+                  Showing first 25 of {attention.length}. Use the shipments table below to scroll the full list.
+                </div>
+              )}
+            </div>
+          </Card>
+        );
+      })()}
+
+      {/* ── UI-3.2a: cross-batch sales & accounting operations card ─────────
+          Read-only sibling to the UI-3.1b warehouse card. Aggregates the
+          existing batch-list payload into operator-readable sales / wFirma /
+          PZ buckets, then surfaces the subset of batches that need
+          accounting attention.
+
+          Source fields (all already on every list row):
+            row.salesHint   ← batch.sales_status_hint   (present|none|n/a)
+            row.wfirmaHint  ← batch.wfirma_status_hint  (preview_built|none|n/a)
+            row.pzStatus    ← mapPzStatus(batch.pz_status)
+                              (Locked|Ready for PZ|Generated|Exported)
+            row.awb / row.doc_no / row.timestamp / row.id
+
+          Attention rule per spec:
+            sales missing  (none or n/a)
+            OR wfirma missing  (none or n/a)
+            OR pzStatus NOT in {Ready for PZ, Generated, Exported}.
+
+          Buckets exposed (six counts):
+            sales_ready, sales_missing,
+            wfirma_preview, wfirma_pending,
+            pz_done, pz_pending.
+
+          Same read-only discipline as UI-3.1b: no fetch helper, no
+          button primitive, no form, no execute endpoint, no carrier
+          leakage. The only interactive element is the existing
+          onViewShipment navigation.
+       */}
+      {viewMode === 'active' && (() => {
+        const acctBucketLabel = {
+          sales_ready:    'Sales ready',
+          sales_missing:  'Sales missing',
+          wfirma_preview: 'wFirma preview built',
+          wfirma_pending: 'wFirma not prepared',
+          pz_done:        'PZ generated/exported',
+          pz_pending:     'PZ ready/locked',
+        };
+        const acctBucketTone = {
+          sales_ready:    { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          sales_missing:  { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+          wfirma_preview: { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+          wfirma_pending: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+          pz_done:        { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          pz_pending:     { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+        };
+        // Display helpers (string mappers for the per-row pills).
+        // These are display-only; predicate logic lives in the
+        // shared OP_PREDICATES / ATTENTION_PREDICATES.
+        const acctSalesLabel = (row) => {
+          const h = row.salesHint || 'n/a';
+          if (h === 'present') return 'Linked';
+          if (h === 'none')    return 'Not linked';
+          return 'Unknown';
+        };
+        const acctWfirmaLabel = (row) => {
+          const h = row.wfirmaHint || 'n/a';
+          if (h === 'preview_built') return 'Preview built';
+          if (h === 'none')          return 'Not prepared';
+          return 'Unknown';
+        };
+        // UI-3.3a: predicate aliases — single source of truth via
+        // OP_PREDICATES / ATTENTION_PREDICATES. Anchors preserved.
+        const acctSalesMissing   = OP_PREDICATES.sales_accounting.sales_missing;
+        const acctWfirmaMissing  = OP_PREDICATES.sales_accounting.wfirma_pending;
+        const acctPzPending      = OP_PREDICATES.sales_accounting.pz_pending;
+        const acctNeedsAttention = ATTENTION_PREDICATES.sales_accounting;
+
+        const acctCounts = {
+          sales_ready:    batches.filter(OP_PREDICATES.sales_accounting.sales_ready).length,
+          sales_missing:  batches.filter(OP_PREDICATES.sales_accounting.sales_missing).length,
+          wfirma_preview: batches.filter(OP_PREDICATES.sales_accounting.wfirma_preview).length,
+          wfirma_pending: batches.filter(OP_PREDICATES.sales_accounting.wfirma_pending).length,
+          pz_done:        batches.filter(OP_PREDICATES.sales_accounting.pz_done).length,
+          pz_pending:     batches.filter(OP_PREDICATES.sales_accounting.pz_pending).length,
+        };
+        const acctAttention = batches
+          .filter(acctNeedsAttention)
+          .sort((a, b) => {
+            const at = (a._raw && a._raw.timestamp) || a.timestamp || '';
+            const bt = (b._raw && b._raw.timestamp) || b.timestamp || '';
+            return at < bt ? 1 : at > bt ? -1 : 0;
+          });
+        return (
+          <Card
+            data-testid="sales-accounting-operations-card"
+            style={{ padding: 16, marginBottom: 16 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📑 Sales & Accounting Operations</div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                  Cross-batch sales / wFirma / PZ status — derived read-only from existing batch-list payload. Open a batch for full detail.
+                </div>
+              </div>
+            </div>
+
+            {/* Bucket counts */}
+            <div
+              data-testid="sales-accounting-operations-buckets"
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8, marginBottom: 14 }}
+            >
+              {['sales_ready', 'sales_missing', 'wfirma_preview', 'wfirma_pending', 'pz_done', 'pz_pending'].map(key => {
+                const tone   = acctBucketTone[key];
+                const active = isOpActive('sales_accounting', key);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    data-testid={`sales-accounting-operations-bucket-${key}`}
+                    data-bucket-key={key}
+                    data-op-active={active ? 'true' : 'false'}
+                    aria-pressed={active}
+                    onClick={() => toggleOpFilter('sales_accounting', key, acctBucketLabel[key])}
+                    title={active ? 'Click to clear operational filter' : `Filter the shipments table by ${acctBucketLabel[key]}`}
+                    style={{ textAlign: 'left', padding: '10px 12px', border: `${active ? 2 : 1}px solid ${active ? 'var(--accent)' : tone.border}`, background: tone.bg, borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', boxShadow: active ? '0 0 0 2px var(--accent-subtle)' : 'none' }}
+                  >
+                    <div style={{ fontSize: 10, fontWeight: 700, color: tone.text, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                      {acctBucketLabel[key]}
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: tone.text, fontFamily: '"DM Serif Display",serif', marginTop: 2 }}>
+                      {loading ? '…' : acctCounts[key]}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Attention table */}
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>
+                Needs accounting attention <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>(sales missing, wFirma not prepared, or PZ not yet generated)</span>
+              </div>
+              {loading && (
+                <div data-testid="sales-accounting-operations-attention-loading" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  Loading shipments…
+                </div>
+              )}
+              {!loading && acctAttention.length === 0 && (
+                <div data-testid="sales-accounting-operations-attention-empty" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  No batches need accounting attention.
+                </div>
+              )}
+              {!loading && acctAttention.length > 0 && (
+                <table
+                  data-testid="sales-accounting-operations-attention-table"
+                  style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}
+                >
+                  <thead>
+                    <tr>
+                      {['Shipment', 'Sales', 'wFirma', 'PZ', 'Last activity'].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {acctAttention.slice(0, 25).map(row => {
+                      const ts = (row._raw && row._raw.timestamp) || row.timestamp || '—';
+                      const salesLabel  = acctSalesLabel(row);
+                      const wfirmaLabel = acctWfirmaLabel(row);
+                      const pzLabel     = row.pzStatus || '—';
+                      return (
+                        <tr
+                          key={row.id}
+                          data-testid="sales-accounting-operations-attention-row"
+                          data-batch-id={row.id}
+                          data-sales-hint={row.salesHint || 'n/a'}
+                          data-wfirma-hint={row.wfirmaHint || 'n/a'}
+                          data-pz-status={row.pzStatus || ''}
+                        >
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <button
+                              onClick={() => onViewShipment(row)}
+                              data-testid="sales-accounting-operations-attention-open"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--badge-blue-text)', fontSize: 11, fontWeight: 600, fontFamily: 'monospace', textDecoration: 'underline', textDecorationStyle: 'dotted', padding: 0 }}
+                              title="Open shipment detail (read-only)"
+                            >
+                              {row.awb}
+                            </button>
+                            {row.doc_no && (
+                              <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 1 }}>{row.doc_no}</div>
+                            )}
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>
+                            <span
+                              data-testid="sales-accounting-operations-attention-sales-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: acctSalesMissing(row) ? 'var(--badge-red-bg)' : 'var(--badge-green-bg)', color: acctSalesMissing(row) ? 'var(--badge-red-text)' : 'var(--badge-green-text)', border: `1px solid ${acctSalesMissing(row) ? 'var(--badge-red-border)' : 'var(--badge-green-border)'}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {salesLabel}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>
+                            <span
+                              data-testid="sales-accounting-operations-attention-wfirma-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: acctWfirmaMissing(row) ? 'var(--badge-amber-bg)' : 'var(--badge-blue-bg)', color: acctWfirmaMissing(row) ? 'var(--badge-amber-text)' : 'var(--badge-blue-text)', border: `1px solid ${acctWfirmaMissing(row) ? 'var(--badge-amber-border)' : 'var(--badge-blue-border)'}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {wfirmaLabel}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' }}>
+                            <span
+                              data-testid="sales-accounting-operations-attention-pz-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: acctPzPending(row) ? 'var(--badge-amber-bg)' : 'var(--badge-green-bg)', color: acctPzPending(row) ? 'var(--badge-amber-text)' : 'var(--badge-green-text)', border: `1px solid ${acctPzPending(row) ? 'var(--badge-amber-border)' : 'var(--badge-green-border)'}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {pzLabel}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-3)', fontFamily: 'monospace' }}>{ts}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+              {!loading && acctAttention.length > 25 && (
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>
+                  Showing first 25 of {acctAttention.length}. Use the shipments table below to scroll the full list.
+                </div>
+              )}
+            </div>
+          </Card>
+        );
+      })()}
+
+      {/* ── UI-3.2b: cross-batch DHL & customs operations card ──────────────
+          Read-only sibling to the UI-3.1b warehouse + UI-3.2a sales cards.
+          Aggregates the existing batch-list payload into operator-readable
+          DHL / SAD / tracking buckets and surfaces the subset of batches
+          that need customs attention.
+
+          Source fields (all verified to exist on every list row — pre-check
+          rejected inventing additional customs / agency status fields
+          that are not in the batch-list payload):
+            row.dhlStatus            ← mapDhlStatus(batch.dhl_status)
+            row._raw.dhl_status      ← raw key (awaiting_dhl_email | dhl_email_received | …)
+            row.sadStatus            ← mapSadStatus(batch.sad_status)
+            row._raw.sad_status      ← raw key (missing | uploaded | uploaded_parsed | …)
+            row.has_sad              ← boolean
+            row.mrn                  ← customs MRN string
+            row._raw.tracking_status_key ← in_transit | delivered | out_for_delivery
+                                          | customs | exception | unknown | null
+            row._raw.tracking_status     ← display label, may be null
+            row.awb / row.doc_no / row.timestamp / row.id
+
+          Attention rule (per spec):
+            SAD missing (has_sad === false) when DHL flow has started
+            OR raw sad_status === 'missing'
+            OR tracking_status_key ∈ {'exception', 'customs'}
+            OR raw dhl_status === 'dhl_email_received'
+               (operator action required: customs reply pending)
+
+          Buckets exposed (six counts):
+            awaiting_customs_docs (sad missing AND dhl flow live),
+            sad_present, sad_missing,
+            customs_cleared (sad parsed/verified),
+            dhl_in_transit, dhl_delivered.
+
+          Same read-only discipline as UI-3.1b / UI-3.2a: no fetch helper,
+          no button primitive, no form, no execute endpoint, no
+          reply/send/customs action. Only interactive element is the
+          existing onViewShipment navigation. DHL Express wording is
+          preserved at the per-row carrier column (already rendered in
+          the existing shipments table); this card stays carrier-neutral
+          in copy except for the title which names DHL because that is
+          the only carrier in operator scope for this app.
+       */}
+      {viewMode === 'active' && (() => {
+        const dcBucketLabel = {
+          awaiting_customs_docs: 'Awaiting customs docs',
+          sad_present:           'SAD present',
+          sad_missing:           'SAD missing',
+          customs_cleared:       'Customs cleared',
+          dhl_in_transit:        'DHL in transit',
+          dhl_delivered:         'DHL delivered',
+        };
+        const dcBucketTone = {
+          awaiting_customs_docs: { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+          sad_present:           { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          sad_missing:           { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+          customs_cleared:       { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          dhl_in_transit:        { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+          dhl_delivered:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+        };
+        // Display helpers (raw-field readers used for pill text +
+        // data-* attributes). Display-only — predicate logic lives
+        // in the shared OP_PREDICATES / ATTENTION_PREDICATES.
+        const dcRawDhl     = (row) => (row._raw && row._raw.dhl_status)        || '';
+        const dcRawSad     = (row) => (row._raw && row._raw.sad_status)        || '';
+        const dcTrackKey   = (row) => (row._raw && row._raw.tracking_status_key) || '';
+        const dcTrackLabel = (row) => (row._raw && row._raw.tracking_status)     || '';
+        // UI-3.3a: predicate aliases — single source of truth.
+        // Anchors preserved for existing tests + downstream wrappers.
+        const dcSadCleared       = OP_PREDICATES.dhl_customs.customs_cleared;
+        const dcAwaitingCustoms  = OP_PREDICATES.dhl_customs.awaiting_customs_docs;
+        // dcDhlActionPending / dcTrackAttention drive per-row pill
+        // tone and are NOT bucket predicates — they remain display
+        // helpers that mirror the conditions baked into
+        // ATTENTION_PREDICATES.dhl_customs.
+        const dcDhlActionPending = (row) => dcRawDhl(row) === 'dhl_email_received';
+        const dcTrackAttention   = (row) => TRACK_ATTENTION.has(dcTrackKey(row));
+        const dcNeedsAttention   = ATTENTION_PREDICATES.dhl_customs;
+
+        const dcCounts = {
+          awaiting_customs_docs: batches.filter(OP_PREDICATES.dhl_customs.awaiting_customs_docs).length,
+          sad_present:           batches.filter(OP_PREDICATES.dhl_customs.sad_present).length,
+          sad_missing:           batches.filter(OP_PREDICATES.dhl_customs.sad_missing).length,
+          customs_cleared:       batches.filter(OP_PREDICATES.dhl_customs.customs_cleared).length,
+          dhl_in_transit:        batches.filter(OP_PREDICATES.dhl_customs.dhl_in_transit).length,
+          dhl_delivered:         batches.filter(OP_PREDICATES.dhl_customs.dhl_delivered).length,
+        };
+        const dcAttention = batches
+          .filter(dcNeedsAttention)
+          .sort((a, b) => {
+            const at = (a._raw && a._raw.timestamp) || a.timestamp || '';
+            const bt = (b._raw && b._raw.timestamp) || b.timestamp || '';
+            return at < bt ? 1 : at > bt ? -1 : 0;
+          });
+        return (
+          <Card
+            data-testid="dhl-customs-operations-card"
+            style={{ padding: 16, marginBottom: 16 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📨 DHL &amp; Customs Operations</div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                  Cross-batch DHL Express / SAD / tracking status — derived read-only from existing batch-list payload. Open a batch for full detail.
+                </div>
+              </div>
+            </div>
+
+            {/* Bucket counts */}
+            <div
+              data-testid="dhl-customs-operations-buckets"
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8, marginBottom: 14 }}
+            >
+              {['awaiting_customs_docs', 'sad_missing', 'sad_present', 'customs_cleared', 'dhl_in_transit', 'dhl_delivered'].map(key => {
+                const tone   = dcBucketTone[key];
+                const active = isOpActive('dhl_customs', key);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    data-testid={`dhl-customs-operations-bucket-${key}`}
+                    data-bucket-key={key}
+                    data-op-active={active ? 'true' : 'false'}
+                    aria-pressed={active}
+                    onClick={() => toggleOpFilter('dhl_customs', key, dcBucketLabel[key])}
+                    title={active ? 'Click to clear operational filter' : `Filter the shipments table by ${dcBucketLabel[key]}`}
+                    style={{ textAlign: 'left', padding: '10px 12px', border: `${active ? 2 : 1}px solid ${active ? 'var(--accent)' : tone.border}`, background: tone.bg, borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', boxShadow: active ? '0 0 0 2px var(--accent-subtle)' : 'none' }}
+                  >
+                    <div style={{ fontSize: 10, fontWeight: 700, color: tone.text, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                      {dcBucketLabel[key]}
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: tone.text, fontFamily: '"DM Serif Display",serif', marginTop: 2 }}>
+                      {loading ? '…' : dcCounts[key]}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Attention table */}
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>
+                Needs customs attention <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>(SAD missing, customs unresolved, or tracking exception)</span>
+              </div>
+              {loading && (
+                <div data-testid="dhl-customs-operations-attention-loading" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  Loading shipments…
+                </div>
+              )}
+              {!loading && dcAttention.length === 0 && (
+                <div data-testid="dhl-customs-operations-attention-empty" style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                  No batches need customs attention.
+                </div>
+              )}
+              {!loading && dcAttention.length > 0 && (
+                <table
+                  data-testid="dhl-customs-operations-attention-table"
+                  style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}
+                >
+                  <thead>
+                    <tr>
+                      {['Shipment', 'DHL Status', 'SAD', 'MRN', 'Tracking', 'Last activity'].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dcAttention.slice(0, 25).map(row => {
+                      const ts        = (row._raw && row._raw.timestamp) || row.timestamp || '—';
+                      const dhlLabel  = row.dhlStatus || '—';
+                      const sadLabel  = row.sadStatus || '—';
+                      const mrnLabel  = (row.mrn && row.mrn !== '—') ? row.mrn : '—';
+                      const trackKey  = dcTrackKey(row);
+                      const trackLbl  = dcTrackLabel(row) || (trackKey || '—');
+                      const sadTone   = row.has_sad ? 'var(--badge-green' : 'var(--badge-red';
+                      const trackTone =
+                          trackKey === 'delivered'  ? 'var(--badge-green'
+                        : trackKey === 'in_transit' ? 'var(--badge-blue'
+                        : TRACK_ATTENTION.has(trackKey) ? 'var(--badge-red'
+                        : 'var(--badge-neutral';
+                      return (
+                        <tr
+                          key={row.id}
+                          data-testid="dhl-customs-operations-attention-row"
+                          data-batch-id={row.id}
+                          data-dhl-status={dcRawDhl(row)}
+                          data-sad-status={dcRawSad(row)}
+                          data-has-sad={row.has_sad ? 'true' : 'false'}
+                          data-tracking-key={trackKey}
+                        >
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <button
+                              onClick={() => onViewShipment(row)}
+                              data-testid="dhl-customs-operations-attention-open"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--badge-blue-text)', fontSize: 11, fontWeight: 600, fontFamily: 'monospace', textDecoration: 'underline', textDecorationStyle: 'dotted', padding: 0 }}
+                              title="Open shipment detail (read-only)"
+                            >
+                              {row.awb}
+                            </button>
+                            {row.doc_no && (
+                              <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 1 }}>{row.doc_no}</div>
+                            )}
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <span
+                              data-testid="dhl-customs-operations-attention-dhl-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: dcDhlActionPending(row) ? 'var(--badge-amber-bg)' : 'var(--badge-neutral-bg)', color: dcDhlActionPending(row) ? 'var(--badge-amber-text)' : 'var(--badge-neutral-text)', border: `1px solid ${dcDhlActionPending(row) ? 'var(--badge-amber-border)' : 'var(--badge-neutral-border)'}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {dhlLabel}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <span
+                              data-testid="dhl-customs-operations-attention-sad-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: `${sadTone}-bg)`, color: `${sadTone}-text)`, border: `1px solid ${sadTone}-border)`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {sadLabel}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)', fontFamily: 'monospace', fontSize: 10 }}>{mrnLabel}</td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <span
+                              data-testid="dhl-customs-operations-attention-tracking-pill"
+                              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: `${trackTone}-bg)`, color: `${trackTone}-text)`, border: `1px solid ${trackTone}-border)`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                            >
+                              {trackLbl}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-3)', fontFamily: 'monospace' }}>{ts}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+              {!loading && dcAttention.length > 25 && (
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>
+                  Showing first 25 of {dcAttention.length}. Use the shipments table below to scroll the full list.
+                </div>
+              )}
+            </div>
+          </Card>
+        );
+      })()}
+
 
       {/* ── Archived view ── */}
       {viewMode === 'archived' && (
@@ -1126,7 +2351,13 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
                 <tr><td colSpan={14} style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>Loading shipments…</td></tr>
               )}
               {!loading && sorted.length === 0 && (
-                <tr><td colSpan={14} style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>No shipments found</td></tr>
+                <tr>
+                  <td colSpan={14} style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }} data-testid="active-table-empty-state">
+                    No shipments found{opFilter
+                      ? <span data-testid="active-table-empty-op-filter-note"> — operational filter <b>{opFilter.label}</b> is active. <a onClick={clearOpFilter} style={{ color: 'var(--badge-blue-text)', cursor: 'pointer', textDecoration: 'underline' }} title="Clear operational filter">clear filter</a></span>
+                      : null}
+                  </td>
+                </tr>
               )}
               {!loading && sorted.map(row => {
                 // Short labels for long DHL status values — full text in title tooltip
@@ -1199,7 +2430,7 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
                   <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right', whiteSpace: 'nowrap' }}>{row.net}</td>
                   <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right', whiteSpace: 'nowrap' }}>{row.gross}</td>
                   <td style={{ padding: '10px 12px', color: 'var(--accent)', fontWeight: 700, textAlign: 'right', whiteSpace: 'nowrap' }}>{row.duty}</td>
-                  <td style={{ padding: '10px 12px', overflow: 'hidden' }}><Badge status={row.overall} small /></td>
+                  <td style={{ padding: '10px 12px', overflow: 'hidden' }}><Badge status={row.overall} small title={row.overall === 'Action Required' && row.action_reason ? row.action_reason : undefined} /></td>
                   <td style={{ padding: '8px 10px', position: 'sticky', right: 0, background: 'var(--card)', zIndex: 2, boxShadow: '-2px 0 6px rgba(0,0,0,0.06)' }}>
                     <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'nowrap' }}>
                       <Btn small variant="outline" onClick={() => onViewShipment(row)} title="View detail">View</Btn>
@@ -2132,6 +3363,60 @@ function OverallReadinessCard({ batchReadiness, loading, error, decisionData, de
 
 const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals'];
 
+const WORKFLOW_STAGES = [
+  { id: 'intake',   num: 1, label: 'Intake' },
+  { id: 'precheck', num: 2, label: 'Pre-check' },
+  { id: 'reply',    num: 3, label: 'DHL Reply' },
+  { id: 'sad',      num: 4, label: 'SAD / ZC429' },
+  { id: 'verified', num: 5, label: 'Verified' },
+  { id: 'pz',       num: 6, label: 'PZ Generated' },
+  { id: 'wfirma',   num: 7, label: 'wFirma Booked' },
+];
+
+function WorkflowStrip({ audit }) {
+  if (!audit) return null;
+  const dhl  = audit.dhl_status || '';
+  const sad  = audit.sad_status || '';
+  const pz   = audit.pz_status  || '';
+
+  const stageState = (id) => {
+    if (id === 'intake')   return 'done';
+    if (id === 'precheck') return (dhl === 'pre_check_completed' || dhl === 'reply_sent' || dhl === 'reply_queued') ? 'done' : (dhl ? 'active' : 'pending');
+    if (id === 'reply')    return (dhl === 'reply_sent') ? 'done' : (dhl === 'reply_queued' || dhl === 'reply_package_prepared' || dhl === 'dhl_email_received') ? 'active' : 'pending';
+    if (id === 'sad')      return (sad === 'customs_verified' || sad === 'uploaded_parsed' || sad === 'customs_parsed') ? 'done' : (dhl === 'reply_sent' && sad !== 'missing') ? 'active' : 'pending';
+    if (id === 'verified') return (sad === 'customs_verified') ? 'done' : (sad === 'customs_parsed' || sad === 'uploaded_parsed') ? 'active' : 'pending';
+    if (id === 'pz')       return (pz === 'generated' || pz === 'exported') ? 'done' : (sad === 'customs_verified') ? 'active' : 'pending';
+    if (id === 'wfirma')   return (pz === 'exported') ? 'done' : (pz === 'generated') ? 'active' : 'pending';
+    return 'pending';
+  };
+
+  const colors = {
+    done:    { numBg: '#22A06B', numBorder: '#22A06B', numText: '#fff', labelColor: '#186838' },
+    active:  { numBg: 'var(--accent-subtle)', numBorder: 'var(--accent-border)', numText: 'var(--accent)', labelColor: 'var(--accent)' },
+    pending: { numBg: 'var(--card)', numBorder: 'var(--border)', numText: 'var(--text-3)', labelColor: 'var(--text-3)' },
+  };
+
+  return (
+    <div style={{ padding: '14px 32px', background: 'var(--card)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0, overflowX: 'auto' }}>
+      {WORKFLOW_STAGES.map((stage, i) => {
+        const s = stageState(stage.id);
+        const c = colors[s];
+        return (
+          <React.Fragment key={stage.id}>
+            {i > 0 && <div style={{ flex: 1, minWidth: 12, height: 1, background: s === 'done' ? '#22A06B' : 'var(--border)', opacity: s === 'done' ? 0.5 : 1 }} />}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+              <div style={{ width: 26, height: 26, borderRadius: '50%', background: c.numBg, border: `2px solid ${c.numBorder}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: c.numText }}>
+                {s === 'done' ? '✓' : stage.num}
+              </div>
+              <span style={{ fontSize: 10, fontWeight: 500, color: c.labelColor, whiteSpace: 'nowrap' }}>{stage.label}</span>
+            </div>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
 function BatchDetailPage({ batchId, onBack, onToast }) {
   const [audit, setAudit] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -2602,6 +3887,17 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   React.useEffect(() => { if (activeTab === 'Proposals') loadProposals(); }, [activeTab]);
   // Fetch warehouse audit when tab is activated
   React.useEffect(() => { if (activeTab === 'Warehouse' && !warehouseAudit) loadWarehouseAudit(); }, [activeTab]);
+  // UI-3.4: Pipeline Summary on the batch overview tab consumes
+  // warehouseAudit for the Warehouse lifecycle pill. Trigger the same
+  // existing load when entering the overview view (no new endpoint —
+  // just earlier activation). A separate useEffect (not merged into
+  // the Warehouse one above) so prior tab-locator tests that count
+  // literal tab-equality substrings in dashboard.html are unaffected.
+  React.useEffect(() => {
+    if (activeTab && activeTab.toLowerCase() === 'overview' && !warehouseAudit) {
+      loadWarehouseAudit();
+    }
+  }, [activeTab]);
   // Fetch sales linkage when tab is activated
   React.useEffect(() => { if (activeTab === 'Sales' && !salesLinkage) loadSalesLinkage(); }, [activeTab]);
   // Fetch wFirma reservation preview and PZ preview when tab is activated
@@ -2716,6 +4012,34 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         </Btn>
       </div>
 
+      {/* Workflow strip */}
+      <WorkflowStrip audit={audit} />
+
+      {/* Next operator action callout */}
+      {(() => {
+        const dhl = audit.dhl_status || '';
+        const sad = audit.sad_status || '';
+        const pz  = audit.pz_status  || '';
+        let label = null, cta = null, tab = null;
+        if (!dhl || dhl === 'awaiting_dhl_email') { label = 'Scan DHL inbox for clearance email'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
+        else if (dhl === 'dhl_email_received' || dhl === 'reply_package_prepared') { label = 'Send reply package to DHL Customs'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
+        else if (!sad || sad === 'missing' || sad === 'sad_pending') { label = 'Upload SAD / ZC429 from customs agent'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
+        else if (sad === 'verification_needed') { label = 'Verify customs document values'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
+        else if (!pz || pz === 'locked') { label = 'Generate PZ document'; cta = 'PZ / wFirma'; tab = 'PZ / wFirma'; }
+        else if (pz === 'generated') { label = 'Export PZ to wFirma'; cta = 'PZ / wFirma'; tab = 'PZ / wFirma'; }
+        if (!label) return null;
+        return (
+          <div style={{ margin: '12px 32px 0', padding: '12px 18px', background: 'linear-gradient(90deg,var(--accent-subtle),#F8EDD0)', border: '1px solid var(--accent-border)', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
+            <span style={{ fontSize: 16 }}>→</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 2 }}>Next Action</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{label}</div>
+            </div>
+            <button onClick={() => setActiveTab(tab)} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}>{cta} →</button>
+          </div>
+        );
+      })()}
+
       {/* Recheck result panel */}
       {recheckPanel && (
         <div style={{ margin: '0 32px 0', padding: '10px 14px', background: recheckPanel.ok ? 'var(--badge-green-bg)' : 'var(--badge-red-bg)', border: `1px solid ${recheckPanel.ok ? 'var(--badge-green-border)' : 'var(--badge-red-border)'}`, borderRadius: 6, display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
@@ -2814,6 +4138,310 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               decisionData={decisionData}
               decisionLoading={decisionLoading}
             />
+
+            {/* ── UI-3.4: Per-Batch Pipeline Summary ─────────────────────────
+                Read-only three-section snapshot mirroring the cross-batch
+                operational triptych at single-batch scope. Consumes the
+                module-scope shared helpers (OP_PREDICATES, ATTENTION_PREDICATES,
+                deriveWarehouseLifecycle, WAREHOUSE_LIFECYCLE_LABEL) — the
+                exact same predicate set as UI-3.1b / UI-3.2a / UI-3.2b.
+
+                Source data (all already loaded by BatchDetailPage):
+                  audit.*                — batch audit JSON from
+                                           GET /dashboard/batches/{id}
+                  warehouseAudit.summary — from GET /api/v1/warehouse/audit/{id}
+                                           (eager-loaded on Overview via the
+                                           useEffect above; no new endpoint)
+                  batchReadiness.*       — already loaded for the readiness banners
+                  mapPzStatus / mapDhlStatus / mapSadStatus — existing helpers.
+
+                Sales hint is NOT surfaced here as a derived bucket because
+                the cross-batch sales_status_hint backend derivation runs
+                against the documents DB that BatchDetailPage does not query.
+                We label this honestly rather than inventing a state.
+            */}
+            {(() => {
+              const inp = (audit && audit.inputs) || {};
+              const wf  = (audit && audit.wfirma_export) || {};
+              const tk  = (audit && audit.tracking) || {};
+              const SAD_DERIVED_KEYS = ['sad_uploaded', 'customs_parsed', 'customs_verified', 'verification_needed'];
+              const hasSadDerived =
+                !!inp.zc429 || SAD_DERIVED_KEYS.includes((audit && audit.sad_status) || '');
+              // Row-like object consumed by shared predicates. Field names
+              // match the cross-batch row shape so OP_PREDICATES applies
+              // without duplication.
+              const pipelineRow = {
+                warehouseHint: (() => {
+                  const wa = warehouseAudit;
+                  if (!wa || wa.error) return 'n/a';
+                  const s = wa.summary || {};
+                  const total   = Number(s.total_items   || 0);
+                  const scanned = Number(s.scanned_items || 0);
+                  const missing = Number(s.missing_items || 0);
+                  if (total === 0) return 'n/a';
+                  if (missing === 0 && scanned > 0) return 'clean';
+                  if (scanned > 0)                  return 'partial';
+                  return 'empty';
+                })(),
+                pzStatus:    mapPzStatus(audit && audit.pz_status),
+                // wFirma surfaces "preview built" when any wFirma artifact
+                // exists in the audit — same field the per-batch UI-3.1a
+                // badge uses for the "Reserved" lifecycle key.
+                wfirmaHint:  (wf.wfirma_pz_doc_id || (audit && audit.wfirma_reservation_id))
+                  ? 'preview_built'
+                  : 'n/a',
+                // UI-3.6: batch detail now injects sales_status_hint so
+                // Pipeline Summary reflects true packing-line presence.
+                salesHint: (audit && audit.sales_status_hint) || 'n/a',
+                has_sad:     hasSadDerived,
+                mrn:         (audit && audit.mrn) || inp.zc429_mrn || '',
+                _raw: {
+                  dhl_status:          (audit && audit.dhl_status) || (audit && audit.clearance_status) || '',
+                  sad_status:          (audit && audit.sad_status) || '',
+                  tracking_status_key: tk.status       || '',
+                  tracking_status:     tk.status_label || '',
+                  timestamp:           (audit && audit.timestamp) || '',
+                },
+              };
+              const warehouseLifecycle      = deriveWarehouseLifecycle(pipelineRow);
+              const warehouseLifecycleLabel = WAREHOUSE_LIFECYCLE_LABEL[warehouseLifecycle];
+              const warehouseAttention      = ATTENTION_PREDICATES.warehouse(pipelineRow);
+              const salesAttention          = ATTENTION_PREDICATES.sales_accounting(pipelineRow);
+              const dhlAttention            = ATTENTION_PREDICATES.dhl_customs(pipelineRow);
+
+              const pillBase = { fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, display: 'inline-block', whiteSpace: 'nowrap', border: '1px solid var(--border)' };
+              const pillNeutral = { ...pillBase, background: 'var(--badge-neutral-bg)', color: 'var(--badge-neutral-text)', borderColor: 'var(--badge-neutral-border)' };
+              const pillAmber   = { ...pillBase, background: 'var(--badge-amber-bg)',   color: 'var(--badge-amber-text)',   borderColor: 'var(--badge-amber-border)' };
+              const pillGreen   = { ...pillBase, background: 'var(--badge-green-bg)',   color: 'var(--badge-green-text)',   borderColor: 'var(--badge-green-border)' };
+              const pillBlue    = { ...pillBase, background: 'var(--badge-blue-bg)',    color: 'var(--badge-blue-text)',    borderColor: 'var(--badge-blue-border)' };
+              const pillRed     = { ...pillBase, background: 'var(--badge-red-bg)',    color: 'var(--badge-red-text)',    borderColor: 'var(--badge-red-border)' };
+              const lifecycleTone =
+                  warehouseLifecycle === 'reserved'         ? pillGreen
+                : warehouseLifecycle === 'in_warehouse'     ? pillBlue
+                : warehouseLifecycle === 'partial_received' ? pillAmber
+                : warehouseLifecycle === 'awaiting'         ? pillRed
+                : pillNeutral;
+              const sectionStyle = { padding: 12, background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' };
+              const sectionHeadStyle = { fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6, letterSpacing: '0.04em', textTransform: 'uppercase' };
+
+              return (
+                <Card
+                  data-testid="pipeline-summary-panel"
+                  style={{ padding: 16, marginBottom: 16 }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>📋 Pipeline Summary</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 12 }}>
+                    Read-only operational snapshot for this batch — same lifecycle lenses as the cross-batch cards, derived from the existing batch payload. Open any tab for full detail.
+                  </div>
+
+                  {/* UI-3.5: each pill below is a <button> that navigates
+                      to the corresponding existing tab via the existing
+                      setActiveTab setter — pure frontend navigation, no
+                      new API calls, no write actions, no new tabs. */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+
+                    {/* Warehouse */}
+                    <div data-testid="pipeline-summary-warehouse" data-lifecycle-state={warehouseLifecycle} style={sectionStyle}>
+                      <div style={sectionHeadStyle}>Warehouse</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-warehouse-lifecycle-pill"
+                          data-lifecycle-state={warehouseLifecycle}
+                          data-nav-target="Warehouse"
+                          onClick={() => setActiveTab('Warehouse')}
+                          title="Open Warehouse tab"
+                          aria-label={`${warehouseLifecycleLabel} — open Warehouse tab`}
+                          style={{ ...lifecycleTone, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          {warehouseLifecycleLabel}
+                        </button>
+                        {batchReadiness && batchReadiness.warehouse && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-warehouse-readiness-pill"
+                            data-readiness-status={batchReadiness.warehouse.status || ''}
+                            data-nav-target="Warehouse"
+                            onClick={() => setActiveTab('Warehouse')}
+                            title="Open Warehouse tab"
+                            aria-label={`Warehouse readiness ${batchReadiness.warehouse.status || 'unknown'} — open Warehouse tab`}
+                            style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            Readiness: {batchReadiness.warehouse.status || 'unknown'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-warehouse-packing-list-pill"
+                          data-nav-target="Warehouse"
+                          onClick={() => setActiveTab('Warehouse')}
+                          title="Open Warehouse tab"
+                          aria-label="Packing list status — open Warehouse tab"
+                          style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          Packing list: {pipelineRow.warehouseHint === 'n/a' ? 'absent' : 'present'}
+                        </button>
+                        {warehouseAttention && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-warehouse-attention"
+                            data-nav-target="Warehouse"
+                            onClick={() => setActiveTab('Warehouse')}
+                            title="Open Warehouse tab"
+                            aria-label="Warehouse needs attention — open Warehouse tab"
+                            style={{ ...pillAmber, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            ⚠ Needs attention
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Sales & Accounting */}
+                    <div data-testid="pipeline-summary-sales-accounting" style={sectionStyle}>
+                      <div style={sectionHeadStyle}>Sales &amp; Accounting</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-sales-pill"
+                          data-sales-hint={pipelineRow.salesHint}
+                          data-nav-target="Sales"
+                          onClick={() => setActiveTab('Sales')}
+                          title="Open Sales tab"
+                          aria-label="Sales linkage — open Sales tab"
+                          style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          Sales: {pipelineRow.salesHint === 'present'
+                            ? 'Linked'
+                            : 'See Sales tab'}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-wfirma-pill"
+                          data-wfirma-hint={pipelineRow.wfirmaHint}
+                          data-nav-target="PZ / wFirma"
+                          onClick={() => setActiveTab('PZ / wFirma')}
+                          title="Open PZ / wFirma tab"
+                          aria-label="wFirma preview status — open PZ / wFirma tab"
+                          style={{ ...(pipelineRow.wfirmaHint === 'preview_built' ? pillBlue : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          wFirma: {pipelineRow.wfirmaHint === 'preview_built'
+                            ? 'Preview built'
+                            : 'Not prepared'}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-pz-pill"
+                          data-pz-status={pipelineRow.pzStatus}
+                          data-nav-target="PZ / wFirma"
+                          onClick={() => setActiveTab('PZ / wFirma')}
+                          title="Open PZ / wFirma tab"
+                          aria-label={`PZ status ${pipelineRow.pzStatus || 'unknown'} — open PZ / wFirma tab`}
+                          style={{ ...(PZ_DONE_LABELS.has(pipelineRow.pzStatus) ? pillGreen : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          PZ: {pipelineRow.pzStatus || '—'}
+                        </button>
+                        {salesAttention && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-sales-attention"
+                            data-nav-target="Sales"
+                            onClick={() => setActiveTab('Sales')}
+                            title="Open Sales tab"
+                            aria-label="Sales & Accounting needs attention — open Sales tab"
+                            style={{ ...pillAmber, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            ⚠ Needs attention
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* DHL & Customs */}
+                    <div data-testid="pipeline-summary-dhl-customs" style={sectionStyle}>
+                      <div style={sectionHeadStyle}>DHL &amp; Customs</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-dhl-status-pill"
+                          data-dhl-status={pipelineRow._raw.dhl_status}
+                          data-nav-target="DHL / Customs"
+                          onClick={() => setActiveTab('DHL / Customs')}
+                          title="Open DHL / Customs tab"
+                          aria-label={`DHL status — open DHL / Customs tab`}
+                          style={{ ...(pipelineRow._raw.dhl_status === 'dhl_email_received' ? pillAmber : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          DHL: {mapDhlStatus(pipelineRow._raw.dhl_status) || '—'}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="pipeline-summary-sad-pill"
+                          data-sad-status={pipelineRow._raw.sad_status}
+                          data-has-sad={pipelineRow.has_sad ? 'true' : 'false'}
+                          data-nav-target="DHL / Customs"
+                          onClick={() => setActiveTab('DHL / Customs')}
+                          title="Open DHL / Customs tab"
+                          aria-label="SAD status — open DHL / Customs tab"
+                          style={{ ...(pipelineRow.has_sad ? pillGreen : pillRed), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                        >
+                          SAD: {pipelineRow.has_sad
+                            ? mapSadStatus(pipelineRow._raw.sad_status)
+                            : 'SAD missing'}
+                        </button>
+                        {pipelineRow.mrn && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-mrn-pill"
+                            data-nav-target="DHL / Customs"
+                            onClick={() => setActiveTab('DHL / Customs')}
+                            title="Open DHL / Customs tab"
+                            aria-label="Customs MRN — open DHL / Customs tab"
+                            style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            MRN: <span style={{ fontFamily: 'monospace' }}>{pipelineRow.mrn}</span>
+                          </button>
+                        )}
+                        {(pipelineRow._raw.tracking_status_key || pipelineRow._raw.tracking_status) && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-tracking-pill"
+                            data-tracking-key={pipelineRow._raw.tracking_status_key}
+                            data-nav-target="DHL / Customs"
+                            onClick={() => setActiveTab('DHL / Customs')}
+                            title="Open DHL / Customs tab"
+                            aria-label="Carrier tracking — open DHL / Customs tab"
+                            style={{ ...(pipelineRow._raw.tracking_status_key === 'delivered'
+                              ? pillGreen
+                              : pipelineRow._raw.tracking_status_key === 'in_transit'
+                              ? pillBlue
+                              : TRACK_ATTENTION.has(pipelineRow._raw.tracking_status_key)
+                              ? pillRed
+                              : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            Tracking: {pipelineRow._raw.tracking_status || pipelineRow._raw.tracking_status_key}
+                          </button>
+                        )}
+                        {dhlAttention && (
+                          <button
+                            type="button"
+                            data-testid="pipeline-summary-dhl-attention"
+                            data-nav-target="DHL / Customs"
+                            onClick={() => setActiveTab('DHL / Customs')}
+                            title="Open DHL / Customs tab"
+                            aria-label="DHL & Customs needs attention — open DHL / Customs tab"
+                            style={{ ...pillAmber, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            ⚠ Needs attention
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                  </div>
+                </Card>
+              );
+            })()}
+
             <MissingFunctionsMatrix />
 
             {/* ── Closure Evaluation ── */}
@@ -3938,6 +5566,45 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           const badge        = (n, color) => (
             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: n === 0 ? 'var(--badge-green-bg)' : color.bg, color: n === 0 ? 'var(--badge-green-text)' : color.text }}>{n}</span>
           );
+          // UI-3.1a: derive operator-readable inventory lifecycle from existing payload.
+          // Inputs are purely existing backend fields — no new endpoints, no new allowlist.
+          //   warehouseAudit.summary.{total_items, scanned_items, dispatched_items, missing_items}
+          //   audit.wfirma_export.wfirma_pz_doc_id  → reserved signal
+          // Operator-readable labels live in a map; technical key is exposed via data-lifecycle-state.
+          const wfExp = (audit && audit.wfirma_export) || {};
+          const hasPzDocId = !!(wfExp.wfirma_pz_doc_id && String(wfExp.wfirma_pz_doc_id).trim());
+          const lifecycleState = (() => {
+            if (!wa || isErr) return 'unknown';
+            const total      = Number(summary.total_items      || 0);
+            const scanned    = Number(summary.scanned_items    || 0);
+            const dispatched = Number(summary.dispatched_items || 0);
+            if (total === 0) return 'unknown';
+            if (dispatched > 0 && dispatched >= total) return 'dispatched';
+            if (dispatched > 0)                        return 'partial_dispatch';
+            if (scanned === 0)                         return 'awaiting';
+            if (scanned < total)                       return 'partial_received';
+            if (hasPzDocId)                            return 'reserved';
+            return 'in_warehouse';
+          })();
+          const lifecycleLabel = {
+            unknown:          'No packing list',
+            awaiting:         'Awaiting receipt',
+            partial_received: 'Partially received',
+            in_warehouse:     'In warehouse',
+            reserved:         'Reserved (PZ created)',
+            partial_dispatch: 'Partial dispatch',
+            dispatched:       'Dispatched',
+          }[lifecycleState] || 'No packing list';
+          const lifecycleTone = {
+            unknown:          { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+            awaiting:         { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+            partial_received: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+            in_warehouse:     { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+            reserved:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+            partial_dispatch: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+            dispatched:       { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+          }[lifecycleState] || { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
+
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {/* Phase 2: Readiness banner */}
@@ -3950,6 +5617,23 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 loading={batchReadinessLoading && !batchReadiness}
                 error={batchReadinessError}
               />
+              {/* UI-3.1a: operator-readable inventory lifecycle badge (read-only, derived). */}
+              <div
+                data-testid="warehouse-inventory-lifecycle-badge"
+                data-lifecycle-state={lifecycleState}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-2)' }}
+              >
+                <span style={{ color: 'var(--text-3)' }}>Inventory lifecycle:</span>
+                <span
+                  data-testid="warehouse-inventory-lifecycle-pill"
+                  style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: lifecycleTone.bg, color: lifecycleTone.text, border: `1px solid ${lifecycleTone.border}`, display: 'inline-block', whiteSpace: 'nowrap' }}
+                >
+                  {lifecycleLabel}
+                </span>
+                <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                  Derived from warehouse audit + wFirma PZ state — no manual control.
+                </span>
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 Warehouse Audit</div>
                 <Btn small variant="outline" onClick={loadWarehouseAudit} disabled={warehouseAuditLoading}>
@@ -7643,7 +9327,7 @@ function ShipmentsTable({ batches, onViewShipment, filterFn, emptyMsg }) {
                 <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-dhl">
                   <span style={{ fontSize: 10, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{row.dhlStatus || 'Not checked'}</span>
                 </td>
-                <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-overall"><Badge status={row.overall} small /></td>
+                <td style={{ padding: '10px 12px' }} data-testid="shipments-cell-overall"><Badge status={row.overall} small title={row.overall === 'Action Required' && row.action_reason ? row.action_reason : undefined} /></td>
                 <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{row.net}</td>
                 <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{row.gross}</td>
                 <td style={{ padding: '10px 12px', color: 'var(--accent)', fontWeight: 700, textAlign: 'right' }}>{row.duty}</td>
@@ -13549,25 +15233,34 @@ function App() {
   };
 
   const handleNav = (navId) => {
-    setPage(navId);
+    const canonical = ROUTE_REDIRECTS[navId] || navId;
+    setPage(canonical);
     setSelectedBatch(null);
     history.pushState({}, '', window.location.pathname);
   };
 
   const sidebarActive = page === 'detail' ? 'shipments' : page;
+  const activeNavGroup = navGroupOf(sidebarActive);
 
   const PAGE_TITLES = {
-    dashboard: { title: 'Dashboard',          subtitle: 'Overview of all shipments and customs workflow' },
-    shipments: { title: 'Shipments',           subtitle: 'All shipments across all carriers' },
-    dhl:       { title: 'DHL Clearance',       subtitle: 'DHL email monitoring, DSK generation, and reply workflow' },
-    customs:   { title: 'Customs Documents',   subtitle: 'SAD / ZC429 uploads and verification status' },
-    pz:        { title: 'PZ / Accounting',     subtitle: 'Generate PZ documents and export to wFirma' },
-    wfirma:    { title: 'wFirma Export',       subtitle: 'Export completed PZ records to wFirma accounting' },
-    reports:       { title: 'Analytics',            subtitle: 'Duty totals, shipment value, inventory, and wFirma sync status' },
-    intelligence:  { title: 'Intelligence Insights', subtitle: 'Trigger suggestions, risk warnings, and clearance intelligence — suggest-only mode' },
-    ai_bridge:     { title: 'AI Bridge',            subtitle: 'File-based coordination tasks for Claude Cowork / ChatGPT — no direct production access' },
-    learning:      { title: 'Learning / Parser',   subtitle: 'Invoice learning patterns and parser feedback' },
-    admin:         { title: 'Admin / Settings',    subtitle: 'System configuration and API health' },
+    dashboard:  { title: 'Dashboard',  subtitle: 'Pipeline view — every active shipment, one glance' },
+    inbox:      { title: 'Inbox',      subtitle: 'Everything that needs your attention — emails · proposals · approvals · reservations · customs holds' },
+    shipments:  { title: 'Shipments',  subtitle: 'All shipments — click any AWB to open detail' },
+    documents:  { title: 'Documents',  subtitle: 'Unified workspace for every document the system creates — Proforma · Invoice · PZ · Customs · Shipping' },
+    accounting: { title: 'Accounting', subtitle: 'Proforma · Invoice · WZ · PZ · PW · RW · MM · Client Balance · Ledgers — all mapped from wFirma' },
+    inventory:  { title: 'Inventory',  subtitle: 'Two-stage inventory — Stage 1 (Temp Purchase / Warehouse / Sale) · Stage 2 (Final Stock, Samples, Returns)' },
+    reports:    { title: 'Reports',    subtitle: 'Financial, sales, purchase, and shipping reports — date-filtered with drill-down' },
+    dhl:        { title: 'DHL Clearance',       subtitle: 'DHL email monitoring, DSK generation, and reply workflow' },
+    wfirma_setup:{ title: 'wFirma Mapping',      subtitle: 'Customer + product mapping · capabilities · reservation gate readiness' },
+    intelligence:{ title: 'Intelligence Insights', subtitle: 'Trigger suggestions, risk warnings, and clearance intelligence — suggest-only mode' },
+    intelligence_grp:{ title: 'Parser / Learning', subtitle: 'Invoice learning patterns and parser feedback' },
+    automation: { title: 'Automation Center',   subtitle: 'Cowork task queue, results, errors, capabilities, and prompt templates' },
+    admin:      { title: 'Admin / Settings',    subtitle: 'System configuration and API health' },
+    master:     { title: 'Master Data',         subtitle: 'Create and edit all master records — clients, suppliers, products, designs, HS codes, FX, users, roles' },
+    carriers:   { title: 'Carriers',            subtitle: 'Multi-carrier login · API integration · webhooks · sessions · audit log' },
+    api_status: { title: 'API Status',          subtitle: 'Consolidated health for every backend integration · carriers · accounting · customs' },
+    diagnostics:{ title: 'System Diagnostics',  subtitle: 'Health checks · storage · locks · CLI diagnostic tools' },
+    coverage:   { title: 'Coverage Matrix',     subtitle: 'Feature × status × API placeholders — wireframe coverage' },
   };
   const currentTitle = PAGE_TITLES[page];
 
@@ -13587,6 +15280,11 @@ function App() {
           onLogout={handleLogout}
         />
 
+        {/* Sub-tab strip for group children */}
+        {page !== 'detail' && activeNavGroup && (
+          <SubTabStrip group={activeNavGroup} active={sidebarActive} onNav={handleNav} />
+        )}
+
         {/* Page header (not shown in detail view) */}
         {page !== 'detail' && currentTitle && (
           <PageHeader
@@ -13603,28 +15301,36 @@ function App() {
           <BatchDetailPage batchId={selectedBatch} onBack={goBack} onToast={notify} />
         )}
 
-        {/* Dashboard */}
+        {/* Dashboard — Kanban pipeline (workflow-first) */}
         {page === 'dashboard' && (
+          <DashboardKanban
+            batches={batches}
+            onViewShipment={(b) => viewShipment(b)}
+            onNav={handleNav}
+            onNewShipment={() => setShowNewShipment(true)}
+          />
+        )}
+
+        {/* Shipments list — full table with filters/sort/actions */}
+        {page === 'shipments' && (
           <DashboardPage onViewShipment={viewShipment} batches={batches} loading={batchesLoading} onReload={loadBatches} onToast={notify} />
         )}
 
-        {/* Shipments list */}
-        {page === 'shipments' && (
-          <div style={{ flex: 1, overflowY: 'auto', padding: '0 32px 32px' }}>
-            <ShipmentsTable batches={batches} onViewShipment={viewShipment} emptyMsg="No shipments found" />
-          </div>
-        )}
-
         {/* Module pages */}
-        {page === 'dhl'      && <DhlClearancePage batches={batches} onViewShipment={viewShipment} />}
-        {page === 'customs'  && <CustomsDocumentsPage batches={batches} onViewShipment={viewShipment} />}
-        {page === 'pz'       && <PzAccountingPage batches={batches} onViewShipment={viewShipment} />}
-        {page === 'wfirma'   && <WfirmaExportPage batches={batches} onViewShipment={viewShipment} />}
-        {page === 'reports'       && <ReportsPage />}
-        {page === 'intelligence'  && <IntelligencePage onToast={notify} />}
-        {page === 'ai_bridge'     && <AiBridgePage onToast={notify} />}
-        {page === 'learning'      && <LearningPage onToast={notify} />}
-        {page === 'admin'         && <AdminPage user={user} />}
+        {page === 'dhl'         && <DhlClearancePage batches={batches} onViewShipment={viewShipment} />}
+        {page === 'documents'   && <CustomsDocumentsPage batches={batches} onViewShipment={viewShipment} />}
+        {page === 'accounting'  && <PzAccountingPage batches={batches} onViewShipment={viewShipment} />}
+        {page === 'wfirma_setup'&& <WfirmaExportPage batches={batches} onViewShipment={viewShipment} />}
+        {page === 'reports'         && <ReportsPage />}
+        {page === 'intelligence'    && <IntelligencePage onToast={notify} />}
+        {page === 'intelligence_grp'&& <LearningPage onToast={notify} />}
+        {page === 'automation'      && <AiBridgePage onToast={notify} />}
+        {page === 'admin'           && <AdminPage user={user} />}
+
+        {/* Stub pages — design IA present, backend pending */}
+        {(page === 'inbox' || page === 'inventory' || page === 'master' || page === 'carriers' || page === 'api_status' || page === 'diagnostics' || page === 'coverage') && (
+          <StubPage page={page} onNav={handleNav} />
+        )}
       </div>
 
       {showNewShipment && (
