@@ -1089,8 +1089,8 @@ function CoverageMatrixPage() {
       next_action: 'Backend: extend /ledgers/* endpoints (read-only wFirma proxy)' },
     { module: 'Inventory',         route: 'inventory',     classification: 'COMPOSED',
       real_source: 'Composed from batches prop (OP_PREDICATES.warehouse + lifecycle helpers) + /api/v1/inventory/stage2/aggregate (final_stock + samples both live from inventory_state_engine.count_by_state) + /api/v1/inventory/pieces/scan_code unified timeline',
-      pending_surface: 'Stage 2 partially live — final_stock + samples derive from inventory_state.state (WAREHOUSE_STOCK + SAMPLE_OUT). Returns + consignment still have no backing state or table.',
-      next_action: 'Backend: design returns + consignment tables when those workflows are scoped (separate task, SECURITY gate required)' },
+      pending_surface: 'Stage 2 partially live — final_stock + samples + returns all derive from inventory_state (WAREHOUSE_STOCK, SAMPLE_OUT, RETURNED_FROM_CLIENT, RETURNED_TO_PRODUCER). Consignment still has no backing state or table.',
+      next_action: 'Backend: design consignment table when that workflow is scoped (separate task, SECURITY gate required)' },
     { module: 'Reports',           route: 'reports',       classification: 'LIVE',
       real_source: '/analytics/phase-a + tracking export endpoints',
       pending_surface: 'P&L, top clients, scheduling, period filters (preview only)',
@@ -1266,6 +1266,8 @@ const _STATE_TONE = {
   CLIENT_DISPATCHED:     { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
   SALES_TRANSIT:         { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
   SAMPLE_OUT:            { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  RETURNED_FROM_CLIENT:  { bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    border: 'var(--badge-red-border)' },
+  RETURNED_TO_PRODUCER:  { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  border: 'var(--badge-amber-border)' },
   CLOSED:                { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
 };
 
@@ -1307,6 +1309,24 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
     notes:                 '',
   });
   const [sampleReturnNotes, setSampleReturnNotes] = React.useState('');
+
+  // Phase B.2 — returns mutation state.
+  const [returnFromClientForm, setReturnFromClientForm] = React.useState({
+    return_reason:      'warranty_claim',
+    origin_context:     '',
+    received_at:        '',
+    source_holder_name: '',
+    notes:              '',
+  });
+  const [returnToProducerForm, setReturnToProducerForm] = React.useState({
+    producer_name:            '',
+    return_reason:            'defect',
+    dispatch_reference:       '',
+    producer_id:              '',
+    expected_resolution_date: '',
+    notes:                    '',
+  });
+  const [returnFromProducerNotes, setReturnFromProducerNotes] = React.useState('');
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1431,6 +1451,87 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
     setActionBusy(false);
   }, [pieceDetail, sampleReturnNotes, _postSample, refreshPiece, onToast]);
 
+  const submitReturnFromClient = React.useCallback(async () => {
+    if (!pieceDetail || !pieceDetail.state) return;
+    const piece_id = pieceDetail.state.scan_code;
+    const op = _resolveOperator();
+    if (!op) { setActionError('Operator name required'); return; }
+    if (!returnFromClientForm.origin_context.trim()) {
+      setActionError('Origin context required (RMA #, sales doc, etc.)'); return;
+    }
+    if (!returnFromClientForm.received_at) {
+      setActionError('Received-at date/time required'); return;
+    }
+    setActionBusy(true); setActionError('');
+    try {
+      await _postSample('return-from-client', {
+        operator:           op,
+        return_reason:      returnFromClientForm.return_reason,
+        origin_context:     returnFromClientForm.origin_context.trim(),
+        received_at:        returnFromClientForm.received_at,
+        idempotency_key:    `rfc-${piece_id}-${Date.now()}`,
+        source_holder_name: returnFromClientForm.source_holder_name || '',
+        notes:              returnFromClientForm.notes || '',
+      }, piece_id);
+      await refreshPiece(piece_id);
+      setReturnFromClientForm({ return_reason: 'warranty_claim', origin_context: '', received_at: '', source_holder_name: '', notes: '' });
+      if (onToast) onToast('Return from client recorded', 'success');
+    } catch (e) {
+      setActionError((e && e.message) || String(e));
+    }
+    setActionBusy(false);
+  }, [pieceDetail, returnFromClientForm, _postSample, refreshPiece, onToast]);
+
+  const submitReturnToProducer = React.useCallback(async () => {
+    if (!pieceDetail || !pieceDetail.state) return;
+    const piece_id = pieceDetail.state.scan_code;
+    const op = _resolveOperator();
+    if (!op) { setActionError('Operator name required'); return; }
+    if (!returnToProducerForm.producer_name.trim()) {
+      setActionError('Producer name required'); return;
+    }
+    setActionBusy(true); setActionError('');
+    try {
+      await _postSample('return-to-producer', {
+        operator:                 op,
+        producer_name:            returnToProducerForm.producer_name.trim(),
+        idempotency_key:          `rtp-${piece_id}-${Date.now()}`,
+        return_reason:            returnToProducerForm.return_reason || '',
+        dispatch_reference:       returnToProducerForm.dispatch_reference || '',
+        producer_id:              returnToProducerForm.producer_id || '',
+        expected_resolution_date: returnToProducerForm.expected_resolution_date || '',
+        notes:                    returnToProducerForm.notes || '',
+      }, piece_id);
+      await refreshPiece(piece_id);
+      setReturnToProducerForm({ producer_name: '', return_reason: 'defect', dispatch_reference: '', producer_id: '', expected_resolution_date: '', notes: '' });
+      if (onToast) onToast('Return to producer recorded', 'success');
+    } catch (e) {
+      setActionError((e && e.message) || String(e));
+    }
+    setActionBusy(false);
+  }, [pieceDetail, returnToProducerForm, _postSample, refreshPiece, onToast]);
+
+  const submitReturnFromProducer = React.useCallback(async () => {
+    if (!pieceDetail || !pieceDetail.state) return;
+    const piece_id = pieceDetail.state.scan_code;
+    const op = _resolveOperator();
+    if (!op) { setActionError('Operator name required'); return; }
+    setActionBusy(true); setActionError('');
+    try {
+      await _postSample('return-from-producer', {
+        operator:        op,
+        idempotency_key: `rfp-${piece_id}-${Date.now()}`,
+        notes:           returnFromProducerNotes || '',
+      }, piece_id);
+      await refreshPiece(piece_id);
+      setReturnFromProducerNotes('');
+      if (onToast) onToast('Return from producer recorded — piece restocked', 'success');
+    } catch (e) {
+      setActionError((e && e.message) || String(e));
+    }
+    setActionBusy(false);
+  }, [pieceDetail, returnFromProducerNotes, _postSample, refreshPiece, onToast]);
+
   React.useEffect(() => {
     let cancelled = false;
     setStage2Loading(true);
@@ -1494,21 +1595,8 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
           style={{ padding: '4px 12px', borderRadius: 6, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'none' }}>
           ⊡ Open Warehouse Scanner
         </a>
-        {/* Phase B.1 live: sample-out / sample-return moved into the
-            piece drawer (state-gated + evidence form). Move stock has
-            its own per-piece UI in the Warehouse Scanner. Remaining
-            placeholders are still backend-pending two-stage writes. */}
-        {[
-          { id: 'goods_return',  label: '↩ Goods return' },
-          { id: 'return_prod',   label: '↰ Return to producer' },
-        ].map(b => (
-          <button key={b.id} data-testid={`inventory-preview-action-${b.id}`}
-            data-pending="true" disabled aria-disabled="true"
-            title="Backend pending — two-stage inventory action not wired"
-            style={{ padding: '4px 12px', borderRadius: 6, border: '1px dashed var(--border)', background: 'var(--bg-subtle)', color: 'var(--text-3)', fontSize: 11, cursor: 'not-allowed', fontFamily: 'inherit', opacity: 0.85 }}>
-            {b.label}
-          </button>
-        ))}
+        {/* Phase B.2 live: returns actions (return-from-client, return-to-producer,
+            return-from-producer) are state-gated inside the piece drawer. */}
       </div>
 
       {/* ── Lifecycle buckets (5 cards from shared OP_PREDICATES.warehouse) ──── */}
@@ -1610,7 +1698,7 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
           {[
             { key: 'final_stock', label: 'Final Stock',  testid: 'inventory-stage2-final',       hint: 'PZ booked, available' },
             { key: 'samples',     label: 'Samples',      testid: 'inventory-stage2-samples',     hint: 'SAMPLE_OUT pieces — live count from inventory_state' },
-            { key: 'returns',     label: 'Returns',      testid: 'inventory-stage2-returns',     hint: 'incoming RMA / debit-note (backend pending)' },
+            { key: 'returns',     label: 'Returns',      testid: 'inventory-stage2-returns',     hint: 'RETURNED_FROM_CLIENT + RETURNED_TO_PRODUCER — live from inventory_state' },
             { key: 'consignment', label: 'Consignment',  testid: 'inventory-stage2-consignment', hint: 'physically with client, title retained (backend pending)' },
             { key: 'unknown',     label: 'Unknown',      testid: 'inventory-stage2-unknown',     hint: 'residual — pending final aggregate model' },
           ].map(tile => {
@@ -1691,7 +1779,7 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
       {/* Design preview footer */}
       <div data-testid="inventory-design-preview" style={{ marginTop: 14, padding: '10px 14px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span data-testid="inventory-preview-pending-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10, fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
-        <span>Move-stock, Sample-out, and Sample-return are live (see Warehouse Scanner + piece drawer). Goods-return, Return-to-producer, and Consignment still require server-side writes that don't exist. Per-batch warehouse audit lives on the Warehouse tab inside each batch.</span>
+        <span>Move-stock, Sample-out, Sample-return, Return-from-client, Return-to-producer, and Return-from-producer are live (see piece drawer — state-gated forms). Consignment still requires server-side writes. Per-batch warehouse audit lives on the Warehouse tab inside each batch.</span>
       </div>
 
       {/* ── Phase 4.4: Piece lookup + detail drawer (read-only) ──
@@ -1881,6 +1969,10 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
                   {pieceDetail.timeline.map((ev) => {
                     const icon = ev.kind === 'lifecycle' ? '◆'
                                : ev.kind === 'movement'  ? '→'
+                               : ev.kind === 'returns'
+                                 ? (ev.detail && ev.detail.direction === 'to_producer' ? '↰'
+                                    : ev.detail && (ev.detail.direction === 'producer_restock' || ev.detail.direction === 'restock') ? '↓'
+                                    : '↩')
                                : (ev.detail && ev.detail.direction === 'return') ? '↙'
                                : '↗';
                     return (
@@ -1908,6 +2000,17 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
                               {ev.detail.expected_return_date && (
                                 <span>expected return: {ev.detail.expected_return_date}</span>
                               )}
+                            </div>
+                          )}
+                          {ev.kind === 'returns' && ev.detail && (
+                            <div data-testid="inventory-piece-drawer-timeline-returns-detail"
+                                 style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 1 }}>
+                              {ev.detail.return_reason && <span>reason: {ev.detail.return_reason}</span>}
+                              {ev.detail.return_reason && ev.detail.source_holder_name && ' · '}
+                              {ev.detail.source_holder_name && <span>from: {ev.detail.source_holder_name}</span>}
+                              {ev.detail.producer_name && <span>producer: {ev.detail.producer_name}</span>}
+                              {ev.detail.dispatch_reference && <span> · ref: {ev.detail.dispatch_reference}</span>}
+                              {ev.detail.expected_resolution_date && <span> · resolve by: {ev.detail.expected_resolution_date}</span>}
                             </div>
                           )}
                           <div style={{ fontSize: 10, color: 'var(--text-3)',
@@ -2044,11 +2147,169 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
                   </div>
                 )}
 
-                {st !== 'WAREHOUSE_STOCK' && st !== 'SAMPLE_OUT' && (
+                {(st === 'WAREHOUSE_STOCK' || st === 'SAMPLE_OUT') && (
+                  <div data-testid="inventory-piece-return-from-client-form"
+                       style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+                    <div style={{ fontSize: 10, color: 'var(--badge-red-text)', fontWeight: 700,
+                                  textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>
+                      ↩ Mark returned from client
+                    </div>
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Return reason *
+                    </label>
+                    <select data-testid="inventory-piece-rfc-reason"
+                      value={returnFromClientForm.return_reason}
+                      onChange={(e) => setReturnFromClientForm(s => ({ ...s, return_reason: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }}>
+                      <option value="warranty_claim">Warranty claim</option>
+                      <option value="customer_refused">Customer refused</option>
+                      <option value="post_sample_review_reject">Post-sample review reject</option>
+                      <option value="dimension_issue">Dimension issue</option>
+                      <option value="quality_complaint">Quality complaint</option>
+                      <option value="wrong_item_shipped">Wrong item shipped</option>
+                      <option value="other">Other</option>
+                    </select>
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 4 }}>
+                      Origin context * (RMA #, sales doc, etc.)
+                    </label>
+                    <input data-testid="inventory-piece-rfc-origin"
+                      type="text"
+                      value={returnFromClientForm.origin_context}
+                      onChange={(e) => setReturnFromClientForm(s => ({ ...s, origin_context: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 4 }}>
+                      Received at * (ISO date/time)
+                    </label>
+                    <input data-testid="inventory-piece-rfc-received-at"
+                      type="datetime-local"
+                      value={returnFromClientForm.received_at}
+                      onChange={(e) => setReturnFromClientForm(s => ({ ...s, received_at: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 4 }}>
+                      Source holder name (optional)
+                    </label>
+                    <input data-testid="inventory-piece-rfc-holder"
+                      type="text"
+                      value={returnFromClientForm.source_holder_name}
+                      onChange={(e) => setReturnFromClientForm(s => ({ ...s, source_holder_name: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 4 }}>
+                      Notes (optional)
+                    </label>
+                    <input data-testid="inventory-piece-rfc-notes"
+                      type="text"
+                      value={returnFromClientForm.notes}
+                      onChange={(e) => setReturnFromClientForm(s => ({ ...s, notes: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <button data-testid="inventory-piece-rfc-submit"
+                      onClick={submitReturnFromClient}
+                      disabled={actionBusy}
+                      style={{ marginTop: 6, padding: '6px 12px', fontSize: 12,
+                               background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)',
+                               border: '1px solid var(--badge-red-border)', borderRadius: 4, fontWeight: 600,
+                               cursor: actionBusy ? 'not-allowed' : 'pointer', opacity: actionBusy ? 0.5 : 1 }}>
+                      {actionBusy ? '…' : '↩ Return from client'}
+                    </button>
+                  </div>
+                )}
+
+                {(st === 'WAREHOUSE_STOCK' || st === 'RETURNED_FROM_CLIENT') && (
+                  <div data-testid="inventory-piece-return-to-producer-form"
+                       style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+                    <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 700,
+                                  textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>
+                      ↰ Return to producer
+                    </div>
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Producer name *
+                    </label>
+                    <input data-testid="inventory-piece-rtp-producer"
+                      type="text"
+                      value={returnToProducerForm.producer_name}
+                      onChange={(e) => setReturnToProducerForm(s => ({ ...s, producer_name: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 4 }}>
+                      Return reason
+                    </label>
+                    <select data-testid="inventory-piece-rtp-reason"
+                      value={returnToProducerForm.return_reason}
+                      onChange={(e) => setReturnToProducerForm(s => ({ ...s, return_reason: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }}>
+                      <option value="defect">Defect</option>
+                      <option value="dimension_out_of_spec">Dimension out of spec</option>
+                      <option value="quality_reject">Quality reject</option>
+                      <option value="post_inspection_reject">Post-inspection reject</option>
+                      <option value="recall">Recall</option>
+                      <option value="other">Other</option>
+                    </select>
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 4 }}>
+                      Dispatch reference (waybill / RMA)
+                    </label>
+                    <input data-testid="inventory-piece-rtp-dispatch"
+                      type="text"
+                      value={returnToProducerForm.dispatch_reference}
+                      onChange={(e) => setReturnToProducerForm(s => ({ ...s, dispatch_reference: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 4 }}>
+                      Expected resolution date (optional)
+                    </label>
+                    <input data-testid="inventory-piece-rtp-resolution-date"
+                      type="date"
+                      value={returnToProducerForm.expected_resolution_date}
+                      onChange={(e) => setReturnToProducerForm(s => ({ ...s, expected_resolution_date: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 4 }}>
+                      Notes (optional)
+                    </label>
+                    <input data-testid="inventory-piece-rtp-notes"
+                      type="text"
+                      value={returnToProducerForm.notes}
+                      onChange={(e) => setReturnToProducerForm(s => ({ ...s, notes: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <button data-testid="inventory-piece-rtp-submit"
+                      onClick={submitReturnToProducer}
+                      disabled={actionBusy}
+                      style={{ marginTop: 6, padding: '6px 12px', fontSize: 12,
+                               background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+                               border: '1px solid var(--badge-amber-border)', borderRadius: 4, fontWeight: 600,
+                               cursor: actionBusy ? 'not-allowed' : 'pointer', opacity: actionBusy ? 0.5 : 1 }}>
+                      {actionBusy ? '…' : '↰ Return to producer'}
+                    </button>
+                  </div>
+                )}
+
+                {st === 'RETURNED_TO_PRODUCER' && (
+                  <div data-testid="inventory-piece-return-from-producer-form"
+                       style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 700,
+                                  textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>
+                      ↓ Restock from producer
+                    </div>
+                    <label style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Notes (optional)
+                    </label>
+                    <input data-testid="inventory-piece-rfp-notes"
+                      type="text"
+                      value={returnFromProducerNotes}
+                      onChange={(e) => setReturnFromProducerNotes(e.target.value)}
+                      style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <button data-testid="inventory-piece-rfp-submit"
+                      onClick={submitReturnFromProducer}
+                      disabled={actionBusy}
+                      style={{ marginTop: 6, padding: '6px 12px', fontSize: 12,
+                               background: 'var(--accent)', color: '#fff',
+                               border: 'none', borderRadius: 4, fontWeight: 600,
+                               cursor: actionBusy ? 'not-allowed' : 'pointer', opacity: actionBusy ? 0.5 : 1 }}>
+                      {actionBusy ? '…' : '↓ Restock to warehouse'}
+                    </button>
+                  </div>
+                )}
+
+                {st !== 'WAREHOUSE_STOCK' && st !== 'SAMPLE_OUT' && st !== 'RETURNED_FROM_CLIENT' && st !== 'RETURNED_TO_PRODUCER' && (
                   <div data-testid="inventory-piece-no-actions"
                     style={{ fontSize: 11, color: 'var(--text-3)',
                              fontStyle: 'italic' }}>
-                    No sample-out actions for state {st}.
+                    No write actions available for state {st}.
                   </div>
                 )}
               </div>

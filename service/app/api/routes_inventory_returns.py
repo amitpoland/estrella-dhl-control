@@ -102,6 +102,7 @@ _STATUS_FOR_CODE = {
     "WRONG_STATE":       409,
     "MIGRATION_PENDING": 503,
     "DB_UNAVAILABLE":    503,
+    "DB_CONSTRAINT":     500,
 }
 
 
