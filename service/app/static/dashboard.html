@@ -5520,6 +5520,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [dhlReadiness, setDhlReadiness] = React.useState(null);
   const [dhlReadinessLoading, setDhlReadinessLoading] = React.useState(false);
   const [dhlReadinessError, setDhlReadinessError] = React.useState('');
+  // Phase 4.2: per-batch inventory state strip (read-only)
+  const [invState, setInvState] = React.useState(null);
+  const [invStateLoading, setInvStateLoading] = React.useState(false);
+  const [invStateError, setInvStateError] = React.useState('');
   // Phase 3.6: decision engine advisory output (read-only, never blocks execution)
   const [decisionData, setDecisionData] = React.useState(null);
   const [decisionLoading, setDecisionLoading] = React.useState(false);
@@ -5892,6 +5896,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     setDhlReadinessLoading(false);
   }, [batchId]);
 
+  // Phase 4.2: per-batch inventory state (GET /api/v1/inventory/state/{batch_id})
+  const loadInvState = React.useCallback(async () => {
+    setInvStateLoading(true); setInvStateError('');
+    try {
+      const d = await apiFetch(`/api/v1/inventory/state/${encodeURIComponent(batchId)}`);
+      setInvState(d);
+    } catch (e) { setInvStateError(e.message || 'Failed to load'); }
+    setInvStateLoading(false);
+  }, [batchId]);
+
   // Phase 3.6: fetch decision advisory (GET only — read, no writes)
   const loadDecision = React.useCallback(async () => {
     setDecisionLoading(true);
@@ -5950,7 +5964,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   React.useEffect(() => { if (activeTab === 'Documents' && !packingInfo) loadPackingInfo(); }, [activeTab]);
   // Phase 2: fetch batch readiness on mount (Pipeline tab shows OverallReadinessCard)
   // Phase 3.6: also fetch decision advisory on mount — runs alongside readiness, never blocks
-  React.useEffect(() => { loadBatchReadiness(); loadDecision(); }, [batchId]);
+  React.useEffect(() => { loadBatchReadiness(); loadDecision(); loadInvState(); }, [batchId]);
   // Phase 2: fetch DHL readiness when DHL tab is activated
   React.useEffect(() => { if (activeTab === 'DHL / Customs' && !dhlReadiness) loadDhlReadiness(); }, [activeTab]);
 
@@ -6197,6 +6211,66 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               decisionData={decisionData}
               decisionLoading={decisionLoading}
             />
+
+            {/* ── Phase 4.2: Inventory state strip (per-batch, read-only) ──
+                Source: GET /api/v1/inventory/state/{batchId}
+                Honest empty when total=0; honest degraded when DB unavailable. */}
+            <div
+              data-testid="inventory-batch-state-strip"
+              style={{
+                margin: '12px 0', padding: '12px 14px',
+                background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
+                fontSize: 13,
+              }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between',
+                            alignItems: 'baseline', marginBottom: 8 }}>
+                <strong style={{ color: '#111827' }}>Inventory state</strong>
+                {invStateLoading && (
+                  <span data-testid="inventory-batch-state-loading"
+                        style={{ color: '#6b7280', fontSize: 12 }}>…</span>
+                )}
+                {!invStateLoading && invState && (
+                  <span style={{ color: '#6b7280', fontSize: 12 }}>
+                    total {invState.total}
+                    {invState.degraded ? ' · degraded' : ''}
+                  </span>
+                )}
+              </div>
+              {invStateError && (
+                <div data-testid="inventory-batch-state-error"
+                     style={{ color: '#991b1b', fontSize: 12 }}>
+                  ⚠ {invStateError}
+                </div>
+              )}
+              {!invStateError && invState && invState.total === 0 && !invStateLoading && (
+                <div data-testid="inventory-batch-state-empty"
+                     style={{ color: '#6b7280', fontSize: 12 }}>
+                  No inventory rows for this batch yet.
+                </div>
+              )}
+              {!invStateError && invState && invState.total > 0 && (
+                <div style={{ display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                              gap: 8 }}>
+                  {Object.entries(invState.counts || {}).map(([stateName, count]) => (
+                    <div key={stateName}
+                         data-testid={`inventory-batch-state-tile-${stateName}`}
+                         data-pending={count === 0 ? 'true' : undefined}
+                         style={{ padding: '8px 10px', background: '#f9fafb',
+                                  border: '1px solid #e5e7eb', borderRadius: 6 }}>
+                      <div style={{ fontSize: 11, color: '#6b7280',
+                                    textTransform: 'lowercase' }}>
+                        {stateName.replace(/_/g, ' ').toLowerCase()}
+                      </div>
+                      <div style={{ fontSize: 18, color: count > 0 ? '#111827' : '#9ca3af',
+                                    fontWeight: 600 }}>
+                        {count > 0 ? String(count) : '—'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* ── UI-3.4: Per-Batch Pipeline Summary ─────────────────────────
                 Read-only three-section snapshot mirroring the cross-batch
