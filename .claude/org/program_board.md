@@ -104,14 +104,33 @@ note explaining why.
 
 | Field | Value |
 |---|---|
-| State | `pre-impl` — P1 done per memory; P2-P5 sequestered as ADRs (012-016) |
+| State | `pre-impl` — P1 done; **P0 scaffolding designed (2026-05-12); P2-P5 scoped and sequenced**; ADRs 012-016 hold |
 | Owner | Backend Architect, Customs Compliance Reviewer, Integration Engineer (Zoho Mail) |
-| Tests | `partial` — DHL clearance tests exist; proactive-dispatch path untested |
+| Tests | `partial` — DHL clearance tests exist; P2-P5 test plans drafted (≥40/30/50/50 cases per phase); proactive-dispatch path still untested in code |
 | Telemetry | `gap` |
-| UI | `none` |
+| UI | `none` (Mac); deferred to Windows Atlas per 2026-05-12 strategic memory |
 | Debt | none (D-6 closed by ADR-012..016 on 2026-05-10) |
-| Live-risk gate | Customs Compliance Reviewer sign-off + audit-evidence completeness |
+| Live-risk gate | Per-phase: P2 (Customs Compliance + Operator Safety, 48h shadow); P3 (Operator Safety + Carrier Ops, 1 week shadow); P4 (Customs Compliance + Operator Safety + Customer Service, 72h + ≥200 classifications); P5 (Customs Compliance + Inventory/Finance + Operator Safety, 1 week + ≥30 SAD events, two-stage flag promotion) |
 | Last commit | n/a (mainline; spec sequestered in ADR-012..016) |
+
+**Planned phase sequence (designed 2026-05-12, planning artifacts at `docs/operational-memory/dhl-selfclearance/`):**
+- **P0** Foundation scaffolding (state engine + coordinator + manifest namespace + 6 default-OFF flags + classifier vocabulary + per-thread reply lock + RFC822 thread tracking + tracking-event vocab extension + `is_awb_stable()` + `dhl_selfclearance_followup_v2.py` alongside legacy + admin runtime-flags endpoint) — **prerequisite to all four phases**
+- **P2** ADR-013 proactive dispatch — 48h shadow
+- **P3** ADR-014 tracking watcher + arrival follow-up — 1 week shadow
+- **P4** ADR-015 thread clarification reply — 72h + ≥200 classifications
+- **P5** ADR-016 SAD/PZC unlock + PZ trigger — 1 week + ≥30 SAD events, two-stage flag promotion
+
+**Cross-phase invariants (per ADR-012):**
+- HL1 never PZ before SAD link
+- HL2 never inventory mutation before customs complete
+- HL3 never agency-forward on self-clearance path
+- HL4 one AWB = one thread (engine side; operator-side fresh threads handled via `thread_id_aliases[]` per Risk R1)
+
+**Single point of catastrophic failure identified:** P4/P5 intent classifier (per reviewer-challenge 2026-05-12). Mitigation: classifier shadow validation against historical DHL email corpus is required in P0 before P2 ships to production.
+
+**Weakest architectural assumption:** DHL thread-stationarity. DHL has been observed to initiate fresh threads server-side. Mitigation: manifest's `thread_id_aliases[]` tracks DHL-initiated fresh threads for the same AWB; P5 thread-matching falls back to AWB-keyed search.
+
+**Wall-clock estimate (best case):** ~3 weeks from P0 start to P5 live. **Realistic with operator review queues:** 4-5 weeks.
 
 ---
 
@@ -225,6 +244,31 @@ note explaining why.
 | Last commit | `958d1db` on `feat/reconciliation-engine-inspection` (docs: retroactive reconciliation engine Stage 1 design) |
 
 **Note:** this is the *retroactive* reconciliation engine — read-only inspection over historical batches to surface drift / missing-evidence anomalies. Live-impact gate cannot be set until Stage 1 design transitions to a pre-impl phase plan.
+
+---
+
+### W-12 — Admin runtime-flags infrastructure
+
+| Field | Value |
+|---|---|
+| State | `pre-impl` — designed 2026-05-12 as part of W-5 P0 scaffolding; reusable across future workstreams |
+| Owner | Backend Architect, Security Reviewer |
+| Tests | n/a (design only); P0 implementation will add ≥6 endpoint tests |
+| Telemetry | n/a → `green` once implemented (audit log entry per flag flip) |
+| UI | `none` — admin endpoint only, NO browser UI (Windows Atlas memory rule binding) |
+| Debt | none |
+| Live-risk gate | Security Reviewer sign-off on the auth surface + audit-log completeness |
+| Last commit | n/a (design captured in `docs/operational-memory/dhl-selfclearance/01_P0_FOUNDATION.md`) |
+
+**Purpose:** Provide a kill-switch mechanism for phase-scoped runtime flags (initially W-5's six `dhl_selfclearance_pN_*` flags; reusable for future workstreams). `POST /api/v1/admin/runtime-flags/<scope>` with `X-API-Key` auth via the hybrid guard from PR #23. Restartless reload via in-memory + persisted JSON store consulted by config readers before falling back to env-var defaults. Audit log entry per flip (`admin_runtime_flag_flipped` with actor, flag_name, old_value, new_value, timestamp).
+
+**Cross-workstream coupling:** ships as part of W-5 P0 but is workstream-agnostic. Subsequent workstreams can register their own flag scopes by adding a new POST route prefix.
+
+**Live-risk gate:** Security Reviewer must sign off that:
+- Auth surface uses `require_api_key` (no separate auth path)
+- Error responses are templated (no raw exception strings — engineering discipline rule)
+- Audit log entry is mandatory before flag mutation persists
+- No browser UI is exposed (Windows Atlas memory rule)
 
 ---
 
