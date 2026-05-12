@@ -145,6 +145,41 @@ def test_limitations_array_surfaced_in_ui():
     assert "stage2Data.limitations.map" in body
 
 
+def test_stale_sample_out_limitation_is_rewritten_in_ui():
+    """Phase B.1 added SAMPLE_OUT to inventory_state_engine.STATES, so
+    the aggregator's hard-coded "SAMPLE_OUT not in
+    inventory_state_engine.STATES" limitation is now factually false.
+    The dashboard must rewrite that exact line at render time until the
+    aggregator copy is updated server-side."""
+    body = _inventory_page_body()
+    # The stale phrase must still be matched (so we can rewrite it)
+    # but only inside the rewrite guard — i.e. as a string literal in
+    # an indexOf check, not as the displayed text.
+    assert "SAMPLE_OUT not in inventory_state_engine.STATES" in body, (
+        "Rewrite guard must reference the exact stale phrase to match it"
+    )
+    # The corrected message must be present.
+    assert "Stage 2 aggregator has not yet been updated to count" in body
+    # And the testid that flags a rewritten row must be present, so
+    # operators can grep for it in DevTools when triaging Stage 2 copy.
+    assert 'inventory-stage2-limitation-samples-corrected' in body
+
+
+def test_samples_tile_hint_no_longer_claims_backend_pending_lifecycle():
+    """Samples tile hint must reflect: SAMPLE_OUT lifecycle is live;
+    only the aggregator-derived count is still pending."""
+    body = _inventory_page_body()
+    samples_line_idx = body.index("testid: 'inventory-stage2-samples'")
+    samples_line_end = body.index("\n", samples_line_idx)
+    line = body[samples_line_idx:samples_line_end]
+    # Must NOT contain the stale "released to client for review"
+    # without acknowledging the lifecycle is live.
+    assert "SAMPLE_OUT lifecycle live" in line, \
+        "Samples tile hint must reference SAMPLE_OUT being live"
+    assert "aggregator count pending" in line, \
+        "Samples tile hint must say aggregator count is still pending"
+
+
 def test_coverage_matrix_inventory_row_updated():
     body = _coverage_page_body()
     inv_row = re.search(
