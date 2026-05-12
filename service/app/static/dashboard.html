@@ -6246,6 +6246,106 @@ function WorkflowStrip({ audit }) {
   );
 }
 
+// ── W-5 P2: read-only Path A self-clearance state pill ──
+// Renders the current state from GET /api/v1/dhl/selfclearance/state/{batch_id}.
+// Greyed-out when the shipment is not on Path A (in_scope=false).
+// Per Windows Atlas memory rule, NO write controls — read-only display.
+function SelfclearanceStatePill({ batchId }) {
+  const [data, setData] = React.useState(null);
+  const [err, setErr] = React.useState('');
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!batchId) return;
+    (async () => {
+      try {
+        const r = await fetch(`/api/v1/dhl/selfclearance/state/${encodeURIComponent(batchId)}`, {
+          credentials: 'include',
+        });
+        if (!r.ok) {
+          if (!cancelled) setErr(`HTTP ${r.status}`);
+          return;
+        }
+        const j = await r.json();
+        if (!cancelled) setData(j);
+      } catch (e) {
+        if (!cancelled) setErr(String(e));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [batchId]);
+
+  if (err) return null;          // honest silence on transient error
+  if (!data) return null;        // loading
+
+  const state = data.state || 'n/a';
+  const inScope = !!data.in_scope;
+  const shadow = data.p2_dispatch && data.p2_dispatch.shadow;
+
+  // Color map per state — neutral grey for n/a, blue for active, amber for failure.
+  const colorByState = {
+    'awaiting_preemptive_send':    '#6b7280',
+    'awaiting_poland_arrival':     '#2563eb',
+    'followup_active':             '#2563eb',
+    'dhl_requested_clarification': '#d97706',
+    'clarification_sent':          '#2563eb',
+    'awaiting_sad':                '#2563eb',
+    'sad_received':                '#16a34a',
+    'pz_unlocked':                 '#16a34a',
+    'shipment_closed':             '#16a34a',
+    'dispatch_failed':             '#dc2626',
+    'scope_gate_violated':         '#dc2626',
+    'operator_override_active':    '#d97706',
+    'pz_failed':                   '#dc2626',
+    'n/a':                         '#9ca3af',
+  };
+  const color = colorByState[state] || '#6b7280';
+
+  return (
+    <div
+      data-testid="selfclearance-state-pill"
+      style={{
+        margin: '8px 0',
+        padding: '8px 12px',
+        border: '1px solid var(--border-subtle, #e5e7eb)',
+        borderRadius: 6,
+        background: 'var(--surface, #fff)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 10,
+        fontSize: 13,
+      }}
+      title={inScope
+        ? `DHL self-clearance (Path A) state — operator controls on Windows Atlas`
+        : `Not on Path A self-clearance — pill informational only`}
+    >
+      <span style={{ fontWeight: 600 }}>Self-clearance:</span>
+      <span
+        style={{
+          display: 'inline-block',
+          padding: '2px 8px',
+          borderRadius: 12,
+          background: color,
+          color: '#fff',
+          fontFamily: 'monospace',
+          fontSize: 12,
+        }}
+      >
+        {state}
+      </span>
+      {inScope && shadow === true && (
+        <span style={{ color: '#6b7280', fontSize: 12 }}>(shadow)</span>
+      )}
+      {inScope && shadow === false && (
+        <span style={{ color: '#16a34a', fontSize: 12 }}>(live)</span>
+      )}
+      {!inScope && (
+        <span style={{ color: '#9ca3af', fontSize: 12 }}>(not Path A)</span>
+      )}
+    </div>
+  );
+}
+
 function BatchDetailPage({ batchId, onBack, onToast }) {
   const [audit, setAudit] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -6982,6 +7082,13 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         {/* ── EMAIL EVIDENCE TIMELINE (always visible on Pipeline tab) ── */}
         {activeTab === 'Overview' && (
           <EmailEvidenceTimeline batchId={batchId} />
+        )}
+
+        {/* ── W-5 P2: read-only self-clearance state pill ──
+            Source: GET /api/v1/dhl/selfclearance/state/{batchId}
+            Read-only per Windows Atlas memory rule — no write controls. */}
+        {activeTab === 'Overview' && (
+          <SelfclearanceStatePill batchId={batchId} />
         )}
 
         {/* ── OVERVIEW TAB — Batch Control Center + Readiness ── */}

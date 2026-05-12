@@ -33,8 +33,15 @@ def _audit_path_b():
 def test_dispatch_proactive_raises_not_implemented_yet():
     c = DhlClearanceCoordinator()
     inp = DispatchInput(batch_id="B1", awb="AWB1", audit=_audit_path_a())
-    with pytest.raises(NotImplementedYet):
-        c.dispatch_proactive(inp)
+    # P2 wires dispatch_proactive (commit chore/dhl-selfclearance-p2-proactive).
+    # On default flag state (shadow_mode=True, live_enabled=False, AWB
+    # unstable in P0-only world) the coordinator returns a structured
+    # result rather than raising NotImplementedYet. The "skipped" reason
+    # is either "awb_unstable" (no carrier row present) or "dormant_state"
+    # (shadow disabled). Specifically not NotImplementedYet anymore.
+    result = c.dispatch_proactive(inp)
+    assert isinstance(result, dict)
+    assert result.get("status") in {"skipped", "shadow", "sent", "blocked"}
 
 
 def test_on_tracking_event_raises_not_implemented_yet():
