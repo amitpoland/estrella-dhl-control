@@ -132,6 +132,104 @@ shipment-run step would skip a GATE check, the GATE wins.
 
 ---
 
+## MANDATORY OBSERVATION LAYER
+
+These rules govern the meta-agent layer that observes and improves
+the rest of the agent system. They are non-negotiable and apply to
+every session — including new sessions resuming from cold start.
+
+### RULE 1 — Read PROJECT_STATE.md first
+
+Every new session, **before any task work begins**, must read
+`.claude/memory/PROJECT_STATE.md` to load current project state.
+This is the source of truth for "where are we in the project right
+now." Do not re-derive state from chat history; chat history is
+lossy across sessions.
+
+The four mandatory sections (FACTS / DECISIONS / ASSUMPTIONS /
+OPEN QUESTIONS) are owned by `flow-context-keeper`. Read all four
+before opening a task; the OPEN QUESTIONS section in particular
+flags items that the operator may want resolved before new work
+fires.
+
+### RULE 2 — `agent-performance-observer` auto-fires
+
+After any task report containing a `FINAL REPORT` section header,
+OR any report showing ≥3 distinct subagents in Section 2 "Agents
+activated", fire `agent-performance-observer` to produce a
+scorecard. Output is stored at
+`.claude/memory/scorecards/<YYYY-MM-DD>-<campaign-slug>.md`.
+
+The observer is mandatory regardless of campaign outcome — even
+BLOCKED campaigns produce quality signals worth scoring. Silent
+observation is no observation.
+
+### RULE 3 — `flow-context-keeper` auto-fires
+
+After `agent-performance-observer` completes, OR after any PR
+merges to main, OR after any GitHub issue closes, fire
+`flow-context-keeper` to update `.claude/memory/PROJECT_STATE.md`.
+
+The four-section structure (FACTS / DECISIONS / ASSUMPTIONS /
+OPEN QUESTIONS) is the load-bearing invariant. FACTS are
+append-only — never demoted to ASSUMPTIONS. See
+`.claude/agents/flow-context-keeper.md` for the full movement-rule
+matrix.
+
+### RULE 4 — Observer can be invoked manually
+
+The operator may invoke `/observe` to force
+`agent-performance-observer` to run against the most recent report.
+The operator may invoke `/update-state` to force
+`flow-context-keeper` to refresh `PROJECT_STATE.md`.
+
+### RULE 5 — Self-evaluation cadence (calendar-driven)
+
+`agent-performance-observer` must self-evaluate on a calendar-driven
+cadence. Trigger self-evaluation if:
+- The most recent self-eval file (`.claude/memory/scorecards/self-eval-*.md`) is older than 7 calendar days, OR
+- The most recent self-eval flagged `SELF-DEGRADATION DETECTED` and this is the 3rd campaign scorecard run since it.
+
+When triggered: read the previous 5 campaign scorecards, score self on the same 6 dimensions, report degradation if any. Output goes to `.claude/memory/scorecards/self-eval-<YYYY-MM-DD>.md`. Self-blind agents degrade silently; the calendar-driven cadence is the system's anti-blind-spot.
+
+### RULE 6 — Observer outputs must be visible
+
+Scorecards must be referenced in subsequent task reports (cite the
+file path). `PROJECT_STATE.md` must be readable at the start of
+every session. Hidden observation = no observation.
+
+If a task report cites a scorecard, the citation must include the
+scorecard's file path so an operator can audit it directly.
+
+Enforcement mechanism: `flow-context-keeper` must record every
+scorecard file produced by `agent-performance-observer` in the
+FACTS section of `PROJECT_STATE.md`, with date and file path. If
+a scorecard exists in `.claude/memory/scorecards/` but is not
+cited in PROJECT_STATE.md, that scorecard is invisible to future
+operators — RULE 6 has failed.
+
+**NEEDS-TUNING / UNRELIABLE verdicts are GATE 4 salvage findings.**
+When `agent-performance-observer` produces a scorecard with any
+NEEDS-TUNING or UNRELIABLE verdict, that verdict is structurally
+analogous to a salvage finding and MUST receive exactly one
+disposition per GATE 4: SCHEDULED, ISSUE, or REJECTED. "Recommendation
+noted" is not a valid disposition for an observer verdict either.
+
+### Deferred meta-agents (logged here for traceability)
+
+Two meta-agents are intentionally deferred until two campaigns under
+this observation layer establish a baseline:
+
+- `agent-prompt-refiner` — reads scorecards across a 7-day window,
+  drafts refined prompts as PRs (never mutates prompts directly).
+- `pattern-historian` — scans recent campaign reports for repeated
+  patterns and proposes CLAUDE.md amendments or new gates.
+
+Decision criteria + implementation rules captured in the deferred
+issue filed alongside the PR that introduces this section.
+
+---
+
 ## Available integration
 
 The Zoho Cliq MCP connector for Estrella is:
