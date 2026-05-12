@@ -335,12 +335,14 @@ The single-writer discipline (`inventory_state_engine.py:235-310`) plus the `_lo
 
 ## 8. Open / pending operator decisions
 
-None of the items below block Stage 2. They are flagged so the Stage 2 implementer asks the operator the first time they hit one.
+All four open items have been **RESOLVED by the operator on 2026-05-12** before Stage 2 begins. Stage 2 implements to these answers verbatim; no further deliberation needed.
 
-1. **Move stock + SAMPLE_OUT interaction.** Section 7 recommends Move stock rejects relocation while `SAMPLE_OUT`. The Move stock writer (not on this branch) must add `SAMPLE_OUT` to its forbidden-state list. Confirm before Stage 2 ships.
-2. **Commercial value lookup for `batch-detail-sample-exposure`.** If `v_sales_to_wfirma` (referenced at `routes_proforma.py:402-406`) is not available for unbilled pieces, the pill renders count only. Confirm whether a fallback (e.g. `purchase_invoice_lines.rate_usd × fx_rate`) is acceptable.
-3. **Aging policy thresholds.** 14d and 30d are operator-set defaults. Confirm or revise before Stage 2.
-4. **Sample group as a first-class entity.** The design treats each piece as an independent transition. If operators routinely send 50-piece sample drops to a single trade show, a "sample drop" entity may be worth adding in a later phase. Not in Stage 1 scope.
+1. **Move stock + SAMPLE_OUT interaction → REJECT with 409 `WRONG_STATE`.** The Move stock writer's state-gate already enforces `WAREHOUSE_STOCK` only (the only currently-legal pre-state for a MOVE). Once `SAMPLE_OUT` exists, an attempted Move stock on a sampled piece naturally hits the existing state-gate and returns 409. **No code change to Move stock is required.** Stage 2 only needs to confirm this with a test case (`test_move_stock_rejects_sampled_piece`).
+2. **Sample exposure value source → piece purchase/import value (first version).** The `batch-detail-sample-exposure` pill renders `count × purchase_value_per_piece`. Sales-value-based exposure is deferred to a later phase. If `purchase_value_per_piece` is unavailable for any piece (data gap), that piece contributes to the count only and the pill annotates the partial coverage.
+3. **Aging thresholds → 14-day soft-flag / 30-day block-new (first version).**
+   - `expected_return_date + 14d` overdue → render `data-testid="inventory-stale-sample-alert"` in the dashboard with a yellow chip; no behavior change.
+   - `expected_return_date + 30d` overdue → new sample-out requests for the same `recipient_client_name` are rejected with `409 RECIPIENT_OVERDUE_BLOCK` until either the overdue sample is returned or an operator-issued override is supplied. The override mechanism is a separate operator decision to be surfaced when first encountered in Stage 2.
+4. **Sample group as first-class entity → DEFER.** Stage 2 uses per-piece transitions only. The `sample_group_id` field is NOT added. Future phase may revisit if 50-piece trade-show drops become operationally common.
 
 ---
 
