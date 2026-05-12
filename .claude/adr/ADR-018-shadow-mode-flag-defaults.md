@@ -107,7 +107,25 @@ four combinations exist. Three are valid; one is forbidden.
    - Audit JSONL records
    - Internal counters and metrics
    - Manifest writes WITHIN `dhl_clearance.*` namespace (no cross-namespace
-     writes that could affect non-W-5 systems)
+     writes that could affect non-W-5 systems). The sub-schemas of the
+     `dhl_clearance.*` namespace are frozen at P0 per
+     `docs/operational-memory/dhl-selfclearance/01_P0_FOUNDATION.md`
+     §"Files to be created" (manifest writer helper section): phases
+     may NOT add fields without an ADR amendment. Adding a
+     `dhl_clearance.p2_new_diagnostic_field` under shadow_mode is
+     therefore a schema-fence violation, not merely a namespace-fence
+     compliance.
+   - **State_history entries written under shadow_mode MUST carry
+     `shadow: True` on the entry record.** State_history is
+     append-only by construction (audit-irreversible), so shadow runs
+     would otherwise leave indistinguishable transition records
+     alongside live transitions. The `shadow: True` tag lets audit
+     consumers filter cleanly. Appending to state_history under
+     shadow_mode does NOT count as "customs state advancement that
+     would unblock downstream phases" (Invariant 3) provided no
+     downstream code path reads the shadow-tagged entries as
+     gating signals — phase implementers must verify this in their
+     own PR.
 
 ## Runtime enforcement recommendation
 
