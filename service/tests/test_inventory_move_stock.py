@@ -31,27 +31,25 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 _SVC = Path(__file__).resolve().parent.parent
 if str(_SVC) not in sys.path:
     sys.path.insert(0, str(_SVC))
 
-from app.main import app
 from app.core.security import require_api_key
 from app.api.routes_inventory_writes import router as _inv_writes_router
 
 
-# Test-only router registration. Spec forbids touching main.py on this
-# branch (deploy-time wiring), so we attach the writes router to the
-# existing app here. Idempotent — if main.py later includes it, the
-# duplicate check below prevents double-registration.
-if not any(
-    getattr(r, "path", "") == "/api/v1/inventory/pieces/{piece_id}/location"
-    for r in app.routes
-):
-    app.include_router(_inv_writes_router)
-
+# Local test app. Move stock's router is intentionally NOT registered
+# on the production `app` from main.py — that's a deploy-time wiring
+# step per campaign spec. Using a local FastAPI instance here gives
+# us route-level introspection without polluting the shared `app`
+# (which would break other test files' "no write methods" assertions
+# at session scope).
+app = FastAPI()
+app.include_router(_inv_writes_router)
 app.dependency_overrides[require_api_key] = lambda: None
 client = TestClient(app)
 
