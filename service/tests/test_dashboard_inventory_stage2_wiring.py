@@ -85,19 +85,22 @@ def test_error_state_chip_present_and_isolated():
     assert 'data-testid="inventory-page"' in _src()
 
 
-def test_disabled_action_buttons_unchanged():
-    # The 5 disabled action button testids are rendered from a JSX
-    # template literal: `data-testid={`inventory-preview-action-${b.id}`}`.
-    # Source-grep checks the template form + the per-id source array.
+def test_disabled_action_buttons_post_sample_activation():
+    # The toolbar placeholder array is rendered from a JSX template
+    # literal: `data-testid={`inventory-preview-action-${b.id}`}`. With
+    # Phase B.1 (Sample-out live) and Move stock live, only Goods-return
+    # and Return-to-producer remain backend-pending toolbar placeholders.
     body = _inventory_page_body()
     assert "data-testid={`inventory-preview-action-${b.id}`}" in body, \
         "Disabled-action testid template missing from InventoryPage"
-    for action_id in ("'move_stock'", "'sample_out'", "'sample_return'",
-                      "'goods_return'", "'return_prod'"):
+    for action_id in ("'goods_return'", "'return_prod'"):
         assert f"id: {action_id}" in body, \
-            f"Disabled action id missing from source: {action_id}"
-    # Each button template still carries disabled + cursor: not-allowed
-    actions_block_start = body.index("Design-preview disabled actions")
+            f"Backend-pending action id missing from source: {action_id}"
+    for action_id in ("'sample_out'", "'sample_return'", "'move_stock'"):
+        assert f"id: {action_id}" not in body, \
+            f"Live action {action_id} must not remain in disabled placeholders"
+    # Remaining placeholders still carry disabled + cursor: not-allowed.
+    actions_block_start = body.index("Phase B.1 live")
     actions_block_end = body.index("Lifecycle buckets", actions_block_start)
     actions_block = body[actions_block_start:actions_block_end]
     assert "disabled" in actions_block
@@ -105,12 +108,29 @@ def test_disabled_action_buttons_unchanged():
     assert "cursor: 'not-allowed'" in actions_block
 
 
-def test_no_new_write_methods_in_inventory_page():
+def test_inventory_page_writes_match_sample_allowlist():
+    """Phase B.1 activates exactly two POST surfaces on InventoryPage:
+    sample-out and sample-return, both inside the piece drawer.
+    PUT/PATCH/DELETE remain forbidden. Both endpoint templates must
+    be present and a single POST helper feeds them."""
     body = _inventory_page_body()
-    for method_str in ("'POST'", "'PUT'", "'PATCH'", "'DELETE'",
-                       '"POST"', '"PUT"', '"PATCH"', '"DELETE"'):
+    for method_str in ("'PUT'", '"PUT"', "'PATCH'", '"PATCH"',
+                       "'DELETE'", '"DELETE"'):
         assert method_str not in body, \
             f"Forbidden write method in InventoryPage: {method_str}"
+    # The two allowlisted POST targets appear via template literals
+    # rendered by the shared `_postSample` helper.
+    assert "_postSample('sample-out'" in body, "sample-out POST call missing"
+    assert "_postSample('sample-return'" in body, "sample-return POST call missing"
+    # POST method markers are bounded — there should be exactly the
+    # one POST helper call (`_postSample` issues a single fetch() with
+    # method:'POST'). If this count grows, it means a new mutation
+    # surface was introduced and the contract needs explicit review.
+    post_count = body.count("method: 'POST'")
+    assert post_count == 1, (
+        f"Expected exactly one POST helper in InventoryPage "
+        f"(_postSample); found {post_count}"
+    )
 
 
 def test_basis_surfaced_as_tooltip():

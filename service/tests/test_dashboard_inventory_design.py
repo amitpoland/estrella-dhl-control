@@ -156,8 +156,12 @@ def test_no_bulk_warehouse_audit_calls():
         f"allowlisted = {apifetch_aggregate} aggregate + {apifetch_pieces} pieces. "
         "Extra apiFetch calls violate the no-bulk-per-batch contract."
     )
-    assert apifetch_pieces <= 1, (
-        "Piece lookup must be a single user-triggered apiFetch, not a fan-out"
+    # Phase B.1: the drawer now also refreshes after a successful
+    # sample-out / sample-return write (one apiFetch in lookupPiece +
+    # one in refreshPiece). Both are user-triggered, not fan-outs.
+    assert apifetch_pieces <= 2, (
+        "Piece lookup/refresh apiFetch count exceeds the lookup + post-write "
+        "refresh allowance — possible fan-out regression"
     )
 
 
@@ -267,13 +271,20 @@ def test_no_mock_sku_or_product_fixtures():
 
 # ── Read-only: no write paths ─────────────────────────────────────────────
 
-def test_no_new_write_paths_in_inventory():
+def test_inventory_writes_match_sample_allowlist():
+    """Phase B.1 activates exactly two POST surfaces on InventoryPage:
+    sample-out and sample-return (inside the piece drawer). PUT, PATCH,
+    DELETE remain forbidden. Any new POSTs must target one of those two
+    paths or this gate."""
     src = _src()
     block_start = src.index("function InventoryPage(")
     block_end   = src.index("function MasterDataPage(", block_start)
     block = src[block_start:block_end]
-    for method in ("method: 'POST'", "method: 'PUT'", "method: 'DELETE'", "method: 'PATCH'"):
+    for method in ("method: 'PUT'", "method: 'DELETE'", "method: 'PATCH'"):
         assert method not in block, f"InventoryPage body must NOT contain {method!r}"
+    # POST allowlist: only the two Phase B.1 lifecycle endpoints.
+    assert "_postSample('sample-out'" in block, "Expected sample-out POST call"
+    assert "_postSample('sample-return'" in block, "Expected sample-return POST call"
 
 
 def test_no_scan_or_move_or_release_buttons():
@@ -372,25 +383,35 @@ def test_two_stage_tiles_show_em_dash_not_fake_counts():
 # ── Toolbar disabled placeholders ─────────────────────────────────────────
 
 def test_design_preview_actions_disabled_and_pending():
+    # Phase B.1: Sample-out + Sample-return moved to the piece drawer
+    # (state-gated, evidence form). Move stock has its own per-piece UI
+    # in the Warehouse Scanner. Only Goods-return and Return-to-producer
+    # remain backend-pending toolbar placeholders.
     src = _src()
-    for aid in ('move_stock', 'sample_out', 'sample_return', 'goods_return', 'return_prod'):
-        assert f"id: '{aid}'" in src, f"Missing preview action id: {aid}"
+    for aid in ('goods_return', 'return_prod'):
+        assert f"id: '{aid}'" in src, f"Missing backend-pending action id: {aid}"
+    for aid in ('move_stock', 'sample_out', 'sample_return'):
+        assert f"id: '{aid}'" not in src, (
+            f"Live action {aid} must not remain in disabled placeholders"
+        )
     assert 'data-testid={`inventory-preview-action-${b.id}`}' in src
     block_start = src.index('data-testid="inventory-toolbar"')
     block_end   = src.index('<SectionLabel>Warehouse lifecycle</SectionLabel>', block_start)
     block = src[block_start:block_end]
-    # 5 disabled buttons in source template — `disabled` count ≥3
-    # (bare attr + aria-disabled + comment)
-    assert block.count('disabled') >= 3
+    assert block.count('disabled') >= 2
     assert 'aria-disabled="true"' in block
     assert "cursor: 'not-allowed'" in block
 
 
 def test_disabled_actions_have_no_onclick_no_fetch():
+    # Block bounds: from the live-actions marker comment to the
+    # Lifecycle buckets section. The toolbar's remaining
+    # backend-pending placeholder buttons must still have no onClick
+    # and no fetch.
     src = _src()
-    block_start = src.index("Design-preview disabled actions")
-    rest = src[block_start:]
-    block = rest[:2500]
+    block_start = src.index("Phase B.1 live")
+    block_end   = src.index('<SectionLabel>Warehouse lifecycle</SectionLabel>', block_start)
+    block = src[block_start:block_end]
     assert 'onClick' not in block, "Disabled action template must NOT have onClick"
     assert 'apiFetch' not in block, "Disabled action template must NOT call apiFetch"
     assert 'fetch(' not in block

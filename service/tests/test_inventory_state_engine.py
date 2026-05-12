@@ -124,6 +124,7 @@ def test_no_duplicate_stock_across_states(db):
         ise.PURCHASE_TRANSIT:      1, ise.WAREHOUSE_STOCK:       1,
         ise.SALES_TRANSIT:         1, ise.CLOSED:                1,
         ise.DIRECT_DISPATCH_READY: 0, ise.CLIENT_DISPATCHED:     0,
+        ise.SAMPLE_OUT:            0,  # Phase B.1 — added with Sample-out activation
     }
 
 
