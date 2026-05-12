@@ -145,39 +145,41 @@ def test_limitations_array_surfaced_in_ui():
     assert "stage2Data.limitations.map" in body
 
 
-def test_stale_sample_out_limitation_is_rewritten_in_ui():
-    """Phase B.1 added SAMPLE_OUT to inventory_state_engine.STATES, so
-    the aggregator's hard-coded "SAMPLE_OUT not in
-    inventory_state_engine.STATES" limitation is now factually false.
-    The dashboard must rewrite that exact line at render time until the
-    aggregator copy is updated server-side."""
+def test_pr20_rewrite_guard_is_retired():
+    """The temporary UI rewrite guard from PR #20 must be gone now that
+    the aggregator no longer emits the stale "SAMPLE_OUT not in
+    inventory_state_engine.STATES" limitation. The dashboard renders
+    limitations verbatim again — no client-side corrections needed."""
     body = _inventory_page_body()
-    # The stale phrase must still be matched (so we can rewrite it)
-    # but only inside the rewrite guard — i.e. as a string literal in
-    # an indexOf check, not as the displayed text.
-    assert "SAMPLE_OUT not in inventory_state_engine.STATES" in body, (
-        "Rewrite guard must reference the exact stale phrase to match it"
+    # Neither the rewrite-target string nor the rewritten replacement
+    # may appear in source — the aggregator is the source of truth and
+    # emits the correct copy.
+    assert "SAMPLE_OUT not in inventory_state_engine.STATES" not in body, (
+        "Rewrite guard for stale samples limitation must be removed"
     )
-    # The corrected message must be present.
-    assert "Stage 2 aggregator has not yet been updated to count" in body
-    # And the testid that flags a rewritten row must be present, so
-    # operators can grep for it in DevTools when triaging Stage 2 copy.
-    assert 'inventory-stage2-limitation-samples-corrected' in body
+    assert "Stage 2 aggregator has not yet been updated to count" not in body, (
+        "Rewritten samples message must be removed (aggregator is the "
+        "source of truth now)"
+    )
+    assert "inventory-stage2-limitation-samples-corrected" not in body, (
+        "Corrected-row testid must be removed with the rewrite guard"
+    )
 
 
-def test_samples_tile_hint_no_longer_claims_backend_pending_lifecycle():
-    """Samples tile hint must reflect: SAMPLE_OUT lifecycle is live;
-    only the aggregator-derived count is still pending."""
+def test_samples_tile_hint_reflects_live_count():
+    """Samples tile hint must reflect the new reality: count is now
+    derived live from inventory_state.state=SAMPLE_OUT, not pending."""
     body = _inventory_page_body()
     samples_line_idx = body.index("testid: 'inventory-stage2-samples'")
     samples_line_end = body.index("\n", samples_line_idx)
     line = body[samples_line_idx:samples_line_end]
-    # Must NOT contain the stale "released to client for review"
-    # without acknowledging the lifecycle is live.
-    assert "SAMPLE_OUT lifecycle live" in line, \
-        "Samples tile hint must reference SAMPLE_OUT being live"
-    assert "aggregator count pending" in line, \
-        "Samples tile hint must say aggregator count is still pending"
+    assert "SAMPLE_OUT" in line, \
+        "Samples tile hint must reference the SAMPLE_OUT source"
+    assert "live count" in line, \
+        "Samples tile hint must say count is live"
+    # The "aggregator count pending" copy from PR #20 must be gone.
+    assert "aggregator count pending" not in line, \
+        "Stale 'aggregator count pending' copy must be removed"
 
 
 def test_coverage_matrix_inventory_row_updated():
