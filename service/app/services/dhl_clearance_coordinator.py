@@ -1,18 +1,23 @@
 """
-dhl_clearance_coordinator.py — Path A self-clearance coordinator (P0 skeleton).
+dhl_clearance_coordinator.py — Path A self-clearance coordinator (P0 skeleton + P2 dispatch).
 
 Single coordinator that drives the DHL self-clearance state machine through
 P2 (proactive dispatch), P3 (tracking watcher), P4 (clarification reply), and
 P5 (SAD unlock + PZ trigger).
 
-At P0 this is a *scaffold only*: every on_* entrypoint is declared but raises
-`NotImplementedYet`. P2-P5 each wires its own behaviour behind its own flag.
+At P0 every on_* entrypoint was a `NotImplementedYet` scaffold. P2 wires
+`dispatch_proactive` behind the default-OFF `dhl_selfclearance_p2_live_enabled`
+flag, with ADR-018 shadow-mode semantics (`shadow_mode=True` default → build
+package + manifest + log, NO send; `live_enabled=True + shadow_mode=True` →
+queue real email via `email_service.queue_email`; FORBIDDEN combination
+`shadow_mode=False + live_enabled=True` is rejected by `_enforce_flag_combination`).
 
 Path A scope gate
 =================
 Every entrypoint MUST short-circuit if the shipment is not on the Path A
 self-clearance flow. The gate uses `is_dhl_self_clearance()` from
-`clearance_path_alias`, which normalises legacy aliases.
+`clearance_path_alias`, which normalises legacy aliases. Non-Path-A shipments
+raise `OutOfScopeError` (Path B falls through to the existing agency flow).
 
 AWB stability gate
 ==================
@@ -25,10 +30,21 @@ Predecessor-phase gate (Risk R7)
 Each phase checks its predecessor's *live_enabled* flag before doing work.
 If the predecessor is OFF, the phase logs `selfclearance_pX_blocked_predecessor_off`
 and no-ops. P0 declares the gate; P2-P5 enforce it in their own wiring.
+
+Idempotency
+===========
+Once `audit.dhl_clearance.p2_dispatch.message_id` is recorded, subsequent
+`dispatch_proactive` calls for the same batch are no-ops. This holds across
+both shadow and live modes — second call returns the same prior result
+shape with `idempotent: True`.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..core.config import settings
@@ -41,6 +57,20 @@ log = get_logger(__name__)
 
 class NotImplementedYet(NotImplementedError):
     """Coordinator entrypoint exists at P0 but its behaviour ships in P2-P5."""
+
+
+class OutOfScopeError(Exception):
+    """Shipment is not on the Path A self-clearance flow. Caller must skip."""
+
+
+class ForbiddenFlagCombination(Exception):
+    """ADR-018 FORBIDDEN state: shadow_mode=False AND live_enabled=True.
+
+    The combination is structurally invalid — `live_enabled=True` REQUIRES
+    `shadow_mode=True` (Invariant 1 of ADR-018). The coordinator rejects
+    the action; the admin endpoint should likewise refuse the flag-flip
+    that would produce this state.
+    """
 
 
 # ── Inputs for each entrypoint (typed records) ───────────────────────────────
@@ -104,16 +134,288 @@ class DhlClearanceCoordinator:
         return bool(is_dhl_self_clearance(decision.get("clearance_path")))
 
     @staticmethod
-    def is_awb_stable_for(awb: str) -> bool:
-        """Read-only carrier predicate — see carrier/coordinator.is_awb_stable."""
+    def is_awb_stable_for(awb: str, batch_id: Optional[str] = None) -> bool:
+        """Read-only carrier predicate — see carrier/coordinator.is_awb_stable.
+
+        Resolves the carrier shipment DB path from settings and passes the
+        caller-supplied batch_id as the lookup key (batch_id is the carrier
+        DB's primary index; AWB→batch_id direct resolver is operator-
+        deferred per P0 spec, with batch_id passed by P2/P3/P4/P5 callers
+        from their DispatchInput / TrackingEventInput / etc.).
+
+        If batch_id is not provided OR the carrier DB does not exist on
+        disk, returns False (safe-default for a stability predicate).
+        """
         from .carrier.coordinator import is_awb_stable  # local — avoid eager import
-        return bool(is_awb_stable(awb))
+        if not batch_id:
+            return False
+        # The carrier shipment DB lives under storage_root. The path is
+        # derived the same way the carrier subsystem itself derives it
+        # (see CarrierCoordinator construction in routes_carrier_actions.py).
+        db_path = settings.storage_root / "carrier_shipments.db"
+        if not db_path.exists():
+            return False
+        return bool(is_awb_stable(batch_id, db_path=db_path))
 
-    # ── P2 — proactive dispatch ──────────────────────────────────────────────
+    # ── P2 — proactive dispatch (WIRED) ──────────────────────────────────────
 
-    def dispatch_proactive(self, _inp: DispatchInput) -> None:
-        """Wired in P2. Sends the proactive customs package to DHL."""
-        raise NotImplementedYet("P2 wires dhl_proactive_dispatch_builder.py")
+    def dispatch_proactive(self, inp: "DispatchInput") -> Dict[str, Any]:
+        """
+        Fire the proactive customs dispatch for a Path A shipment.
+
+        Returns a result dict:
+            {
+              "status": "shadow" | "sent" | "skipped" | "blocked",
+              "reason": <str>,
+              "message_id": <str|None>,
+              "content_sha256": <hex>,
+              "idempotent": <bool>,
+            }
+
+        Behavior matrix (ADR-018):
+          - shadow_mode=True,  live_enabled=False → SHADOW  (build + manifest, no send)
+          - shadow_mode=True,  live_enabled=True  → LIVE    (queue email + manifest)
+          - shadow_mode=False, live_enabled=False → DORMANT (no-op, status=skipped)
+          - shadow_mode=False, live_enabled=True  → FORBIDDEN (raises)
+
+        Raises:
+            OutOfScopeError       — shipment is on Path B (agency_clearance)
+            ForbiddenFlagCombination — `shadow_mode=False AND live_enabled=True`
+        """
+        # ── 1. Scope gate (Path A only) ──────────────────────────────────────
+        if not self.is_in_scope(inp.audit):
+            raise OutOfScopeError(
+                f"batch_id={inp.batch_id!r} is not on Path A self-clearance; "
+                f"refusing P2 dispatch"
+            )
+
+        # ── 2. Flag combination check (ADR-018) ──────────────────────────────
+        shadow_mode = bool(getattr(settings, "dhl_selfclearance_p2_shadow_mode", True))
+        live_enabled = bool(getattr(settings, "dhl_selfclearance_p2_live_enabled", False))
+        _enforce_flag_combination("p2", shadow_mode, live_enabled)
+
+        # ── 3. DORMANT: nothing to do ────────────────────────────────────────
+        if not shadow_mode and not live_enabled:
+            log.info("selfclearance_p2_dormant batch_id=%s", inp.batch_id)
+            return {
+                "status": "skipped",
+                "reason": "dormant_state",
+                "message_id": None,
+                "content_sha256": "",
+                "idempotent": False,
+            }
+
+        # ── 4. Idempotency — second call returns prior result ────────────────
+        manifest.init_manifest(inp.audit)
+        prior = inp.audit["dhl_clearance"].get("p2_dispatch") or {}
+        if prior.get("message_id"):
+            log.info(
+                "selfclearance_p2_idempotent batch_id=%s message_id=%s",
+                inp.batch_id, prior.get("message_id"),
+            )
+            return {
+                "status": "shadow" if prior.get("shadow") else "sent",
+                "reason": "already_dispatched",
+                "message_id": prior.get("message_id"),
+                "content_sha256": prior.get("content_sha256", ""),
+                "idempotent": True,
+            }
+
+        # ── 5. AWB stability gate ────────────────────────────────────────────
+        # Pass batch_id explicitly — see is_awb_stable_for docstring + Issue #38 F8.
+        if not self.is_awb_stable_for(inp.awb, batch_id=inp.batch_id):
+            log.info(
+                "selfclearance_p2_awb_unstable batch_id=%s awb=%s — staying at "
+                "awaiting_preemptive_send",
+                inp.batch_id, inp.awb,
+            )
+            return {
+                "status": "skipped",
+                "reason": "awb_unstable",
+                "message_id": None,
+                "content_sha256": "",
+                "idempotent": False,
+            }
+
+        # ── 6. Build the dispatch package ────────────────────────────────────
+        try:
+            from .dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+            pkg = build_dhl_proactive_dispatch(inp.audit, inp.batch_id)
+        except Exception as exc:
+            log.error(
+                "selfclearance_p2_build_failed batch_id=%s reason=%s",
+                inp.batch_id, exc.__class__.__name__,
+            )
+            self._transition_to_dispatch_failed(inp.audit, exc.__class__.__name__)
+            return {
+                "status": "blocked",
+                "reason": "build_failed",
+                "message_id": None,
+                "content_sha256": "",
+                "idempotent": False,
+            }
+
+        if pkg.get("missing"):
+            log.warning(
+                "selfclearance_p2_missing_attachments batch_id=%s missing=%s",
+                inp.batch_id, pkg.get("missing"),
+            )
+            return {
+                "status": "blocked",
+                "reason": "missing_attachments",
+                "message_id": None,
+                "content_sha256": "",
+                "idempotent": False,
+            }
+
+        # Compute content SHA over a deterministic canonical projection of the
+        # outbound payload (subject + body_text + recipient + attachment labels).
+        # Bytes never live in the manifest — only the hash.
+        content_sha256 = _compute_content_sha256(pkg)
+
+        # ── 7. SHADOW or LIVE? ───────────────────────────────────────────────
+        if shadow_mode and not live_enabled:
+            # SHADOW state — build + manifest + log only.
+            message_id = f"shadow:{inp.batch_id}:{content_sha256[:12]}"
+            now = _now_iso()
+            recipient = _normalise_recipient(pkg.get("to"))
+            manifest.write_p2_dispatch(
+                inp.audit,
+                shadow=True,
+                message_id=message_id,
+                recipient=recipient,
+                sent_at=now,
+                content_sha256=content_sha256,
+            )
+            # State transition: awaiting_preemptive_send → awaiting_poland_arrival
+            # (legal under shadow mode per ADR-018 — state_history append carries
+            # shadow:True via reason field; downstream phases gated on
+            # live_enabled=True will not act on shadow-tagged transitions).
+            self._advance_to_awaiting_poland_arrival(inp.audit, shadow=True)
+            log.info(
+                "selfclearance_p2_shadow batch_id=%s message_id=%s sha=%s",
+                inp.batch_id, message_id, content_sha256[:12],
+            )
+            return {
+                "status": "shadow",
+                "reason": "shadow_logged",
+                "message_id": message_id,
+                "content_sha256": content_sha256,
+                "idempotent": False,
+            }
+
+        # LIVE state — actually queue the email.
+        from .email_service import queue_email
+        from ..config.email_routing import format_to, format_cc
+        # Builder returns to/cc as strings (resolve_dhl_to/cc return str);
+        # if a list slips in for any reason, normalise it. queue_email
+        # expects a comma-separated string.
+        to_str = _normalise_recipient(pkg.get("to"))
+        cc_str = _normalise_recipient(pkg.get("cc"))
+        try:
+            message_id = queue_email(
+                to=to_str,
+                subject=pkg.get("subject", ""),
+                body_html=pkg.get("body_html", ""),
+                body_text=pkg.get("body_text", ""),
+                batch_id=inp.batch_id,
+                cc=cc_str,
+                from_address=pkg.get("from_address", ""),
+                email_type=pkg.get("email_type", "dhl_proactive_dispatch"),
+            )
+        except Exception as exc:
+            log.error(
+                "selfclearance_p2_queue_failed batch_id=%s reason=%s",
+                inp.batch_id, exc.__class__.__name__,
+            )
+            self._transition_to_dispatch_failed(inp.audit, exc.__class__.__name__)
+            return {
+                "status": "blocked",
+                "reason": "queue_failed",
+                "message_id": None,
+                "content_sha256": content_sha256,
+                "idempotent": False,
+            }
+
+        now = _now_iso()
+        manifest.write_p2_dispatch(
+            inp.audit,
+            shadow=False,
+            message_id=message_id,
+            recipient=to_str,
+            sent_at=now,
+            content_sha256=content_sha256,
+        )
+        self._advance_to_awaiting_poland_arrival(inp.audit, shadow=False)
+        log.info(
+            "selfclearance_p2_sent batch_id=%s message_id=%s recipient=%s",
+            inp.batch_id, message_id, to_str,
+        )
+        return {
+            "status": "sent",
+            "reason": "queued",
+            "message_id": message_id,
+            "content_sha256": content_sha256,
+            "idempotent": False,
+        }
+
+    # ── P2 state transition helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def _advance_to_awaiting_poland_arrival(audit: Dict[str, Any], *, shadow: bool) -> None:
+        """Advance state if currently awaiting_preemptive_send; otherwise no-op
+        (caller may already be past this state, e.g. on idempotent retry).
+
+        Per ADR-018 Invariant 4, when transitioning under shadow_mode=True
+        the state_history entry carries an explicit `shadow: True` field so
+        audit consumers can filter cleanly between observation-mode and
+        live-mode transitions. The boolean is forwarded through
+        `manifest.record_transition(shadow=shadow)` → `state_engine.transition`.
+        """
+        block = audit[manifest.MANIFEST_KEY]
+        current = block.get("state", state_engine.INITIAL_STATE)
+        if current != state_engine.STATE_AWAITING_PREEMPTIVE_SEND:
+            log.warning(
+                "selfclearance_p2_state_skew current=%s expected=%s — "
+                "skipping advance to awaiting_poland_arrival (see F5/F6)",
+                current, state_engine.STATE_AWAITING_PREEMPTIVE_SEND,
+            )
+            return
+        manifest.record_transition(
+            audit,
+            state_engine.STATE_AWAITING_POLAND_ARRIVAL,
+            reason="p2_dispatch",
+            actor="system",
+            shadow=shadow,
+        )
+
+    @staticmethod
+    def _transition_to_dispatch_failed(audit: Dict[str, Any], reason: str) -> None:
+        """Transition to dispatch_failed if currently awaiting_preemptive_send.
+
+        Note: `reason` is the original exception's class name (NOT str(exc))
+        to avoid persisting raw exception args into the audit. The caller
+        passes `exc.__class__.__name__` per backend-safety + security-write-
+        action reviewer recommendations.
+        """
+        manifest.init_manifest(audit)
+        block = audit[manifest.MANIFEST_KEY]
+        current = block.get("state", state_engine.INITIAL_STATE)
+        if current != state_engine.STATE_AWAITING_PREEMPTIVE_SEND:
+            log.warning(
+                "selfclearance_p2_state_skew current=%s expected=%s — "
+                "skipping transition to dispatch_failed (see F5/F6); "
+                "operator must clear via dispatch_failed→awaiting_preemptive_send "
+                "recovery before retry",
+                current, state_engine.STATE_AWAITING_PREEMPTIVE_SEND,
+            )
+            return
+        manifest.record_transition(
+            audit,
+            state_engine.STATE_DISPATCH_FAILED,
+            reason=f"p2_dispatch_failed:{reason[:80]}",
+            actor="system",
+        )
 
     # ── P3 — tracking watcher ────────────────────────────────────────────────
 
@@ -170,3 +472,67 @@ class DhlClearanceCoordinator:
 
 # Module-level singleton for callers that prefer a function-call shape.
 coordinator = DhlClearanceCoordinator()
+
+
+# ── Module-level helpers (used by dispatch_proactive and exported for tests) ──
+
+def _enforce_flag_combination(phase: str, shadow_mode: bool, live_enabled: bool) -> None:
+    """ADR-018 Invariant 1: `live_enabled=True` REQUIRES `shadow_mode=True`.
+
+    Raises ForbiddenFlagCombination on the (False, True) combination.
+    All other combinations are valid (DORMANT / SHADOW / LIVE).
+    """
+    if live_enabled and not shadow_mode:
+        raise ForbiddenFlagCombination(
+            f"phase={phase!r}: shadow_mode=False AND live_enabled=True is "
+            f"FORBIDDEN (ADR-018 Invariant 1: live_enabled=True requires "
+            f"shadow_mode=True)"
+        )
+
+
+def _compute_content_sha256(pkg: Dict[str, Any]) -> str:
+    """Deterministic SHA256 over the dispatch package's canonical projection.
+
+    Hash inputs: subject, body_text (Polish-first bilingual), recipient
+    (normalised — see _normalise_recipient), attachment labels
+    (NOT paths — paths are environment-specific).
+
+    Bytes never live in the manifest (ADR-006). Only this hash does.
+    """
+    projection = {
+        "subject": pkg.get("subject", ""),
+        "body_text": pkg.get("body_text", ""),
+        "to": _normalise_recipient(pkg.get("to")),
+        "attachment_labels": sorted(
+            (a.get("label", "") for a in (pkg.get("attachments") or [])),
+        ),
+    }
+    canonical = json.dumps(projection, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _normalise_recipient(value: Any) -> str:
+    """Normalise a builder-returned recipient value into a comma-separated string.
+
+    The canonical builder (`dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch`)
+    returns `to` / `cc` as **strings** (output of `resolve_dhl_to()` / `resolve_dhl_cc()`).
+    Test stubs and historical callers may pass `List[str]`. This helper accepts
+    either and returns a comma-separated string suitable for `queue_email(to=...)`.
+
+    Per integration-boundary review of P2 — without this normalisation, the
+    coordinator would iterate over string characters and produce a corrupt
+    "o,d,p,r,a,..." recipient that fails at SMTP delivery time.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        # Filter empty entries; join with comma (matches format_to/format_cc
+        # convention in email_routing).
+        return ", ".join(s.strip() for s in (str(v) for v in value) if s.strip())
+    return str(value)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

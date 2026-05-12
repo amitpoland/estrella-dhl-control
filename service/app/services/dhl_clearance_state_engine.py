@@ -186,14 +186,22 @@ def transition(
     to_state: str,
     *,
     reason: str = "",
-    actor: str = "system",
-    at: Optional[str] = None,
+    actor:  str = "system",
+    at:     Optional[str] = None,
+    shadow: bool = False,
 ) -> Dict[str, Any]:
     """
     Validate a transition and return the new state-history entry.
 
     Does NOT mutate any external state — caller appends the returned record
     via append_state_history().
+
+    The optional `shadow` kwarg places a `shadow: True` key on the entry
+    record when the transition was produced under `shadow_mode=True` per
+    ADR-018 Invariant 4. Audit consumers that filter via
+    `entry.get("shadow") is True` can cleanly distinguish observation-mode
+    transitions from live-mode transitions. When shadow=False (default),
+    the key is omitted to keep live records compact.
 
     Raises:
         UnknownState      — if either state is not in ALL_STATES.
@@ -210,13 +218,16 @@ def transition(
             f"{sorted(allowed_next_states(from_state))}"
         )
 
-    return {
+    entry: Dict[str, Any] = {
         "from":   from_state,
         "to":     to_state,
         "at":     at or _now_utc(),
         "actor":  actor,
         "reason": reason or "",
     }
+    if shadow:
+        entry["shadow"] = True
+    return entry
 
 
 def append_state_history(

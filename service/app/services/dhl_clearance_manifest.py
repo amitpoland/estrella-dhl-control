@@ -168,10 +168,16 @@ def record_transition(
     *,
     reason: str = "",
     actor:  str = "system",
+    shadow: bool = False,
 ) -> Dict[str, Any]:
     """
     Validate the transition through the state engine, append to state_history,
     and update current state. Append-only.
+
+    The optional `shadow` kwarg forwards to `state_engine.transition()`. When
+    True, the state_history entry carries a `shadow: True` key per ADR-018
+    Invariant 4 so audit consumers can filter cleanly between observation-
+    mode and live-mode transitions.
 
     Raises:
         IllegalTransition / UnknownState — surfaces from state engine.
@@ -180,7 +186,8 @@ def record_transition(
     from_state = block.get("state", _state_engine.INITIAL_STATE)
 
     entry = _state_engine.transition(
-        from_state, to_state, reason=reason, actor=actor,
+        from_state, to_state,
+        reason=reason, actor=actor, shadow=shadow,
     )
     block["state_history"] = _state_engine.append_state_history(
         block.get("state_history") or [], entry,

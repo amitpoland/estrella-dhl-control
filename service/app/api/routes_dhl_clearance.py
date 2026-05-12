@@ -1865,3 +1865,73 @@ def request_proactive_dispatch(
         "status":       proposal.get("status", "pending_review"),
         "is_new":       bool(is_new_proposal),
     }
+
+
+# ── W-5 P2: read-only self-clearance state for Mac dashboard state pill ──────
+# Per Windows Atlas memory rule: no operator-facing write controls on Mac
+# dashboard. This GET is the ONLY new surface from P2 on the Mac side.
+
+@router.get("/selfclearance/state/{batch_id}", dependencies=[_auth])
+def get_selfclearance_state(batch_id: str):
+    """
+    Return the current Path A self-clearance state for the batch.
+
+    Response shape:
+        {
+          "batch_id": "...",
+          "in_scope": true | false,
+          "state": "awaiting_preemptive_send" | ... | "n/a",
+          "p2_dispatch": {
+            "shadow": <bool>,
+            "message_id": <str|null>,
+            "sent_at": <iso8601|null>,
+          },
+        }
+
+    Returns `state: "n/a"` for non-Path-A shipments — the Mac dashboard
+    renders the pill greyed-out in that case.
+    """
+    from ..services.dhl_clearance_coordinator import DhlClearanceCoordinator
+    from ..services import dhl_clearance_manifest as _manifest
+
+    # Load audit; if not present, return n/a (do not 500)
+    audit_path = settings.storage_root / "outputs" / batch_id / "audit.json"
+    if not audit_path.is_file():
+        return {
+            "batch_id":     batch_id,
+            "in_scope":     False,
+            "state":        "n/a",
+            "p2_dispatch":  {"shadow": None, "message_id": None, "sent_at": None},
+        }
+
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "batch_id":     batch_id,
+            "in_scope":     False,
+            "state":        "n/a",
+            "p2_dispatch":  {"shadow": None, "message_id": None, "sent_at": None},
+        }
+
+    in_scope = DhlClearanceCoordinator.is_in_scope(audit)
+    if not in_scope:
+        return {
+            "batch_id":     batch_id,
+            "in_scope":     False,
+            "state":        "n/a",
+            "p2_dispatch":  {"shadow": None, "message_id": None, "sent_at": None},
+        }
+
+    block = audit.get(_manifest.MANIFEST_KEY) or {}
+    p2 = block.get("p2_dispatch") or {}
+    return {
+        "batch_id":     batch_id,
+        "in_scope":     True,
+        "state":        block.get("state", "awaiting_preemptive_send"),
+        "p2_dispatch":  {
+            "shadow":     p2.get("shadow"),
+            "message_id": p2.get("message_id"),
+            "sent_at":    p2.get("sent_at"),
+        },
+    }
