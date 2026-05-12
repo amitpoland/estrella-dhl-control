@@ -481,10 +481,13 @@ def test_main_app_has_move_stock_route():
     assert "POST" in methods
 
 
-def test_main_app_only_one_inventory_write_route():
-    """Move stock is the ONLY write route under /api/v1/inventory/* on
-    the production app. Any additional write here requires a new
-    SECURITY review."""
+def test_main_app_inventory_writes_match_allowlist():
+    """Inventory writes under /api/v1/inventory/* are an explicit
+    allowlist. Any new write requires both adding it here AND a fresh
+    SECURITY review on the corresponding writer.
+
+    Updated for Phase B.1 (Sample-out): the allowlist now contains
+    three writes — Move stock + sample-out + sample-return."""
     from app.main import app as production_app
     writes = []
     for r in production_app.routes:
@@ -494,8 +497,13 @@ def test_main_app_only_one_inventory_write_route():
         methods = set(getattr(r, "methods", set()) or set())
         if methods & {"POST", "PUT", "PATCH", "DELETE"}:
             writes.append((path, methods))
-    assert len(writes) == 1, (
-        f"Expected exactly 1 write under /api/v1/inventory/*, got {writes}"
+    expected = {
+        "/api/v1/inventory/pieces/{piece_id}/location":       {"POST"},
+        "/api/v1/inventory/pieces/{piece_id}/sample-out":     {"POST"},
+        "/api/v1/inventory/pieces/{piece_id}/sample-return":  {"POST"},
+    }
+    actual = {p: m for p, m in writes}
+    assert actual == expected, (
+        f"Inventory write surface drifted from allowlist.\n"
+        f"Expected: {expected}\nActual:   {actual}"
     )
-    assert writes[0][0] == "/api/v1/inventory/pieces/{piece_id}/location"
-    assert writes[0][1] == {"POST"}

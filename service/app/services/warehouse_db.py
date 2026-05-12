@@ -700,3 +700,172 @@ def get_inventory_at_location(location_code: str) -> List[Dict[str, Any]]:
             (location_code,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Sample-out helpers (Phase B.1) ───────────────────────────────────────
+#
+# These helpers read/write sample_out_events. They do NOT mutate
+# inventory_state — that goes through inventory_state_engine.transition()
+# (single-writer discipline). The writer in inventory_sample_writer.py
+# calls transition() AND then calls record_sample_out_event() here to
+# capture the Sample-out-specific evidence in the dedicated event table.
+#
+# Migration:
+#   service/app/db/migrations/draft_20260512_122327_sample_out_events.py.draft
+#   must be applied before these helpers can run in production.
+
+_sample_out_schema_verified = False
+
+
+def ensure_sample_out_schema() -> bool:
+    """Return True iff `sample_out_events` table AND
+    `idx_sample_out_idempotency` index both exist. Cached on success.
+
+    Used by the Sample-out writer as a pre-write guard, same pattern as
+    `ensure_idempotency_schema()` for Move stock. Callers that get False
+    should respond with HTTP 503 MIGRATION_PENDING.
+
+    Never raises.
+    """
+    global _sample_out_schema_verified
+    if _sample_out_schema_verified:
+        return True
+    if _db_path is None:
+        return False
+    try:
+        with _connect() as con:
+            tbl = con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='sample_out_events'"
+            ).fetchone()
+            if tbl is None:
+                return False
+            idx = con.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_sample_out_idempotency'"
+            ).fetchone()
+            if idx is None:
+                return False
+    except Exception:
+        return False
+    _sample_out_schema_verified = True
+    return True
+
+
+def record_sample_out_event(
+    *,
+    scan_code:               str,
+    direction:               str,        # 'out' | 'return'
+    operator:                str,
+    recipient_client_name:   str = "",
+    recipient_client_id:     str = "",
+    sample_reason:           str = "",
+    expected_return_date:    str = "",
+    notes:                   str = "",
+    idempotency_key:         str = "",
+    linked_state_event_id:   str = "",
+    linked_origin_event_id:  str = "",
+) -> Dict[str, Any]:
+    """Append a row to sample_out_events. Raises sqlite3.IntegrityError
+    if the partial UNIQUE index on (scan_code, idempotency_key) catches
+    a duplicate; caller treats that as the replay signal.
+
+    Returns the inserted row as a dict. Never mutates inventory_state.
+    """
+    if _db_path is None:
+        raise RuntimeError("warehouse_db not initialised")
+    if not scan_code:
+        raise ValueError("scan_code is required")
+    if direction not in ("out", "return"):
+        raise ValueError(f"direction must be 'out' or 'return', got {direction!r}")
+    if not idempotency_key:
+        raise ValueError("idempotency_key is required for record_sample_out_event")
+
+    now = _now()
+    evt_id = str(uuid.uuid4())
+    with _connect() as con:
+        con.execute(
+            """INSERT INTO sample_out_events
+               (id, scan_code, direction, operator,
+                recipient_client_name, recipient_client_id, sample_reason,
+                expected_return_date, notes, idempotency_key,
+                linked_state_event_id, linked_origin_event_id,
+                occurred_at, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (evt_id, scan_code, direction, operator,
+             recipient_client_name, recipient_client_id, sample_reason,
+             expected_return_date, notes, idempotency_key,
+             linked_state_event_id, linked_origin_event_id,
+             now, now),
+        )
+        con.commit()
+        row = con.execute(
+            "SELECT * FROM sample_out_events WHERE id=?", (evt_id,)
+        ).fetchone()
+    return dict(row) if row else {"id": evt_id}
+
+
+def find_sample_out_event_by_idempotency(
+    scan_code: str, idempotency_key: str
+) -> Optional[Dict[str, Any]]:
+    """Return the prior sample_out_events row matching
+    (scan_code, idempotency_key), or None. Replay lookup used by the
+    Sample-out writer after IntegrityError."""
+    if _db_path is None or not scan_code or not idempotency_key:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            "SELECT * FROM sample_out_events "
+            "WHERE scan_code=? AND idempotency_key=?",
+            (scan_code, idempotency_key),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def find_origin_sample_out_event(scan_code: str) -> Optional[Dict[str, Any]]:
+    """Find the most recent 'out' event for a scan_code that has NOT
+    yet been paired with a 'return' event. Used by sample-return to
+    link the return audit row to the originating out event."""
+    if _db_path is None or not scan_code:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            """SELECT * FROM sample_out_events
+               WHERE scan_code=? AND direction='out'
+               AND id NOT IN (
+                   SELECT linked_origin_event_id FROM sample_out_events
+                   WHERE scan_code=? AND direction='return'
+                     AND linked_origin_event_id != ''
+               )
+               ORDER BY occurred_at DESC LIMIT 1""",
+            (scan_code, scan_code),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def count_open_overdue_samples_for_recipient(
+    recipient_client_name: str, threshold_iso: str
+) -> int:
+    """Count open (not-yet-returned) sample-out events for a given
+    recipient whose `expected_return_date` is at or before
+    `threshold_iso`. Used to enforce the 30-day block-new rule:
+    when count > 0, new sample-outs to the same recipient are rejected.
+
+    Open = an 'out' event with no matching 'return' event."""
+    if _db_path is None or not (recipient_client_name or "").strip():
+        return 0
+    with _connect() as con:
+        row = con.execute(
+            """SELECT COUNT(*) AS n FROM sample_out_events o
+               WHERE o.recipient_client_name = ?
+                 AND o.direction = 'out'
+                 AND o.expected_return_date != ''
+                 AND o.expected_return_date <= ?
+                 AND NOT EXISTS (
+                   SELECT 1 FROM sample_out_events r
+                   WHERE r.scan_code = o.scan_code
+                     AND r.direction = 'return'
+                     AND r.occurred_at >= o.occurred_at
+                 )""",
+            (recipient_client_name, threshold_iso),
+        ).fetchone()
+    return int(row["n"]) if row else 0
