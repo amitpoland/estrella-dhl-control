@@ -121,10 +121,13 @@ def test_no_bulk_warehouse_audit_calls():
     call for every batch, do not bulk-call them.' Inventory body must not
     iterate batches calling /warehouse/audit/{id}.
 
-    Updated for Phase 2 (Inventory Stage 2 aggregate): the single
-    permitted apiFetch call is to the read-only Stage 2 aggregate
-    endpoint /api/v1/inventory/stage2/aggregate (one call on mount,
-    not per-batch)."""
+    Updated for Phase 2 (Inventory Stage 2 aggregate): permitted apiFetch
+    calls are pinned to a read-only allowlist — no per-batch fan-out.
+
+    Updated for Phase 4.4 (piece detail drawer): user-triggered single-piece
+    lookup against /api/v1/inventory/pieces/{scan_code} is permitted. Still
+    not a bulk per-batch call.
+    """
     src = _src()
     block_start = src.index("function InventoryPage(")
     block_end   = src.index("function MasterDataPage(", block_start)
@@ -135,17 +138,27 @@ def test_no_bulk_warehouse_audit_calls():
     assert "/api/v1/warehouse/inventory/" not in block
     assert "/api/v1/warehouse/scan" not in block
     assert "/api/v1/warehouse/locations" not in block
-    # The only permitted apiFetch is the single Stage 2 aggregate call.
-    # Confirm exactly one apiFetch call AND that it targets the aggregate.
+    # Allowlisted apiFetch URLs (Stage 2 mount + Phase 4.4 single-piece lookup).
     apifetch_total = block.count("apiFetch(")
     apifetch_aggregate = (
         block.count("apiFetch('/api/v1/inventory/stage2/aggregate')")
         + block.count('apiFetch("/api/v1/inventory/stage2/aggregate")')
     )
-    assert apifetch_total == 1, \
-        f"Expected exactly 1 apiFetch in InventoryPage, got {apifetch_total}"
+    apifetch_pieces = (
+        block.count("apiFetch(`/api/v1/inventory/pieces/${encodeURIComponent(code)}`)")
+        + block.count("apiFetch('/api/v1/inventory/pieces/")
+        + block.count('apiFetch("/api/v1/inventory/pieces/')
+    )
     assert apifetch_aggregate == 1, \
-        "The single apiFetch must target /api/v1/inventory/stage2/aggregate"
+        "Exactly one apiFetch must target /api/v1/inventory/stage2/aggregate"
+    assert apifetch_total == apifetch_aggregate + apifetch_pieces, (
+        f"InventoryPage has {apifetch_total} apiFetch calls; "
+        f"allowlisted = {apifetch_aggregate} aggregate + {apifetch_pieces} pieces. "
+        "Extra apiFetch calls violate the no-bulk-per-batch contract."
+    )
+    assert apifetch_pieces <= 1, (
+        "Piece lookup must be a single user-triggered apiFetch, not a fan-out"
+    )
 
 
 # ── Warehouse Scanner link preserved ──────────────────────────────────────
