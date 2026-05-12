@@ -24,6 +24,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
+from typing import FrozenSet, Optional
 
 from .factory import CarrierConfig, get_adapter
 from .models.shipment import (
@@ -38,9 +39,70 @@ from .persistence.redactor import redact_response
 from .persistence.shadow_log_db import append_entry as _shadow_log_append
 from .persistence.shadow_log_db import init_db as _init_shadow_log
 from .persistence.shipment_db import get_shipment as _db_get
+from .persistence.shipment_db import get_shipment_by_batch_id as _db_get_by_batch
 from .persistence.shipment_db import init_db as _init_shipment_db
 from .persistence.shipment_db import insert_shipment as _db_insert
 from .persistence.shipment_db import update_state as _db_update
+
+
+# ── AWB stability predicate (read-only — added in W-5 / P0) ───────────────────
+#
+# The spec vocabulary {awb_issued, label_created, label_printed, handed_to_carrier}
+# (ADR-013) does not exist 1:1 in the carrier ShipmentState enum, which holds
+# {pending, submitted, complete, failed}. The mapping locked at P0 is:
+#
+#     awb_issued       → SUBMITTED (idempotency row + adapter response confirmed)
+#     label_created    → SUBMITTED
+#     label_printed    → SUBMITTED
+#     handed_to_carrier→ COMPLETE  (full carrier-side close)
+#
+# Therefore the stable set is {SUBMITTED, COMPLETE}. PENDING (in-flight),
+# FAILED (error), and not-found all return False.
+
+_AWB_STABLE_STATES: FrozenSet[str] = frozenset({
+    ShipmentState.SUBMITTED.value,
+    ShipmentState.COMPLETE.value,
+})
+
+
+def is_state_stable(state: Optional[str]) -> bool:
+    """Pure helper — True iff a carrier ShipmentState string is in the stable set."""
+    if not state:
+        return False
+    return state in _AWB_STABLE_STATES
+
+
+def is_awb_stable(
+    awb:     str,
+    *,
+    db_path: Optional[Path] = None,
+    state_override: Optional[str] = None,
+) -> bool:
+    """
+    Read-only predicate: True iff *awb* corresponds to a carrier shipment whose
+    current state is in {SUBMITTED, COMPLETE}.
+
+    Resolution order:
+        1. *state_override* (test injection / explicit caller)
+        2. carrier shipment_db lookup by batch_id  (awb used as batch_id surrogate)
+        3. False (unresolved)
+
+    AWB→batch_id direct mapping does not exist in P0; P2 wires the proper
+    resolver via the audit / tracking layer. P0 callers MAY pass
+    state_override to test the mapping deterministically.
+
+    NEVER mutates any state — purely read-only.
+    """
+    if state_override is not None:
+        return is_state_stable(state_override)
+
+    if not awb or db_path is None:
+        return False
+
+    row = _db_get_by_batch(db_path, awb)
+    if not row:
+        return False
+    return is_state_stable(row.get("state"))
 
 
 @dataclass

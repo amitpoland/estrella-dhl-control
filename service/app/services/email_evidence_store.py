@@ -242,9 +242,17 @@ def save_message(
     msg.setdefault("matched_identifiers", {})
     msg.setdefault("body_hash", "")
     if not msg.get("thread_id"):
-        # synthesise a thread id from normalised subject root for backfill records
-        from .email_thread_mapper import normalise_subject
-        msg["thread_id"] = "sub:" + (normalise_subject(msg.get("subject", "")) or "unknown")[:80]
+        # W-5 / P0: DHL self-clearance emails use RFC822 References-based threading
+        # (per dhl_thread_tracker). Non-DHL traffic retains the existing
+        # subject-keyed logic for backwards compatibility.
+        if _is_dhl_selfclearance_message(msg):
+            derived = _derive_dhl_thread_id(msg, awb)
+            if derived:
+                msg["thread_id"] = derived
+        if not msg.get("thread_id"):
+            # synthesise a thread id from normalised subject root for backfill records
+            from .email_thread_mapper import normalise_subject
+            msg["thread_id"] = "sub:" + (normalise_subject(msg.get("subject", "")) or "unknown")[:80]
 
     with _awb_lock(awb) as p:
         doc = _safe_load(p) or _empty_awb_doc(awb)
@@ -295,6 +303,70 @@ def save_message(
         _index_message(awb, mid, msg)
     _index_thread(msg["thread_id"], awb, msg.get("message_id"))
     return {"action": action, "message_id": mid}
+
+
+def _is_dhl_selfclearance_message(msg: Dict[str, Any]) -> bool:
+    """
+    True iff this message is on the DHL self-clearance email path.
+
+    Gated by sender/recipient match against email_routing.DHL_TO. Other email
+    types (agency forwards, invoice forwards, etc.) keep the existing
+    subject-keyed thread_id logic — only DHL customs threads switch to
+    RFC822 References-based threading at P0.
+    """
+    try:
+        from ..config.email_routing import DHL_TO
+    except Exception:
+        return False
+    dhl_addrs = {a.lower() for a in (DHL_TO or [])}
+    if not dhl_addrs:
+        return False
+
+    def _collect(value: Any) -> set:
+        if value is None:
+            return set()
+        if isinstance(value, str):
+            return {value.lower()}
+        if isinstance(value, (list, tuple, set)):
+            return {str(v).lower() for v in value}
+        return {str(value).lower()}
+
+    candidates = (
+        _collect(msg.get("sender"))
+        | _collect(msg.get("from"))
+        | _collect(msg.get("to"))
+        | _collect(msg.get("cc"))
+    )
+    # Substring match handles formatted "Name <addr@example>" envelopes.
+    for cand in candidates:
+        for dhl in dhl_addrs:
+            if dhl and dhl in cand:
+                return True
+    return False
+
+
+def _derive_dhl_thread_id(msg: Dict[str, Any], awb: str) -> Optional[str]:
+    """
+    Resolve a thread_id for a DHL self-clearance message via RFC822 References.
+
+    Returns None when neither headers nor an AWB fallback resolve a thread.
+    The caller falls back to the legacy subject-keyed path on None.
+    """
+    headers = msg.get("headers") or {}
+    if not isinstance(headers, dict):
+        headers = {}
+    # Inline References / In-Reply-To / Message-ID can also live at the top
+    # level of the message dict — accept either.
+    for k in ("References", "references", "In-Reply-To", "in_reply_to",
+              "Message-ID", "message_id"):
+        if k not in headers and k in msg:
+            headers[k] = msg[k]
+    try:
+        from .dhl_thread_tracker import resolve_thread_id
+    except Exception:
+        return None
+    thread_id, _source = resolve_thread_id(headers, awb)
+    return thread_id or None
 
 
 def _index_message(awb: str, message_id: str, msg: Dict[str, Any]) -> None:

@@ -55,6 +55,7 @@ from .api.routes_inventory import router as inventory_router
 from .api.routes_inventory_writes import router as inventory_writes_router
 from .api.routes_inventory_sample import router as inventory_sample_router
 from .api.routes_inventory_returns import router as inventory_returns_router
+from .api.routes_admin_runtime_flags import router as admin_runtime_flags_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -107,6 +108,22 @@ async def lifespan(app: FastAPI):
     init_intake_lineage(_root / "intake_lineage.db")
     init_proforma_service_charges(_root / "proforma_links.db")
     log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma)", _root)
+
+    # ── W-5 / P0: replay persisted DHL self-clearance runtime flags ──────
+    # Restores operator-set flag values onto in-memory `settings` so that
+    # NSSM service restarts do not silently revert kill switches. The
+    # admin endpoint writes a JSON store at storage_root; we read it back
+    # here. Safe to call when the store is absent (returns {}).
+    try:
+        from .api.routes_admin_runtime_flags import load_persisted_flags_into_settings
+        restored = load_persisted_flags_into_settings()
+        if restored:
+            log.info(
+                "DHL self-clearance runtime flags restored from store: %s",
+                {k: v for k, v in restored.items()},
+            )
+    except Exception as exc:  # pragma: no cover — never block startup
+        log.warning("runtime_flag_replay_failed reason=%s", exc)
 
     log.info("Starting Estrella PZ Service  [env=%s]", settings.environment)
     log.info("Engine dir: %s", settings.engine_dir)
@@ -228,6 +245,7 @@ app.include_router(inventory_router)        # GET /api/v1/inventory/stage2/aggre
 app.include_router(inventory_writes_router) # POST /api/v1/inventory/pieces/{id}/location (Move stock; precheck-guarded)
 app.include_router(inventory_sample_router) # POST /api/v1/inventory/pieces/{id}/sample-out + /sample-return (Phase B.1; precheck-guarded)
 app.include_router(inventory_returns_router)# POST /api/v1/inventory/pieces/{id}/return-from-client + /return-to-producer + /return-from-producer (Phase B.2; precheck-guarded)
+app.include_router(admin_runtime_flags_router)  # W-5 / P0: DHL self-clearance runtime flag admin (X-API-Key)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────

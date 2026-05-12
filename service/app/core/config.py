@@ -242,5 +242,38 @@ class Settings(BaseSettings):
     # Set DEBUG_ALLOW_OLD_BATCH_FLOW=true in .env only for backward-compat testing.
     debug_allow_old_batch_flow: bool = False
 
+    # ── DHL self-clearance program (W-5 / P0 scaffolding — ADR-010, ADR-012..016) ──
+    # Phase-scoped live flags (default OFF — ADR-010). Restartless-flippable
+    # via POST /api/v1/admin/runtime-flags/self-clearance once P0 ships.
+    #
+    # Asymmetry notes:
+    #   • p3_tracker_paused is a kill switch (no shadow equivalent meaningful).
+    #   • p5_pz_trigger_enabled is an inner gate (no shadow equivalent — shadow
+    #     vs live is governed by p5_live_enabled).
+    dhl_selfclearance_p2_live_enabled:        bool = Field(default=False, env="DHL_SELFCLEARANCE_P2_LIVE_ENABLED")
+    dhl_selfclearance_p2_shadow_mode:         bool = Field(default=True,  env="DHL_SELFCLEARANCE_P2_SHADOW_MODE")
+    dhl_selfclearance_p3_live_enabled:        bool = Field(default=False, env="DHL_SELFCLEARANCE_P3_LIVE_ENABLED")
+    dhl_selfclearance_p3_shadow_mode:         bool = Field(default=True,  env="DHL_SELFCLEARANCE_P3_SHADOW_MODE")
+    dhl_selfclearance_p3_tracker_paused:      bool = Field(default=False, env="DHL_SELFCLEARANCE_P3_TRACKER_PAUSED")
+    dhl_selfclearance_p4_live_enabled:        bool = Field(default=False, env="DHL_SELFCLEARANCE_P4_LIVE_ENABLED")
+    dhl_selfclearance_p4_shadow_mode:         bool = Field(default=True,  env="DHL_SELFCLEARANCE_P4_SHADOW_MODE")
+    dhl_selfclearance_p5_live_enabled:        bool = Field(default=False, env="DHL_SELFCLEARANCE_P5_LIVE_ENABLED")
+    dhl_selfclearance_p5_shadow_mode:         bool = Field(default=True,  env="DHL_SELFCLEARANCE_P5_SHADOW_MODE")
+    dhl_selfclearance_p5_pz_trigger_enabled:  bool = Field(default=False, env="DHL_SELFCLEARANCE_P5_PZ_TRIGGER_ENABLED")
+
+    # Classifier confidence thresholds (literal identifiers — phases quote verbatim)
+    dhl_selfclearance_p4_classifier_min_confidence:  float = Field(default=0.85, env="DHL_SELFCLEARANCE_P4_CLASSIFIER_MIN_CONFIDENCE")
+    dhl_selfclearance_p5_classifier_min_confidence:  float = Field(default=0.95, env="DHL_SELFCLEARANCE_P5_CLASSIFIER_MIN_CONFIDENCE")
+
+    # Follow-up scheduler (ADR-014 policy)
+    dhl_selfclearance_followup_working_interval_sec:  int = Field(default=7200,                env="DHL_SELFCLEARANCE_FOLLOWUP_WORKING_INTERVAL_SEC")
+    dhl_selfclearance_followup_offhours_interval_sec: int = Field(default=21600,               env="DHL_SELFCLEARANCE_FOLLOWUP_OFFHOURS_INTERVAL_SEC")
+    dhl_selfclearance_followup_working_hours_window:  str = Field(default="08:00-16:00 CET",   env="DHL_SELFCLEARANCE_FOLLOWUP_WORKING_HOURS_WINDOW")
+    dhl_selfclearance_followup_livelock_budget_hours: int = Field(default=168,                 env="DHL_SELFCLEARANCE_FOLLOWUP_LIVELOCK_BUDGET_HOURS")
+
+    # Path A clearance value threshold. Reading site lives in clearance_decision.py;
+    # this exposes it as config so an operator can override via the admin endpoint.
+    dhl_selfclearance_value_threshold_usd:    int = Field(default=2500, env="DHL_SELFCLEARANCE_VALUE_THRESHOLD_USD")
+
 
 settings = Settings()
