@@ -27,7 +27,9 @@ CANONICAL_STATES = {
     "CLIENT_DISPATCHED",
     "SALES_TRANSIT",
     "CLOSED",
-    "SAMPLE_OUT",  # Phase B.1 — added with Sample-out activation
+    "SAMPLE_OUT",            # Phase B.1 — added with Sample-out activation
+    "RETURNED_FROM_CLIENT",  # Phase B.2 — added with Returns activation
+    "RETURNED_TO_PRODUCER",  # Phase B.2 — added with Returns activation
 }
 
 

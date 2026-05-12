@@ -24,6 +24,18 @@ if str(_SVC) not in sys.path:
 from app.services import inventory_piece_view as ipv  # noqa: E402
 
 
+# Phase B.2 adds a 4th reader (get_returns_history) to the piece view.
+# The pre-existing tests below were written before that reader existed
+# and don't inject anything for it. Patch it to [] by default so the
+# legacy assertions stay valid; tests that exercise the returns kind
+# override this inside their own `with patch(...)` block.
+@pytest.fixture(autouse=True)
+def _default_empty_returns_history():
+    with patch.object(ipv.warehouse_db, "get_returns_history",
+                       return_value=[]) as _m:
+        yield _m
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
 def _state_row(scan_code: str = "S1", state: str = "WAREHOUSE_STOCK"):
@@ -399,7 +411,125 @@ def test_piece_view_module_has_no_writes():
 
 
 def test_sort_key_kind_priority_matches_design():
-    """Tie-break order lifecycle(0) < movement(1) < sample(2). Documented
-    in PIECE_TIMELINE_DESIGN.md §4.2; matched in inventory_piece_view."""
+    """Tie-break order lifecycle(0) < movement(1) < sample(2) < returns(3).
+    Documented in PIECE_TIMELINE_DESIGN.md §4.2 and extended for
+    Phase B.2 in RETURNS_LIFECYCLE_DESIGN.md §6.2."""
     assert ipv._KIND_PRIORITY["lifecycle"] < ipv._KIND_PRIORITY["movement"]
     assert ipv._KIND_PRIORITY["movement"]  < ipv._KIND_PRIORITY["sample"]
+    assert ipv._KIND_PRIORITY["sample"]    < ipv._KIND_PRIORITY["returns"]
+
+
+# ── Phase B.2: returns kind in timeline ───────────────────────────────────
+
+def _returns_event(eid, occurred_at, direction, **extra):
+    base = {
+        "id":                       eid,
+        "scan_code":                "S1",
+        "direction":                direction,
+        "operator":                 "op",
+        "source_holder_name":       "",
+        "producer_name":            "",
+        "producer_id":              "",
+        "return_reason":            "",
+        "received_at":              "",
+        "expected_resolution_date": "",
+        "dispatch_reference":       "",
+        "notes":                    "",
+        "idempotency_key":          "k-" + eid,
+        "linked_state_event_id":    "",
+        "linked_origin_event_id":   "",
+        "occurred_at":              occurred_at,
+        "created_at":               occurred_at,
+    }
+    base.update(extra)
+    return base
+
+
+def test_returns_kind_appears_in_timeline():
+    rt = [_returns_event("R1", "2026-05-15T11:00:00Z", "from_client",
+                          source_holder_name="ACME Corp",
+                          return_reason="warranty_claim")]
+    with patch.object(ipv.inventory_state_engine, "get_state",
+                       return_value=_state_row()), \
+         patch.object(ipv.warehouse_db, "get_current_location",
+                       return_value=None), \
+         patch.object(ipv.inventory_state_engine, "get_history",
+                       return_value=[]), \
+         patch.object(ipv.warehouse_db, "get_movement_history",
+                       return_value=[]), \
+         patch.object(ipv.warehouse_db, "get_sample_out_history",
+                       return_value=[]), \
+         patch.object(ipv.warehouse_db, "get_returns_history",
+                       return_value=rt):
+        d = ipv.get_piece_detail("S1")
+    assert len(d["timeline"]) == 1
+    entry = d["timeline"][0]
+    assert entry["kind"]    == "returns"
+    assert entry["summary"] == "returned from ACME Corp (warranty_claim)"
+    assert entry["detail"]["direction"]          == "from_client"
+    assert entry["detail"]["source_holder_name"] == "ACME Corp"
+
+
+def test_returns_summary_to_producer_format():
+    rt = [_returns_event("R2", "2026-05-15T11:00:00Z", "to_producer",
+                          producer_name="ProdCo",
+                          return_reason="defect")]
+    with patch.object(ipv.inventory_state_engine, "get_state",
+                       return_value=_state_row()), \
+         patch.object(ipv.warehouse_db, "get_current_location",
+                       return_value=None), \
+         patch.object(ipv.inventory_state_engine, "get_history",
+                       return_value=[]), \
+         patch.object(ipv.warehouse_db, "get_movement_history",
+                       return_value=[]), \
+         patch.object(ipv.warehouse_db, "get_sample_out_history",
+                       return_value=[]), \
+         patch.object(ipv.warehouse_db, "get_returns_history",
+                       return_value=rt):
+        d = ipv.get_piece_detail("S1")
+    assert d["timeline"][0]["summary"] == "returned to ProdCo (defect)"
+
+
+def test_timeline_merges_four_sources_in_chronological_order():
+    lc = [_lifecycle_event("L1", "2026-05-01T09:00:00Z", "",
+                            "PURCHASE_TRANSIT")]
+    mv = [_movement_event("M1", "2026-05-04T14:00:00Z", "", "A-1")]
+    sm = [_sample_event("S1", "2026-05-02T11:00:00Z", "out",
+                         recipient_client_name="X")]
+    rt = [_returns_event("R1", "2026-05-10T11:00:00Z", "from_client",
+                          source_holder_name="X")]
+    with patch.object(ipv.inventory_state_engine, "get_state",
+                       return_value=_state_row()), \
+         patch.object(ipv.warehouse_db, "get_current_location",
+                       return_value=None), \
+         patch.object(ipv.inventory_state_engine, "get_history",
+                       return_value=lc), \
+         patch.object(ipv.warehouse_db, "get_movement_history",
+                       return_value=mv), \
+         patch.object(ipv.warehouse_db, "get_sample_out_history",
+                       return_value=sm), \
+         patch.object(ipv.warehouse_db, "get_returns_history",
+                       return_value=rt):
+        d = ipv.get_piece_detail("S1")
+    times = [e["occurred_at"] for e in d["timeline"]]
+    assert times == sorted(times)
+    kinds = [e["kind"] for e in d["timeline"]]
+    assert "returns" in kinds
+
+
+def test_degraded_when_returns_reader_raises():
+    with patch.object(ipv.inventory_state_engine, "get_state",
+                       return_value=_state_row()), \
+         patch.object(ipv.warehouse_db, "get_current_location",
+                       return_value=None), \
+         patch.object(ipv.inventory_state_engine, "get_history",
+                       return_value=[]), \
+         patch.object(ipv.warehouse_db, "get_movement_history",
+                       return_value=[]), \
+         patch.object(ipv.warehouse_db, "get_sample_out_history",
+                       return_value=[]), \
+         patch.object(ipv.warehouse_db, "get_returns_history",
+                       side_effect=RuntimeError("returns_events missing")):
+        d = ipv.get_piece_detail("S1")
+    assert d["degraded"] is True
+    assert any("returns_events" in l for l in d["limitations"])

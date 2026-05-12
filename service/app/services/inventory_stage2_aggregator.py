@@ -2,9 +2,10 @@
 Inventory Stage 2 read-only aggregator.
 
 Surfaces a 5-bucket summary over existing inventory_state data:
-  - final_stock  (count_by_state()['WAREHOUSE_STOCK']) — derivable
-  - samples      (count_by_state()['SAMPLE_OUT'])      — derivable (Phase B.1)
-  - returns      → null + limitation (no source)
+  - final_stock  (count_by_state()['WAREHOUSE_STOCK'])    — derivable
+  - samples      (count_by_state()['SAMPLE_OUT'])         — derivable (Phase B.1)
+  - returns      (RETURNED_FROM_CLIENT + RETURNED_TO_PRODUCER, with
+                  subcounts.from_client + subcounts.to_producer) — derivable (Phase B.2)
   - consignment  → null + limitation (no source)
   - unknown      → null + limitation (Path A: strict residual undefined)
 
@@ -39,11 +40,13 @@ from . import inventory_state_engine
 
 
 SAMPLES_BASIS_LIVE     = "inventory_state.state = 'SAMPLE_OUT'"
-RETURNS_BASIS          = "not_available — no return state or returns table"
+RETURNS_BASIS_LIVE     = (
+    "inventory_state.state IN ('RETURNED_FROM_CLIENT', 'RETURNED_TO_PRODUCER')"
+)
 CONSIGNMENT_BASIS      = "not_available — no consignment state or table"
 UNKNOWN_BASIS          = (
-    "not_available — strict residual requires returns/consignment "
-    "counts which are null"
+    "not_available — strict residual requires consignment count "
+    "which is null"
 )
 
 # Phase B.1 retired the old "samples: SAMPLE_OUT not in STATES" claim.
@@ -52,10 +55,12 @@ SAMPLES_LIMITATION_MISSING_KEY = (
     "samples: SAMPLE_OUT state missing from count_by_state result — "
     "count_by_state() returned a dict without the SAMPLE_OUT key"
 )
-RETURNS_LIMITATION = (
-    "returns: no return state (no RETURNED_FROM_CLIENT or "
-    "RETURNED_TO_PRODUCER in inventory_state_engine.STATES) and no "
-    "returns table — cannot count returned units"
+# Phase B.2 retired the old "returns: no return state" claim.
+# Returns is now derivable; only the degrade paths add a limitation.
+RETURNS_LIMITATION_MISSING_KEY = (
+    "returns: RETURNED_FROM_CLIENT or RETURNED_TO_PRODUCER state "
+    "missing from count_by_state result — count_by_state() returned "
+    "a dict without one or both keys"
 )
 CONSIGNMENT_LIMITATION = (
     "consignment: no consignment state (no CONSIGNMENT in "
@@ -64,8 +69,7 @@ CONSIGNMENT_LIMITATION = (
 )
 UNKNOWN_LIMITATION = (
     "unknown: strict residual (total Stage 2 − final − samples − "
-    "returns − consignment) is undefined while returns/consignment "
-    "are null"
+    "returns − consignment) is undefined while consignment is null"
 )
 
 
@@ -80,23 +84,32 @@ def aggregate_stage2(as_of: Optional[str] = None) -> dict:
     limitations: list = []
     status = "ok"
 
-    # ── Single state-count read; feeds final_stock + samples. ─────────────
+    # ── Single state-count read; feeds final_stock + samples + returns. ──
     final_stock_count = None
     final_stock_basis = ""
     samples_count     = None
     samples_basis     = ""
+    returns_count     = None
+    returns_basis     = ""
+    returns_from_client = None
+    returns_to_producer = None
 
     try:
         state_counts = inventory_state_engine.count_by_state()
     except Exception as e:  # warehouse_db not initialised, SQL error, etc.
         final_stock_basis = f"source unavailable — {type(e).__name__}"
         samples_basis     = f"source unavailable — {type(e).__name__}"
+        returns_basis     = f"source unavailable — {type(e).__name__}"
         limitations.append(
             f"final_stock: count_by_state() raised {type(e).__name__} "
             f"— source unavailable"
         )
         limitations.append(
             f"samples: count_by_state() raised {type(e).__name__} "
+            f"— source unavailable"
+        )
+        limitations.append(
+            f"returns: count_by_state() raised {type(e).__name__} "
             f"— source unavailable"
         )
         status = "degraded"
@@ -111,9 +124,27 @@ def aggregate_stage2(as_of: Optional[str] = None) -> dict:
             samples_basis = "not_available — SAMPLE_OUT key missing from source"
             limitations.append(SAMPLES_LIMITATION_MISSING_KEY)
             status = "degraded"
+        # Phase B.2 returns derivation: both states must be present
+        # in the count_by_state dict to compute the sum. In production
+        # count_by_state() pre-seeds all STATES keys at 0
+        # (inventory_state_engine.count_by_state). The missing-key
+        # branch is only exercised by partial/mock dicts.
+        rfc = state_counts.get("RETURNED_FROM_CLIENT")
+        rtp = state_counts.get("RETURNED_TO_PRODUCER")
+        if rfc is not None and rtp is not None:
+            returns_from_client = int(rfc)
+            returns_to_producer = int(rtp)
+            returns_count = returns_from_client + returns_to_producer
+            returns_basis = RETURNS_BASIS_LIVE
+        else:
+            returns_basis = (
+                "not_available — RETURNED_FROM_CLIENT or "
+                "RETURNED_TO_PRODUCER key missing from source"
+            )
+            limitations.append(RETURNS_LIMITATION_MISSING_KEY)
+            status = "degraded"
 
-    # ── returns / consignment / unknown: still null today ─────────────────
-    limitations.append(RETURNS_LIMITATION)
+    # ── consignment / unknown: still null today ───────────────────────────
     limitations.append(CONSIGNMENT_LIMITATION)
     limitations.append(UNKNOWN_LIMITATION)
 
@@ -138,9 +169,13 @@ def aggregate_stage2(as_of: Optional[str] = None) -> dict:
                 "confidence": "HIGH" if samples_count is not None else "NONE",
             },
             "returns": {
-                "count": None,
-                "basis": RETURNS_BASIS,
-                "confidence": "NONE",
+                "count": returns_count,
+                "basis": returns_basis,
+                "confidence": "HIGH" if returns_count is not None else "NONE",
+                "subcounts": {
+                    "from_client": returns_from_client,
+                    "to_producer": returns_to_producer,
+                },
             },
             "consignment": {
                 "count": None,

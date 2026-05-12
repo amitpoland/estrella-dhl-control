@@ -1,0 +1,163 @@
+"""DRAFT migration — add returns_events table.
+
+Phase B.2 (Returns lifecycle) ships its own dedicated event table
+separate from inventory_state_events, following the same pattern that
+sample_out_events established in PR #17:
+
+  - inventory_state_events records the lifecycle transitions
+    (e.g. WAREHOUSE_STOCK -> RETURNED_FROM_CLIENT with
+    trigger='returned_from_client_received'). That row is the audit
+    anchor for the state change.
+  - returns_events records the Returns-specific evidence:
+    return_reason, source_holder_name OR producer_name,
+    received_at / expected_resolution_date, idempotency_key, plus
+    FK-equivalent linkage to the state event row.
+
+See: docs/operational-memory/inventory/RETURNS_LIFECYCLE_DESIGN.md
+(operator-resolved 2026-05-12, READY-FOR-STAGE-2).
+
+This file is `.py.draft` — NOT picked up by any importer. Operator
+runs manually after morning review:
+
+  python service/app/db/migrations/draft_20260512_175238_returns_events.py.draft \\
+      <warehouse.db path> up
+
+Idempotent: safe to re-run.
+"""
+from __future__ import annotations
+
+import sqlite3
+import sys
+from pathlib import Path
+
+
+REVISION = "20260512_175238_returns_events"
+DESCRIPTION = (
+    "Add returns_events table for Phase B.2 Returns evidence storage. "
+    "Includes partial UNIQUE index on (scan_code, idempotency_key) "
+    "for replay safety, plus lookup indexes for per-piece audit + "
+    "producer-open-claims queries."
+)
+
+
+def _table_exists(con: sqlite3.Connection, name: str) -> bool:
+    row = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _index_exists(con: sqlite3.Connection, name: str) -> bool:
+    row = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def upgrade(db_path: Path) -> None:
+    """Apply the migration to warehouse.db at `db_path`. Idempotent."""
+    con = sqlite3.connect(str(db_path))
+    try:
+        if not _table_exists(con, "returns_events"):
+            con.execute(
+                """
+                CREATE TABLE returns_events (
+                    id                       TEXT PRIMARY KEY,
+                    scan_code                TEXT NOT NULL,
+                    direction                TEXT NOT NULL,
+                    operator                 TEXT NOT NULL DEFAULT '',
+                    source_holder_name       TEXT NOT NULL DEFAULT '',
+                    producer_name            TEXT NOT NULL DEFAULT '',
+                    producer_id              TEXT NOT NULL DEFAULT '',
+                    return_reason            TEXT NOT NULL DEFAULT '',
+                    received_at              TEXT NOT NULL DEFAULT '',
+                    expected_resolution_date TEXT NOT NULL DEFAULT '',
+                    dispatch_reference       TEXT NOT NULL DEFAULT '',
+                    notes                    TEXT NOT NULL DEFAULT '',
+                    idempotency_key          TEXT NOT NULL DEFAULT '',
+                    linked_state_event_id    TEXT NOT NULL DEFAULT '',
+                    linked_origin_event_id   TEXT NOT NULL DEFAULT '',
+                    occurred_at              TEXT NOT NULL,
+                    created_at               TEXT NOT NULL
+                )
+                """
+            )
+            print(f"[{REVISION}] Created table returns_events")
+        else:
+            print(f"[{REVISION}] Table returns_events already exists")
+
+        # Partial UNIQUE on (scan_code, idempotency_key) for non-empty
+        # keys only — replay safety. Mirrors sample_out_events.
+        if not _index_exists(con, "idx_returns_idempotency"):
+            con.execute(
+                "CREATE UNIQUE INDEX idx_returns_idempotency "
+                "ON returns_events (scan_code, idempotency_key) "
+                "WHERE idempotency_key != ''"
+            )
+            print(f"[{REVISION}] Created partial UNIQUE index idx_returns_idempotency")
+        else:
+            print(f"[{REVISION}] Index idx_returns_idempotency already exists")
+
+        # Per-piece lookup index for replay + audit queries.
+        if not _index_exists(con, "idx_returns_scan_time"):
+            con.execute(
+                "CREATE INDEX idx_returns_scan_time "
+                "ON returns_events (scan_code, occurred_at)"
+            )
+            print(f"[{REVISION}] Created lookup index idx_returns_scan_time")
+        else:
+            print(f"[{REVISION}] Index idx_returns_scan_time already exists")
+
+        # Producer-open-claims index (aging surface; no DB block-new).
+        if not _index_exists(con, "idx_returns_producer_open"):
+            con.execute(
+                "CREATE INDEX idx_returns_producer_open "
+                "ON returns_events (producer_name, direction, expected_resolution_date)"
+            )
+            print(f"[{REVISION}] Created lookup index idx_returns_producer_open")
+        else:
+            print(f"[{REVISION}] Index idx_returns_producer_open already exists")
+
+        con.commit()
+    finally:
+        con.close()
+
+
+def downgrade(db_path: Path) -> None:
+    """Reverse the migration. Drops indexes and table. Safe to re-run."""
+    con = sqlite3.connect(str(db_path))
+    try:
+        for idx in (
+            "idx_returns_idempotency",
+            "idx_returns_scan_time",
+            "idx_returns_producer_open",
+        ):
+            if _index_exists(con, idx):
+                con.execute(f"DROP INDEX {idx}")
+                print(f"[{REVISION}] Dropped index {idx}")
+        if _table_exists(con, "returns_events"):
+            con.execute("DROP TABLE returns_events")
+            print(f"[{REVISION}] Dropped table returns_events")
+        con.commit()
+    finally:
+        con.close()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print(f"Usage: python {sys.argv[0]} <path-to-warehouse.db> [up|down]")
+        sys.exit(2)
+    target = Path(sys.argv[1])
+    direction = sys.argv[2] if len(sys.argv) > 2 else "up"
+    if not target.exists():
+        print(f"ERROR: db not found at {target}")
+        sys.exit(1)
+    if direction == "up":
+        upgrade(target)
+    elif direction == "down":
+        downgrade(target)
+    else:
+        print(f"Unknown direction: {direction!r}; expected 'up' or 'down'")
+        sys.exit(2)

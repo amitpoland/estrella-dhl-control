@@ -861,6 +861,153 @@ def get_sample_out_history(scan_code: str) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+# ── Returns helpers (Phase B.2) ──────────────────────────────────────────
+#
+# These helpers read/write returns_events. They do NOT mutate
+# inventory_state — that goes through inventory_state_engine.transition()
+# (single-writer discipline). The writer in inventory_returns_writer.py
+# calls transition() AND then calls record_returns_event() here to
+# capture the Returns-specific evidence in the dedicated event table.
+#
+# Migration:
+#   service/app/db/migrations/draft_20260512_175238_returns_events.py.draft
+#   must be applied before these helpers can run in production.
+
+_returns_schema_verified = False
+
+
+def ensure_returns_schema() -> bool:
+    """Return True iff `returns_events` table AND
+    `idx_returns_idempotency` index both exist. Cached on success.
+
+    Used by the Returns writer as a pre-write guard, same pattern as
+    `ensure_sample_out_schema()` for Sample-out. Callers that get False
+    should respond with HTTP 503 MIGRATION_PENDING.
+
+    Never raises.
+    """
+    global _returns_schema_verified
+    if _returns_schema_verified:
+        return True
+    if _db_path is None:
+        return False
+    try:
+        with _connect() as con:
+            tbl = con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='returns_events'"
+            ).fetchone()
+            if tbl is None:
+                return False
+            idx = con.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_returns_idempotency'"
+            ).fetchone()
+            if idx is None:
+                return False
+    except Exception:
+        return False
+    _returns_schema_verified = True
+    return True
+
+
+def record_returns_event(
+    *,
+    scan_code:                str,
+    direction:                str,  # 'from_client' | 'to_producer' | 'restock' | 'producer_restock' | 'producer_to_rma'
+    operator:                 str,
+    source_holder_name:       str = "",
+    producer_name:            str = "",
+    producer_id:              str = "",
+    return_reason:            str = "",
+    received_at:              str = "",
+    expected_resolution_date: str = "",
+    dispatch_reference:       str = "",
+    notes:                    str = "",
+    idempotency_key:          str = "",
+    linked_state_event_id:    str = "",
+    linked_origin_event_id:   str = "",
+) -> Dict[str, Any]:
+    """Append a row to returns_events. Raises sqlite3.IntegrityError if
+    the partial UNIQUE index on (scan_code, idempotency_key) catches a
+    duplicate; caller treats that as the replay signal.
+
+    Returns the inserted row as a dict. Never mutates inventory_state.
+    """
+    if _db_path is None:
+        raise RuntimeError("warehouse_db not initialised")
+    if not scan_code:
+        raise ValueError("scan_code is required")
+    if direction not in (
+        "from_client", "to_producer",
+        "restock", "producer_restock", "producer_to_rma",
+    ):
+        raise ValueError(f"direction must be one of the Returns directions, got {direction!r}")
+    if not idempotency_key:
+        raise ValueError("idempotency_key is required for record_returns_event")
+
+    now = _now()
+    evt_id = str(uuid.uuid4())
+    with _connect() as con:
+        con.execute(
+            """INSERT INTO returns_events
+               (id, scan_code, direction, operator,
+                source_holder_name, producer_name, producer_id,
+                return_reason, received_at, expected_resolution_date,
+                dispatch_reference, notes, idempotency_key,
+                linked_state_event_id, linked_origin_event_id,
+                occurred_at, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (evt_id, scan_code, direction, operator,
+             source_holder_name, producer_name, producer_id,
+             return_reason, received_at, expected_resolution_date,
+             dispatch_reference, notes, idempotency_key,
+             linked_state_event_id, linked_origin_event_id,
+             now, now),
+        )
+        con.commit()
+        row = con.execute(
+            "SELECT * FROM returns_events WHERE id=?", (evt_id,)
+        ).fetchone()
+    return dict(row) if row else {"id": evt_id}
+
+
+def find_returns_event_by_idempotency(
+    scan_code: str, idempotency_key: str
+) -> Optional[Dict[str, Any]]:
+    """Return the prior returns_events row matching
+    (scan_code, idempotency_key), or None. Replay lookup used by the
+    Returns writer after IntegrityError."""
+    if _db_path is None or not scan_code or not idempotency_key:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            "SELECT * FROM returns_events "
+            "WHERE scan_code=? AND idempotency_key=?",
+            (scan_code, idempotency_key),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_returns_history(scan_code: str) -> List[Dict[str, Any]]:
+    """Append-only returns_events history for a scan_code.
+
+    Mirrors get_movement_history() and get_sample_out_history() in
+    shape: chronological by occurred_at ascending, empty list when
+    DB unavailable or scan_code is unknown. Used by
+    inventory_piece_view to compose the unified piece timeline.
+    Read-only.
+    """
+    if _db_path is None or not scan_code:
+        return []
+    with _connect() as con:
+        rows = con.execute(
+            """SELECT * FROM returns_events
+               WHERE scan_code=? ORDER BY occurred_at""",
+            (scan_code,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def count_open_overdue_samples_for_recipient(
     recipient_client_name: str, threshold_iso: str
 ) -> int:

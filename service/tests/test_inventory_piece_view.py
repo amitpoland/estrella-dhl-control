@@ -90,6 +90,18 @@ def test_found_piece_returns_state_and_history():
     ), patch(
         "app.services.inventory_piece_view.inventory_state_engine.get_history",
         return_value=fake_history,
+    ), patch(
+        "app.services.inventory_piece_view.warehouse_db.get_current_location",
+        return_value=None,
+    ), patch(
+        "app.services.inventory_piece_view.warehouse_db.get_movement_history",
+        return_value=[],
+    ), patch(
+        "app.services.inventory_piece_view.warehouse_db.get_sample_out_history",
+        return_value=[],
+    ), patch(
+        "app.services.inventory_piece_view.warehouse_db.get_returns_history",
+        return_value=[],
     ):
         r = client.get("/api/v1/inventory/pieces/SCAN-FOUND")
         data = r.json()
@@ -126,9 +138,12 @@ def test_no_write_methods_on_pieces_path():
     ]
     assert routes, "/api/v1/inventory/pieces route not registered"
     allowed_writes = {
-        "/api/v1/inventory/pieces/{piece_id}/location",       # Move stock — POST
-        "/api/v1/inventory/pieces/{piece_id}/sample-out",     # Sample-out — POST (Phase B.1)
-        "/api/v1/inventory/pieces/{piece_id}/sample-return",  # Sample-return — POST (Phase B.1)
+        "/api/v1/inventory/pieces/{piece_id}/location",              # Move stock — POST
+        "/api/v1/inventory/pieces/{piece_id}/sample-out",            # Sample-out — POST (Phase B.1)
+        "/api/v1/inventory/pieces/{piece_id}/sample-return",         # Sample-return — POST (Phase B.1)
+        "/api/v1/inventory/pieces/{piece_id}/return-from-client",    # Returns — POST (Phase B.2)
+        "/api/v1/inventory/pieces/{piece_id}/return-to-producer",    # Returns — POST (Phase B.2)
+        "/api/v1/inventory/pieces/{piece_id}/return-from-producer",  # Returns — POST (Phase B.2)
     }
     for route in routes:
         path = getattr(route, "path", "")

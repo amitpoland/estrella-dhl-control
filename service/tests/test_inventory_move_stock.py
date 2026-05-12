@@ -486,8 +486,8 @@ def test_main_app_inventory_writes_match_allowlist():
     allowlist. Any new write requires both adding it here AND a fresh
     SECURITY review on the corresponding writer.
 
-    Updated for Phase B.1 (Sample-out): the allowlist now contains
-    three writes — Move stock + sample-out + sample-return."""
+    Updated for Phase B.2 (Returns): the allowlist now contains six
+    writes — Move stock + sample-out/return + 3 returns routes."""
     from app.main import app as production_app
     writes = []
     for r in production_app.routes:
@@ -498,9 +498,12 @@ def test_main_app_inventory_writes_match_allowlist():
         if methods & {"POST", "PUT", "PATCH", "DELETE"}:
             writes.append((path, methods))
     expected = {
-        "/api/v1/inventory/pieces/{piece_id}/location":       {"POST"},
-        "/api/v1/inventory/pieces/{piece_id}/sample-out":     {"POST"},
-        "/api/v1/inventory/pieces/{piece_id}/sample-return":  {"POST"},
+        "/api/v1/inventory/pieces/{piece_id}/location":              {"POST"},
+        "/api/v1/inventory/pieces/{piece_id}/sample-out":            {"POST"},
+        "/api/v1/inventory/pieces/{piece_id}/sample-return":         {"POST"},
+        "/api/v1/inventory/pieces/{piece_id}/return-from-client":    {"POST"},
+        "/api/v1/inventory/pieces/{piece_id}/return-to-producer":    {"POST"},
+        "/api/v1/inventory/pieces/{piece_id}/return-from-producer":  {"POST"},
     }
     actual = {p: m for p, m in writes}
     assert actual == expected, (

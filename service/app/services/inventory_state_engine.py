@@ -82,11 +82,21 @@ CLOSED                 = "CLOSED"
 # Explicitly NOT in PROFORMA_ELIGIBLE_STATES (see below).
 SAMPLE_OUT             = "SAMPLE_OUT"
 
+# Phase B.2 — Returns lifecycle states. Two physical-custody classes:
+#   RETURNED_FROM_CLIENT: piece is physically in the warehouse RMA
+#     area, awaiting QA / regrade / restock / escalation.
+#   RETURNED_TO_PRODUCER: piece is physically with the producer for
+#     rework / replacement / settlement.
+# Neither is in PROFORMA_ELIGIBLE_STATES (see below).
+RETURNED_FROM_CLIENT   = "RETURNED_FROM_CLIENT"
+RETURNED_TO_PRODUCER   = "RETURNED_TO_PRODUCER"
+
 STATES: frozenset = frozenset({
     PURCHASE_TRANSIT, WAREHOUSE_STOCK,
     DIRECT_DISPATCH_READY, CLIENT_DISPATCHED,
     SALES_TRANSIT, CLOSED,
     SAMPLE_OUT,
+    RETURNED_FROM_CLIENT, RETURNED_TO_PRODUCER,
 })
 
 # Sample-out reason enum (operator-provided per piece).
@@ -98,20 +108,65 @@ SAMPLE_OUT_REASONS: frozenset = frozenset({
     "other",
 })
 
+# Returns reason enums (operator-provided per piece). Distinct enum
+# per direction so the UI can show only the relevant reasons.
+RETURNED_FROM_CLIENT_REASONS: frozenset = frozenset({
+    "warranty_claim",
+    "customer_refused",
+    "post_sample_review_reject",
+    "dimension_issue",
+    "quality_complaint",
+    "wrong_item_shipped",
+    "other",
+})
+RETURNED_TO_PRODUCER_REASONS: frozenset = frozenset({
+    "defect",
+    "dimension_out_of_spec",
+    "quality_reject",
+    "post_inspection_reject",
+    "recall",
+    "other",
+})
+
 # Map: from_state (or None for first entry) → set of legal to_states.
 LEGAL_TRANSITIONS: Dict[Optional[str], frozenset] = {
     None:                  frozenset({PURCHASE_TRANSIT}),
     PURCHASE_TRANSIT:      frozenset({WAREHOUSE_STOCK, DIRECT_DISPATCH_READY}),
-    WAREHOUSE_STOCK:       frozenset({SALES_TRANSIT, SAMPLE_OUT}),
+    # Phase B.2 — RETURNED_FROM_CLIENT becomes a legal successor of
+    # WAREHOUSE_STOCK so a piece sitting in warehouse that is later
+    # identified as defective/returned-RMA can be logged without an
+    # outbound first. Also legal: RETURNED_TO_PRODUCER from warehouse
+    # for defective stock found in the warehouse.
+    WAREHOUSE_STOCK:       frozenset({SALES_TRANSIT, SAMPLE_OUT,
+                                      RETURNED_FROM_CLIENT,
+                                      RETURNED_TO_PRODUCER}),
     DIRECT_DISPATCH_READY: frozenset({CLIENT_DISPATCHED}),
     CLIENT_DISPATCHED:     frozenset({CLOSED}),
     SALES_TRANSIT:         frozenset({CLOSED}),
+    # CLOSED stays terminal. Resolved 2026-05-12 in
+    # RETURNS_LIFECYCLE_DESIGN.md §2: producer replacements use a
+    # new scan_code rather than a CLOSED → anything transition.
     CLOSED:                frozenset(),
-    # Sample-out can ONLY return to WAREHOUSE_STOCK. Forbidden by absence:
+    # Sample-out can now also escalate into RETURNED_FROM_CLIENT
+    # (sample came back with a problem). Forbidden by absence:
     # SAMPLE_OUT → CLOSED, SAMPLE_OUT → SALES_TRANSIT,
     # SAMPLE_OUT → CLIENT_DISPATCHED, SAMPLE_OUT → DIRECT_DISPATCH_READY,
-    # SAMPLE_OUT → PURCHASE_TRANSIT, SAMPLE_OUT → SAMPLE_OUT (no double).
-    SAMPLE_OUT:            frozenset({WAREHOUSE_STOCK}),
+    # SAMPLE_OUT → PURCHASE_TRANSIT, SAMPLE_OUT → SAMPLE_OUT,
+    # SAMPLE_OUT → RETURNED_TO_PRODUCER (must go through RMA first).
+    SAMPLE_OUT:            frozenset({WAREHOUSE_STOCK, RETURNED_FROM_CLIENT}),
+    # Phase B.2 — Returns successors. Forbidden by absence is rich
+    # here (see RETURNS_LIFECYCLE_DESIGN.md §4 for the full list):
+    #   * RETURNED_FROM_CLIENT cannot become SAMPLE_OUT / SALES_TRANSIT /
+    #     CLIENT_DISPATCHED / DIRECT_DISPATCH_READY / PURCHASE_TRANSIT.
+    #   * RETURNED_FROM_CLIENT → CLOSED is forbidden in this Stage 2
+    #     scope. Write-offs require a separate, scoped flow.
+    #   * RETURNED_TO_PRODUCER cannot become SAMPLE_OUT / SALES_TRANSIT /
+    #     CLIENT_DISPATCHED / DIRECT_DISPATCH_READY / PURCHASE_TRANSIT.
+    #   * RETURNED_TO_PRODUCER → CLOSED is forbidden (CLOSED terminal
+    #     rule, §2 of design). Settlement that retires a scan_code
+    #     uses a new scan_code; this state does not retire.
+    RETURNED_FROM_CLIENT:  frozenset({WAREHOUSE_STOCK, RETURNED_TO_PRODUCER}),
+    RETURNED_TO_PRODUCER:  frozenset({WAREHOUSE_STOCK, RETURNED_FROM_CLIENT}),
 }
 
 # Default trigger label for each transition; callers may override.
@@ -125,6 +180,14 @@ DEFAULT_TRIGGER: Dict[tuple, str] = {
     (CLIENT_DISPATCHED,     CLOSED):                "delivery_confirmed",
     (WAREHOUSE_STOCK,       SAMPLE_OUT):            "sample_out_marked",
     (SAMPLE_OUT,            WAREHOUSE_STOCK):       "sample_returned",
+    # Phase B.2 — Returns triggers.
+    (WAREHOUSE_STOCK,       RETURNED_FROM_CLIENT):  "returned_from_client_received",
+    (SAMPLE_OUT,            RETURNED_FROM_CLIENT):  "returned_from_client_received",
+    (WAREHOUSE_STOCK,       RETURNED_TO_PRODUCER):  "returned_to_producer_shipped",
+    (RETURNED_FROM_CLIENT,  WAREHOUSE_STOCK):       "returned_restocked",
+    (RETURNED_FROM_CLIENT,  RETURNED_TO_PRODUCER):  "returned_escalated_to_producer",
+    (RETURNED_TO_PRODUCER,  WAREHOUSE_STOCK):       "returned_from_producer_restocked",
+    (RETURNED_TO_PRODUCER,  RETURNED_FROM_CLIENT):  "returned_from_producer_to_rma",
 }
 
 # Lifecycle states that satisfy a Proforma stock-readiness gate.
@@ -241,6 +304,15 @@ def transition(
     recipient_client_name:    str = "",
     expected_return_date:     str = "",
     sample_reason:            str = "",
+    # ── Returns evidence (Phase B.2, only consulted when
+    #    to_state == RETURNED_FROM_CLIENT or RETURNED_TO_PRODUCER) ─
+    return_reason:            str = "",
+    source_holder_name:       str = "",   # who returned the piece (RFC)
+    producer_name:            str = "",   # producer claim target (RTP)
+    received_at:              str = "",   # ISO 8601, not in future (RFC)
+    expected_resolution_date: str = "",   # ISO 8601 optional (RTP)
+    dispatch_reference:       str = "",   # outbound waybill / RMA (RTP)
+    origin_context:           str = "",   # free-text origin-link note (RFC)
 ) -> Dict[str, Any]:
     """
     Move *scan_code* into *to_state*. Validates the transition is legal from
@@ -344,6 +416,95 @@ def transition(
             if missing:
                 raise ValueError(
                     f"SAMPLE_OUT requires evidence; missing: "
+                    f"{', '.join(missing)}"
+                )
+
+        # Evidence gate — RETURNED_FROM_CLIENT (Phase B.2). Inbound
+        # receipt: operator + reason + origin_context + received_at
+        # in the past or present (inverse of SAMPLE_OUT's future-date
+        # rule). RETURNS_LIFECYCLE_DESIGN.md §5.1.
+        if to_state == RETURNED_FROM_CLIENT:
+            missing = []
+            if not (operator or "").strip():
+                missing.append("operator")
+            if not (return_reason or "").strip():
+                missing.append("return_reason")
+            elif return_reason not in RETURNED_FROM_CLIENT_REASONS:
+                missing.append(
+                    f"return_reason∈{sorted(RETURNED_FROM_CLIENT_REASONS)} "
+                    f"(got {return_reason!r})"
+                )
+            if not (origin_context or "").strip():
+                missing.append("origin_context")
+            if not (received_at or "").strip():
+                missing.append("received_at")
+            else:
+                try:
+                    ra_normalized = (
+                        received_at.replace("Z", "+00:00")
+                        if received_at.endswith("Z")
+                        else received_at
+                    )
+                    ra = datetime.fromisoformat(ra_normalized)
+                    if ra.tzinfo is None:
+                        ra = ra.replace(tzinfo=timezone.utc)
+                    if ra > datetime.now(timezone.utc):
+                        missing.append("received_at not in the future")
+                except (ValueError, TypeError):
+                    missing.append(
+                        f"received_at ISO 8601 (got {received_at!r})"
+                    )
+            if missing:
+                raise ValueError(
+                    f"RETURNED_FROM_CLIENT requires evidence; missing: "
+                    f"{', '.join(missing)}"
+                )
+
+        # Evidence gate — RETURNED_TO_PRODUCER (Phase B.2). Outbound
+        # to producer: operator + producer_name + reason or dispatch
+        # reference; expected_resolution_date optional but if given
+        # must be ISO 8601 in the future. RETURNS_LIFECYCLE_DESIGN.md
+        # §5.2.
+        if to_state == RETURNED_TO_PRODUCER:
+            missing = []
+            if not (operator or "").strip():
+                missing.append("operator")
+            if not (producer_name or "").strip():
+                missing.append("producer_name")
+            # Either a structured reason OR a dispatch reference must
+            # exist so the audit row is never empty. The brief permits
+            # "dispatch_reference or reason"; we accept either.
+            has_reason = bool((return_reason or "").strip())
+            has_ref    = bool((dispatch_reference or "").strip())
+            if not (has_reason or has_ref):
+                missing.append("return_reason or dispatch_reference")
+            elif has_reason and return_reason not in RETURNED_TO_PRODUCER_REASONS:
+                missing.append(
+                    f"return_reason∈{sorted(RETURNED_TO_PRODUCER_REASONS)} "
+                    f"(got {return_reason!r})"
+                )
+            # expected_resolution_date is optional — only validate
+            # format + future-ness when provided.
+            if (expected_resolution_date or "").strip():
+                try:
+                    erd_normalized = (
+                        expected_resolution_date.replace("Z", "+00:00")
+                        if expected_resolution_date.endswith("Z")
+                        else expected_resolution_date
+                    )
+                    erd = datetime.fromisoformat(erd_normalized)
+                    if erd.tzinfo is None:
+                        erd = erd.replace(tzinfo=timezone.utc)
+                    if erd <= datetime.now(timezone.utc):
+                        missing.append("expected_resolution_date in the future")
+                except (ValueError, TypeError):
+                    missing.append(
+                        f"expected_resolution_date ISO 8601 "
+                        f"(got {expected_resolution_date!r})"
+                    )
+            if missing:
+                raise ValueError(
+                    f"RETURNED_TO_PRODUCER requires evidence; missing: "
                     f"{', '.join(missing)}"
                 )
 
