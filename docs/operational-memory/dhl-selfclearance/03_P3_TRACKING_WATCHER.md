@@ -78,8 +78,8 @@ Minimal Mac UI — extend the read-only state pill from P2 to surface `followup_
 
 1. `dhl_selfclearance_p3_live_enabled` defaults to `False`. `dhl_selfclearance_p3_tracker_paused` independent pause flag exists.
 2. Watcher activates scheduler ONLY on the 5 named signals. Departure / in-transit events: no-op.
-3. Scheduler cadence respects working-hours config (`selfclearance.followup.working_interval_sec`, `.offhours_interval_sec`, `.working_hours_window`).
-4. Livelock budget honored: after `selfclearance.followup.livelock_budget_hours`, scheduler escalates shipment to operator review state.
+3. Scheduler cadence respects working-hours config (`dhl_selfclearance_followup_working_interval_sec`, `dhl_selfclearance_followup_offhours_interval_sec`, `dhl_selfclearance_followup_working_hours_window`).
+4. Livelock budget honored: after `dhl_selfclearance_followup_livelock_budget_hours`, scheduler escalates shipment to operator review state.
 5. No new email thread opened in any test (verify by grep — reply functions always pass `thread_id` from manifest).
 6. Shadow mode: signal classification logged; scheduler ticks logged; no state transition out of `awaiting_poland_arrival` without explicit shadow→live flag flip.
 7. Legacy `dhl_followup_sla.py` untouched; tests for that service unchanged.

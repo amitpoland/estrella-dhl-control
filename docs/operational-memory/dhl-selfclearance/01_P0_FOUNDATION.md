@@ -67,12 +67,12 @@ All tests in `service/tests/test_dhl_selfclearance_p0_*.py` (one file per scaffo
 
 | Path | Purpose |
 |---|---|
-| `service/app/services/dhl_clearance_state_engine.py` | 9 ADR-012 states + 4 added: `dispatch_failed`, `scope_gate_violated`, `operator_override_active`, `pz_failed`. Frozenset-edge `LEGAL_TRANSITIONS` map. Pure-logic (no DB). Append-only. |
+| `service/app/services/dhl_clearance_state_engine.py` | **13 total states** = 9 ADR-012 base states (in order: `awaiting_preemptive_send`, `awaiting_poland_arrival`, `followup_active`, `dhl_requested_clarification`, `clarification_sent`, `awaiting_sad`, `sad_received`, `pz_unlocked`, `shipment_closed`) + 4 added states (`dispatch_failed`, `scope_gate_violated`, `operator_override_active`, `pz_failed`). Frozenset-edge `LEGAL_TRANSITIONS` map. **Must include the Risk-R3 edge `awaiting_poland_arrival → dhl_requested_clarification`** (DHL responds before tracking shows Poland arrival). Pure-logic (no DB). Append-only state_history. |
 | `service/app/services/dhl_clearance_coordinator.py` | Single coordinator class. Stubs for `dispatch_proactive`, `on_tracking_event`, `tick_followup`, `on_inbound_clarification`, `on_sad_inbound`. Each stub raises `NotImplementedYet` for now — wired in P2-P5. Path A scope gate via `is_dhl_self_clearance()`. |
-| `service/app/services/dhl_clearance_manifest.py` | Writer helpers for `audit.dhl_clearance.{state, state_history, thread_id, thread_id_aliases, p2_dispatch, p3_tracking, p4_followup, p5_clarifications, p6_sad, p7_pz}`. Append-only state_history. Hash-only audit per ADR-006. |
+| `service/app/services/dhl_clearance_manifest.py` | Writer helpers for `audit.dhl_clearance.*` with the following enumerated sub-schemas (frozen at P0 — phases may NOT add fields without an ADR amendment): <br>• `state` (string, one of 13) <br>• `state_history` (append-only list of `{from, to, at, reason}`) <br>• `thread_id` (string), `thread_id_aliases` (list of strings) <br>• `p2_dispatch` (`{shadow:bool, message_id, recipient, sent_at, content_sha256}`) <br>• `p3_tracking` (`{last_signal_token, last_signal_at, tick_count, last_tick_at, watcher_active:bool}`) <br>• `p4_followup` (`{activated_at, last_tick_at, livelock_budget_until}`) <br>• `p5_clarifications` (list of `{inbound_message_id, intent, confidence, reply_message_id, reply_sha256, at}`) <br>• `p6_sad` (`{doc_id, sha256, type:"SAD"\|"PZC", arrived_at}`) <br>• `p7_pz` (`{triggered_at, last_status:"unlocked"\|"running"\|"succeeded"\|"failed", last_run_at, failure_reason}`) <br>Append-only state_history. Hash-only audit per ADR-006. |
 | `service/app/services/dhl_clarification_classifier.py` | 4-intent enum (`goods_description`, `invoice`, `authorization`, `sad_received`). `classify_clarification(email_body) -> (intent, confidence)`. Confidence-threshold gate. Unknown → operator-review. **Stub implementation**: returns deterministic placeholder; production training happens via the validation harness. |
 | `service/app/services/dhl_clarification_validation_harness.py` | Read-only harness. Accepts a labelled corpus path (CSV/JSONL with email body + true intent). Runs classifier. Emits accuracy report (per-intent precision/recall, confusion matrix, drift flags). **Corpus loading not wired** — operator points harness at the corpus when ready. |
-| `service/app/services/dhl_thread_lock.py` | SQLite row keyed by `thread_id`. `acquire(thread_id, owner_actor, ttl_sec) -> bool` and `release(thread_id, owner_actor) -> None`. Operator-manual-reply emits release event. |
+| `service/app/services/dhl_thread_lock.py` | SQLite row keyed by `thread_id`. API: `acquire(thread_id, owner_actor, ttl_sec) -> bool`, `release(thread_id, owner_actor) -> None` (owner-match required), `force_release(thread_id, reason) -> None` (operator-override path; audit-logged). On operator-manual-reply detected in the thread, the email-intake side calls `force_release(thread_id, "operator_manual_reply")`. Acquire returns `False` if a non-expired lock exists. TTL extension is NOT supported — caller must release and re-acquire. |
 | `service/app/services/dhl_thread_tracker.py` | RFC822 References-aware thread tracker for DHL self-clearance threads. `resolve_thread_id(message_headers, awb) -> thread_id`. Fallback to AWB-keyed search if References chain doesn't resolve. Maintains `thread_id_aliases[]` on manifest for DHL-initiated fresh threads (Risk R1). |
 | `service/app/services/dhl_selfclearance_followup_v2.py` | New service alongside legacy `dhl_followup_sla.py`. Implements ADR-014 cadence: 2h working hours (CET 08-16, configurable), slower overnight + weekend + holidays (configurable), livelock budget. No SMTP yet — pure schedule decisions. |
 | `service/app/api/routes_admin_runtime_flags.py` | New router. `POST /api/v1/admin/runtime-flags/self-clearance` body `{flag_name, value, actor}`. `GET /api/v1/admin/runtime-flags/self-clearance` returns current flag map. `X-API-Key` auth via `require_api_key`. Audit log line per flip (`admin_runtime_flag_flipped` event). Restartless reload: writes to a runtime-flag store (in-memory + persisted JSON) that config readers consult before falling back to env-var defaults. NO browser UI. |
@@ -86,22 +86,26 @@ All tests in `service/tests/test_dhl_selfclearance_p0_*.py` (one file per scaffo
 | `service/app/services/email_evidence_store.py` | Replace subject-keyed `thread_id` derivation for **DHL self-clearance emails only** (gated by sender/recipient match against `email_routing.DHL_TO`). Other email types continue using existing logic. Backwards-compatible: existing records' `thread_id` field unchanged. |
 | `service/app/core/config.py` | Register new flags + config keys (default OFF / conservative): |
 
-Config keys to add to `config.py` (all default-OFF or conservative):
+Config keys to add to `config.py` (all default-OFF or conservative). **Canonical naming convention: flat snake_case with `dhl_selfclearance_` prefix.** All consumer phases (P2-P5) must reference these literal identifiers verbatim; no dotted-path variants.
 
 ```python
-# Phase-scoped live flags (default OFF — ADR-010)
+# Phase-scoped live flags (default OFF — ADR-010). 6 live flags total.
+# Asymmetry note: paired shadow_mode exists for 4 flags only.
+# p3_tracker_paused is a kill switch (no shadow equivalent meaningful).
+# p5_pz_trigger_enabled is an inner gate (no shadow equivalent — it
+# permits/forbids the auto-PZ; shadow vs live is governed by p5_live_enabled).
 dhl_selfclearance_p2_live_enabled:        bool  = False
 dhl_selfclearance_p2_shadow_mode:         bool  = True
 dhl_selfclearance_p3_live_enabled:        bool  = False
 dhl_selfclearance_p3_shadow_mode:         bool  = True
-dhl_selfclearance_p3_tracker_paused:      bool  = False
+dhl_selfclearance_p3_tracker_paused:      bool  = False   # kill switch
 dhl_selfclearance_p4_live_enabled:        bool  = False
 dhl_selfclearance_p4_shadow_mode:         bool  = True
 dhl_selfclearance_p5_live_enabled:        bool  = False
 dhl_selfclearance_p5_shadow_mode:         bool  = True
-dhl_selfclearance_p5_pz_trigger_enabled:  bool  = False  # inner gate
+dhl_selfclearance_p5_pz_trigger_enabled:  bool  = False   # inner gate
 
-# Classifier thresholds
+# Classifier thresholds (literal identifiers — phases quote verbatim)
 dhl_selfclearance_p4_classifier_min_confidence:  float = 0.85
 dhl_selfclearance_p5_classifier_min_confidence:  float = 0.95   # higher — irreversible
 
@@ -111,12 +115,12 @@ dhl_selfclearance_followup_offhours_interval_sec: int  = 21600   # 6h
 dhl_selfclearance_followup_working_hours_window:  str  = "08:00-16:00 CET"
 dhl_selfclearance_followup_livelock_budget_hours: int  = 168     # 1 week
 
-# Path A clearance value threshold (already implicit in clearance_decision.py;
-# expose as config for operator override per Decision 1)
+# Path A clearance value threshold. Reading site lives in clearance_decision.py;
+# this exposes it as config so an operator can override via the admin endpoint.
 dhl_selfclearance_value_threshold_usd:    int  = 2500
 ```
 
-All keys also surfaceable via the admin runtime-flags endpoint.
+All keys also surfaceable via the admin runtime-flags endpoint (read + write).
 
 ## FILES NOT TO BE MODIFIED
 

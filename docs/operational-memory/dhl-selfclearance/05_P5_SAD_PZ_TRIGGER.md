@@ -31,7 +31,8 @@ Minimal Mac UI — extend state pill with the terminal states + PZ trigger statu
 
 ## PREREQUISITES (BLOCK if not met)
 
-- P0 scaffolding shipped, including SAD classifier (content-aware, not filename-only — per Risk R4).
+- P0 scaffolding shipped: state engine, coordinator, manifest namespace (`p6_sad` + `p7_pz` declared), 6 default-OFF flags, `dhl_selfclearance_p5_classifier_min_confidence` config, classifier validation harness, per-thread reply lock primitive, RFC822 thread tracking.
+- **Note:** The content-aware SAD/PZC document classifier is implemented in **this phase** as an extension of `customs_doc_classifier.py` (see FILES TO BE MODIFIED). P0 only delivers the 4-intent clarification classifier (`dhl_clarification_classifier.py`); P5 owns the SAD/PZC discriminator. This split matches Master Plan §4.4 and is intentional.
 - P2, P3, P4 all live and stable for ≥1 week each.
 - W-3 customs / PZ engine green (`make verify` → 160/160 on the same commit).
 - Inventory state engine `LEGAL_TRANSITIONS` unaffected (P5 closes the customs flow; inventory takes over after `shipment_closed`).

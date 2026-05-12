@@ -74,7 +74,7 @@ Minimal Mac UI — extend state pill to show `dhl_requested_clarification` + `cl
 
 ## ACCEPTANCE CRITERIA
 
-1. `dhl_selfclearance_p4_live_enabled` defaults to `False`. `selfclearance_p4_classifier_min_confidence` numeric config exists.
+1. `dhl_selfclearance_p4_live_enabled` defaults to `False`. `dhl_selfclearance_p4_classifier_min_confidence` numeric config exists.
 2. Classifier returns one of the 4 intents OR "unknown" (operator-review fallback).
 3. Reply is queued with `thread_id` pulled from manifest. Verify `email_service` receives non-empty `thread_id`.
 4. Per-thread reply lock acquired before queue; lock released on send confirmation OR on operator-manual-reply audit event.
