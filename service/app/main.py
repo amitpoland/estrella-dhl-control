@@ -52,6 +52,7 @@ from .api.routes_carrier_webhook import router as carrier_webhook_router
 from .api.routes_carrier_shadow import router as carrier_shadow_router
 from .api.routes_carrier_actions import router as carrier_actions_router
 from .api.routes_inventory import router as inventory_router
+from .api.routes_inventory_writes import router as inventory_writes_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -222,6 +223,7 @@ app.include_router(carrier_webhook_router)
 app.include_router(carrier_shadow_router)   # static paths (shadow/log, status) before dynamic
 app.include_router(carrier_actions_router)  # dynamic paths ({batch_id}/shipment)
 app.include_router(inventory_router)        # GET /api/v1/inventory/stage2/aggregate (read-only)
+app.include_router(inventory_writes_router) # POST /api/v1/inventory/pieces/{id}/location (Move stock; precheck-guarded)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────

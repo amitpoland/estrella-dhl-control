@@ -6,6 +6,13 @@
 **Reviewer:** inline review per campaign Phase 7 spec; criteria match the earlier security-write-action-reviewer subagent verdict format.
 **Verdict:** **PASS** — ready to PR after Group A merges.
 
+**Activation hardening (added 2026-05-12 on `feat/inventory-button-move-stock-v2`):**
+- `service/app/main.py` now includes `app.include_router(inventory_writes_router)` — wiring is committed, not deploy-time. Eliminates the "uncommitted production-only behavior" anti-pattern.
+- Migration precheck (`warehouse_db.ensure_idempotency_schema`) runs before any INSERT. If the `idempotency_key` column or `idx_movement_idempotency` index is missing, the endpoint returns HTTP 503 with `{"code": "MIGRATION_PENDING", "detail": "..."}` — sanitized, no SQL or traceback leak.
+- Precheck result is cached at module scope on success (cheap PRAGMA call, no perf cost after first request).
+- Precheck does NOT affect read routes — `/stage2/aggregate`, `/state/{batch_id}`, `/pieces/{piece_id}` continue to work even if the write-path migration is pending.
+- Tests added: `test_migration_pending_returns_503`, `test_migration_pending_does_not_disable_read_routes`, `test_main_app_has_move_stock_route`, `test_main_app_only_one_inventory_write_route`.
+
 ## Headline
 
 The SELECT-then-INSERT race identified in the original

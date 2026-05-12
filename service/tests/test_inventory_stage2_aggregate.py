@@ -86,16 +86,26 @@ def test_no_500_when_source_missing():
 
 
 def test_no_write_methods_registered():
-    # Note: trailing slash distinguishes /api/v1/inventory/* (this router)
-    # from /api/v1/inventory-state/* (pre-existing lifecycle POST).
+    # Scope: the Stage 2 aggregator's router is and stays read-only.
+    # The /api/v1/inventory/ prefix is now shared with the Move stock
+    # writes router (POST /pieces/{piece_id}/location), which is an
+    # intentional, security-reviewed activation. This test enforces
+    # the read-only invariant on the AGGREGATOR's specific endpoints
+    # and explicitly allowlists the one approved write.
     routes = [r for r in app.routes
               if getattr(r, "path", "").startswith("/api/v1/inventory/")]
     assert routes, "No /api/v1/inventory/ routes registered"
+    allowed_writes = {
+        "/api/v1/inventory/pieces/{piece_id}/location",  # Move stock — POST
+    }
     for route in routes:
+        path = getattr(route, "path", "")
         methods = set(getattr(route, "methods", set()) or set())
         non_safe = methods - {"GET", "HEAD", "OPTIONS"}
+        if non_safe and path in allowed_writes:
+            continue
         assert not non_safe, \
-            f"Non-GET method registered on {route.path}: {non_safe}"
+            f"Non-GET method registered on {path}: {non_safe}"
 
 
 def test_no_db_writes_in_aggregator_source():

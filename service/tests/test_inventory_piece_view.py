@@ -108,15 +108,27 @@ def test_degraded_when_warehouse_db_unavailable():
 
 
 def test_no_write_methods_on_pieces_path():
+    # Scope: the per-piece READ endpoint (/pieces/{piece_id}) is and
+    # stays read-only. The /pieces/ prefix is now shared with the
+    # Move stock writes router (POST /pieces/{piece_id}/location),
+    # which is an intentional, security-reviewed activation. This
+    # test enforces read-only on the piece-detail GET and explicitly
+    # allowlists the one approved write.
     routes = [
         r for r in app.routes
         if getattr(r, "path", "").startswith("/api/v1/inventory/pieces")
     ]
     assert routes, "/api/v1/inventory/pieces route not registered"
+    allowed_writes = {
+        "/api/v1/inventory/pieces/{piece_id}/location",  # Move stock — POST
+    }
     for route in routes:
+        path = getattr(route, "path", "")
         methods = set(getattr(route, "methods", set()) or set())
         non_safe = methods - {"GET", "HEAD", "OPTIONS"}
-        assert not non_safe, f"Forbidden method on {route.path}: {non_safe}"
+        if non_safe and path in allowed_writes:
+            continue
+        assert not non_safe, f"Forbidden method on {path}: {non_safe}"
 
 
 def test_service_module_has_no_writes():

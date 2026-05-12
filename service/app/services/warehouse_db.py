@@ -630,6 +630,52 @@ def find_movement_event_by_idempotency(
     return dict(row) if row else None
 
 
+# Module-level cache. Once the precheck succeeds, the column + index
+# can't disappear at runtime (SQLite doesn't drop columns silently),
+# so we never need to re-check. Failure does NOT cache — a runtime
+# migration apply during operator triage will be picked up on the
+# next request. Tests reset this via patching the function directly.
+_idempotency_schema_verified = False
+
+
+def ensure_idempotency_schema() -> bool:
+    """Return True iff `inventory_movement_events.idempotency_key`
+    column AND `idx_movement_idempotency` index both exist.
+
+    Used by the Move stock write path as a pre-write guard. Callers
+    that get False should respond with HTTP 503 MIGRATION_PENDING
+    rather than letting the downstream ``INSERT`` raise a raw
+    ``sqlite3.OperationalError`` (column missing) that leaks SQL
+    text and traceback to the client.
+
+    Never raises. Reading PRAGMA + sqlite_master is read-only and
+    cheap; the result is cached at module scope once verified.
+    """
+    global _idempotency_schema_verified
+    if _idempotency_schema_verified:
+        return True
+    if _db_path is None:
+        return False
+    try:
+        with _connect() as con:
+            cols = [
+                r[1] for r in
+                con.execute("PRAGMA table_info(inventory_movement_events)").fetchall()
+            ]
+            if "idempotency_key" not in cols:
+                return False
+            row = con.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_movement_idempotency'"
+            ).fetchone()
+            if row is None:
+                return False
+    except Exception:
+        return False
+    _idempotency_schema_verified = True
+    return True
+
+
 def get_movement_history(scan_code: str) -> List[Dict[str, Any]]:
     if _db_path is None or not scan_code:
         return []

@@ -42,16 +42,27 @@ from app.core.security import require_api_key
 from app.api.routes_inventory_writes import router as _inv_writes_router
 
 
-# Local test app. Move stock's router is intentionally NOT registered
-# on the production `app` from main.py — that's a deploy-time wiring
-# step per campaign spec. Using a local FastAPI instance here gives
-# us route-level introspection without polluting the shared `app`
-# (which would break other test files' "no write methods" assertions
-# at session scope).
+# Local test app. Using a local FastAPI instance here gives route-
+# level introspection without polluting the shared `app` (which would
+# break other test files' "no write methods" assertions at session
+# scope). The production `app` in main.py also registers this router,
+# verified separately in test_main_app_has_move_stock_route below.
 app = FastAPI()
 app.include_router(_inv_writes_router)
 app.dependency_overrides[require_api_key] = lambda: None
 client = TestClient(app)
+
+
+# Autouse: most tests assume the idempotency migration has been
+# applied (the precheck returns True). The MIGRATION_PENDING test
+# overrides this with its own patch.
+@pytest.fixture(autouse=True)
+def _stub_idempotency_schema_ok():
+    with patch(
+        "app.services.inventory_location_writer.wdb.ensure_idempotency_schema",
+        return_value=True,
+    ):
+        yield
 
 
 PATH = "/api/v1/inventory/pieces/SCAN-001/location"
@@ -396,3 +407,95 @@ def test_warehouse_db_has_idempotency_helpers():
     assert callable(getattr(wdb, "find_movement_event_by_idempotency", None)), (
         "warehouse_db.find_movement_event_by_idempotency must be defined"
     )
+    assert callable(getattr(wdb, "ensure_idempotency_schema", None)), (
+        "warehouse_db.ensure_idempotency_schema must be defined for the "
+        "Move stock precheck"
+    )
+
+
+# ── Migration precheck hardening ─────────────────────────────────────────
+
+def test_migration_pending_returns_503(_stub_idempotency_schema_ok):
+    """If the idempotency migration is not applied, the writer's precheck
+    fires before any INSERT and returns 503 MIGRATION_PENDING — NOT a
+    500 with raw SQLite traceback.
+    """
+    # Override the autouse fixture: make precheck return False.
+    with patch(
+        "app.services.inventory_location_writer.wdb._db_path", new="/fake/path"
+    ), patch(
+        "app.services.inventory_location_writer.wdb.ensure_idempotency_schema",
+        return_value=False,
+    ):
+        r = client.post(PATH, json=VALID_BODY)
+        assert r.status_code == 503, r.text
+        body = r.json()
+        assert body["detail"]["code"] == "MIGRATION_PENDING"
+        # Ensure detail does NOT leak SQL/traceback markers
+        detail_str = body["detail"]["detail"]
+        for forbidden in ("Traceback", "sqlite3.", "no such column",
+                          "OperationalError", "SELECT ", "INSERT "):
+            assert forbidden not in detail_str, (
+                f"MIGRATION_PENDING detail leaked {forbidden!r}: {detail_str}"
+            )
+
+
+def test_migration_pending_does_not_disable_read_routes():
+    """The precheck on the write path must not affect inventory read
+    routes. We verify this by route-table introspection on the
+    production app: read routes are still GET-only registered."""
+    from app.main import app as production_app
+    read_paths = [
+        getattr(r, "path", "") for r in production_app.routes
+        if getattr(r, "path", "").startswith("/api/v1/inventory/")
+        and "GET" in (getattr(r, "methods", set()) or set())
+    ]
+    expected_reads = {
+        "/api/v1/inventory/stage2/aggregate",
+        "/api/v1/inventory/state/{batch_id}",
+        "/api/v1/inventory/pieces/{piece_id}",
+    }
+    for ep in expected_reads:
+        assert ep in read_paths, f"Read route disabled: {ep}"
+
+
+# ── main.py wiring (committed activation, not deploy-time) ──────────────
+
+def test_main_app_has_move_stock_route():
+    """main.py must include the Move stock writes router. The wiring is
+    a committed activation step, not a deploy-time edit — production
+    main.py contains the route registration once this branch merges."""
+    from app.main import app as production_app
+    move_routes = [
+        r for r in production_app.routes
+        if getattr(r, "path", "") == "/api/v1/inventory/pieces/{piece_id}/location"
+    ]
+    assert move_routes, (
+        "POST /api/v1/inventory/pieces/{piece_id}/location not registered "
+        "on production app. main.py must include "
+        "`app.include_router(inventory_writes_router)`."
+    )
+    methods = set()
+    for r in move_routes:
+        methods |= set(getattr(r, "methods", set()) or set())
+    assert "POST" in methods
+
+
+def test_main_app_only_one_inventory_write_route():
+    """Move stock is the ONLY write route under /api/v1/inventory/* on
+    the production app. Any additional write here requires a new
+    SECURITY review."""
+    from app.main import app as production_app
+    writes = []
+    for r in production_app.routes:
+        path = getattr(r, "path", "")
+        if not path.startswith("/api/v1/inventory/"):
+            continue
+        methods = set(getattr(r, "methods", set()) or set())
+        if methods & {"POST", "PUT", "PATCH", "DELETE"}:
+            writes.append((path, methods))
+    assert len(writes) == 1, (
+        f"Expected exactly 1 write under /api/v1/inventory/*, got {writes}"
+    )
+    assert writes[0][0] == "/api/v1/inventory/pieces/{piece_id}/location"
+    assert writes[0][1] == {"POST"}

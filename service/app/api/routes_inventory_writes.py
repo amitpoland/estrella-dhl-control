@@ -54,6 +54,8 @@ def move_piece_location(piece_id: str, payload: MoveStockRequest) -> dict:
       404 PIECE_NOT_FOUND
       409 WRONG_STATE          (piece is not in WAREHOUSE_STOCK)
       503 DB_UNAVAILABLE       (warehouse_db not initialised)
+      503 MIGRATION_PENDING    (idempotency_key column/index missing —
+                                operator must run the draft migration)
     """
     try:
         return move_piece(
@@ -65,10 +67,11 @@ def move_piece_location(piece_id: str, payload: MoveStockRequest) -> dict:
         )
     except MoveStockError as e:
         status_for = {
-            "INVALID_INPUT":    400,
-            "PIECE_NOT_FOUND":  404,
-            "WRONG_STATE":      409,
-            "DB_UNAVAILABLE":   503,
+            "INVALID_INPUT":     400,
+            "PIECE_NOT_FOUND":   404,
+            "WRONG_STATE":       409,
+            "MIGRATION_PENDING": 503,
+            "DB_UNAVAILABLE":    503,
         }
         raise HTTPException(
             status_code=status_for.get(e.code, 500),

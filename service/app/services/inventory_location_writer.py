@@ -88,6 +88,19 @@ def move_piece(
     if wdb._db_path is None:
         raise MoveStockError("DB_UNAVAILABLE", "warehouse_db not initialised")
 
+    # 0. Migration precheck — column + index must exist BEFORE we issue
+    #    the INSERT, otherwise SQLite raises OperationalError("no column
+    #    named idempotency_key") which the writer's IntegrityError catch
+    #    does NOT handle, propagating as a raw 500 with SQL text in the
+    #    traceback. Fail fast and explicit instead.
+    if not wdb.ensure_idempotency_schema():
+        raise MoveStockError(
+            "MIGRATION_PENDING",
+            "idempotency_key migration not applied — endpoint disabled until "
+            "operator runs the draft_20260512_002516_idempotency_key migration "
+            "against warehouse.db",
+        )
+
     # 1. State gate — piece must be in WAREHOUSE_STOCK (Doc 2 rule).
     #    Done BEFORE the write so we don't waste an insert+rollback
     #    on a piece that can't legally move.
