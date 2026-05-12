@@ -25,6 +25,113 @@ Production: `C:\PZ` | Service: `PZService` (NSSM, port 47213) | Public: `https:/
 
 ---
 
+## MANDATORY GOVERNANCE GATES
+
+These gates apply to ALL implementation work in this repository.
+They are not optional and not negotiable per-task. The cost of a
+broken gate is real production damage; the cost of honoring a gate
+is a few minutes of disciplined waiting.
+
+These gates **supersede** any older governance language elsewhere in
+this file. Where prior language survives below as operational
+guidance (workflow steps, posting formats, etc.), it is subordinate
+to GATES 1–6.
+
+### GATE 1 — PR OPEN DISCIPLINE
+A PR may not be opened until ALL of the following are true:
+- Every named subagent has returned a verdict block (or explicitly
+  failed dispatch with disclosure)
+- Every HIGH or CRITICAL finding has been resolved inline OR
+  explicitly escalated to operator
+- Required browser verification (if UI changes) completed with
+  console + network logs reviewed
+- Regression tests have run with verdict (make verify or pytest -k
+  targeted suite)
+- Forbidden-files check confirms no out-of-scope edits
+
+If any of these is incomplete at PR-open time, BLOCK and report
+instead of opening.
+
+### GATE 2 — MAXIMUM OPEN PR COUNT
+Hard limit: 3 simultaneous open PRs from this repository.
+- If 3 PRs are already open when a new implementation task begins,
+  switch to merge-and-review mode: clear at least 1 PR from the
+  queue before opening another.
+- This applies across sessions. A future session inheriting 3 open
+  PRs must close at least 1 before opening a 4th.
+- Exception: governance-only / docs-only PRs may stack 1 additional
+  beyond the limit (so 3 implementation + 1 docs = 4 max), since
+  docs PRs are zero blast radius.
+
+### GATE 3 — BRANCH STATUS DESIGNATION
+Every branch must carry one of three explicit status labels:
+- ACTIVE: work in progress, may merge to main
+- REFERENCE_ONLY: preserved for design history, never merges
+- ARCHIVED: frozen, may merge nothing, may delete after retention
+  period
+
+Branches that pass salvage audit with "FULL ABANDON" verdict MUST
+receive an archive tag of form:
+`git tag archive/<branch-name>-<YYYY-MM-DD>`
+before being marked ARCHIVED.
+
+A branch with no status designation is treated as ACTIVE by default
+and assumed merge-eligible — this is unsafe and must be corrected on
+first contact.
+
+### GATE 4 — SALVAGE FINDING DISPOSITION
+Every salvage opportunity surfaced by an audit must receive exactly
+one of:
+- SCHEDULED: filed as a task with a specific target session
+- ISSUE: filed as a GitHub issue with appropriate labels
+- REJECTED: explicit operator rejection with reasoning logged in
+  the audit report
+
+"Recommendation noted" is not a valid disposition. A salvage finding
+without disposition becomes lost governance debt.
+
+### GATE 5 — AGENT SUBSTITUTION DISCLOSURE
+If a named subagent is not in the current registry, the substituting
+agent must:
+- Be named explicitly in Section 2 of the final report
+- Have capability equivalence stated ("X-detection covers the gap
+  identification scope of gap-hunter; X-review covers ADR conformance
+  scope of adr-historian")
+- Have the registry mismatch logged for follow-up registry repair
+
+Silent substitution is forbidden. A missing agent surfaces as a
+disclosure, not as a reduced report.
+
+### GATE 6 — BROWSER VERIFICATION COMPLETENESS
+Implementation is not complete until:
+- Browser flow tested end-to-end through every modified path
+- Console errors checked (no new red entries)
+- Network requests verified (no 4xx/5xx on happy path; expected
+  errors confirmed on error paths)
+- Execution path verified (button click → API call → DB change →
+  UI update — full chain)
+
+Code that compiles + passes unit tests is not the same as code that
+works in the browser. The latter is the bar for "shipped."
+
+For backend-only changes (no UI surface), this gate is N/A. For
+admin endpoints (curl-able but no UI), curl + audit-log verification
+substitutes.
+
+### Subordinate-language note
+
+The "Production deployment rule (PERMANENT)" section above (the
+7-agent gate) is a **specialisation of GATE 1** for production
+deploys: it adds named-agent + named-test requirements but does not
+relax any GATE-1 condition. Where the two could be read in tension,
+GATE 1 controls.
+
+The "Operating rules" and "When asked to run a shipment" sections
+below are operational guidance — subordinate to GATES 1–6. If a
+shipment-run step would skip a GATE check, the GATE wins.
+
+---
+
 ## Available integration
 
 The Zoho Cliq MCP connector for Estrella is:
