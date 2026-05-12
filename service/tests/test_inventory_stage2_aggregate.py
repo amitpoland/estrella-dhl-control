@@ -96,9 +96,12 @@ def test_no_write_methods_registered():
               if getattr(r, "path", "").startswith("/api/v1/inventory/")]
     assert routes, "No /api/v1/inventory/ routes registered"
     allowed_writes = {
-        "/api/v1/inventory/pieces/{piece_id}/location",       # Move stock — POST
-        "/api/v1/inventory/pieces/{piece_id}/sample-out",     # Sample-out — POST (Phase B.1)
-        "/api/v1/inventory/pieces/{piece_id}/sample-return",  # Sample-return — POST (Phase B.1)
+        "/api/v1/inventory/pieces/{piece_id}/location",              # Move stock — POST
+        "/api/v1/inventory/pieces/{piece_id}/sample-out",            # Sample-out — POST (Phase B.1)
+        "/api/v1/inventory/pieces/{piece_id}/sample-return",         # Sample-return — POST (Phase B.1)
+        "/api/v1/inventory/pieces/{piece_id}/return-from-client",    # Returns — POST (Phase B.2)
+        "/api/v1/inventory/pieces/{piece_id}/return-to-producer",    # Returns — POST (Phase B.2)
+        "/api/v1/inventory/pieces/{piece_id}/return-from-producer",  # Returns — POST (Phase B.2)
     }
     for route in routes:
         path = getattr(route, "path", "")
@@ -191,22 +194,26 @@ def test_honest_zero_vs_null_distinguished():
     assert d_zero["stage2"]["final_stock"] != d_null["stage2"]["final_stock"]
 
 
+_FULL_COUNT_BY_STATE = {
+    "WAREHOUSE_STOCK":       12,
+    "SAMPLE_OUT":             3,
+    "RETURNED_FROM_CLIENT":   2,
+    "RETURNED_TO_PRODUCER":   1,
+    "PURCHASE_TRANSIT":       0,
+    "DIRECT_DISPATCH_READY":  0,
+    "CLIENT_DISPATCHED":      0,
+    "SALES_TRANSIT":          0,
+    "CLOSED":                 0,
+}
+
+
 def test_samples_count_derived_from_sample_out_state():
-    """Phase B.1 — samples count now derives from
-    inventory_state.state='SAMPLE_OUT' (mirrors WAREHOUSE_STOCK for
-    final_stock). No mock = real DB; fixture-free path is exercised
-    elsewhere via patching."""
+    """Phase B.1 — samples count derives from
+    inventory_state.state='SAMPLE_OUT'. With Phase B.2 keys present the
+    response is fully ok status."""
     with patch(
         "app.services.inventory_stage2_aggregator.inventory_state_engine.count_by_state",
-        return_value={
-            "WAREHOUSE_STOCK":       12,
-            "SAMPLE_OUT":             3,
-            "PURCHASE_TRANSIT":       0,
-            "DIRECT_DISPATCH_READY":  0,
-            "CLIENT_DISPATCHED":      0,
-            "SALES_TRANSIT":          0,
-            "CLOSED":                 0,
-        },
+        return_value=dict(_FULL_COUNT_BY_STATE),
     ):
         r = client.get("/api/v1/inventory/stage2/aggregate")
         data = r.json()
@@ -216,7 +223,6 @@ def test_samples_count_derived_from_sample_out_state():
         assert data["stage2"]["samples"]["confidence"] == "HIGH"
         assert data["stage2"]["final_stock"]["count"] == 12
         assert data["status"] == "ok"
-        # No samples-specific limitation when count is numeric.
         assert not any(lim.startswith("samples:")
                        for lim in data["limitations"])
 
@@ -224,23 +230,79 @@ def test_samples_count_derived_from_sample_out_state():
 def test_samples_zero_count_is_honest_when_no_sample_out_pieces():
     """Empty SAMPLE_OUT bucket in a real (fully-keyed) count_by_state
     dict → samples count = 0, NOT null, NOT a limitation."""
+    zeros = dict(_FULL_COUNT_BY_STATE)
+    zeros["WAREHOUSE_STOCK"] = 5
+    for k in ("SAMPLE_OUT", "RETURNED_FROM_CLIENT", "RETURNED_TO_PRODUCER"):
+        zeros[k] = 0
     with patch(
         "app.services.inventory_stage2_aggregator.inventory_state_engine.count_by_state",
-        return_value={
-            "WAREHOUSE_STOCK":       5,
-            "SAMPLE_OUT":            0,
-            "PURCHASE_TRANSIT":      0,
-            "DIRECT_DISPATCH_READY": 0,
-            "CLIENT_DISPATCHED":     0,
-            "SALES_TRANSIT":         0,
-            "CLOSED":                0,
-        },
+        return_value=zeros,
     ):
         r = client.get("/api/v1/inventory/stage2/aggregate")
         data = r.json()
         assert data["stage2"]["samples"]["count"] == 0
         assert data["status"] == "ok"
         assert not any(lim.startswith("samples:")
+                       for lim in data["limitations"])
+
+
+def test_returns_count_derived_from_two_states():
+    """Phase B.2 — returns.count = RETURNED_FROM_CLIENT + RETURNED_TO_PRODUCER.
+    subcounts.from_client / to_producer expose the split."""
+    with patch(
+        "app.services.inventory_stage2_aggregator.inventory_state_engine.count_by_state",
+        return_value=dict(_FULL_COUNT_BY_STATE),
+    ):
+        r = client.get("/api/v1/inventory/stage2/aggregate")
+        data = r.json()
+        returns = data["stage2"]["returns"]
+        assert returns["count"] == 3   # 2 + 1
+        assert returns["basis"] == \
+            "inventory_state.state IN ('RETURNED_FROM_CLIENT', 'RETURNED_TO_PRODUCER')"
+        assert returns["confidence"] == "HIGH"
+        assert returns["subcounts"]["from_client"] == 2
+        assert returns["subcounts"]["to_producer"] == 1
+        assert data["status"] == "ok"
+        assert not any(lim.startswith("returns:")
+                       for lim in data["limitations"])
+
+
+def test_returns_missing_key_degrades_alone():
+    """Mock dict without RETURNED_FROM_CLIENT key → returns degrades,
+    samples + final_stock still derive."""
+    partial = dict(_FULL_COUNT_BY_STATE)
+    del partial["RETURNED_FROM_CLIENT"]
+    with patch(
+        "app.services.inventory_stage2_aggregator.inventory_state_engine.count_by_state",
+        return_value=partial,
+    ):
+        r = client.get("/api/v1/inventory/stage2/aggregate")
+        data = r.json()
+        assert data["stage2"]["final_stock"]["count"] == 12
+        assert data["stage2"]["samples"]["count"] == 3
+        assert data["stage2"]["returns"]["count"] is None
+        assert data["status"] == "degraded"
+        assert any("RETURNED_FROM_CLIENT or RETURNED_TO_PRODUCER" in lim
+                   for lim in data["limitations"])
+
+
+def test_returns_subcounts_zero_when_no_returns_pieces():
+    """Both returns keys present at 0 → returns.count=0,
+    subcounts={from_client:0, to_producer:0}, no limitation."""
+    zeros = dict(_FULL_COUNT_BY_STATE)
+    for k in ("RETURNED_FROM_CLIENT", "RETURNED_TO_PRODUCER"):
+        zeros[k] = 0
+    with patch(
+        "app.services.inventory_stage2_aggregator.inventory_state_engine.count_by_state",
+        return_value=zeros,
+    ):
+        r = client.get("/api/v1/inventory/stage2/aggregate")
+        data = r.json()
+        assert data["stage2"]["returns"]["count"] == 0
+        assert data["stage2"]["returns"]["subcounts"]["from_client"] == 0
+        assert data["stage2"]["returns"]["subcounts"]["to_producer"] == 0
+        assert data["status"] == "ok"
+        assert not any(lim.startswith("returns:")
                        for lim in data["limitations"])
 
 
@@ -257,12 +319,12 @@ def test_no_stale_samples_limitation_emitted_anymore():
         )
 
 
-def test_returns_consignment_unknown_remain_pending():
-    """Phase B.1 only activated samples. Returns, consignment, unknown
-    have no backing state or table yet and must stay null + limited."""
+def test_consignment_unknown_remain_pending():
+    """Phase B.2 activated returns. Consignment + unknown remain
+    null + limited until their backend support lands."""
     r = client.get("/api/v1/inventory/stage2/aggregate")
     data = r.json()
-    for cat in ("returns", "consignment", "unknown"):
+    for cat in ("consignment", "unknown"):
         assert data["stage2"][cat]["count"] is None, \
             f"{cat} must remain null until backend support lands"
         assert any(cat in lim for lim in data["limitations"]), \

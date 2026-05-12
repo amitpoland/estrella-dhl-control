@@ -40,6 +40,7 @@ _KIND_PRIORITY: Dict[str, int] = {
     "lifecycle": 0,
     "movement":  1,
     "sample":    2,
+    "returns":   3,
 }
 
 
@@ -73,6 +74,29 @@ def _sample_summary(row: Dict[str, Any]) -> str:
     if direction == "return":
         return "sample-return to warehouse"
     return f"sample event ({direction or 'unknown'})"
+
+
+def _returns_summary(row: Dict[str, Any]) -> str:
+    direction = (row.get("direction") or "").strip()
+    if direction == "from_client":
+        source = (row.get("source_holder_name") or "").strip() or "client"
+        reason = (row.get("return_reason") or "").strip()
+        if reason:
+            return f"returned from {source} ({reason})"
+        return f"returned from {source}"
+    if direction == "to_producer":
+        producer = (row.get("producer_name") or "").strip() or "producer"
+        reason   = (row.get("return_reason") or "").strip()
+        if reason:
+            return f"returned to {producer} ({reason})"
+        return f"returned to {producer}"
+    if direction == "producer_restock":
+        return "returned from producer to warehouse"
+    if direction == "restock":
+        return "RMA restocked to warehouse"
+    if direction == "producer_to_rma":
+        return "producer-returned to RMA"
+    return f"returns event ({direction or 'unknown'})"
 
 
 def _lifecycle_entries(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -132,6 +156,31 @@ def _sample_entries(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "expected_return_date":   r.get("expected_return_date")   or "",
                 "linked_origin_event_id": r.get("linked_origin_event_id") or "",
                 "notes":                  r.get("notes")                  or "",
+            },
+        })
+    return out
+
+
+def _returns_entries(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        out.append({
+            "kind":        "returns",
+            "occurred_at": r.get("occurred_at") or "",
+            "operator":    r.get("operator")   or "",
+            "event_id":    r.get("id")         or "",
+            "summary":     _returns_summary(r),
+            "detail": {
+                "direction":                r.get("direction")                or "",
+                "source_holder_name":       r.get("source_holder_name")       or "",
+                "producer_name":            r.get("producer_name")            or "",
+                "producer_id":              r.get("producer_id")              or "",
+                "return_reason":            r.get("return_reason")            or "",
+                "received_at":              r.get("received_at")              or "",
+                "expected_resolution_date": r.get("expected_resolution_date") or "",
+                "dispatch_reference":       r.get("dispatch_reference")       or "",
+                "linked_origin_event_id":   r.get("linked_origin_event_id")   or "",
+                "notes":                    r.get("notes")                    or "",
             },
         })
     return out
@@ -225,12 +274,20 @@ def get_piece_detail(piece_id: str, as_of: Optional[str] = None) -> Dict[str, An
         limitations.append(f"sample_out_events: {e!s}"
                            or "sample_out_events: reader failed")
 
+    try:
+        returns_rows = warehouse_db.get_returns_history(piece_id)
+    except Exception as e:
+        returns_rows = []
+        limitations.append(f"returns_events: {e!s}"
+                           or "returns_events: reader failed")
+
     # 4. Compose unified timeline. Server-side merge + sort by
     #    (occurred_at asc, kind priority asc, event_id asc).
     merged: List[Dict[str, Any]] = []
     merged.extend(_lifecycle_entries(lifecycle_rows))
     merged.extend(_movement_entries(movement_rows))
     merged.extend(_sample_entries(sample_rows))
+    merged.extend(_returns_entries(returns_rows))
     merged.sort(key=_sort_key)
 
     return {

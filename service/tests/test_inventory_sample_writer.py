@@ -363,9 +363,10 @@ def test_sample_routes_registered_on_main_app():
     assert "/api/v1/inventory/pieces/{piece_id}/sample-return" in paths
 
 
-def test_main_app_inventory_writes_are_only_three():
-    """Move stock + sample-out + sample-return = exactly 3 writes under
-    /api/v1/inventory/*. Any addition requires new SECURITY review."""
+def test_main_app_inventory_writes_match_full_allowlist():
+    """Phase B.2 expands the inventory write allowlist to 6:
+      Move stock (1) + Sample-out/return (2) + Returns x3 (Phase B.2).
+    Any addition requires new SECURITY review."""
     from app.main import app as prod
     writes = []
     for r in prod.routes:
@@ -379,6 +380,9 @@ def test_main_app_inventory_writes_are_only_three():
         "/api/v1/inventory/pieces/{piece_id}/location",
         "/api/v1/inventory/pieces/{piece_id}/sample-out",
         "/api/v1/inventory/pieces/{piece_id}/sample-return",
+        "/api/v1/inventory/pieces/{piece_id}/return-from-client",
+        "/api/v1/inventory/pieces/{piece_id}/return-to-producer",
+        "/api/v1/inventory/pieces/{piece_id}/return-from-producer",
     }
     actual = {p for p, _ in writes}
     assert actual == expected, (
