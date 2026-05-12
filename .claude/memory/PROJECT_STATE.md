@@ -4,6 +4,8 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
+**Last-run-at:** 2026-05-13 (initial scaffold by meta-agent observation layer PR; refreshed by `flow-context-keeper` on every subsequent fire). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
+
 ---
 
 # FACTS

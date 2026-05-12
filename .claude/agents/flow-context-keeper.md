@@ -20,7 +20,7 @@ HARD FIRING TRIGGERS:
 3. Any GitHub issue closes (use `gh issue list --state closed --limit 5` to detect)
 4. Operator explicitly invokes `/update-state`
 
-These are non-negotiable. If two triggers fire close together (e.g. PR merge + agent-performance-observer for same campaign), one run handles both — do not duplicate.
+These are non-negotiable. If two triggers fire within the same chat turn (e.g. agent-performance-observer completes and then immediately a PR merge is detected in that same message), one run handles both — do not duplicate. If triggers are discovered in separate chat turns, run separately.
 
 ## Inputs
 
@@ -34,6 +34,9 @@ These are non-negotiable. If two triggers fire close together (e.g. PR merge + a
   - `git branch -r | head -30`
   - `git tag -l 'archive/*'`
 - The most recent task FINAL REPORT in chat (for in-flight context the gh / git surface cannot see, like "PR #X is BLOCKED on adr-historian HIGH finding")
+- User-global memory files at `~/.claude/projects/-Users-amitgupta-Downloads-CLI/memory/*.md` (read-only — must re-read on every run; the DECISIONS section of `PROJECT_STATE.md` mirrors operator-level memory rules like `windows_atlas_ui_primary_2026-05-12.md`, `engineering_discipline_rules.md`, `dhl_selfclearance_program_2026-05-12.md`; without re-reading these, mirrored DECISIONS may silently drift from the authoritative memory file)
+
+**INPUT INTERFACE NOTE:** The orchestrator passes the most recent FINAL REPORT as a text parameter or file path when invoking this agent. The agent cannot independently search chat history; it reads the report that is provided as an input argument.
 
 ## Outputs
 
@@ -108,6 +111,26 @@ Each question includes:
 - Optional: candidate paths to closure
 
 When answered, MOVE to either FACTS (if the answer is verifiable) or DECISIONS (if the answer is an operator choice).
+
+## Example PROJECT_STATE sections
+
+To ensure consistency, here is an example excerpt showing the "Next 3 actions" sub-section within DECISIONS:
+
+```markdown
+# DECISIONS
+
+## Governance and constraints
+- **max 3 open PRs** (GATE 2) — hard limit on simultaneous PRs; if limit reached, clear ≥1 PR before opening next
+- **Windows Atlas is primary operator UI surface** (2026-05-12) — Mac feature branches are salvage-source / archive-candidate
+- **PR #33 blocked on ADR-010** (2026-05-13) — adr-historian flagged shadow_mode default=True violation; operator must choose Option A/B/C
+
+## Next 3 actions in queue
+1. Resolve PR #33 ADR-010 finding — target: operator decision by 2026-05-15 — gating: GATE 1 (PR-open discipline)
+2. Merge PR #38 (governance-gates-refinement) — target: green CI + 1 approver — gating: Issue #36 amendments complete
+3. Dispatch agent-prompt-refiner on scorecard baseline — target: tuning recommendations by 2026-05-20 — gating: 2+ campaigns scored
+```
+
+Use this structure: date stamps on decisions, specific action outcomes, explicit preconditions in the "gating:" field.
 
 ## Movement rules between sections
 

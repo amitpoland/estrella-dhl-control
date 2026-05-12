@@ -183,14 +183,14 @@ The operator may invoke `/observe` to force
 The operator may invoke `/update-state` to force
 `flow-context-keeper` to refresh `PROJECT_STATE.md`.
 
-### RULE 5 — Self-evaluation cadence
+### RULE 5 — Self-evaluation cadence (calendar-driven)
 
-`agent-performance-observer` must self-evaluate every 5 runs.
-Reads its own previous 5 scorecards, scores self on the same 6
-dimensions, reports degradation if any. The output goes to
-`.claude/memory/scorecards/self-eval-<YYYY-MM-DD>.md`. Self-blind
-agents degrade silently; the every-5th-run cadence is the system's
-anti-blind-spot.
+`agent-performance-observer` must self-evaluate on a calendar-driven
+cadence. Trigger self-evaluation if:
+- The most recent self-eval file (`.claude/memory/scorecards/self-eval-*.md`) is older than 7 calendar days, OR
+- The most recent self-eval flagged `SELF-DEGRADATION DETECTED` and this is the 3rd campaign scorecard run since it.
+
+When triggered: read the previous 5 campaign scorecards, score self on the same 6 dimensions, report degradation if any. Output goes to `.claude/memory/scorecards/self-eval-<YYYY-MM-DD>.md`. Self-blind agents degrade silently; the calendar-driven cadence is the system's anti-blind-spot.
 
 ### RULE 6 — Observer outputs must be visible
 
@@ -200,6 +200,20 @@ every session. Hidden observation = no observation.
 
 If a task report cites a scorecard, the citation must include the
 scorecard's file path so an operator can audit it directly.
+
+Enforcement mechanism: `flow-context-keeper` must record every
+scorecard file produced by `agent-performance-observer` in the
+FACTS section of `PROJECT_STATE.md`, with date and file path. If
+a scorecard exists in `.claude/memory/scorecards/` but is not
+cited in PROJECT_STATE.md, that scorecard is invisible to future
+operators — RULE 6 has failed.
+
+**NEEDS-TUNING / UNRELIABLE verdicts are GATE 4 salvage findings.**
+When `agent-performance-observer` produces a scorecard with any
+NEEDS-TUNING or UNRELIABLE verdict, that verdict is structurally
+analogous to a salvage finding and MUST receive exactly one
+disposition per GATE 4: SCHEDULED, ISSUE, or REJECTED. "Recommendation
+noted" is not a valid disposition for an observer verdict either.
 
 ### Deferred meta-agents (logged here for traceability)
 

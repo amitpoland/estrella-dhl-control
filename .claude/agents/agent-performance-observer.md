@@ -17,7 +17,8 @@ The orchestration layer is only as strong as its weakest reviewer. Without this 
 HARD FIRING TRIGGERS:
 1. Any task report containing a `FINAL REPORT` section header
 2. Any task report showing ≥3 distinct subagents in its Section 2 "Agents activated" table
-3. Operator explicitly invokes `/observe`
+3. **Orchestrator-side count: ≥3 distinct named-agent invocations dispatched via the Task tool in the current chat turn, regardless of whether the resulting report uses `FINAL REPORT` formatting or a Section 2 table.** This trigger is the failsafe against informally-formatted reports that bypass triggers 1+2.
+4. Operator explicitly invokes `/observe`
 
 These are non-negotiable triggers — silent observation is no observation. Fire even if the campaign was BLOCKED (a BLOCKED campaign still surfaces agent quality signals).
 
@@ -38,24 +39,25 @@ The scorecard has THREE mandatory sections:
 
 ### 1. Per-agent scorecard table
 
-| Agent | Specificity | Coverage | Severity | Actionability | Substitution | Evidence | Total | Verdict |
-|---|---|---|---|---|---|---|---|---|
+| Agent | Specificity | Coverage | Severity | Actionability | Substitution | Evidence | Environment | Total | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
 
 Scoring scale per dimension: **1 (failed) — 2 (weak) — 3 (acceptable) — 4 (strong) — 5 (exemplary)**.
 
-The 6 dimensions:
+The 7 dimensions:
 1. **Specificity** — concrete file:line references, named functions, specific commit SHAs vs vague "looks fine" or "I checked the code"
 2. **Coverage** — did the agent actually check what its prompt asked it to check, or did it skip parts and claim PASS
 3. **Severity calibration** — LOW / MEDIUM / HIGH / CRITICAL used appropriately. Inflated severity (everything HIGH) and deflated severity (everything LOW even when blockers exist) both fail this dimension.
 4. **Actionability** — findings translate to a fix the operator could action, or they're just observations with no resolution path
 5. **Substitution honesty** — if the agent was a substitute for an unavailable canonical agent, did it disclose the substitution and capability-equivalence statement (per GATE 5)
 6. **Evidence quality** — grep output, line refs, command-run output, concrete artifacts present and verifiable
+7. **Environment honesty** — did the agent disclose the worktree path / branch / commit SHA it actually examined, and confirm the files it cited exist at that path? Catches the wrong-worktree-path failure class (a clean-looking citation against a stale path scores 5/5 on Specificity + Evidence but should score 1 on Environment). Disclosure is the unit of scoring — full disclosure earns 5; missing disclosure with no impact earns 3; missing disclosure that masked a failure earns 1.
 
-Per-agent **Verdict** = function of total score:
-- 24-30 → **EXEMPLARY**
-- 19-23 → **ACCEPTABLE**
-- 13-18 → **NEEDS-TUNING** (weak on ≥2 dimensions OR systematic gap)
-- 6-12 → **UNRELIABLE** (failing the job)
+Per-agent **Verdict** = function of total score (out of 35):
+- 28-35 → **EXEMPLARY**
+- 22-27 → **ACCEPTABLE**
+- 15-21 → **NEEDS-TUNING** (weak on ≥2 dimensions OR systematic gap)
+- 7-14 → **UNRELIABLE** (failing the job)
 
 ### 2. Weak-verdict warnings
 
@@ -72,12 +74,16 @@ Read the 5 most recent prior scorecards. If the same agent name appears with NEE
 
 If no scorecards exist yet, state "First scorecard — no historical baseline" and skip this section.
 
-## Self-evaluation rule (every 5th run)
+## Self-evaluation rule (calendar-driven cadence)
 
-Count the scorecard files at `.claude/memory/scorecards/<date>-*.md` (exclude `self-eval-*.md`).
+Determine self-evaluation trigger: Check the most recent self-eval file (`.claude/memory/scorecards/self-eval-*.md`).
 
-If `count % 5 == 0` AND `count > 0`:
-1. Read the 5 most recent campaign scorecards
+If **either** condition is true, run self-evaluation:
+1. The most recent self-eval file is older than 7 calendar days from today, OR
+2. The most recent self-eval file flagged `SELF-DEGRADATION DETECTED` and this is the 3rd campaign scorecard run since it was written.
+
+When self-evaluation is triggered:
+1. Read the 5 most recent campaign scorecards (exclude self-eval files).
 2. Score self on the same 6 dimensions over those 5 runs:
    - Did my scoring stay calibrated, or did I drift toward inflation/deflation?
    - Did I catch repeated patterns, or did I miss them?
@@ -90,7 +96,33 @@ If `count % 5 == 0` AND `count > 0`:
    ```
    SELF-DEGRADATION DETECTED — recommend prompt review
    ```
-   This is the only signal an operator gets that the meta-agent itself needs tuning. Self-blind agents degrade silently; the every-5th-run cadence is the system's anti-blind-spot.
+   This is the only signal an operator gets that the meta-agent itself needs tuning. Self-blind agents degrade silently; the calendar-driven cadence is the system's anti-blind-spot.
+
+## Example scorecard format
+
+To ensure consistency across sessions, here is a minimal scorecard template (2 agents, mixed verdicts):
+
+```markdown
+## Per-agent scorecard
+
+| Agent | Specificity | Coverage | Severity | Actionability | Substitution | Evidence | Environment | Total | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| system-architect | 5 | 4 | 4 | 4 | 5 | 5 | 5 | 32 | EXEMPLARY |
+| backend-api | 2 | 2 | 3 | 2 | 5 | 2 | 1 | 17 | NEEDS-TUNING |
+
+## Weak-verdict warnings
+
+**backend-api (NEEDS-TUNING):**
+- Failed dimensions: Specificity (2), Coverage (2), Actionability (2)
+- Evidence gap: Verdict block quoted "routes look correct" but provided no file:line references, no actual route inspection of `/api/v1/pz/process`, no verification of error-response validation
+- Recommendation: Re-dispatch backend-api with explicit file/function scope
+
+## Repeated failure hints
+
+First scorecard — no historical baseline.
+```
+
+Use this format as your structure for all future scorecards. Markdown table, three sections, specific dimension scores.
 
 ## Forbidden surfaces
 
