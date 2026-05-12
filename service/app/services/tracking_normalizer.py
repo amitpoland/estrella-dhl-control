@@ -68,6 +68,90 @@ CUSTOMS_WORKFLOW_STAGES: FrozenSet[str] = frozenset({
     "CUSTOMS_CLEARED",
 })
 
+# ── DHL self-clearance signal tokens (W-5 / P0 — ADR-013 / P3 watcher input) ──
+#
+# Additive vocabulary, layered on top of STAGE_ORDER. These are *signal* tokens
+# the P3 tracking watcher will react to (P0 introduces only the vocabulary +
+# detection rules; P3 wires the reactor).
+#
+# Locked at P0 (consumers in P2-P5 must reference these literals verbatim):
+SIGNAL_POLAND_ARRIVAL:     str = "poland_arrival"
+SIGNAL_CUSTOMS_PROCESSING: str = "customs_processing"
+SIGNAL_CUSTOMS_HOLD:       str = "customs_hold"
+SIGNAL_DELAY:              str = "delay"
+SIGNAL_REJECTED_PAPERWORK: str = "rejected_paperwork"
+
+SELFCLEARANCE_SIGNAL_TOKENS: FrozenSet[str] = frozenset({
+    SIGNAL_POLAND_ARRIVAL,
+    SIGNAL_CUSTOMS_PROCESSING,
+    SIGNAL_CUSTOMS_HOLD,
+    SIGNAL_DELAY,
+    SIGNAL_REJECTED_PAPERWORK,
+})
+
+# Substring detection rules for emitting self-clearance signal tokens.
+# Independent of _NORMALIZE_RULES (those map to STAGE_ORDER). These rules run
+# AGAINST the same raw_description + raw_status blob and return the set of
+# matched tokens (a single event may emit multiple tokens; e.g. a customs hold
+# *and* a delay).
+_SIGNAL_RULES: List[Tuple[str, str]] = [
+    # poland_arrival — destination country is Poland on this event
+    # (also detected by tracking_normalizer milestone emitter via location,
+    # but the signal token is convenient for the P3 watcher to consume directly)
+    ("arrived at destination country - poland",  SIGNAL_POLAND_ARRIVAL),
+    ("arrived warsaw",                           SIGNAL_POLAND_ARRIVAL),
+    # customs_processing — customs is actively reviewing
+    ("under customs review",                     SIGNAL_CUSTOMS_PROCESSING),
+    ("customs processing",                       SIGNAL_CUSTOMS_PROCESSING),
+    ("customs status updated",                   SIGNAL_CUSTOMS_PROCESSING),
+    # customs_hold — shipment held / clearance blocked
+    ("clearance on hold",                        SIGNAL_CUSTOMS_HOLD),
+    ("held by customs",                          SIGNAL_CUSTOMS_HOLD),
+    ("shipment on hold",                         SIGNAL_CUSTOMS_HOLD),
+    # delay — general delay / exception markers
+    ("shipment delayed",                         SIGNAL_DELAY),
+    ("delivery delayed",                         SIGNAL_DELAY),
+    ("delay in transit",                         SIGNAL_DELAY),
+    # rejected_paperwork — customs returned the documents
+    ("documents rejected",                       SIGNAL_REJECTED_PAPERWORK),
+    ("paperwork rejected",                       SIGNAL_REJECTED_PAPERWORK),
+    ("clearance rejected",                       SIGNAL_REJECTED_PAPERWORK),
+    ("incorrect documentation",                  SIGNAL_REJECTED_PAPERWORK),
+]
+
+
+def extract_selfclearance_signals(raw_event: Dict[str, Any]) -> FrozenSet[str]:
+    """
+    Inspect a raw tracking event dict and return the set of self-clearance
+    signal tokens detected. Empty frozenset if none matched.
+
+    Pure function. Reads only raw_description / description / status. Does
+    not mutate the event, does not consult location (callers can do that).
+    """
+    raw_description = (
+        raw_event.get("raw_description")
+        or raw_event.get("description")
+        or raw_event.get("status")
+        or raw_event.get("statusCode")
+        or ""
+    )
+    raw_status = (
+        raw_event.get("raw_status")
+        or raw_event.get("status")
+        or raw_event.get("statusCode")
+        or ""
+    )
+    blob = (str(raw_description) + " " + str(raw_status)).lower()
+    found: set = set()
+    for phrase, token in _SIGNAL_RULES:
+        if phrase in blob:
+            found.add(token)
+    # Poland arrival is also detectable via location country code.
+    loc = raw_event.get("location") or raw_event.get("loc") or ""
+    if _country_code_from_location(str(loc)) == "PL":
+        found.add(SIGNAL_POLAND_ARRIVAL)
+    return frozenset(found)
+
 # ── Timeline milestone allowlist (LOCKED — runtime-enforced) ──────────────────
 # tracking_normalizer may write ONLY these events into audit["timeline"].
 # Any other event name passed to _emit_milestone raises ValueError.
