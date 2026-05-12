@@ -842,6 +842,25 @@ def find_origin_sample_out_event(scan_code: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def get_sample_out_history(scan_code: str) -> List[Dict[str, Any]]:
+    """Append-only sample_out_events history for a scan_code.
+
+    Mirrors get_movement_history() in shape: chronological by
+    occurred_at ascending, empty list when DB unavailable or scan_code
+    is unknown. Used by inventory_piece_view to compose the unified
+    piece timeline (Phase B.2). Read-only.
+    """
+    if _db_path is None or not scan_code:
+        return []
+    with _connect() as con:
+        rows = con.execute(
+            """SELECT * FROM sample_out_events
+               WHERE scan_code=? ORDER BY occurred_at""",
+            (scan_code,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def count_open_overdue_samples_for_recipient(
     recipient_client_name: str, threshold_iso: str
 ) -> int:

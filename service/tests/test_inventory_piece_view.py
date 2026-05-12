@@ -43,8 +43,14 @@ def test_unknown_piece_returns_honest_empty():
 def test_envelope_schema():
     r = client.get("/api/v1/inventory/pieces/SCAN-001")
     data = r.json()
-    for key in ("piece_id", "as_of", "found", "state", "history", "degraded"):
+    # Phase B.2 — envelope now includes timeline + location + limitations.
+    # `history` is preserved as a legacy alias for one release.
+    for key in ("piece_id", "as_of", "found", "state",
+                "history", "timeline", "location", "limitations", "degraded"):
         assert key in data, f"Missing top-level key: {key}"
+    assert isinstance(data["timeline"],    list)
+    assert isinstance(data["limitations"], list)
+    assert isinstance(data["history"],     list)
 
 
 def test_as_of_validation():

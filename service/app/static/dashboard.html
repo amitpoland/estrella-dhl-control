@@ -1812,6 +1812,23 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
                     {overdue ? `⚠ ${days}d out · overdue` : `${days}d out`}
                   </span>
                 )}
+                {/* Phase B.2 — current location chip. Sourced from
+                    inventory_current_location via the unified piece
+                    endpoint. Shown only when populated. */}
+                {pieceDetail.location && pieceDetail.location.current_location && (
+                  <span data-testid="inventory-piece-location-chip"
+                    title={`Updated ${pieceDetail.location.updated_at || ''}`}
+                    style={{
+                      display: 'inline-block', padding: '2px 8px',
+                      background: 'var(--bg-subtle)',
+                      color: 'var(--text-2)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 10, fontSize: 10, fontWeight: 600,
+                      fontFamily: 'monospace',
+                    }}>
+                    📍 {pieceDetail.location.current_location}
+                  </span>
+                )}
               </div>
 
               <div style={{ fontSize: 12, marginBottom: 8 }}>
@@ -1822,27 +1839,85 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
                 <div><strong>design:</strong> {pieceDetail.state.design_no || '—'}</div>
                 <div><strong>updated:</strong> {pieceDetail.state.updated_at || '—'}</div>
               </div>
+
+              {/* Phase B.2 — Unified timeline. Replaces the legacy
+                  History section. Three event kinds (lifecycle,
+                  movement, sample) are merged server-side and sorted
+                  by occurred_at ascending. The legacy `history` field
+                  is still emitted by the backend for one release but
+                  the drawer renders `timeline` exclusively. */}
               <div style={{ fontSize: 11, color: 'var(--text-3)',
                             textTransform: 'uppercase', letterSpacing: '0.06em',
-                            margin: '12px 0 6px' }}>History</div>
-              {(!pieceDetail.history || pieceDetail.history.length === 0) ? (
-                <div data-testid="inventory-piece-drawer-history-empty"
+                            margin: '12px 0 6px' }}>Timeline</div>
+
+              {pieceDetail.limitations && pieceDetail.limitations.length > 0 && (
+                <div data-testid="inventory-piece-drawer-timeline-limitations"
+                  style={{ padding: '6px 10px', marginBottom: 6,
+                           background: 'var(--badge-amber-bg)',
+                           color: 'var(--badge-amber-text)',
+                           border: '1px solid var(--badge-amber-border)',
+                           borderRadius: 4, fontSize: 11 }}>
+                  <strong style={{ fontSize: 10, letterSpacing: '0.06em',
+                                   textTransform: 'uppercase' }}>
+                    {pieceDetail.limitations.length} source{pieceDetail.limitations.length === 1 ? '' : 's'} degraded
+                  </strong>
+                  <ul style={{ margin: '4px 0 0 14px', padding: 0, listStyle: 'disc' }}>
+                    {pieceDetail.limitations.map((lim, i) => (
+                      <li key={i} style={{ fontSize: 10.5, lineHeight: 1.5 }}>{lim}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {(!pieceDetail.timeline || pieceDetail.timeline.length === 0) ? (
+                <div data-testid="inventory-piece-drawer-timeline-empty"
                      style={{ fontSize: 11, color: 'var(--text-3)' }}>
                   No events.
                 </div>
               ) : (
-                <ul data-testid="inventory-piece-drawer-history"
-                    style={{ margin: 0, padding: '0 0 0 16px', fontSize: 11,
-                             color: 'var(--text-2)' }}>
-                  {pieceDetail.history.map((ev) => (
-                    <li key={ev.id} style={{ marginBottom: 4 }}>
-                      <strong>{ev.to_state}</strong>
-                      {' · '}
-                      <span style={{ color: 'var(--text-3)' }}>{ev.trigger}</span>
-                      {' · '}
-                      <span style={{ color: 'var(--text-3)' }}>{ev.occurred_at}</span>
-                    </li>
-                  ))}
+                <ul data-testid="inventory-piece-drawer-timeline"
+                    style={{ margin: 0, padding: '0 0 0 4px', fontSize: 11,
+                             color: 'var(--text-2)', listStyle: 'none' }}>
+                  {pieceDetail.timeline.map((ev) => {
+                    const icon = ev.kind === 'lifecycle' ? '◆'
+                               : ev.kind === 'movement'  ? '→'
+                               : (ev.detail && ev.detail.direction === 'return') ? '↙'
+                               : '↗';
+                    return (
+                      <li key={ev.event_id || `${ev.kind}-${ev.occurred_at}`}
+                          data-testid="inventory-piece-drawer-timeline-row"
+                          data-kind={ev.kind}
+                          style={{ display: 'flex', gap: 8,
+                                   padding: '4px 0',
+                                   borderBottom: '1px dotted var(--border-subtle)' }}>
+                        <span style={{ minWidth: 14, color: 'var(--text-3)',
+                                       fontFamily: 'monospace', fontSize: 12 }}>
+                          {icon}
+                        </span>
+                        <div style={{ flex: 1 }}>
+                          <div><strong>{ev.summary || ev.kind}</strong></div>
+                          {ev.kind === 'sample' && ev.detail && ev.detail.direction === 'out'
+                              && (ev.detail.recipient_client_name || ev.detail.expected_return_date) && (
+                            <div data-testid="inventory-piece-drawer-timeline-sample-detail"
+                                 style={{ fontSize: 10.5, color: 'var(--text-3)',
+                                          marginTop: 1 }}>
+                              {ev.detail.recipient_client_name && (
+                                <span>recipient: {ev.detail.recipient_client_name}</span>
+                              )}
+                              {ev.detail.recipient_client_name && ev.detail.expected_return_date && ' · '}
+                              {ev.detail.expected_return_date && (
+                                <span>expected return: {ev.detail.expected_return_date}</span>
+                              )}
+                            </div>
+                          )}
+                          <div style={{ fontSize: 10, color: 'var(--text-3)',
+                                        marginTop: 1 }}>
+                            {ev.occurred_at}{ev.operator ? ` · ${ev.operator}` : ''}
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
 
