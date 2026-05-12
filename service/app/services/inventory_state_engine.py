@@ -77,22 +77,41 @@ DIRECT_DISPATCH_READY  = "DIRECT_DISPATCH_READY"
 CLIENT_DISPATCHED      = "CLIENT_DISPATCHED"
 SALES_TRANSIT          = "SALES_TRANSIT"
 CLOSED                 = "CLOSED"
+# Phase B.1 — Sample-out lifecycle state. Piece is physically out at a
+# client / trade show / quality check; must return to WAREHOUSE_STOCK.
+# Explicitly NOT in PROFORMA_ELIGIBLE_STATES (see below).
+SAMPLE_OUT             = "SAMPLE_OUT"
 
 STATES: frozenset = frozenset({
     PURCHASE_TRANSIT, WAREHOUSE_STOCK,
     DIRECT_DISPATCH_READY, CLIENT_DISPATCHED,
     SALES_TRANSIT, CLOSED,
+    SAMPLE_OUT,
+})
+
+# Sample-out reason enum (operator-provided per piece).
+SAMPLE_OUT_REASONS: frozenset = frozenset({
+    "customer_review",
+    "quality_check",
+    "marketing_photo",
+    "trade_show",
+    "other",
 })
 
 # Map: from_state (or None for first entry) → set of legal to_states.
 LEGAL_TRANSITIONS: Dict[Optional[str], frozenset] = {
     None:                  frozenset({PURCHASE_TRANSIT}),
     PURCHASE_TRANSIT:      frozenset({WAREHOUSE_STOCK, DIRECT_DISPATCH_READY}),
-    WAREHOUSE_STOCK:       frozenset({SALES_TRANSIT}),
+    WAREHOUSE_STOCK:       frozenset({SALES_TRANSIT, SAMPLE_OUT}),
     DIRECT_DISPATCH_READY: frozenset({CLIENT_DISPATCHED}),
     CLIENT_DISPATCHED:     frozenset({CLOSED}),
     SALES_TRANSIT:         frozenset({CLOSED}),
     CLOSED:                frozenset(),
+    # Sample-out can ONLY return to WAREHOUSE_STOCK. Forbidden by absence:
+    # SAMPLE_OUT → CLOSED, SAMPLE_OUT → SALES_TRANSIT,
+    # SAMPLE_OUT → CLIENT_DISPATCHED, SAMPLE_OUT → DIRECT_DISPATCH_READY,
+    # SAMPLE_OUT → PURCHASE_TRANSIT, SAMPLE_OUT → SAMPLE_OUT (no double).
+    SAMPLE_OUT:            frozenset({WAREHOUSE_STOCK}),
 }
 
 # Default trigger label for each transition; callers may override.
@@ -104,6 +123,8 @@ DEFAULT_TRIGGER: Dict[tuple, str] = {
     (WAREHOUSE_STOCK,       SALES_TRANSIT):         "invoice_issued",
     (SALES_TRANSIT,         CLOSED):                "delivery_confirmed",
     (CLIENT_DISPATCHED,     CLOSED):                "delivery_confirmed",
+    (WAREHOUSE_STOCK,       SAMPLE_OUT):            "sample_out_marked",
+    (SAMPLE_OUT,            WAREHOUSE_STOCK):       "sample_returned",
 }
 
 # Lifecycle states that satisfy a Proforma stock-readiness gate.
@@ -206,16 +227,20 @@ def _has_receive_event(con: sqlite3.Connection, scan_code: str) -> bool:
 
 def transition(
     *,
-    scan_code:           str,
-    to_state:            str,
-    trigger:             Optional[str] = None,
-    product_code:        str = "",
-    design_no:           str = "",
-    batch_id:            str = "",
-    operator:            str = "",
-    note:                str = "",
-    customer_allocation: str = "",
-    customs_cleared:     bool = False,
+    scan_code:                str,
+    to_state:                 str,
+    trigger:                  Optional[str] = None,
+    product_code:             str = "",
+    design_no:                str = "",
+    batch_id:                 str = "",
+    operator:                 str = "",
+    note:                     str = "",
+    customer_allocation:      str = "",
+    customs_cleared:          bool = False,
+    # ── Sample-out evidence (only consulted when to_state == SAMPLE_OUT) ─
+    recipient_client_name:    str = "",
+    expected_return_date:     str = "",
+    sample_reason:            str = "",
 ) -> Dict[str, Any]:
     """
     Move *scan_code* into *to_state*. Validates the transition is legal from
@@ -223,8 +248,20 @@ def transition(
     event to inventory_state_events.
 
     Raises ValueError on illegal transition, unknown to_state, or — for
-    DIRECT_DISPATCH_READY — missing evidence (operator, customer_allocation,
-    customs_cleared, or no prior RECEIVE movement event).
+    states that require evidence — missing/invalid evidence. Evidence
+    contracts per to_state:
+
+      DIRECT_DISPATCH_READY:
+        - operator non-empty
+        - customer_allocation non-empty
+        - customs_cleared True
+        - a RECEIVE movement event must already exist
+
+      SAMPLE_OUT:
+        - operator non-empty
+        - recipient_client_name non-empty
+        - sample_reason in SAMPLE_OUT_REASONS
+        - expected_return_date ISO 8601 and in the future
     """
     if not scan_code:
         raise ValueError("scan_code is required")
@@ -264,6 +301,49 @@ def transition(
             if missing:
                 raise ValueError(
                     f"DIRECT_DISPATCH_READY requires evidence; missing: "
+                    f"{', '.join(missing)}"
+                )
+
+        # Evidence gate — Sample-out (Phase B.1). Forbids transition into
+        # SAMPLE_OUT without operator + recipient + valid reason + future
+        # expected return. Forbidden transitions (SAMPLE_OUT → anything
+        # except WAREHOUSE_STOCK) are blocked by absence from
+        # LEGAL_TRANSITIONS and rejected by the legality check above.
+        if to_state == SAMPLE_OUT:
+            missing = []
+            if not (operator or "").strip():
+                missing.append("operator")
+            if not (recipient_client_name or "").strip():
+                missing.append("recipient_client_name")
+            if not (sample_reason or "").strip():
+                missing.append("sample_reason")
+            elif sample_reason not in SAMPLE_OUT_REASONS:
+                missing.append(
+                    f"sample_reason∈{sorted(SAMPLE_OUT_REASONS)} "
+                    f"(got {sample_reason!r})"
+                )
+            if not (expected_return_date or "").strip():
+                missing.append("expected_return_date")
+            else:
+                try:
+                    erd_normalized = (
+                        expected_return_date.replace("Z", "+00:00")
+                        if expected_return_date.endswith("Z")
+                        else expected_return_date
+                    )
+                    erd = datetime.fromisoformat(erd_normalized)
+                    if erd.tzinfo is None:
+                        erd = erd.replace(tzinfo=timezone.utc)
+                    if erd <= datetime.now(timezone.utc):
+                        missing.append("expected_return_date in the future")
+                except (ValueError, TypeError):
+                    missing.append(
+                        f"expected_return_date ISO 8601 "
+                        f"(got {expected_return_date!r})"
+                    )
+            if missing:
+                raise ValueError(
+                    f"SAMPLE_OUT requires evidence; missing: "
                     f"{', '.join(missing)}"
                 )
 

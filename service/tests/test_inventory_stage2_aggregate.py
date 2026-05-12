@@ -96,7 +96,9 @@ def test_no_write_methods_registered():
               if getattr(r, "path", "").startswith("/api/v1/inventory/")]
     assert routes, "No /api/v1/inventory/ routes registered"
     allowed_writes = {
-        "/api/v1/inventory/pieces/{piece_id}/location",  # Move stock — POST
+        "/api/v1/inventory/pieces/{piece_id}/location",       # Move stock — POST
+        "/api/v1/inventory/pieces/{piece_id}/sample-out",     # Sample-out — POST (Phase B.1)
+        "/api/v1/inventory/pieces/{piece_id}/sample-return",  # Sample-return — POST (Phase B.1)
     }
     for route in routes:
         path = getattr(route, "path", "")

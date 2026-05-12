@@ -422,6 +422,10 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     in_purchase      = set(state_codes.get(ise.PURCHASE_TRANSIT,       []))
     in_sales_transit = set(state_codes.get(ise.SALES_TRANSIT,          []))
     in_closed        = set(state_codes.get(ise.CLOSED,                 []))
+    # Phase B.1 — SAMPLE_OUT is explicitly NOT in PROFORMA_ELIGIBLE_STATES
+    # (see SAMPLE_OUT_DESIGN.md §6.2). A piece physically out at a client
+    # cannot satisfy a proforma until it's returned to WAREHOUSE_STOCK.
+    in_sample_out    = set(state_codes.get(ise.SAMPLE_OUT,             []))
 
     # Eligible = any state listed in PROFORMA_ELIGIBLE_STATES. We aggregate
     # to the strictest descriptive label so the UI reports cleanly.
@@ -445,6 +449,8 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
                 if all(sc in sset for sc in scs):
                     return label
             return "mixed_eligible"
+        if any(sc in in_sample_out for sc in scs):
+            return "sample_out"
         if any(sc in in_purchase for sc in scs):
             return "purchase_transit"
         if any(sc in in_sales_transit for sc in scs):
