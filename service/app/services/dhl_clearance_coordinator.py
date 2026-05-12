@@ -134,10 +134,28 @@ class DhlClearanceCoordinator:
         return bool(is_dhl_self_clearance(decision.get("clearance_path")))
 
     @staticmethod
-    def is_awb_stable_for(awb: str) -> bool:
-        """Read-only carrier predicate — see carrier/coordinator.is_awb_stable."""
+    def is_awb_stable_for(awb: str, batch_id: Optional[str] = None) -> bool:
+        """Read-only carrier predicate — see carrier/coordinator.is_awb_stable.
+
+        Resolves the carrier shipment DB path from settings and passes the
+        caller-supplied batch_id as the lookup key (batch_id is the carrier
+        DB's primary index; AWB→batch_id direct resolver is operator-
+        deferred per P0 spec, with batch_id passed by P2/P3/P4/P5 callers
+        from their DispatchInput / TrackingEventInput / etc.).
+
+        If batch_id is not provided OR the carrier DB does not exist on
+        disk, returns False (safe-default for a stability predicate).
+        """
         from .carrier.coordinator import is_awb_stable  # local — avoid eager import
-        return bool(is_awb_stable(awb))
+        if not batch_id:
+            return False
+        # The carrier shipment DB lives under storage_root. The path is
+        # derived the same way the carrier subsystem itself derives it
+        # (see CarrierCoordinator construction in routes_carrier_actions.py).
+        db_path = settings.storage_root / "carrier_shipments.db"
+        if not db_path.exists():
+            return False
+        return bool(is_awb_stable(batch_id, db_path=db_path))
 
     # ── P2 — proactive dispatch (WIRED) ──────────────────────────────────────
 
@@ -204,7 +222,8 @@ class DhlClearanceCoordinator:
             }
 
         # ── 5. AWB stability gate ────────────────────────────────────────────
-        if not self.is_awb_stable_for(inp.awb):
+        # Pass batch_id explicitly — see is_awb_stable_for docstring + Issue #38 F8.
+        if not self.is_awb_stable_for(inp.awb, batch_id=inp.batch_id):
             log.info(
                 "selfclearance_p2_awb_unstable batch_id=%s awb=%s — staying at "
                 "awaiting_preemptive_send",
@@ -227,7 +246,7 @@ class DhlClearanceCoordinator:
                 "selfclearance_p2_build_failed batch_id=%s reason=%s",
                 inp.batch_id, exc.__class__.__name__,
             )
-            self._transition_to_dispatch_failed(inp.audit, str(exc))
+            self._transition_to_dispatch_failed(inp.audit, exc.__class__.__name__)
             return {
                 "status": "blocked",
                 "reason": "build_failed",
@@ -259,7 +278,7 @@ class DhlClearanceCoordinator:
             # SHADOW state — build + manifest + log only.
             message_id = f"shadow:{inp.batch_id}:{content_sha256[:12]}"
             now = _now_iso()
-            recipient = ",".join(pkg.get("to") or [])
+            recipient = _normalise_recipient(pkg.get("to"))
             manifest.write_p2_dispatch(
                 inp.audit,
                 shadow=True,
@@ -288,8 +307,11 @@ class DhlClearanceCoordinator:
         # LIVE state — actually queue the email.
         from .email_service import queue_email
         from ..config.email_routing import format_to, format_cc
-        to_str = format_to(pkg.get("to") or [])
-        cc_str = format_cc(pkg.get("cc") or [])
+        # Builder returns to/cc as strings (resolve_dhl_to/cc return str);
+        # if a list slips in for any reason, normalise it. queue_email
+        # expects a comma-separated string.
+        to_str = _normalise_recipient(pkg.get("to"))
+        cc_str = _normalise_recipient(pkg.get("cc"))
         try:
             message_id = queue_email(
                 to=to_str,
@@ -306,7 +328,7 @@ class DhlClearanceCoordinator:
                 "selfclearance_p2_queue_failed batch_id=%s reason=%s",
                 inp.batch_id, exc.__class__.__name__,
             )
-            self._transition_to_dispatch_failed(inp.audit, str(exc))
+            self._transition_to_dispatch_failed(inp.audit, exc.__class__.__name__)
             return {
                 "status": "blocked",
                 "reason": "queue_failed",
@@ -342,26 +364,51 @@ class DhlClearanceCoordinator:
     @staticmethod
     def _advance_to_awaiting_poland_arrival(audit: Dict[str, Any], *, shadow: bool) -> None:
         """Advance state if currently awaiting_preemptive_send; otherwise no-op
-        (caller may already be past this state, e.g. on idempotent retry)."""
+        (caller may already be past this state, e.g. on idempotent retry).
+
+        Per ADR-018 Invariant 4, when transitioning under shadow_mode=True
+        the state_history entry carries an explicit `shadow: True` field so
+        audit consumers can filter cleanly between observation-mode and
+        live-mode transitions. The boolean is forwarded through
+        `manifest.record_transition(shadow=shadow)` → `state_engine.transition`.
+        """
         block = audit[manifest.MANIFEST_KEY]
         current = block.get("state", state_engine.INITIAL_STATE)
         if current != state_engine.STATE_AWAITING_PREEMPTIVE_SEND:
+            log.warning(
+                "selfclearance_p2_state_skew current=%s expected=%s — "
+                "skipping advance to awaiting_poland_arrival (see F5/F6)",
+                current, state_engine.STATE_AWAITING_PREEMPTIVE_SEND,
+            )
             return
-        reason = "p2_dispatch_shadow" if shadow else "p2_dispatch_sent"
         manifest.record_transition(
             audit,
             state_engine.STATE_AWAITING_POLAND_ARRIVAL,
-            reason=reason,
+            reason="p2_dispatch",
             actor="system",
+            shadow=shadow,
         )
 
     @staticmethod
     def _transition_to_dispatch_failed(audit: Dict[str, Any], reason: str) -> None:
-        """Transition to dispatch_failed if currently awaiting_preemptive_send."""
+        """Transition to dispatch_failed if currently awaiting_preemptive_send.
+
+        Note: `reason` is the original exception's class name (NOT str(exc))
+        to avoid persisting raw exception args into the audit. The caller
+        passes `exc.__class__.__name__` per backend-safety + security-write-
+        action reviewer recommendations.
+        """
         manifest.init_manifest(audit)
         block = audit[manifest.MANIFEST_KEY]
         current = block.get("state", state_engine.INITIAL_STATE)
         if current != state_engine.STATE_AWAITING_PREEMPTIVE_SEND:
+            log.warning(
+                "selfclearance_p2_state_skew current=%s expected=%s — "
+                "skipping transition to dispatch_failed (see F5/F6); "
+                "operator must clear via dispatch_failed→awaiting_preemptive_send "
+                "recovery before retry",
+                current, state_engine.STATE_AWAITING_PREEMPTIVE_SEND,
+            )
             return
         manifest.record_transition(
             audit,
@@ -446,21 +493,45 @@ def _enforce_flag_combination(phase: str, shadow_mode: bool, live_enabled: bool)
 def _compute_content_sha256(pkg: Dict[str, Any]) -> str:
     """Deterministic SHA256 over the dispatch package's canonical projection.
 
-    Hash inputs: subject, body_text (Polish-first bilingual), recipient list,
-    attachment labels (NOT paths — paths are environment-specific).
+    Hash inputs: subject, body_text (Polish-first bilingual), recipient
+    (normalised — see _normalise_recipient), attachment labels
+    (NOT paths — paths are environment-specific).
 
     Bytes never live in the manifest (ADR-006). Only this hash does.
     """
     projection = {
         "subject": pkg.get("subject", ""),
         "body_text": pkg.get("body_text", ""),
-        "to": pkg.get("to") or [],
+        "to": _normalise_recipient(pkg.get("to")),
         "attachment_labels": sorted(
             (a.get("label", "") for a in (pkg.get("attachments") or [])),
         ),
     }
     canonical = json.dumps(projection, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _normalise_recipient(value: Any) -> str:
+    """Normalise a builder-returned recipient value into a comma-separated string.
+
+    The canonical builder (`dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch`)
+    returns `to` / `cc` as **strings** (output of `resolve_dhl_to()` / `resolve_dhl_cc()`).
+    Test stubs and historical callers may pass `List[str]`. This helper accepts
+    either and returns a comma-separated string suitable for `queue_email(to=...)`.
+
+    Per integration-boundary review of P2 — without this normalisation, the
+    coordinator would iterate over string characters and produce a corrupt
+    "o,d,p,r,a,..." recipient that fails at SMTP delivery time.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        # Filter empty entries; join with comma (matches format_to/format_cc
+        # convention in email_routing).
+        return ", ".join(s.strip() for s in (str(v) for v in value) if s.strip())
+    return str(value)
 
 
 def _now_iso() -> str:

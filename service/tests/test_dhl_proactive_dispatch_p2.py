@@ -58,8 +58,8 @@ def _stub_pkg(**overrides) -> dict:
     base = {
         "from_address": "import@estrellajewels.eu",
         "email_type":   "dhl_proactive_dispatch",
-        "to":           ["odprawacelna@dhl.com"],
-        "cc":           ["import@estrellajewels.eu"],
+        "to":           "odprawacelna@dhl.com",
+        "cc":           "import@estrellajewels.eu",
         "subject":      "AWB AWB123 — Customs Declaration",
         "body_text":    "Customs declaration body — Polish then English",
         "body_html":    "<pre>Customs declaration body — Polish then English</pre>",
@@ -105,7 +105,7 @@ def test_path_b_no_manifest_mutation(coord):
 def test_path_a_passes_scope_gate(coord, monkeypatch):
     # Force AWB-unstable to short-circuit before any builder call,
     # but verify scope gate let us through.
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: False)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: False)
     audit = _audit_path_a()
     inp = cc.DispatchInput(batch_id="B1", awb="AWB123", audit=audit)
     result = coord.dispatch_proactive(inp)
@@ -137,7 +137,7 @@ def test_dormant_state_returns_skipped(coord, monkeypatch):
 def test_shadow_state_is_default(coord, monkeypatch):
     """Per ADR-018 the safe-default state is SHADOW (shadow=True, live=False)."""
     audit = _audit_path_a()
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_clearance_coordinator.build_dhl_proactive_dispatch"
         if False else "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
@@ -152,7 +152,7 @@ def test_shadow_state_is_default(coord, monkeypatch):
 # ── AWB stability gate ───────────────────────────────────────────────────────
 
 def test_awb_unstable_no_op(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: False)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: False)
     audit = _audit_path_a()
     inp = cc.DispatchInput(batch_id="B1", awb="AWB123", audit=audit)
     result = coord.dispatch_proactive(inp)
@@ -164,7 +164,7 @@ def test_awb_unstable_no_op(coord, monkeypatch):
 
 
 def test_awb_stable_proceeds_to_build(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(),
@@ -177,7 +177,7 @@ def test_awb_stable_proceeds_to_build(coord, monkeypatch):
 # ── Shadow mode: build + manifest, NO send ───────────────────────────────────
 
 def test_shadow_writes_p2_dispatch_manifest(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(),
@@ -194,7 +194,7 @@ def test_shadow_writes_p2_dispatch_manifest(coord, monkeypatch):
 
 
 def test_shadow_no_email_queued(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(),
@@ -208,7 +208,7 @@ def test_shadow_no_email_queued(coord, monkeypatch):
 
 
 def test_shadow_advances_state_to_awaiting_poland_arrival(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(),
@@ -219,8 +219,13 @@ def test_shadow_advances_state_to_awaiting_poland_arrival(coord, monkeypatch):
     assert audit[mf.MANIFEST_KEY]["state"] == se.STATE_AWAITING_POLAND_ARRIVAL
 
 
-def test_shadow_state_history_carries_reason(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+def test_shadow_state_history_carries_shadow_true_per_adr018(coord, monkeypatch):
+    """ADR-018 Invariant 4: state_history entries written under shadow_mode
+    MUST carry `shadow: True` as a structured field. Per the canonical
+    adr-historian re-review, this is enforced via state_engine.transition
+    accepting a shadow= kwarg that materializes the key on the entry record.
+    """
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(),
@@ -230,13 +235,40 @@ def test_shadow_state_history_carries_reason(coord, monkeypatch):
     coord.dispatch_proactive(inp)
     history = audit[mf.MANIFEST_KEY]["state_history"]
     assert len(history) == 1
-    assert history[0]["reason"] == "p2_dispatch_shadow"
+    entry = history[0]
+    # Reason is the canonical single value (no _shadow / _sent split).
+    assert entry["reason"] == "p2_dispatch"
+    # ADR-018 Invariant 4: shadow:True is a structured field, not a substring.
+    assert entry.get("shadow") is True
+
+
+def test_live_state_history_omits_shadow_field(coord, monkeypatch):
+    """When live_enabled=True (LIVE state), state_history entries are NOT
+    shadow-tagged. Audit consumers filter `entry.get("shadow") is True`
+    to count shadow runs; live runs must be absent from that filter."""
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
+    monkeypatch.setattr(settings, "dhl_selfclearance_p2_live_enabled", True)
+    monkeypatch.setattr(
+        "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
+        lambda audit, batch_id: _stub_pkg(),
+    )
+    monkeypatch.setattr("app.services.email_service.queue_email",
+                        lambda **k: "msg_id_live")
+    audit = _audit_path_a()
+    inp = cc.DispatchInput(batch_id="B1", awb="AWB123", audit=audit)
+    coord.dispatch_proactive(inp)
+    history = audit[mf.MANIFEST_KEY]["state_history"]
+    assert len(history) == 1
+    entry = history[0]
+    assert entry["reason"] == "p2_dispatch"
+    # Shadow key is absent (or False) on live entries.
+    assert entry.get("shadow") in (None, False)
 
 
 # ── Live mode: queue email + manifest ────────────────────────────────────────
 
 def test_live_calls_queue_email_exactly_once(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(settings, "dhl_selfclearance_p2_live_enabled", True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
@@ -258,7 +290,7 @@ def test_live_calls_queue_email_exactly_once(coord, monkeypatch):
 
 
 def test_live_writes_p2_dispatch_manifest(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(settings, "dhl_selfclearance_p2_live_enabled", True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
@@ -278,7 +310,7 @@ def test_live_writes_p2_dispatch_manifest(coord, monkeypatch):
 
 
 def test_live_advances_state(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(settings, "dhl_selfclearance_p2_live_enabled", True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
@@ -295,7 +327,7 @@ def test_live_advances_state(coord, monkeypatch):
 # ── Idempotency ───────────────────────────────────────────────────────────────
 
 def test_idempotent_second_call_returns_prior_result(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(),
@@ -310,7 +342,7 @@ def test_idempotent_second_call_returns_prior_result(coord, monkeypatch):
 
 
 def test_idempotent_no_second_email_queued(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(settings, "dhl_selfclearance_p2_live_enabled", True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
@@ -333,7 +365,7 @@ def test_idempotent_no_second_email_queued(coord, monkeypatch):
 # ── Build / queue failure paths ──────────────────────────────────────────────
 
 def test_build_failure_advances_to_dispatch_failed(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
 
     def fake_build(audit, batch_id):
         raise RuntimeError("simulated build failure")
@@ -351,7 +383,7 @@ def test_build_failure_advances_to_dispatch_failed(coord, monkeypatch):
 
 
 def test_missing_attachments_blocks(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(missing=["polish desc"]),
@@ -366,7 +398,7 @@ def test_missing_attachments_blocks(coord, monkeypatch):
 
 
 def test_queue_failure_advances_to_dispatch_failed(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(settings, "dhl_selfclearance_p2_live_enabled", True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
@@ -438,7 +470,7 @@ def test_predecessor_p2_always_unblocked():
 # ── Manifest content_sha256 validation (ADR-006 hash-only) ───────────────────
 
 def test_manifest_p2_dispatch_sha256_validated(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(),
@@ -453,7 +485,7 @@ def test_manifest_p2_dispatch_sha256_validated(coord, monkeypatch):
 # ── Result-shape invariants ──────────────────────────────────────────────────
 
 def test_result_has_required_keys(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(),
@@ -481,7 +513,7 @@ def test_dormant_result_shape(coord, monkeypatch):
 # ── Multiple distinct AWBs in shadow mode (volume invariant) ─────────────────
 
 def test_shadow_multiple_awbs_unique_message_ids(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(subject=f"AWB {batch_id}"),
@@ -495,10 +527,54 @@ def test_shadow_multiple_awbs_unique_message_ids(coord, monkeypatch):
     assert len(msg_ids) == 5
 
 
+# ── Real-builder integration (no stub) — catches type-contract drift ────────
+
+def test_real_builder_to_field_is_str_not_list():
+    """Regression test against integration-boundary CRITICAL finding: the
+    real builder returns `pkg["to"]` as a comma-separated string (from
+    `resolve_dhl_to()`), NOT as `List[str]`. The coordinator's
+    `_normalise_recipient` helper must handle both shapes.
+    """
+    from app.services.dhl_proactive_dispatch_builder import build_dhl_proactive_dispatch
+    audit = _audit_path_a()
+    pkg = build_dhl_proactive_dispatch(audit, batch_id="B1")
+    assert isinstance(pkg["to"], str), (
+        f"resolve_dhl_to() returns str; coordinator must normalise — "
+        f"got type {type(pkg['to']).__name__}"
+    )
+    assert isinstance(pkg["cc"], str), (
+        f"resolve_dhl_cc() returns str; coordinator must normalise — "
+        f"got type {type(pkg['cc']).__name__}"
+    )
+
+
+def test_normalise_recipient_handles_str():
+    assert cc._normalise_recipient("a@b.com") == "a@b.com"
+
+
+def test_normalise_recipient_handles_list():
+    assert cc._normalise_recipient(["a@b.com", "c@d.com"]) == "a@b.com, c@d.com"
+
+
+def test_normalise_recipient_handles_none_and_empty():
+    assert cc._normalise_recipient(None) == ""
+    assert cc._normalise_recipient("") == ""
+    assert cc._normalise_recipient([]) == ""
+
+
+def test_normalise_recipient_no_char_iteration_bug():
+    """The bug integration-boundary caught: a naive `",".join("a@b.com")`
+    would produce "a,@,b,.,c,o,m". Confirm we don't do that anymore."""
+    result = cc._normalise_recipient("odprawacelna@dhl.com")
+    assert result == "odprawacelna@dhl.com"
+    # The result is the str unchanged — no character-level join.
+    assert result.count("@") == 1
+
+
 # ── Live state transitions match shadow (parity check) ───────────────────────
 
 def test_live_and_shadow_advance_to_same_state(coord, monkeypatch):
-    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb: True)
+    monkeypatch.setattr(coord, "is_awb_stable_for", lambda awb, batch_id=None: True)
     monkeypatch.setattr(
         "app.services.dhl_proactive_dispatch_builder.build_dhl_proactive_dispatch",
         lambda audit, batch_id: _stub_pkg(),
