@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-13 (initial scaffold by meta-agent observation layer PR; refreshed by `flow-context-keeper` on every subsequent fire). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
+**Last-run-at:** 2026-05-13T01:55:00Z (RULE 6 visibility refresh by `flow-context-keeper` second run — appended scorecard + engineering_lessons.md + CLAUDE.md addition + registry-resolution FACTS; appended engineering-lessons governance DECISIONS; promoted 2 registry ASSUMPTIONS to FACTS). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
 
 ---
 
@@ -82,6 +82,12 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **2026-05-13** — Project registry healthy with 13 project agents at `.claude/agents/` (including `gap-hunter` + `adr-historian` salvaged via PR #35). Global registry at `~/.claude/agents/` has 54 agents. Total reachable agents in session: 77 (incl. plugin + built-in). No naming collisions.
 - After this PR: project registry will be 15 agents (adds `agent-performance-observer` and `flow-context-keeper`).
 
+## RULE 6 visibility entries (appended 2026-05-13 by flow-context-keeper second run)
+- **2026-05-13** — Scorecard recorded: `.claude/memory/scorecards/2026-05-13-w5-p0-adr018-p2-deployment-campaign.md` — observer: `agent-performance-observer` post PR #41 registry-refresh validation — 14 verdicts scored, all EXEMPLARY, zero NEEDS-TUNING / UNRELIABLE.
+- **2026-05-13** — Engineering lessons file created: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch, origin PR #46) + Lesson B (mid-session registry refresh non-determinism, origin PR #41) are now binding rules.
+- **2026-05-13** — `CLAUDE.md` updated: new section "Engineering Lessons (permanent)" inserted between MANDATORY OBSERVATION LAYER (line 135) and Available integration (line 323) — section occupies lines 233-322 (90 lines). Adds binding-rule summaries of Lesson A + B with enforcement surfaces (GATE 1 for Lesson A, GATE 5 for Lesson B, GATE 4 for post-merge Lesson A failures). Branch: `chore/observation-layer-verification-and-lessons` (pre-merge at time of this entry).
+- **2026-05-13** — Mid-session registry-refresh issue from PR #41 RESOLVED in this session: both `agent-performance-observer` and `flow-context-keeper` dispatched cleanly via `subagent_type` registry (this very entry is evidence of `flow-context-keeper` dispatch). Closes the prior VALIDATION-FAILED signal recorded under Lesson B.
+
 ---
 
 # DECISIONS
@@ -98,6 +104,12 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Engineering discipline rules (locked 2026-05-12)** — doc-vs-code consistency gate (Issue #27 pattern), API error templating (`{detail, error_code, field, hint}`), exception-leak prevention. Source: memory `engineering_discipline_rules`.
 - **agent-prompt-refiner and pattern-historian deferred** pending two campaigns under observation-layer baseline. Source: this PR + Issue (filed in this PR).
 
+## Engineering lessons governance (appended 2026-05-13)
+
+- **Engineering lessons are append-only.** Supersede with new dated entries; never delete. Source: `.claude/memory/engineering_lessons.md` header + CLAUDE.md "Engineering Lessons (permanent)" section.
+- **Lesson A enforcement is jointly owned**: `integration-boundary` (primary — type-contract review at coordinator/builder boundary), `testing-verification` (regression test against the REAL builder, no stub), `backend-safety-reviewer` (boundary `_normalise_X` helper presence). All three must sign off on any coordinator/consumer-to-builder wiring PR.
+- **Network-bound boundary carve-out for Lesson A**: contract tests against recorded fixtures (VCR/recorded responses) substitute for real-builder regression tests on DHL / wFirma / SMTP / Cliq boundaries. Real-builder test is impractical there because the "real builder" makes a live network call; recorded-fixture contract tests still assert the type contract without flakiness.
+
 ## Next 3 actions in queue
 
 1. **Operator decides ADR-010 vs P0 spec conflict** (Options A/B/C in PR #33 comment thread). Until decided, PR #33 cannot merge and Phases 5-8 of master campaign remain blocked.
@@ -111,8 +123,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **P2 shadow window is expected to run 48 hours of real-time DHL dispatch volume before promotion to live.** Source: master plan §4.3 shadow-window table. Move to FACTS when shadow window opens (then it becomes a measurable interval).
 - **The carrier vocabulary mapping in `is_awb_stable` (SUBMITTED ∪ COMPLETE = stable) is correct for production use.** Source: P0 commit message + system-architect verdict. Move to FACTS when P2 wires `is_awb_stable` against real AWBs and the predicate produces the expected gate behaviour.
 - **The Phase 1.3 email routing migration (`service/app/config/email_routing.py`) shipped and all 14+ consumer services use it.** Source: P0 spec prerequisite note. Move to FACTS by running `grep -rln "from ..config.email_routing import" service/app/ | wc -l` and confirming ≥14.
-- **Registry agents persist across Code-tab restart.** Source: prior diagnostic + this session's PR #35 work. Move to FACTS by re-running registry diagnostic at start of next session and confirming `gap-hunter` + `adr-historian` + `agent-performance-observer` + `flow-context-keeper` all present.
-- **No deletion of `gap-hunter.md` or `adr-historian.md` from main between this session and the next.** Source: PR #35 commit. Move to FACTS by re-running registry diagnostic next session.
+- ~~**Registry agents persist across Code-tab restart.** Source: prior diagnostic + this session's PR #35 work.~~ MOVED TO FACTS 2026-05-13: this session successfully dispatched both `agent-performance-observer` and `flow-context-keeper` post-merge — see RULE 6 visibility entry above.
+- ~~**No deletion of `gap-hunter.md` or `adr-historian.md` from main between this session and the next.**~~ MOVED TO FACTS 2026-05-13: registry verified healthy at start of this run (15 agents in `.claude/agents/`).
 
 ---
 

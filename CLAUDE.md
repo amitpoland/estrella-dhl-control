@@ -230,6 +230,96 @@ issue filed alongside the PR that introduces this section.
 
 ---
 
+## Engineering Lessons (permanent)
+
+Binding rules learned from real campaigns. Each lesson cites its
+origin (PR / commit / agent verdict) and states the rule that
+should prevent recurrence. Full text + detection signals + work-
+arounds live in `.claude/memory/engineering_lessons.md`. The
+summaries below are the binding-rule layer that every implementing
+agent and reviewer must apply.
+
+This section is append-only. Do not delete prior lessons; supersede
+with a new dated entry instead. Cross-reference: see also
+`memory-lessons` agent (`.claude/agents/memory-lessons.md`) and the
+`engineering_discipline_rules` auto-memory entry for related
+discipline patterns.
+
+**Enforcement surfaces**: Lesson A binds at GATE 1 (PR open
+discipline — real-builder regression test is a precondition;
+integration-boundary owns the verdict, testing-verification
+adds the test, backend-safety-reviewer flags missing
+`_normalise_X` boundary helpers). Lesson B binds at GATE 5
+(substitution disclosure — meta-agent substitution forbidden) and
+at the orchestrator's first-task-of-session diagnostic. A Lesson-A
+failure detected AFTER merge is a GATE 4 salvage finding requiring
+SCHEDULED / ISSUE / REJECTED disposition.
+
+### Lesson A — Test stubs must match real production return shapes (2026-05-13)
+
+**Origin**: PR #46 W-5 P2 proactive customs dispatch; integration-
+boundary canonical agent flagged a CRITICAL type-contract bug that
+37 unit tests had masked.
+
+**Binding rule**:
+1. Synthetic test stubs MUST match the real production function's
+   return shape (str vs List[str] vs dict). Stub authors must read
+   the real function before writing the stub.
+2. Every PR that wires a coordinator/consumer to a builder MUST
+   include at least one regression test that exercises the REAL
+   builder (no stub) and asserts the type contract directly.
+3. Coordinators/consumers MUST normalise polymorphic inputs at the
+   boundary via a `_normalise_X` helper rather than assuming a
+   single shape.
+4. "Tests pass but production breaks" on a stub/real mismatch is a
+   Lesson-A failure; add the real-builder regression test in the
+   same PR.
+
+**Where it binds**: every coordinator/builder/consumer wiring in
+W-5 P3/P4/P5 and beyond, every test fixture that approximates a
+service boundary, every code review of a coordinator that imports
+a builder.
+
+**Reference**: `.claude/memory/engineering_lessons.md` Lesson A;
+canonical regression test
+`service/tests/test_dhl_proactive_dispatch_p2.py::test_real_builder_to_field_is_str_not_list`.
+
+### Lesson B — Mid-session git pull does NOT reliably refresh the subagent_type registry (2026-05-13)
+
+**Origin**: PR #41 meta-agent observation layer foundation; post-
+merge validation could not dispatch the newly-merged
+`agent-performance-observer` and `flow-context-keeper` even though
+both files were on disk.
+
+**Binding rule**:
+1. A new agent file added via `git pull` mid-session is NOT
+   guaranteed to be invocable in the same session. Treat as
+   "available next session, not this one."
+2. Post-merge validation tasks for agent-adding PRs MUST report
+   VALIDATION-FAILED if the new agent cannot be dispatched in the
+   post-merge session, even when all other steps succeed. Refresh
+   sometimes succeeds (PR #35 precedent); the rule mandates
+   *validating dispatch*, not assuming failure.
+3. For the meta-agents (`agent-performance-observer`,
+   `flow-context-keeper`), silent substitution is FORBIDDEN per
+   GATE 5; escalate instead.
+4. Operator should restart the Claude Code session after any PR
+   that adds new agent files merges, before launching the next
+   campaign that depends on those agents.
+
+**Where it binds**: every PR that creates `.claude/agents/*.md` or
+`~/.claude/agents/*.md`; every "post-merge validation" or "fresh-
+session smoke" task; the first task of every session that follows
+an agent-adding merge.
+
+**Reference**: `.claude/memory/engineering_lessons.md` Lesson B;
+this PR's first dispatch (campaign
+`chore/observation-layer-verification-and-lessons`) confirmed both
+meta-agents are dispatchable in the current session, closing the
+prior VALIDATION-FAILED signal.
+
+---
+
 ## Available integration
 
 The Zoho Cliq MCP connector for Estrella is:
