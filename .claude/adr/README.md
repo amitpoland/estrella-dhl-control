@@ -76,6 +76,7 @@ What does this decision lock in for future work? What does it enable?
 | [ADR-015](ADR-015-dhl-self-clearance-thread-clarification.md) | DHL self-clearance — thread-based clarification (P5) | Accepted |
 | [ADR-016](ADR-016-dhl-self-clearance-sad-unlock-and-pz.md) | DHL self-clearance — SAD unlock and PZ trigger (P6 + P7) | Accepted |
 | [ADR-017](ADR-017-carrier-label-store-retention.md) | Carrier label store — retention policy (immutable evidence) | Accepted |
+| [ADR-018](ADR-018-shadow-mode-flag-defaults.md) | Shadow-mode flag defaults — Category B observation flags default True; live-enabled flags remain Category A default False. Amends ADR-010 with two-category model and forbidden state semantics. | Accepted |
 
 ## When to write a new ADR
 
