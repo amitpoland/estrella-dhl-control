@@ -169,7 +169,10 @@ def mark_returned_from_client(
                 "return_reason":   (prior or {}).get("return_reason", ""),
                 "received_at":     (prior or {}).get("received_at", ""),
             }
-        raise
+        raise ReturnsError(
+            "DB_CONSTRAINT",
+            f"unexpected database constraint: {exc}",
+        ) from exc
 
     # State transition — engine validates evidence again (defence in
     # depth). If transition rejects, the evidence row stays as part of
@@ -262,7 +265,10 @@ def mark_returned_to_producer(
                 "idempotency_key": idempotency_key,
                 "producer_name":   (prior or {}).get("producer_name", ""),
             }
-        raise
+        raise ReturnsError(
+            "DB_CONSTRAINT",
+            f"unexpected database constraint: {exc}",
+        ) from exc
 
     inventory_state_engine.transition(
         scan_code=scan_code,
@@ -341,7 +347,10 @@ def return_from_producer_to_stock(
                 "event_id":        (prior or {}).get("id"),
                 "idempotency_key": idempotency_key,
             }
-        raise
+        raise ReturnsError(
+            "DB_CONSTRAINT",
+            f"unexpected database constraint: {exc}",
+        ) from exc
 
     inventory_state_engine.transition(
         scan_code=scan_code,
