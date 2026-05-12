@@ -1088,9 +1088,9 @@ function CoverageMatrixPage() {
       pending_surface: 'Invoices, ledgers, WZ/PW/RW/MM, supplier balances (preview only)',
       next_action: 'Backend: extend /ledgers/* endpoints (read-only wFirma proxy)' },
     { module: 'Inventory',         route: 'inventory',     classification: 'COMPOSED',
-      real_source: 'Composed from batches prop (OP_PREDICATES.warehouse + lifecycle helpers) + /api/v1/inventory/stage2/aggregate (final_stock live from inventory_state_engine)',
-      pending_surface: 'Stage 2 partially live — final_stock derived from inventory_state.state=WAREHOUSE_STOCK; samples/returns/consignment/unknown still Backend pending (no dedicated tables)',
-      next_action: 'Backend: design sample_releases / returns / consignment tables when those workflows are scoped (separate task, SECURITY gate required)' },
+      real_source: 'Composed from batches prop (OP_PREDICATES.warehouse + lifecycle helpers) + /api/v1/inventory/stage2/aggregate (final_stock live from inventory_state_engine; SAMPLE_OUT lifecycle live but aggregator does not yet count it) + /api/v1/inventory/pieces/scan_code unified timeline',
+      pending_surface: 'Stage 2 partially live — final_stock derives from inventory_state.state=WAREHOUSE_STOCK. SAMPLE_OUT lifecycle is live in the state engine, but the Stage 2 aggregator does not yet derive the samples count from it. Returns + consignment still have no backing state or table.',
+      next_action: 'Backend: extend inventory_stage2_aggregator to count SAMPLE_OUT for the samples tile; design returns + consignment tables when those workflows are scoped (separate task, SECURITY gate required)' },
     { module: 'Reports',           route: 'reports',       classification: 'LIVE',
       real_source: '/analytics/phase-a + tracking export endpoints',
       pending_surface: 'P&L, top clients, scheduling, period filters (preview only)',
@@ -1609,10 +1609,10 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
         >
           {[
             { key: 'final_stock', label: 'Final Stock',  testid: 'inventory-stage2-final',       hint: 'PZ booked, available' },
-            { key: 'samples',     label: 'Samples',      testid: 'inventory-stage2-samples',     hint: 'released to client for review' },
-            { key: 'returns',     label: 'Returns',      testid: 'inventory-stage2-returns',     hint: 'incoming RMA / debit-note' },
-            { key: 'consignment', label: 'Consignment',  testid: 'inventory-stage2-consignment', hint: 'physically with client, title retained' },
-            { key: 'unknown',     label: 'Unknown',      testid: 'inventory-stage2-unknown',     hint: 'unclassified residual' },
+            { key: 'samples',     label: 'Samples',      testid: 'inventory-stage2-samples',     hint: 'SAMPLE_OUT lifecycle live; aggregator count pending' },
+            { key: 'returns',     label: 'Returns',      testid: 'inventory-stage2-returns',     hint: 'incoming RMA / debit-note (backend pending)' },
+            { key: 'consignment', label: 'Consignment',  testid: 'inventory-stage2-consignment', hint: 'physically with client, title retained (backend pending)' },
+            { key: 'unknown',     label: 'Unknown',      testid: 'inventory-stage2-unknown',     hint: 'residual — pending final aggregate model' },
           ].map(tile => {
             const cat = stage2Data?.stage2?.[tile.key];
             const count = cat?.count;
@@ -1665,9 +1665,27 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
               {stage2Data.limitations.length} categor{stage2Data.limitations.length === 1 ? 'y' : 'ies'} not yet derivable
             </strong>
             <ul style={{ margin: '4px 0 0 14px', padding: 0, listStyle: 'disc' }}>
-              {stage2Data.limitations.map((lim, i) => (
-                <li key={i} style={{ fontSize: 10.5, lineHeight: 1.5 }}>{lim}</li>
-              ))}
+              {stage2Data.limitations.map((lim, i) => {
+                // Truth correction: the aggregator's hard-coded "samples"
+                // limitation still claims SAMPLE_OUT is not in
+                // inventory_state_engine.STATES. That changed when
+                // Phase B.1 added SAMPLE_OUT to STATES; the aggregator
+                // copy is stale until it is updated server-side.
+                // Rewrite that single line here so the UI never shows
+                // a statement that is demonstrably false.
+                const corrected = (typeof lim === 'string' &&
+                                   lim.indexOf('SAMPLE_OUT not in inventory_state_engine.STATES') !== -1)
+                  ? 'samples: SAMPLE_OUT lifecycle state is live; Stage 2 aggregator has not yet been updated to count inventory_state.state=SAMPLE_OUT for the samples tile.'
+                  : lim;
+                return (
+                  <li key={i} data-testid={
+                        corrected !== lim
+                          ? 'inventory-stage2-limitation-samples-corrected'
+                          : undefined
+                      }
+                      style={{ fontSize: 10.5, lineHeight: 1.5 }}>{corrected}</li>
+                );
+              })}
             </ul>
           </div>
         )}
@@ -1691,7 +1709,7 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
       {/* Design preview footer */}
       <div data-testid="inventory-design-preview" style={{ marginTop: 14, padding: '10px 14px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span data-testid="inventory-preview-pending-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10, fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
-        <span>Move-stock, Sample-out, and Sample-return are live (see Warehouse Scanner + piece drawer). Goods-return and Return-to-producer still require server-side writes that don't exist. Per-batch warehouse audit lives on the Warehouse tab inside each batch.</span>
+        <span>Move-stock, Sample-out, and Sample-return are live (see Warehouse Scanner + piece drawer). Goods-return, Return-to-producer, and Consignment still require server-side writes that don't exist. Per-batch warehouse audit lives on the Warehouse tab inside each batch.</span>
       </div>
 
       {/* ── Phase 4.4: Piece lookup + detail drawer (read-only) ──
