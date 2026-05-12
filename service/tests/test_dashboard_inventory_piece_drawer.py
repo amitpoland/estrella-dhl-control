@@ -88,20 +88,37 @@ def test_close_handler_resets_drawer():
     assert "const closeDrawer" in body
 
 
-def test_no_write_methods_in_lookup_or_drawer_block():
+def test_drawer_writes_match_sample_allowlist():
+    """The piece drawer became a controlled write surface with Phase B.1.
+
+    Lookup itself stays GET-only. The drawer's action panel adds exactly
+    two write paths — POST sample-out and POST sample-return — and
+    nothing else. PUT/PATCH/DELETE remain forbidden anywhere on the
+    InventoryPage (which contains the drawer)."""
     body = _inventory_body()
-    lookup_start = body.index('data-testid="inventory-piece-lookup"')
-    region = body[lookup_start:lookup_start + 6000]
-    for method_str in ("'POST'", '"POST"', "'PUT'", '"PUT"',
-                       "'PATCH'", '"PATCH"', "'DELETE'", '"DELETE"'):
-        assert method_str not in region, (
-            f"Forbidden write method in piece-drawer region: {method_str}"
+    for method_str in ("'PUT'", '"PUT"', "'PATCH'", '"PATCH"',
+                       "'DELETE'", '"DELETE"'):
+        assert method_str not in body, (
+            f"Forbidden write method in InventoryPage / drawer: {method_str}"
         )
+    # POST is allowed but only against the two Phase B.1 paths.
+    assert "_postSample('sample-out'" in body, "Expected sample-out POST call"
+    assert "_postSample('sample-return'" in body, "Expected sample-return POST call"
 
 
-def test_disabled_action_buttons_unchanged():
+def test_disabled_action_buttons_post_sample_activation():
+    """Sample-out + Sample-return moved from toolbar placeholders into
+    the piece drawer. Move stock has its own per-piece UI in the
+    Warehouse Scanner. Goods-return + Return-to-producer remain
+    backend-pending placeholders in the toolbar."""
     body = _inventory_body()
     assert "data-testid={`inventory-preview-action-${b.id}`}" in body
-    for action_id in ("'move_stock'", "'sample_out'", "'sample_return'",
-                      "'goods_return'", "'return_prod'"):
+    # Remaining backend-pending placeholders.
+    for action_id in ("'goods_return'", "'return_prod'"):
         assert f"id: {action_id}" in body
+    # Now-live actions must NOT appear as disabled placeholders.
+    for action_id in ("'sample_out'", "'sample_return'", "'move_stock'"):
+        assert f"id: {action_id}" not in body, (
+            f"Live action {action_id} must not remain in the disabled "
+            f"placeholder array"
+        )

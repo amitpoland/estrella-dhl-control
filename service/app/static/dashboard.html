@@ -1257,24 +1257,72 @@ const _LIFECYCLE_TONE = {
   reserved:         { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
 };
 
+// Lifecycle state → pill tone. Keys match inventory_state_engine.STATES.
+// SAMPLE_OUT is amber (operator attention class) — see SAMPLE_OUT_DESIGN.md.
+const _STATE_TONE = {
+  PURCHASE_TRANSIT:      { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  WAREHOUSE_STOCK:       { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+  DIRECT_DISPATCH_READY: { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  CLIENT_DISPATCHED:     { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  SALES_TRANSIT:         { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+  SAMPLE_OUT:            { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
+  CLOSED:                { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+};
+
+// 30d overdue threshold mirrors RECIPIENT_OVERDUE_DAYS in inventory_sample_writer.
+const _SAMPLE_OVERDUE_DAYS = 30;
+
+function _daysSinceIso(iso) {
+  if (!iso) return null;
+  try {
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) return null;
+    return Math.floor((Date.now() - t) / 86400000);
+  } catch { return null; }
+}
+
 function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
   // ── Stage 2 aggregate state — wired to /api/v1/inventory/stage2/aggregate ──
   const [stage2Data,    setStage2Data]    = React.useState(null);
   const [stage2Loading, setStage2Loading] = React.useState(true);
   const [stage2Error,   setStage2Error]   = React.useState(null);
 
-  // ── Phase 4.4: piece detail drawer (read-only) ─────────────────────────
+  // ── Phase 4.4: piece detail drawer (read-only lookup + Phase B.1 actions) ─
   const [pieceLookupCode, setPieceLookupCode] = React.useState('');
   const [pieceDetail,        setPieceDetail]        = React.useState(null);
   const [pieceDetailLoading, setPieceDetailLoading] = React.useState(false);
   const [pieceDetailError,   setPieceDetailError]   = React.useState('');
   const [drawerOpen,         setDrawerOpen]         = React.useState(false);
 
+  // Phase B.1 — sample-out / sample-return mutation state.
+  // API key is fetched via /api/v1/warehouse/config (same convention as
+  // warehouse.html). Routes require X-API-Key when settings.api_key is set.
+  const [inventoryApiKey, setInventoryApiKey] = React.useState('');
+  const [actionBusy,      setActionBusy]      = React.useState(false);
+  const [actionError,     setActionError]     = React.useState('');
+  const [sampleOutForm,   setSampleOutForm]   = React.useState({
+    recipient_client_name: '',
+    expected_return_date:  '',
+    sample_reason:         'customer_review',
+    notes:                 '',
+  });
+  const [sampleReturnNotes, setSampleReturnNotes] = React.useState('');
+
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch('/api/v1/warehouse/config', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled && d && d.api_key) setInventoryApiKey(d.api_key); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const lookupPiece = React.useCallback(async () => {
     const code = (pieceLookupCode || '').trim();
     if (!code) return;
     setPieceDetailLoading(true);
     setPieceDetailError('');
+    setActionError('');
     setDrawerOpen(true);
     try {
       const d = await apiFetch(`/api/v1/inventory/pieces/${encodeURIComponent(code)}`);
@@ -1286,11 +1334,102 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
     setPieceDetailLoading(false);
   }, [pieceLookupCode]);
 
+  // Re-fetch piece detail for a known scan_code (used after a successful
+  // sample-out / sample-return write so the drawer reflects new state).
+  const refreshPiece = React.useCallback(async (code) => {
+    if (!code) return;
+    setPieceDetailLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/inventory/pieces/${encodeURIComponent(code)}`);
+      setPieceDetail(d);
+    } catch (e) {
+      setPieceDetailError((e && e.message) || String(e));
+    }
+    setPieceDetailLoading(false);
+  }, []);
+
   const closeDrawer = React.useCallback(() => {
     setDrawerOpen(false);
     setPieceDetail(null);
     setPieceDetailError('');
+    setActionError('');
   }, []);
+
+  const _postSample = React.useCallback(async (suffix, body, scanCode) => {
+    const res = await fetch(
+      `/api/v1/inventory/pieces/${encodeURIComponent(scanCode)}/${suffix}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(inventoryApiKey ? { 'X-API-Key': inventoryApiKey } : {}),
+        },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const code   = errBody?.detail?.code   || `HTTP_${res.status}`;
+      const detail = errBody?.detail?.detail || '';
+      throw new Error(`${code}${detail ? ': ' + detail : ''}`);
+    }
+    return res.json().catch(() => ({}));
+  }, [inventoryApiKey]);
+
+  const submitSampleOut = React.useCallback(async () => {
+    if (!pieceDetail || !pieceDetail.state) return;
+    const piece_id = pieceDetail.state.scan_code;
+    const op = _resolveOperator();
+    if (!op) { setActionError('Operator name required'); return; }
+    if (!sampleOutForm.recipient_client_name.trim()) {
+      setActionError('Recipient client name required'); return;
+    }
+    if (!sampleOutForm.expected_return_date) {
+      setActionError('Expected return date required'); return;
+    }
+    setActionBusy(true); setActionError('');
+    try {
+      await _postSample('sample-out', {
+        operator:               op,
+        recipient_client_name:  sampleOutForm.recipient_client_name.trim(),
+        expected_return_date:   sampleOutForm.expected_return_date,
+        sample_reason:          sampleOutForm.sample_reason,
+        idempotency_key:        `so-${piece_id}-${Date.now()}`,
+        notes:                  sampleOutForm.notes || '',
+      }, piece_id);
+      await refreshPiece(piece_id);
+      setSampleOutForm({
+        recipient_client_name: '', expected_return_date: '',
+        sample_reason: 'customer_review', notes: '',
+      });
+      if (onToast) onToast('Sample-out recorded', 'success');
+    } catch (e) {
+      setActionError((e && e.message) || String(e));
+    }
+    setActionBusy(false);
+  }, [pieceDetail, sampleOutForm, _postSample, refreshPiece, onToast]);
+
+  const submitSampleReturn = React.useCallback(async () => {
+    if (!pieceDetail || !pieceDetail.state) return;
+    const piece_id = pieceDetail.state.scan_code;
+    const op = _resolveOperator();
+    if (!op) { setActionError('Operator name required'); return; }
+    setActionBusy(true); setActionError('');
+    try {
+      await _postSample('sample-return', {
+        operator:        op,
+        idempotency_key: `sr-${piece_id}-${Date.now()}`,
+        notes:           sampleReturnNotes || '',
+      }, piece_id);
+      await refreshPiece(piece_id);
+      setSampleReturnNotes('');
+      if (onToast) onToast('Sample-return recorded', 'success');
+    } catch (e) {
+      setActionError((e && e.message) || String(e));
+    }
+    setActionBusy(false);
+  }, [pieceDetail, sampleReturnNotes, _postSample, refreshPiece, onToast]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1355,11 +1494,11 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
           style={{ padding: '4px 12px', borderRadius: 6, border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', color: 'var(--accent)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'none' }}>
           ⊡ Open Warehouse Scanner
         </a>
-        {/* Design-preview disabled actions — two-stage IA writes that don't exist. */}
+        {/* Phase B.1 live: sample-out / sample-return moved into the
+            piece drawer (state-gated + evidence form). Move stock has
+            its own per-piece UI in the Warehouse Scanner. Remaining
+            placeholders are still backend-pending two-stage writes. */}
         {[
-          { id: 'move_stock',    label: '⇄ Move stock' },
-          { id: 'sample_out',    label: '↗ Sample out' },
-          { id: 'sample_return', label: '↙ Sample return' },
           { id: 'goods_return',  label: '↩ Goods return' },
           { id: 'return_prod',   label: '↰ Return to producer' },
         ].map(b => (
@@ -1552,7 +1691,7 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
       {/* Design preview footer */}
       <div data-testid="inventory-design-preview" style={{ marginTop: 14, padding: '10px 14px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span data-testid="inventory-preview-pending-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10, fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
-        <span>Move-stock / Sample-out / Sample-return / Goods-return / Return-to-producer require server-side writes that don't exist. Per-batch warehouse audit and scan operations live on the Warehouse tab inside each batch, and the Warehouse Scanner external page covers mobile-safe scans.</span>
+        <span>Move-stock, Sample-out, and Sample-return are live (see Warehouse Scanner + piece drawer). Goods-return and Return-to-producer still require server-side writes that don't exist. Per-batch warehouse audit lives on the Warehouse tab inside each batch.</span>
       </div>
 
       {/* ── Phase 4.4: Piece lookup + detail drawer (read-only) ──
@@ -1640,8 +1779,41 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
           )}
 
           {!pieceDetailLoading && !pieceDetailError && pieceDetail
-              && pieceDetail.found === true && pieceDetail.state && (
+              && pieceDetail.found === true && pieceDetail.state && (() => {
+            const st     = pieceDetail.state.state;
+            const tone   = _STATE_TONE[st] || _STATE_TONE.CLOSED;
+            const days   = st === 'SAMPLE_OUT' ? _daysSinceIso(pieceDetail.state.updated_at) : null;
+            const overdue = days !== null && days >= _SAMPLE_OVERDUE_DAYS;
+            return (
             <div data-testid="inventory-piece-drawer-found">
+              {/* Lifecycle pill + aging indicator (SAMPLE_OUT only) */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6,
+                            marginBottom: 10, flexWrap: 'wrap' }}>
+                <span data-testid="inventory-piece-state-pill"
+                  data-state={st}
+                  style={{
+                    display: 'inline-block', padding: '2px 8px',
+                    background: tone.bg, color: tone.text,
+                    border: `1px solid ${tone.border}`,
+                    borderRadius: 10, fontSize: 10, fontWeight: 700,
+                    letterSpacing: '0.06em', fontFamily: 'monospace',
+                  }}>{st}</span>
+                {st === 'SAMPLE_OUT' && days !== null && (
+                  <span data-testid="inventory-piece-sample-aging"
+                    data-overdue={overdue ? 'true' : 'false'}
+                    title={`Lifecycle entered SAMPLE_OUT at ${pieceDetail.state.updated_at}`}
+                    style={{
+                      display: 'inline-block', padding: '2px 8px',
+                      background: overdue ? 'var(--badge-red-bg)'     : 'var(--badge-amber-bg)',
+                      color:      overdue ? 'var(--badge-red-text)'   : 'var(--badge-amber-text)',
+                      border: `1px solid ${overdue ? 'var(--badge-red-border)' : 'var(--badge-amber-border)'}`,
+                      borderRadius: 10, fontSize: 10, fontWeight: 700,
+                    }}>
+                    {overdue ? `⚠ ${days}d out · overdue` : `${days}d out`}
+                  </span>
+                )}
+              </div>
+
               <div style={{ fontSize: 12, marginBottom: 8 }}>
                 <div><strong>scan_code:</strong> {pieceDetail.state.scan_code}</div>
                 <div><strong>state:</strong> {pieceDetail.state.state}</div>
@@ -1673,8 +1845,140 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
                   ))}
                 </ul>
               )}
+
+              {/* Phase B.1 — Sample-out / Sample-return actions.
+                  State-gated: form appears only for legal transitions. */}
+              <div data-testid="inventory-piece-actions"
+                   style={{ marginTop: 14, paddingTop: 10,
+                            borderTop: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-3)',
+                              textTransform: 'uppercase', letterSpacing: '0.06em',
+                              marginBottom: 8 }}>Actions</div>
+
+                {actionError && (
+                  <div data-testid="inventory-piece-action-error"
+                    style={{ padding: '6px 10px',
+                             background: 'var(--badge-red-bg)',
+                             color: 'var(--badge-red-text)',
+                             border: '1px solid var(--badge-red-border)',
+                             borderRadius: 4, fontSize: 11, marginBottom: 8,
+                             wordBreak: 'break-word' }}>
+                    ⚠ {actionError}
+                  </div>
+                )}
+
+                {st === 'WAREHOUSE_STOCK' && (
+                  <div data-testid="inventory-piece-sample-out-form"
+                       style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ fontSize: 10, color: 'var(--text-3)',
+                                    textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Recipient client name *
+                    </label>
+                    <input data-testid="inventory-piece-sample-out-recipient"
+                      type="text"
+                      value={sampleOutForm.recipient_client_name}
+                      onChange={(e) => setSampleOutForm(s =>
+                        ({ ...s, recipient_client_name: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12,
+                               border: '1px solid var(--border)', borderRadius: 4 }} />
+
+                    <label style={{ fontSize: 10, color: 'var(--text-3)',
+                                    textTransform: 'uppercase', letterSpacing: '0.06em',
+                                    marginTop: 4 }}>
+                      Expected return date *
+                    </label>
+                    <input data-testid="inventory-piece-sample-out-return-date"
+                      type="date"
+                      value={sampleOutForm.expected_return_date}
+                      onChange={(e) => setSampleOutForm(s =>
+                        ({ ...s, expected_return_date: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12,
+                               border: '1px solid var(--border)', borderRadius: 4 }} />
+
+                    <label style={{ fontSize: 10, color: 'var(--text-3)',
+                                    textTransform: 'uppercase', letterSpacing: '0.06em',
+                                    marginTop: 4 }}>
+                      Reason *
+                    </label>
+                    <select data-testid="inventory-piece-sample-out-reason"
+                      value={sampleOutForm.sample_reason}
+                      onChange={(e) => setSampleOutForm(s =>
+                        ({ ...s, sample_reason: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12,
+                               border: '1px solid var(--border)', borderRadius: 4 }}>
+                      <option value="customer_review">Customer review</option>
+                      <option value="quality_check">Quality check</option>
+                      <option value="marketing_photo">Marketing photo</option>
+                      <option value="trade_show">Trade show</option>
+                      <option value="other">Other</option>
+                    </select>
+
+                    <label style={{ fontSize: 10, color: 'var(--text-3)',
+                                    textTransform: 'uppercase', letterSpacing: '0.06em',
+                                    marginTop: 4 }}>
+                      Notes (optional)
+                    </label>
+                    <input data-testid="inventory-piece-sample-out-notes"
+                      type="text"
+                      value={sampleOutForm.notes}
+                      onChange={(e) => setSampleOutForm(s =>
+                        ({ ...s, notes: e.target.value }))}
+                      style={{ padding: '4px 8px', fontSize: 12,
+                               border: '1px solid var(--border)', borderRadius: 4 }} />
+
+                    <button data-testid="inventory-piece-sample-out-submit"
+                      onClick={submitSampleOut}
+                      disabled={actionBusy}
+                      style={{
+                        marginTop: 6, padding: '6px 12px', fontSize: 12,
+                        background: 'var(--accent)', color: '#fff',
+                        border: 'none', borderRadius: 4, fontWeight: 600,
+                        cursor: actionBusy ? 'not-allowed' : 'pointer',
+                        opacity: actionBusy ? 0.5 : 1,
+                      }}>
+                      {actionBusy ? '…' : '↗ Sample out'}
+                    </button>
+                  </div>
+                )}
+
+                {st === 'SAMPLE_OUT' && (
+                  <div data-testid="inventory-piece-sample-return-form"
+                       style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ fontSize: 10, color: 'var(--text-3)',
+                                    textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Return notes (optional)
+                    </label>
+                    <input data-testid="inventory-piece-sample-return-notes"
+                      type="text"
+                      value={sampleReturnNotes}
+                      onChange={(e) => setSampleReturnNotes(e.target.value)}
+                      style={{ padding: '4px 8px', fontSize: 12,
+                               border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <button data-testid="inventory-piece-sample-return-submit"
+                      onClick={submitSampleReturn}
+                      disabled={actionBusy}
+                      style={{
+                        marginTop: 6, padding: '6px 12px', fontSize: 12,
+                        background: 'var(--accent)', color: '#fff',
+                        border: 'none', borderRadius: 4, fontWeight: 600,
+                        cursor: actionBusy ? 'not-allowed' : 'pointer',
+                        opacity: actionBusy ? 0.5 : 1,
+                      }}>
+                      {actionBusy ? '…' : '↙ Sample return'}
+                    </button>
+                  </div>
+                )}
+
+                {st !== 'WAREHOUSE_STOCK' && st !== 'SAMPLE_OUT' && (
+                  <div data-testid="inventory-piece-no-actions"
+                    style={{ fontSize: 11, color: 'var(--text-3)',
+                             fontStyle: 'italic' }}>
+                    No sample-out actions for state {st}.
+                  </div>
+                )}
+              </div>
             </div>
-          )}
+          ); })()}
         </div>
       )}
     </div>
