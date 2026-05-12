@@ -161,7 +161,10 @@ def test_source_descriptions_reference_real_tables():
 
 
 def test_honest_zero_vs_null_distinguished():
-    # Empty source → honest zero
+    # Empty-source mock — final_stock takes 0 from .get(), but samples
+    # degrades because the dict lacks the SAMPLE_OUT key (Phase B.1
+    # missing-key contract). In production, count_by_state() pre-seeds
+    # ALL keys including SAMPLE_OUT, so this case is mock-only.
     with patch(
         "app.services.inventory_stage2_aggregator.inventory_state_engine.count_by_state",
         return_value={},
@@ -169,9 +172,12 @@ def test_honest_zero_vs_null_distinguished():
         r_zero = client.get("/api/v1/inventory/stage2/aggregate")
         d_zero = r_zero.json()
         assert d_zero["stage2"]["final_stock"]["count"] == 0
-        assert d_zero["status"] == "ok"
+        assert d_zero["stage2"]["samples"]["count"] is None
+        assert d_zero["status"] == "degraded"
+        assert any("SAMPLE_OUT state missing" in lim
+                   for lim in d_zero["limitations"])
 
-    # Source raises → honest null
+    # Source raises → honest null on BOTH final_stock and samples.
     with patch(
         "app.services.inventory_stage2_aggregator.inventory_state_engine.count_by_state",
         side_effect=RuntimeError("db not initialised"),
@@ -179,6 +185,85 @@ def test_honest_zero_vs_null_distinguished():
         r_null = client.get("/api/v1/inventory/stage2/aggregate")
         d_null = r_null.json()
         assert d_null["stage2"]["final_stock"]["count"] is None
+        assert d_null["stage2"]["samples"]["count"]     is None
         assert d_null["status"] == "degraded"
 
     assert d_zero["stage2"]["final_stock"] != d_null["stage2"]["final_stock"]
+
+
+def test_samples_count_derived_from_sample_out_state():
+    """Phase B.1 — samples count now derives from
+    inventory_state.state='SAMPLE_OUT' (mirrors WAREHOUSE_STOCK for
+    final_stock). No mock = real DB; fixture-free path is exercised
+    elsewhere via patching."""
+    with patch(
+        "app.services.inventory_stage2_aggregator.inventory_state_engine.count_by_state",
+        return_value={
+            "WAREHOUSE_STOCK":       12,
+            "SAMPLE_OUT":             3,
+            "PURCHASE_TRANSIT":       0,
+            "DIRECT_DISPATCH_READY":  0,
+            "CLIENT_DISPATCHED":      0,
+            "SALES_TRANSIT":          0,
+            "CLOSED":                 0,
+        },
+    ):
+        r = client.get("/api/v1/inventory/stage2/aggregate")
+        data = r.json()
+        assert data["stage2"]["samples"]["count"] == 3
+        assert data["stage2"]["samples"]["basis"] == \
+            "inventory_state.state = 'SAMPLE_OUT'"
+        assert data["stage2"]["samples"]["confidence"] == "HIGH"
+        assert data["stage2"]["final_stock"]["count"] == 12
+        assert data["status"] == "ok"
+        # No samples-specific limitation when count is numeric.
+        assert not any(lim.startswith("samples:")
+                       for lim in data["limitations"])
+
+
+def test_samples_zero_count_is_honest_when_no_sample_out_pieces():
+    """Empty SAMPLE_OUT bucket in a real (fully-keyed) count_by_state
+    dict → samples count = 0, NOT null, NOT a limitation."""
+    with patch(
+        "app.services.inventory_stage2_aggregator.inventory_state_engine.count_by_state",
+        return_value={
+            "WAREHOUSE_STOCK":       5,
+            "SAMPLE_OUT":            0,
+            "PURCHASE_TRANSIT":      0,
+            "DIRECT_DISPATCH_READY": 0,
+            "CLIENT_DISPATCHED":     0,
+            "SALES_TRANSIT":         0,
+            "CLOSED":                0,
+        },
+    ):
+        r = client.get("/api/v1/inventory/stage2/aggregate")
+        data = r.json()
+        assert data["stage2"]["samples"]["count"] == 0
+        assert data["status"] == "ok"
+        assert not any(lim.startswith("samples:")
+                       for lim in data["limitations"])
+
+
+def test_no_stale_samples_limitation_emitted_anymore():
+    """The Phase B.1 brief retired the
+    'SAMPLE_OUT not in inventory_state_engine.STATES' claim. It must
+    NEVER appear in the live aggregator response, even on degraded
+    paths."""
+    r = client.get("/api/v1/inventory/stage2/aggregate")
+    data = r.json()
+    for lim in data["limitations"]:
+        assert "SAMPLE_OUT not in inventory_state_engine.STATES" not in lim, (
+            f"Stale samples limitation must not be emitted: {lim!r}"
+        )
+
+
+def test_returns_consignment_unknown_remain_pending():
+    """Phase B.1 only activated samples. Returns, consignment, unknown
+    have no backing state or table yet and must stay null + limited."""
+    r = client.get("/api/v1/inventory/stage2/aggregate")
+    data = r.json()
+    for cat in ("returns", "consignment", "unknown"):
+        assert data["stage2"][cat]["count"] is None, \
+            f"{cat} must remain null until backend support lands"
+        assert any(cat in lim for lim in data["limitations"]), \
+            f"{cat} must still surface a limitation"

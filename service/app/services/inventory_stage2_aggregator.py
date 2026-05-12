@@ -2,16 +2,28 @@
 Inventory Stage 2 read-only aggregator.
 
 Surfaces a 5-bucket summary over existing inventory_state data:
-  - final_stock  (count_by_state()['WAREHOUSE_STOCK'])  — derivable
-  - samples      → null + limitation (no source)
+  - final_stock  (count_by_state()['WAREHOUSE_STOCK']) — derivable
+  - samples      (count_by_state()['SAMPLE_OUT'])      — derivable (Phase B.1)
   - returns      → null + limitation (no source)
   - consignment  → null + limitation (no source)
   - unknown      → null + limitation (Path A: strict residual undefined)
 
+Phase B.1 activated the SAMPLE_OUT lifecycle state. This aggregator now
+counts pieces in inventory_state.state='SAMPLE_OUT' for the samples
+tile, mirroring the WAREHOUSE_STOCK derivation used for final_stock.
+Returns + consignment still have no backing state or table — they stay
+null and surface a limitation.
+
 Failure isolation: if count_by_state() raises (e.g. warehouse_db not
-initialised), final_stock is downgraded to count=null with a limitation,
-the response top-level status becomes "degraded", and the endpoint
-still returns 200. The function NEVER raises.
+initialised), BOTH final_stock and samples are downgraded to count=null
+with limitations, the response top-level status becomes "degraded",
+and the endpoint still returns 200. The function NEVER raises.
+
+A separate degrade path exists for the unusual case where the
+count_by_state() result dict succeeds but does not contain the
+SAMPLE_OUT key (e.g. a test/mock returning a partial dict). In that
+case samples degrades alone with a targeted limitation; final_stock
+is unaffected.
 
 Read-only invariants:
   - No INSERT / UPDATE / DELETE
@@ -26,18 +38,19 @@ from typing import Optional
 from . import inventory_state_engine
 
 
-SAMPLES_BASIS     = "not_available — no sample-out state or table"
-RETURNS_BASIS     = "not_available — no return state or returns table"
-CONSIGNMENT_BASIS = "not_available — no consignment state or table"
-UNKNOWN_BASIS     = (
-    "not_available — strict residual requires samples/returns/"
-    "consignment counts which are null"
+SAMPLES_BASIS_LIVE     = "inventory_state.state = 'SAMPLE_OUT'"
+RETURNS_BASIS          = "not_available — no return state or returns table"
+CONSIGNMENT_BASIS      = "not_available — no consignment state or table"
+UNKNOWN_BASIS          = (
+    "not_available — strict residual requires returns/consignment "
+    "counts which are null"
 )
 
-SAMPLES_LIMITATION = (
-    "samples: no dedicated state (SAMPLE_OUT not in "
-    "inventory_state_engine.STATES) and no sample_releases table — "
-    "cannot distinguish sample releases from direct dispatches"
+# Phase B.1 retired the old "samples: SAMPLE_OUT not in STATES" claim.
+# Samples is now derivable; only the degrade paths add a limitation.
+SAMPLES_LIMITATION_MISSING_KEY = (
+    "samples: SAMPLE_OUT state missing from count_by_state result — "
+    "count_by_state() returned a dict without the SAMPLE_OUT key"
 )
 RETURNS_LIMITATION = (
     "returns: no return state (no RETURNED_FROM_CLIENT or "
@@ -51,8 +64,8 @@ CONSIGNMENT_LIMITATION = (
 )
 UNKNOWN_LIMITATION = (
     "unknown: strict residual (total Stage 2 − final − samples − "
-    "returns − consignment) is undefined while samples/returns/"
-    "consignment are null"
+    "returns − consignment) is undefined while returns/consignment "
+    "are null"
 )
 
 
@@ -67,24 +80,39 @@ def aggregate_stage2(as_of: Optional[str] = None) -> dict:
     limitations: list = []
     status = "ok"
 
-    # ── final_stock: only derivable category ──────────────────────────────
+    # ── Single state-count read; feeds final_stock + samples. ─────────────
     final_stock_count = None
     final_stock_basis = ""
+    samples_count     = None
+    samples_basis     = ""
+
     try:
         state_counts = inventory_state_engine.count_by_state()
-        final_stock_count = int(state_counts.get("WAREHOUSE_STOCK", 0))
-        final_stock_basis = "inventory_state.state = 'WAREHOUSE_STOCK'"
     except Exception as e:  # warehouse_db not initialised, SQL error, etc.
-        final_stock_count = None
         final_stock_basis = f"source unavailable — {type(e).__name__}"
+        samples_basis     = f"source unavailable — {type(e).__name__}"
         limitations.append(
             f"final_stock: count_by_state() raised {type(e).__name__} "
             f"— source unavailable"
         )
+        limitations.append(
+            f"samples: count_by_state() raised {type(e).__name__} "
+            f"— source unavailable"
+        )
         status = "degraded"
+    else:
+        final_stock_count = int(state_counts.get("WAREHOUSE_STOCK", 0))
+        final_stock_basis = "inventory_state.state = 'WAREHOUSE_STOCK'"
+        if "SAMPLE_OUT" in state_counts:
+            samples_count = int(state_counts["SAMPLE_OUT"])
+            samples_basis = SAMPLES_BASIS_LIVE
+        else:
+            # Partial/mock dict missing the key — degrade samples only.
+            samples_basis = "not_available — SAMPLE_OUT key missing from source"
+            limitations.append(SAMPLES_LIMITATION_MISSING_KEY)
+            status = "degraded"
 
-    # ── samples / returns / consignment / unknown: always null today ──────
-    limitations.append(SAMPLES_LIMITATION)
+    # ── returns / consignment / unknown: still null today ─────────────────
     limitations.append(RETURNS_LIMITATION)
     limitations.append(CONSIGNMENT_LIMITATION)
     limitations.append(UNKNOWN_LIMITATION)
@@ -105,9 +133,9 @@ def aggregate_stage2(as_of: Optional[str] = None) -> dict:
                 "confidence": "HIGH" if final_stock_count is not None else "NONE",
             },
             "samples": {
-                "count": None,
-                "basis": SAMPLES_BASIS,
-                "confidence": "NONE",
+                "count": samples_count,
+                "basis": samples_basis,
+                "confidence": "HIGH" if samples_count is not None else "NONE",
             },
             "returns": {
                 "count": None,
