@@ -563,3 +563,460 @@ def test_startup_enforcement_helper_uses_coordinator_function(monkeypatch, tmp_p
     assert route_mod._enforce_flag_combination is coord_mod._enforce_flag_combination
     # Sanity: the startup helper is exported for direct testing.
     assert hasattr(route_mod, "_enforce_startup_combined_states")
+
+
+# ── Per-phase concurrency lock (Issue #48) ───────────────────────────────────
+
+def _drain_phase_locks():
+    """Reset all phase locks to released state. Called between tests that
+    deliberately leave a lock held to verify timeout behaviour."""
+    from app.api.routes_admin_runtime_flags import _PHASE_LOCKS
+    for lock in _PHASE_LOCKS.values():
+        # Release if held; ignore if not held.
+        try:
+            lock.release()
+        except RuntimeError:
+            pass
+
+
+@pytest.fixture(autouse=True)
+def _release_phase_locks_after_test():
+    """Autouse: release any phase lock left held by a test. Belt-and-braces
+    cleanup; with the context-manager design every test SHOULD release on
+    its own, but timeout-simulation tests deliberately hold a lock."""
+    yield
+    _drain_phase_locks()
+
+
+def test_lock_single_post_succeeds_without_contention(client):
+    """Baseline: a single POST acquires + releases the lock and returns 200."""
+    _set_phase_pair("p2", shadow=True, live=False)
+    r = _post(client, "dhl_selfclearance_p2_live_enabled", True)
+    assert r.status_code == 200, r.json()
+
+
+@pytest.mark.parametrize("phase", ["p2", "p3", "p4", "p5"])
+def test_lock_two_concurrent_posts_same_phase_one_returns_503(monkeypatch, tmp_path, phase):
+    """Operator scenario: two admins flip flags on the SAME phase
+    simultaneously. With per-phase lock, one wins; the other times out
+    on lock acquisition and returns 503 LOCK_ACQUISITION_TIMEOUT."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-key-secret")
+    # Tighten timeout so the test runs fast — patch module constant.
+    import app.api.routes_admin_runtime_flags as route_mod
+    monkeypatch.setattr(route_mod, "LOCK_ACQUISITION_TIMEOUT_SECONDS", 0.5)
+
+    _set_phase_pair(phase, shadow=True, live=False)
+
+    # Hold the phase lock externally to simulate a concurrent in-flight POST.
+    held = route_mod._PHASE_LOCKS[phase]
+    assert held.acquire(blocking=True), "test setup: could not acquire phase lock"
+
+    try:
+        from app.main import app
+        c = TestClient(app)
+        r = c.post(
+            _URL,
+            headers=_AUTH,
+            json={"flag_name": f"dhl_selfclearance_{phase}_live_enabled",
+                  "value": True, "actor": "test"},
+        )
+        assert r.status_code == 503
+        body = r.json()["detail"]
+        assert body["error_code"] == "LOCK_ACQUISITION_TIMEOUT"
+        assert phase in body["detail"]
+        assert "retry" in body["hint"].lower()
+    finally:
+        held.release()
+
+
+def test_lock_two_concurrent_posts_different_phases_both_succeed(monkeypatch, tmp_path):
+    """Per-phase isolation: a held P2 lock does NOT block a P3 POST."""
+    import app.api.routes_admin_runtime_flags as route_mod
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-key-secret")
+    monkeypatch.setattr(route_mod, "LOCK_ACQUISITION_TIMEOUT_SECONDS", 0.5)
+
+    _set_phase_pair("p2", shadow=True, live=False)
+    _set_phase_pair("p3", shadow=True, live=False)
+
+    p2_lock = route_mod._PHASE_LOCKS["p2"]
+    assert p2_lock.acquire(blocking=True)
+
+    try:
+        from app.main import app
+        c = TestClient(app)
+        # P3 POST should succeed — its lock is independent.
+        r = c.post(
+            _URL,
+            headers=_AUTH,
+            json={"flag_name": "dhl_selfclearance_p3_live_enabled",
+                  "value": True, "actor": "test"},
+        )
+        assert r.status_code == 200, r.json()
+    finally:
+        p2_lock.release()
+
+
+def test_lock_released_after_successful_post(client, monkeypatch):
+    """After a 200 POST, the per-phase lock must be released so subsequent
+    POSTs against the same phase succeed without waiting."""
+    _set_phase_pair("p2", shadow=True, live=False)
+
+    r1 = _post(client, "dhl_selfclearance_p2_live_enabled", True)
+    assert r1.status_code == 200
+
+    # Second POST — lock must be free.
+    r2 = _post(client, "dhl_selfclearance_p2_live_enabled", False)
+    assert r2.status_code == 200
+
+
+def test_lock_released_after_rejected_forbidden_post(client):
+    """A FORBIDDEN-rejection POST must still release the lock — exception
+    path cleanup discipline."""
+    _set_phase_pair("p3", shadow=True, live=True)
+
+    # This POST is rejected with 400 FORBIDDEN (would yield (False, True))
+    r1 = _post(client, "dhl_selfclearance_p3_shadow_mode", False)
+    assert r1.status_code == 400
+
+    # Lock must be released — subsequent legal POST succeeds.
+    r2 = _post(client, "dhl_selfclearance_p3_live_enabled", False)
+    assert r2.status_code == 200
+
+
+def test_lock_released_after_unknown_flag_posts_nothing(client):
+    """An UNKNOWN_FLAG rejection happens BEFORE the lock acquisition path
+    (because _coerce_and_validate runs first). Verify the lock state for
+    valid phases remains untouched after such a rejection."""
+    import app.api.routes_admin_runtime_flags as route_mod
+
+    r = _post(client, "not_a_flag", True)
+    assert r.status_code == 400
+    assert r.json()["detail"]["error_code"] == "UNKNOWN_FLAG"
+
+    # All 4 phase locks must still be acquirable (not held).
+    for phase in ("p2", "p3", "p4", "p5"):
+        lock = route_mod._PHASE_LOCKS[phase]
+        assert lock.acquire(blocking=False), f"{phase} lock leaked after UNKNOWN_FLAG"
+        lock.release()
+
+
+def test_get_endpoint_not_blocked_by_held_post_lock(monkeypatch, tmp_path):
+    """GET is read-only — the operator can inspect state even while another
+    operator holds a per-phase lock during a POST."""
+    import app.api.routes_admin_runtime_flags as route_mod
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-key-secret")
+
+    p2_lock = route_mod._PHASE_LOCKS["p2"]
+    assert p2_lock.acquire(blocking=True)
+
+    try:
+        from app.main import app
+        c = TestClient(app)
+        r = c.get(_URL, headers=_AUTH)
+        assert r.status_code == 200
+        # Sanity: response shape preserved.
+        assert "dhl_selfclearance_p2_live_enabled" in r.json()
+        assert "_phases" in r.json()
+    finally:
+        p2_lock.release()
+
+
+def test_lock_timeout_audited(monkeypatch, tmp_path):
+    """Lock timeouts must produce an `admin_runtime_flag_lock_timeout`
+    audit entry for forensic reconstruction of contention patterns."""
+    import json as _json
+    import app.api.routes_admin_runtime_flags as route_mod
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-key-secret")
+    monkeypatch.setattr(route_mod, "LOCK_ACQUISITION_TIMEOUT_SECONDS", 0.3)
+
+    _set_phase_pair("p4", shadow=True, live=False)
+    p4_lock = route_mod._PHASE_LOCKS["p4"]
+    assert p4_lock.acquire(blocking=True)
+
+    try:
+        from app.main import app
+        c = TestClient(app)
+        r = c.post(
+            _URL, headers=_AUTH,
+            json={"flag_name": "dhl_selfclearance_p4_live_enabled",
+                  "value": True, "actor": "tejal"},
+        )
+        assert r.status_code == 503
+
+        audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+        lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+        timeouts = [e for e in lines if e.get("event") == "admin_runtime_flag_lock_timeout"]
+        assert len(timeouts) == 1
+        assert timeouts[0]["phase"] == "p4"
+        assert timeouts[0]["actor"] == "tejal"
+        assert timeouts[0]["timeout_seconds"] == 0.3
+    finally:
+        p4_lock.release()
+
+
+def test_lock_acquisition_and_release_audited(client, tmp_path):
+    """Successful POSTs produce both `lock_acquired` and `lock_released`
+    audit entries with held_seconds for forensic completeness."""
+    import json as _json
+
+    _set_phase_pair("p5", shadow=True, live=False)
+    r = _post(client, "dhl_selfclearance_p5_live_enabled", True)
+    assert r.status_code == 200
+
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+
+    acquired = [e for e in lines if e.get("event") == "admin_runtime_flag_lock_acquired"]
+    released = [e for e in lines if e.get("event") == "admin_runtime_flag_lock_released"]
+    assert len(acquired) == 1 and acquired[0]["phase"] == "p5"
+    assert len(released) == 1 and released[0]["phase"] == "p5"
+    assert "held_seconds" in released[0]
+    assert released[0]["held_seconds"] >= 0
+
+
+def test_lock_per_phase_isolation(monkeypatch, tmp_path):
+    """Holding the P2 lock does not affect P3/P4/P5 locks (and vice versa)."""
+    import app.api.routes_admin_runtime_flags as route_mod
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-key-secret")
+
+    p2 = route_mod._PHASE_LOCKS["p2"]
+    p3 = route_mod._PHASE_LOCKS["p3"]
+    p4 = route_mod._PHASE_LOCKS["p4"]
+    p5 = route_mod._PHASE_LOCKS["p5"]
+
+    assert p2.acquire(blocking=True)
+    try:
+        # Other 3 must remain acquirable while p2 is held.
+        assert p3.acquire(blocking=False)
+        p3.release()
+        assert p4.acquire(blocking=False)
+        p4.release()
+        assert p5.acquire(blocking=False)
+        p5.release()
+    finally:
+        p2.release()
+
+
+def test_lock_not_acquired_for_non_phase_pair_flags(monkeypatch, tmp_path):
+    """Flags like `tracker_paused`, `classifier_min_*`, `value_threshold_usd`
+    do NOT participate in ADR-018's combined-state invariant. They MUST NOT
+    acquire any phase lock — verified by attempting POST while ALL 4 phase
+    locks are held externally."""
+    import app.api.routes_admin_runtime_flags as route_mod
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-key-secret")
+
+    # Hold all 4 phase locks.
+    for phase in ("p2", "p3", "p4", "p5"):
+        assert route_mod._PHASE_LOCKS[phase].acquire(blocking=True)
+
+    try:
+        from app.main import app
+        c = TestClient(app)
+        # Non-phase-pair flag POSTs must succeed — they bypass the lock.
+        for flag, value in [
+            ("dhl_selfclearance_p3_tracker_paused",       True),
+            ("dhl_selfclearance_p4_classifier_min_confidence", 0.9),
+            ("dhl_selfclearance_followup_working_interval_sec", 600),
+            ("dhl_selfclearance_value_threshold_usd",      2500),
+        ]:
+            r = c.post(
+                _URL, headers=_AUTH,
+                json={"flag_name": flag, "value": value, "actor": "test"},
+            )
+            assert r.status_code == 200, (
+                f"non-pair flag {flag} should bypass lock; got {r.status_code} {r.json()}"
+            )
+    finally:
+        for phase in ("p2", "p3", "p4", "p5"):
+            try:
+                route_mod._PHASE_LOCKS[phase].release()
+            except RuntimeError:
+                pass
+
+
+def test_lock_acquire_phase_lock_helper_no_op_for_none_phase():
+    """Direct test of the context manager — None phase yields without
+    acquiring any lock."""
+    from app.api.routes_admin_runtime_flags import _acquire_phase_lock, _PHASE_LOCKS
+
+    # None phase is a no-op — must not touch any lock.
+    with _acquire_phase_lock(None, flag_name="some_flag", actor="test"):
+        # Inside the no-op context, all locks are still acquirable.
+        for phase, lock in _PHASE_LOCKS.items():
+            assert lock.acquire(blocking=False), f"{phase} lock unexpectedly held"
+            lock.release()
+
+
+def test_lock_acquire_phase_lock_helper_unknown_phase_no_op():
+    """Defensive: an unknown phase identifier (e.g. 'p99') must be a no-op
+    rather than KeyError."""
+    from app.api.routes_admin_runtime_flags import _acquire_phase_lock
+
+    with _acquire_phase_lock("p99", flag_name="hypothetical", actor="test"):
+        pass  # no exception expected
+
+
+def test_boot_replay_does_not_acquire_phase_lock(monkeypatch, tmp_path):
+    """Boot-replay runs single-threaded before the route is mounted. It
+    must NOT contend for phase locks. Verified by holding all 4 locks
+    externally and confirming `load_persisted_flags_into_settings`
+    completes without timing out."""
+    import json as _json
+    import app.api.routes_admin_runtime_flags as route_mod
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+
+    store = {
+        "dhl_selfclearance_p2_shadow_mode":  True,
+        "dhl_selfclearance_p3_shadow_mode":  True,
+    }
+    (tmp_path / "dhl_selfclearance_runtime_flags.json").write_text(_json.dumps(store))
+
+    # Hold all 4 phase locks — boot-replay must ignore them.
+    for phase in ("p2", "p3", "p4", "p5"):
+        assert route_mod._PHASE_LOCKS[phase].acquire(blocking=True)
+
+    try:
+        from app.api.routes_admin_runtime_flags import load_persisted_flags_into_settings
+        # Time-bound the call so a regression that adds locking would deadlock
+        # rather than block forever.
+        import threading as _t
+        result_box = {}
+
+        def _runner():
+            try:
+                result_box["applied"] = load_persisted_flags_into_settings()
+            except Exception as e:  # pragma: no cover
+                result_box["error"] = e
+
+        thread = _t.Thread(target=_runner, daemon=True)
+        thread.start()
+        thread.join(timeout=2.0)
+        assert not thread.is_alive(), "boot replay deadlocked on a phase lock"
+        assert "error" not in result_box
+        assert "applied" in result_box
+    finally:
+        for phase in ("p2", "p3", "p4", "p5"):
+            try:
+                route_mod._PHASE_LOCKS[phase].release()
+            except RuntimeError:
+                pass
+
+
+def test_lock_default_timeout_is_5_seconds():
+    """Operator-visible constant — timeout SHOULD be 5s by default per
+    Issue #48 specification."""
+    from app.api.routes_admin_runtime_flags import LOCK_ACQUISITION_TIMEOUT_SECONDS
+    assert LOCK_ACQUISITION_TIMEOUT_SECONDS == 5.0
+
+
+def test_lock_count_is_exactly_four():
+    """Per Issue #48 design: exactly 4 locks (one per P2/P3/P4/P5).
+    Adding more phases later requires updating both `_ALLOWED_FLAGS` AND
+    `_PHASE_LOCKS` AND `_PHASE_PAIR_RE` — same coupling rule documented
+    near the regex."""
+    from app.api.routes_admin_runtime_flags import _PHASE_LOCKS
+    assert set(_PHASE_LOCKS.keys()) == {"p2", "p3", "p4", "p5"}
+    assert len(_PHASE_LOCKS) == 4
+
+
+def test_lock_timeout_writes_both_lifecycle_and_rejection_audit_entries(monkeypatch, tmp_path):
+    """Per gap-hunter F9 (LOW): dual audit-write on lock-timeout is
+    intentional. The lifecycle event (`admin_runtime_flag_lock_timeout`)
+    captures the lock-level forensic context; the rejection event
+    (`admin_runtime_flag_rejected` with error_code=LOCK_ACQUISITION_TIMEOUT)
+    categorises it alongside other 4xx rejections. A future refactor that
+    "deduplicates" these would silently drop forensic redundancy.
+
+    This test guards the dual-write contract."""
+    import json as _json
+    import app.api.routes_admin_runtime_flags as route_mod
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-key-secret")
+    monkeypatch.setattr(route_mod, "LOCK_ACQUISITION_TIMEOUT_SECONDS", 0.2)
+
+    _set_phase_pair("p3", shadow=True, live=False)
+    p3_lock = route_mod._PHASE_LOCKS["p3"]
+    assert p3_lock.acquire(blocking=True)
+
+    try:
+        from app.main import app
+        c = TestClient(app)
+        r = c.post(
+            _URL, headers=_AUTH,
+            json={"flag_name": "dhl_selfclearance_p3_live_enabled",
+                  "value": True, "actor": "amit"},
+        )
+        assert r.status_code == 503
+
+        audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+        lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+
+        timeouts = [e for e in lines if e.get("event") == "admin_runtime_flag_lock_timeout"]
+        rejections = [
+            e for e in lines
+            if e.get("event") == "admin_runtime_flag_rejected"
+            and e.get("error_code") == "LOCK_ACQUISITION_TIMEOUT"
+        ]
+        assert len(timeouts)   == 1, f"expected 1 lifecycle timeout entry, got {timeouts}"
+        assert len(rejections) == 1, f"expected 1 rejection entry, got {rejections}"
+    finally:
+        p3_lock.release()
+
+
+def test_lock_released_after_store_write_failure(client, monkeypatch):
+    """Per testing-verification recommendation: STORE_WRITE_FAILED path
+    raises HTTPException(500) inside the `with _acquire_phase_lock` block.
+    The `finally` must release the lock; otherwise the next POST against
+    the same phase would time out forever."""
+    import app.api.routes_admin_runtime_flags as route_mod
+
+    _set_phase_pair("p2", shadow=True, live=False)
+
+    # Inject _save_store failure via monkeypatch.
+    def _failing_save_store(flag_map):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(route_mod, "_save_store", _failing_save_store)
+
+    r = _post(client, "dhl_selfclearance_p2_live_enabled", True)
+    assert r.status_code == 500
+    assert r.json()["detail"]["error_code"] == "STORE_WRITE_FAILED"
+
+    # Settings rolled back.
+    assert getattr(settings, "dhl_selfclearance_p2_live_enabled") is False
+
+    # Lock released — next acquire must succeed without blocking.
+    p2 = route_mod._PHASE_LOCKS["p2"]
+    assert p2.acquire(blocking=False), (
+        "p2 lock leaked after STORE_WRITE_FAILED — finally block did not release"
+    )
+    p2.release()
+
+
+def test_lock_held_seconds_is_non_negative_under_clock_step(client):
+    """Lifecycle audit's `held_seconds` field uses time.monotonic() so it
+    is robust against NTP step-back. Under any wall-clock manipulation the
+    field must remain non-negative."""
+    import json as _json
+
+    _set_phase_pair("p4", shadow=True, live=False)
+    r = _post(client, "dhl_selfclearance_p4_live_enabled", True)
+    assert r.status_code == 200
+
+    audit_path = settings.storage_root / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+    released = [e for e in lines if e.get("event") == "admin_runtime_flag_lock_released"]
+    assert len(released) == 1
+    assert released[0]["held_seconds"] >= 0
