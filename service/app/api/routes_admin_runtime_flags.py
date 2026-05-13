@@ -709,10 +709,183 @@ def _enforce_resulting_combined_state(
 # ── Request shape ────────────────────────────────────────────────────────────
 
 class FlagFlipBody(BaseModel):
-    flag_name: str
-    value:     Any
-    actor:     str
-    reason:    Optional[str] = None
+    flag_name:        str
+    value:            Any
+    actor:            str
+    reason:           Optional[str] = None
+    # Issue #49 — predecessor-live override mechanism. Default False; only
+    # consulted when posting `live_enabled=True` for a phase whose
+    # predecessor's live_enabled is False. Override requires a non-empty
+    # `override_reason` (min 10 chars) AND `actor` (min 3 chars) for
+    # operator accountability. ADR-018 combined-state invariant is NOT
+    # affected by override — FORBIDDEN remains FORBIDDEN regardless.
+    override:         Optional[bool] = False
+    override_reason:  Optional[str]  = None
+
+
+# Predecessor chain (locked per Issue #49 spec).
+# - P2 has no predecessor (P2 is the first live phase)
+# - P3 predecessor = P2
+# - P4 predecessor = P3
+# - P5 predecessor = P4
+_PREDECESSOR_MAP: Dict[str, str] = {
+    "p3": "p2",
+    "p4": "p3",
+    "p5": "p4",
+}
+
+# Operator accountability minimums (Issue #49 spec).
+_OVERRIDE_REASON_MIN_CHARS: int = 10
+_OVERRIDE_ACTOR_MIN_CHARS:  int = 3
+
+
+def _enforce_predecessor_live(
+    *,
+    flag_name:       str,
+    new_value:       Any,
+    override:        bool,
+    override_reason: Optional[str],
+    actor:           str,
+) -> None:
+    """Issue #49 — predecessor-live enforcement at admin endpoint.
+
+    Rule: REJECT POST that sets pX_live_enabled=True if
+    p(X-1)_live_enabled=False, UNLESS override=True is explicitly present
+    AND override_reason (min 10 chars) AND actor (min 3 chars) satisfy
+    the override contract.
+
+    Only applies to (phase_pair, dimension=live_enabled, new_value=True)
+    POSTs. All other POSTs are no-ops (no predecessor check).
+
+    Override path emits a WARNING-level log AND a structured audit entry
+    (event=`admin_runtime_flag_predecessor_override`) for operator review.
+
+    Note: this function reads `settings.dhl_selfclearance_<predecessor>_live_enabled`.
+    The predecessor is a DIFFERENT phase from the one being modified, so the
+    per-phase lock for `phase` does NOT cover the predecessor read. A
+    concurrent operator could be flipping the predecessor's live_enabled
+    in another threadpool worker — worst case is a stale-read rejection
+    (PREDECESSOR_NOT_LIVE returned even though predecessor just went
+    live). Operator retry resolves it. Acquiring the predecessor's lock
+    here would risk deadlock if two operators tried to acquire each
+    other's phase locks; benign retry is the chosen trade-off.
+    """
+    parsed = _parse_phase_pair(flag_name)
+    if parsed is None:
+        return  # not a phase-pair flag — predecessor rule does not apply
+
+    phase, dimension = parsed
+    # Only applies to live_enabled=True flips.
+    if dimension != "live_enabled":
+        return
+    if new_value is not True:
+        return
+
+    predecessor = _PREDECESSOR_MAP.get(phase)
+    if predecessor is None:
+        return  # P2 has no predecessor
+
+    pred_live_attr = f"dhl_selfclearance_{predecessor}_live_enabled"
+    pred_live      = bool(getattr(settings, pred_live_attr, False))
+    if pred_live:
+        return  # predecessor live — no override needed
+
+    # Predecessor NOT live. Decide based on override flag.
+    if not override:
+        raise _error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Phase {phase!r} live_enabled=True requires "
+                f"{predecessor!r}_live_enabled=True OR explicit override flag."
+            ),
+            error_code="PREDECESSOR_NOT_LIVE",
+            field="value",
+            hint=(
+                f"Set {pred_live_attr}=true first, OR re-POST with "
+                f"override=true + override_reason (min "
+                f"{_OVERRIDE_REASON_MIN_CHARS} chars) + actor "
+                f"(min {_OVERRIDE_ACTOR_MIN_CHARS} chars)."
+            ),
+            flag_name=flag_name,
+            actor=actor,
+            extra_audit_context={
+                "phase":               phase,
+                "predecessor":         predecessor,
+                "predecessor_live":    pred_live,
+                "override_attempted":  False,
+            },
+        )
+
+    # Override path — validate reason and actor.
+    if (override_reason is None
+            or len(override_reason.strip()) < _OVERRIDE_REASON_MIN_CHARS):
+        raise _error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"override_reason (min {_OVERRIDE_REASON_MIN_CHARS} chars) "
+                f"is required when override=true."
+            ),
+            error_code="MISSING_OVERRIDE_REASON",
+            field="override_reason",
+            hint=(
+                "Provide an operator-visible reason for bypassing the "
+                "predecessor-live check."
+            ),
+            flag_name=flag_name,
+            actor=actor,
+            extra_audit_context={
+                "phase":               phase,
+                "predecessor":         predecessor,
+                "override_attempted":  True,
+            },
+        )
+
+    if not actor or len(actor.strip()) < _OVERRIDE_ACTOR_MIN_CHARS:
+        raise _error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"actor (min {_OVERRIDE_ACTOR_MIN_CHARS} chars) is required "
+                f"when override=true."
+            ),
+            error_code="MISSING_ACTOR",
+            field="actor",
+            hint=(
+                "Override requires identifiable operator identity (min "
+                f"{_OVERRIDE_ACTOR_MIN_CHARS} chars)."
+            ),
+            flag_name=flag_name,
+            actor=actor,
+            extra_audit_context={
+                "phase":               phase,
+                "predecessor":         predecessor,
+                "override_attempted":  True,
+            },
+        )
+
+    # Override path approved. Emit WARNING-level log AND structured audit
+    # entry. Filterable by event="admin_runtime_flag_predecessor_override"
+    # for downstream operator review.
+    reason_clean = override_reason.strip()
+    log.warning(
+        "admin_runtime_flag_predecessor_override phase=%s predecessor=%s "
+        "actor=%s reason=%r",
+        phase, predecessor, actor, reason_clean,
+    )
+    try:
+        _append_audit({
+            "event":              "admin_runtime_flag_predecessor_override",
+            "phase":              phase,
+            "predecessor":        predecessor,
+            "predecessor_live":   pred_live,
+            "actor":              actor,
+            "override_reason":    reason_clean,
+            "timestamp":          int(time.time()),
+            "log_level":          "WARNING",
+        })
+    except Exception:  # pragma: no cover — best-effort
+        log.warning(
+            "predecessor_override_audit_write_failed phase=%s", phase,
+        )
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -809,9 +982,24 @@ def post_self_clearance_flag(body: FlagFlipBody = Body(...)) -> Dict[str, Any]:
         # live_enabled) state across both dimensions for any P2/P3/P4/P5 phase
         # pair flag, computed from (current_settings ∪ POST_diff). Single-field
         # validation alone is insufficient. No-op for non-phase-pair flags.
+        # NOTE: combined-state runs FIRST — override does NOT bypass it.
+        # FORBIDDEN combinations remain rejected even with override=true.
         _enforce_resulting_combined_state(
             flag_name=flag_name,
             new_value=new_value,
+            actor=actor,
+        )
+
+        # Issue #49 — predecessor-live enforcement. Reject pX_live=True if
+        # p(X-1)_live=False UNLESS override=true + reason + actor satisfy
+        # the override contract. Override path emits WARNING-level audit
+        # entry. No-op for non-phase-pair flags, non-live-enabled flips,
+        # P2 (no predecessor), or when predecessor already live.
+        _enforce_predecessor_live(
+            flag_name=flag_name,
+            new_value=new_value,
+            override=bool(body.override),
+            override_reason=body.override_reason,
             actor=actor,
         )
 
