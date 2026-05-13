@@ -109,6 +109,10 @@ def test_flip_then_read_back(client):
 
 def test_audit_log_entry_written(client, tmp_path):
     headers = {"X-API-Key": "test-key-secret"}
+    # Issue #49: P4 live requires P3 + P2 live. Seed chain via direct setattr
+    # (bypassing the admin endpoint to avoid noisy audit entries).
+    setattr(settings, "dhl_selfclearance_p2_live_enabled", True)
+    setattr(settings, "dhl_selfclearance_p3_live_enabled", True)
     client.post(
         "/api/v1/admin/runtime-flags/self-clearance",
         headers=headers,

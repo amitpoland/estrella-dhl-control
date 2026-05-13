@@ -141,6 +141,10 @@ def test_dormant_to_shadow_allowed(client, phase):
 
 @pytest.mark.parametrize("phase", ["p2", "p3", "p4", "p5"])
 def test_shadow_to_live_allowed(client, phase):
+    # Issue #49: pX live requires predecessor live. Seed predecessor LIVE.
+    _PREDECESSOR = {"p3": "p2", "p4": "p3", "p5": "p4"}
+    if phase in _PREDECESSOR:
+        _set_phase_pair(_PREDECESSOR[phase], shadow=True, live=True)
     _set_phase_pair(phase, shadow=True, live=False)
     r = _post(client, f"dhl_selfclearance_{phase}_live_enabled", True)
     assert r.status_code == 200, r.json()
@@ -295,6 +299,10 @@ def test_dormant_post_shadow_false_idempotent(client, phase):
 @pytest.mark.parametrize("phase", ["p2", "p3", "p4", "p5"])
 def test_live_post_live_true_idempotent(client, phase):
     """current shadow=True, live=True; POST live=True → no state change → ALLOWED."""
+    # Issue #49: pX live requires predecessor live. Seed predecessor LIVE.
+    _PREDECESSOR = {"p3": "p2", "p4": "p3", "p5": "p4"}
+    if phase in _PREDECESSOR:
+        _set_phase_pair(_PREDECESSOR[phase], shadow=True, live=True)
     _set_phase_pair(phase, shadow=True, live=True)
     r = _post(client, f"dhl_selfclearance_{phase}_live_enabled", True)
     assert r.status_code == 200
@@ -640,7 +648,8 @@ def test_lock_two_concurrent_posts_different_phases_both_succeed(monkeypatch, tm
     monkeypatch.setattr(settings, "api_key", "test-key-secret")
     monkeypatch.setattr(route_mod, "LOCK_ACQUISITION_TIMEOUT_SECONDS", 0.5)
 
-    _set_phase_pair("p2", shadow=True, live=False)
+    # Issue #49: P3 live requires P2 live. Seed P2 LIVE before holding lock.
+    _set_phase_pair("p2", shadow=True, live=True)
     _set_phase_pair("p3", shadow=True, live=False)
 
     p2_lock = route_mod._PHASE_LOCKS["p2"]
@@ -767,6 +776,10 @@ def test_lock_acquisition_and_release_audited(client, tmp_path):
     audit entries with held_seconds for forensic completeness."""
     import json as _json
 
+    # Issue #49: P5 live requires P4 live (which requires P3, P2). Seed chain.
+    _set_phase_pair("p2", shadow=True, live=True)
+    _set_phase_pair("p3", shadow=True, live=True)
+    _set_phase_pair("p4", shadow=True, live=True)
     _set_phase_pair("p5", shadow=True, live=False)
     r = _post(client, "dhl_selfclearance_p5_live_enabled", True)
     assert r.status_code == 200
@@ -1011,6 +1024,9 @@ def test_lock_held_seconds_is_non_negative_under_clock_step(client):
     field must remain non-negative."""
     import json as _json
 
+    # Issue #49: P4 live requires P3 live (which requires P2). Seed chain.
+    _set_phase_pair("p2", shadow=True, live=True)
+    _set_phase_pair("p3", shadow=True, live=True)
     _set_phase_pair("p4", shadow=True, live=False)
     r = _post(client, "dhl_selfclearance_p4_live_enabled", True)
     assert r.status_code == 200
