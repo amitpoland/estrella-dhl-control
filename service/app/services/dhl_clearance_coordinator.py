@@ -416,6 +416,7 @@ class DhlClearanceCoordinator:
                 cc=cc_str,
                 from_address=pkg.get("from_address", ""),
                 email_type=pkg.get("email_type", "dhl_proactive_dispatch"),
+                attachments=pkg.get("attachments", []),
             )
         except Exception as exc:
             log.error(

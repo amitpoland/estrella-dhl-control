@@ -498,6 +498,7 @@ def _ensure_dhl_dsk_transfer_reply(audit_path: Path, audit: Dict[str, Any]) -> D
                 cc=pkg.get("cc", ""),
                 from_address=pkg.get("from_address", ""),
                 email_type=pkg.get("email_type", "dhl_b2_dsk_only_reply"),
+                attachments=existing,
             )
 
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -578,6 +579,7 @@ def _DEPRECATED_ensure_dhl_dsk_transfer_reply_legacy(audit_path: Path, audit: Di
             cc=pkg.get("cc", ""),
             from_address=pkg.get("from_address", ""),
             email_type=pkg.get("email_type", "dhl_reply"),
+            attachments=existing,
         )
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -663,6 +665,7 @@ def _ensure_dhl_self_clearance_reply(audit_path: Path, audit: Dict[str, Any]) ->
             cc=pkg.get("cc", ""),
             from_address=pkg.get("from_address", ""),
             email_type=pkg.get("email_type", "dhl_self_clearance_reply"),
+            attachments=existing,
         )
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -1269,6 +1272,7 @@ def _ensure_path_a_auto_queue(audit_path: Path, audit: Dict[str, Any]) -> Dict[s
                 body_text = pkg.get("body_text", ""),
                 batch_id  = batch_id,
                 cc        = resolved_cc,
+                attachments=pkg.get("attachments", []),
             )
         except Exception as exc:
             log.warning("[%s] auto-queue: queue_email raised %s", batch_id, exc)
@@ -1658,6 +1662,7 @@ def _ensure_agency_forward_after_dhl(audit_path: Path, audit: Dict[str, Any]) ->
                 cc=pkg.get("cc", ""),
                 from_address=pkg.get("from_address", ""),
                 email_type=pkg.get("email_type", "agency_forward_after_dhl"),
+                attachments=existing_attach,
             )
 
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -2020,6 +2025,7 @@ def _process_dhl_followup(
                 cc=pkg.get("cc", ""),
                 from_address=pkg.get("from_address", ""),
                 email_type=pkg.get("email_type", "dhl_followup"),
+                attachments=existing,
             )
             send_method  = "smtp"
             send_outcome = None

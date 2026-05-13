@@ -185,14 +185,18 @@ async def build_agency_email_package(batch_id: str) -> AgencyPackageResponse:
         )
 
     email_id = queue_email(
-        to        = pkg["to"],
-        subject   = pkg["subject"],
-        body_html = body_html,
-        body_text = body_text,
-        batch_id  = batch_id,
-        cc        = pkg.get("cc", ""),
-        from_address = pkg.get("from_address", ""),
-        email_type   = pkg.get("email_type", "agency"),
+        to          = pkg["to"],
+        subject     = pkg["subject"],
+        body_html   = body_html,
+        body_text   = body_text,
+        batch_id    = batch_id,
+        cc          = pkg.get("cc", ""),
+        from_address= pkg.get("from_address", ""),
+        email_type  = pkg.get("email_type", "agency"),
+        # Pass attachment metadata directly so the integrity guard fires
+        # on the synchronous SMTP attempt inside queue_email() — before
+        # this function writes audit["agency_reply_package"] to disk.
+        attachments = pkg.get("attachments", []),
     )
 
     # ── Persist to audit ──────────────────────────────────────────────────────

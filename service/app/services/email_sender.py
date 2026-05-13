@@ -102,18 +102,50 @@ def _dedupe_addresses(addrs: List[str]) -> List[str]:
 
 def _attachments_for_queue(queue_entry: Dict[str, Any]) -> Tuple[List[Path], List[str]]:
     """
-    Resolve attachment paths for this queue entry by reading the linked batch's
-    audit.json. Looks in three locations, in priority order, matched by the
-    queue entry's id (== proposal.email_id):
+    Resolve attachment paths for this queue entry.
 
-      1. action_proposals[*].draft.attachments   (dhl_proactive_dispatch and
-         any other proposal-driven email)
+    Priority order:
+      0. queue_entry["attachments"]  — stored at queue time via queue_email(attachments=...)
+         Preferred path; avoids the audit.json timing race where the immediate SMTP
+         attempt fires before the caller writes audit["agency_reply_package"] to disk.
+      1. action_proposals[*].draft.attachments  (proposal-driven emails)
       2. agency_reply_package.attachments
       3. dhl_reply_package.attachments
+      4. Last-resort union of all above (legacy fallback)
 
-    Falls back to the union of all (1)+(2)+(3) when no match found.
     Returns (existing_paths, missing_labels).
     """
+    # ── Priority 0: attachments stored directly in queue entry ───────────────
+    # This is the post-fix path for all callers that pass attachments= to queue_email().
+    # It avoids the timing race: queue_email() calls send_queued_email() synchronously,
+    # before the caller has had a chance to write audit.json. Without this fast path
+    # the integrity guards cannot fire on the first send attempt.
+    direct_attachments = queue_entry.get("attachments")
+    if direct_attachments is not None:  # explicit empty list [] is also authoritative
+        found: List[Path] = []
+        missing: List[str] = []
+        _storage_root = settings.storage_root.resolve()
+        for a in direct_attachments:
+            path_str = a.get("path") if isinstance(a, dict) else ""
+            if path_str:
+                p = Path(path_str)
+                try:
+                    resolved = p.resolve()
+                    # Security: only serve files that live under storage_root
+                    resolved.relative_to(_storage_root)
+                except (ValueError, OSError):
+                    log.warning(
+                        "[email_sender] attachment path outside storage_root — skipped: %s", path_str
+                    )
+                    missing.append(a.get("label") or path_str)
+                    continue
+                if resolved.is_file():
+                    found.append(resolved)
+                else:
+                    missing.append(a.get("label") or path_str)
+        return found, missing
+
+    # ── Fallback: look up from batch audit.json (legacy / backwards compat) ──
     batch_id = queue_entry.get("batch_id", "")
     if not batch_id:
         return [], []
@@ -155,17 +187,17 @@ def _attachments_for_queue(queue_entry: Dict[str, Any]) -> Tuple[List[Path], Lis
             for a in (pkg.get("attachments") or []):
                 candidates.append(a)
 
-    found: List[Path] = []
-    missing: List[str] = []
+    found_l: List[Path] = []
+    missing_l: List[str] = []
     for a in candidates:
         path_str = a.get("path") if isinstance(a, dict) else ""
         if path_str:
             p = Path(path_str)
             if p.is_file():
-                found.append(p)
+                found_l.append(p)
             else:
-                missing.append(a.get("label") or path_str)
-    return found, missing
+                missing_l.append(a.get("label") or path_str)
+    return found_l, missing_l
 
 
 def _expected_attachment_count(queue_entry: Dict[str, Any]) -> int:
@@ -173,7 +205,15 @@ def _expected_attachment_count(queue_entry: Dict[str, Any]) -> int:
     proposal/package? Used to detect the silent-send bug where attachments
     were declared upstream but the resolver returned an empty list. Returns
     0 when no proposal or package is found, in which case 'no attachments'
-    is a valid send (e.g. plain admin notification)."""
+    is a valid send (e.g. plain admin notification).
+
+    Priority: queue entry's own attachments list (set at queue time) first,
+    then audit.json fallback for legacy entries."""
+    # Fast path: attachments stored in queue entry (post-fix path)
+    direct = queue_entry.get("attachments")
+    if direct is not None:
+        return len(direct)
+
     batch_id = queue_entry.get("batch_id", "")
     if not batch_id:
         return 0
@@ -237,6 +277,196 @@ def _build_mime(
         part["Content-Disposition"] = f'attachment; filename="{p.name}"'
         msg.attach(part)
     return msg
+
+
+# ── Attachment integrity constants ────────────────────────────────────────────
+
+# Terminal queue status for attachment validation failures.
+# Distinct from 'failed' (SMTP error) so UI can show the right recovery action.
+_STATUS_ATTACHMENT_VALIDATION_FAILED = "FAILED_ATTACHMENT_VALIDATION"
+
+# Body keywords that signal the email is supposed to carry attachments.
+# When any of these appear in the combined body text but attach_paths is empty,
+# the guard fires regardless of email_type.
+_ATTACHMENT_BODY_KEYWORDS: Tuple[str, ...] = (
+    "w załączeniu",
+    "w zał.",
+    "w zal.",
+    "w załączniku",
+    "załączam",
+    "załącza",
+    "prosimy o weryfikację dokumentów",
+    "please find attached",
+    "attached please find",
+    "please find enclosed",
+    "please see attached",
+    "see attached",
+    "herewith attached",
+    "herewith enclosed",
+    "enclosed please find",
+    "in attachment",
+    "as an attachment",
+    "as attachment",
+    "attached hereto",
+    "attached herewith",
+)
+
+# Email types that unconditionally require ≥ 1 attachment before send.
+# A customs or agency email without files is always an operational error.
+_ATTACHMENT_REQUIRED_EMAIL_TYPES: frozenset = frozenset({
+    "agency",
+    "dhl_reply",
+    "dhl_proactive_dispatch",
+})
+
+
+def _set_terminal_failure(
+    queue_id: str,
+    error_code: str,
+    error_detail: str,
+) -> None:
+    """
+    Set queue entry status to FAILED_ATTACHMENT_VALIDATION — a terminal state.
+
+    Unlike _mark_queue_error (which keeps status='pending' so the entry is
+    retryable), this marks a state that requires operator action: the
+    attachment issue must be fixed and the email re-built before retry.
+    """
+    try:
+        queue = _load_queue()
+        for e in queue:
+            if e.get("id") == queue_id:
+                e["status"]                 = _STATUS_ATTACHMENT_VALIDATION_FAILED
+                e["error"]                  = error_code
+                e["error_detail"]           = (error_detail or "")[:500]
+                e["last_send_attempt_at"]   = datetime.now(timezone.utc).isoformat()
+                e["attachment_guard_fired"] = True
+                break
+        _save_queue(queue)
+    except Exception:
+        pass  # Never block the return path — the guard result already returned False
+
+
+def _log_attachment_failure_to_audit(
+    queue_id: str,
+    entry: Dict[str, Any],
+    error_code: str,
+    error_detail: str,
+) -> None:
+    """Write an attachment_validation_failed timeline event to the batch audit.json."""
+    batch_id = entry.get("batch_id", "")
+    if not batch_id:
+        return
+    # Security: reject path-traversal patterns in batch_id before building FS path
+    if any(c in batch_id for c in ("/", "\\", "..")):
+        log.warning("[email_sender] _log_attachment_failure: rejected unsafe batch_id=%r", batch_id)
+        return
+    for sub in ("outputs", "working"):
+        audit_path = settings.storage_root / sub / batch_id / "audit.json"
+        if audit_path.exists():
+            try:
+                tl.log_event(
+                    audit_path,
+                    "attachment_validation_failed",
+                    trigger_source="email_sender",
+                    actor="system",
+                    detail={
+                        "queue_id":    queue_id,
+                        "error_code":  error_code,
+                        "error_detail": (error_detail or "")[:300],
+                        "email_type":  entry.get("email_type", ""),
+                        "subject":     (entry.get("subject") or "")[:120],
+                        "to":          entry.get("to", ""),
+                    },
+                )
+            except Exception:
+                pass  # Non-fatal; don't mask the guard result
+            return
+
+
+def _validate_attachment_integrity(
+    entry: Dict[str, Any],
+    attach_paths: List[Path],
+) -> Tuple[bool, str, str]:
+    """
+    Full attachment integrity check — called after _attachments_for_queue has
+    confirmed declared paths exist on disk.
+
+    Checks (in order):
+      1. Zero-byte file guard — any 0-size attachment is invalid.
+      2. Email-type requirement — customs/agency emails require ≥ 1 attachment.
+      3. Body-keyword guard — body references attachments but list is empty.
+      4. MIME packaging dry-run — catch encoding/IO failures before SMTP.
+
+    Returns (ok, error_code, error_detail).
+    ok=True means the email is safe to send.
+    """
+    email_type   = (entry.get("email_type") or "").strip().lower()
+    body_text    = (entry.get("body_text") or "").lower()
+    body_html    = (entry.get("body_html") or "").lower()
+    combined_body = body_text + " " + body_html
+
+    # ── Check 1: zero-byte files ──────────────────────────────────────────
+    for p in attach_paths:
+        try:
+            if p.stat().st_size == 0:
+                detail = (
+                    "Outbound customs email blocked: required attachments missing or invalid. "
+                    f"Attachment '{p.name}' is empty (0 bytes) — file was not generated correctly."
+                )
+                return False, "attachment_zero_bytes", detail
+        except OSError as exc:
+            detail = (
+                "Outbound customs email blocked: required attachments missing or invalid. "
+                f"Cannot stat attachment '{p.name}': {exc}"
+            )
+            return False, "attachment_stat_error", detail
+
+    # ── Check 2: email type unconditionally requires ≥ 1 attachment ──────
+    if email_type in _ATTACHMENT_REQUIRED_EMAIL_TYPES and len(attach_paths) == 0:
+        detail = (
+            "Outbound customs email blocked: required attachments missing or invalid. "
+            f"Email type '{email_type}' requires at least 1 attachment "
+            "but the resolver returned an empty list."
+        )
+        return False, "attachment_required_for_type", detail
+
+    # ── Check 3: body keyword → attachment count mismatch ─────────────────
+    if len(attach_paths) == 0:
+        body_signals_attachment = any(kw in combined_body for kw in _ATTACHMENT_BODY_KEYWORDS)
+        if body_signals_attachment:
+            detail = (
+                "Outbound customs email blocked: required attachments missing or invalid. "
+                "Email body references attachments (attachment keyword found) "
+                "but no attachment files were resolved."
+            )
+            return False, "body_references_missing_attachments", detail
+
+    # ── Check 4: MIME packaging dry-run ───────────────────────────────────
+    if attach_paths:
+        try:
+            to_list = _dedupe_addresses(_split_recipients(entry.get("to", "")))
+            raw_cc  = _dedupe_addresses(_split_recipients(entry.get("cc", "")))
+            to_norm = {a.lower() for a in to_list}
+            cc_list = [a for a in raw_cc if a.lower() not in to_norm]
+            _build_mime(
+                sender      = entry.get("from_address", "test@localhost"),
+                to_list     = to_list or ["test@localhost"],
+                cc_list     = cc_list,
+                subject     = entry.get("subject", ""),
+                body_text   = entry.get("body_text", ""),
+                body_html   = entry.get("body_html", ""),
+                attachments = attach_paths,
+            )
+        except Exception as exc:
+            filenames = [p.name for p in attach_paths]
+            detail = (
+                "Outbound customs email blocked: required attachments missing or invalid. "
+                f"MIME packaging failed for {filenames}: {exc}"
+            )
+            return False, "mime_packaging_failed", detail
+
+    return True, "", ""
 
 
 def _smtp_configured() -> bool:
@@ -380,6 +610,27 @@ def send_queued_email(
             "error_detail": reason,
         }
 
+    # ── Full attachment integrity validation ──────────────────────────────
+    # Covers: zero-byte files, email-type attachment requirement,
+    # body-keyword vs attachment-count mismatch, MIME packaging dry-run.
+    # Sets terminal status FAILED_ATTACHMENT_VALIDATION and logs to audit
+    # on failure — no retry until operator fixes the underlying issue.
+    att_ok, att_error, att_detail = _validate_attachment_integrity(entry, attach_paths)
+    if not att_ok:
+        _set_terminal_failure(queue_id, att_error, att_detail)
+        _log_attachment_failure_to_audit(queue_id, entry, att_error, att_detail)
+        log.error(
+            "[email_sender] attachment integrity blocked send: queue=%s error=%s detail=%s",
+            queue_id, att_error, (att_detail or "")[:200],
+        )
+        return {
+            "ok":       False,
+            "queue_id": queue_id,
+            "status":   _STATUS_ATTACHMENT_VALIDATION_FAILED,
+            "error":    att_error,
+            "error_detail": att_detail,
+        }
+
     # SMTP authenticates as smtp_user (amit@), but FROM may be an alias
     # configured on the same Zoho mailbox (import@, info@, account@).
     # Zoho permits this when the alias is in sendMailDetails for the account.
@@ -387,15 +638,26 @@ def send_queued_email(
     sender_addr = (entry.get("from_address") or "").strip() or auth_user
 
     # ── Build MIME ────────────────────────────────────────────────────────
-    msg = _build_mime(
-        sender=sender_addr,
-        to_list=to_list,
-        cc_list=cc_list,
-        subject=entry.get("subject", ""),
-        body_text=entry.get("body_text", ""),
-        body_html=entry.get("body_html", ""),
-        attachments=attach_paths,
-    )
+    try:
+        msg = _build_mime(
+            sender=sender_addr,
+            to_list=to_list,
+            cc_list=cc_list,
+            subject=entry.get("subject", ""),
+            body_text=entry.get("body_text", ""),
+            body_html=entry.get("body_html", ""),
+            attachments=attach_paths,
+        )
+    except Exception as exc:
+        log.error("[email_sender] MIME build failed queue=%s: %s", queue_id, exc)
+        _mark_queue_error(queue_id, "mime_build_failed", str(exc)[:300])
+        return {
+            "ok":           False,
+            "queue_id":     queue_id,
+            "status":       entry.get("status", "pending"),
+            "error":        "mime_build_failed",
+            "error_detail": f"MIME assembly failed: {exc}",
+        }
 
     # ── Connect + send ────────────────────────────────────────────────────
     all_recipients = to_list + cc_list

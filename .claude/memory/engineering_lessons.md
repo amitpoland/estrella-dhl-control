@@ -156,3 +156,75 @@ The file usually lands correctly. The intermittent failure pattern means there's
 **Reference**: PR #50 silent-loss anomaly (2026-05-13); audit-closure task that produced the retroactive scorecard at `.claude/memory/scorecards/2026-05-13-w5-pd-admin-runtime-flags-validator-RETROACTIVE.md`; gap-hunter root-cause hunt (`ROOT-CAUSE-INCONCLUSIVE / SYSTEMIC-ISSUE-DETECTED, MEDIUM`); audit-closure scorecard at `.claude/memory/scorecards/2026-05-13-observation-audit-closure.md`. The intermittent recurrence in the audit-closure run itself (where `final-consistency-review` reported missing files that landed seconds later) is the second confirmed instance.
 
 **Future hardening proposal** (not binding in this lesson; tracked as OPEN QUESTION in PROJECT_STATE.md): amend `agent-performance-observer.md` to (a) require absolute Write target derived from a `${ORCHESTRATOR_REPO_ROOT}` placeholder the orchestrator interpolates at dispatch time, and (b) require post-Write Read self-verification before printing `SCORECARD WRITTEN`. Same hardening applies to `flow-context-keeper.md` for PROJECT_STATE.md writes.
+
+---
+
+## Lesson D — LOCAL-COMMIT-ONLY deploys must be disclosed and reconciled (2026-05-13)
+
+**Origin**: Wave 1 closure cycle (2026-05-13). SHA `4c797e46ff40b09f51292f05e13baef2882622a0` was deployed to Windows production via the 7-agent inline gate and robocopy sync without first landing on `origin/main` via a GitHub PR. The deploy itself was sound — all 7 gate agents returned CLEAR, all smokes passed, no rollback needed. But the SHA had no GitHub PR trail, making it invisible to any audit of `origin/main` history. The `deploy_release_manager` agent running inline did not flag this deviation. The gap was discovered post-deploy during SHA lineage verification (`git merge-base 0b4e381 4c797e4` returned `1b38ea0`, and `git log 0b4e381..4c797e4` showed only `4c797e4`, confirming it had no PR ancestry).
+
+**What happened**
+
+The Wave 1 hotfix (`fix(email): prevent outbound customs emails sending without attachments`) was built directly on the Windows staging machine under time pressure — the attachment integrity guard needed to reach production before customs emails could be queued. The correct 7-agent gate was run inline (reading agent files, not spawning agents), tests passed 160/160 + 366/366 + 12/12 (new attachment tests), and robocopy synced the code to `C:\PZ\app`. But the commit remained on the Windows local branch only; no PR was opened on GitHub. Consequence: `origin/main` has no record of this change. Any future audit of what code is running in production would require direct access to the Windows machine's git history or explicit documentation — neither of which is discoverable via the canonical GitHub interface.
+
+Three of the four previously-documented "local hotfix commits" (`4d595ca`, `80e3469`, `1b38ea0`) were already on `origin/main` (reachable from `0b4e381`), confirming that SHA lineage verification is a reliable discriminator for this pattern.
+
+**Gate types distinguished**
+
+*PR gate*: Code lands on `origin/main` via GitHub PR. CI runs. Agent review fires per CLAUDE.md GATE 1. Merge via "Create a merge commit." SHA is publicly attributable to a PR number with full reviewer trail on GitHub.
+
+*Inline gate (LOCAL-COMMIT-ONLY)*: Code exists as a commit on a local working tree without a GitHub PR. 7-agent review fires against the local state. Agents produce verdicts. Lead coordinator issues verdict. Code ships to production via local sync (robocopy/scp/equivalent) without GitHub PR review surface. **Both gate types involve agent review. The distinguishing fact is whether the SHA has a public PR trail.**
+
+**Binding rule** (apply to every deploy where the SHA to deploy is not on `origin/main`):
+
+1. **Disclosure required**: Any LOCAL-COMMIT-ONLY deploy must include in its gate report header, before any sync commands execute:
+   ```
+   ⚠ LOCAL-COMMIT-ONLY DEPLOY
+   SHA being deployed:    <full SHA>
+   GitHub PR:             NONE — this SHA is not on origin/main
+   Bypass reason:         <reason from enumerated list below>
+   Reconciliation plan:   <when and how the reconciliation PR will be filed>
+   ```
+   This header must appear at the top of the gate report, visible to the operator before deploy commands are executed.
+
+2. **Operator must acknowledge**: The disclosure header must elicit an explicit operator acknowledgment before sync proceeds. "I acknowledge LOCAL-COMMIT-ONLY" or equivalent. Tacit approval (proceeding without acknowledgment) is not sufficient.
+
+3. **Reconciliation required before next origin-pull deploy** (SOFT rule): A reconciliation PR must be filed and merged to `origin/main` before any subsequent `git pull --ff-only origin main` is executed on the same production machine. Pre-check command for any future deploy: `git log origin/main..HEAD` — if any commits appear AND those commits are currently deployed to production, reconciliation must precede the pull.
+
+4. **Reconciliation PR body must include**:
+   - Original LOCAL-COMMIT-ONLY deploy date and SHA
+   - Bypass reason from the inline gate
+   - The 7-agent gate verdicts produced during inline review (summarised)
+   - Verification command confirming byte-identical content: `git diff <local-sha> <reconcile-pr-head> -- service/app/`
+   - Explicit statement: "The code in this PR is byte-identical to what was deployed on [date]."
+
+5. **Audit trail**: Every LOCAL-COMMIT-ONLY deploy creates an entry in `.claude/memory/local-commit-deploys.jsonl` immediately after the gate report is produced (before sync). The JSONL schema is documented in that file's header comment.
+
+**Valid reasons justifying inline gate** (enumerated; all others are automatically invalid):
+- Production incident requiring fix faster than PR review cycle permits — operator must document the incident in the disclosure header
+- Operator on production-only machine (Mac dev environment unavailable for PR filing) — state which machine
+- Toolchain failure preventing PR creation (e.g., GitHub API unreachable, `gh` CLI broken) — cite the specific failure
+
+**Reasons that do NOT justify inline gate** (automatic escalation triggers):
+- Convenience or speed preference
+- Avoiding review friction or CI wait time
+- Bypassing failing tests
+
+**Where the rule binds**:
+- Every call to the 7-agent deploy gate where `git log origin/main..HEAD` returns any commits
+- `deploy_release_manager.md` § Branch hygiene item 5 (already updated with detection logic)
+- The orchestrator's pre-sync checklist before any robocopy/production-sync command
+- `.claude/memory/local-commit-deploys.jsonl` (append on every LOCAL-COMMIT-ONLY gate invocation)
+
+**Detection signals**:
+- `git log origin/main..HEAD` returns commits AND `git branch -r --contains <sha>` does NOT list `origin/main`
+- The `deploy_release_manager` reports CLEAR but `git rev-parse origin/main` ≠ `git rev-parse HEAD`
+- A post-deploy SHA lineage check (`git merge-base`) confirms divergence between production and origin
+
+**Workaround if disclosure was skipped (retroactive application)**:
+1. Create the `local-commit-deploys.jsonl` entry retroactively (use `"reconciliation_status": "PENDING_RETROACTIVE"`)
+2. File the reconciliation PR with `-RETROACTIVE` suffix in title
+3. Add an OPEN QUESTION in PROJECT_STATE.md: "Is reconciliation PR filed for this LOCAL-COMMIT-ONLY deploy?"
+4. Do not proceed with any subsequent origin-pull deploy until reconciliation is merged
+
+**Reference**: Wave 1 closure cycle (2026-05-13); SHA `4c797e4`; SHA lineage verification section of `PROJECT_STATE.md`; Wave 1 closure scorecard `.claude/memory/scorecards/2026-05-13-wave1-deploy-closure.md` § 4 (Lesson D candidate). Governance reference: `docs/governance/lesson-d-local-commit-only-deploys.md`. Audit record: `.claude/memory/local-commit-deploys.jsonl` (first entry: `4c797e4` retroactive).

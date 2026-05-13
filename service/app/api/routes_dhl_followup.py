@@ -108,6 +108,7 @@ def send_now_endpoint(batch_id: str, body: SendNowReq) -> Dict[str, Any]:
         batch_id=batch_id, cc=pkg.get("cc", ""),
         from_address=pkg.get("from_address", ""),
         email_type=pkg.get("email_type", "dhl_followup"),
+        attachments=pkg.get("attachments", []),
     )
     if not _smtp_configured():
         return {"ok": False, "queued": True, "email_id": email_id,
