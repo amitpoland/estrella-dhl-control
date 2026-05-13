@@ -194,6 +194,19 @@ def upsert_packing_document(
                     )
                     return document_id
 
+            # Hash-based dedup: if another record for this batch already has the
+            # same file hash, return it without creating a ghost duplicate.
+            # This covers rapid re-uploads and retry scenarios where no
+            # document_id was threaded through by the caller.
+            if source_file_hash:
+                dup = con.execute(
+                    "SELECT id FROM packing_documents "
+                    "WHERE batch_id=? AND source_file_hash=? LIMIT 1",
+                    (batch_id, source_file_hash),
+                ).fetchone()
+                if dup:
+                    return dup[0]
+
             # Otherwise insert new
             doc_id = document_id or str(uuid.uuid4())
             con.execute(

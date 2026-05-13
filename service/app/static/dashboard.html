@@ -16925,6 +16925,13 @@ function ProformaDraftPanel({ batchId, onToast }) {
   const [events, setEvents]       = React.useState(null);
   const [eventsOpen, setEventsOpen] = React.useState(false);
 
+  // ── Link-packing-as-sales state ─────────────────────────────────────────
+  const [showLink, setShowLink]       = React.useState(false);
+  const [packDocs, setPackDocs]       = React.useState([]);
+  const [packDocsLoading, setPackDocsLoading] = React.useState(false);
+  const [clientNames, setClientNames] = React.useState({});  // pdoc_id → name
+  const [linkBusy, setLinkBusy]       = React.useState(false);
+
   const refreshList = React.useCallback(async () => {
     setLoading(true);
     try {
@@ -16975,6 +16982,58 @@ function ProformaDraftPanel({ batchId, onToast }) {
       onToast && onToast('Failed to load events: ' + e.message, 'error');
     }
   }, [openId, onToast]);
+
+  // ── Link-packing-as-sales callbacks ─────────────────────────────────────
+  const openLinkPanel = React.useCallback(async () => {
+    setShowLink(true);
+    setPackDocsLoading(true);
+    setPackDocs([]);
+    setClientNames({});
+    try {
+      const d = await apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/packing-documents`);
+      const docs = (d && d.documents) || [];
+      setPackDocs(docs);
+      // Pre-fill client names from filename suggestions
+      const initial = {};
+      docs.forEach(doc => {
+        initial[doc.id] = doc.suggested_client_name || '';
+      });
+      setClientNames(initial);
+    } catch (e) {
+      onToast && onToast('Failed to load packing documents: ' + e.message, 'error');
+    }
+    setPackDocsLoading(false);
+  }, [batchId, onToast]);
+
+  const submitLinkAsSales = React.useCallback(async () => {
+    const mappings = packDocs
+      .filter(doc => (clientNames[doc.id] || '').trim())
+      .map(doc => ({ packing_document_id: doc.id, client_name: clientNames[doc.id].trim() }));
+    if (!mappings.length) {
+      onToast && onToast('Enter at least one client name to link.', 'error');
+      return;
+    }
+    setLinkBusy(true);
+    try {
+      const res = await apiFetch(
+        `/api/v1/packing/${encodeURIComponent(batchId)}/link-as-sales`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_mappings: mappings }) },
+      );
+      const linked  = (res && res.linked)  || 0;
+      const created = (res && res.draft_sync && res.draft_sync.created) || 0;
+      const synced  = (res && res.draft_sync && res.draft_sync.synced)  || 0;
+      onToast && onToast(
+        `Linked ${linked} client(s). Drafts created: ${created}, synced: ${synced}.`,
+        linked > 0 ? 'success' : 'warning',
+      );
+      setShowLink(false);
+      refreshList();
+    } catch (e) {
+      onToast && onToast('Link failed: ' + e.message, 'error');
+    }
+    setLinkBusy(false);
+  }, [batchId, packDocs, clientNames, onToast, refreshList]);
 
   // Wrapped fetch that injects X-Operator + JSON content-type for write calls.
   const _writeCall = React.useCallback(async (label, url, opts = {}) => {
@@ -17161,6 +17220,116 @@ function ProformaDraftPanel({ batchId, onToast }) {
       <Card data-testid="proforma-draft-panel-empty" style={{ marginBottom: 16 }}>
         <SectionHeader icon="◇" title="Local Proforma Drafts"
                        subtitle="No proforma drafts yet — they'll appear once packing data is uploaded." />
+
+        {/* Link-packing-as-sales panel — shown when purchase packing files are
+            already uploaded but were never routed through the sales intake path */}
+        {!showLink ? (
+          <div style={{ padding: '0 16px 16px' }}>
+            <button
+              data-testid="btn-link-packing-as-sales"
+              onClick={openLinkPanel}
+              style={{
+                fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                background: '#0B3D2E', color: '#fff', border: 'none', cursor: 'pointer',
+              }}
+            >
+              ⟳ Link packing files as client sales
+            </button>
+            <span style={{ marginLeft: 10, fontSize: 11, color: 'var(--text-3)' }}>
+              Use this if client packing files were uploaded but drafts were not created.
+            </span>
+          </div>
+        ) : (
+          <div data-testid="link-packing-panel" style={{ padding: '0 16px 16px' }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
+              Assign client names to uploaded packing files
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+              Names pre-filled from filenames where possible. Leave blank to skip a file.
+            </div>
+
+            {packDocsLoading && (
+              <div style={{ color: 'var(--text-3)', fontSize: 12 }}>Loading packing documents…</div>
+            )}
+
+            {!packDocsLoading && !packDocs.length && (
+              <div data-testid="link-packing-no-docs"
+                   style={{ color: 'var(--text-3)', fontSize: 12 }}>
+                No purchase packing files found for this batch.
+              </div>
+            )}
+
+            {!packDocsLoading && packDocs.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border-1)', color: 'var(--text-3)' }}>
+                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Invoice / File</th>
+                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Lines</th>
+                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Client name</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {packDocs.map(doc => (
+                    <tr key={doc.id} style={{ borderBottom: '1px solid var(--border-0)' }}>
+                      <td style={{ padding: '4px 8px' }}>
+                        <span data-testid={`link-packing-doc-invoice-${doc.id}`}>
+                          {doc.invoice_no || '—'}
+                        </span>
+                        <div style={{ color: 'var(--text-3)', fontSize: 10, maxWidth: 200,
+                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {doc.source_file_path ? doc.source_file_path.split(/[/\\]/).pop() : ''}
+                        </div>
+                      </td>
+                      <td style={{ padding: '4px 8px', color: 'var(--text-3)' }}>
+                        <span data-testid={`link-packing-doc-lines-${doc.id}`}>—</span>
+                      </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        <input
+                          data-testid={`link-packing-client-input-${doc.id}`}
+                          type="text"
+                          placeholder="Client name"
+                          value={clientNames[doc.id] || ''}
+                          onChange={e => setClientNames(prev => ({ ...prev, [doc.id]: e.target.value }))}
+                          style={{
+                            fontSize: 12, padding: '3px 8px', borderRadius: 4, width: 180,
+                            border: '1px solid var(--border-1)', background: 'var(--bg-1)',
+                            color: 'var(--text-1)',
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                data-testid="btn-link-packing-submit"
+                onClick={submitLinkAsSales}
+                disabled={linkBusy || packDocsLoading || !packDocs.length}
+                style={{
+                  fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                  background: linkBusy ? '#555' : '#0B3D2E', color: '#fff',
+                  border: 'none', cursor: linkBusy ? 'default' : 'pointer',
+                }}
+              >
+                {linkBusy ? 'Linking…' : '✓ Link & Create Drafts'}
+              </button>
+              <button
+                data-testid="btn-link-packing-cancel"
+                onClick={() => setShowLink(false)}
+                style={{
+                  fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                  background: 'transparent', color: 'var(--text-2)',
+                  border: '1px solid var(--border-1)', cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </Card>
     );
   }

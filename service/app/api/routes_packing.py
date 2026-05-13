@@ -15,12 +15,14 @@ GET  /api/v1/packing/{batch_id}/lines
 from __future__ import annotations
 
 import json
+import re
 import socket
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel
 
 from ..auth.dependencies import get_current_user
 from ..core.config import settings
@@ -485,6 +487,205 @@ def get_packing_lines(batch_id: str) -> Dict[str, Any]:
     }
 
 
+# ── Helpers for link-as-sales ────────────────────────────────────────────────
+
+# Matches filenames like "148 Client SUOKKO.xlsx" or "149 Cilent Diamond Point".
+# Handles both the correct spelling "Client" and the common typo "Cilent".
+# Optional file extension is consumed but not captured.
+_CLIENT_NAME_RE = re.compile(
+    r"^\d+\s+(?:client|cilent)\s+(.+?)(?:\.\w+)?$",
+    re.IGNORECASE,
+)
+
+
+def _guess_client_from_filename(filename: str) -> str:
+    """
+    Parse the client name from filenames like '148 Client SUOKKO.xlsx'.
+    Also handles the 'Cilent' typo.  Returns '' if the pattern does not match.
+    """
+    stem = Path(filename).stem
+    m = _CLIENT_NAME_RE.match(stem.strip())
+    return m.group(1).strip() if m else ""
+
+
+# ── GET /api/v1/packing/{batch_id}/packing-documents ─────────────────────────
+
+@router.get("/{batch_id}/packing-documents", dependencies=[_auth])
+def get_packing_documents(batch_id: str) -> Dict[str, Any]:
+    """
+    Return the list of packing_documents rows for a batch, each annotated with
+    ``suggested_client_name`` parsed from the filename (if the name follows the
+    ``{N} Client {name}`` pattern).
+
+    Used by the dashboard "Link packing files" flow to pre-fill client names
+    before calling ``POST /{batch_id}/link-as-sales``.
+    """
+    _validate_batch(batch_id)
+    docs = pdb.get_packing_documents_for_batch(batch_id)
+    for d in docs:
+        raw_name = Path(d.get("source_file_path", "")).name
+        d["suggested_client_name"] = _guess_client_from_filename(raw_name)
+    return {
+        "batch_id": batch_id,
+        "count":    len(docs),
+        "documents": docs,
+    }
+
+
+# ── POST /api/v1/packing/{batch_id}/link-as-sales ────────────────────────────
+
+
+class _ClientMapping(BaseModel):
+    packing_document_id: str
+    client_name: str
+
+
+class _LinkAsSalesBody(BaseModel):
+    client_mappings: List[_ClientMapping]
+
+
+@router.post("/{batch_id}/link-as-sales", dependencies=[_auth])
+def link_packing_as_sales(
+    batch_id: str,
+    body: _LinkAsSalesBody,
+) -> Dict[str, Any]:
+    """
+    Promote purchase packing lines into ``sales_packing_lines`` with operator-
+    supplied client attribution, then auto-create/sync proforma drafts.
+
+    This is the backfill path for batches where client packing files were
+    uploaded via the purchase-packing route (``POST /{batch_id}/upload``) instead
+    of the sales-intake route.
+
+    **Idempotent**: uses ``replace_sales_packing_lines`` which atomically
+    replaces lines scoped to (sales_document_id, batch_id) only.  Re-calling
+    with the same mappings is safe.
+
+    **Non-destructive**: rows in ``packing_lines`` (purchase side) are never
+    touched.  Duplicate packing_document rows (ghost records from pre-dedup
+    era) are safe to reference — they share lines with the canonical record.
+    """
+    output_dir = _validate_batch(batch_id)
+    if not body.client_mappings:
+        raise HTTPException(status_code=400, detail="client_mappings must not be empty.")
+
+    results: List[Dict[str, Any]] = []
+    for mapping in body.client_mappings:
+        pdoc_id = (mapping.packing_document_id or "").strip()
+        client  = (mapping.client_name or "").strip()
+        if not pdoc_id or not client:
+            results.append({
+                "packing_document_id": pdoc_id,
+                "client_name":         client,
+                "ok":                  False,
+                "reason":              "missing packing_document_id or client_name",
+            })
+            continue
+
+        # Load existing purchase packing lines for this document
+        packing_lines = pdb.get_packing_lines_for_document(pdoc_id)
+        if not packing_lines:
+            results.append({
+                "packing_document_id": pdoc_id,
+                "client_name":         client,
+                "ok":                  False,
+                "reason":              "no packing lines found for document",
+            })
+            continue
+
+        # Get-or-create a stable sales_document record for this packing doc + client
+        sales_doc_id = ddb.get_or_create_sales_document_for_packing(
+            batch_id=batch_id,
+            packing_document_id=pdoc_id,
+            client_name=client,
+        )
+
+        # Map packing_lines columns → sales_packing_lines format.
+        # unit_price / total_value are intentionally 0.0: the packing list
+        # carries no price data.  The draft editor allows the operator to fill
+        # these in, or they are populated later from the purchase invoice match.
+        sales_lines = [
+            {
+                "client_name":   client,
+                "client_ref":    str(ln.get("invoice_no", "") or ""),
+                "product_code":  str(ln.get("product_code", "") or ""),
+                "design_no":     str(ln.get("design_no", "") or ""),
+                "bag_id":        str(ln.get("bag_id", "") or ""),
+                "quantity":      float(ln.get("quantity", 0) or 0),
+                "remarks":       str(ln.get("remarks", "") or ""),
+                "unit_price":    0.0,
+                "currency":      "EUR",
+                "total_value":   0.0,
+                "price_source":  "packing_promote",
+            }
+            for ln in packing_lines
+        ]
+
+        # Atomically replace (idempotent for this sales_document scope)
+        repl = ddb.replace_sales_packing_lines(
+            sales_document_id=sales_doc_id,
+            batch_id=batch_id,
+            lines=sales_lines,
+        )
+        results.append({
+            "packing_document_id": pdoc_id,
+            "client_name":         client,
+            "ok":                  True,
+            "packing_lines_read":  len(packing_lines),
+            "sales_lines_written": repl["inserted"],
+        })
+        log.info(
+            "[%s] link_as_sales: client=%s pdoc=%s lines=%d→%d",
+            batch_id, client, pdoc_id, len(packing_lines), repl["inserted"],
+        )
+
+    # Trigger proforma draft auto-sync (non-blocking; any error is logged, not raised)
+    sync_summary: Dict[str, Any] = {}
+    try:
+        from ..services.proforma_draft_sync import sync_draft_from_packing_upload
+        _pf_db_path = settings.storage_root / "proforma_links.db"
+        sync_summary = sync_draft_from_packing_upload(
+            batch_id=batch_id,
+            operator="link_as_sales",
+            db_path=_pf_db_path,
+            audit_path=output_dir / "audit.json",
+        )
+        log.info("[%s] link_as_sales draft sync: %s", batch_id, sync_summary)
+    except Exception as exc:
+        log.warning("[%s] link_as_sales draft sync failed (non-fatal): %s", batch_id, exc)
+        sync_summary = {"error": str(exc)}
+
+    # Audit timeline
+    try:
+        tl.log_event(
+            output_dir / "audit.json",
+            "PACKING_LINKED_AS_SALES",
+            "link_as_sales",
+            actor="operator",
+            detail={
+                "batch_id": batch_id,
+                "mappings": [
+                    {"doc": m.packing_document_id, "client": m.client_name}
+                    for m in body.client_mappings
+                ],
+                "results": results,
+            },
+        )
+    except Exception:
+        pass
+
+    ok_count = sum(1 for r in results if r.get("ok"))
+    return {
+        "ok":        ok_count > 0,
+        "batch_id":  batch_id,
+        "processed": len(results),
+        "linked":    ok_count,
+        "failed":    len(results) - ok_count,
+        "results":   results,
+        "draft_sync": sync_summary,
+    }
+
+
 # ── GET /api/v1/packing/{batch_id}/barcode ───────────────────────────────────
 
 @router.get("/{batch_id}/barcode", dependencies=[_auth])
@@ -623,8 +824,6 @@ def print_barcode_labels(
 # Gated by settings.environment == "dev" — returns 404 in prod. No auth so
 # validation harnesses can hit it without a session. Should be removed (or
 # kept disabled) before any non-dev deployment.
-
-from pydantic import BaseModel  # noqa: E402  (kept local to dev router)
 
 # Single dev router carries both packing trigger and inventory-state seeder.
 # Mounted by main.py as packing_dev_router. Prefix is /api/v1/dev so

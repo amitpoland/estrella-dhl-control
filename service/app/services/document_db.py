@@ -1147,6 +1147,56 @@ def get_sales_documents(batch_id: str) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def get_or_create_sales_document_for_packing(
+    batch_id:            str,
+    packing_document_id: str,
+    client_name:         str,
+) -> str:
+    """
+    Idempotent: return or create a sales_documents row that represents a purchase
+    packing document being promoted to the sales side (via link-as-sales).
+
+    Uses the synthetic document_id ``"packing:{packing_document_id}"`` as the
+    stable lookup key — repeated calls for the same packing doc return the same
+    row.  If the row already exists but the client_name differs (operator
+    corrected a typo), the name is updated in-place.
+
+    Returns the sales_document primary-key id.
+    """
+    if _db_path is None:
+        return ""
+    synthetic_doc_id = f"packing:{packing_document_id}"
+    now = _now()
+    with _lock, _connect() as con:
+        existing = con.execute(
+            "SELECT id FROM sales_documents WHERE batch_id=? AND document_id=?",
+            (batch_id, synthetic_doc_id),
+        ).fetchone()
+        if existing:
+            if client_name:
+                con.execute(
+                    "UPDATE sales_documents SET client_name=?, updated_at=? WHERE id=?",
+                    (client_name, now, existing[0]),
+                )
+            return existing[0]
+        row_id = str(uuid.uuid4())
+        con.execute(
+            """INSERT INTO sales_documents
+               (id, batch_id, document_id, client_name, client_ref,
+                document_type, sales_doc_no, sales_doc_date,
+                source_file_path, extraction_status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row_id, batch_id, synthetic_doc_id,
+                client_name, "",
+                "packing_list_promote", "", "",
+                "", "extracted",
+                now, now,
+            ),
+        )
+    return row_id
+
+
 def store_sales_packing_lines(
     sales_document_id: str,
     batch_id:          str,
