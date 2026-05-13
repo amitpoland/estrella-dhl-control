@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services import proforma_invoice_link_db as pildb
-from app.services.proforma_draft_sync import sync_draft_from_packing_upload, _modal_currency
+from app.services.proforma_draft_sync import sync_draft_from_packing_upload, _modal_currency, _write_sync_metadata
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -356,6 +356,72 @@ class TestTOCTOURace:
         draft = pildb.list_drafts_for_batch(db_path, "B16")[0]
         assert draft.packing_sync_warning is not None
         assert "DraftConflict" in draft.packing_sync_warning
+
+    def test_draft_not_editable_is_non_fatal(self, db_path, audit_path):
+        """DraftNotEditable in the TOCTOU path must be caught and treated as
+        blocked — it uses the same handler branch as DraftConflict (line 200
+        of proforma_draft_sync.py: ``except (pildb.DraftNotEditable, pildb.DraftConflict)``).
+
+        This covers the second half of that dual-exception catch which the
+        DraftConflict test above never exercises.
+        """
+        d, _ = pildb.auto_create_draft_from_sales_packing(
+            db_path, batch_id="B17", client_name="ACME",
+            currency="EUR",
+            lines=[{"product_code": "PC-001", "qty": 1, "unit_price": 10.0, "currency": "EUR"}],
+        )
+        lines = _sales_lines("ACME")
+        with _patch_sales_lines("B17", lines):
+            with patch(
+                "app.services.proforma_draft_sync.pildb.reset_draft_from_sales_packing",
+                side_effect=pildb.DraftNotEditable("state changed between read and write"),
+            ):
+                result = sync_draft_from_packing_upload(
+                    batch_id="B17", operator="packing_upload",
+                    db_path=db_path, audit_path=audit_path,
+                )
+        # Must not raise — blocked is the expected outcome
+        assert result["blocked"] == 1
+        assert result["synced"] == 0
+        draft = pildb.list_drafts_for_batch(db_path, "B17")[0]
+        assert draft.packing_sync_warning is not None
+        assert "DraftNotEditable" in draft.packing_sync_warning
+
+
+class TestSyncMetadataOCC:
+    """_write_sync_metadata must not bump updated_at (OCC safety)."""
+
+    def test_write_sync_metadata_preserves_updated_at(self, db_path, audit_path):
+        """_write_sync_metadata writes audit columns without touching updated_at.
+
+        updated_at is the OCC token used by concurrent operators to detect
+        conflicts.  If a packing sync bumped it, any operator who opened the
+        draft before the sync would get a spurious DraftConflict on their next
+        save, even though they did not conflict with another human operator.
+
+        This test pins that invariant: call _write_sync_metadata and assert
+        that updated_at is unchanged.
+        """
+        d, _ = pildb.auto_create_draft_from_sales_packing(
+            db_path, batch_id="B_OCC", client_name="ACME",
+            currency="EUR",
+            lines=[{"product_code": "PC-001", "qty": 1, "unit_price": 10.0, "currency": "EUR"}],
+        )
+        original_updated_at = d.updated_at
+
+        _write_sync_metadata(db_path, d.id, warning=None)
+
+        refreshed = pildb.get_draft_by_id(db_path, d.id)
+        assert refreshed.updated_at == original_updated_at, (
+            "_write_sync_metadata must NOT bump updated_at — it would invalidate "
+            "OCC tokens held by concurrent operators"
+        )
+        assert refreshed.last_packing_sync_at is not None, (
+            "last_packing_sync_at must be written"
+        )
+        assert refreshed.packing_sync_warning is None, (
+            "packing_sync_warning should be None when no warning was supplied"
+        )
 
 
 class TestModalCurrency:
