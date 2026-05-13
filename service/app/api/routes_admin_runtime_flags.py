@@ -63,15 +63,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Optional
+from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from ..core.config import settings
 from ..core.security import require_api_key
+from ..services.dhl_clearance_coordinator import (
+    ForbiddenFlagCombination,
+    _enforce_flag_combination,
+)
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +146,24 @@ def load_persisted_flags_into_settings() -> Dict[str, Any]:
     survived validation. Invalid / unknown entries are skipped (logged).
 
     Safe to call multiple times — `settings.<name> = value` is idempotent.
+
+    ADR-018 §a — startup-time enforcement
+    =====================================
+    After the per-flag replay, this function walks every P2/P3/P4/P5 phase
+    pair and checks the resulting (shadow_mode, live_enabled) combined
+    state. If a phase ended up in the FORBIDDEN combination
+    (shadow_mode=False, live_enabled=True) — whether due to a hand-edited
+    JSON store, a pre-validator-era persisted file, or a future race
+    condition that bypassed the runtime gate — the function:
+      1. logs CRITICAL
+      2. forces the affected phase to a safe DORMANT state
+         (shadow_mode=False, live_enabled=False)
+      3. records a `runtime_flags_startup_forbidden_combo_repaired` audit entry
+    The phase remains DORMANT until an operator restores it via the admin
+    endpoint, which itself enforces ADR-018 Invariant 1.
+
+    This closes the boot-replay auth-bypass surface for the combined-state
+    rule (gap-hunter F1 / security AUTH-BYPASS finding on the original PR).
     """
     applied: Dict[str, Any] = {}
     store = _load_store()
@@ -165,7 +188,63 @@ def load_persisted_flags_into_settings() -> Dict[str, Any]:
             log.warning("runtime_flag_store_setattr_failed flag=%s", name)
     if applied:
         log.info("runtime_flags_restored_from_store count=%d", len(applied))
+
+    # ── ADR-018 §a startup enforcement (post-replay sweep) ───────────────
+    repaired = _enforce_startup_combined_states()
+    if repaired:
+        log.critical(
+            "runtime_flags_startup_forbidden_combo_repaired phases=%s",
+            sorted(repaired.keys()),
+        )
     return applied
+
+
+def _enforce_startup_combined_states() -> Dict[str, Dict[str, bool]]:
+    """ADR-018 §a — walk P2/P3/P4/P5 after boot-replay; if any phase landed
+    in the FORBIDDEN combined state, force it to DORMANT and audit the
+    repair. Returns {phase: {prior_shadow, prior_live}} for repaired phases.
+
+    Reuses `_enforce_flag_combination` (single source of truth) — does not
+    re-implement the (False, True) check.
+    """
+    repaired: Dict[str, Dict[str, bool]] = {}
+    for phase in ("p2", "p3", "p4", "p5"):
+        shadow_attr = f"dhl_selfclearance_{phase}_shadow_mode"
+        live_attr   = f"dhl_selfclearance_{phase}_live_enabled"
+        prior_shadow = bool(getattr(settings, shadow_attr, False))
+        prior_live   = bool(getattr(settings, live_attr,   False))
+        try:
+            _enforce_flag_combination(
+                phase,
+                shadow_mode=prior_shadow,
+                live_enabled=prior_live,
+            )
+        except ForbiddenFlagCombination:
+            # Force DORMANT (safe default per ADR-018 §a).
+            try:
+                setattr(settings, shadow_attr, False)
+                setattr(settings, live_attr,   False)
+            except Exception:  # pragma: no cover — defensive
+                log.error(
+                    "startup_forbidden_combo_repair_setattr_failed phase=%s",
+                    phase,
+                )
+                continue
+            try:
+                _append_audit({
+                    "event":          "runtime_flags_startup_forbidden_combo_repaired",
+                    "phase":          phase,
+                    "prior_shadow":   prior_shadow,
+                    "prior_live":     prior_live,
+                    "forced_shadow":  False,
+                    "forced_live":    False,
+                    "timestamp":      int(time.time()),
+                    "reason":         "ADR-018 Invariant 1 violation detected at startup",
+                })
+            except Exception:  # pragma: no cover — best-effort
+                log.warning("startup_forbidden_combo_audit_write_failed phase=%s", phase)
+            repaired[phase] = {"prior_shadow": prior_shadow, "prior_live": prior_live}
+    return repaired
 
 
 def _coerce_value_no_http(flag_name: str, value: Any) -> Any:
@@ -218,20 +297,29 @@ def _error(
     hint:        str = "",
     flag_name:   Optional[str] = None,
     actor:       Optional[str] = None,
+    extra_audit_context: Optional[Dict[str, Any]] = None,
 ) -> HTTPException:
     # Tamper-evidence: record validation rejections in the audit trail so
     # repeated probing on the admin surface is observable. Audit-log write
     # failure is swallowed to log.warning — never blocks the 4xx response.
+    #
+    # `extra_audit_context` carries error-specific forensic detail (e.g.
+    # FORBIDDEN_FLAG_COMBINATION attaches phase + attempted/current/resulting
+    # shadow+live values). Append-only JSONL is backwards-compatible with
+    # extra fields; readers ignore unknown keys.
+    audit_entry: Dict[str, Any] = {
+        "event":      "admin_runtime_flag_rejected",
+        "error_code": error_code,
+        "field":      field,
+        "flag_name":  flag_name,
+        "actor":      actor or "",
+        "timestamp":  int(time.time()),
+        "status":     status_code,
+    }
+    if extra_audit_context:
+        audit_entry.update(extra_audit_context)
     try:
-        _append_audit({
-            "event":      "admin_runtime_flag_rejected",
-            "error_code": error_code,
-            "field":      field,
-            "flag_name":  flag_name,
-            "actor":      actor or "",
-            "timestamp":  int(time.time()),
-            "status":     status_code,
-        })
+        _append_audit(audit_entry)
     except Exception:  # pragma: no cover — best-effort tamper-evidence
         log.warning("rejected_audit_write_failed error_code=%s", error_code)
     return HTTPException(
@@ -333,6 +421,126 @@ def _coerce_and_validate(flag_name: str, value: Any) -> Any:
     )
 
 
+# ── ADR-018 combined-state validator (resulting state, not POST diff alone) ──
+#
+# ADR-018 §"Runtime enforcement recommendations" b: the admin runtime-flags
+# endpoint POST handler validates the RESULTING state across both dimensions
+# (shadow_mode, live_enabled) for the affected phase, computed from
+# (current_settings ∪ POST_diff). Single-field validation alone is insufficient.
+#
+# Coverage: ALL DHL self-clearance phase pairs — P2, P3, P4, P5. Not just P2
+# merely because P2 is the only currently wired coordinator path.
+#
+# Single source of truth: this module imports `_enforce_flag_combination` from
+# `dhl_clearance_coordinator` and reuses it. Truth-table logic is NOT
+# re-implemented here. Any future ADR-018 amendment to the (False, True)
+# rejection rule lands in one place — the coordinator helper — and propagates
+# automatically to this admin route.
+
+# IMPORTANT — phase-coverage binding rule:
+# The character class [2-5] must match the phases declared in `_ALLOWED_FLAGS`
+# above (currently p2, p3, p4, p5). If a future ADR-018 amendment introduces
+# a new phase pair (e.g. p6_shadow_mode / p6_live_enabled), BOTH this regex
+# AND `_ALLOWED_FLAGS` must be updated in the same PR — otherwise the new
+# phase silently escapes the combined-state gate and FORBIDDEN combinations
+# would be accepted by the admin endpoint. See gap-hunter F7 disposition.
+_PHASE_PAIR_RE = re.compile(
+    r"^dhl_selfclearance_(p[2-5])_(shadow_mode|live_enabled)$"
+)
+
+
+def _parse_phase_pair(flag_name: str) -> Optional[Tuple[str, str]]:
+    """If `flag_name` belongs to a phase-pair flag (shadow_mode or live_enabled
+    for any of p2/p3/p4/p5), return (phase, dimension). Else None."""
+    m = _PHASE_PAIR_RE.match(flag_name)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def _enforce_resulting_combined_state(
+    *,
+    flag_name: str,
+    new_value: Any,
+    actor: Optional[str],
+) -> None:
+    """Validate the RESULTING (shadow_mode, live_enabled) state for the
+    affected phase, computed as (current_settings ∪ POST_diff).
+
+    Reuses `_enforce_flag_combination` from the coordinator — single source
+    of truth for ADR-018 Invariant 1.
+
+    No-ops for non-phase-pair flags (e.g. tracker_paused, classifier_min_*).
+    Raises HTTPException(400) with templated error on FORBIDDEN combination.
+    """
+    parsed = _parse_phase_pair(flag_name)
+    if parsed is None:
+        return  # not a phase-pair flag — combined-state rule does not apply
+
+    # Defensive: the call order in post_self_clearance_flag is
+    # _coerce_and_validate (enforces isinstance(value, bool) for bool flags)
+    # → _enforce_resulting_combined_state. Guard against a future refactor
+    # that reorders these and lets a non-bool slip through (gap-hunter F10).
+    if not isinstance(new_value, bool):
+        return  # caller's type-validator should have rejected; fail-closed by skipping
+
+    phase, dimension = parsed
+    shadow_attr = f"dhl_selfclearance_{phase}_shadow_mode"
+    live_attr   = f"dhl_selfclearance_{phase}_live_enabled"
+
+    current_shadow = bool(getattr(settings, shadow_attr, False))
+    current_live   = bool(getattr(settings, live_attr,   False))
+
+    if dimension == "shadow_mode":
+        resulting_shadow = new_value
+        resulting_live   = current_live
+    else:  # live_enabled
+        resulting_shadow = current_shadow
+        resulting_live   = new_value
+
+    try:
+        # Keyword arguments at call site — protects against silent
+        # parameter-reorder breakage in future coordinator-helper changes
+        # (integration-boundary forward-compat note).
+        _enforce_flag_combination(
+            phase,
+            shadow_mode=resulting_shadow,
+            live_enabled=resulting_live,
+        )
+    except ForbiddenFlagCombination:
+        # Never leak the raw exception message — template it. Per Lesson A
+        # backend-safety follow-up: use exception class context, not str(exc).
+        raise _error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Resulting state for phase {phase!r} would be FORBIDDEN: "
+                f"shadow_mode={resulting_shadow}, live_enabled={resulting_live}."
+            ),
+            error_code="FORBIDDEN_FLAG_COMBINATION",
+            field="value",
+            hint=(
+                f"ADR-018 Invariant 1: live_enabled=True requires "
+                f"shadow_mode=True. Current state for {phase}: "
+                f"shadow_mode={current_shadow}, live_enabled={current_live}. "
+                f"Set {shadow_attr}=true before enabling live."
+            ),
+            flag_name=flag_name,
+            actor=actor,
+            # Forensic context — captures full attempted state transition
+            # so an operator tracing probing patterns has enough to act
+            # (gap-hunter F5 / security AUDIT-TRACE-COMPLETENESS finding).
+            extra_audit_context={
+                "phase":            phase,
+                "dimension":        dimension,
+                "attempted_value":  new_value,
+                "current_shadow":   current_shadow,
+                "current_live":     current_live,
+                "resulting_shadow": resulting_shadow,
+                "resulting_live":   resulting_live,
+            },
+        )
+
+
 # ── Request shape ────────────────────────────────────────────────────────────
 
 class FlagFlipBody(BaseModel):
@@ -344,13 +552,48 @@ class FlagFlipBody(BaseModel):
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
+def _classify_phase_state(shadow_mode: bool, live_enabled: bool) -> str:
+    """Map a (shadow_mode, live_enabled) pair to its ADR-018 truth-table
+    label: DORMANT / SHADOW / LIVE / FORBIDDEN. Used by GET endpoint for
+    operator readability under kill-switch time pressure (gap-hunter F3)."""
+    if not shadow_mode and not live_enabled:
+        return "DORMANT"
+    if shadow_mode and not live_enabled:
+        return "SHADOW"
+    if shadow_mode and live_enabled:
+        return "LIVE"
+    return "FORBIDDEN"  # (False, True) — should never persist; surfaces drift
+
+
 @router.get("/self-clearance", dependencies=[_auth])
 def get_self_clearance_flags() -> Dict[str, Any]:
     """
     Return the current live values of all self-clearance flags. Reflects
     in-memory `settings` (the source of truth after any restartless flip).
+
+    Includes a derived `phases` block per ADR-018 truth table — each
+    phase pair (P2/P3/P4/P5) is classified DORMANT/SHADOW/LIVE/FORBIDDEN.
+    Operators get a readable label without having to mentally evaluate
+    the (shadow, live) tuple under time pressure.
     """
-    return {name: getattr(settings, name, None) for name in sorted(ALLOWED_FLAG_NAMES)}
+    # Flat flag map at top level (backwards-compatible with existing readers).
+    payload: Dict[str, Any] = {
+        name: getattr(settings, name, None) for name in sorted(ALLOWED_FLAG_NAMES)
+    }
+    # Adjunct phase-state classification — keyed `_phases` (leading underscore
+    # so it cannot collide with any current or future flag name in
+    # `_ALLOWED_FLAGS`, which are all `dhl_selfclearance_*`).
+    phases: Dict[str, Dict[str, Any]] = {}
+    for phase in ("p2", "p3", "p4", "p5"):
+        shadow = bool(getattr(settings, f"dhl_selfclearance_{phase}_shadow_mode", False))
+        live   = bool(getattr(settings, f"dhl_selfclearance_{phase}_live_enabled", False))
+        phases[phase] = {
+            "shadow_mode":  shadow,
+            "live_enabled": live,
+            "state":        _classify_phase_state(shadow, live),
+        }
+    payload["_phases"] = phases
+    return payload
 
 
 @router.post("/self-clearance", dependencies=[_auth])
@@ -379,6 +622,17 @@ def post_self_clearance_flag(body: FlagFlipBody = Body(...)) -> Dict[str, Any]:
         )
 
     new_value = _coerce_and_validate(flag_name, body.value)
+
+    # ADR-018 combined-state gate — validate RESULTING (shadow_mode,
+    # live_enabled) state across both dimensions for any P2/P3/P4/P5 phase
+    # pair flag, computed from (current_settings ∪ POST_diff). Single-field
+    # validation alone is insufficient. No-op for non-phase-pair flags.
+    _enforce_resulting_combined_state(
+        flag_name=flag_name,
+        new_value=new_value,
+        actor=actor,
+    )
+
     old_value = getattr(settings, flag_name, None)
 
     # In-memory restartless reload — every consumer of settings sees the
