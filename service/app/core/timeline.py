@@ -95,6 +95,10 @@ EV_TRACKING_UPDATED         = "tracking_updated"                  # batch tracki
 EV_AI_BRIDGE_TASK_CREATED   = "ai_bridge_task_created"           # task file created for external AI
 EV_AI_BRIDGE_RESULT_RECEIVED = "ai_bridge_result_received"       # result imported from external AI
 
+# ── Packing list events ────────────────────────────────────────────────────────
+EV_PACKING_LIST_EXTRACTED     = "packing_list_extracted"       # packing PDF/XLSX parsed + rows stored
+EV_PACKING_MATCHED_TO_INVOICE = "packing_matched_to_invoice"   # packing rows matched to invoice lines
+
 _MAX_EVENTS           = 200
 
 

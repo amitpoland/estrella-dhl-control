@@ -358,6 +358,50 @@ Future hardening proposal: amend
 Write target + post-Write Read self-verification (tracked as OPEN
 QUESTION in PROJECT_STATE.md, decision pending operator).
 
+### Lesson D — LOCAL-COMMIT-ONLY deploys must be disclosed and reconciled (2026-05-13)
+
+**Origin**: Wave 1 closure cycle (2026-05-13). SHA `4c797e4`
+deployed to Windows production via inline 7-agent gate + robocopy
+without a GitHub PR. Deploy was sound (all smokes passed) but the
+SHA had no public PR trail — invisible to GitHub audit. Discovered
+post-deploy via SHA lineage verification (`git log 0b4e381..4c797e4`
+returned only `4c797e4`; `git merge-base` confirmed divergence).
+`deploy_release_manager` did not flag the deviation. The gap was
+codified as Lesson D during the Wave 1 governance closure cycle.
+
+**Gate types distinguished**:
+- *PR gate*: SHA lands on `origin/main` via GitHub PR. Publicly auditable.
+- *Inline gate (LOCAL-COMMIT-ONLY)*: SHA on local working tree only. 7-agent review
+  runs, code ships via robocopy, but no GitHub PR trail exists. Both involve agent
+  review; the distinguishing fact is whether the SHA has a public PR trail.
+
+**Binding rule**:
+1. Any LOCAL-COMMIT-ONLY deploy must include a disclosure header at
+   the top of the gate report (before sync commands): SHA, "GitHub PR: NONE",
+   bypass reason, reconciliation plan. Visible to operator before any sync executes.
+2. Operator must explicitly acknowledge the disclosure before sync proceeds.
+3. Reconciliation PR must be filed and merged before the next
+   `git pull --ff-only origin main` on the same production machine.
+4. Reconciliation PR body must confirm byte-identical content via
+   `git diff <local-sha> <reconcile-pr-head> -- service/app/`.
+5. Every LOCAL-COMMIT-ONLY deploy appends an entry to
+   `.claude/memory/local-commit-deploys.jsonl` (see schema there).
+
+**Valid bypass reasons** (enumerated; all others trigger escalation):
+production incident timing, operator on production-only machine,
+toolchain failure preventing PR creation.
+
+**Invalid**: convenience, speed preference, avoiding CI, review friction.
+
+**Where it binds**: every 7-agent gate call where `git log origin/main..HEAD`
+returns commits; `deploy_release_manager.md` § Branch hygiene item 5
+(detection logic already embedded); orchestrator pre-sync checklist.
+
+**Reference**: `.claude/memory/engineering_lessons.md` Lesson D;
+`docs/governance/lesson-d-local-commit-only-deploys.md`;
+`.claude/memory/local-commit-deploys.jsonl`;
+Wave 1 closure scorecard `.claude/memory/scorecards/2026-05-13-wave1-deploy-closure.md` § 4.
+
 ---
 
 ## Available integration

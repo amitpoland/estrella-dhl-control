@@ -1,0 +1,16 @@
+# local-commit-deploys.jsonl — Audit record for LOCAL-COMMIT-ONLY production deploys
+# Format: one JSON object per line (JSONL). Do not edit existing entries; append only.
+# Schema fields:
+#   timestamp            ISO8601 — when the gate report was produced (pre-sync)
+#   sha                  Full 40-char commit SHA
+#   commit_message       First line of the commit message
+#   bypass_reason        One of: "production-incident-timing" | "production-only-machine" | "toolchain-failure"
+#   bypass_detail        Free text documenting the specific incident or constraint
+#   gate_mode            "inline" | "spawned"
+#   gate_verdicts_summary  Brief summary of all 7 agent verdicts
+#   reconciliation_status  "PENDING" | "PENDING_RETROACTIVE" | "MERGED" | "ABANDONED"
+#   reconciliation_pr    null or GitHub PR number (integer)
+#   reconciliation_merged_at  null or ISO8601
+#   environment          "windows-prod" | "mac-dev" | other
+#   deployed_at          ISO8601 when robocopy completed
+{"timestamp":"2026-05-13T10:43:00Z","sha":"4c797e46ff40b09f51292f05e13baef2882622a0","commit_message":"fix(email): prevent outbound customs emails sending without attachments","bypass_reason":"production-incident-timing","bypass_detail":"Attachment integrity guard needed in production before customs email queue could safely run. Wave 1 hotfix built on Windows staging under operational timing pressure. Note: GitHub was accessible (PR #74 filed same session via worktree) — primary factor was established inline-gate norm before Lesson D codified, not toolchain unavailability. This entry is RETROACTIVE — created during Lesson D codification 2026-05-13, after the deploy.","gate_mode":"inline","gate_verdicts_summary":"All 7 deploy_* agents CLEAR (inline). 160/160 PZ regression, 366/366 carrier suite, 12/12 attachment integrity tests. Risk: MEDIUM. Lead coordinator: READY-TO-DEPLOY.","reconciliation_status":"PENDING_RETROACTIVE","reconciliation_pr":null,"reconciliation_merged_at":null,"environment":"windows-prod","deployed_at":"2026-05-13T10:43:00Z"}
