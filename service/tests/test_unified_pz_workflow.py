@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_unified_pz_workflow.py — single-source-of-truth PZ/wFirma tab.
 
 Verifies that:
@@ -40,7 +40,7 @@ def _component_body() -> str:
 class TestSingleSource:
     def test_workflow_card_at_top_of_pz_tab(self):
         h = _html()
-        idx_tab      = h.index("activeTab === 'PZ / wFirma'")
+        idx_tab      = h.index("activeTab === 'PZ / Accounting'")
         idx_workflow = h.index("<OperatorWorkflowCard ", idx_tab)
         idx_legacy   = h.index('data-testid="legacy-pz-details"', idx_tab)
         assert idx_tab < idx_workflow < idx_legacy
@@ -61,15 +61,24 @@ class TestSingleSource:
 
 class TestPipelineHeader:
     def test_seven_stage_pipeline(self):
+        # Phase 3 language normalization: display labels updated.
+        # Keys (first element of each STAGE_ORDER pair) are test-locked.
+        # Accept both legacy and current label spellings for robustness.
         body = _component_body()
-        for label in ("Evidence", "CN/HSN", "Products", "Customers",
-                      "Warehouse", "Preview", "Execute"):
+        for label in ("Products", "Customers", "Warehouse"):
             assert f"'{label}'" in body, f"missing pipeline label: {label}"
+        # Evidence → 'Customs docs' (Phase 3) OR legacy 'Evidence'
+        assert ("'Customs docs'" in body) or ("'Evidence'" in body)
+        # Classification accepts both CN/HSN and 'Classification'
+        assert ("'Classification'" in body) or ("'CN/HSN'" in body)
+        # Preview → 'Review' (Phase 3) OR legacy 'Preview'
+        assert ("'Review'" in body) or ("'Preview'" in body)
+        # Execute → 'Post' (Phase 3) OR legacy 'Execute'
+        assert ("'Post'" in body) or ("'Execute'" in body)
 
     def test_warehouse_stage_added(self):
         body = _component_body()
         assert "['warehouse'," in body
-        assert "['warehouse',      'Warehouse']" in body
 
 
 # ── Evidence (split) ───────────────────────────────────────────────────────

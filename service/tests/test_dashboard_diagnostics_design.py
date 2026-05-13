@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_diagnostics_design.py — Path B / Tier 2 / Pass 14.
 
 Contract for the new Diagnostics composition page:
@@ -368,4 +368,4 @@ def test_ui3_operational_cards_still_present():
 
 def test_detail_tabs_unchanged():
     src = _src()
-    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals']" in src
+    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals']" in src

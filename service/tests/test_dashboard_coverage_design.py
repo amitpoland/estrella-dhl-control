@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_coverage_design.py — Path B / Tier 2 close-out / Pass 18.
 
 Contract for the new Coverage Matrix documentation page:
@@ -313,7 +313,7 @@ def test_no_regression_in_other_tier_pages():
 
 def test_detail_tabs_unchanged():
     src = _src()
-    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals']" in src
+    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals']" in src
 
 
 # ── UI-3 landmarks unchanged ───────────────────────────────────────────

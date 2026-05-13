@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_proforma_readiness_panel.py — pin the read-only Proforma readiness
 aggregator endpoint + dashboard.html panel surface.
 
@@ -14,7 +14,7 @@ It must:
     the headline ready=False verdict.
 
 The dashboard surface tests check that the panel is wired into the
-PZ / wFirma tab and references the existing endpoint paths only —
+PZ / Accounting tab and references the existing endpoint paths only —
 the React tree itself is not exercised here.
 """
 from __future__ import annotations
@@ -382,8 +382,14 @@ class TestDashboardPanelSurface:
             assert path in html, f"missing endpoint reference: {path}"
 
     def test_blocked_flag_message_visible(self, html):
-        assert "WFIRMA_CREATE_PRODUCT_ALLOWED is off" in html
-        assert "WFIRMA_CREATE_CUSTOMER_ALLOWED is off" in html
+        # Phase 3: raw env-var names replaced with human-readable messages.
+        # Verify the human-readable form exists and the env-var strings are gone.
+        assert "contact your admin" in html, \
+            "flag-off message must say 'contact your admin'"
+        assert "WFIRMA_CREATE_PRODUCT_ALLOWED" not in html, \
+            "WFIRMA_CREATE_PRODUCT_ALLOWED must not appear in the dashboard"
+        assert "WFIRMA_CREATE_CUSTOMER_ALLOWED" not in html, \
+            "WFIRMA_CREATE_CUSTOMER_ALLOWED must not appear in the dashboard"
 
     def test_pnd_ambiguity_surfaced(self, html):
         # The bridge ambiguity block uses data-testid for tests

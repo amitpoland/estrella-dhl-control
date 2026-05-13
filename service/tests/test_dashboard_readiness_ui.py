@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_readiness_ui.py — Source-grep tests for the Phase 2
 dashboard readiness UI components.
 
@@ -58,12 +58,12 @@ def test_dhl_customs_tab_registered_in_detail_tabs():
 
 
 def test_pz_wfirma_tab_registered_in_detail_tabs():
-    """'PZ / wFirma' must appear in the DETAIL_TABS list."""
+    """'PZ / Accounting' must appear in the DETAIL_TABS list."""
     src = _src()
     for line in src.splitlines():
         if "DETAIL_TABS" in line and "[" in line:
-            assert "'PZ / wFirma'" in line or '"PZ / wFirma"' in line, (
-                f"'PZ / wFirma' not found in DETAIL_TABS line: {line!r}"
+            assert "'PZ / Accounting'" in line or '"PZ / Accounting"' in line, (
+                f"'PZ / Accounting' not found in DETAIL_TABS line: {line!r}"
             )
             return
     raise AssertionError("DETAIL_TABS constant not found in dashboard.html")
@@ -201,7 +201,7 @@ def test_readiness_banner_in_sales_panel():
     # The panel render block is the SECOND occurrence — first is in a useEffect
     sa_start = _find_nth(src, "activeTab === 'Sales'", 2)
     assert sa_start != -1, "Sales panel block (2nd occurrence) not found"
-    sa_end = src.find("activeTab === 'PZ / wFirma'", sa_start)
+    sa_end = src.find("activeTab === 'PZ / Accounting'", sa_start)
     assert sa_end != -1
     snippet = src[sa_start:sa_end]
     assert "readiness-banner-sales" in snippet, (
@@ -210,16 +210,16 @@ def test_readiness_banner_in_sales_panel():
 
 
 def test_readiness_banner_in_wfirma_panel():
-    """The wFirma banner must appear inside the PZ / wFirma tab block (the panel, not the useEffect)."""
+    """The wFirma banner must appear inside the PZ / Accounting tab block (the panel, not the useEffect)."""
     src = _src()
     # The panel render block is the SECOND occurrence — first is in a useEffect
-    wf_start = _find_nth(src, "activeTab === 'PZ / wFirma'", 2)
-    assert wf_start != -1, "PZ / wFirma panel block (2nd occurrence) not found"
+    wf_start = _find_nth(src, "activeTab === 'PZ / Accounting'", 2)
+    assert wf_start != -1, "PZ / Accounting panel block (2nd occurrence) not found"
     wf_end = src.find("activeTab === 'DHL / Customs'", wf_start)
     assert wf_end != -1
     snippet = src[wf_start:wf_end]
     assert "readiness-banner-wfirma" in snippet, (
-        "ReadinessBanner with testid 'readiness-banner-wfirma' not in PZ / wFirma panel"
+        "ReadinessBanner with testid 'readiness-banner-wfirma' not in PZ / Accounting panel"
     )
 
 

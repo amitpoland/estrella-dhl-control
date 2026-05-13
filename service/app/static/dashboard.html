@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -1678,7 +1678,7 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
           {[
             { id: 'stage1_temp',      label: 'Stage 1 · Temp Purchase', hint: 'pre-arrival staging',        pending: true,  statusLabel: 'Backend pending' },
             { id: 'stage1_warehouse', label: 'Stage 1 · Warehouse',     hint: 'received, awaiting PZ',      pending: true,  statusLabel: 'Backend pending' },
-            { id: 'stage1_sale',      label: 'Stage 1 · Sale',          hint: 'proforma drafts per-client', pending: false, statusLabel: 'Open batch → PZ / wFirma tab' },
+            { id: 'stage1_sale',      label: 'Stage 1 · Sale',          hint: 'proforma drafts per-client', pending: false, statusLabel: 'Open batch → PZ / Accounting tab' },
           ].map(t => (
             <div key={t.id}
               data-testid={`inventory-stage1-${t.id.replace('stage1_', '')}`}
@@ -5847,7 +5847,7 @@ function MissingFunctionsMatrix() {
       ui:         'Partial',
       tests:      'Partial',
       flow:       'Partial',
-      action:     'Accessible from PZ / wFirma tab; no immediate action',
+      action:     'Accessible from PZ / Accounting tab; no immediate action',
     },
     {
       module:     'Packing list upload',
@@ -6014,7 +6014,7 @@ function BatchControlCenter({ batchId, audit, batchReadiness, batchReadinessLoad
   const steps = [
     { label: 'Batch created',         done: !!batchId,      tab: null },
     { label: 'SAD / customs doc uploaded', done: hasSad,    tab: 'DHL / Customs' },
-    { label: 'PZ document generated', done: hasPz,          tab: 'PZ / wFirma' },
+    { label: 'PZ document generated', done: hasPz,          tab: 'PZ / Accounting' },
     { label: 'DHL contacted',         done: hasDhlContact,  tab: 'DHL / Customs' },
     { label: 'DHL reply received',    done: hasDhlReply,    tab: 'DHL / Customs' },
     { label: 'DSK docs received',     done: hasDsk,         tab: 'DHL / Customs' },
@@ -6022,7 +6022,7 @@ function BatchControlCenter({ batchId, audit, batchReadiness, batchReadinessLoad
     { label: 'SAD / PZC from agency', done: hasSadPzc,      tab: 'DHL / Customs' },
     { label: 'Warehouse scanned',     done: whReady,        tab: 'Warehouse' },
     { label: 'Sales linked',          done: salesReady,     tab: 'Sales' },
-    { label: 'wFirma reservation',    done: wfirmaReady,    tab: 'PZ / wFirma' },
+    { label: 'wFirma reservation',    done: wfirmaReady,    tab: 'PZ / Accounting' },
     { label: 'Customs cleared',       done: hasSadPzc && hasDsk, tab: 'DHL / Customs' },
     { label: 'Ready for closure',     done: allReady,       tab: null },
   ];
@@ -6197,7 +6197,7 @@ function OverallReadinessCard({ batchReadiness, loading, error, decisionData, de
 // BATCH DETAIL PAGE (real API)
 // ══════════════════════════════════════════════════════════
 
-const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals'];
+const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals'];
 
 const WORKFLOW_STAGES = [
   { id: 'intake',   num: 1, label: 'Intake' },
@@ -6870,7 +6870,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   React.useEffect(() => { if (activeTab === 'Sales' && !salesLinkage) loadSalesLinkage(); }, [activeTab]);
   // Fetch wFirma reservation preview and PZ preview when tab is activated
   React.useEffect(() => {
-    if (activeTab === 'PZ / wFirma') {
+    if (activeTab === 'PZ / Accounting') {
       if (!reservationPreview) loadReservationPreview();
       if (!pzPreview) loadPzPreview();
     }
@@ -7015,8 +7015,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         else if (dhl === 'dhl_email_received' || dhl === 'reply_package_prepared') { label = 'Send reply package to DHL Customs'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
         else if (!sad || sad === 'missing' || sad === 'sad_pending') { label = 'Upload SAD / ZC429 from customs agent'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
         else if (sad === 'verification_needed') { label = 'Verify customs document values'; cta = 'DHL / Customs'; tab = 'DHL / Customs'; }
-        else if (!pz || pz === 'locked') { label = 'Generate PZ document'; cta = 'PZ / wFirma'; tab = 'PZ / wFirma'; }
-        else if (pz === 'generated') { label = 'Export PZ to wFirma'; cta = 'PZ / wFirma'; tab = 'PZ / wFirma'; }
+        else if (!pz || pz === 'locked') { label = 'Generate PZ document'; cta = 'PZ / Accounting'; tab = 'PZ / Accounting'; }
+        else if (pz === 'generated') { label = 'Export PZ to wFirma'; cta = 'PZ / Accounting'; tab = 'PZ / Accounting'; }
         if (!label) return null;
         return (
           <div style={{ margin: '12px 32px 0', padding: '12px 18px', background: 'linear-gradient(90deg,var(--accent-subtle),#F8EDD0)', border: '1px solid var(--accent-border)', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
@@ -7407,10 +7407,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                               data-testid="pipeline-summary-wfirma-pill"
                               data-wfirma-hint={pipelineRow.wfirmaHint}
                               data-pipeline-stage={dataStage}
-                              data-nav-target="PZ / wFirma"
-                              onClick={() => setActiveTab('PZ / wFirma')}
-                              title="Open PZ / wFirma tab"
-                              aria-label={`wFirma / Proforma status: ${pillLabel}`}
+                              data-nav-target="PZ / Accounting"
+                              onClick={() => setActiveTab('PZ / Accounting')}
+                              title="Open PZ / Accounting tab"
+                              aria-label={`wFirma / Proforma status: ${pillLabel} — open PZ / Accounting tab`}
                               style={{ ...pillStyle, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                             >
                               wFirma: {proformaPipelineLoading ? '…' : pillLabel}
@@ -7421,10 +7421,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           type="button"
                           data-testid="pipeline-summary-pz-pill"
                           data-pz-status={pipelineRow.pzStatus}
-                          data-nav-target="PZ / wFirma"
-                          onClick={() => setActiveTab('PZ / wFirma')}
-                          title="Open PZ / wFirma tab"
-                          aria-label={`PZ status ${pipelineRow.pzStatus || 'unknown'} — open PZ / wFirma tab`}
+                          data-nav-target="PZ / Accounting"
+                          onClick={() => setActiveTab('PZ / Accounting')}
+                          title="Open PZ / Accounting tab"
+                          aria-label={`PZ status ${pipelineRow.pzStatus || 'unknown'} — open PZ / Accounting tab`}
                           style={{ ...(PZ_DONE_LABELS.has(pipelineRow.pzStatus) ? pillGreen : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                         >
                           PZ: {pipelineRow.pzStatus || '—'}
@@ -7540,7 +7540,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               };
               const NEXT_STEP_MAP = {
                 customs_docs_received: 'Upload SAD/PZC from the customs agency (DHL / Customs tab)',
-                pz_generated:          'Generate PZ document (PZ / wFirma tab)',
+                pz_generated:          'Generate PZ document (PZ / Accounting tab)',
               };
               const cc = closureCheck;
               const alreadyDone = cc && cc.already_completed;
@@ -7557,7 +7557,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               const closureEvalDisabledReason = batchCompletedStatus
                 ? 'Shipment already completed — no further action needed'
                 : !pzGenerated
-                ? 'PZ document must be generated first (PZ / wFirma tab)'
+                ? 'PZ document must be generated first (PZ / Accounting tab)'
                 : null;
               return (
                 <Card data-testid="closure-eval-card" style={{ marginTop: 4 }}>
@@ -9051,8 +9051,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         })()}
 
 
-        {/* ── PZ / WFIRMA — Sections moved from Overview ── */}
-        {activeTab === 'PZ / wFirma' && (
+        {/* ── PZ / Accounting — Sections moved from Overview ── */}
+        {activeTab === 'PZ / Accounting' && (
           <>
             {/* Unified operator workflow — one ordered view with the 6 stages:
                 Evidence → Classification → Products → Customers → Preview → Execute.
@@ -9826,7 +9826,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           </>
         )}
 
-        {activeTab === 'PZ / wFirma' && (() => {
+        {activeTab === 'PZ / Accounting' && (() => {
           // Legacy reservation preview — uses an older resolver that may
           // disagree with proforma-readiness. Wrapped as legacy so it
           // can't contradict the unified workflow above.
@@ -12848,7 +12848,7 @@ function WfirmaExportPage({ batches, onViewShipment }) {
             <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>How wFirma warehouse PZ works</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.55 }}>
-            1. Open a shipment with PZ generated → 2. Go to the <b>PZ / wFirma</b> tab → 3. In the <b>wFirma Warehouse</b> card, run <b>Resolve Products</b> until all codes are mapped → 4. Click <b>Create wFirma PZ</b> and confirm → 5. The document ID is saved to the audit automatically.
+            1. Open a shipment with PZ generated → 2. Go to the <b>PZ / Accounting</b> tab → 3. In the <b>wFirma Warehouse</b> card, run <b>Resolve Products</b> until all codes are mapped → 4. Click <b>Create wFirma PZ</b> and confirm → 5. The document ID is saved to the audit automatically.
           </div>
         </div>
 
@@ -15383,13 +15383,13 @@ function OperatorWorkflowCard({ batchId, onToast }) {
   }, [zc429, cnhsn, proforma, preview, caps, batchReady, batchDet]);
 
   const STAGE_ORDER = [
-    ['evidence',       'Evidence'],
-    ['classification', 'CN/HSN'],
+    ['evidence',       'Customs docs'],
+    ['classification', 'Classification'],
     ['products',       'Products'],
     ['customers',      'Customers'],
     ['warehouse',      'Warehouse'],
-    ['preview',        'Preview'],
-    ['execute',        'Execute'],
+    ['preview',        'Review'],
+    ['execute',        'Post'],
   ];
 
   // ── Style helpers ────────────────────────────────────────────────────
@@ -15772,6 +15772,25 @@ function OperatorWorkflowCard({ batchId, onToast }) {
       <div data-testid="workflow-section-b">
         {sectionGroupHeader('B — PZ Generation & Customs', 'b')}
 
+        {/* Completion banner — only when all 7 stages are green */}
+        {(() => {
+          const allStagesDone = stages.evidence.color === 'green'
+            && stages.classification.color === 'green'
+            && stages.products.color === 'green'
+            && stages.customers.color === 'green'
+            && stages.warehouse.color === 'green'
+            && stages.preview.color === 'green'
+            && stages.execute.color === 'green';
+          return allStagesDone ? (
+            <div style={{ background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)',
+                          color: 'var(--badge-green-text)', borderRadius: 8, padding: '12px 16px',
+                          marginBottom: 8, fontSize: 12, fontWeight: 600 }}
+                 data-testid="workflow-completion-banner">
+              ✓ All steps complete — ready to post to accounting
+            </div>
+          ) : null;
+        })()}
+
         {/* Pipeline header */}
         <div data-testid="workflow-pipeline" style={bar}>
           {STAGE_ORDER.map(([k, label], i) => (
@@ -15816,13 +15835,13 @@ function OperatorWorkflowCard({ batchId, onToast }) {
         })()}
 
         {/* Seven ordered sections */}
-        {sectionShell('evidence',       '1. DHL / ZC429 evidence',        evidenceBody)}
-        {sectionShell('classification', '2. CN / HSN classification',     classificationBody)}
-        {sectionShell('products',       '3. Product identity mapping',    productsBody)}
-        {sectionShell('customers',      '4. Customer identity mapping',   customersBody)}
-        {sectionShell('warehouse',      '5. Packing list / Sales linkage', warehouseBody)}
-        {sectionShell('preview',        '6. PZ preview readiness',        previewBody)}
-        {sectionShell('execute',        '7. Execute PZ in wFirma',        executeBody)}
+        {sectionShell('evidence',       '1. DHL / ZC429 evidence',                   evidenceBody)}
+        {sectionShell('classification', '2. Tariff classification',                   classificationBody)}
+        {sectionShell('products',       '3. Products registered in accounting',       productsBody)}
+        {sectionShell('customers',      '4. Customers matched to orders',             customersBody)}
+        {sectionShell('warehouse',      '5. Packing list / Sales linkage',            warehouseBody)}
+        {sectionShell('preview',        '6. Goods receipt ready to post',             previewBody)}
+        {sectionShell('execute',        '7. Create goods receipt in wFirma',          executeBody)}
       </div>
     </div>
   );
@@ -16065,7 +16084,7 @@ function ExecutePZGate({ batchId, onToast }) {
   const onExecute = React.useCallback(async () => {
     if (!batchId) return;
     if (!window.confirm(
-        'Execute PZ in wFirma?\n\nThis writes a wFirma PZ document. ' +
+        'Create goods receipt in wFirma?\n\nThis writes a wFirma PZ document. ' +
         'Proceed only after PZ Preview verification.')) return;
     setBusy(true);
     try {
@@ -16105,7 +16124,7 @@ function ExecutePZGate({ batchId, onToast }) {
   if (loading) {
     return (
       <div style={card} data-testid="execute-pz-gate">
-        <div style={h2}>⚡ Execute PZ in wFirma</div>
+        <div style={h2}>⚡ Create goods receipt in wFirma</div>
         <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}>Loading…</div>
       </div>
     );
@@ -16137,10 +16156,21 @@ function ExecutePZGate({ batchId, onToast }) {
   return (
     <div style={card} data-testid="execute-pz-gate">
       <div style={h2}>
-        ⚡ Execute PZ in wFirma
+        ⚡ Create goods receipt in wFirma
+      </div>
+
+      {reasons.length > 0 && !enabled && (
+        <div data-testid="execute-pz-reasons"
+             style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>What's needed:</div>
+          {reasons.map((r, i) => <div key={i}>⚠ {r}</div>)}
+        </div>
+      )}
+
+      <div style={{ marginBottom: 8 }}>
         <span style={chip(enabled ? 'green' : alreadyCreated ? 'gray' : 'amber')}
               data-testid="execute-pz-status-chip">
-          {alreadyCreated ? 'Already created' : enabled ? 'Ready to execute' : 'Locked'}
+          {alreadyCreated ? 'Already created' : enabled ? 'Ready to post' : 'Blocked — resolve items above'}
         </span>
       </div>
 
@@ -16148,7 +16178,7 @@ function ExecutePZGate({ batchId, onToast }) {
                style={{ fontSize: 11, color: 'var(--text-2,#6b7280)', marginBottom: 8 }}>
         <summary style={{ cursor: 'pointer', fontSize: 11,
                           color: 'var(--text-2,#6b7280)', padding: '2px 0' }}>
-          Technical state (debug)
+          Technical diagnostics
         </summary>
         <div style={{ marginTop: 4 }}>
           <div><span style={label}>PZ preview ready: </span>{String(ready)}</div>
@@ -16161,18 +16191,11 @@ function ExecutePZGate({ batchId, onToast }) {
         </div>
       </details>
 
-      {reasons.length > 0 && !enabled && (
-        <div data-testid="execute-pz-reasons"
-             style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
-          {reasons.map((r, i) => <div key={i}>⚠ {r}</div>)}
-        </div>
-      )}
-
       <div style={{ display: 'flex', gap: 8 }}>
         <button data-testid="execute-pz-refresh"
                 onClick={refresh}
                 style={{ padding: '6px 12px', fontSize: 12 }}>
-          Refresh preview
+          Refresh
         </button>
         <button data-testid="execute-pz-button"
                 onClick={onExecute}
@@ -16182,7 +16205,7 @@ function ExecutePZGate({ batchId, onToast }) {
                          background: enabled ? '#15803d' : '#9ca3af',
                          color: '#fff', border: 'none', borderRadius: 6,
                          cursor: enabled ? 'pointer' : 'not-allowed' }}>
-          {busy ? '⟳ Executing…' : 'Execute PZ in wFirma'}
+          {busy ? '⟳ Creating…' : 'Create goods receipt in wFirma'}
         </button>
       </div>
 
@@ -16635,13 +16658,13 @@ function ProformaReadinessCard({ batchId, onToast }) {
           </div>
           {!products.create_flag_on && products.missing > 0 && (
             <div data-testid="product-flag-off" style={{ fontSize: 11, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', padding: '6px 10px', borderRadius: 4, marginBottom: 8 }}>
-              WFIRMA_CREATE_PRODUCT_ALLOWED is off — auto-register write button will return blocked
+              Auto-register is not available (contact your admin)
             </div>
           )}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <Btn onClick={previewProducts} disabled={!!busy} small>Preview product auto-register</Btn>
             <Btn onClick={writeProducts} disabled={!!busy || !products.create_flag_on || (products.missing ?? 0) === 0} small variant="primary">
-              Auto-register products
+              Register missing items in accounting
             </Btn>
           </div>
         </section>
@@ -16659,7 +16682,7 @@ function ProformaReadinessCard({ batchId, onToast }) {
           </div>
           {!customers.create_flag_on && customers.missing > 0 && (
             <div data-testid="customer-flag-off" style={{ fontSize: 11, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', padding: '6px 10px', borderRadius: 4, marginBottom: 8 }}>
-              WFIRMA_CREATE_CUSTOMER_ALLOWED is off — create button will return blocked
+              Auto-create is not available (contact your admin)
             </div>
           )}
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
@@ -16868,6 +16891,17 @@ function _draftStateChipColors(state) {
   return map[state] || { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)' };
 }
 
+const _DRAFT_STATE_LABELS = {
+  draft:       'Draft',
+  editing:     'Editing',
+  approved:    'Locked for posting',
+  posting:     'Sending…',
+  posted:      'Sent to accounting',
+  post_failed: 'Send failed',
+  cancelled:   'Cancelled',
+  superseded:  'Replaced',
+};
+
 function ProformaDraftStateChip({ state }) {
   const c = _draftStateChipColors(state);
   return (
@@ -16877,7 +16911,7 @@ function ProformaDraftStateChip({ state }) {
             borderRadius: 10, fontSize: 11, fontWeight: 700,
             textTransform: 'uppercase', letterSpacing: '0.04em',
           }}>
-      {state}
+      {_DRAFT_STATE_LABELS[state] || state}
     </span>
   );
 }
@@ -17126,7 +17160,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
     return (
       <Card data-testid="proforma-draft-panel-empty" style={{ marginBottom: 16 }}>
         <SectionHeader icon="◇" title="Local Proforma Drafts"
-                       subtitle="No drafts yet for this batch — sales packing intake creates them automatically." />
+                       subtitle="No proforma drafts yet — they'll appear once packing data is uploaded." />
       </Card>
     );
   }
@@ -17548,7 +17582,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
                     <Btn small variant="primary" onClick={onApprove}
                          data-testid="btn-draft-approve">Approve</Btn>
                     <Btn small onClick={onReset}
-                         data-testid="btn-draft-reset">Reset from sales packing</Btn>
+                         data-testid="btn-draft-reset">Reload items from warehouse data</Btn>
                     <Btn small onClick={onResetAll}
                          data-testid="btn-draft-reset-all">Reset ALL</Btn>
                   </React.Fragment>
@@ -17561,7 +17595,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
                          data-testid="btn-draft-post"
                          style={{ background: 'var(--badge-red-bg)',
                                     color: 'var(--badge-red-text)' }}>
-                      ⚠ Post to wFirma
+                      Send to accounting (wFirma)
                     </Btn>
                   </React.Fragment>
                 )}

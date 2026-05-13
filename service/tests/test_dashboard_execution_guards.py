@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_execution_guards.py — Source-grep tests for execution guards
 on write actions in the dashboard.
 
@@ -632,14 +632,14 @@ def _svc_invoice_snippet(src: str) -> str:
 
 
 def test_svc_invoice_card_present_in_pz_wfirma_tab():
-    """Service Invoices card must be present in the PZ / wFirma tab block."""
+    """Service Invoices card must be present in the PZ / Accounting tab block."""
     src = _src()
-    # Card must appear after the 'PZ / wFirma' tab guard
-    pz_tab_idx = src.find("activeTab === 'PZ / wFirma'")
-    assert pz_tab_idx != -1, "PZ / wFirma tab guard not found"
+    # Card must appear after the 'PZ / Accounting' tab guard
+    pz_tab_idx = src.find("activeTab === 'PZ / Accounting'")
+    assert pz_tab_idx != -1, "PZ / Accounting tab guard not found"
     region = src[pz_tab_idx:]
     assert "Service Invoices" in region, (
-        "Service Invoices card title not found in PZ / wFirma tab block"
+        "Service Invoices card title not found in PZ / Accounting tab block"
     )
 
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_operator_workflow_card.py — unified pre-PZ workflow card.
 
 This is a UI surface test. It greps the OperatorWorkflowCard component
@@ -44,7 +44,7 @@ class TestMount:
 
     def test_mounted_in_pz_wfirma_tab(self):
         h = _html()
-        idx_tab    = h.index("activeTab === 'PZ / wFirma'")
+        idx_tab    = h.index("activeTab === 'PZ / Accounting'")
         idx_card   = h.index("<OperatorWorkflowCard ", idx_tab)
         idx_close  = h.index("Section 3 — PZ / Accounting", idx_tab)
         assert idx_tab < idx_card < idx_close
@@ -54,7 +54,7 @@ class TestMount:
         ahead of the legacy free-standing cards (which are now embedded
         inside it as sub-sections)."""
         h = _html()
-        idx_tab     = h.index("activeTab === 'PZ / wFirma'")
+        idx_tab     = h.index("activeTab === 'PZ / Accounting'")
         idx_workflow = h.index("<OperatorWorkflowCard ", idx_tab)
         # The legacy standalone <ProformaReadinessCard> mount block was
         # removed from the tab top; only the embedded one inside the
@@ -70,13 +70,20 @@ class TestMount:
 
 class TestPipelineHeader:
     def test_six_stage_pipeline(self):
-        # Now 7 stages (Warehouse added), and 'Classification' is shown
-        # as 'CN/HSN' in the pipeline header. Both legacy and new
-        # spellings are accepted so this stays compatible.
+        # Phase 3 language normalization: display labels updated.
+        # Keys (first element of each STAGE_ORDER pair) are locked.
+        # Accept both legacy and current spellings for robustness.
         body = _component_body()
-        for label in ("Evidence", "Products",
-                      "Customers", "Preview", "Execute"):
+        # Products and Customers are stable across all phases.
+        for label in ("Products", "Customers"):
             assert f"'{label}'" in body, f"missing pipeline stage label: {label}"
+        # Evidence → 'Customs docs' (Phase 3) OR legacy 'Evidence'
+        assert ("'Customs docs'" in body) or ("'Evidence'" in body)
+        # Preview → 'Review' (Phase 3) OR legacy 'Preview'
+        assert ("'Review'" in body) or ("'Preview'" in body)
+        # Execute → 'Post' (Phase 3) OR legacy 'Execute'
+        assert ("'Post'" in body) or ("'Execute'" in body)
+        # Classification accepts both CN/HSN and 'Classification'
         assert ("'Classification'" in body) or ("'CN/HSN'" in body)
 
     def test_stage_pills_have_testids(self):

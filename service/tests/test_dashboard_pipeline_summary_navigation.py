@@ -1,4 +1,4 @@
-"""tests/test_dashboard_pipeline_summary_navigation.py — UI-3.5
+﻿"""tests/test_dashboard_pipeline_summary_navigation.py — UI-3.5
 
 Source-grep tests for the clickable navigation behaviour added to the
 Per-Batch Pipeline Summary pills. Each pill becomes a <button> that
@@ -51,7 +51,7 @@ def _panel_block(src: str) -> str:
 
 EXISTING_TABS = {
     'Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales',
-    'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals', 'DHL Express',
+    'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals', 'DHL Express',
 }
 
 
@@ -61,7 +61,7 @@ def test_detail_tabs_constant_unchanged():
     src = _src()
     expected = (
         "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', "
-        "'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', "
+        "'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', "
         "'Proposals'];"
     )
     assert expected in src, (
@@ -78,8 +78,8 @@ PILL_TARGETS = [
     ("pipeline-summary-warehouse-packing-list-pill",   "Warehouse"),
     ("pipeline-summary-warehouse-attention",           "Warehouse"),
     ("pipeline-summary-sales-pill",                    "Sales"),
-    ("pipeline-summary-wfirma-pill",                   "PZ / wFirma"),
-    ("pipeline-summary-pz-pill",                       "PZ / wFirma"),
+    ("pipeline-summary-wfirma-pill",                   "PZ / Accounting"),
+    ("pipeline-summary-pz-pill",                       "PZ / Accounting"),
     ("pipeline-summary-sales-attention",               "Sales"),
     ("pipeline-summary-dhl-status-pill",               "DHL / Customs"),
     ("pipeline-summary-sad-pill",                      "DHL / Customs"),

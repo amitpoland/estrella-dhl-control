@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_detail_design.py — Path B / Pass 3.
 
 Contract for the Shipment Detail (BatchDetailPage) design pass:
@@ -31,7 +31,7 @@ def _src() -> str:
 
 def test_detail_tabs_nine_preserved():
     src = _src()
-    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals']" in src
+    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals']" in src
 
 
 def test_detail_tabs_map_renders():
@@ -252,7 +252,7 @@ def test_sales_tab_still_referenced():
 
 def test_pz_wfirma_tab_still_referenced():
     src = _src()
-    assert "activeTab === 'PZ / wFirma'" in src
+    assert "activeTab === 'PZ / Accounting'" in src
 
 
 def test_timeline_tab_still_referenced():

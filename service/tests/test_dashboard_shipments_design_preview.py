@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_shipments_design_preview.py — Path B / Pass 2.5
 
 Contract for the Shipments page "Design preview · Backend pending" strip:
@@ -191,4 +191,4 @@ def test_open_shipment_handler_unchanged():
 
 def test_detail_tabs_unchanged():
     src = _src()
-    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals']" in src
+    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals']" in src

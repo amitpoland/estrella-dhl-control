@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_shipments_real_data.py — Source-grep contract for the
 Shipments page (DashboardPage table view) after Path B / Pass 2.
 
@@ -225,4 +225,4 @@ def test_count_label_shows_real_numbers():
 
 def test_detail_tabs_unchanged():
     src = _src()
-    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals']" in src
+    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals']" in src
