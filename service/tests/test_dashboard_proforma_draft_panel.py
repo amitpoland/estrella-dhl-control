@@ -204,7 +204,7 @@ def test_posted_banner_links_to_view_proforma(html):
     assert "/api/v1/proforma/${encodeURIComponent(openDraft.batch_id)}/" in html
 
 
-# ── 10. Cancel button hidden for posted drafts ──────────────────────────────
+# ── 10. Cancel button hidden for posted / posting drafts ────────────────────
 
 def test_cancel_button_hidden_when_posted(html):
     # The cancel button is wrapped in `!isPosted && !isCancelled && ...`
@@ -213,6 +213,26 @@ def test_cancel_button_hidden_when_posted(html):
     window = html[max(0, idx - 400):idx]
     assert "!isPosted" in window
     assert "!isCancelled" in window
+
+
+def test_cancel_button_hidden_when_posting(html):
+    """Cancel must be suppressed while a wFirma write is in-flight.
+
+    A draft in 'posting' state has an active external write in progress.
+    Showing the cancel button during this window creates a race condition
+    where the cancel request can land after the wFirma document has already
+    been created, leaving the system in an inconsistent state.
+
+    The fix: add ``!isPosting`` to the cancel button guard.
+    """
+    idx = html.find('data-testid="btn-draft-cancel"')
+    assert idx > 0, "btn-draft-cancel must exist in the DOM"
+    window = html[max(0, idx - 400):idx]
+    assert "!isPosting" in window, (
+        "Cancel draft button must be gated on !isPosting to prevent "
+        "race condition against an in-flight wFirma write. "
+        "Add '&& !isPosting' to the cancel button condition."
+    )
 
 
 # ── 11. Reset warns lines will be replaced ─────────────────────────────────

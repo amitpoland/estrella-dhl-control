@@ -17527,7 +17527,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
                     </span>
                   </React.Fragment>
                 )}
-                {!isPosted && !isCancelled && (
+                {!isPosted && !isCancelled && !isPosting && (
                   <Btn small onClick={onCancel}
                        data-testid="btn-draft-cancel">Cancel draft</Btn>
                 )}

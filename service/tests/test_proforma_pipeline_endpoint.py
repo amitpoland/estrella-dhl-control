@@ -88,6 +88,16 @@ def _seed_draft(db_path: Path, *, batch_id="B1", client_name="ACME",
             error="wFirma connection timeout",
             operator=operator,
         )
+    elif state == "posting":
+        # approve → posting (left in-flight — simulates active wFirma write)
+        d = pildb.approve_draft(
+            db_path, d.id, operator, d.updated_at,
+            confirm_token=pildb.APPROVE_CONFIRM_TOKEN,
+        )
+        d = pildb.start_post(
+            db_path, d.id, operator, d.updated_at,
+            confirm_token=pildb.POST_CONFIRM_TOKEN,
+        )
     elif state == "posted":
         # approve → posting → posted
         d = pildb.approve_draft(
@@ -191,6 +201,29 @@ class TestPipelineSingleDraft:
         assert body["by_state"].get("post_failed", 0) == 1
         assert body["needs_attention"] is True
         assert body["pipeline_stage"] == "post_failed"
+
+    def test_posting_state_needs_attention(self, client, db_path, monkeypatch):
+        """A draft stuck in 'posting' state must raise needs_attention.
+
+        'posting' represents an in-flight wFirma write.  If it never
+        transitions to 'posted' or 'post_failed' the batch is stuck and
+        the operator needs to investigate.  The endpoint must surface this
+        via needs_attention=True so the attention bucket on the dashboard
+        lights up even before a post_failed is recorded.
+        """
+        monkeypatch.setattr(
+            "app.api.routes_proforma._proforma_db_path", lambda: db_path
+        )
+        _seed_draft(db_path, batch_id="B5b", client_name="ACME",
+                    state="posting")
+        r = client.get("/api/v1/proforma/pipeline/B5b",
+                       headers=_auth_headers())
+        body = r.json()
+        assert body["by_state"].get("posting", 0) == 1
+        assert body["needs_attention"] is True, (
+            "A draft in 'posting' state must set needs_attention=True — "
+            "it represents a stuck in-flight wFirma write"
+        )
 
     def test_error_hint_in_draft_entry(self, client, db_path, monkeypatch):
         monkeypatch.setattr(
