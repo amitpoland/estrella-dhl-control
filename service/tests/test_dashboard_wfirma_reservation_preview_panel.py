@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_wfirma_reservation_preview_panel.py — UI exposure tests for
 the wFirma Reservation Preview panel inside Batch detail.
 
@@ -27,13 +27,13 @@ def _src() -> str:
 # ── Tab registration ─────────────────────────────────────────────────────────
 
 def test_wfirma_tab_registered_in_detail_tabs():
-    """The 'PZ / wFirma' tab must appear in DETAIL_TABS (renamed from 'wFirma')."""
+    """The 'PZ / Accounting' tab must appear in DETAIL_TABS (renamed from 'wFirma')."""
     src = _src()
     assert "DETAIL_TABS" in src, "DETAIL_TABS array missing"
     for line in src.splitlines():
         if "const DETAIL_TABS" in line and "[" in line:
-            assert "'PZ / wFirma'" in line, (
-                "PZ / wFirma tab not registered: " + line
+            assert "'PZ / Accounting'" in line, (
+                "PZ / Accounting tab not registered: " + line
             )
             return
     raise AssertionError("Could not locate DETAIL_TABS definition")
@@ -46,8 +46,8 @@ def test_reservation_preview_endpoint_is_wired():
     src = _src()
     assert "/api/v1/wfirma/reservation-preview/" in src
     assert "loadReservationPreview" in src
-    # The fetch must trigger when the PZ / wFirma tab becomes active
-    assert "activeTab === 'PZ / wFirma'" in src
+    # The fetch must trigger when the PZ / Accounting tab becomes active
+    assert "activeTab === 'PZ / Accounting'" in src
 
 
 def test_reservation_preview_state_hooks_present():
@@ -184,6 +184,6 @@ def test_dashboard_html_braces_balanced():
 
 def test_dashboard_html_has_wfirma_panel_branch():
     src = _src()
-    assert "activeTab === 'PZ / wFirma'" in src
+    assert "activeTab === 'PZ / Accounting'" in src
     # The visible panel header
     assert "wFirma Reservation Preview" in src

@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_zc429_email_dispatcher.py — mailbox-to-intake bridge.
 
 Covers:
@@ -295,7 +295,7 @@ class TestDashboardSurface:
         Execute section — reachable from the PZ/wFirma tab via the
         unified workflow."""
         h = _html()
-        idx_tab      = h.index("activeTab === 'PZ / wFirma'")
+        idx_tab      = h.index("activeTab === 'PZ / Accounting'")
         idx_workflow = h.index("<OperatorWorkflowCard ", idx_tab)
         idx_close    = h.index("Section 3 — PZ / Accounting", idx_tab)
         assert idx_tab < idx_workflow < idx_close

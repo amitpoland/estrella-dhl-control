@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_cn_hsn_classifier.py — CN/HSN hierarchical comparison + operator
 decision endpoints.
 
@@ -422,14 +422,14 @@ class TestDashboardSurface:
 
     def test_panel_mounted_in_pz_section(self):
         h = _html()
-        # The panel must appear in the PZ / wFirma tab AFTER Section 3
+        # The panel must appear in the PZ / Accounting tab AFTER Section 3
         # header (we mounted it inside Section 3, just below the header).
         idx_section = h.index("Section 3 — PZ / Accounting")
         idx_panel   = h.index("<CNHSNDecisionPanel ")
         # Panel exists somewhere in the dashboard
         assert idx_panel >= 0
-        # And it lives under the PZ / wFirma tab (same tab block)
-        idx_tab = h.index("activeTab === 'PZ / wFirma'")
+        # And it lives under the PZ / Accounting tab (same tab block)
+        idx_tab = h.index("activeTab === 'PZ / Accounting'")
         assert idx_tab < idx_panel
 
     def test_panel_has_required_testids(self):

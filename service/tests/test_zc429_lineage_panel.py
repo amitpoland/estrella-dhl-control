@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_zc429_lineage_panel.py — read-only ZC429 evidence chain in
 the dashboard.
 
@@ -243,7 +243,7 @@ class TestDashboardSurface:
         in the PZ/wFirma tab — that gives the operator access to the
         ZC429 evidence chain."""
         h = _html()
-        idx_tab      = h.index("activeTab === 'PZ / wFirma'")
+        idx_tab      = h.index("activeTab === 'PZ / Accounting'")
         idx_workflow = h.index("<OperatorWorkflowCard ", idx_tab)
         idx_close    = h.index("Section 3 — PZ / Accounting", idx_tab)
         assert idx_tab < idx_workflow < idx_close

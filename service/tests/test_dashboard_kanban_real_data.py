@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_kanban_real_data.py — Source-grep tests proving the Dashboard
 Kanban landing page binds to real backend `batches`, contains no mock /
 sample data, preserves UI-3 landmarks, and keeps NewShipmentModal reachable.
@@ -167,7 +167,7 @@ def test_sales_status_hint_binding_preserved():
 
 def test_detail_tabs_unchanged():
     src = _src()
-    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals']" in src
+    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals']" in src
 
 
 # ── Routes still resolve for every sidebar item ─────────────────────────────

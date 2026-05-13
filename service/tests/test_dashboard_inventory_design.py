@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_inventory_design.py — Path B / Tier 2 / Pass 17 (close-out).
 
 Contract for the new Inventory composition page:
@@ -466,4 +466,4 @@ def test_ui3_1a_lifecycle_helpers_still_at_module_scope():
 
 def test_detail_tabs_unchanged():
     src = _src()
-    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals']" in src
+    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals']" in src

@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_carriers_design.py — Path B / Tier 2 / Pass 15.
 
 Contract for the new Carriers composition page:
@@ -378,4 +378,4 @@ def test_ui3_operational_cards_still_present():
 
 def test_detail_tabs_unchanged():
     src = _src()
-    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals']" in src
+    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals']" in src

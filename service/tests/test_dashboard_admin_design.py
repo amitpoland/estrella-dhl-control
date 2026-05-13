@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_dashboard_admin_design.py — Path B / Pass 10.
 
 Contract for the Settings / Admin page (AdminPage) design pass:
@@ -300,4 +300,4 @@ def test_ui3_operational_cards_still_present():
 
 def test_detail_tabs_unchanged():
     src = _src()
-    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / wFirma', 'Timeline', 'Intelligence', 'Proposals']" in src
+    assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals']" in src
