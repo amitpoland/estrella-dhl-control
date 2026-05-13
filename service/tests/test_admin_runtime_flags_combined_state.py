@@ -928,3 +928,95 @@ def test_lock_count_is_exactly_four():
     from app.api.routes_admin_runtime_flags import _PHASE_LOCKS
     assert set(_PHASE_LOCKS.keys()) == {"p2", "p3", "p4", "p5"}
     assert len(_PHASE_LOCKS) == 4
+
+
+def test_lock_timeout_writes_both_lifecycle_and_rejection_audit_entries(monkeypatch, tmp_path):
+    """Per gap-hunter F9 (LOW): dual audit-write on lock-timeout is
+    intentional. The lifecycle event (`admin_runtime_flag_lock_timeout`)
+    captures the lock-level forensic context; the rejection event
+    (`admin_runtime_flag_rejected` with error_code=LOCK_ACQUISITION_TIMEOUT)
+    categorises it alongside other 4xx rejections. A future refactor that
+    "deduplicates" these would silently drop forensic redundancy.
+
+    This test guards the dual-write contract."""
+    import json as _json
+    import app.api.routes_admin_runtime_flags as route_mod
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-key-secret")
+    monkeypatch.setattr(route_mod, "LOCK_ACQUISITION_TIMEOUT_SECONDS", 0.2)
+
+    _set_phase_pair("p3", shadow=True, live=False)
+    p3_lock = route_mod._PHASE_LOCKS["p3"]
+    assert p3_lock.acquire(blocking=True)
+
+    try:
+        from app.main import app
+        c = TestClient(app)
+        r = c.post(
+            _URL, headers=_AUTH,
+            json={"flag_name": "dhl_selfclearance_p3_live_enabled",
+                  "value": True, "actor": "amit"},
+        )
+        assert r.status_code == 503
+
+        audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+        lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+
+        timeouts = [e for e in lines if e.get("event") == "admin_runtime_flag_lock_timeout"]
+        rejections = [
+            e for e in lines
+            if e.get("event") == "admin_runtime_flag_rejected"
+            and e.get("error_code") == "LOCK_ACQUISITION_TIMEOUT"
+        ]
+        assert len(timeouts)   == 1, f"expected 1 lifecycle timeout entry, got {timeouts}"
+        assert len(rejections) == 1, f"expected 1 rejection entry, got {rejections}"
+    finally:
+        p3_lock.release()
+
+
+def test_lock_released_after_store_write_failure(client, monkeypatch):
+    """Per testing-verification recommendation: STORE_WRITE_FAILED path
+    raises HTTPException(500) inside the `with _acquire_phase_lock` block.
+    The `finally` must release the lock; otherwise the next POST against
+    the same phase would time out forever."""
+    import app.api.routes_admin_runtime_flags as route_mod
+
+    _set_phase_pair("p2", shadow=True, live=False)
+
+    # Inject _save_store failure via monkeypatch.
+    def _failing_save_store(flag_map):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(route_mod, "_save_store", _failing_save_store)
+
+    r = _post(client, "dhl_selfclearance_p2_live_enabled", True)
+    assert r.status_code == 500
+    assert r.json()["detail"]["error_code"] == "STORE_WRITE_FAILED"
+
+    # Settings rolled back.
+    assert getattr(settings, "dhl_selfclearance_p2_live_enabled") is False
+
+    # Lock released — next acquire must succeed without blocking.
+    p2 = route_mod._PHASE_LOCKS["p2"]
+    assert p2.acquire(blocking=False), (
+        "p2 lock leaked after STORE_WRITE_FAILED — finally block did not release"
+    )
+    p2.release()
+
+
+def test_lock_held_seconds_is_non_negative_under_clock_step(client):
+    """Lifecycle audit's `held_seconds` field uses time.monotonic() so it
+    is robust against NTP step-back. Under any wall-clock manipulation the
+    field must remain non-negative."""
+    import json as _json
+
+    _set_phase_pair("p4", shadow=True, live=False)
+    r = _post(client, "dhl_selfclearance_p4_live_enabled", True)
+    assert r.status_code == 200
+
+    audit_path = settings.storage_root / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+    released = [e for e in lines if e.get("event") == "admin_runtime_flag_lock_released"]
+    assert len(released) == 1
+    assert released[0]["held_seconds"] >= 0

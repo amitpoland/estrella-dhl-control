@@ -480,6 +480,38 @@ _PHASE_PAIR_RE = re.compile(
 
 LOCK_ACQUISITION_TIMEOUT_SECONDS: float = 5.0
 
+# IMPORTANT — single-process deployment assumption.
+#
+# `threading.Lock` is process-private. Production NSSM `PZService` runs
+# a single-process uvicorn (no `--workers >1` flag) — verified against
+# `service/docs/production_deployment_rule.md` and `batch_lock.py`'s
+# explicit "single-process uvicorn" assertion. Under that assumption,
+# this lock correctly serializes admin POSTs across the starlette
+# threadpool.
+#
+# `service/Makefile` `make prod` target uses `--workers 2` for
+# **dev/CI only**. If the production NSSM service is ever
+# reconfigured to multi-worker, two workers would each have their
+# own `_PHASE_LOCKS` dict and the FORBIDDEN-state race re-opens. In
+# that case, the only remaining backstop is the boot-replay sweep
+# (`_enforce_startup_combined_states`), which only fires on restart.
+# Tracked as gap-hunter F1 follow-up.
+#
+# IMPORTANT — non-reentrant.
+#
+# `threading.Lock()` (not `RLock`) — non-reentrant. Do NOT invoke any
+# code path that may re-enter `post_self_clearance_flag` from inside
+# the lock scope. No current callee re-enters; defensive note for
+# future contributors.
+#
+# IMPORTANT — process-restart behaviour.
+#
+# SIGTERM / NSSM stop kills the worker thread holding a lock; lock
+# state dies with the process. On restart, `_PHASE_LOCKS` is fresh
+# and `_enforce_startup_combined_states` revalidates all 4 phase
+# pairs against ADR-018 truth table BEFORE the route is mounted, so
+# no FORBIDDEN combination can survive a crash mid-flip.
+
 _PHASE_LOCKS: Dict[str, threading.Lock] = {
     "p2": threading.Lock(),
     "p3": threading.Lock(),
@@ -512,7 +544,11 @@ def _acquire_phase_lock(
         return
 
     lock = _PHASE_LOCKS[phase]
-    acquired_at = time.time()
+    # `time.monotonic()` for elapsed-time measurement — robust against
+    # clock-step (NTP correction, manual time set). `time.time()` is
+    # still used for `timestamp` audit fields where wall-clock is needed.
+    acquired_at_monotonic = time.monotonic()
+    acquired_at_wall      = time.time()
     acquired = lock.acquire(timeout=LOCK_ACQUISITION_TIMEOUT_SECONDS)
 
     if not acquired:
@@ -555,7 +591,7 @@ def _acquire_phase_lock(
             "phase":      phase,
             "flag_name":  flag_name,
             "actor":      actor or "",
-            "timestamp":  int(acquired_at),
+            "timestamp":  int(acquired_at_wall),
         })
     except Exception:  # pragma: no cover
         log.warning("lock_acquired_audit_write_failed phase=%s", phase)
@@ -571,7 +607,8 @@ def _acquire_phase_lock(
                 "flag_name":        flag_name,
                 "actor":            actor or "",
                 "timestamp":        int(time.time()),
-                "held_seconds":     round(time.time() - acquired_at, 3),
+                # `time.monotonic()` for elapsed; immune to NTP step-back.
+                "held_seconds":     round(time.monotonic() - acquired_at_monotonic, 3),
             })
         except Exception:  # pragma: no cover
             log.warning("lock_released_audit_write_failed phase=%s", phase)
@@ -804,7 +841,12 @@ def post_self_clearance_flag(body: FlagFlipBody = Body(...)) -> Dict[str, Any]:
             try:
                 setattr(settings, flag_name, old_value)
             except Exception:
-                pass
+                # Diagnostic — silent rollback failure could leave the
+                # in-memory state diverged from persisted state.
+                log.warning(
+                    "settings_rollback_failed_after_store_write_failure flag=%s",
+                    flag_name,
+                )
             raise _error(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Flag store write failed.",
