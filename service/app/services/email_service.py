@@ -220,6 +220,69 @@ https://estrellajewels.eu"""
     return subject, html, text
 
 
+def make_password_reset_email(
+    user_full_name: str,
+    code: str,
+    reset_url: str = "https://pz.estrellajewels.eu/forgot-password",
+    expires_minutes: int = 30,
+) -> tuple[str, str, str]:
+    """Password-reset email carrying the 6-digit code to the user directly.
+
+    Returns (subject, body_html, body_text).
+
+    Wired by `routes_auth.forgot_password` — the prior behaviour returned
+    the code in the API response body as `_debug_code` only, requiring an
+    admin to manually relay it. Production incident 2026-05-13 (Tejal
+    login lockout) surfaced that no automated delivery path existed.
+    """
+    subject = "Estrella PZ — password reset code"
+    safe_name = user_full_name or "there"
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif; color: #1e293b; max-width: 560px; margin: 40px auto; padding: 32px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+  <div style="text-align:center; margin-bottom: 28px;">
+    <span style="font-size: 28px; color: #b8952a;">✦</span>
+    <h2 style="font-family: Georgia, serif; color: #0f172a; margin: 8px 0 0;">Estrella Jewels</h2>
+    <p style="color: #64748b; font-size: 13px; margin: 4px 0 0;">Customs Control System</p>
+  </div>
+  <p>Hello {safe_name},</p>
+  <p>A password reset was requested for your Estrella PZ account.</p>
+  <p>Your 6-digit reset code is:</p>
+  <div style="text-align: center; margin: 24px 0;">
+    <span style="display:inline-block; background:#0f172a; color:#fff; font-family: 'Courier New', monospace; font-size: 28px; letter-spacing: 8px; padding: 16px 32px; border-radius: 6px; font-weight: 700;">{code}</span>
+  </div>
+  <p>This code expires in {expires_minutes} minutes.</p>
+  <div style="text-align: center; margin: 24px 0;">
+    <a href="{reset_url}" style="display:inline-block; background: #b8952a; color: #fff; text-decoration: none; padding: 12px 28px; border-radius: 6px; font-weight: 600; font-size: 14px;">Enter code on reset page</a>
+  </div>
+  <p style="font-size: 12px; color: #94a3b8;">If you did not request this reset, ignore this email — your password will not change. Contact your administrator if you suspect unauthorised activity.</p>
+  <p style="font-size: 13px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 16px; margin-top: 28px;">
+    Regards,<br>
+    <strong>Estrella Jewels</strong><br>
+    <a href="https://estrellajewels.eu" style="color: #b8952a;">estrellajewels.eu</a>
+  </p>
+</body>
+</html>"""
+    text = f"""Hello {safe_name},
+
+A password reset was requested for your Estrella PZ account.
+
+Your 6-digit reset code is: {code}
+
+This code expires in {expires_minutes} minutes.
+
+Enter the code on the reset page: {reset_url}
+
+If you did not request this reset, ignore this email — your password
+will not change. Contact your administrator if you suspect unauthorised
+activity.
+
+Regards,
+Estrella Jewels
+https://estrellajewels.eu"""
+    return subject, html, text
+
+
 def make_rejection_email(user_full_name: str) -> tuple[str, str, str]:
     """Returns (subject, body_html, body_text)."""
     subject = "Your Estrella PZ account request"

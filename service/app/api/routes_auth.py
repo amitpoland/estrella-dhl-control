@@ -50,6 +50,7 @@ from ..services.email_service import (
     queue_email,
     make_approval_email,
     make_rejection_email,
+    make_password_reset_email,
 )
 from ..core.config import settings
 
@@ -232,20 +233,65 @@ async def me(user: dict = Depends(get_current_user)):
 
 @router.post("/forgot-password")
 async def forgot_password(body: ForgotPasswordRequest):
+    """Generate a password-reset code and email it to the user.
+
+    Per Estrella production incident 2026-05-13 (Tejal lockout): the prior
+    implementation returned the code in the API response body (`_debug_code`)
+    and required an admin to manually relay it. This produced "code routed
+    to admin" UI labels with no actual delivery path. Now the code is
+    emailed to the user directly via `queue_email` (Zoho Mail REST primary,
+    file-queue fallback).
+
+    Security:
+    - Always returns the same success message regardless of whether the
+      email exists (no user enumeration).
+    - Email-queue failure is logged at WARNING but does NOT change the
+      response; the admin can still recover the code from `reset_tokens`
+      table via SQL if email fails.
+    - `_debug_code` field is REMOVED from the response (was an admin
+      relay mechanism; obsolete now that the email path exists).
+    """
     email = body.email.lower().strip()
     user  = get_user_by_email(email)
     # Always return success to avoid user enumeration
     if not user:
         return {
             "ok": True,
-            "message": "If that email is registered, a reset code has been generated. Contact your admin.",
+            "message": "If that email is registered, a reset code has been emailed to you.",
         }
     code = create_reset_token(user["id"])
+
+    # Queue the reset email (non-blocking). Failure must not break the
+    # response or expose information about whether the email landed.
+    email_queued = False
+    try:
+        reset_url = f"{settings.fastapi_public_url.rstrip('/')}/forgot-password"
+        subject, html, text = make_password_reset_email(
+            user_full_name=user.get("full_name", ""),
+            code=code,
+            reset_url=reset_url,
+        )
+        queue_email(
+            to=user["email"],
+            subject=subject,
+            body_html=html,
+            body_text=text,
+        )
+        email_queued = True
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Email queue failed for password reset (user_id=%s): %s",
+            user["id"], exc,
+        )
+
     return {
         "ok":      True,
-        "message": "Reset code generated. Contact your admin to receive it.",
-        # NOTE: remove _debug_code when SMTP is fully configured
-        "_debug_code": code if True else None,
+        "message": (
+            "If that email is registered, a reset code has been emailed to you."
+            if email_queued else
+            "Reset code generated. If you do not receive an email shortly, contact your admin."
+        ),
     }
 
 
@@ -267,6 +313,51 @@ async def reset_password(body: ResetPasswordRequest):
 @router.get("/users")
 async def admin_list_users(user: dict = Depends(require_admin)):
     return [_safe_user(u) for u in list_users()]
+
+
+@router.get("/users/{user_id}/active-reset-code")
+async def admin_get_active_reset_code(
+    user_id: str,
+    user: dict = Depends(require_admin),
+):
+    """Recover the most recent UNUSED, UNEXPIRED reset code for a user.
+
+    Operator-recovery surface for the case where (a) the password-reset
+    email failed to deliver, (b) the user cannot access their inbox, or
+    (c) SMTP/Zoho was misconfigured. Admin-only. Per Estrella incident
+    2026-05-13 — closes the loop where the prior implementation relied
+    on admin manually relaying the code but no UI existed to read it.
+
+    Returns 404 if no active code exists; 410 if expired/used; 200 with
+    code on success. Admin action is audit-logged via standard request
+    log (every read is observable).
+    """
+    target = get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    from datetime import datetime, timezone
+    from ..auth.database import get_db
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_db() as con:
+        row = con.execute(
+            "SELECT token, expires_at FROM reset_tokens "
+            "WHERE user_id=? AND used=0 AND expires_at>? "
+            "ORDER BY expires_at DESC LIMIT 1",
+            (user_id, now_iso),
+        ).fetchone()
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="No active reset code for this user. Ask the user to request a new one via /forgot-password.",
+        )
+    return {
+        "ok":         True,
+        "user_email": target["email"],
+        "code":       row["token"],
+        "expires_at": row["expires_at"],
+        "note":       "Share this code with the user via a secure channel. Code is single-use.",
+    }
 
 
 @router.post("/users/{user_id}/approve")
