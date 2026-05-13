@@ -501,12 +501,15 @@ def test_dormant_result_shape(coord, monkeypatch):
     monkeypatch.setattr(settings, "dhl_selfclearance_p2_live_enabled", False)
     audit = _audit_path_a()
     result = coord.dispatch_proactive(cc.DispatchInput(batch_id="B1", awb="AWB123", audit=audit))
+    # Per ADR-019: return shape now carries `triggered_by` (default "sweep"
+    # when caller= is omitted).
     assert result == {
         "status": "skipped",
         "reason": "dormant_state",
         "message_id": None,
         "content_sha256": "",
         "idempotent": False,
+        "triggered_by": "sweep",
     }
 
 

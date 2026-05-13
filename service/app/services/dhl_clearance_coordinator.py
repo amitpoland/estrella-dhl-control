@@ -73,6 +73,24 @@ class ForbiddenFlagCombination(Exception):
     """
 
 
+class ForceRequiresActor(Exception):
+    """ADR-019: `force=True` on dispatch_proactive requires a non-empty actor.
+
+    Force bypasses idempotency and re-emits dispatch. Audit trail MUST
+    identify the operator. Admin route enforces min-3-char actor before
+    calling coordinator; this is the coordinator-level guard.
+    """
+
+
+class CallerRejectsForce(Exception):
+    """ADR-019 Invariant 4: sweep caller must never set force=True.
+
+    Sweep is the automatic primary path; force is reserved for the admin
+    HTTP override route. Mixing these would mask sweep bugs as operator
+    actions.
+    """
+
+
 # ── Inputs for each entrypoint (typed records) ───────────────────────────────
 
 @dataclass(frozen=True)
@@ -159,17 +177,37 @@ class DhlClearanceCoordinator:
 
     # ── P2 — proactive dispatch (WIRED) ──────────────────────────────────────
 
-    def dispatch_proactive(self, inp: "DispatchInput") -> Dict[str, Any]:
+    def dispatch_proactive(
+        self,
+        inp: "DispatchInput",
+        *,
+        caller: str = "sweep",
+        force: bool = False,
+        actor: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Fire the proactive customs dispatch for a Path A shipment.
 
-        Returns a result dict:
+        Parameters:
+            inp:    DispatchInput dataclass (batch_id, awb, audit)
+            caller: "sweep" | "admin_route"  — Model C ignition source (ADR-019)
+            force:  When True, bypass the per-batch idempotency check and emit
+                    a new dispatch even if a prior `p2_dispatch.message_id`
+                    exists. Requires `caller=="admin_route"` and a non-empty
+                    `actor`. Always emits a WARNING-level audit entry.
+                    Forbidden when `caller=="sweep"` — raises `ForceRequiresActor`.
+            actor:  Operator identity (required when force=True). Persisted in
+                    audit log for forensic reconstruction. Min 3 chars enforced
+                    by the admin route layer; coordinator only checks non-empty.
+
+        Returns a result dict (ADR-019 truth table for `triggered_by`):
             {
-              "status": "shadow" | "sent" | "skipped" | "blocked",
-              "reason": <str>,
-              "message_id": <str|None>,
+              "status":         "shadow" | "sent" | "skipped" | "blocked",
+              "reason":         <str>,
+              "message_id":     <str|None>,
               "content_sha256": <hex>,
-              "idempotent": <bool>,
+              "idempotent":     <bool>,
+              "triggered_by":   "sweep" | "admin_override_normal" | "admin_override_force",
             }
 
         Behavior matrix (ADR-018):
@@ -178,10 +216,38 @@ class DhlClearanceCoordinator:
           - shadow_mode=False, live_enabled=False → DORMANT (no-op, status=skipped)
           - shadow_mode=False, live_enabled=True  → FORBIDDEN (raises)
 
+        Force semantics (ADR-019):
+          - force=False (default): existing idempotency behavior; second call
+            returns the prior result with idempotent=True
+          - force=True: bypasses idempotency, re-dispatches, appends to
+            `audit.dhl_clearance.p2_dispatch_history[]` (prior message_id
+            preserved for audit), emits WARNING-level audit. Subject to ALL
+            other gates: scope, ADR-018 truth table, AWB stability, build.
+
         Raises:
-            OutOfScopeError       — shipment is on Path B (agency_clearance)
+            OutOfScopeError          — shipment is on Path B (agency_clearance)
             ForbiddenFlagCombination — `shadow_mode=False AND live_enabled=True`
+            ForceRequiresActor       — `force=True` without a non-empty `actor`
+            CallerRejectsForce       — `caller=="sweep"` AND `force=True`
         """
+        # ── 0. Caller / force contract (ADR-019) ─────────────────────────────
+        if caller == "sweep" and force:
+            raise CallerRejectsForce(
+                "sweep caller must never set force=True; force is reserved for "
+                "admin_route per ADR-019"
+            )
+        if force and not (actor or "").strip():
+            raise ForceRequiresActor(
+                f"force=True requires a non-empty actor for audit "
+                f"(batch_id={inp.batch_id!r})"
+            )
+        # Resolve triggered_by per ADR-019 truth table.
+        if caller == "admin_route":
+            triggered_by = "admin_override_force" if force else "admin_override_normal"
+        else:
+            triggered_by = "sweep"
+
+
         # ── 1. Scope gate (Path A only) ──────────────────────────────────────
         if not self.is_in_scope(inp.audit):
             raise OutOfScopeError(
@@ -203,15 +269,19 @@ class DhlClearanceCoordinator:
                 "message_id": None,
                 "content_sha256": "",
                 "idempotent": False,
+                "triggered_by": triggered_by,
             }
 
         # ── 4. Idempotency — second call returns prior result ────────────────
+        # Force=True (ADR-019) bypasses this check — it MUST advance to
+        # rebuild + re-dispatch + record a new history entry. Prior dispatch
+        # is preserved in `p2_dispatch_history[]` for forensic audit.
         manifest.init_manifest(inp.audit)
         prior = inp.audit["dhl_clearance"].get("p2_dispatch") or {}
-        if prior.get("message_id"):
+        if prior.get("message_id") and not force:
             log.info(
-                "selfclearance_p2_idempotent batch_id=%s message_id=%s",
-                inp.batch_id, prior.get("message_id"),
+                "selfclearance_p2_idempotent batch_id=%s message_id=%s caller=%s",
+                inp.batch_id, prior.get("message_id"), caller,
             )
             return {
                 "status": "shadow" if prior.get("shadow") else "sent",
@@ -219,7 +289,27 @@ class DhlClearanceCoordinator:
                 "message_id": prior.get("message_id"),
                 "content_sha256": prior.get("content_sha256", ""),
                 "idempotent": True,
+                "triggered_by": triggered_by,
             }
+
+        if prior.get("message_id") and force:
+            # Force-path: archive prior dispatch into history before overwrite.
+            log.warning(
+                "selfclearance_p2_force_redispatch batch_id=%s actor=%s "
+                "prior_message_id=%s caller=%s",
+                inp.batch_id, actor, prior.get("message_id"), caller,
+            )
+            history = inp.audit["dhl_clearance"].setdefault("p2_dispatch_history", [])
+            history.append({
+                **prior,
+                "archived_at":   _now_iso(),
+                "archived_by":   actor,
+                "archive_reason": "force_redispatch",
+            })
+            # Clear the current p2_dispatch so the manifest write below produces
+            # a fresh entry. The history array preserves the prior message_id
+            # for forensic reconstruction.
+            inp.audit["dhl_clearance"]["p2_dispatch"] = {}
 
         # ── 5. AWB stability gate ────────────────────────────────────────────
         # Pass batch_id explicitly — see is_awb_stable_for docstring + Issue #38 F8.
@@ -235,6 +325,7 @@ class DhlClearanceCoordinator:
                 "message_id": None,
                 "content_sha256": "",
                 "idempotent": False,
+                "triggered_by": triggered_by,
             }
 
         # ── 6. Build the dispatch package ────────────────────────────────────
@@ -253,6 +344,7 @@ class DhlClearanceCoordinator:
                 "message_id": None,
                 "content_sha256": "",
                 "idempotent": False,
+                "triggered_by": triggered_by,
             }
 
         if pkg.get("missing"):
@@ -266,6 +358,7 @@ class DhlClearanceCoordinator:
                 "message_id": None,
                 "content_sha256": "",
                 "idempotent": False,
+                "triggered_by": triggered_by,
             }
 
         # Compute content SHA over a deterministic canonical projection of the
@@ -302,6 +395,7 @@ class DhlClearanceCoordinator:
                 "message_id": message_id,
                 "content_sha256": content_sha256,
                 "idempotent": False,
+                "triggered_by": triggered_by,
             }
 
         # LIVE state — actually queue the email.
@@ -335,6 +429,7 @@ class DhlClearanceCoordinator:
                 "message_id": None,
                 "content_sha256": content_sha256,
                 "idempotent": False,
+                "triggered_by": triggered_by,
             }
 
         now = _now_iso()
@@ -348,8 +443,8 @@ class DhlClearanceCoordinator:
         )
         self._advance_to_awaiting_poland_arrival(inp.audit, shadow=False)
         log.info(
-            "selfclearance_p2_sent batch_id=%s message_id=%s recipient=%s",
-            inp.batch_id, message_id, to_str,
+            "selfclearance_p2_sent batch_id=%s message_id=%s recipient=%s caller=%s",
+            inp.batch_id, message_id, to_str, caller,
         )
         return {
             "status": "sent",
@@ -357,6 +452,7 @@ class DhlClearanceCoordinator:
             "message_id": message_id,
             "content_sha256": content_sha256,
             "idempotent": False,
+            "triggered_by": triggered_by,
         }
 
     # ── P2 state transition helpers ──────────────────────────────────────────

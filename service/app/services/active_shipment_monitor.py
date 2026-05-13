@@ -31,12 +31,44 @@ from ..core import timeline as tl
 from ..utils.io import write_json_atomic
 from .clearance_path_alias import is_agency_clearance, is_dhl_self_clearance
 
+import threading
+
 log = logging.getLogger(__name__)
 
 COOLDOWN_MINUTES = 10
 WARSAW_DHL_EMAIL_SLA_HOURS = 6
 DHL_REPLY_AFTER_EMAIL_SLA_MINUTES = 10
 TRIGGER_RETRY_MINUTES = 10
+
+# ── W-5 P2 ignition (Model C, ADR-019) ───────────────────────────────────────
+# Per-batch lock dict: serializes sweep iterations against admin-route
+# overrides on the same batch. The coordinator's idempotency guard (manifest-
+# message_id) is the inner safety; this lock is defense-in-depth.
+# Per design doc §8 P1-PREC5.
+_P2_BATCH_LOCKS: Dict[str, threading.Lock] = {}
+_P2_BATCH_LOCK_GUARD: threading.Lock = threading.Lock()
+
+# Boot-replay guard (per design doc §8 R-C10). Set True after
+# load_persisted_flags_into_settings() completes — ensures sweep does NOT
+# fire with stale flag values during the lifespan startup window.
+_STARTUP_REPLAY_COMPLETE: bool = False
+
+
+def mark_startup_replay_complete() -> None:
+    """Called from main.py lifespan at end of load_persisted_flags_into_settings.
+    Until this fires, P2 sweep branch is a no-op (boot-replay race guard)."""
+    global _STARTUP_REPLAY_COMPLETE
+    _STARTUP_REPLAY_COMPLETE = True
+
+
+def _get_batch_lock(batch_id: str) -> threading.Lock:
+    """Return (creating if needed) the per-batch threading.Lock."""
+    with _P2_BATCH_LOCK_GUARD:
+        lock = _P2_BATCH_LOCKS.get(batch_id)
+        if lock is None:
+            lock = threading.Lock()
+            _P2_BATCH_LOCKS[batch_id] = lock
+        return lock
 
 # Statuses considered terminal — sweeper skips these unless force=True
 _TERMINAL_CLEARANCE_STATUSES = frozenset({
@@ -811,6 +843,169 @@ def _run_path_a_validation_gate(
         return False, "validation_failed:internal_cc_incomplete"
 
     return True, None
+
+
+def _dispatch_p2_via_coordinator(
+    audit_path: Path,
+    audit: Dict[str, Any],
+) -> Dict[str, Any]:
+    """W-5 P2 ignition (Model C, ADR-019) — sweep → coordinator.
+
+    Eligibility filter (P0-PREC2 — coordinator-aware):
+      - boot-replay completed (`_STARTUP_REPLAY_COMPLETE` is True)
+      - shipment is Path A (coordinator's `is_in_scope`)
+      - state machine: `audit.dhl_clearance.state == awaiting_preemptive_send`
+      - per-batch lock acquired non-blocking (skip if held by admin route)
+
+    Coordinator is invoked with `caller="sweep"` and `force=False` (per
+    ADR-019 Invariant 4: sweep never sets force). Coordinator handles all
+    flag inspection (DORMANT/SHADOW/LIVE/FORBIDDEN truth table), AWB
+    stability gate, and idempotency internally; the sweep observes only
+    the response.
+
+    Returns:
+        {
+          "dispatched":   bool,            # whether coordinator ran (True)
+                                           # or sweep skipped (False)
+          "skip_reason":  str (when not dispatched),
+          "result":       <coordinator response dict> (when dispatched),
+          "triggered_by": "sweep" (when dispatched),
+          "error":        str (when exception caught),
+        }
+
+    Audit-log mutations: writes nothing directly. Coordinator owns manifest
+    + state-engine writes; this helper mutates `audit` in-place via the
+    coordinator and the caller (`scan_active_shipments`) persists.
+    """
+    # ── Boot-replay guard (R-C10) ────────────────────────────────────────────
+    if not _STARTUP_REPLAY_COMPLETE:
+        return {"dispatched": False, "skip_reason": "startup_replay_incomplete"}
+
+    # ── State filter (P0-PREC2) ──────────────────────────────────────────────
+    state = (audit.get("dhl_clearance") or {}).get("state")
+    if state != "awaiting_preemptive_send":
+        return {"dispatched": False, "skip_reason": f"state_not_eligible:{state}"}
+
+    # ── Path A scope filter (defense-in-depth; coordinator also enforces) ──
+    clearance_path = (
+        (audit.get("clearance_decision") or {}).get("clearance_path", "")
+    )
+    if not is_dhl_self_clearance(clearance_path):
+        return {"dispatched": False, "skip_reason": "not_path_a"}
+
+    # ── batch_id + AWB resolution (mirrors admin route) ─────────────────────
+    batch_id = (
+        audit.get("batch_id")
+        or audit_path.parent.name
+        or ""
+    ).strip()
+    if not batch_id:
+        return {"dispatched": False, "skip_reason": "missing_batch_id"}
+
+    awb = (
+        (audit.get("dhl_awb") or "").strip()
+        or (audit.get("awb") or "").strip()
+        or ((audit.get("batch_meta") or {}).get("awb") or "").strip()
+        or (audit.get("tracking_no") or "").strip()
+    )
+    if not awb:
+        return {"dispatched": False, "skip_reason": "missing_awb"}
+
+    # ── Per-batch lock (P1-PREC5) ────────────────────────────────────────────
+    # Non-blocking acquire: if admin route is mid-call on this batch, sweep
+    # skips this iteration and tries again next tick. Coordinator's
+    # idempotency would absorb the conflict, but skipping is cleaner.
+    lock = _get_batch_lock(batch_id)
+    if not lock.acquire(blocking=False):
+        return {"dispatched": False, "skip_reason": "batch_lock_held"}
+
+    try:
+        # ── Invoke coordinator ───────────────────────────────────────────────
+        from .dhl_clearance_coordinator import (  # local import — keeps top-level light
+            DhlClearanceCoordinator,
+            DispatchInput,
+            OutOfScopeError,
+            ForbiddenFlagCombination,
+        )
+        coord = DhlClearanceCoordinator()
+        try:
+            result = coord.dispatch_proactive(
+                DispatchInput(batch_id=batch_id, awb=awb, audit=audit),
+                caller="sweep",
+                force=False,
+            )
+        except OutOfScopeError:
+            # Defense-in-depth tripped — clearance_path filter passed but
+            # coordinator's check (which uses the same alias resolver) said no.
+            # Treat as skip, not error.
+            return {"dispatched": False, "skip_reason": "coordinator_out_of_scope"}
+        except ForbiddenFlagCombination:
+            # ADR-018 FORBIDDEN — flag store has an invalid combination. The
+            # boot-replay sweep should have repaired it; if it didn't, surface.
+            log.error(
+                "p2_sweep_forbidden_combination batch_id=%s — boot-replay "
+                "should have caught this", batch_id,
+            )
+            return {"dispatched": False, "skip_reason": "forbidden_combination"}
+        except Exception as exc:
+            # Any other coordinator exception is logged + sweep continues with
+            # other batches. NEVER let one batch's failure crash the loop.
+            log.error(
+                "p2_sweep_coordinator_failed batch_id=%s reason=%s",
+                batch_id, exc.__class__.__name__,
+            )
+            return {
+                "dispatched": False,
+                "skip_reason": "coordinator_exception",
+                "error":       exc.__class__.__name__,
+            }
+
+        # ── Persist audit mutations (manifest + state) ──────────────────────
+        try:
+            write_json_atomic(audit_path, audit)
+        except OSError as exc:
+            log.error(
+                "p2_sweep_audit_save_failed batch_id=%s reason=%s",
+                batch_id, exc.__class__.__name__,
+            )
+            return {
+                "dispatched":   True,
+                "result":       result,
+                "triggered_by": result.get("triggered_by", "sweep"),
+                "error":        f"audit_save_failed:{exc.__class__.__name__}",
+            }
+
+        # ── Audit log: sweep_dispatched event ───────────────────────────────
+        try:
+            tl.append(
+                audit,
+                event_type="p2_sweep_dispatched",
+                summary=(
+                    f"P2 dispatch via sweep: status={result.get('status')} "
+                    f"reason={result.get('reason')} "
+                    f"message_id={result.get('message_id')}"
+                ),
+                detail={
+                    "shipment_id":   batch_id,
+                    "awb":           awb,
+                    "result":        result,
+                    "triggered_by":  result.get("triggered_by", "sweep"),
+                },
+            )
+            write_json_atomic(audit_path, audit)
+        except Exception as exc:  # pragma: no cover — best-effort
+            log.warning(
+                "p2_sweep_timeline_audit_failed batch_id=%s reason=%s",
+                batch_id, exc.__class__.__name__,
+            )
+
+        return {
+            "dispatched":   True,
+            "result":       result,
+            "triggered_by": result.get("triggered_by", "sweep"),
+        }
+    finally:
+        lock.release()
 
 
 def _ensure_path_a_auto_queue(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
@@ -2026,16 +2221,38 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
         except Exception as exc:
             action["polish_description_auto_error"] = str(exc)
 
-        # 5a-bis-2. Phase 2.3 — Path A auto-queue at Departed origin.
-        # Read-only when feature flag off, when not Path A, when no
-        # Departed-origin event yet, or when already fired.
-        try:
-            audit_for_p23 = json.loads(audit_path.read_text(encoding="utf-8"))
-            p23_result = _ensure_path_a_auto_queue(audit_path, audit_for_p23)
-            if p23_result.get("triggered") or p23_result.get("error"):
-                action["path_a_auto_queue"] = p23_result
-        except Exception as exc:
-            action["path_a_auto_queue_error"] = str(exc)
+        # 5a-bis-2. Phase 2.3 — Legacy Path A auto-queue at Departed origin.
+        # GATE-FLIPPED per ADR-019 / Model C: by default this legacy path is
+        # OFF; the new W-5 P2 ignition (5a-bis-3 below) is the primary path.
+        # Operator can re-enable the legacy path via
+        # `dhl_selfclearance_legacy_path_a_queue_enabled=True` ONLY as a
+        # rollback escape valve. Both paths firing simultaneously would
+        # double-dispatch — never enable both.
+        if bool(getattr(settings, "dhl_selfclearance_legacy_path_a_queue_enabled", False)):
+            try:
+                audit_for_p23 = json.loads(audit_path.read_text(encoding="utf-8"))
+                p23_result = _ensure_path_a_auto_queue(audit_path, audit_for_p23)
+                if p23_result.get("triggered") or p23_result.get("error"):
+                    action["path_a_auto_queue"] = p23_result
+            except Exception as exc:
+                action["path_a_auto_queue_error"] = str(exc)
+
+        # 5a-bis-3. W-5 P2 ignition (Model C, ADR-019) — sweep → coordinator.
+        # Primary ignition path. Skipped when legacy path is enabled (above).
+        # Honors _STARTUP_REPLAY_COMPLETE guard (R-C10) to avoid stale-flag
+        # dispatch during the lifespan startup window. Per-batch lock
+        # serializes against admin-route concurrent calls. Coordinator handles
+        # all flag inspection internally; sweep only filters by audit state.
+        else:
+            try:
+                audit_for_p2_ign = json.loads(audit_path.read_text(encoding="utf-8"))
+                p2_ign_result = _dispatch_p2_via_coordinator(
+                    audit_path, audit_for_p2_ign,
+                )
+                if p2_ign_result.get("dispatched") or p2_ign_result.get("error"):
+                    action["p2_ignition"] = p2_ign_result
+            except Exception as exc:
+                action["p2_ignition_error"] = str(exc)
 
         # 5b. Auto-build + send DHL reply for high-value shipments with email
         try:

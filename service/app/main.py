@@ -56,6 +56,7 @@ from .api.routes_inventory_writes import router as inventory_writes_router
 from .api.routes_inventory_sample import router as inventory_sample_router
 from .api.routes_inventory_returns import router as inventory_returns_router
 from .api.routes_admin_runtime_flags import router as admin_runtime_flags_router
+from .api.routes_admin_dhl_clearance import router as admin_dhl_clearance_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -124,6 +125,16 @@ async def lifespan(app: FastAPI):
             )
     except Exception as exc:  # pragma: no cover — never block startup
         log.warning("runtime_flag_replay_failed reason=%s", exc)
+
+    # ── W-5 P2 ignition (Model C, ADR-019) ─────────────────────────────────
+    # Boot-replay completion signal — sweep's P2 ignition branch is a no-op
+    # until this fires, preventing stale-flag dispatch during the lifespan
+    # startup window (design doc §8 R-C10).
+    try:
+        from .services.active_shipment_monitor import mark_startup_replay_complete
+        mark_startup_replay_complete()
+    except Exception as exc:  # pragma: no cover — never block startup
+        log.warning("p2_sweep_startup_marker_failed reason=%s", exc)
 
     log.info("Starting Estrella PZ Service  [env=%s]", settings.environment)
     log.info("Engine dir: %s", settings.engine_dir)
@@ -246,6 +257,7 @@ app.include_router(inventory_writes_router) # POST /api/v1/inventory/pieces/{id}
 app.include_router(inventory_sample_router) # POST /api/v1/inventory/pieces/{id}/sample-out + /sample-return (Phase B.1; precheck-guarded)
 app.include_router(inventory_returns_router)# POST /api/v1/inventory/pieces/{id}/return-from-client + /return-to-producer + /return-from-producer (Phase B.2; precheck-guarded)
 app.include_router(admin_runtime_flags_router)  # W-5 / P0: DHL self-clearance runtime flag admin (X-API-Key)
+app.include_router(admin_dhl_clearance_router)  # W-5 / P2 ignition (Model C): admin override route for proactive dispatch (X-API-Key, ADR-019)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
