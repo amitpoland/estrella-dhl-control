@@ -64,9 +64,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterator, Optional, Tuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -449,6 +451,132 @@ _PHASE_PAIR_RE = re.compile(
 )
 
 
+# ── Per-phase concurrency lock (Issue #48) ───────────────────────────────────
+#
+# Closes the gap-hunter F2 / security-write-action CONCURRENCY race: two
+# concurrent admin POSTs against the same phase could both pass the
+# combined-state gate based on stale current state, then both mutate
+# settings to a FORBIDDEN combination.
+#
+# Design:
+# - 4 locks total (one per phase pair P2/P3/P4/P5). Per-phase granularity
+#   chosen over global lock so an operator flipping P2 does not block
+#   another inspecting/flipping P4. Per-flag granularity rejected as
+#   complexity without operational value (the FORBIDDEN-state invariant
+#   is per-phase, so the lock scope must be per-phase).
+# - Lock scope: covers the entire read-current → validate-resulting →
+#   setattr → persist → audit-flipped atomic sequence.
+# - Acquisition timeout: 5 seconds. On timeout: 503 LOCK_ACQUISITION_TIMEOUT.
+# - In-memory only (NOT persisted). Service restart resets to unlocked,
+#   which is correct because boot-replay validates combined state via
+#   _enforce_startup_combined_states() before any traffic arrives.
+# - GET endpoint does NOT acquire the lock (read-only; eventually
+#   consistent is acceptable for the operator dashboard).
+# - Boot-replay is single-threaded and runs before the route is mounted,
+#   so it never contends for the lock.
+# - threading.Lock chosen over asyncio.Lock because FastAPI runs sync
+#   def handlers in a starlette threadpool. The current POST handler is
+#   sync def; switching to async would require broader refactor.
+
+LOCK_ACQUISITION_TIMEOUT_SECONDS: float = 5.0
+
+_PHASE_LOCKS: Dict[str, threading.Lock] = {
+    "p2": threading.Lock(),
+    "p3": threading.Lock(),
+    "p4": threading.Lock(),
+    "p5": threading.Lock(),
+}
+
+
+@contextmanager
+def _acquire_phase_lock(
+    phase: Optional[str],
+    *,
+    flag_name: str,
+    actor: str,
+) -> Iterator[None]:
+    """Context manager that acquires the per-phase lock for the
+    read-validate-write atomic sequence. For non-phase flags (`phase is
+    None`), is a no-op — those flags do not participate in ADR-018's
+    combined-state invariant.
+
+    On acquisition timeout: appends `admin_runtime_flag_lock_timeout`
+    audit entry and raises HTTPException(503) with templated error.
+
+    Always releases lock on exit (success OR exception) — `finally`
+    block ensures cleanup even if validation raises FORBIDDEN_FLAG_COMBINATION
+    or any downstream exception.
+    """
+    if phase is None or phase not in _PHASE_LOCKS:
+        yield
+        return
+
+    lock = _PHASE_LOCKS[phase]
+    acquired_at = time.time()
+    acquired = lock.acquire(timeout=LOCK_ACQUISITION_TIMEOUT_SECONDS)
+
+    if not acquired:
+        # Tamper-evidence + operator-forensics: record the timeout so
+        # repeated lock contention on a single phase is observable.
+        try:
+            _append_audit({
+                "event":           "admin_runtime_flag_lock_timeout",
+                "phase":           phase,
+                "flag_name":       flag_name,
+                "actor":           actor or "",
+                "timestamp":       int(time.time()),
+                "timeout_seconds": LOCK_ACQUISITION_TIMEOUT_SECONDS,
+            })
+        except Exception:  # pragma: no cover — best-effort
+            log.warning("lock_timeout_audit_write_failed phase=%s", phase)
+        raise _error(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"Could not acquire phase lock for {phase!r} within "
+                f"{LOCK_ACQUISITION_TIMEOUT_SECONDS}s."
+            ),
+            error_code="LOCK_ACQUISITION_TIMEOUT",
+            field="flag_name",
+            hint=(
+                "Another operator is updating this phase; retry in a moment."
+            ),
+            flag_name=flag_name,
+            actor=actor,
+            extra_audit_context={
+                "phase":           phase,
+                "timeout_seconds": LOCK_ACQUISITION_TIMEOUT_SECONDS,
+            },
+        )
+
+    # Acquisition succeeded — record for forensic completeness.
+    try:
+        _append_audit({
+            "event":      "admin_runtime_flag_lock_acquired",
+            "phase":      phase,
+            "flag_name":  flag_name,
+            "actor":      actor or "",
+            "timestamp":  int(acquired_at),
+        })
+    except Exception:  # pragma: no cover
+        log.warning("lock_acquired_audit_write_failed phase=%s", phase)
+
+    try:
+        yield
+    finally:
+        lock.release()
+        try:
+            _append_audit({
+                "event":            "admin_runtime_flag_lock_released",
+                "phase":            phase,
+                "flag_name":        flag_name,
+                "actor":            actor or "",
+                "timestamp":        int(time.time()),
+                "held_seconds":     round(time.time() - acquired_at, 3),
+            })
+        except Exception:  # pragma: no cover
+            log.warning("lock_released_audit_write_failed phase=%s", phase)
+
+
 def _parse_phase_pair(flag_name: str) -> Optional[Tuple[str, str]]:
     """If `flag_name` belongs to a phase-pair flag (shadow_mode or live_enabled
     for any of p2/p3/p4/p5), return (phase, dimension). Else None."""
@@ -623,69 +751,86 @@ def post_self_clearance_flag(body: FlagFlipBody = Body(...)) -> Dict[str, Any]:
 
     new_value = _coerce_and_validate(flag_name, body.value)
 
-    # ADR-018 combined-state gate — validate RESULTING (shadow_mode,
-    # live_enabled) state across both dimensions for any P2/P3/P4/P5 phase
-    # pair flag, computed from (current_settings ∪ POST_diff). Single-field
-    # validation alone is insufficient. No-op for non-phase-pair flags.
-    _enforce_resulting_combined_state(
+    # Determine which (if any) phase pair this flag belongs to. Used to
+    # decide whether the per-phase concurrency lock applies (Issue #48).
+    parsed_pair = _parse_phase_pair(flag_name)
+    phase_for_lock: Optional[str] = parsed_pair[0] if parsed_pair else None
+
+    # Per-phase atomic block (Issue #48). Lock scope covers the entire
+    # read-validate-write sequence: combined-state check reads current
+    # settings; setattr mutates them; store + audit persist them.
+    # Without the lock, two concurrent POSTs against the same phase
+    # could both pass the gate based on stale state and produce a
+    # FORBIDDEN combination. For non-phase flags, the context manager
+    # is a no-op.
+    with _acquire_phase_lock(
+        phase_for_lock,
         flag_name=flag_name,
-        new_value=new_value,
         actor=actor,
-    )
-
-    old_value = getattr(settings, flag_name, None)
-
-    # In-memory restartless reload — every consumer of settings sees the
-    # new value within one read cycle.
-    try:
-        setattr(settings, flag_name, new_value)
-    except Exception:
-        # NEVER leak the raw exception — template it.
-        raise _error(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="In-memory settings refresh failed.",
-            error_code="SETTINGS_REFRESH_FAILED",
-            field="flag_name",
-            hint="Retry; if persistent, contact engineering.",
+    ):
+        # ADR-018 combined-state gate — validate RESULTING (shadow_mode,
+        # live_enabled) state across both dimensions for any P2/P3/P4/P5 phase
+        # pair flag, computed from (current_settings ∪ POST_diff). Single-field
+        # validation alone is insufficient. No-op for non-phase-pair flags.
+        _enforce_resulting_combined_state(
+            flag_name=flag_name,
+            new_value=new_value,
+            actor=actor,
         )
 
-    # Persist to flag store and audit log (both crash-safe).
-    try:
-        store = _load_store()
-        store[flag_name] = new_value
-        _save_store(store)
-    except OSError:
-        # Rollback in-memory change to keep persisted state consistent.
+        old_value = getattr(settings, flag_name, None)
+
+        # In-memory restartless reload — every consumer of settings sees the
+        # new value within one read cycle.
         try:
-            setattr(settings, flag_name, old_value)
+            setattr(settings, flag_name, new_value)
         except Exception:
-            pass
-        raise _error(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Flag store write failed.",
-            error_code="STORE_WRITE_FAILED",
-            field="flag_name",
-            hint="Check filesystem permissions on storage_root.",
-        )
+            # NEVER leak the raw exception — template it.
+            raise _error(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="In-memory settings refresh failed.",
+                error_code="SETTINGS_REFRESH_FAILED",
+                field="flag_name",
+                hint="Retry; if persistent, contact engineering.",
+            )
 
-    ts = int(time.time())
-    audit_entry = {
-        "event":      "admin_runtime_flag_flipped",
-        "actor":      actor,
-        "flag_name":  flag_name,
-        "old_value":  old_value,
-        "new_value":  new_value,
-        "timestamp":  ts,
-        "reason":     body.reason or "",
-    }
-    audit_write_failed = False
-    try:
-        _append_audit(audit_entry)
-    except OSError:
-        # Surface so caller can re-emit. State already mutated + persisted;
-        # rolling back here would create more drift than it would fix.
-        audit_write_failed = True
-        log.warning("audit_log_write_failed flag=%s actor=%s", flag_name, actor)
+        # Persist to flag store and audit log (both crash-safe).
+        try:
+            store = _load_store()
+            store[flag_name] = new_value
+            _save_store(store)
+        except OSError:
+            # Rollback in-memory change to keep persisted state consistent.
+            try:
+                setattr(settings, flag_name, old_value)
+            except Exception:
+                pass
+            raise _error(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Flag store write failed.",
+                error_code="STORE_WRITE_FAILED",
+                field="flag_name",
+                hint="Check filesystem permissions on storage_root.",
+            )
+
+        ts = int(time.time())
+        audit_entry = {
+            "event":      "admin_runtime_flag_flipped",
+            "actor":      actor,
+            "flag_name":  flag_name,
+            "old_value":  old_value,
+            "new_value":  new_value,
+            "timestamp":  ts,
+            "reason":     body.reason or "",
+        }
+        audit_write_failed = False
+        try:
+            _append_audit(audit_entry)
+        except OSError:
+            # Surface so caller can re-emit. State already mutated + persisted;
+            # rolling back here would create more drift than it would fix.
+            audit_write_failed = True
+            log.warning("audit_log_write_failed flag=%s actor=%s", flag_name, actor)
 
     return {
         "status":             "ok",
