@@ -1676,16 +1676,23 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 10 }}>
           {[
-            { id: 'stage1_temp',      label: 'Stage 1 · Temp Purchase', hint: 'pre-arrival staging' },
-            { id: 'stage1_warehouse', label: 'Stage 1 · Warehouse',     hint: 'received, awaiting PZ' },
-            { id: 'stage1_sale',      label: 'Stage 1 · Sale',          hint: 'reserved against sales doc' },
+            { id: 'stage1_temp',      label: 'Stage 1 · Temp Purchase', hint: 'pre-arrival staging',        pending: true,  statusLabel: 'Backend pending' },
+            { id: 'stage1_warehouse', label: 'Stage 1 · Warehouse',     hint: 'received, awaiting PZ',      pending: true,  statusLabel: 'Backend pending' },
+            { id: 'stage1_sale',      label: 'Stage 1 · Sale',          hint: 'proforma drafts per-client', pending: false, statusLabel: 'Open batch → PZ / wFirma tab' },
           ].map(t => (
-            <div key={t.id} data-testid={`inventory-stage1-${t.id.replace('stage1_', '')}`} data-pending="true"
-              style={{ background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 6, padding: '10px 14px' }}>
+            <div key={t.id}
+              data-testid={`inventory-stage1-${t.id.replace('stage1_', '')}`}
+              data-pending={t.pending ? 'true' : undefined}
+              style={{
+                background: t.pending ? 'var(--bg-subtle)' : 'var(--card)',
+                border: t.pending ? '1px dashed var(--border)' : '1px solid var(--border)',
+                borderRadius: 6, padding: '10px 14px',
+                opacity: t.pending ? 0.78 : 1,
+              }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>{t.label}</div>
-              <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-3)', fontFamily: '"DM Serif Display", serif', lineHeight: 1 }}>—</div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: t.pending ? 'var(--text-3)' : 'var(--text-1)', fontFamily: '"DM Serif Display", serif', lineHeight: 1 }}>—</div>
               <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 4 }}>{t.hint}</div>
-              <div style={{ marginTop: 6, fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-3)' }}>Backend pending</div>
+              <div style={{ marginTop: 6, fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: t.pending ? 'var(--text-3)' : 'var(--badge-blue-text)' }}>{t.statusLabel}</div>
             </div>
           ))}
         </div>
@@ -6438,6 +6445,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [closureConfirmBusy,  setClosureConfirmBusy]  = React.useState(false);
   const [closureConfirmResult, setClosureConfirmResult] = React.useState(null);
   const [dhlSendReplyResult,  setDhlSendReplyResult]  = React.useState(null);
+  // Proforma draft pipeline — per-batch lifecycle aggregation.
+  // Fetched once on mount; refreshed after any proforma action via refreshProformaPipeline.
+  const [proformaPipeline,        setProformaPipeline]        = React.useState(null);
+  const [proformaPipelineLoading, setProformaPipelineLoading] = React.useState(false);
 
   const setBusyKey = (k, v) => setBusy(p => ({ ...p, [k]: v }));
 
@@ -6461,6 +6472,20 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
       const tl = await apiFetch(`/api/v1/tracking/shipment/${encodeURIComponent(batchId)}/timeline`);
       setTimeline(Array.isArray(tl) ? tl : (tl.timeline || tl.events || []));
     } catch (e) {}
+  }, [batchId]);
+
+  // Proforma pipeline fetch — lightweight (read-only, no side effects).
+  // Called on mount + after any proforma write action.
+  const refreshProformaPipeline = React.useCallback(async () => {
+    setProformaPipelineLoading(true);
+    try {
+      const d = await apiFetch(`/api/v1/proforma/pipeline/${encodeURIComponent(batchId)}`);
+      setProformaPipeline(d);
+    } catch (e) {
+      // Non-fatal — pipeline data is supplemental; UI degrades gracefully.
+      setProformaPipeline(null);
+    }
+    setProformaPipelineLoading(false);
   }, [batchId]);
 
   const loadDbEvents = React.useCallback(async () => {
@@ -6821,7 +6846,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     setProposalsBusy(p => ({ ...p, [proposalId]: false }));
   };
 
-  React.useEffect(() => { load(); loadTimeline(); loadDbEvents(); }, [batchId]);
+  React.useEffect(() => { load(); loadTimeline(); loadDbEvents(); refreshProformaPipeline(); }, [batchId]);
   // Fetch tracking once the audit loads (audit is needed for tracking_no)
   React.useEffect(() => { if (audit) fetchTracking(); }, [audit?.tracking_no]);
   // Fetch intelligence when tab is activated
@@ -7347,20 +7372,51 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                             ? 'Linked'
                             : 'See Sales tab'}
                         </button>
-                        <button
-                          type="button"
-                          data-testid="pipeline-summary-wfirma-pill"
-                          data-wfirma-hint={pipelineRow.wfirmaHint}
-                          data-nav-target="PZ / wFirma"
-                          onClick={() => setActiveTab('PZ / wFirma')}
-                          title="Open PZ / wFirma tab"
-                          aria-label="wFirma preview status — open PZ / wFirma tab"
-                          style={{ ...(pipelineRow.wfirmaHint === 'preview_built' ? pillBlue : pillNeutral), cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
-                        >
-                          wFirma: {pipelineRow.wfirmaHint === 'preview_built'
-                            ? 'Preview built'
-                            : 'Not prepared'}
-                        </button>
+                        {(() => {
+                          // Pipeline-stage-aware wFirma pill.
+                          // Prefers proforma draft lifecycle (from /api/v1/proforma/pipeline)
+                          // over the static wfirmaHint when pipeline data is available.
+                          const ps = proformaPipeline && proformaPipeline.pipeline_stage;
+                          let pillStyle = pillNeutral;
+                          let pillLabel = 'Not prepared';
+                          let dataStage = ps || pipelineRow.wfirmaHint || 'n/a';
+                          if (ps === 'all_posted') {
+                            pillStyle = pillGreen;
+                            pillLabel = `Proforma: Posted (${proformaPipeline.by_state?.posted || ''})`;
+                          } else if (ps === 'partial_posted') {
+                            pillStyle = pillGreen;
+                            pillLabel = `Proforma: Partial (${proformaPipeline.by_state?.posted || 0}/${proformaPipeline.client_count || 0})`;
+                          } else if (ps === 'post_failed') {
+                            pillStyle = pillRed;
+                            pillLabel = `Proforma: Failed`;
+                          } else if (ps === 'approved') {
+                            pillStyle = pillBlue;
+                            pillLabel = 'Proforma: Approved';
+                          } else if (ps === 'drafting') {
+                            pillStyle = pillAmber;
+                            pillLabel = 'Proforma: Draft';
+                          } else if (pipelineRow.wfirmaHint === 'preview_built') {
+                            pillStyle = pillBlue;
+                            pillLabel = 'Preview built';
+                          }
+                          const needsAttn = proformaPipeline && proformaPipeline.needs_attention;
+                          if (needsAttn) pillStyle = { ...pillStyle, outline: '2px solid var(--badge-red-border)', outlineOffset: 1 };
+                          return (
+                            <button
+                              type="button"
+                              data-testid="pipeline-summary-wfirma-pill"
+                              data-wfirma-hint={pipelineRow.wfirmaHint}
+                              data-pipeline-stage={dataStage}
+                              data-nav-target="PZ / wFirma"
+                              onClick={() => setActiveTab('PZ / wFirma')}
+                              title="Open PZ / wFirma tab"
+                              aria-label={`wFirma / Proforma status: ${pillLabel}`}
+                              style={{ ...pillStyle, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                            >
+                              wFirma: {proformaPipelineLoading ? '…' : pillLabel}
+                            </button>
+                          );
+                        })()}
                         <button
                           type="button"
                           data-testid="pipeline-summary-pz-pill"
@@ -17026,9 +17082,11 @@ function ProformaDraftPanel({ batchId, onToast }) {
     );
   }
 
-  const isEditable = openDraft && PROFORMA_DRAFT_EDITABLE_STATES.includes(openDraft.draft_state);
-  const isPosted   = openDraft && openDraft.draft_state === 'posted';
-  const isCancelled = openDraft && openDraft.draft_state === 'cancelled';
+  const isEditable    = openDraft && PROFORMA_DRAFT_EDITABLE_STATES.includes(openDraft.draft_state);
+  const isPosted      = openDraft && openDraft.draft_state === 'posted';
+  const isCancelled   = openDraft && openDraft.draft_state === 'cancelled';
+  const isPostFailed  = openDraft && openDraft.draft_state === 'post_failed';
+  const isPosting     = openDraft && openDraft.draft_state === 'posting';
 
   return (
     <Card data-testid="proforma-draft-panel"
@@ -17116,9 +17174,50 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   )}
                 </span>
               )}
+              {d.draft_state === 'post_failed' && d.error_hint && (
+                <span data-testid={`draft-error-hint-${d.id}`}
+                      style={{ marginLeft: 8, fontSize: 10,
+                                color: 'var(--badge-red-text)',
+                                fontFamily: 'monospace',
+                                background: 'var(--badge-red-bg)',
+                                padding: '1px 5px', borderRadius: 3,
+                                maxWidth: 260, display: 'inline-block',
+                                overflow: 'hidden', textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap', verticalAlign: 'middle' }}
+                      title={d.error_hint}>
+                  ✗ {d.error_hint}
+                </span>
+              )}
+              {d.reservation_status && d.reservation_status !== 'created' && (
+                <span data-testid={`draft-reservation-status-${d.id}`}
+                      style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700,
+                                letterSpacing: '0.06em', textTransform: 'uppercase',
+                                color: d.reservation_status === 'failed'
+                                  ? 'var(--badge-red-text)' : 'var(--text-3)',
+                                background: d.reservation_status === 'failed'
+                                  ? 'var(--badge-red-bg)' : 'var(--bg-subtle)',
+                                padding: '1px 5px', borderRadius: 3 }}>
+                  res: {d.reservation_status}
+                </span>
+              )}
+              {d.last_packing_sync_at && !d.packing_sync_warning && (
+                <span data-testid={`draft-sync-chip-${d.id}`}
+                      style={{ marginLeft: 8, fontSize: 9.5,
+                                color: 'var(--text-3)',
+                                background: 'var(--bg-subtle)',
+                                padding: '1px 5px', borderRadius: 3 }}
+                      title={`Lines synced from packing upload: ${d.last_packing_sync_at.slice(0,19).replace('T',' ')}`}>
+                  ↻ packing synced
+                </span>
+              )}
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-              updated {(d.updated_at || '').slice(0, 19).replace('T', ' ')}
+              {d.draft_state === 'posting' && d.posting_started_at
+                ? <span style={{ color: 'var(--badge-blue-text)' }}>
+                    posting since {d.posting_started_at.slice(0, 19).replace('T', ' ')}
+                  </span>
+                : <>updated {(d.updated_at || '').slice(0, 19).replace('T', ' ')}</>
+              }
             </div>
           </div>
         ))}
@@ -17214,6 +17313,89 @@ function ProformaDraftPanel({ batchId, onToast }) {
                       {openDraft.currency || '—'}
                     </strong></span>
                   </div>
+                </div>
+              )}
+
+              {/* Posting in-progress banner */}
+              {isPosting && (
+                <div data-testid="draft-posting-banner"
+                     style={{ padding: '10px 14px', marginBottom: 12,
+                                background: 'var(--badge-blue-bg)',
+                                border: '1px solid var(--badge-blue-border)',
+                                borderRadius: 4, fontSize: 12,
+                                color: 'var(--badge-blue-text)',
+                                display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <span style={{ fontWeight: 700 }}>⏳ Posting to wFirma…</span>
+                  {openDraft.posting_started_at && (
+                    <span style={{ fontSize: 10 }}>
+                      started {openDraft.posting_started_at.slice(0, 19).replace('T', ' ')}
+                      {openDraft.posting_started_by && ` by ${openDraft.posting_started_by}`}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Post-failed error banner */}
+              {isPostFailed && (
+                <div data-testid="draft-post-failed-banner"
+                     style={{ padding: '10px 14px', marginBottom: 12,
+                                background: 'var(--badge-red-bg)',
+                                border: '1px solid var(--badge-red-border)',
+                                borderRadius: 4, fontSize: 12 }}>
+                  <div style={{ fontWeight: 700, color: 'var(--badge-red-text)',
+                                  marginBottom: 4 }}>
+                    ✗ Posting failed
+                  </div>
+                  {openDraft.post_failed_at && (
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>
+                      {openDraft.post_failed_at.slice(0, 19).replace('T', ' ')}
+                    </div>
+                  )}
+                  {openDraft.error_hint && (
+                    <pre data-testid="draft-post-failed-error"
+                         style={{ margin: 0, fontSize: 10.5, fontFamily: 'monospace',
+                                    color: 'var(--badge-red-text)',
+                                    whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                      {openDraft.error_hint}
+                    </pre>
+                  )}
+                  <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-3)' }}>
+                    Re-open the draft to edit, then re-approve and re-post.
+                  </div>
+                </div>
+              )}
+
+              {/* Posted — attribution line */}
+              {isPosted && openDraft.posted_by && (
+                <div data-testid="draft-posted-attribution"
+                     style={{ marginBottom: 8, fontSize: 10,
+                                color: 'var(--text-3)', textAlign: 'right' }}>
+                  Posted by <strong>{openDraft.posted_by}</strong>
+                  {openDraft.posted_at && (
+                    <span style={{ marginLeft: 6 }}>
+                      {openDraft.posted_at.slice(0, 19).replace('T', ' ')}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Auto-sync badge — shown when lines were synced from packing upload */}
+              {openDraft.last_packing_sync_at && (
+                <div data-testid="draft-packing-sync-badge"
+                     style={{ marginBottom: 8, display: 'flex', alignItems: 'center',
+                                gap: 6, fontSize: 10,
+                                color: openDraft.packing_sync_warning
+                                  ? 'var(--badge-amber-text, #92400e)'
+                                  : 'var(--text-3)' }}>
+                  <span style={{ fontWeight: 600 }}>
+                    {openDraft.packing_sync_warning ? '⚠ Auto-synced (blocked)' : '↻ Auto-synced from packing list'}
+                  </span>
+                  <span>{openDraft.last_packing_sync_at.slice(0, 19).replace('T', ' ')}</span>
+                  {openDraft.packing_sync_warning && (
+                    <span style={{ fontSize: 9, opacity: 0.75 }}>
+                      ({openDraft.packing_sync_warning})
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -17332,6 +17514,17 @@ function ProformaDraftPanel({ batchId, onToast }) {
                                     color: 'var(--badge-red-text)' }}>
                       ⚠ Post to wFirma
                     </Btn>
+                  </React.Fragment>
+                )}
+                {isPostFailed && (
+                  <React.Fragment>
+                    <Btn small onClick={onReopen}
+                         data-testid="btn-draft-reopen-after-fail">Re-open for edit</Btn>
+                    <span data-testid="draft-post-failed-note"
+                          style={{ fontSize: 11, color: 'var(--badge-red-text)',
+                                    alignSelf: 'center' }}>
+                      Post failed — re-open to fix, then re-approve and re-post.
+                    </span>
                   </React.Fragment>
                 )}
                 {!isPosted && !isCancelled && (

@@ -2577,7 +2577,18 @@ def proforma_to_invoice(
 
 def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     """Compact projection for the batch listing endpoint. Excludes the big
-    JSON blobs so the listing stays cheap."""
+    JSON blobs so the listing stays cheap.
+
+    Phase pipeline: includes posting lifecycle metadata so the dashboard
+    can show post_failed errors, posting timestamps, and posted attribution
+    without fetching the full draft payload.
+    """
+    # Surface a capped error hint when the draft is in post_failed state.
+    # The notes field carries the error text written by mark_post_failed.
+    notes_hint = ""
+    if d.draft_state == "post_failed" and d.notes:
+        notes_hint = (d.notes or "")[:300]
+
     return {
         "id":                         d.id,
         "batch_id":                   d.batch_id,
@@ -2592,9 +2603,17 @@ def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "approved_at":                d.approved_at,
         "approved_by":                d.approved_by,
         "posted_at":                  d.posted_at,
+        "posted_by":                  d.posted_by,
         "locked_at":                  d.locked_at,
+        "posting_started_at":         d.posting_started_at,
+        "posting_started_by":         d.posting_started_by,
+        "post_failed_at":             d.post_failed_at,
+        "error_hint":                 notes_hint,
         "created_at":                 d.created_at,
         "updated_at":                 d.updated_at,
+        # Phase 6 — packing-upload auto-sync metadata
+        "last_packing_sync_at":       d.last_packing_sync_at,
+        "packing_sync_warning":       d.packing_sync_warning,
     }
 
 
@@ -3466,4 +3485,139 @@ def post_proforma_draft_to_wfirma(
         "wfirma_proforma_fullnumber": full_number,
         "currency":                   posted.currency,
         "draft":                      _draft_to_full(posted),
+    })
+
+
+# ── Phase pipeline — batch-level aggregation ──────────────────────────────────
+
+@router.get("/pipeline/{batch_id}", dependencies=[_auth])
+def get_proforma_pipeline(batch_id: str):
+    """Batch-level proforma pipeline state.
+
+    Returns an aggregated view of:
+    - All proforma drafts for the batch (with posting lifecycle metadata)
+    - Per-draft wFirma reservation draft status (cross-joined from wfirma_reservation_drafts)
+    - Reservation queue stats by status for the batch
+    - High-level flags: needs_attention, has_posted, all_posted, client_count
+
+    Designed to feed:
+    - Stage 1 Sale card (pipeline summary tiles)
+    - ProformaDraftPanel (per-draft posting visibility)
+    - Pipeline Summary wFirma pill (lifecycle state)
+    """
+    from ..services import reservation_db as rdb
+
+    # ── 1. Load all proforma drafts ──────────────────────────────────────────
+    proforma_db = _proforma_db_path()
+    try:
+        drafts = pildb.list_drafts_for_batch(proforma_db, batch_id)
+    except Exception as exc:
+        log.warning("[pipeline %s] list_drafts_for_batch failed: %s", batch_id, exc)
+        drafts = []
+
+    # ── 2. Load wFirma reservation drafts and build lookup ───────────────────
+    # wfirma_reservation_drafts is keyed by (batch_id, client_name).
+    # It tracks the pre-creation stage (pending/submitting/created/failed)
+    # and holds the wfirma_reservation_id once created.
+    try:
+        res_draft_rows = wfdb.list_reservation_drafts(batch_id)
+    except Exception as exc:
+        log.warning("[pipeline %s] list_reservation_drafts failed: %s", batch_id, exc)
+        res_draft_rows = []
+
+    res_draft_by_client: Dict[str, Dict[str, Any]] = {
+        r["client_name"]: r for r in res_draft_rows
+    }
+
+    # ── 3. Load reservation queue stats for this batch ───────────────────────
+    # Gracefully absent — the queue DB may not yet exist or may not be
+    # configured for this batch.
+    queue_stats: Dict[str, int] = {}
+    try:
+        queue_db = settings.storage_root / "reservation_queue.db"
+        if queue_db.exists():
+            queue_rows = rdb.list_reservation_queue(queue_db, batch_id=batch_id)
+            for row in queue_rows:
+                s = row.get("status") or "unknown"
+                queue_stats[s] = queue_stats.get(s, 0) + 1
+    except Exception as exc:
+        log.warning("[pipeline %s] reservation queue stats failed: %s", batch_id, exc)
+
+    # ── 4. Build per-draft summaries with reservation status cross-joined ────
+    by_state: Dict[str, int] = {}
+    enriched_drafts: List[Dict[str, Any]] = []
+
+    for d in drafts:
+        summary = _draft_to_summary(d)
+        state = d.draft_state or "draft"
+        by_state[state] = by_state.get(state, 0) + 1
+
+        # Cross-join reservation draft metadata by client_name
+        res = res_draft_by_client.get(d.client_name)
+        if res:
+            summary["reservation_status"]      = res.get("status")
+            summary["wfirma_reservation_id"]   = res.get("wfirma_reservation_id")
+            summary["reservation_ready"]       = bool(res.get("ready_to_create"))
+            summary["reservation_last_error"]  = res.get("last_error")
+            summary["reservation_submitted_at"]= res.get("submitted_at")
+        else:
+            summary["reservation_status"]      = None
+            summary["wfirma_reservation_id"]   = None
+            summary["reservation_ready"]       = False
+            summary["reservation_last_error"]  = None
+            summary["reservation_submitted_at"]= None
+
+        enriched_drafts.append(summary)
+
+    # ── 5. Derive high-level flags ────────────────────────────────────────────
+    client_count = len(enriched_drafts)
+
+    # needs_attention: any draft in a failure or stuck-posting state
+    attention_states = {"post_failed", "posting"}
+    needs_attention = any(
+        (d.draft_state in attention_states) for d in drafts
+    )
+    # post_failed always needs attention; posting needs attention only when
+    # posting_started_at is stale (>10 min) — use simple flag for now
+    post_failed_count = by_state.get("post_failed", 0)
+    if post_failed_count:
+        needs_attention = True
+
+    has_posted    = by_state.get("posted", 0) > 0
+    all_posted    = client_count > 0 and by_state.get("posted", 0) == client_count
+    has_approved  = by_state.get("approved", 0) > 0
+    has_draft     = (by_state.get("draft", 0) + by_state.get("editing", 0)) > 0
+    has_cancelled = by_state.get("cancelled", 0) > 0
+
+    # pipeline_stage: single highest-priority lifecycle label for the batch
+    # (used by Pipeline Summary wFirma pill)
+    if post_failed_count:
+        pipeline_stage = "post_failed"
+    elif all_posted:
+        pipeline_stage = "all_posted"
+    elif has_posted:
+        pipeline_stage = "partial_posted"
+    elif has_approved:
+        pipeline_stage = "approved"
+    elif has_draft:
+        pipeline_stage = "drafting"
+    elif client_count == 0:
+        pipeline_stage = "none"
+    else:
+        pipeline_stage = "other"
+
+    return JSONResponse({
+        "ok":             True,
+        "batch_id":       batch_id,
+        "client_count":   client_count,
+        "pipeline_stage": pipeline_stage,
+        "needs_attention": needs_attention,
+        "has_posted":     has_posted,
+        "all_posted":     all_posted,
+        "has_approved":   has_approved,
+        "has_draft":      has_draft,
+        "has_cancelled":  has_cancelled,
+        "by_state":       by_state,
+        "queue_stats":    queue_stats,
+        "drafts":         enriched_drafts,
     })

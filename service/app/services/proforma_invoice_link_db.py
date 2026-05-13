@@ -432,6 +432,9 @@ class ProformaDraft:
     posting_started_by:         Optional[str] = None
     post_failed_at:             Optional[str] = None
     posted_by:                  Optional[str] = None
+    # ── Phase 6 — packing-upload auto-sync metadata ───────────────
+    last_packing_sync_at:       Optional[str] = None
+    packing_sync_warning:       Optional[str] = None
 
 
 def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
@@ -480,6 +483,9 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         ("posting_started_by",         "TEXT"),
         ("post_failed_at",             "TEXT"),
         ("posted_by",                  "TEXT"),
+        # ── Phase 6 — packing-upload auto-sync metadata ───────────
+        ("last_packing_sync_at",       "TEXT"),
+        ("packing_sync_warning",       "TEXT"),
     )
     for _col, _ddl in _ADDITIVE_DRAFT_COLUMNS:
         try:
@@ -659,6 +665,8 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         posting_started_by         = _opt("posting_started_by"),
         post_failed_at             = _opt("post_failed_at"),
         posted_by                  = _opt("posted_by"),
+        last_packing_sync_at       = _opt("last_packing_sync_at"),
+        packing_sync_warning       = _opt("packing_sync_warning"),
     )
 
 
