@@ -132,6 +132,18 @@ class Settings(BaseSettings):
     # hard guarantees from the pre-implementation security pass be encoded.
     enable_path_a_auto_queue: bool = Field(default=False, env="ENABLE_PATH_A_AUTO_QUEUE")
 
+    # ── W-5 / P2 ignition (Model C) ── gate-flip for legacy _ensure_path_a_auto_queue
+    # Default False: new coordinator-based P2 ignition (sweep → dispatch_proactive)
+    # is the primary path. Legacy _ensure_path_a_auto_queue stays in code but is
+    # NOT invoked unless this flag is explicitly flipped True (rollback escape valve
+    # only — never both paths simultaneously).
+    # See ADR-019 §"Gate-flip migration" and design doc
+    # docs/operational-memory/dhl-selfclearance/02b_P2_IGNITION_SWITCH_DESIGN.md §P0-PREC1.
+    dhl_selfclearance_legacy_path_a_queue_enabled: bool = Field(
+        default=False,
+        env="DHL_SELFCLEARANCE_LEGACY_PATH_A_QUEUE_ENABLED",
+    )
+
     # ── Zoho Mail (OAuth2 with refresh-token rotation) ────────────────────────
     # All values come from .env — never hardcode.
     # Required for /api/v1/dhl/scan-inbox to perform a backend mailbox search.

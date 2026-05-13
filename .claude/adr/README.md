@@ -77,6 +77,7 @@ What does this decision lock in for future work? What does it enable?
 | [ADR-016](ADR-016-dhl-self-clearance-sad-unlock-and-pz.md) | DHL self-clearance — SAD unlock and PZ trigger (P6 + P7) | Accepted |
 | [ADR-017](ADR-017-carrier-label-store-retention.md) | Carrier label store — retention policy (immutable evidence) | Accepted |
 | [ADR-018](ADR-018-shadow-mode-flag-defaults.md) | Shadow-mode flag defaults — Category B observation flags default True; live-enabled flags remain Category A default False. Amends ADR-010 with two-category model and forbidden state semantics. | Accepted |
+| [ADR-019](ADR-019-p2-ignition-pattern.md) | DHL self-clearance — proactive dispatch trigger surfaces and dedup contract (P2 ignition switch). Sweep primary + admin HTTP override route; `force` parameter contract; truth table for `triggered_by`. Extends ADR-013 caller pattern. | Accepted |
 
 ## When to write a new ADR
 
