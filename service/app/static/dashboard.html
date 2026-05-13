@@ -15563,8 +15563,8 @@ function OperatorWorkflowCard({ batchId, onToast }) {
           <div style={{ color: '#b45309', marginTop: 4 }}>
             ⚠ {p.missing} product code(s) missing.{' '}
             {p.create_flag_on
-              ? 'Operator may run Auto-register from the detail panel.'
-              : 'Auto-register flag (WFIRMA_CREATE_PRODUCT_ALLOWED) is OFF.'}
+              ? 'Operator may run Auto-register from the Proforma Readiness panel below.'
+              : 'Auto-register is not enabled (contact your admin).'}
           </div>
         )}
         <div style={{ marginTop: 6, color: '#6b7280' }}>
@@ -15587,7 +15587,7 @@ function OperatorWorkflowCard({ batchId, onToast }) {
             panel.{' '}
             {c.create_flag_on
               ? ''
-              : '(WFIRMA_CREATE_CUSTOMER_ALLOWED is OFF.)'}
+              : '(Auto-create is not enabled — contact your admin.)'}
           </div>
         )}
       </div>
@@ -15693,12 +15693,26 @@ function OperatorWorkflowCard({ batchId, onToast }) {
     );
   }
 
+  // ── Section style helpers ────────────────────────────────────────────
+  const sectionGroupHeader = (label, color) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '6px 10px', marginBottom: 8, marginTop: 4,
+                  background: color === 'a' ? '#eff6ff' : '#f0fdf4',
+                  borderLeft: `3px solid ${color === 'a' ? '#3b82f6' : '#16a34a'}`,
+                  borderRadius: '0 4px 4px 0' }}>
+      <span style={{ fontSize: 12, fontWeight: 700,
+                     color: color === 'a' ? '#1d4ed8' : '#15803d' }}>
+        {label}
+      </span>
+    </div>
+  );
+
   return (
     <div style={card} data-testid="workflow-card">
       <div style={{ display: 'flex', alignItems: 'center', gap: 8,
                     marginBottom: 12 }}>
         <div style={{ fontSize: 14, fontWeight: 700 }}>
-          🛠 Operator Workflow — pre-PZ review
+          🛠 Operator Workflow
         </div>
         <button data-testid="workflow-refresh"
                 onClick={refresh}
@@ -15715,72 +15729,101 @@ function OperatorWorkflowCard({ batchId, onToast }) {
         </div>
       )}
 
-      {/* Pipeline header */}
-      <div data-testid="workflow-pipeline" style={bar}>
-        {STAGE_ORDER.map(([k, label], i) => (
-          <React.Fragment key={k}>
-            {stagePill(stages, k, label)}
-            {i < STAGE_ORDER.length - 1 && (
-              <span style={{ color: '#9ca3af' }}>→</span>
-            )}
-          </React.Fragment>
-        ))}
+      {/* Independence note — two workflows run in parallel */}
+      <div data-testid="workflow-independence-note"
+           style={{ fontSize: 11, color: '#374151', marginBottom: 12,
+                    padding: '6px 10px', background: '#f9fafb',
+                    border: '1px solid #e5e7eb', borderRadius: 6 }}>
+        ℹ Two parallel workflows — complete either in any order. Posting the
+        proforma does <strong>not</strong> unblock PZ, and PZ does not
+        require the proforma to be posted first.
       </div>
 
-      {/* Top-of-card "Next required actions" — show 1–2 most urgent. */}
-      {(() => {
-        const next = [];
-        if (stages.classification.color === 'red')
-          next.push('Resolve CN/HSN block (different chapter detected).');
-        if (stages.products.count > 0)
-          next.push(`Map ${stages.products.count} product code(s) (Auto-register or manual).`);
-        if (stages.customers.count > 0)
-          next.push(`Resolve ${stages.customers.count} customer identity row(s).`);
-        if (stages.warehouse.color === 'amber' && stages.warehouse.message)
-          next.push(stages.warehouse.message);
-        if (stages.evidence.sadPresent && !stages.evidence.zcPresent)
-          next.push('Ingest DHL ZC429 email (operator action).');
-        if (next.length === 0) return null;
-        return (
-          <div data-testid="workflow-next-actions"
-               style={{ background: '#fffbeb', border: '1px solid #fcd34d',
-                        borderRadius: 6, padding: 8, marginBottom: 12,
-                        fontSize: 12, color: '#92400e' }}>
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>
-              Next required actions
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* SECTION A — Sales & Proforma Invoices (commercial)             */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      <div data-testid="workflow-section-a">
+        {sectionGroupHeader('A — Proforma Invoices (commercial)', 'a')}
+
+        {/* Phase 6 — local editable Proforma Draft panel. Always visible
+            when drafts exist; auto-created from sales packing intake.
+            Posting from this panel is the ONLY UI path that reaches wFirma
+            for Proforma issuance — legacy /proforma/create has no button
+            surface in the dashboard. */}
+        <ProformaDraftPanel batchId={batchId} onToast={onToast} />
+
+        {/* Detail panel — per-row write surfaces for product / customer
+            mapping used by the proforma flow. */}
+        <details data-testid="workflow-details-toggle" style={{ marginTop: 8, marginBottom: 4 }}>
+          <summary style={{ fontSize: 11, color: '#6b7280', cursor: 'pointer',
+                            padding: '6px 0' }}>
+            Show full Proforma Readiness panel (per-row product &amp; customer actions)
+          </summary>
+          <ProformaReadinessCard batchId={batchId} onToast={onToast} />
+        </details>
+      </div>
+
+      {/* Divider between workflows */}
+      <div style={{ height: 1, background: '#e5e7eb', margin: '12px 0' }} />
+
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      {/* SECTION B — PZ Generation & Customs (independent)              */}
+      {/* ═══════════════════════════════════════════════════════════════ */}
+      <div data-testid="workflow-section-b">
+        {sectionGroupHeader('B — PZ Generation & Customs', 'b')}
+
+        {/* Pipeline header */}
+        <div data-testid="workflow-pipeline" style={bar}>
+          {STAGE_ORDER.map(([k, label], i) => (
+            <React.Fragment key={k}>
+              {stagePill(stages, k, label)}
+              {i < STAGE_ORDER.length - 1 && (
+                <span style={{ color: '#9ca3af' }}>→</span>
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+
+        {/* "Next required actions" — show 1–2 most urgent PZ blockers. */}
+        {(() => {
+          const next = [];
+          if (stages.classification.color === 'red')
+            next.push('Resolve CN/HSN block (different chapter detected).');
+          if (stages.products.count > 0)
+            next.push(`Map ${stages.products.count} product code(s) to wFirma (Auto-register or manual).`);
+          if (stages.customers.count > 0)
+            next.push(`Resolve ${stages.customers.count} customer identity row(s).`);
+          if (stages.warehouse.color === 'amber' && stages.warehouse.message)
+            next.push(stages.warehouse.message);
+          if (stages.evidence.sadPresent && !stages.evidence.zcPresent)
+            next.push('Ingest DHL ZC429 email (operator action).');
+          if (!stages.evidence.sadPresent)
+            next.push('Awaiting customs document (SAD / ZC429) — required before PZ can run.');
+          if (next.length === 0) return null;
+          return (
+            <div data-testid="workflow-next-actions"
+                 style={{ background: '#fffbeb', border: '1px solid #fcd34d',
+                          borderRadius: 6, padding: 8, marginBottom: 12,
+                          fontSize: 12, color: '#92400e' }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                Next required actions
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {next.slice(0, 2).map((n, i) => <li key={i}>{n}</li>)}
+              </ul>
             </div>
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {next.slice(0, 2).map((n, i) => <li key={i}>{n}</li>)}
-            </ul>
-          </div>
-        );
-      })()}
+          );
+        })()}
 
-      {/* Seven ordered sections */}
-      {sectionShell('evidence',       '1. DHL / ZC429 evidence',        evidenceBody)}
-      {sectionShell('classification', '2. CN / HSN classification',     classificationBody)}
-      {sectionShell('products',       '3. Product identity mapping',    productsBody)}
-      {sectionShell('customers',      '4. Customer identity mapping',   customersBody)}
-      {sectionShell('warehouse',      '5. Warehouse / packing readiness', warehouseBody)}
-      {sectionShell('preview',        '6. PZ preview readiness',        previewBody)}
-      {sectionShell('execute',        '7. Execute PZ in wFirma',        executeBody)}
-
-      {/* Phase 6 — local editable Proforma Draft panel. Always visible
-          when drafts exist; auto-created from sales packing intake.
-          Posting from this panel is the ONLY UI path that reaches wFirma
-          for Proforma issuance — legacy /proforma/create has no button
-          surface in the dashboard. */}
-      <ProformaDraftPanel batchId={batchId} onToast={onToast} />
-
-      {/* Detail panel — keep the full Proforma readiness card below
-          for the per-row write surfaces the workflow only summarises. */}
-      <details data-testid="workflow-details-toggle" style={{ marginTop: 8 }}>
-        <summary style={{ fontSize: 11, color: '#6b7280', cursor: 'pointer',
-                          padding: '6px 0' }}>
-          Show full Proforma Readiness panel (per-row actions)
-        </summary>
-        <ProformaReadinessCard batchId={batchId} onToast={onToast} />
-      </details>
+        {/* Seven ordered sections */}
+        {sectionShell('evidence',       '1. DHL / ZC429 evidence',        evidenceBody)}
+        {sectionShell('classification', '2. CN / HSN classification',     classificationBody)}
+        {sectionShell('products',       '3. Product identity mapping',    productsBody)}
+        {sectionShell('customers',      '4. Customer identity mapping',   customersBody)}
+        {sectionShell('warehouse',      '5. Packing list / Sales linkage', warehouseBody)}
+        {sectionShell('preview',        '6. PZ preview readiness',        previewBody)}
+        {sectionShell('execute',        '7. Execute PZ in wFirma',        executeBody)}
+      </div>
     </div>
   );
 }
@@ -16081,9 +16124,9 @@ function ExecutePZGate({ batchId, onToast }) {
   // Build disabled-reason chips so the operator sees exactly why.
   const reasons = [];
   if (alreadyCreated)               reasons.push('PZ already created');
-  if (!flagOn)                      reasons.push('WFIRMA_CREATE_PZ_ALLOWED is off');
-  if (!ready)                       reasons.push('pz_preview.ready=false');
-  if (!wouldCreate && !alreadyCreated) reasons.push('would_create_pz=false');
+  if (!flagOn)                      reasons.push('PZ creation is disabled (admin setting)');
+  if (!ready)                       reasons.push('PZ preview not ready — resolve issues in steps 1–6 above');
+  if (!wouldCreate && !alreadyCreated) reasons.push('Preview check: no PZ would be created — verify product and customer mapping');
   if (data && (data.unresolved_product_codes || []).length > 0) {
     reasons.push(`${data.unresolved_product_codes.length} product code(s) unresolved`);
   }
@@ -16101,16 +16144,22 @@ function ExecutePZGate({ batchId, onToast }) {
         </span>
       </div>
 
-      <div data-testid="execute-pz-summary"
-           style={{ fontSize: 12, color: 'var(--text-2,#6b7280)', marginBottom: 8 }}>
-        <div><span style={label}>pz_preview.ready: </span>{String(ready)}</div>
-        <div><span style={label}>would_create_pz: </span>{String(wouldCreate)}</div>
-        <div><span style={label}>already_created: </span>{String(alreadyCreated)}</div>
-        <div><span style={label}>WFIRMA_CREATE_PZ_ALLOWED: </span>{String(flagOn)}</div>
-        {data && data.wfirma_pz_doc_id ? (
-          <div><span style={label}>wfirma_pz_doc_id: </span>{data.wfirma_pz_doc_id}</div>
-        ) : null}
-      </div>
+      <details data-testid="execute-pz-summary"
+               style={{ fontSize: 11, color: 'var(--text-2,#6b7280)', marginBottom: 8 }}>
+        <summary style={{ cursor: 'pointer', fontSize: 11,
+                          color: 'var(--text-2,#6b7280)', padding: '2px 0' }}>
+          Technical state (debug)
+        </summary>
+        <div style={{ marginTop: 4 }}>
+          <div><span style={label}>PZ preview ready: </span>{String(ready)}</div>
+          <div><span style={label}>Would create PZ: </span>{String(wouldCreate)}</div>
+          <div><span style={label}>Already created: </span>{String(alreadyCreated)}</div>
+          <div><span style={label}>Creation enabled: </span>{String(flagOn)}</div>
+          {data && data.wfirma_pz_doc_id ? (
+            <div><span style={label}>wFirma PZ document: </span>{data.wfirma_pz_doc_id}</div>
+          ) : null}
+        </div>
+      </details>
 
       {reasons.length > 0 && !enabled && (
         <div data-testid="execute-pz-reasons"
