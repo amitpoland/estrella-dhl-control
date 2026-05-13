@@ -34,7 +34,7 @@ git rev-parse origin/main   # SHA to deploy
 2. Current branch must be `main`. Any other branch: **block**.
 3. Pull must be fast-forward only. A merge commit would be required: **block**.
 4. `origin/main` must be reachable (fetch succeeded). If not: **block**.
-5. **LOCAL-COMMIT-ONLY check**: run `git branch -r --contains <deploy-sha>`. If `origin/main` is not listed, the deploy SHA never landed via PR. Gate report must include: (a) commit SHA being deployed, (b) reason PR flow was bypassed, (c) reconciliation plan (when will this be PR'd). Label the gate output `LOCAL-COMMIT-ONLY`. This is not an automatic block, but it is a mandatory disclosure. (Lesson D — Wave 1 closure 2026-05-13.)
+5. **LOCAL-COMMIT-ONLY check**: run `git branch -r --contains $(git rev-parse HEAD)`. If `origin/main` is not listed, the deploy SHA never landed via PR. Gate report MUST include: (a) commit SHA being deployed, (b) reason PR flow was bypassed, (c) reconciliation plan (when will this be PR'd). Label the gate output `LOCAL-COMMIT-ONLY`. **If the disclosure header is absent**, release manager reports `BLOCKER — LOCAL-COMMIT-ONLY without disclosure (Lesson D Rule 1)`, and `deploy_lead_coordinator` will block on this finding. If header is present, release manager reports `CLEAR — LOCAL-COMMIT-ONLY disclosed` and lead coordinator handles the acknowledgment gate. (Lesson D — Wave 1 closure 2026-05-13, backstop added 2026-05-13.)
 
 ### Commit log review
 

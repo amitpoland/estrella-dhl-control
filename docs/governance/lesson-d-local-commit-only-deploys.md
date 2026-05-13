@@ -160,6 +160,9 @@ Schema:
 
 **Note on bypass reason accuracy:** On reflection, GitHub was accessible during this session (PR #74 was filed via `gh pr create` from a worktree in the same session at ~12:26Z). The primary bypass reason was operational timing urgency + the inline-gate pattern being the established Windows-deploy norm at the time (before Lesson D was codified). This entry is marked retroactive accordingly.
 
+**Reconciliation status: CLOSED — 2026-05-13**  
+SHA `4c797e4` is now an ancestor of `origin/main`. It was swept onto `origin/main` via the PR #76 governance branch (`chore/governance-lesson-d-codification`), which was created from local `main` (which included `4c797e4`). Confirmed: `git branch -r --contains 4c797e4` → `origin/main`. Dedicated reconciliation PR #77 (`reconcile/4c797e4-plus-lesson-d-backstop`) added the formal closure + lead coordinator backstop. Audit record updated in `.claude/memory/local-commit-deploys.jsonl` (reconciliation-close entry appended). No Windows deploy required — production content was already byte-identical.
+
 ---
 
 ## 4c797e4 Reconciliation Workflow
@@ -229,6 +232,8 @@ Schema:
 
 ### When to execute
 
+> **STATUS: COMPLETED 2026-05-13** — `4c797e4` reconciliation is done (see Reconciliation status note in § Worked Example above). The steps below are preserved as the canonical workflow for future LOCAL-COMMIT-ONLY reconciliations.
+
 - **Recommended**: next governance-focused session
 - **Hard requirement**: before any `git pull --ff-only origin main` on Windows production
 - **If Wave 2 evidence triggers a new code change before reconciliation**: reconciliation must happen first (per Rule 3)
@@ -253,5 +258,6 @@ If additional commits appear between `origin/main` and `4c797e4`, the cherry-pic
 | Is it a hard block? | No — but disclosure + acknowledgment are mandatory before sync |
 | When must reconciliation be filed? | Before next `git pull --ff-only origin main` on the same machine |
 | Where is the audit record? | `.claude/memory/local-commit-deploys.jsonl` |
-| Which agent enforces Rule 1 detection? | `deploy_release_manager.md` § Branch hygiene item 5 |
-| What is the retroactive record for `4c797e4`? | See § Worked Example above + `.claude/memory/local-commit-deploys.jsonl` first entry |
+| Which agent enforces Rule 1 detection? | `deploy_release_manager.md` § Branch hygiene item 5 + `deploy_lead_coordinator.md` § LOCAL-COMMIT-ONLY detection (backstop, added 2026-05-13) |
+| What is the retroactive record for `4c797e4`? | See § Worked Example above + `.claude/memory/local-commit-deploys.jsonl` — entry 1 (original) + entry 2 (reconciliation-close) |
+| Has `4c797e4` been reconciled? | YES — merged onto `origin/main` via PR #76 ancestry. Formal closure: PR #77 |
