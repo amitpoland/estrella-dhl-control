@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -67,6 +68,33 @@ _auth = Depends(require_api_key)
 # Operator accountability minimums per ADR-019.
 _FORCE_REASON_MIN_CHARS: int = 10
 _FORCE_ACTOR_MIN_CHARS:  int = 3
+
+# Input-sanitisation caps for operator-supplied free text. Per security review:
+# unbounded reason/actor lengths permit log-injection + audit-file bloat.
+_FORCE_REASON_MAX_CHARS: int = 500
+_FORCE_ACTOR_MAX_CHARS:  int = 64
+
+# Path traversal guard: batch_id is used to construct file paths under
+# storage_root/outputs/. Whitelist conservative character set matching
+# the project's batch_id convention (alphanumerics + dash + underscore +
+# period for trailing extension-less names). Anything outside this set
+# (slashes, `..`, percent-encoded chars, control chars) is rejected.
+_BATCH_ID_RE: re.Pattern = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _sanitise_free_text(s: str, max_chars: int) -> str:
+    """Strip control chars (\\r, \\n, \\t, and 0x00-0x1F except space) and
+    cap length. Preserves printable ASCII + non-ASCII unicode. Returns
+    a trimmed string ready for audit log + structured logging without
+    log-injection risk."""
+    if not s:
+        return ""
+    # Strip control chars + ANSI escapes
+    cleaned = "".join(ch for ch in s if ch == " " or (ord(ch) >= 0x20 and ord(ch) != 0x7F))
+    cleaned = cleaned.strip()
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars]
+    return cleaned
 
 
 # ── Audit log path resolution (same convention as runtime-flags) ─────────────
@@ -199,9 +227,27 @@ def admin_proactive_dispatch(
             hint="POST to /proactive-dispatch/<batch_id>",
         )
 
+    # Path-traversal guard: batch_id flows into a filesystem path
+    # (storage_root/outputs/<batch_id>/audit.json). Reject anything
+    # outside the conservative allowlist.
+    if not _BATCH_ID_RE.match(batch_id):
+        raise _error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"batch_id contains characters outside the allowlist "
+                f"[A-Za-z0-9_-]; rejected for filesystem-path safety."
+            ),
+            error_code="INVALID_BATCH_ID",
+            field="batch_id",
+            hint="Use only alphanumerics, dashes, and underscores.",
+            batch_id=batch_id,
+        )
+
     force  = bool(body.force)
-    reason = (body.reason or "").strip() if body.reason else ""
-    actor  = (body.actor  or "").strip() if body.actor  else ""
+    # Sanitise + cap operator-supplied free text. Strips control chars to
+    # prevent log-injection; caps length to prevent audit-file bloat.
+    reason = _sanitise_free_text(body.reason or "", _FORCE_REASON_MAX_CHARS)
+    actor  = _sanitise_free_text(body.actor  or "", _FORCE_ACTOR_MAX_CHARS)
 
     # ── Force-path validation (ADR-019 Invariant 2) ──────────────────────────
     if force:
@@ -247,6 +293,35 @@ def admin_proactive_dispatch(
         or ((audit.get("batch_meta") or {}).get("awb") or "").strip()
         or (audit.get("tracking_no") or "").strip()
     )
+
+    # ── State recovery for `dispatch_failed` (force=True only) ──────────────
+    # gap-hunter F2: when state is `dispatch_failed` and operator hits the
+    # admin route with `force=True`, recover to `awaiting_preemptive_send`
+    # before the coordinator runs — otherwise coordinator dispatches but
+    # `_advance_to_awaiting_poland_arrival` silently no-ops because the
+    # current state is not `awaiting_preemptive_send`, leaving the state
+    # stuck on `dispatch_failed` while the email IS sent.
+    # Without force, the recovery does not fire — operator must explicitly
+    # acknowledge the prior failure via reason+actor.
+    current_state = (audit.get("dhl_clearance") or {}).get("state", "")
+    if force and current_state == "dispatch_failed":
+        try:
+            from ..services import dhl_clearance_state_engine as state_engine
+            from ..services import dhl_clearance_manifest as manifest
+            manifest.init_manifest(audit)
+            audit["dhl_clearance"]["state"] = state_engine.STATE_AWAITING_PREEMPTIVE_SEND
+            audit["dhl_clearance"].setdefault("state_history", []).append({
+                "from":   "dispatch_failed",
+                "to":     state_engine.STATE_AWAITING_PREEMPTIVE_SEND,
+                "reason": f"admin_force_retry by {actor}: {reason}",
+                "actor":  actor,
+                "at":     int(time.time()),
+            })
+        except Exception as exc:  # pragma: no cover — defensive
+            log.error(
+                "admin_dispatch_state_recovery_failed batch_id=%s reason=%s",
+                batch_id, exc.__class__.__name__,
+            )
 
     inp = DispatchInput(batch_id=batch_id, awb=awb, audit=audit)
 
@@ -318,17 +393,46 @@ def admin_proactive_dispatch(
         )
 
     # ── Persist audit mutations made by the coordinator ──────────────────────
+    # gap-hunter F1: if `_save_audit` fails AFTER the coordinator has already
+    # queued a real email (LIVE) or recorded a shadow dispatch, the in-memory
+    # manifest.message_id never lands on disk. A later sweep (or admin retry)
+    # would see no prior message_id and double-dispatch. Treat this as 500
+    # so the operator KNOWS state diverged and investigates BEFORE retrying.
+    # The admin audit JSONL still gets the rejection entry for forensic trail.
     try:
         _save_audit(batch_id, audit)
     except OSError as exc:
         log.error(
-            "admin_dispatch_audit_save_failed batch_id=%s reason=%s",
-            batch_id, exc.__class__.__name__,
+            "admin_dispatch_audit_save_failed batch_id=%s status=%s message_id=%s "
+            "reason=%s — state DIVERGED, coordinator action persisted in-memory "
+            "but NOT on disk; manual reconciliation required before any retry",
+            batch_id, result.get("status"), result.get("message_id"),
+            exc.__class__.__name__,
         )
-        # Coordinator action already happened (email queued or shadow logged).
-        # Audit-write failure is surfaced but does not roll back the dispatch.
-        # Mark in response so caller knows.
-        result = {**result, "audit_save_failed": True}
+        raise _error(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Audit save failed AFTER coordinator dispatched. State on "
+                "disk does NOT reflect the dispatch. Manual reconciliation "
+                "required — do NOT retry until inspected."
+            ),
+            error_code="AUDIT_SAVE_FAILED_POST_DISPATCH",
+            field=None,
+            hint=(
+                "Check storage_root/outputs/<batch_id>/audit.json + "
+                "email_queue.json + dhl_selfclearance_dispatch_admin_audit.jsonl "
+                "for the in-flight message_id before any retry. The coordinator "
+                "result is in this response's extra context."
+            ),
+            batch_id=batch_id,
+            actor=actor,
+            extra={
+                "exception_class":     exc.__class__.__name__,
+                "coordinator_status":  result.get("status"),
+                "coordinator_message": result.get("message_id"),
+                "triggered_by":        result.get("triggered_by"),
+            },
+        )
 
     # ── Audit log the override event ─────────────────────────────────────────
     audit_entry = {

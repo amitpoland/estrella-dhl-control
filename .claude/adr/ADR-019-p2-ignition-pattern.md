@@ -5,8 +5,8 @@
 | **Status** | Accepted |
 | **Date** | 2026-05-13 |
 | **Phase** | W-5 / P2 (ignition layer) |
-| **Amends** | none (extends ADR-013 caller pattern) |
-| **Related** | ADR-012, ADR-013, ADR-014, ADR-018 |
+| **Amends** | ADR-013 (idempotency-bypass clause for force-path; see §"Relationship to ADR-013 idempotency") |
+| **Related** | ADR-012, ADR-014, ADR-018 |
 | **Implements operator decision** | Model C (sweep primary + admin override route) per design doc `02b_P2_IGNITION_SWITCH_DESIGN.md` |
 
 ## Context
@@ -73,6 +73,19 @@ The coordinator then enforces:
 7. **Boot-replay race guard.** Sweep's P2 ignition branch is a no-op until `mark_startup_replay_complete()` fires from `main.py` lifespan, immediately after `load_persisted_flags_into_settings()` completes. This prevents stale-flag dispatch during the lifespan startup window.
 
 8. **History append on force.** When `force=True` finds a prior `p2_dispatch.message_id`, the prior entry is archived into `audit.dhl_clearance.p2_dispatch_history[]` with `archived_at`, `archived_by`, and `archive_reason="force_redispatch"` before the manifest is overwritten. Forensic reconstruction always possible.
+
+## Relationship to ADR-013 idempotency
+
+ADR-013 §Idempotency states: *"A second proactive dispatch attempt for the same AWB is a no-op when the manifest already records a successful dispatch message-id."*
+
+ADR-019's `force=True` path introduces a documented bypass of this rule, intentionally bounded by:
+- **Auth surface**: bypass is only reachable via the admin HTTP route (X-API-Key). Sweep cannot trigger it (Invariant 4).
+- **Operator accountability**: bypass requires `actor` (≥3 chars) AND `reason` (≥10 chars). Both validated at the route layer; coordinator's `ForceRequiresActor` is belt-and-braces.
+- **Forensic preservation**: prior dispatch is archived to `audit.dhl_clearance.p2_dispatch_history[]` with `archived_at`, `archived_by`, `archive_reason="force_redispatch"` before the manifest is overwritten (Invariant 8). The prior message_id is never lost.
+- **Audit visibility**: every force-bypass emits a WARNING-level `admin_dispatch_override` audit entry (Invariant 3).
+- **Defense-in-depth**: force=True does NOT bypass ADR-018's combined-state validator, ADR-012's scope gate, or the AWB-stability gate (Invariant 6).
+
+ADR-013's idempotency rule remains the DEFAULT behavior. The bypass is the EXCEPTION, gated by all the above. This ADR amends ADR-013 by carving out this specific exception, not by replacing the default behavior.
 
 ## Gate-flip migration (P0-PREC1)
 

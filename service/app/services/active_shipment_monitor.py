@@ -17,6 +17,34 @@ Audit writes are limited to:
   - dhl_email, agency_preclearance
   - email_scan_results, email_search_risk*
   - timeline events
+  - dhl_clearance.* (P2 ignition; see ADR-019 + design doc 02b)
+
+W-5 DHL self-clearance phase handoff contract (ADR-019, design doc §6, P1-PREC4)
+================================================================================
+Every sweep iteration calls a phase-specific coordinator method, sequenced
+by `audit.dhl_clearance.state`. The sweep is the SHARED substrate for
+P2/P3/P4/P5 ignition; each phase's call site filters by state and invokes
+the matching coordinator method. P0 ships scaffolds; this PR wires P2.
+
+| Phase | Coordinator entrypoint        | dhl_clearance.state         | Sweep helper                          |
+|-------|-------------------------------|------------------------------|---------------------------------------|
+| P2    | `dispatch_proactive`          | `awaiting_preemptive_send`   | `_dispatch_p2_via_coordinator` (here) |
+| P3    | `on_tracking_event`           | `awaiting_poland_arrival`    | (future session)                      |
+| P4    | `on_inbound_clarification`    | `clarification_received`     | (future session)                      |
+| P5    | `on_sad_inbound`              | `sad_received`               | (future session)                      |
+
+Each phase MUST:
+  - filter by `audit.dhl_clearance.state` first (state-machine handoff)
+  - check Path A scope via `is_dhl_self_clearance()`
+  - check `audit.dhl_clearance.operator_hold` (R-C7 escape valve)
+  - acquire `_get_batch_lock(batch_id)` non-blocking (defense-in-depth)
+  - invoke coordinator with `caller="sweep", force=False`
+  - persist audit + append timeline event on success
+  - tolerate coordinator exceptions WITHOUT crashing the sweep loop
+
+This is the binding contract for future P3/P4/P5 ignition. Diverging from
+it (e.g., adding a parallel queue, bypassing per-batch lock) requires an
+ADR amendment to ADR-019.
 """
 from __future__ import annotations
 
@@ -892,6 +920,15 @@ def _dispatch_p2_via_coordinator(
     )
     if not is_dhl_self_clearance(clearance_path):
         return {"dispatched": False, "skip_reason": "not_path_a"}
+
+    # ── Operator-hold filter (R-C7, Atlas integration target F-IGN-1) ──────
+    # When operator (via Atlas UI or direct audit edit) sets
+    # `audit.dhl_clearance.operator_hold == True`, sweep MUST NOT dispatch
+    # for this batch. The admin override route is the only path that can
+    # still dispatch (operator-explicit), and even there it remains hold-
+    # respecting unless force=True with explicit reason+actor.
+    if bool((audit.get("dhl_clearance") or {}).get("operator_hold")):
+        return {"dispatched": False, "skip_reason": "operator_hold"}
 
     # ── batch_id + AWB resolution (mirrors admin route) ─────────────────────
     batch_id = (

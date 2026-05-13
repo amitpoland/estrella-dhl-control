@@ -209,6 +209,148 @@ def test_admin_route_returns_404_on_missing_audit(client, tmp_path):
 
 # ── Lesson A: real coordinator invocation (no stubs) ────────────────────────
 
+# ── Path-traversal guard (security review MEDIUM) ───────────────────────────
+
+@pytest.mark.parametrize("malicious_id", [
+    "../etc/passwd",
+    "..%2Fetc%2Fpasswd",
+    "B/../OTHER",
+    "B 1",                 # space
+    "B;rm",                # shell metachar
+    ".",
+    "..",
+])
+def test_path_traversal_batch_id_rejected(client, malicious_id):
+    r = client.post(f"{_URL}/{malicious_id}", headers=_AUTH, json={})
+    # 400 INVALID_BATCH_ID OR FastAPI 404 (router doesn't match)
+    # Either is a rejection. Verify we never reach the audit-load step.
+    assert r.status_code in (400, 404)
+    if r.status_code == 400:
+        assert r.json()["detail"]["error_code"] == "INVALID_BATCH_ID"
+
+
+# ── Input sanitisation (security review MEDIUM) ─────────────────────────────
+
+def test_reason_strips_control_chars_and_caps_length(client, tmp_path):
+    """Reason with embedded newline + control chars + huge length: stripped
+    and capped before reaching audit log + structured logging."""
+    setattr(settings, "dhl_selfclearance_p2_shadow_mode", True)
+    setattr(settings, "dhl_selfclearance_p2_live_enabled", False)
+    _seed_audit(tmp_path, "B-SANITISE-R")
+    malicious_reason = "Valid reason text\nFAKE_LOG_LINE_INJECT" + ("x" * 1000)
+    r = client.post(f"{_URL}/B-SANITISE-R", headers=_AUTH,
+                    json={"force": True, "actor": "amit",
+                          "reason": malicious_reason})
+    assert r.status_code == 200, r.json()
+    audit_log = tmp_path / "dhl_selfclearance_dispatch_admin_audit.jsonl"
+    entries = [json.loads(l) for l in audit_log.read_text().splitlines() if l.strip()]
+    override = next(e for e in entries
+                    if e.get("event") == "admin_dispatch_override"
+                    and e.get("force") is True)
+    # Newline stripped
+    assert "\n" not in override["reason"]
+    # Length capped at 500
+    assert len(override["reason"]) <= 500
+    # First "Valid" content preserved (sanitiser keeps printable chars)
+    assert "Valid reason" in override["reason"]
+
+
+def test_actor_strips_control_chars_and_caps_length(client, tmp_path):
+    setattr(settings, "dhl_selfclearance_p2_shadow_mode", True)
+    setattr(settings, "dhl_selfclearance_p2_live_enabled", False)
+    _seed_audit(tmp_path, "B-SANITISE-A")
+    malicious_actor = "amit\nINJECTED" + ("y" * 200)
+    r = client.post(f"{_URL}/B-SANITISE-A", headers=_AUTH,
+                    json={"force": True,
+                          "reason": "Valid reason for sanitise test",
+                          "actor": malicious_actor})
+    assert r.status_code == 200
+    audit_log = tmp_path / "dhl_selfclearance_dispatch_admin_audit.jsonl"
+    entries = [json.loads(l) for l in audit_log.read_text().splitlines() if l.strip()]
+    override = next(e for e in entries
+                    if e.get("event") == "admin_dispatch_override")
+    assert "\n" not in override["actor"]
+    assert len(override["actor"]) <= 64
+    assert override["actor"].startswith("amit")
+
+
+# ── State recovery from dispatch_failed (gap-hunter F2) ─────────────────────
+
+def test_force_true_recovers_from_dispatch_failed_state(client, tmp_path):
+    """When state == dispatch_failed and admin calls with force=True,
+    route MUST transition state back to awaiting_preemptive_send before
+    invoking coordinator — otherwise coordinator would dispatch but state
+    stays stuck on dispatch_failed (per gap-hunter F2)."""
+    setattr(settings, "dhl_selfclearance_p2_shadow_mode", True)
+    setattr(settings, "dhl_selfclearance_p2_live_enabled", False)
+    audit_dir = tmp_path / "outputs" / "B-RECOVER"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    (audit_dir / "audit.json").write_text(json.dumps({
+        "batch_id": "B-RECOVER",
+        "dhl_awb": "1234567890",
+        "clearance_decision": {"clearance_path": "dhl_self_clearance"},
+        "dhl_clearance": {"state": "dispatch_failed"},
+    }))
+    r = client.post(f"{_URL}/B-RECOVER", headers=_AUTH,
+                    json={"force": True, "actor": "amit",
+                          "reason": "Recovering from prior SMTP failure"})
+    assert r.status_code == 200, r.json()
+    # State recovery happened
+    audit = json.loads((audit_dir / "audit.json").read_text())
+    state_history = audit.get("dhl_clearance", {}).get("state_history", [])
+    recovery = [h for h in state_history if h.get("from") == "dispatch_failed"]
+    assert len(recovery) >= 1
+    assert recovery[0]["to"] == "awaiting_preemptive_send"
+    assert recovery[0]["actor"] == "amit"
+    assert "admin_force_retry" in recovery[0]["reason"]
+
+
+def test_force_false_does_not_recover_dispatch_failed(client, tmp_path):
+    """Without force=True, dispatch_failed state must NOT auto-recover.
+    Operator must explicitly acknowledge prior failure."""
+    setattr(settings, "dhl_selfclearance_p2_shadow_mode", True)
+    setattr(settings, "dhl_selfclearance_p2_live_enabled", False)
+    audit_dir = tmp_path / "outputs" / "B-NOREC"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    (audit_dir / "audit.json").write_text(json.dumps({
+        "batch_id": "B-NOREC",
+        "dhl_awb": "1234567890",
+        "clearance_decision": {"clearance_path": "dhl_self_clearance"},
+        "dhl_clearance": {"state": "dispatch_failed"},
+    }))
+    r = client.post(f"{_URL}/B-NOREC", headers=_AUTH, json={})
+    # Coordinator may return any status (skip/blocked); important is no recovery
+    audit = json.loads((audit_dir / "audit.json").read_text())
+    state_history = audit.get("dhl_clearance", {}).get("state_history", [])
+    recovery = [h for h in state_history if h.get("from") == "dispatch_failed"]
+    assert recovery == [], "force=False must not auto-recover dispatch_failed"
+
+
+# ── Audit-save failure returns 500 (gap-hunter F1) ──────────────────────────
+
+def test_audit_save_failure_returns_500_not_200(client, tmp_path, monkeypatch):
+    """gap-hunter F1: if audit save fails AFTER coordinator dispatched,
+    return 500 — NOT 200 with audit_save_failed=True. Operator must know
+    state diverged before any retry."""
+    setattr(settings, "dhl_selfclearance_p2_shadow_mode", True)
+    setattr(settings, "dhl_selfclearance_p2_live_enabled", False)
+    _seed_audit(tmp_path, "B-SAVEFAIL")
+
+    # Make _save_audit raise
+    import app.api.routes_admin_dhl_clearance as route_mod
+
+    def _failing_save(batch_id, audit):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(route_mod, "_save_audit", _failing_save)
+
+    r = client.post(f"{_URL}/B-SAVEFAIL", headers=_AUTH, json={})
+    assert r.status_code == 500
+    body = r.json()["detail"]
+    assert body["error_code"] == "AUDIT_SAVE_FAILED_POST_DISPATCH"
+    assert "manual reconciliation" in body["detail"].lower()
+
+
 def test_admin_route_uses_real_coordinator(client, tmp_path):
     """Lesson A canonical: route invokes the REAL coordinator (no monkeypatched
     stub). Verify by checking that the coordinator's exception classes are

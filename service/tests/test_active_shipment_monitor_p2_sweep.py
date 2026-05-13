@@ -215,6 +215,59 @@ def test_sweep_handles_coordinator_exception_without_crash(monkeypatch, tmp_path
     assert res["error"] == "RuntimeError"
 
 
+# ── operator_hold filter (R-C7, F-IGN-1 integration target) ─────────────────
+
+def test_sweep_skips_when_operator_hold_true(tmp_path):
+    """Atlas (or direct audit edit) sets dhl_clearance.operator_hold=True;
+    sweep MUST skip the batch with skip_reason='operator_hold'."""
+    audit_dir = tmp_path / "outputs" / "B-HOLD"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = audit_dir / "audit.json"
+    audit_path.write_text(json.dumps({
+        "batch_id": "B-HOLD",
+        "dhl_awb": "1234567890",
+        "clearance_decision": {"clearance_path": "dhl_self_clearance"},
+        "dhl_clearance": {
+            "state": "awaiting_preemptive_send",
+            "operator_hold": True,
+        },
+    }))
+    audit = json.loads(audit_path.read_text())
+    res = asm._dispatch_p2_via_coordinator(audit_path, audit)
+    assert res["dispatched"] is False
+    assert res["skip_reason"] == "operator_hold"
+
+
+def test_sweep_proceeds_when_operator_hold_false(tmp_path):
+    """When operator_hold is False (or absent), sweep proceeds normally."""
+    audit_path = _seed_audit(tmp_path, "B-NOHOLD")
+    audit = json.loads(audit_path.read_text())
+    audit["dhl_clearance"]["operator_hold"] = False
+    res = asm._dispatch_p2_via_coordinator(audit_path, audit)
+    # NOT skip_reason="operator_hold" — proceeds to coordinator gates
+    assert res.get("skip_reason") != "operator_hold"
+
+
+# ── Lifespan integration: marker fires after boot-replay (F8) ───────────────
+
+def test_lifespan_fires_startup_replay_marker(monkeypatch, tmp_path):
+    """gap-hunter F8: TestClient(app) context-manager form fires lifespan
+    handlers. After startup, _STARTUP_REPLAY_COMPLETE must be True."""
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-key-secret")
+    # Reset to False to prove lifespan flips it
+    asm._STARTUP_REPLAY_COMPLETE = False
+    from fastapi.testclient import TestClient
+    from app.main import app
+    with TestClient(app) as c:
+        # Inside the with block, lifespan startup has fired
+        assert asm._STARTUP_REPLAY_COMPLETE is True
+        # Quick smoke that app is up
+        r = c.get("/api/v1/health")
+        # Health may 401 if API key configured; the lifespan ran is the assertion
+        assert r.status_code in (200, 401, 404)
+
+
 # ── Lesson A: real coordinator import (no stub bound) ───────────────────────
 
 def test_sweep_uses_real_coordinator_module():
