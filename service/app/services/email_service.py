@@ -42,6 +42,7 @@ def queue_email(
     cc:        str = "",   # comma-separated CC string; use email_routing.format_cc()
     from_address: str = "",   # override default sender (e.g. "import@estrellajewels.eu")
     email_type:   str = "",   # "agency" | "dhl_reply" | "" (default)
+    attachments:  Optional[list] = None,  # list of {"label": str, "path": str} dicts
 ) -> str:
     """
     Add an email to the persistent queue.
@@ -49,10 +50,16 @@ def queue_email(
 
     Parameters
     ----------
-    to        : Primary recipient(s) — comma-separated string or single address.
-    cc        : CC recipients — comma-separated string. Use email_routing.format_cc().
-    batch_id  : Optional — links queue entry back to a shipment batch for
-                delivery confirmation propagation (see mark_sent + routes_admin).
+    to          : Primary recipient(s) — comma-separated string or single address.
+    cc          : CC recipients — comma-separated string. Use email_routing.format_cc().
+    attachments : Attachment metadata list — [{"label": "...", "path": "/abs/path"}].
+                  Storing paths HERE (not just in audit.json) avoids a timing race:
+                  queue_email() attempts immediate SMTP delivery synchronously, BEFORE
+                  the caller has a chance to write audit["agency_reply_package"] to disk.
+                  Without this, _attachments_for_queue() sees an empty audit and the
+                  integrity guard cannot fire. Pass attachments= on every customs email.
+    batch_id    : Optional — links queue entry back to a shipment batch for
+                  delivery confirmation propagation (see mark_sent + routes_admin).
     """
     if not to or not to.strip():
         raise ValueError("queue_email: 'to' is required — cannot queue email without recipients")
@@ -75,6 +82,13 @@ def queue_email(
         "from_name":    ZOHO_FROM_NAME,
         "account_id":   ZOHO_ACCOUNT_ID,
         "email_type":   email_type or "",
+        # Attachment metadata stored directly so _attachments_for_queue() can
+        # validate them during the immediate synchronous SMTP attempt that fires
+        # inside this function — before the caller has written audit.json.
+        # IMPORTANT: None means "not provided — use audit.json fallback".
+        # [] (empty list) means "caller explicitly declared no attachments".
+        # Only pass attachments= when the caller owns the file list.
+        "attachments":  list(attachments) if attachments is not None else None,
     }
     _append_to_queue(entry)
     log.info("Email queued id=%s to=%s cc=%s subject=%r", email_id, to, cc or "—", subject)

@@ -336,6 +336,7 @@ def _call_dhl_reply(batch_id: str) -> Dict[str, Any]:
             cc           = package.get("cc", ""),
             from_address = package.get("from_address", ""),
             email_type   = package.get("email_type", "dhl_reply"),
+            attachments  = package.get("attachments", []),
         )
     except Exception as exc:
         log.error("_call_dhl_reply: queue_email failed batch=%s: %s", batch_id, exc)

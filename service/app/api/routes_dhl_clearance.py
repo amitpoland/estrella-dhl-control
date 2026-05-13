@@ -882,11 +882,17 @@ async def generate_description(
                               f"<pre style='white-space:pre-wrap'>{_pkg['body_pl']}</pre><hr/>"
                               f"<pre style='white-space:pre-wrap'>{_pkg['body_en']}</pre></div>")
                 _email_id = queue_email(
-                    to=_pkg["to"], subject=_pkg["subject"],
-                    body_html=_body_html, body_text=_body_text,
-                    batch_id=batch_id, cc=_pkg.get("cc", ""),
-                    from_address=_pkg.get("from_address", ""),
-                    email_type=_pkg.get("email_type", "agency"),
+                    to          = _pkg["to"],
+                    subject     = _pkg["subject"],
+                    body_html   = _body_html,
+                    body_text   = _body_text,
+                    batch_id    = batch_id,
+                    cc          = _pkg.get("cc", ""),
+                    from_address= _pkg.get("from_address", ""),
+                    email_type  = _pkg.get("email_type", "agency"),
+                    # Pass attachments at queue time — integrity guard must fire
+                    # on the synchronous SMTP attempt before audit.json is written.
+                    attachments = _pkg.get("attachments", []),
                 )
                 from ..utils.io import write_json_atomic
                 from datetime import datetime as _dt, timezone as _tz
@@ -1327,14 +1333,20 @@ async def send_dhl_reply(batch_id: str) -> Dict[str, Any]:
     )
 
     # Queue the email
+    # Pass attachment metadata directly into the queue entry so the integrity
+    # guard can fire on the synchronous SMTP attempt inside queue_email(),
+    # which fires before audit.json is updated.
+    _reply_attachments = list(reply_pkg.get("attachments") or [])
     try:
         email_id = email_service.queue_email(
-            to        = to_addr,
-            subject   = subject,
-            body_html = full_body_html,
-            body_text = full_body_text,
-            batch_id  = batch_id,   # links queue entry → batch for delivery propagation
-            cc        = cc_addr,
+            to          = to_addr,
+            subject     = subject,
+            body_html   = full_body_html,
+            body_text   = full_body_text,
+            batch_id    = batch_id,   # links queue entry → batch for delivery propagation
+            cc          = cc_addr,
+            email_type  = "dhl_reply",
+            attachments = _reply_attachments,
         )
     except Exception as exc:
         log.error("send_dhl_reply: queue_email failed: %s", exc, exc_info=True)

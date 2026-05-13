@@ -981,12 +981,13 @@ def queue_proposal(proposal_id: str) -> Dict[str, Any]:
         elif is_proactive:
             try:
                 email_id = queue_email(
-                    to        = to_addr,
-                    subject   = draft["subject"],
-                    body_html = draft.get("body_html") or f"<pre>{draft.get('body_text', '')}</pre>",
-                    body_text = draft.get("body_text", ""),
-                    batch_id  = batch_id,
-                    cc        = cc_addr,
+                    to          = to_addr,
+                    subject     = draft["subject"],
+                    body_html   = draft.get("body_html") or f"<pre>{draft.get('body_text', '')}</pre>",
+                    body_text   = draft.get("body_text", ""),
+                    batch_id    = batch_id,
+                    cc          = cc_addr,
+                    attachments = draft.get("attachments", []),
                 )
             except Exception as exc:
                 # Proactive-only: capture failure into audit, log timeline,
@@ -1011,12 +1012,13 @@ def queue_proposal(proposal_id: str) -> Dict[str, Any]:
         else:
             # Existing six types: exception bubbles up unchanged.
             email_id = queue_email(
-                to        = to_addr,
-                subject   = draft["subject"],
-                body_html = draft.get("body_html") or f"<pre>{draft.get('body_text', '')}</pre>",
-                body_text = draft.get("body_text", ""),
-                batch_id  = batch_id,
-                cc        = cc_addr,
+                to          = to_addr,
+                subject     = draft["subject"],
+                body_html   = draft.get("body_html") or f"<pre>{draft.get('body_text', '')}</pre>",
+                body_text   = draft.get("body_text", ""),
+                batch_id    = batch_id,
+                cc          = cc_addr,
+                attachments = draft.get("attachments", []),
             )
 
         # ── Mutate proposal + audit + write (skip on proactive retry) ─────

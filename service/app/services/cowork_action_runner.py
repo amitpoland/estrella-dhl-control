@@ -463,6 +463,7 @@ def _handle_dhl_reply(batch_id: str, action: Dict[str, Any]) -> Dict[str, Any]:
         cc=pkg.get("cc", ""),
         from_address=pkg.get("from_address", ""),
         email_type=pkg.get("email_type", "dhl_reply"),
+        attachments=existing,
     )
 
     # Write to audit
@@ -505,6 +506,7 @@ def _handle_dhl_self_clearance(batch_id: str, action: Dict[str, Any]) -> Dict[st
         cc=pkg.get("cc", ""),
         from_address=pkg.get("from_address", ""),
         email_type="dhl_self_clearance_reply",
+        attachments=pkg.get("attachments", []),
     )
 
     audit["dhl_self_clearance_reply_package"] = {
@@ -545,6 +547,7 @@ def _handle_agency_forward(batch_id: str, action: Dict[str, Any]) -> Dict[str, A
         cc=pkg.get("cc", ""),
         from_address=pkg.get("from_address", ""),
         email_type="agency_forward_after_dhl",
+        attachments=pkg.get("attachments", []),
     )
 
     audit["agency_forward_after_dhl"] = {
@@ -735,6 +738,7 @@ def _handle_email_draft(batch_id: str, action: Dict[str, Any]) -> Dict[str, Any]
         cc=format_cc(cc_list),
         from_address="import@estrellajewels.eu",
         email_type=email_type,
+        attachments=attachments,
     )
 
     # Record draft in audit

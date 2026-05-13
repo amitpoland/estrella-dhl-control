@@ -427,11 +427,12 @@ def trigger_agency(state: Dict[str, Any], batch_id: str) -> bool:
         pkg = build_agency_package(state, batch_id)
         body_text = f"{pkg['body_pl']}\n\n---\n\n{pkg['body_en']}"
         email_id  = queue_email(
-            to        = pkg["to"],
-            subject   = pkg["subject"],
-            body_html = f"<pre>{body_text}</pre>",
-            body_text = body_text,
-            batch_id  = batch_id,
+            to          = pkg["to"],
+            subject     = pkg["subject"],
+            body_html   = f"<pre>{body_text}</pre>",
+            body_text   = body_text,
+            batch_id    = batch_id,
+            attachments = pkg.get("attachments", []),
         )
         state["agency_reply_package"] = {**pkg, "email_id": email_id, "status": "queued",
                                           "built_at": datetime.now(timezone.utc).isoformat()}
