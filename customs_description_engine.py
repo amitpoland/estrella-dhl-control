@@ -842,6 +842,9 @@ def _register_unicode_font() -> tuple[str, str]:
         ("/usr/share/fonts/dejavu/DejaVuSans.ttf",                          "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",           "DejaVuSans"),
         # FreeSans (Linux)
         ("/usr/share/fonts/truetype/freefont/FreeSans.ttf",                 "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",   "FreeSans"),
+        # Windows system fonts
+        (r"C:\Windows\Fonts\DejaVuSans.ttf",                                r"C:\Windows\Fonts\DejaVuSans-Bold.ttf",                "DejaVuSans"),
+        (r"C:\Windows\Fonts\arial.ttf",                                     r"C:\Windows\Fonts\arialbd.ttf",                        "Arial"),
     ]
 
     # Also look next to this file and in the engine dir
