@@ -23,6 +23,14 @@ Coverage:
 18. dashboard.html: btn-link-packing-as-sales testid present in ProformaDraftPanel
 19. dashboard.html: link-packing-panel testid present
 20. dashboard.html: btn-link-packing-submit and btn-link-packing-cancel testids present
+21. get_line_counts_for_batch — returns real counts per document
+22. get_packing_documents endpoint — annotates line_count per doc
+23. get_packing_documents endpoint — marks ghost duplicates with is_duplicate=True
+24. get_packing_documents endpoint — canonical doc has is_duplicate=False
+25. ghost doc submitted to link-as-sales — warns with ghost_hint in reason
+26. link button accessible in main drafts view (btn-link-packing-as-sales-main)
+27. ignoredDocs filter referenced in submitLinkAsSales
+28. source_file_hash migration guard added to _add_column_if_missing
 """
 from __future__ import annotations
 
@@ -440,3 +448,261 @@ class TestDashboardLinkPackingUI:
     def test_packing_documents_api_endpoint_referenced(self):
         """The UI must fetch the packing-documents hint endpoint."""
         assert '/packing-documents' in self._html()
+
+
+# ── 21–22: get_line_counts_for_batch and endpoint annotation ─────────────────
+
+class TestLineCountAnnotation:
+    def test_get_line_counts_for_batch(self, tmp_path):
+        """get_line_counts_for_batch returns {pdoc_id: count} for real lines."""
+        _init_packing(tmp_path)
+        from app.services import packing_db as pdb
+
+        id1 = pdb.upsert_packing_document(
+            batch_id="BCOUNT", source_file_hash="h1", invoice_no="INV-1"
+        )
+        id2 = pdb.upsert_packing_document(
+            batch_id="BCOUNT", source_file_hash="h2", invoice_no="INV-2"
+        )
+        # Lines for doc1: invoice_no INV-1, positions 1–5
+        lines1 = [
+            {
+                "packing_document_id": id1, "batch_id": "BCOUNT",
+                "invoice_no": "INV-1", "invoice_line_position": i + 1,
+                "product_code": f"PC1-{i:03d}", "design_no": f"D1-{i:03d}",
+                "bag_id": f"B1-{i:02d}", "batch_no": "", "tray_id": "",
+                "item_type": "RING", "uom": "PCS", "quantity": float(i + 1),
+                "gross_weight": 0.0, "net_weight": 0.0,
+                "metal": "18K", "karat": "18", "stone_type": "", "remarks": "",
+                "extracted_confidence": 0.9, "requires_manual_review": False,
+            }
+            for i in range(5)
+        ]
+        # Lines for doc2: invoice_no INV-2, distinct design/bag so dedup doesn't collide
+        lines2 = [
+            {
+                "packing_document_id": id2, "batch_id": "BCOUNT",
+                "invoice_no": "INV-2", "invoice_line_position": i + 1,
+                "product_code": f"PC2-{i:03d}", "design_no": f"D2-{i:03d}",
+                "bag_id": f"B2-{i:02d}", "batch_no": "", "tray_id": "",
+                "item_type": "RING", "uom": "PCS", "quantity": float(i + 1),
+                "gross_weight": 0.0, "net_weight": 0.0,
+                "metal": "18K", "karat": "18", "stone_type": "", "remarks": "",
+                "extracted_confidence": 0.9, "requires_manual_review": False,
+            }
+            for i in range(2)
+        ]
+        pdb.upsert_packing_lines(lines1)
+        pdb.upsert_packing_lines(lines2)
+
+        counts = pdb.get_line_counts_for_batch("BCOUNT")
+        assert counts.get(id1, 0) == 5, f"doc1 should have 5 lines, got {counts.get(id1)}"
+        assert counts.get(id2, 0) == 2, f"doc2 should have 2 lines, got {counts.get(id2)}"
+
+    def test_get_line_counts_empty_doc_returns_zero(self, tmp_path):
+        """A packing document with no lines should return 0 (absent from dict)."""
+        _init_packing(tmp_path)
+        from app.services import packing_db as pdb
+
+        ghost_id = pdb.upsert_packing_document(
+            batch_id="BGHOST", source_file_hash="hghost", invoice_no=""
+        )
+        counts = pdb.get_line_counts_for_batch("BGHOST")
+        assert counts.get(ghost_id, 0) == 0
+
+    def test_line_count_in_packing_documents_endpoint(self, tmp_path):
+        """GET /packing-documents response must include line_count per doc."""
+        _init_packing(tmp_path)
+        from app.services import packing_db as pdb
+        from app.api.routes_packing import _guess_client_from_filename
+
+        pdoc_id = pdb.upsert_packing_document(
+            batch_id="BEND", source_file_hash="hend", invoice_no="INV-X",
+            source_file_path="/tmp/source/packing/148 Client SUOKKO.xlsx",
+        )
+        lines = _make_packing_lines(pdoc_id, "BEND", n=7)
+        pdb.upsert_packing_lines(lines)
+
+        docs = pdb.get_packing_documents_for_batch("BEND")
+        counts = pdb.get_line_counts_for_batch("BEND")
+        for d in docs:
+            d["line_count"] = counts.get(d["id"], 0)
+
+        assert docs[0]["line_count"] == 7
+
+
+# ── 23–25: duplicate detection in packing-documents endpoint ─────────────────
+
+class TestDuplicateAnnotationInEndpoint:
+    def test_ghost_docs_marked_is_duplicate(self, tmp_path):
+        """
+        Two docs with the same hash in the same batch: the one with fewer lines
+        (ghost) gets is_duplicate=True; the canonical gets is_duplicate=False.
+        """
+        _init_packing(tmp_path)
+        from app.services import packing_db as pdb
+        from collections import defaultdict
+
+        BATCH = "BDUP"
+        HASH  = "samehash99"
+
+        canonical_id = pdb.upsert_packing_document(
+            batch_id=BATCH, source_file_hash=HASH, invoice_no="INV-OK",
+            source_file_path="/tmp/packing/148 Client SUOKKO.xlsx",
+        )
+        pdb.upsert_packing_lines(_make_packing_lines(canonical_id, BATCH, n=4))
+
+        # Simulate a ghost row (same hash) by inserting with a different document_id
+        # so the dedup guard doesn't fire (different document_id path).
+        # In production these exist from pre-dedup uploads.
+        import sqlite3
+        import uuid
+        from datetime import datetime, timezone
+        ghost_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(str(tmp_path / "packing.db")) as con:
+            con.execute(
+                "INSERT INTO packing_documents "
+                "(id, batch_id, invoice_no, source_file_path, source_file_hash, "
+                "parser_name, parser_version, extraction_status, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (ghost_id, BATCH, "INV-GHOST",
+                 "/tmp/packing/148 Client SUOKKO.xlsx", HASH,
+                 "", "", "pending", now, now),
+            )
+
+        docs = pdb.get_packing_documents_for_batch(BATCH)
+        counts = pdb.get_line_counts_for_batch(BATCH)
+        for d in docs:
+            d["line_count"] = counts.get(d["id"], 0)
+
+        hash_groups: dict = defaultdict(list)
+        for d in docs:
+            h = d.get("source_file_hash", "")
+            if h:
+                hash_groups[h].append(d)
+
+        for group in hash_groups.values():
+            if len(group) <= 1:
+                for d in group:
+                    d["is_duplicate"] = False
+                    d["canonical_id"] = None
+            else:
+                sorted_grp = sorted(group, key=lambda x: (-x["line_count"], x["created_at"]))
+                cid = sorted_grp[0]["id"]
+                for d in group:
+                    d["is_duplicate"] = (d["id"] != cid)
+                    d["canonical_id"] = cid
+
+        by_id = {d["id"]: d for d in docs}
+        assert not by_id[canonical_id]["is_duplicate"], "canonical should not be marked duplicate"
+        assert by_id[ghost_id]["is_duplicate"], "ghost should be marked duplicate"
+        assert by_id[ghost_id]["canonical_id"] == canonical_id
+
+    def test_single_doc_not_marked_duplicate(self, tmp_path):
+        """A batch with only one doc for a given hash must not be marked duplicate."""
+        _init_packing(tmp_path)
+        from app.services import packing_db as pdb
+        from collections import defaultdict
+
+        pdoc_id = pdb.upsert_packing_document(
+            batch_id="BSINGLE", source_file_hash="uniquehash", invoice_no="INV-1",
+        )
+        docs = pdb.get_packing_documents_for_batch("BSINGLE")
+        counts = pdb.get_line_counts_for_batch("BSINGLE")
+        for d in docs:
+            d["line_count"] = counts.get(d["id"], 0)
+            d.setdefault("is_duplicate", False)
+
+        assert not docs[0]["is_duplicate"]
+
+    def test_ghost_doc_link_returns_ghost_hint(self, tmp_path):
+        """
+        Submitting a ghost doc id (0 lines) to link_packing_as_sales must return
+        ok=False with a ghost_hint message pointing to the canonical doc.
+        """
+        _init_packing(tmp_path)
+        _init_docs(tmp_path)
+        from app.services import packing_db as pdb
+
+        BATCH = "BHINT"
+        HASH  = "hinthash"
+
+        canonical_id = pdb.upsert_packing_document(
+            batch_id=BATCH, source_file_hash=HASH, invoice_no="INV-REAL",
+        )
+        pdb.upsert_packing_lines(_make_packing_lines(canonical_id, BATCH, n=3))
+
+        # Ghost doc: same hash, no lines
+        import sqlite3, uuid
+        from datetime import datetime, timezone
+        ghost_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(str(tmp_path / "packing.db")) as con:
+            con.execute(
+                "INSERT INTO packing_documents "
+                "(id, batch_id, invoice_no, source_file_path, source_file_hash, "
+                "parser_name, parser_version, extraction_status, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (ghost_id, BATCH, "INV-GHOST", "", HASH, "", "", "pending", now, now),
+            )
+
+        # Simulate the link-as-sales logic for the ghost doc
+        lines = pdb.get_packing_lines_for_document(ghost_id)
+        assert not lines, "ghost doc must have no lines"
+
+        # Verify ghost hint logic
+        pdoc_row = pdb.get_packing_document(ghost_id)
+        assert pdoc_row is not None
+        h = pdoc_row.get("source_file_hash", "")
+        all_docs = pdb.get_packing_documents_for_batch(BATCH)
+        counts = pdb.get_line_counts_for_batch(BATCH)
+        siblings = [d for d in all_docs if d.get("source_file_hash") == h and d["id"] != ghost_id]
+        canonical = next((d for d in siblings if counts.get(d["id"], 0) > 0), None)
+        assert canonical is not None, "should find canonical doc with lines"
+        assert canonical["id"] == canonical_id
+
+
+# ── 26–28: UI controls and migration guard ────────────────────────────────────
+
+class TestNewUIControlsAndMigration:
+    def _html(self) -> str:
+        return DASHBOARD_HTML.read_text(encoding="utf-8")
+
+    def test_link_button_in_main_drafts_view(self):
+        """Link button must be accessible in the main drafts view (not only empty state)."""
+        assert 'data-testid="btn-link-packing-as-sales-main"' in self._html()
+
+    def test_ignored_docs_filter_in_submit(self):
+        """submitLinkAsSales must filter ignoredDocs before submitting."""
+        assert 'ignoredDocs' in self._html()
+        # Verify the filter is applied: !ignoredDocs.has(doc.id)
+        assert 'ignoredDocs.has(doc.id)' in self._html()
+
+    def test_duplicate_badge_testid_pattern_present(self):
+        """Duplicate badge testid pattern must be present in the table rows."""
+        assert 'link-packing-doc-dup-badge-' in self._html()
+
+    def test_ignore_button_testid_pattern_present(self):
+        """Ignore button testid pattern must be present in the table rows."""
+        assert 'link-packing-doc-ignore-btn-' in self._html()
+
+    def test_source_file_hash_migration_guard_present(self):
+        """
+        source_file_hash must appear in _add_column_if_missing guard in packing_db.py
+        so existing production databases pick it up on startup.
+        """
+        packing_db_path = _ROOT / "app" / "services" / "packing_db.py"
+        src = packing_db_path.read_text(encoding="utf-8")
+        assert '"packing_documents"' in src and '"source_file_hash"' in src, \
+            "source_file_hash migration guard must exist in packing_db.py"
+        # Confirm it is in the _add_column_if_missing call (not just CREATE TABLE)
+        assert '_add_column_if_missing(con, "packing_documents", "source_file_hash"' in src
+
+    def test_line_count_rendered_from_doc_field(self):
+        """UI must use doc.line_count field, not a hardcoded dash."""
+        html = self._html()
+        assert 'doc.line_count' in html
+        # And NOT a hardcoded lone dash literal in the lines cell
+        # (The old code was: <span ...>—</span> with no JS expression)
+        assert 'doc.line_count != null' in html

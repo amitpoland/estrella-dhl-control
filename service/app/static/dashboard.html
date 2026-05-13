@@ -16930,6 +16930,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
   const [packDocs, setPackDocs]       = React.useState([]);
   const [packDocsLoading, setPackDocsLoading] = React.useState(false);
   const [clientNames, setClientNames] = React.useState({});  // pdoc_id → name
+  const [ignoredDocs, setIgnoredDocs] = React.useState(new Set()); // pdoc_id → ignored
   const [linkBusy, setLinkBusy]       = React.useState(false);
 
   const refreshList = React.useCallback(async () => {
@@ -16989,16 +16990,22 @@ function ProformaDraftPanel({ batchId, onToast }) {
     setPackDocsLoading(true);
     setPackDocs([]);
     setClientNames({});
+    setIgnoredDocs(new Set());
     try {
       const d = await apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/packing-documents`);
       const docs = (d && d.documents) || [];
       setPackDocs(docs);
       // Pre-fill client names from filename suggestions
       const initial = {};
+      // Auto-ignore ghost duplicate docs (same hash, no lines) so the operator
+      // sees a clean list by default.  They can restore any ignored row manually.
+      const initialIgnored = new Set();
       docs.forEach(doc => {
         initial[doc.id] = doc.suggested_client_name || '';
+        if (doc.is_duplicate) initialIgnored.add(doc.id);
       });
       setClientNames(initial);
+      setIgnoredDocs(initialIgnored);
     } catch (e) {
       onToast && onToast('Failed to load packing documents: ' + e.message, 'error');
     }
@@ -17006,11 +17013,12 @@ function ProformaDraftPanel({ batchId, onToast }) {
   }, [batchId, onToast]);
 
   const submitLinkAsSales = React.useCallback(async () => {
+    // Only active (not ignored) rows with a non-blank client name are submitted
     const mappings = packDocs
-      .filter(doc => (clientNames[doc.id] || '').trim())
+      .filter(doc => !ignoredDocs.has(doc.id) && (clientNames[doc.id] || '').trim())
       .map(doc => ({ packing_document_id: doc.id, client_name: clientNames[doc.id].trim() }));
     if (!mappings.length) {
-      onToast && onToast('Enter at least one client name to link.', 'error');
+      onToast && onToast('Enter at least one client name to link (or restore an ignored row).', 'error');
       return;
     }
     setLinkBusy(true);
@@ -17021,19 +17029,20 @@ function ProformaDraftPanel({ batchId, onToast }) {
           body: JSON.stringify({ client_mappings: mappings }) },
       );
       const linked  = (res && res.linked)  || 0;
+      const skipped = (res && res.failed)   || 0;
       const created = (res && res.draft_sync && res.draft_sync.created) || 0;
       const synced  = (res && res.draft_sync && res.draft_sync.synced)  || 0;
-      onToast && onToast(
-        `Linked ${linked} client(s). Drafts created: ${created}, synced: ${synced}.`,
-        linked > 0 ? 'success' : 'warning',
-      );
+      const parts = [`Linked ${linked} client(s).`];
+      if (skipped) parts.push(`${skipped} skipped.`);
+      parts.push(`Drafts created: ${created}, synced: ${synced}.`);
+      onToast && onToast(parts.join(' '), linked > 0 ? 'success' : 'warning');
       setShowLink(false);
       refreshList();
     } catch (e) {
       onToast && onToast('Link failed: ' + e.message, 'error');
     }
     setLinkBusy(false);
-  }, [batchId, packDocs, clientNames, onToast, refreshList]);
+  }, [batchId, packDocs, clientNames, ignoredDocs, onToast, refreshList]);
 
   // Wrapped fetch that injects X-Operator + JSON content-type for write calls.
   const _writeCall = React.useCallback(async (label, url, opts = {}) => {
@@ -17264,14 +17273,29 @@ function ProformaDraftPanel({ batchId, onToast }) {
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border-1)', color: 'var(--text-3)' }}>
                     <th style={{ textAlign: 'left', padding: '4px 8px' }}>Invoice / File</th>
-                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Lines</th>
+                    <th style={{ textAlign: 'right', padding: '4px 8px' }}>Lines</th>
                     <th style={{ textAlign: 'left', padding: '4px 8px' }}>Client name</th>
+                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {packDocs.map(doc => (
-                    <tr key={doc.id} style={{ borderBottom: '1px solid var(--border-0)' }}>
+                  {packDocs.map(doc => {
+                    const isIgnored = ignoredDocs.has(doc.id);
+                    return (
+                    <tr key={doc.id} data-testid={isIgnored ? `link-packing-doc-ignored-${doc.id}` : undefined}
+                        style={{ borderBottom: '1px solid var(--border-0)',
+                                 opacity: isIgnored ? 0.38 : 1,
+                                 transition: 'opacity 0.15s' }}>
                       <td style={{ padding: '4px 8px' }}>
+                        {doc.is_duplicate && (
+                          <span data-testid={`link-packing-doc-dup-badge-${doc.id}`}
+                                style={{ fontSize: 9, fontWeight: 700,
+                                         background: '#7c3aed22', color: '#7c3aed',
+                                         borderRadius: 3, padding: '1px 4px',
+                                         marginRight: 4, verticalAlign: 'middle' }}>
+                            DUP
+                          </span>
+                        )}
                         <span data-testid={`link-packing-doc-invoice-${doc.id}`}>
                           {doc.invoice_no || '—'}
                         </span>
@@ -17280,8 +17304,10 @@ function ProformaDraftPanel({ batchId, onToast }) {
                           {doc.source_file_path ? doc.source_file_path.split(/[/\\]/).pop() : ''}
                         </div>
                       </td>
-                      <td style={{ padding: '4px 8px', color: 'var(--text-3)' }}>
-                        <span data-testid={`link-packing-doc-lines-${doc.id}`}>—</span>
+                      <td style={{ padding: '4px 8px', color: 'var(--text-3)', textAlign: 'right' }}>
+                        <span data-testid={`link-packing-doc-lines-${doc.id}`}>
+                          {doc.line_count != null ? doc.line_count : '—'}
+                        </span>
                       </td>
                       <td style={{ padding: '4px 8px' }}>
                         <input
@@ -17290,6 +17316,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
                           placeholder="Client name"
                           value={clientNames[doc.id] || ''}
                           onChange={e => setClientNames(prev => ({ ...prev, [doc.id]: e.target.value }))}
+                          disabled={isIgnored}
                           style={{
                             fontSize: 12, padding: '3px 8px', borderRadius: 4, width: 180,
                             border: '1px solid var(--border-1)', background: 'var(--bg-1)',
@@ -17297,8 +17324,33 @@ function ProformaDraftPanel({ batchId, onToast }) {
                           }}
                         />
                       </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        {doc.is_duplicate && (
+                          <button
+                            data-testid={`link-packing-doc-ignore-btn-${doc.id}`}
+                            onClick={() => setIgnoredDocs(prev => {
+                              const next = new Set(prev);
+                              if (next.has(doc.id)) next.delete(doc.id);
+                              else next.add(doc.id);
+                              return next;
+                            })}
+                            title={isIgnored
+                              ? 'Restore: include this file in linking'
+                              : 'Ignore: skip this duplicate file'}
+                            style={{
+                              fontSize: 10, padding: '2px 7px', borderRadius: 4, cursor: 'pointer',
+                              border: '1px solid var(--border-1)',
+                              background: isIgnored ? '#0B3D2E22' : '#7c3aed22',
+                              color: isIgnored ? '#0B3D2E' : '#7c3aed',
+                              fontWeight: 600,
+                            }}>
+                            {isIgnored ? '↩ Restore' : '✕ Ignore'}
+                          </button>
+                        )}
+                      </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             )}
@@ -17817,6 +17869,132 @@ function ProformaDraftPanel({ batchId, onToast }) {
           )}
         </div>
       )}
+
+      {/* ── Link more packing files — accessible even when drafts exist ──────
+          Allows operator to link additional client packing files (or re-link
+          with corrected client names) after initial drafts have been created.
+          Renders as a collapsible section at the bottom of the main panel. */}
+      <div data-testid="link-packing-section-main"
+           style={{ borderTop: '1px solid var(--card-border)', padding: '10px 16px' }}>
+        {!showLink ? (
+          <button
+            data-testid="btn-link-packing-as-sales-main"
+            onClick={openLinkPanel}
+            style={{
+              fontSize: 11, padding: '4px 12px', borderRadius: 5,
+              background: 'transparent', color: 'var(--text-3)',
+              border: '1px solid var(--border-1)', cursor: 'pointer',
+            }}>
+            ⟳ Link / re-link packing files as client sales
+          </button>
+        ) : (
+          <div data-testid="link-packing-panel" style={{ paddingTop: 4 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
+              Assign client names to uploaded packing files
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+              Names pre-filled from filenames where possible. Duplicate rows are auto-ignored — restore to include.
+            </div>
+
+            {packDocsLoading && (
+              <div style={{ color: 'var(--text-3)', fontSize: 12 }}>Loading packing documents…</div>
+            )}
+
+            {!packDocsLoading && !packDocs.length && (
+              <div data-testid="link-packing-no-docs-main"
+                   style={{ color: 'var(--text-3)', fontSize: 12 }}>
+                No purchase packing files found for this batch.
+              </div>
+            )}
+
+            {!packDocsLoading && packDocs.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border-1)', color: 'var(--text-3)' }}>
+                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Invoice / File</th>
+                    <th style={{ textAlign: 'right', padding: '4px 8px' }}>Lines</th>
+                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Client name</th>
+                    <th style={{ textAlign: 'left', padding: '4px 8px' }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {packDocs.map(doc => {
+                    const isIgnored = ignoredDocs.has(doc.id);
+                    return (
+                    <tr key={doc.id}
+                        data-testid={isIgnored ? `link-packing-doc-ignored-main-${doc.id}` : undefined}
+                        style={{ borderBottom: '1px solid var(--border-0)',
+                                 opacity: isIgnored ? 0.38 : 1, transition: 'opacity 0.15s' }}>
+                      <td style={{ padding: '4px 8px' }}>
+                        {doc.is_duplicate && (
+                          <span style={{ fontSize: 9, fontWeight: 700,
+                                         background: '#7c3aed22', color: '#7c3aed',
+                                         borderRadius: 3, padding: '1px 4px',
+                                         marginRight: 4, verticalAlign: 'middle' }}>DUP</span>
+                        )}
+                        <span>{doc.invoice_no || '—'}</span>
+                        <div style={{ color: 'var(--text-3)', fontSize: 10, maxWidth: 200,
+                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {doc.source_file_path ? doc.source_file_path.split(/[/\\]/).pop() : ''}
+                        </div>
+                      </td>
+                      <td style={{ padding: '4px 8px', color: 'var(--text-3)', textAlign: 'right' }}>
+                        {doc.line_count != null ? doc.line_count : '—'}
+                      </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        <input type="text" placeholder="Client name"
+                          value={clientNames[doc.id] || ''}
+                          onChange={e => setClientNames(prev => ({ ...prev, [doc.id]: e.target.value }))}
+                          disabled={isIgnored}
+                          style={{ fontSize: 12, padding: '3px 8px', borderRadius: 4, width: 180,
+                                   border: '1px solid var(--border-1)', background: 'var(--bg-1)',
+                                   color: 'var(--text-1)' }} />
+                      </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        {doc.is_duplicate && (
+                          <button
+                            onClick={() => setIgnoredDocs(prev => {
+                              const next = new Set(prev);
+                              if (next.has(doc.id)) next.delete(doc.id); else next.add(doc.id);
+                              return next;
+                            })}
+                            style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, cursor: 'pointer',
+                                     border: '1px solid var(--border-1)',
+                                     background: isIgnored ? '#0B3D2E22' : '#7c3aed22',
+                                     color: isIgnored ? '#0B3D2E' : '#7c3aed', fontWeight: 600 }}>
+                            {isIgnored ? '↩ Restore' : '✕ Ignore'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                data-testid="btn-link-packing-submit-main"
+                onClick={submitLinkAsSales}
+                disabled={linkBusy || packDocsLoading || !packDocs.length}
+                style={{ fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                         background: linkBusy ? '#555' : '#0B3D2E', color: '#fff',
+                         border: 'none', cursor: linkBusy ? 'default' : 'pointer' }}>
+                {linkBusy ? 'Linking…' : '✓ Link & Create Drafts'}
+              </button>
+              <button
+                data-testid="btn-link-packing-cancel-main"
+                onClick={() => setShowLink(false)}
+                style={{ fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                         background: 'transparent', color: 'var(--text-2)',
+                         border: '1px solid var(--border-1)', cursor: 'pointer' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </Card>
   );
 }

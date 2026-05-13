@@ -130,10 +130,13 @@ def init_packing_db(db_path: Path) -> None:
         #            Distinguishes two same-design rows from one source list.
         # unit_price / total_value — captured for inventory/value verification.
         # scan_code — pre-computed barcode identity for O(1) warehouse lookup.
-        _add_column_if_missing(con, "packing_lines", "pack_sr",     "REAL DEFAULT NULL")
-        _add_column_if_missing(con, "packing_lines", "unit_price",  "REAL NOT NULL DEFAULT 0.0")
-        _add_column_if_missing(con, "packing_lines", "total_value", "REAL NOT NULL DEFAULT 0.0")
-        _add_column_if_missing(con, "packing_lines", "scan_code",   "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines",     "pack_sr",          "REAL DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines",     "unit_price",       "REAL NOT NULL DEFAULT 0.0")
+        _add_column_if_missing(con, "packing_lines",     "total_value",      "REAL NOT NULL DEFAULT 0.0")
+        _add_column_if_missing(con, "packing_lines",     "scan_code",        "TEXT DEFAULT NULL")
+        # source_file_hash — added to packing_documents after initial schema;
+        # guard ensures existing DBs pick it up without a manual migration.
+        _add_column_if_missing(con, "packing_documents", "source_file_hash", "TEXT NOT NULL DEFAULT ''")
 
         # Index for O(1) warehouse scan lookups (added lazily so existing DBs pick it up)
         con.execute(
@@ -408,6 +411,27 @@ def upsert_packing_lines(
                 )
                 inserted += 1
     return inserted
+
+
+def get_line_counts_for_batch(batch_id: str) -> Dict[str, int]:
+    """
+    Return ``{packing_document_id: line_count}`` for all documents in *batch_id*.
+
+    Documents with no lines are absent from the result — callers should use
+    ``.get(doc_id, 0)``.  Used by the packing-documents endpoint to surface
+    real extracted-line counts so operators can identify which document in a
+    duplicate group has actual data.
+    """
+    if _db_path is None:
+        return {}
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT packing_document_id, COUNT(*) AS cnt "
+            "FROM packing_lines WHERE batch_id=? "
+            "GROUP BY packing_document_id",
+            (batch_id,),
+        ).fetchall()
+    return {r[0]: r[1] for r in rows}
 
 
 def get_packing_lines_for_batch(batch_id: str) -> List[Dict[str, Any]]:

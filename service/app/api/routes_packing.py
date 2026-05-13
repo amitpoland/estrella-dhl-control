@@ -513,21 +513,72 @@ def _guess_client_from_filename(filename: str) -> str:
 @router.get("/{batch_id}/packing-documents", dependencies=[_auth])
 def get_packing_documents(batch_id: str) -> Dict[str, Any]:
     """
-    Return the list of packing_documents rows for a batch, each annotated with
-    ``suggested_client_name`` parsed from the filename (if the name follows the
-    ``{N} Client {name}`` pattern).
+    Return packing_documents rows for a batch, each annotated with:
 
-    Used by the dashboard "Link packing files" flow to pre-fill client names
-    before calling ``POST /{batch_id}/link-as-sales``.
+    ``suggested_client_name``
+        Client name parsed from the filename (``{N} Client {name}`` pattern).
+        Empty string when the pattern does not match.
+
+    ``line_count``
+        Actual number of packing_lines rows linked to this document.
+        Ghost rows from pre-dedup re-uploads will show 0.
+
+    ``is_duplicate``
+        True when another document in this batch has the same source_file_hash
+        and this document is NOT the canonical one (i.e. it was created by a
+        re-upload before hash-dedup was in place).
+
+    ``canonical_id``
+        The id of the preferred document in a duplicate hash group — the one
+        with the highest line_count (ties broken by oldest created_at).
+        None for non-duplicate documents.
+
+    Used by the dashboard "Link packing files" flow so the operator can see
+    which documents are real vs. ghost, edit client names, ignore duplicates,
+    and then call ``POST /{batch_id}/link-as-sales``.
     """
+    from collections import defaultdict as _dd
+
     _validate_batch(batch_id)
     docs = pdb.get_packing_documents_for_batch(batch_id)
+
+    # ── Annotate each doc with suggested client name and real line count ──────
+    line_counts = pdb.get_line_counts_for_batch(batch_id)
     for d in docs:
         raw_name = Path(d.get("source_file_path", "")).name
         d["suggested_client_name"] = _guess_client_from_filename(raw_name)
+        d["line_count"] = line_counts.get(d["id"], 0)
+
+    # ── Detect duplicates: group by non-empty source_file_hash ───────────────
+    # Ghost rows share the same hash but were created before the hash-dedup
+    # guard was in place.  Canonical = most lines; ties → oldest created_at.
+    hash_groups: Dict[str, List[Dict[str, Any]]] = _dd(list)
+    for d in docs:
+        h = d.get("source_file_hash", "")
+        if h:
+            hash_groups[h].append(d)
+
+    for group in hash_groups.values():
+        if len(group) == 1:
+            group[0]["is_duplicate"] = False
+            group[0]["canonical_id"] = None
+        else:
+            # Sort: highest line_count first, then oldest created_at first
+            sorted_grp = sorted(group, key=lambda x: (-x["line_count"], x["created_at"]))
+            canonical_id = sorted_grp[0]["id"]
+            for d in group:
+                d["is_duplicate"] = (d["id"] != canonical_id)
+                d["canonical_id"] = canonical_id
+
+    # Docs with empty hash (very old rows with no hash) — never marked duplicate
+    for d in docs:
+        if "is_duplicate" not in d:
+            d["is_duplicate"] = False
+            d["canonical_id"] = None
+
     return {
-        "batch_id": batch_id,
-        "count":    len(docs),
+        "batch_id":  batch_id,
+        "count":     len(docs),
         "documents": docs,
     }
 
@@ -585,11 +636,30 @@ def link_packing_as_sales(
         # Load existing purchase packing lines for this document
         packing_lines = pdb.get_packing_lines_for_document(pdoc_id)
         if not packing_lines:
+            # Check if this might be a ghost duplicate doc with 0 lines.
+            # Ghost docs share a hash with a canonical doc that has the real lines.
+            # Tell the operator which doc to use instead.
+            ghost_hint = ""
+            pdoc_row = pdb.get_packing_document(pdoc_id)
+            if pdoc_row:
+                h = pdoc_row.get("source_file_hash", "")
+                if h:
+                    all_docs = pdb.get_packing_documents_for_batch(batch_id)
+                    counts   = pdb.get_line_counts_for_batch(batch_id)
+                    siblings = [d for d in all_docs
+                                if d.get("source_file_hash") == h and d["id"] != pdoc_id]
+                    canonical = next((d for d in siblings if counts.get(d["id"], 0) > 0), None)
+                    if canonical:
+                        ghost_hint = (
+                            f" This appears to be a ghost duplicate — "
+                            f"use canonical_id={canonical['id']!r} instead "
+                            f"(has {counts[canonical['id']]} lines)."
+                        )
             results.append({
                 "packing_document_id": pdoc_id,
                 "client_name":         client,
                 "ok":                  False,
-                "reason":              "no packing lines found for document",
+                "reason":              f"no packing lines found for document.{ghost_hint}",
             })
             continue
 
