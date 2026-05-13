@@ -63,15 +63,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Optional
+from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from ..core.config import settings
 from ..core.security import require_api_key
+from ..services.dhl_clearance_coordinator import (
+    ForbiddenFlagCombination,
+    _enforce_flag_combination,
+)
 
 log = logging.getLogger(__name__)
 
@@ -333,6 +338,93 @@ def _coerce_and_validate(flag_name: str, value: Any) -> Any:
     )
 
 
+# ── ADR-018 combined-state validator (resulting state, not POST diff alone) ──
+#
+# ADR-018 §"Runtime enforcement recommendations" b: the admin runtime-flags
+# endpoint POST handler validates the RESULTING state across both dimensions
+# (shadow_mode, live_enabled) for the affected phase, computed from
+# (current_settings ∪ POST_diff). Single-field validation alone is insufficient.
+#
+# Coverage: ALL DHL self-clearance phase pairs — P2, P3, P4, P5. Not just P2
+# merely because P2 is the only currently wired coordinator path.
+#
+# Single source of truth: this module imports `_enforce_flag_combination` from
+# `dhl_clearance_coordinator` and reuses it. Truth-table logic is NOT
+# re-implemented here. Any future ADR-018 amendment to the (False, True)
+# rejection rule lands in one place — the coordinator helper — and propagates
+# automatically to this admin route.
+
+_PHASE_PAIR_RE = re.compile(
+    r"^dhl_selfclearance_(p[2-5])_(shadow_mode|live_enabled)$"
+)
+
+
+def _parse_phase_pair(flag_name: str) -> Optional[Tuple[str, str]]:
+    """If `flag_name` belongs to a phase-pair flag (shadow_mode or live_enabled
+    for any of p2/p3/p4/p5), return (phase, dimension). Else None."""
+    m = _PHASE_PAIR_RE.match(flag_name)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def _enforce_resulting_combined_state(
+    *,
+    flag_name: str,
+    new_value: Any,
+    actor: Optional[str],
+) -> None:
+    """Validate the RESULTING (shadow_mode, live_enabled) state for the
+    affected phase, computed as (current_settings ∪ POST_diff).
+
+    Reuses `_enforce_flag_combination` from the coordinator — single source
+    of truth for ADR-018 Invariant 1.
+
+    No-ops for non-phase-pair flags (e.g. tracker_paused, classifier_min_*).
+    Raises HTTPException(400) with templated error on FORBIDDEN combination.
+    """
+    parsed = _parse_phase_pair(flag_name)
+    if parsed is None:
+        return  # not a phase-pair flag — combined-state rule does not apply
+
+    phase, dimension = parsed
+    shadow_attr = f"dhl_selfclearance_{phase}_shadow_mode"
+    live_attr   = f"dhl_selfclearance_{phase}_live_enabled"
+
+    current_shadow = bool(getattr(settings, shadow_attr, False))
+    current_live   = bool(getattr(settings, live_attr,   False))
+
+    if dimension == "shadow_mode":
+        resulting_shadow = bool(new_value)
+        resulting_live   = current_live
+    else:  # live_enabled
+        resulting_shadow = current_shadow
+        resulting_live   = bool(new_value)
+
+    try:
+        _enforce_flag_combination(phase, resulting_shadow, resulting_live)
+    except ForbiddenFlagCombination:
+        # Never leak the raw exception message — template it. Per Lesson A
+        # backend-safety follow-up: use exception class context, not str(exc).
+        raise _error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Resulting state for phase {phase!r} would be FORBIDDEN: "
+                f"shadow_mode={resulting_shadow}, live_enabled={resulting_live}."
+            ),
+            error_code="FORBIDDEN_FLAG_COMBINATION",
+            field="value",
+            hint=(
+                f"ADR-018 Invariant 1: live_enabled=True requires "
+                f"shadow_mode=True. Current state for {phase}: "
+                f"shadow_mode={current_shadow}, live_enabled={current_live}. "
+                f"Set {shadow_attr}=true before enabling live."
+            ),
+            flag_name=flag_name,
+            actor=actor,
+        )
+
+
 # ── Request shape ────────────────────────────────────────────────────────────
 
 class FlagFlipBody(BaseModel):
@@ -379,6 +471,17 @@ def post_self_clearance_flag(body: FlagFlipBody = Body(...)) -> Dict[str, Any]:
         )
 
     new_value = _coerce_and_validate(flag_name, body.value)
+
+    # ADR-018 combined-state gate — validate RESULTING (shadow_mode,
+    # live_enabled) state across both dimensions for any P2/P3/P4/P5 phase
+    # pair flag, computed from (current_settings ∪ POST_diff). Single-field
+    # validation alone is insufficient. No-op for non-phase-pair flags.
+    _enforce_resulting_combined_state(
+        flag_name=flag_name,
+        new_value=new_value,
+        actor=actor,
+    )
+
     old_value = getattr(settings, flag_name, None)
 
     # In-memory restartless reload — every consumer of settings sees the
