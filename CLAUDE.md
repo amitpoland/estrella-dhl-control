@@ -318,6 +318,46 @@ this PR's first dispatch (campaign
 meta-agents are dispatchable in the current session, closing the
 prior VALIDATION-FAILED signal.
 
+### Lesson C — Observer scorecard writes must be orchestrator-verified post-write (2026-05-13)
+
+**Origin**: PR #50 silent-loss anomaly; observation-layer audit closure
+task. `agent-performance-observer` reported `SCORECARD WRITTEN: <path>`
+but the file never reached disk. Confirmed recurrence in the audit-
+closure run itself (intermittent silent loss).
+
+**Binding rule**:
+1. Orchestrator MUST verify the scorecard file exists on disk after
+   the observer agent returns (`ls` or `Read` of expected path) BEFORE
+   composing final report or dispatching downstream consumers.
+2. If the file is missing, treat the dispatch as FAILED — re-fire OR
+   escalate. Do not silently rely on the observer's self-reported
+   success.
+3. Meta-agent prompts SHOULD use absolute paths derived from the
+   orchestrator's repo root, not relative paths that depend on agent
+   runtime cwd.
+4. Meta-agent prompts SHOULD include a post-write Read self-verification
+   step. Agent reports `SCORECARD WRITTEN AND VERIFIED: <path>` only
+   after both succeed.
+5. `flow-context-keeper` MUST validate every scorecard cited in
+   PROJECT_STATE.md FACTS exists on disk before the keeper run
+   completes. Citing a non-existent file is a RULE 6 violation.
+
+**Where it binds**: every dispatch of `agent-performance-observer`
+(RULE 2 auto-fire OR `/observe`); every dispatch of
+`flow-context-keeper` that cites scorecards (RULE 3 auto-fire OR
+`/update-state`); every meta-agent that produces file artefacts;
+every code review of new meta-agent definitions.
+
+**Reference**: `.claude/memory/engineering_lessons.md` Lesson C;
+retroactive scorecard
+`.claude/memory/scorecards/2026-05-13-w5-pd-admin-runtime-flags-validator-RETROACTIVE.md`;
+gap-hunter root-cause hunt verdict
+(ROOT-CAUSE-INCONCLUSIVE / SYSTEMIC-ISSUE-DETECTED, MEDIUM).
+Future hardening proposal: amend
+`.claude/agents/agent-performance-observer.md` to require absolute
+Write target + post-Write Read self-verification (tracked as OPEN
+QUESTION in PROJECT_STATE.md, decision pending operator).
+
 ---
 
 ## Available integration

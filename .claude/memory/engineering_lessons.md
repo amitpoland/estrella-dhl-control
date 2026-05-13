@@ -105,3 +105,54 @@ In the next session (this one), both agents were dispatchable from the start bec
 - Recommend operator restart Claude Code session and re-run the validation task in fresh state
 
 **Reference**: PR #41 post-merge validation task surfaced this; PR #46 confirmed (in a different session) that the agents work fine after fresh load. This validation task (PR for `chore/observation-layer-verification-and-lessons`) confirms the agents are dispatchable in the current session, closing the prior VALIDATION-FAILED signal.
+
+---
+
+## Lesson C — Observer scorecard writes must be orchestrator-verified post-write (2026-05-13)
+
+**Origin**: Observation-layer audit closure task following the validator-hardening 3-PR sequence. After PR #50 (`chore/admin-runtime-flags-combined-state-validator`) merged at commit `8cd7188`, `agent-performance-observer` was dispatched per RULE 2 auto-fire and reported `SCORECARD WRITTEN: <path>`. Filesystem-wide search across all worktrees + git history + reflog + fsck-lost-found revealed the file NEVER reached disk anywhere. The `2026-05-13-w5-pd-admin-runtime-flags-validator.md` scorecard had to be reconstructed retroactively in this audit-closure cycle.
+
+The same failure mode recurred in the audit-closure run itself: `final-consistency-review` initially reported NOT-READY HIGH because the two new scorecards (RETROACTIVE PR #50 + audit-closure) were absent from disk at its read time — even though `agent-performance-observer` had reported `SCORECARD WRITTEN`. Direct disk inspection 30 seconds later confirmed both files DID land. This is intermittent silent-loss, not deterministic failure.
+
+**Root cause** (per gap-hunter F1+F5 root-cause hunt, MEDIUM severity, ROOT-CAUSE-INCONCLUSIVE but SYSTEMIC-ISSUE-DETECTED):
+
+Two structural gaps combine to produce silent loss:
+1. The `agent-performance-observer.md` prompt instructs the agent to print `SCORECARD WRITTEN: <path>` based on its own internal tool-call success state. There is NO post-write read-back self-verification step.
+2. The agent's prompt uses a relative-path target (`.claude/memory/scorecards/<YYYY-MM-DD>-<campaign-slug>.md`). If the agent's runtime cwd at dispatch time differs from the orchestrator's worktree root (e.g., a sandbox dir), a relative-path Write resolves elsewhere and lands invisibly.
+
+The file usually lands correctly. The intermittent failure pattern means there's no signal until a downstream consumer (`flow-context-keeper`, `final-consistency-review`, or a future operator) tries to cite the path and finds nothing.
+
+**Binding rule** (apply to every observer auto-fire and to every meta-agent that produces a file artefact):
+
+1. **Orchestrator MUST verify the scorecard file exists on disk after the observer agent returns.** A simple `ls .claude/memory/scorecards/<expected-filename>` (or `Read` of the path) is sufficient. The verification runs BEFORE composing the final report or dispatching downstream agents that depend on the scorecard.
+
+2. **If the file is missing, treat the observer dispatch as FAILED — re-fire OR escalate.** Do not proceed with downstream work that assumes the file exists. Do not silently rely on the observer's self-reported success.
+
+3. **Meta-agent prompts SHOULD use absolute paths derived from the orchestrator's repo root**, not relative paths that depend on agent runtime cwd. The orchestrator should pass the absolute target path into the agent prompt rather than letting the agent compute it.
+
+4. **Meta-agent prompts SHOULD include a post-write self-verification step**: after Write, the agent does Read on the same path and confirms the file content matches what it intended to write. The agent reports `SCORECARD WRITTEN AND VERIFIED: <path>` only after both succeed.
+
+5. **flow-context-keeper MUST validate every scorecard cited in PROJECT_STATE.md FACTS exists on disk** before the keeper run completes. Citing a non-existent file is a RULE 6 violation (the cited scorecard is invisible to future operators); the keeper should either (a) confirm the file exists, (b) re-fire the observer, or (c) record the citation as `PENDING` rather than as a confirmed FACT.
+
+**Where the rule binds**:
+- Every dispatch of `agent-performance-observer` (RULE 2 auto-fire OR manual `/observe`)
+- Every dispatch of `flow-context-keeper` that cites scorecards (RULE 3 auto-fire OR manual `/update-state`)
+- Every meta-agent that produces file artefacts (current: 2; future: pattern-historian, agent-prompt-refiner)
+- Code review of any new meta-agent definition added to `.claude/agents/`
+- The orchestrator's standard post-merge auto-fire workflow
+
+**Detection signals**:
+- An observer dispatch returns `SCORECARD WRITTEN: <path>` but `ls <path>` returns no such file
+- A keeper run cites a scorecard in PROJECT_STATE.md FACTS that doesn't exist on disk
+- A `final-consistency-review` reports RULE 6 violations because cited scorecards are missing
+- A future operator (or task) cannot find a scorecard the citation chain promises
+
+**Workaround for current session if Lesson C fires**:
+- Re-dispatch the observer with an absolute-path target
+- If re-dispatch also fails: produce the scorecard manually based on the campaign's known agent verdicts (use the RETROACTIVE convention with `-RETROACTIVE` suffix and explicit header note)
+- Update PROJECT_STATE.md to record the recovery + add an OPEN QUESTION about whether the agent prompt needs hardening
+- File a GATE 4 ISSUE (label `agent-tuning`) against `agent-performance-observer.md`
+
+**Reference**: PR #50 silent-loss anomaly (2026-05-13); audit-closure task that produced the retroactive scorecard at `.claude/memory/scorecards/2026-05-13-w5-pd-admin-runtime-flags-validator-RETROACTIVE.md`; gap-hunter root-cause hunt (`ROOT-CAUSE-INCONCLUSIVE / SYSTEMIC-ISSUE-DETECTED, MEDIUM`); audit-closure scorecard at `.claude/memory/scorecards/2026-05-13-observation-audit-closure.md`. The intermittent recurrence in the audit-closure run itself (where `final-consistency-review` reported missing files that landed seconds later) is the second confirmed instance.
+
+**Future hardening proposal** (not binding in this lesson; tracked as OPEN QUESTION in PROJECT_STATE.md): amend `agent-performance-observer.md` to (a) require absolute Write target derived from a `${ORCHESTRATOR_REPO_ROOT}` placeholder the orchestrator interpolates at dispatch time, and (b) require post-Write Read self-verification before printing `SCORECARD WRITTEN`. Same hardening applies to `flow-context-keeper.md` for PROJECT_STATE.md writes.
