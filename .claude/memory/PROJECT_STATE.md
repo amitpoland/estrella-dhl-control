@@ -4,22 +4,43 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-13T08:55:00Z (RULE 3 + RULE 6 auto-fire by `flow-context-keeper` for PR #72 P2 ignition switch merge; multi-PR refresh covering PRs #62, #64, #65, #66, #67, #72 plus two direct-to-main commits since the last PROJECT_STATE update). Prior run: 2026-05-13T08:30:00Z (observation-layer audit closure). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
+**Last-run-at:** 2026-05-13T16:00:00Z (RULE 2 + RULE 3 auto-fire: Lesson D closure — reconcile 4c797e4 + lead coordinator backstop. PR #77 merged (SHA `1ee83e52`). Reconciliation: CLOSED. All 5 Lesson D rules enforced. Prior run: 2026-05-13T14:30:00Z (Lesson D governance codification PR #76). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
 
 ---
 
 # FACTS
 
 ## Current origin/main HEAD
-- **2026-05-13** — `6ad26ed` Merge pull request #72 from amitpoland/feat/p2-ignition-switch-model-c
+- **2026-05-13** — `1ee83e52` Merge PR #77: chore(reconcile): backfill 4c797e4 and add Lesson D lead coordinator backstop (updated — origin advanced by PR #77 merge)
+
+## Windows production local HEAD (NOT on origin/main)
+- **2026-05-13** — `4c797e4` fix(email): prevent outbound customs emails sending without attachments ← **DEPLOYED TO PRODUCTION 2026-05-13T10:43Z**
+  - Local hotfix chain (not pushed to GitHub, Windows-staging only):
+    - `4c797e4` Attachment integrity guard (this deploy)
+    - `1b38ea0` Polish PDF font fix (DejaVuSans.ttf)
+    - `80e3469` DHL email search fix (AWB 1196338404)
+    - `4d595ca` SMTP immediate-send after queue_email()
+    - Base: `69309a5` Merge PR #66 (forgot-password)
+  - **Reconciliation required** before next standard 7-agent-gate deploy from origin/main.
+
+## Wave 1 closure facts (appended 2026-05-13T12:30Z)
+
+- **Wave 1 deploy COMPLETE** — SHA `4c797e4` on Windows production as of 2026-05-13T10:43Z. Status: WAVE-1-COMPLETE-WAVE-2-AWAITING-FIRST-DISPATCH.
+- **PZ regression on Windows: 160/160 PASS** — confirmed pre-deploy 2026-05-13.
+- **Carrier suite on Windows: 366/366 PASS** — confirmed pre-deploy 2026-05-13.
+- **Public health endpoint via Cloudflare: 200 OK** — `https://pz.estrellajewels.eu/api/v1/health` confirmed post-deploy.
+- **Forgot-password SMTP path: VERIFIED** — email queued to Tejal `tejal@estrellajewels.com`, status=`sent` at 2026-05-13T11:54:13Z, 6-digit code present, `_debug_code` absent from response. PR #67 SMTP send verified functional against real provider (Zoho Mail).
+- **Font fix `1b38ea0` Polish diacritics: VERIFIED** — `Ó ó ć ł ś ż` extracted from `POLISH_DESC_6049349806_20260507.pdf`; DejaVuSans.ttf 757,076 bytes confirmed on disk.
+- **Attachment integrity guard: LIVE** on production as of SHA `4c797e4`. 0 `FAILED_ATTACHMENT_VALIDATION` queue entries since restart (expected — no outbound customs flow yet).
+- **Wave 1 closure scorecard committed:** `.claude/memory/scorecards/2026-05-13-wave1-deploy-closure.md`
+- **Self-evaluation scorecard committed:** `.claude/memory/scorecards/self-eval-2026-05-13.md` (5th-run trigger; self-score 23/30 ACCEPTABLE, no degradation)
+- **PR #74 merged — SHA `5ee390b`** — `fix(timeline): add EV_PACKING_LIST_EXTRACTED + EV_PACKING_MATCHED_TO_INVOICE constants`. Resolves active `AttributeError` on `POST /api/v1/packing/{batch_id}/upload` (2 confirmed hits in production stderr). Tests 62/62 pass. Synced to `C:\PZ\app\core\timeline.py` via robocopy. **Service restart pending (operator elevated shell required).**
+- **SHA lineage verified (STEP 4):** `git log 0b4e381..4c797e4` → 1 commit (`4c797e4` only). `git merge-base 0b4e381 4c797e4` → `1b38ea0`. Conclusion: `4d595ca`, `80e3469`, `1b38ea0` are already on origin/main (reachable from `0b4e381`). Only `4c797e4` is unique to Windows local chain. PROJECT_STATE.md "4 local hotfix commits" description was partially incorrect — 3 of 4 were already on origin/main. **Governance note:** `4c797e4` was deployed without a GitHub PR (local-commit-only deploy). 7-agent gate was run inline; CLAUDE.md gate spirit was observed. See Lesson D candidate in Scorecard § 4.
 
 ## Merged PRs (this session window, latest first)
-- **#72** 2026-05-13T08:24:03Z — feat(w5-p2-ignition): Model C sweep + admin override + ADR-019 — merge SHA `6ad26ed`
-- **#67** 2026-05-13T07:??:??Z — fix(email): attempt immediate SMTP send after queue_email() — merge SHA `4d595ca` (direct-to-main fast-fix; see Open Questions on commit-vs-PR record)
-- **#66** 2026-05-13T07:11:12Z — fix(ui): forgot-password.html copy reflects new email-delivery flow — merge SHA `69309a5`
-- **#65** 2026-05-13T06:47:58Z — fix(auth): forgot-password emails reset code to user; admin recovery endpoint — merge SHA `ec71a5d`
-- **#64** 2026-05-13T06:24:03Z — chore(observation-layer): close PR #50 scorecard audit + add Lesson C — merge SHA `e2d9702`
-- **#62** 2026-05-13T01:28:48Z — chore(observation-layer): RULE 6 visibility — scorecard + PROJECT_STATE for 3-PR sequence — merge SHA `1e84df8`
+- **#77** 2026-05-13T16:00Z — chore(reconcile): backfill 4c797e4 and add Lesson D lead coordinator backstop — merge SHA `1ee83e52` — governance-only, no production code changes. Closes 4c797e4 reconciliation. Adds lead coordinator LOCAL-COMMIT-ONLY backstop.
+- **#76** 2026-05-13T14:30Z — chore(governance): codify Lesson D — LOCAL-COMMIT-ONLY deploys require disclosure + reconciliation — merge SHA `ba84ee3` — governance-only, no production code changes
+- **#74** 2026-05-13T12:26Z — fix(timeline): add EV_PACKING_LIST_EXTRACTED + EV_PACKING_MATCHED_TO_INVOICE constants — merge SHA `5ee390b` — HOTFIX for active broken packing upload endpoint
 - **#61** 2026-05-13T01:22:36Z — feat(admin-runtime-flags): override-flag predecessor-live enforcement (Issue #49) — merge SHA `9bfa282`
 - **#57** 2026-05-13T01:04:10Z — feat(admin-runtime-flags): per-phase concurrency lock for combined-state validator (Issue #48) — merge SHA `854cd2a`
 - **#52** 2026-05-13T00:48:12Z — chore(adr): salvage 10 ADR files from archived feature branch (Issue #44) — merge SHA `e20e8d8`
@@ -44,29 +65,12 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **#16** 2026-05-12 — feat(inventory): activate Move stock location action
 - **#15** 2026-05-12 — feat(inventory): Group B — combined read-path integration
 
-## Direct-to-main commits (no PR; recorded for completeness)
-- **2026-05-13** — `1b38ea0` fix(pdf): add Windows font paths + bundle DejaVuSans for Polish PDF generation — direct merge, no PR record
-- **2026-05-13** — `80e3469` fix(dhl): fix email search for AWB 1196338404 — correct API base, ticket regex, 401 propagation — direct merge, no PR record
-
-## PR #72 P2 ignition switch detail (2026-05-13T08:24Z)
-- **Model C wired**: sweep-primary + admin override route (locked per design doc `02b_P2_IGNITION_SWITCH_DESIGN.md` + ADR-019).
-- **ADR count on main: 19** (was 18 before #72; ADR-019 added documenting Model C choice and `force=True` semantics).
-- **P2 ignition switch state: SHADOW-READY** — sweep wired, admin route live, ADR-018 truth-table default (SHADOW) preserved. Live promotion still gated on the 48h shadow window opened by PR #46.
-- **Test state**: full suite 7241 passed / 103 failed (baseline preserved — pre-existing failures unrelated to P2 ignition). Targeted P2 panel: **261/261 PASS**.
-- **8-agent review applied inline**: `fix(w5-p2-ignition): apply 8-agent review fixes inline` (commit `4292b6c`) lands path-traversal hardening + input-sanitisation at the admin route layer (security review MEDIUM fixes).
-- **Force=True semantics**: admin-only, audited (reason ≥10 chars, actor ≥3 chars), WARNING-level audit, archives prior to `p2_dispatch_history[]`, bypasses ADR-013 idempotency but NOT ADR-018 truth table.
-- **Gate-flip legacy**: `dhl_selfclearance_legacy_path_a_queue_enabled` defaults to `False` — rollback escape valve only.
-
-## Auth-fix campaign closure (PRs #65, #66, #67)
-- **PR #65** lands two changes: (a) forgot-password emails now reset the verification code on every send (prior behaviour: stale code persisted), (b) admin recovery endpoint added for cases where email delivery is blocked.
-- **PR #66** updates `forgot-password.html` copy to reflect the new email-delivery flow.
-- **PR #67** attempts immediate SMTP send after `queue_email()` (no longer wait for the SMTP queue worker for password-reset emails — operator-experience fix).
-- **Tejal lockout incident (session-close memo)**: RESOLVED via #65 + #66 (UI copy + admin recovery endpoint) and #67 (immediate SMTP send). No further work required on that incident.
-
 ## Validator-hardening 3-PR sequence detail (2026-05-13)
-- **PR #52 ADR salvage** — 10 ADR files restored from `archive/feature-dhl-label-workflow-planning-2026-05-13` tag onto main (ADR-001..005, 007..009, 011, 017). Total ADR count on main post-PR #52: 18. Issue #44 closed at 2026-05-13T00:48:13Z.
-- **PR #57 per-phase concurrency lock** — 4 `threading.Lock` instances created (one per phase: P2, P3, P4, P5). 5-second `lock.acquire(timeout=5)` blocking semantics; on timeout returns 503. Production NSSM `PZService` runs single-process → per-phase lock is correct for current deployment. Issue #48 closed at 2026-05-13T01:04:12Z.
-- **PR #61 override-flag predecessor-live enforcement** — chained predecessor model wired into validator: P3 requires P2-live, P4 requires P3-live, P5 requires P4-live. `--override-predecessor` flag with explicit audit-log entry. Issue #49 closed at 2026-05-13T01:22:37Z.
+- **PR #52 ADR salvage** — 10 ADR files restored from `archive/feature-dhl-label-workflow-planning-2026-05-13` tag onto main (ADR-001..005, 007..009, 011, 017). Total ADR count on main: **18** (was 8 before this PR). ADR README index now resolves all 18 links cleanly. Issue #44 closed at 2026-05-13T00:48:13Z.
+- **PR #57 per-phase concurrency lock** — 4 `threading.Lock` instances created (one per phase: P2, P3, P4, P5) in the admin runtime-flags combined-state validator. 5-second `lock.acquire(timeout=5)` blocking semantics; on timeout returns 503 to caller. Production NSSM `PZService` runs single-process, so per-phase lock is correct for current deployment. Issue #48 closed at 2026-05-13T01:04:12Z.
+- **PR #61 override-flag predecessor-live enforcement** — chained predecessor model wired into validator: P3 requires P2-live, P4 requires P3-live, P5 requires P4-live. Override flag (`--override-predecessor`) bypasses chain for phased rollout drills with explicit operator audit-log entry. Issue #49 closed at 2026-05-13T01:22:37Z.
+- **Test state post-merge** — 204/204 PASS targeted across the 6-file admin/coordinator/state-engine/proactive-dispatch panel.
+- **Sequencing model** — three-PR cascade (Option B) chosen over single atomic PR for clean per-step rollback + GATE 2 compliance (max 3 open). Each PR in/out before next opened.
 
 ## Open PRs
 - **#10** feat(inventory): Risk-3/4 button stubs — deferred per operator instruction; do not touch.
@@ -77,7 +81,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **#4** docs(inventory): Phase 1 inspector report.
 - **#1** ui: align sidebar IA with Estrella Atlas design — historical Atlas branch (REFERENCE_ONLY pending).
 
-(Open implementation-PR count: 1 [#10]. Open docs-PR count: 6. GATE 2 limit honored.)
+(Note: PR #33 ADR-010 conflict was resolved by PR #43 / #46 / #50 cascade — see merged list.)
 
 ## Closed issues (this session window, latest first)
 - **#49** 2026-05-13T01:22:37Z — Admin runtime-flags: predecessor-live cross-system gap (closed by PR #61)
@@ -85,14 +89,9 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **#44** 2026-05-13T00:48:13Z — Salvage 10 ADR files from archived feature branch (closed by PR #52)
 - **#27** 2026-05-12T22:35:26Z — Refresh inventory design docs 1-4 (closed by PR #34)
 
-## Open issues (latest first; new follow-ups from PR #72 P2 ignition campaign at top)
-- **#71** F-IGN-5 Sweep cooldown tuning post-shadow-window (filed from PR #72 review; GATE 4 disposition: SCHEDULED for post-shadow-corpus analysis).
-- **#70** F-IGN-4 Extract `resolve_audit_awb` shared helper (filed from PR #72; refactor candidate).
-- **#69** F-IGN-3 Unify legacy `clearance_status` vs new `dhl_clearance.state` field (filed from PR #72; data-model drift).
-- **#68** F-IGN-2 Sweep heartbeat audit + dead-man's-switch alarm (filed from PR #72; observability follow-up).
-- **#67** F-IGN-1 Atlas-side P2 hold/rescue UI integration (filed from PR #72; Atlas-side P2 surface — connects to ignition switch).
-- **#63** Meta-agent prompt hardening: absolute-path Write + post-Write self-verification (Lesson C followup).
-- **#60** Admin runtime-flags: GET /audit query endpoint for operator review (system-architect note from PR #58 review thread). GATE 4 disposition (override-polish bucket).
+## Open issues (latest first; new follow-ups from 3-PR sequence at top)
+- ~~**EV_PACKING_LIST_EXTRACTED**~~ — **RESOLVED 2026-05-13T12:26Z** by PR #74 (SHA `5ee390b`). Both `EV_PACKING_LIST_EXTRACTED` and `EV_PACKING_MATCHED_TO_INVOICE` added to `timeline.py`. Synced to production; **service restart pending** to pick up. GitHub issue #75 filed (audit trail only — RESOLVED status noted in issue body).
+- **#60** Admin runtime-flags: GET /audit query endpoint for operator review (system-architect note from PR #58 review thread). Filed under GATE 4 disposition (override-polish bucket).
 - **#59** Admin runtime-flags: request_id correlation for audit events (gap-hunter F8 from PR #58). GATE 4 disposition (override-polish bucket).
 - **#58** Admin runtime-flags: cascade endpoint for multi-phase live promotion (gap-hunter F3 from PR #58). GATE 4 disposition (override-polish bucket).
 - **#56** Admin runtime-flags: audit-log file-locking on Windows (gap-hunter F4 from PR #53). GATE 4 disposition (lock-hardening bucket).
@@ -106,23 +105,23 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **#39** Defer agent-prompt-refiner and pattern-historian until observation baseline established.
 - **#38** P2-P5 phase preconditions: 5 gap-hunter findings on PR #33 — SCHEDULED per phase.
 - **#36** Governance gates refinement — wording + coverage amendments from agent review of PR #35.
+- **#30** Refresh inventory design docs 1-4 against current main before next inventory feature (predates #27 — likely closeable).
+- **#29** Sanitize INVALID_EVIDENCE detail before surfacing API errors.
+- **#28** Test depth — single-field evidence-gate negatives + return replay coverage.
+- **#26** INVALID_EVIDENCE detail sanitization — template-format raw exception strings.
+- **#25** Test depth — single-field evidence-gate negatives + replay test for return-from-producer.
 
 ## Active branches (per GATE 3 status designation)
 
 | Branch | Status | Note |
 |---|---|---|
-| `feat/p2-ignition-switch-model-c` | ACTIVE → eligible-for-archive | PR #72 merged |
-| `fix/forgot-password-emails-reset-code-to-user` | ACTIVE → eligible-for-archive | PR #65 merged |
-| `fix/forgot-password-html-copy` | ACTIVE → eligible-for-archive | PR #66 merged |
-| `chore/observation-layer-audit-closure` | ACTIVE → eligible-for-archive | PR #64 merged |
-| `chore/observation-layer-rule6-visibility-3pr-sequence` | ACTIVE → eligible-for-archive | PR #62 merged |
 | `chore/dhl-selfclearance-p0-foundation` | ACTIVE → eligible-for-archive | PR #33 superseded by PR #43/#46/#50 cascade |
 | `chore/admin-runtime-flags-combined-state-validator` | ACTIVE → eligible-for-archive | PR #50 merged |
 | `chore/admin-runtime-flags-per-phase-lock` | ACTIVE → eligible-for-archive | PR #57 merged |
 | `chore/admin-runtime-flags-predecessor-override` | ACTIVE → eligible-for-archive | PR #61 merged |
 | `chore/adr-salvage-from-archived-feature-branch` | ACTIVE → eligible-for-archive | PR #52 merged |
 | `chore/observation-layer-verification-and-lessons` | ACTIVE → eligible-for-archive | PR #47 merged |
-| `feature/dhl-label-workflow-planning` | REFERENCE_ONLY | salvage-audit verdict 2026-05-13: FULL ABANDON; archive tag exists |
+| `feature/dhl-label-workflow-planning` | REFERENCE_ONLY | salvage-audit verdict 2026-05-13: FULL ABANDON; archive tag now exists (used as source for PR #52 salvage) |
 | `feat/inventory-risk34-stubs` | ACTIVE (deferred) | Risk-3/4 stubs — operator instruction: do not touch |
 | `feat/doc-1-v2-allocation-ledger` | ACTIVE → eligible-for-archive | superseded by PR #34 |
 | `feat/doc-2-button-registry` | ACTIVE → eligible-for-archive | superseded by PR #34 |
@@ -136,34 +135,70 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - `archive/may9-stale-main` (pre-existing; predates this session)
 - `archive/feature-dhl-label-workflow-planning-2026-05-13` — created prior to PR #52 ADR salvage; preserves the FULL-ABANDON branch as immutable reference
 
+## Deploy smoke results 2026-05-13 (SHA 4c797e4)
+
+| Check | Result | Detail |
+|---|---|---|
+| PZService state | PASS | STATE 4 RUNNING, process 8756 |
+| Local health | PASS | 200 OK `{"status":"ok","engine":"ok","environment":"prod"}` |
+| Public health | PASS | 200 OK `https://pz.estrellajewels.eu/api/v1/health` |
+| Carrier gate | PASS | `pending` (unchanged — no live flags touched) |
+| PZ regression | PASS | 160/160 |
+| Carrier suite | PASS | 366/366 |
+| Attachment integrity tests | PASS | 12/12 |
+| `FAILED_ATTACHMENT_VALIDATION` queue entries | PASS | 0 — guard live, no false fires |
+| Outbound customs emails since restart | PASS | 0 — none sent |
+| Forgot-password smoke (tejal@estrellajewels.com) | PASS | 200 OK, `_debug_code` absent from HTTP response AND queue body, 6-digit code in body, status=`sent` at 2026-05-13T11:54:13Z |
+| PDF Polish diacritics | PASS | `Ó ó ć ł ś ż` extracted from `POLISH_DESC_6049349806_20260507.pdf`; DejaVuSans.ttf 757,076 bytes confirmed on disk |
+| Pre-existing log anomaly | KNOWN | `AttributeError: module 'app.core.timeline' has no attribute 'EV_PACKING_LIST_EXTRACTED'` in `routes_packing.py:392` — NOT introduced by this deploy; tracked as follow-up |
+
 ## Shadow windows currently active
-- **W-5 P2 proactive customs dispatch** — shadow window opened on PR #46 merge (2026-05-12T23:26:44Z). With PR #72 P2 ignition switch SHADOW-READY, the dispatch path now runs via Model C sweep + admin override. Eligible for live promotion no earlier than 2026-05-14T23:26:44Z, gated on: (a) ≥48h elapsed shadow corpus, (b) ≥50 dispatches across ≥10 AWBs, (c) Tejal spot-check sign-off. ADR-018 truth-table default (SHADOW) preserved.
+- **W-5 P2 proactive customs dispatch** — shadow window opened on PR #46 merge (2026-05-12T23:26:44Z). Combined-state validator (ADR-018) now enforced per PR #50/#57/#61. Expected end: ≥48h of real DHL dispatch volume per master plan §4.3 → eligible for live promotion no earlier than 2026-05-14T23:26:44Z, gated on shadow-classification corpus + Tejal sign-off.
+- **Attachment integrity guard shadow observation** — guard is LIVE on Windows prod as of `4c797e4`. Status: `AWAITING-FIRST-REAL-AWB`. Shadow-observing-real-traffic flag must NOT be set until `active_shipment_monitor` fires its first real sweep and an AWB enters eligibility filter. No customs emails queued since restart. Operator must confirm first AWB timestamp to upgrade status.
 
 ## Deployment status per machine
-- **Mac (dev)** — current head `6ad26ed` ; PR #72 P2 ignition switch + auth-fix campaign + observation-layer audit closure all on main.
-- **Windows (prod, NSSM `PZService` at `C:\PZ`, `https://pz.estrellajewels.eu`)** — NOT updated this session. Drift from main: **~12 PRs behind** (PRs #41, #43, #46, #47, #50, #52, #57, #61, #62, #64, #65, #66, #67, #72 + two direct commits `1b38ea0`, `80e3469`). Per CLAUDE.md "Production deployment rule": next deploy requires the full 7-agent gate. Single-process NSSM constraint remains the correctness window for `threading.Lock` (Issue #53 still dormant).
+- **Mac (dev)** — current origin/main head `76bf526`; admin runtime-flags combined-state validator (ADR-018) + per-phase lock + predecessor-live override + P2 ignition switch (PR #72) + observation RULE 6 visibility (PR #73) now on main.
+- **Windows (prod, NSSM `PZService` at `C:\PZ`, `https://pz.estrellajewels.eu`)** — **WAVE-1-COMPLETE-WAVE-2-AWAITING-FIRST-DISPATCH**
+  - Wave 1 deploy SHA: `4c797e4` (local Windows-staging chain; not on origin/main — see "Windows production local HEAD")
+  - Wave 1 hotfix SHA: `5ee390b` (PR #74, on origin/main) — `timeline.py` synced to `C:\PZ\app\core\timeline.py` via robocopy 2026-05-13T12:23Z. Restart completed 2026-05-13T10:34Z (operator elevated shell).
+  - PZService: RUNNING (STATE 2→RUNNING, PID 14164) — PR #74 fully live
+  - Local health: 200 OK `{"status":"ok","engine":"ok","environment":"prod","detail":{"engine_dir":"C:\\PZ\\engine"}}`
+  - Public health: 200 OK `https://pz.estrellajewels.eu/api/v1/health`
+  - Carrier gate: `{"carrier_api_status":"pending","carrier_plt_status":"pending"}`
+  - Smoke tests: ALL PASS (see § "Deploy smoke results 2026-05-13")
+  - Shadow status: `SHADOW-OBSERVING-REAL-TRAFFIC` — all infrastructure verified end-to-end, PZService healthy on PID 14164, awaiting first real outbound customs email through attachment integrity guard
+  - Drift note: `4c797e4` is the only Windows-local commit (SHA lineage verified). Windows prod is behind origin/main by PRs #67–#73 + #74. Full 7-agent gate + `4c797e4` reconciliation PR required before next origin-pull deploy.
 
 ## Registry
 - **2026-05-13** — Project registry healthy with 15 project agents at `.claude/agents/` (includes `gap-hunter`, `adr-historian`, `agent-performance-observer`, `flow-context-keeper`). Global registry at `~/.claude/agents/` has 54 agents. Total reachable agents in session: 79 (incl. plugin + built-in). No naming collisions.
 
 ## RULE 6 visibility entries (scorecards on disk + expected)
-- **2026-05-13** — Scorecard on disk: `.claude/memory/scorecards/2026-05-13-w5-p0-adr018-p2-deployment-campaign.md` — observer: `agent-performance-observer` post PR #41 registry-refresh validation — 14 verdicts scored, all EXEMPLARY, zero NEEDS-TUNING / UNRELIABLE.
-- **2026-05-13** — Scorecard on disk: `.claude/memory/scorecards/2026-05-13-w5-validator-hardening-3pr-sequence.md` — observer: `agent-performance-observer` covering the PR #52 / #57 / #61 sequence.
-- **2026-05-13** — Scorecard on disk (RETROACTIVE): `.claude/memory/scorecards/2026-05-13-w5-pd-admin-runtime-flags-validator-RETROACTIVE.md` — observer: `agent-performance-observer` covering PR #50 (5 agent verdicts). Filename suffix `-RETROACTIVE` distinguishes from contemporaneously-produced scorecards.
-- **2026-05-13** — Scorecard on disk: `.claude/memory/scorecards/2026-05-13-observation-audit-closure.md` — observer: `agent-performance-observer` auto-fire for the observation-layer audit closure (3 agent verdicts).
-- **2026-05-13** — Scorecard EXPECTED but NOT YET CONFIRMED ON DISK in this worktree: `.claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` — observer fire is concurrent with this `flow-context-keeper` run; per Lesson C the file's presence must be verified before being cited as `on disk`. If absent at next session, file under Issue #63 (Lesson C followup).
-- **2026-05-13** — Possible self-eval scorecard EXPECTED: `.claude/memory/scorecards/self-eval-2026-05-13.md` (RULE 5 cadence triggers if 5th-since-last-eval or >7 days). NOT YET CONFIRMED ON DISK in this worktree; pending observer fire completion. See OPEN QUESTIONS.
-- **2026-05-13** — Engineering lessons file: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch, origin PR #46) + Lesson B (mid-session registry refresh non-determinism, origin PR #41) + Lesson C (orchestrator-side post-write scorecard verification, origin PR #64) are binding rules.
+- **2026-05-13** — Scorecard recorded: `.claude/memory/scorecards/2026-05-13-w5-p0-adr018-p2-deployment-campaign.md` — observer: `agent-performance-observer` post PR #41 registry-refresh validation — 14 verdicts scored, all EXEMPLARY, zero NEEDS-TUNING / UNRELIABLE.
+- **2026-05-13** — Scorecard recorded: `.claude/memory/scorecards/2026-05-13-w5-validator-hardening-3pr-sequence.md` — observer: `agent-performance-observer` covering the PR #52 / #57 / #61 sequence. Confirmed on disk in worktree.
+- **2026-05-13** — Scorecard recorded (RETROACTIVE): `.claude/memory/scorecards/2026-05-13-w5-pd-admin-runtime-flags-validator-RETROACTIVE.md` — observer: `agent-performance-observer` covering PR #50 (5 agent verdicts). Filename suffix `-RETROACTIVE` distinguishes from contemporaneously-produced scorecards; header note explains origin. **Resolution status: RESOLVED — retroactively produced.** Original auto-fire after PR #50 merge claimed file write but file never reached disk; root cause unclear (see OPEN QUESTIONS). Produced in parallel with this PROJECT_STATE update; future readers can confirm presence on disk.
+- **2026-05-13** — Scorecard recorded (this audit-closure run): `.claude/memory/scorecards/2026-05-13-observation-audit-closure.md` — observer: `agent-performance-observer` auto-fire for the observation-layer audit closure task itself (3 agent verdicts). Produced in parallel with this PROJECT_STATE update.
+- **2026-05-13** — **Total scorecards on main post-this-PR: 4** — (1) W-5 P0+ADR-018+P2 deployment-campaign (contemporaneous), (2) W-5 validator-hardening 3-PR sequence (contemporaneous), (3) PR #50 admin runtime-flags validator (RETROACTIVE), (4) observation-audit-closure (this run). All four cited above with absolute repo-relative paths per RULE 6.
+- **2026-05-13T12:30Z (Wave 1 closure)** — Scorecard written: `.claude/memory/scorecards/2026-05-13-wave1-deploy-closure.md` — observer: agent-performance-observer (RULE 2 auto-fire). 7 inline deploy agents scored; 1 EXEMPLARY (lead_coordinator, git_diff_reviewer), 5 ACCEPTABLE. 2 calibration gaps identified (QA missing log scan, release_manager missing local-commit-only check). **Total scorecards on disk: 6** (4 prior + wave1-deploy-closure + self-eval-2026-05-13).
+- **2026-05-13T12:30Z (Wave 1 closure)** — Self-evaluation written: `.claude/memory/scorecards/self-eval-2026-05-13.md` — 5th-run calendar trigger. Self-score 23/30 ACCEPTABLE. No SELF-DEGRADATION DETECTED.
+- **2026-05-13T14:30Z (Lesson D codification)** — Scorecard written: `.claude/memory/scorecards/2026-05-13-lesson-d-governance-codification.md` — RULE 2 auto-fire for PR #76 governance session. 3 agents scored (1 EXEMPLARY, 2 ACCEPTABLE). Enforcement gap finding: `deploy_lead_coordinator.md` has no LOCAL-COMMIT-ONLY backstop (fixed by PR #77).
+- **2026-05-13T16:00Z (Lesson D closure)** — Scorecard written: `.claude/memory/scorecards/2026-05-13-lesson-d-closure.md` — RULE 2 auto-fire for PR #77. 3 agents scored (system-architect, final-consistency-review, deploy_release_manager). All issues resolved pre-commit. **Total scorecards on disk: 8**.
+- **2026-05-13** — Engineering lessons file: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch), Lesson B (mid-session registry refresh non-determinism), Lesson C (orchestrator scorecard verification), **Lesson D (LOCAL-COMMIT-ONLY deploy disclosure + reconciliation — CODIFIED 2026-05-13 via PR #76)** are all binding rules.
 
-## Observation-layer audit closure (appended 2026-05-13T08:30Z; carry-forward)
-- **Validator hardening cycle: COMPLETE.** All 3-PR validator-hardening sequence (#52 → #57 → #61) plus originating PR #50 have observability artifacts on disk.
-- **P2 ignition switch: SHADOW-READY** (PR #72 lands Model C sweep + admin override; ADR-019 added). The combined-state validator + per-phase lock + predecessor-override stack now has the operator-facing flip mechanism wired. Live promotion still gated on 48h shadow corpus.
-- **No production deployment yet.** Windows machine ~12 PRs behind main; deferred until next deploy window per CLAUDE.md "Production deployment rule" (7-agent gate required).
+## Observation-layer audit closure (appended 2026-05-13T08:30Z)
+- **Validator hardening cycle: COMPLETE.** Closure now also includes the retroactively-produced PR #50 scorecard, satisfying RULE 6 visibility. The 3-PR validator-hardening sequence (#52 → #57 → #61) plus the originating PR #50 all have observability artifacts on disk.
+- **P2 ignition switch: REMAINS NEXT MAJOR DESIGN DECISION** (not yet wired; will be next session opening). The combined-state validator + per-phase lock + predecessor-override stack is in place; the actual operator-facing "flip from shadow to live" toggle is the remaining design surface.
+- **No production deployment yet.** Windows machine still ~8 PRs behind main; deferred until next deploy window per CLAUDE.md "Production deployment rule" (7-agent gate required).
 
-## Promoted from ASSUMPTIONS to FACTS (2026-05-13T08:55Z, this run)
-- **Model C correctly handles sweep + admin dual-caller dedup**: VERIFIED by 261/261 P2-panel tests + 8-agent gate (PR #72). The sweep and admin-override paths are serialised against ADR-013 idempotency at the dispatch-history-append boundary; `force=True` is the only legal bypass and is audit-traced.
-- **Per-phase `threading.Lock` correctness on single-process NSSM** (carry-forward): VERIFIED by PR #57 merge + 204/204 test panel green.
-- **Override-flag predecessor chain semantics (P3→P2, P4→P3, P5→P4)** (carry-forward): VERIFIED by PR #61 merge + override-bypass audit-log entry exercised in regression suite.
+## Promoted from ASSUMPTIONS to FACTS (Wave 1 closure, 2026-05-13T12:30Z)
+
+- **"Cloudflare tunnel routes correctly to PZService"** → CONFIRMED. Public health `https://pz.estrellajewels.eu/api/v1/health` returned 200 OK post-deploy. Tunnel is healthy; no routing anomaly.
+- **"PR #67 SMTP works against real provider"** → CONFIRMED. Forgot-password email queued and delivered to `tejal@estrellajewels.com` via Zoho Mail SMTP. `_debug_code` absent from response (production code path). status=`sent`.
+- **"Polish PDF generation renders diacritics in production"** → CONFIRMED. `Ó ó ć ł ś ż` extracted from production PDF. DejaVuSans.ttf 757,076 bytes confirmed on disk. Font fix `1b38ea0` is live.
+- **"Windows fast-forward from 0b4e381 succeeds"** → CONFIRMED (via SHA lineage). `4d595ca`, `80e3469`, `1b38ea0` are all reachable from `0b4e381` (on origin/main). Only `4c797e4` was the unique Windows-local commit.
+
+## Promoted from ASSUMPTIONS to FACTS (2026-05-13, this run)
+- **Per-phase `threading.Lock` correctness on single-process NSSM**: VERIFIED by PR #57 merge + 204/204 test panel green. The 4 phase-scoped locks correctly serialize concurrent validator entries within the single PZService process; cross-worker safety remains an open concern tracked under Issue #53 only if/when the deployment shifts off single-process.
+- **Override-flag predecessor chain semantics (P3→P2, P4→P3, P5→P4)**: VERIFIED by PR #61 merge + override-bypass audit-log entry exercised in regression suite.
 
 ---
 
@@ -181,66 +216,80 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Engineering discipline rules (locked 2026-05-12)** — doc-vs-code consistency gate (Issue #27 pattern), API error templating (`{detail, error_code, field, hint}`), exception-leak prevention. Source: memory `engineering_discipline_rules`.
 - **agent-prompt-refiner and pattern-historian deferred** pending two campaigns under observation-layer baseline. Source: PR #41 + Issue #39.
 
-## Engineering lessons governance (carry-forward 2026-05-13)
+## Engineering lessons governance (appended 2026-05-13)
 
 - **Engineering lessons are append-only.** Supersede with new dated entries; never delete. Source: `.claude/memory/engineering_lessons.md` header + CLAUDE.md "Engineering Lessons (permanent)" section.
 - **Lesson A enforcement is jointly owned**: `integration-boundary` (primary — type-contract review at coordinator/builder boundary), `testing-verification` (regression test against the REAL builder, no stub), `backend-safety-reviewer` (boundary `_normalise_X` helper presence). All three must sign off on any coordinator/consumer-to-builder wiring PR.
 - **Network-bound boundary carve-out for Lesson A**: contract tests against recorded fixtures (VCR/recorded responses) substitute for real-builder regression tests on DHL / wFirma / SMTP / Cliq boundaries.
-- **Lesson C (locked 2026-05-13, origin PR #64)** — orchestrator-side post-write scorecard verification: after every observer scorecard auto-fire, the orchestrator (or `flow-context-keeper` on its own scorecard-citation runs) must confirm the scorecard file is on disk before citing it as `on disk`. Missing files re-fire the observer or escalate. Tracked in Issue #63.
 
-## Validator-hardening decisions (carry-forward 2026-05-13, 3-PR sequence)
+## Validator-hardening decisions (appended 2026-05-13, 3-PR sequence)
 
-- **Per-phase lock granularity (Issue #48)** — chosen over global-lock and per-flag-lock alternatives. Per-phase scope matches the FORBIDDEN-state invariant. Source: PR #57 + Issue #48 close thread.
-- **Override-flag predecessor model (Issue #49)** — chosen over strict-no-override and warn-only alternatives. Override requires explicit `--override-predecessor` flag with audit-log entry. Source: PR #61 + Issue #49 close thread.
-- **Cross-worker safety posture** — production NSSM verified single-process; `threading.Lock` is correct for current deployment. Multi-worker hardening tracked in Issue #53; no work scheduled until deployment topology changes.
-- **Three-PR sequencing (Option B) over atomic single PR** — preferred for clean per-step rollback + GATE 2 compliance.
+- **Per-phase lock granularity (Issue #48)** — chosen over global-lock and per-flag-lock alternatives. Rationale: the FORBIDDEN-state invariant is per-phase (P2-shadow + P2-live cannot both be true; cross-phase pairs are independent). A global lock would needlessly serialize unrelated phase admin operations; a per-flag lock would not protect the combined-state invariant. Source: PR #57 + Issue #48 close thread.
+- **Override-flag predecessor model (Issue #49)** — chosen over strict-no-override and warn-only alternatives. Rationale: phased rollout drills require a controlled bypass path; strict mode would block legitimate operator drills, warn-only would erode the safety property. Override requires explicit `--override-predecessor` flag with audit-log entry. Source: PR #61 + Issue #49 close thread.
+- **Cross-worker safety posture** — production NSSM verified single-process; `threading.Lock` is correct for current deployment. Multi-worker hardening (file lock, distributed lock, or actor-model serialization) tracked in Issue #53; no work scheduled until deployment topology changes. Source: PR #57 review thread + Issue #53 filing.
+- **GATE 5 disclosure (PR #61)** — `security-write-action-reviewer` drifted off-scope on the predecessor-override review (focused on auth instead of write-ordering); coverage filled by the other 4 review agents (`backend-safety-reviewer`, `gap-hunter`, `system-architect`, `integration-boundary`). Logged for registry-prompt-refinement queue. Source: PR #61 final report Section 2.
+- **Three-PR sequencing (Option B) over atomic single PR** — preferred for clean per-step rollback (each merge is independently revertable) + GATE 2 compliance (never exceeds 3 open implementation PRs). Each PR opened only after predecessor merged. Source: pre-campaign decision, evidenced by PR #52 → #57 → #61 ordering.
 
-## P2 ignition switch decisions (appended 2026-05-13T08:55Z, PR #72)
+## Observation-layer governance (appended 2026-05-13T08:30Z, audit-closure run)
 
-- **Model C for P2 ignition: sweep primary + admin override route** — chosen over Model A (admin-only) and Model B (auto-only). Source: design doc `02b_P2_IGNITION_SWITCH_DESIGN.md` + ADR-019 + PR #72 merge. Rationale: sweep handles the steady-state dispatch backlog without operator intervention; admin override gives the operator a controlled escape valve for one-off interventions. Both paths share the same ADR-018 truth-table and ADR-013 idempotency guarantees.
-- **`force=True` semantics on admin override** — admin-only, audited (reason ≥10 chars, actor ≥3 chars), WARNING-level audit entry, archives prior dispatch records to `p2_dispatch_history[]`, bypasses ADR-013 idempotency but NOT ADR-018 truth table. Source: ADR-019 + PR #72 review thread. Rationale: idempotency bypass is occasionally needed (legitimate retry of a stuck dispatch); truth-table bypass would defeat the safety property and is therefore forbidden.
-- **Gate-flip legacy: `dhl_selfclearance_legacy_path_a_queue_enabled` defaults False** — rollback escape valve only. Source: PR #72. Rationale: legacy path must NOT receive new dispatches by default; only explicit operator opt-in (during a rollback drill) flips it.
-- **Path-traversal + input-sanitisation enforced at admin route layer** — security review MEDIUM fixes landed inline in PR #72 (commit `4292b6c`). Source: PR #72 8-agent review. Rationale: admin endpoints are operator-trust-boundary; defensive sanitisation at the route layer prevents path-traversal pivots from admin into arbitrary file access.
+- **Retroactive scorecards are valid governance artefacts** when a contemporaneous auto-fire failed silently. Filename suffix `-RETROACTIVE` distinguishes them from contemporaneously-produced scorecards; a header note in each retroactive scorecard explains origin (which PR + when the original fire was expected vs when the retroactive fire occurred). This decision binds future audit-closure work: silent observer failures must be remediated by retroactive production, not waved away. Source: this audit-closure run + PR #50 anomaly resolution.
+- **PR #50 scorecard root cause: NOT a DECISION (recorded as OPEN QUESTION instead).** The failure mechanism is not fully diagnosable from current state — three hypotheses remain (silent tool-call failure, ephemeral path mis-routing, or branch-switch clobber). Recording as OPEN QUESTION rather than DECISION preserves accuracy: we have not yet chosen a corrective rule, only acknowledged the gap. Source: this audit-closure task brief.
 
-## Observation-layer governance (carry-forward 2026-05-13T08:30Z, audit-closure run)
+## Wave 1 closure decisions (appended 2026-05-13T12:30Z)
 
-- **Retroactive scorecards are valid governance artefacts** when a contemporaneous auto-fire failed silently. Filename suffix `-RETROACTIVE` distinguishes them; a header note explains origin. Source: PR #50 anomaly resolution + PR #64.
-- **PR #50 scorecard root cause: NOT a DECISION (recorded as OPEN QUESTION instead).** Three hypotheses remain. Recording as OPEN QUESTION rather than DECISION preserves accuracy: we have not yet chosen a corrective rule, only acknowledged the gap. Lesson C (above) is the closest we have to a corrective rule and is now locked.
+- **P2 live promotion eligibility clock** — starts from `first_real_dispatch_timestamp` (when first real AWB hits sweep eligibility filter), NOT from PZService restart time. Combined conditions: 48h elapsed since first dispatch AND ≥50 real dispatches AND ≥10 distinct AWBs AND Tejal spot-check sign-off.
+- **Wave 1 deploy strategy validated** — production synchronization deploy with 7-agent gate + 3 mandatory smokes (forgot-password SMTP, Polish PDF diacritics, attachment integrity) + rollback-ready is the canonical pattern for future Windows catch-up deploys.
+- **Wave 2 (shadow observation) is operationally-paced, not engineering-paced** — engineering work pauses until evidence accumulates from real Path A traffic. No engineering sprint should open during Wave 2 waiting period.
+- **Shadow status semantics (canonical definitions):**
+  - `SHADOW-READY-WITH-IGNITION`: code exists on main, infrastructure ready, NOT YET deployed to production
+  - `SHADOW-OBSERVING-REAL-TRAFFIC`: production deploy verified + infrastructure verified end-to-end, awaiting first real operational event
+  - `SHADOW-OBSERVED-WITH-EVIDENCE`: first real dispatch observed + audit log entries accumulating + Wave 2 clock running
+  - `SHADOW-READY-FOR-LIVE-EVALUATION`: 48h + 50 dispatches + 10 AWBs + Tejal sign-off all achieved
+- **Current attachment guard shadow status: `SHADOW-OBSERVING-REAL-TRAFFIC`** — production deploy of SHA `4c797e4` verified, infrastructure end-to-end verified, awaiting first real outbound customs email attempt.
+- ~~**Lesson D candidate**~~ → **CODIFIED 2026-05-13 via PR #76** (`ba84ee3`): any commit deployed to production that does not exist on `origin/main` via a PR requires a LOCAL-COMMIT-ONLY disclosure header + operator acknowledgment + reconciliation PR before next `git pull --ff-only`. 5 binding rules + JSONL audit trail. Governance reference: `docs/governance/lesson-d-local-commit-only-deploys.md`. Audit record: `.claude/memory/local-commit-deploys.jsonl`.
+- **Inline 7-agent gate disclosure requirement** — when all 7 deploy agents are run inline (no spawned Tool calls), the gate output MUST include a disclosure header stating: "Gate mode: inline execution — agents not spawned; project-local agent files at `.claude/agents/deploy_*.md` used directly." Source: Wave 1 closure scorecard § 1 (Substitution column).
 
 ## Next 3 actions in queue
 
-1. **W-5 P2 shadow corpus monitoring + live promotion gate** — collect ≥48h of real DHL dispatch shadow classifications + ≥50 dispatches across ≥10 AWBs + Tejal spot-check sign-off. Target outcome: P2 promoted from SHADOW to LIVE. Gating: shadow window opened 2026-05-12T23:26:44Z (PR #46); eligible no earlier than 2026-05-14T23:26:44Z. Downstream effect: unblocks P3 design start per W-5 program firing order.
-2. **Windows production deployment (catch up ~12 PRs)** — Windows machine drifted from main since the last verified deploy. Target outcome: Windows `C:\PZ` at SHA `6ad26ed` (or later) with PZService restarted via NSSM. Gating: full 7-agent gate per CLAUDE.md "Production deployment rule" (`/deploy` slash command); 160/160 PZ tests + 366/366 carrier tests must remain green; single-process NSSM constraint preserved so per-phase `threading.Lock` correctness window holds.
-3. **Verify PR #72 scorecard on disk and decide on self-eval cadence** — confirm `.claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` is on disk per Lesson C. Decide whether RULE 5 self-eval is due (5th-since-last or >7 days). Target outcome: scorecard file confirmed (or retroactively produced + filed under Issue #63), self-eval status decided. Gating: must complete before next observer auto-fire to honor RULE 6 visibility.
+1. ~~**Restart PZService for PR #74**~~ — **DONE 2026-05-13T10:34Z**. PID 14164, health 200 OK. EV_PACKING constants live.
+2. ~~**Codify Lesson D governance**~~ — **DONE 2026-05-13T14:30Z**. PR #76 merged (SHA `ba84ee3`). 5 rules codified across 4 files. Audit record (local-commit-deploys.jsonl) created. Scorecard on disk.
+3. **Observe first real AWB through attachment integrity guard** — shadow status `SHADOW-OBSERVING-REAL-TRAFFIC`. Any `FAILED_ATTACHMENT_VALIDATION` entry = guard working. First successfully-queued customs email = behavioral verification complete.
+
+## Completed actions (previously "next")
+
+- ~~**Reconcile `4c797e4` with origin/main**~~ — **DONE 2026-05-13T16:00Z** via PR #77 (SHA `1ee83e52`). `4c797e4` confirmed as ancestor of origin/main (swept in via PR #76 branch). JSONL updated: `PENDING_RETROACTIVE` → reconciliation-close record appended. `local-commit-deploys.jsonl` + `lesson-d-local-commit-only-deploys.md` both updated. Lead coordinator backstop added.
 
 ---
 
 # ASSUMPTIONS
 
-- **P2 shadow window will accumulate ≥48 hours of real-time DHL dispatch volume AND ≥50 dispatches across ≥10 AWBs by 2026-05-14T23:26:44Z** before promotion to live. Source: master plan §4.3 + shadow-window opened on PR #46 merge + PR #72 promotion gate. Move to FACTS by reading shadow-classification count + duration from admin runtime-flags audit log + Tejal spot-check sign-off note.
+- **P2 shadow window will accumulate ≥48 hours of real-time DHL dispatch volume by 2026-05-14T23:26:44Z** before promotion to live. Source: master plan §4.3 + shadow-window opened on PR #46 merge. Move to FACTS by reading shadow-classification count + duration from admin runtime-flags audit log.
 - **The carrier vocabulary mapping in `is_awb_stable` (SUBMITTED ∪ COMPLETE = stable) is correct for production use.** Source: P0 commit message + system-architect verdict. Move to FACTS when P2 shadow corpus produces the expected gate behaviour against real AWBs.
 - **The Phase 1.3 email routing migration (`service/app/config/email_routing.py`) shipped and all 14+ consumer services use it.** Source: P0 spec prerequisite note. Move to FACTS by running `grep -rln "from ..config.email_routing import" service/app/ | wc -l` and confirming ≥14.
-- **PR #72 P2 ignition scorecard was written to disk by the observer in this run.** Source: RULE 3 auto-fire trigger in operator's brief. Move to FACTS once `ls .claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` returns success (per Lesson C).
-- **Auth-fix PRs (#65, #66, #67) resolve the Tejal lockout incident end-to-end** — operator brief asserts incident is resolved. Source: session-close memo. Move to FACTS when Tejal confirms successful password reset against production.
+- ~~**PR #50 scorecard exists somewhere** (operator task brief asserts it). Source: task brief mention of stash/unstash cycle. Move to FACTS or to OPEN QUESTIONS based on next-session worktree audit.~~ — **RESOLVED 2026-05-13T08:30Z**: confirmed never existed pre-audit; produced retroactively. Promoted to FACTS as `2026-05-13-w5-pd-admin-runtime-flags-validator-RETROACTIVE.md`. See FACTS § "RULE 6 visibility entries".
 
 ---
 
 # OPEN QUESTIONS
 
-- **Is the PR #72 P2 ignition switch scorecard on disk?** Answerer: next session opening (Lesson C verification). Impact: if absent, RULE 6 visibility for the P2 ignition campaign is missing; would require retroactive scorecard production analogous to the PR #50 fix. Cross-reference: Issue #63 (Lesson C followup).
-- **Did RULE 5 self-eval cadence fire for 2026-05-13?** Answerer: next session opening. Impact: if the 5th-scorecard-since-last-self-eval or >7-day-elapsed threshold was crossed, a self-eval scorecard should exist at `.claude/memory/scorecards/self-eval-2026-05-13.md`. Currently NOT on disk in this worktree. Possible remediation paths: (a) `agent-performance-observer` re-fire with explicit self-eval directive, or (b) defer to next observer fire if cadence not yet triggered.
-- **P2 live promotion** — when does the operator (with Tejal sign-off) flip P2 from SHADOW to LIVE? Answerer: operator + Tejal. Impact: gates W-5 P3 design start per program firing order. Currently gated by (a) 48h shadow window opening 2026-05-12T23:26Z → eligible 2026-05-14T23:26Z, (b) ≥50 dispatches across ≥10 AWBs gate, (c) Tejal spot-check.
-- **Windows production catch-up — when does the next deploy window open?** Answerer: operator. Impact: production at `C:\PZ` runs ~12 PRs behind main, including the full admin runtime-flags stack + P2 ignition switch + auth-fix campaign. Per CLAUDE.md "Production deployment rule": deploy requires the 7-agent gate via `/deploy`. Single-process NSSM constraint must remain to preserve per-phase lock correctness.
-- **Root cause of original PR #50 auto-fire failure?** (carry-forward) Answerer: future investigation if reproducible (currently not). Impact: silent observer-write failures could recur and undermine RULE 6 visibility. Lesson C now binds the corrective rule (orchestrator-side post-write verification); root-cause diagnosis remains open.
-- **Should the direct-to-main commits `1b38ea0` (PDF fonts) and `80e3469` (DHL email AWB fix) have gone via PR for GATE 1 compliance?** Answerer: operator. Impact: governance precedent. GATE 1 ("PR open discipline") may or may not apply to hotfix-class commits; if it does, these two commits represent a gap.
+## Wave 2 open questions (added 2026-05-13T12:30Z)
+
+- **When will first real Path A AWB hit sweep eligibility?** (operationally determined, not engineering controllable) — this is the trigger for `SHADOW-OBSERVED-WITH-EVIDENCE` status and Wave 2 clock start. Answerer: operator (first confirmed DHL customs email attempt via automated sweep).
+- **Will attachment integrity guard fire correctly on first real outbound customs email attempt?** (structural verification complete; behavioral verification pending real flow) — expected: `attachments=` populated correctly from audit; guard passes; email queued and sent. Any `FAILED_ATTACHMENT_VALIDATION` entry would be the guard working as designed. Answerer: `active_shipment_monitor` sweep logs.
+- ~~**When will PZService be restarted to pick up PR #74?**~~ — **RESOLVED 2026-05-13T10:34Z** by operator. PID 14164, health 200 OK. Packing constants live.
+- ~~**Lesson D governance decision**~~ — **RESOLVED 2026-05-13T14:30Z** by PR #76. `deploy_release_manager.md` already had item 5 from prior spawn task. Full Lesson D codification (5 rules, audit record, governance doc) complete. See merged PR #76 (SHA `ba84ee3`). Lead coordinator backstop added by PR #77 (SHA `1ee83e52`). All 5 Lesson D rules now fully enforced by 2 agents. 4c797e4 reconciliation CLOSED.
+
+- ~~**Where is the PR #50 scorecard file?**~~ — **RESOLVED 2026-05-13T08:30Z**: file did not exist pre-audit; original auto-fire after PR #50 merge claimed file write but file never reached disk. Cross-reference: `.claude/memory/scorecards/2026-05-13-w5-pd-admin-runtime-flags-validator-RETROACTIVE.md` (retroactively produced in this audit-closure cycle).
+- **Root cause of original PR #50 auto-fire failure?** Answerer: future investigation if reproducible (currently not). Impact: silent observer-write failures could recur and undermine RULE 6 visibility. Hypotheses: (a) the observer agent's tool call to Write the scorecard silently failed without raising an error to the orchestrator, (b) the write was routed to an ephemeral path not under the worktree, or (c) the file was clobbered during a subsequent `git checkout` / branch-switch before being staged. Definitive diagnosis would require replay of the agent runtime, which is not available.
+- **Should orchestrator-side verification be mandated after every observer scorecard write?** Answerer: operator (decision pending). Impact: would prevent recurrence of the PR #50 silent-failure pattern. Proposed mechanism: after every observer auto-fire, the orchestrator runs `ls .claude/memory/scorecards/<expected-filename>` to confirm the file landed, and re-fires or escalates if missing. See engineering_lessons.md candidate Lesson C addition (under discussion in this PR). Cross-reference: DECISIONS § "Next 3 actions in queue" item 3.
 - **Tejal availability for P4 / P5 reviewer gates** — not yet confirmed for the May-June window. Answerer: Tejal (via operator). Impact: gates P4 live promotion + P5 live promotion.
-- **When are the obsolete `feat/doc-1..4` branches and the newly-eligible-for-archive `chore/*` + `fix/*` + `feat/p2-ignition-switch-model-c` branches tagged-and-deleted?** Answerer: operator preference. Impact: branch hygiene; harmless if left.
-- **Issue #51 ADR drift reconciliation — when is it fired?** Answerer: operator scheduling. Impact: blocks downstream ADR-drift cleanup. The 8 salvaged ADRs (subset of 10 from PR #52) need successor ADRs documenting how P0/P2 superseded them. The new ADR-019 (Model C) does NOT reconcile this drift.
-- **Issue #53 cross-worker safety hardening** — when does it fire? Answerer: operator (likely never unless deployment topology shifts off single-process NSSM). Impact: dormant correctness debt.
-- **Issues #54/#55/#56 lock-hardening polish** — when do they fire? Answerer: operator scheduling. Impact: incremental hardening of the per-phase lock; none currently blocking.
-- **Issues #58/#59/#60 override polish** — when do they fire? Answerer: operator scheduling. Impact: operator UX improvements on top of the predecessor-override mechanic; none currently blocking.
-- **Issues #67/#68/#69/#70/#71 P2 ignition follow-ups** — when do they fire? Answerer: operator scheduling. Impact: Atlas-side P2 hold/rescue UI (#67) is the most visible operator-facing gap; sweep heartbeat (#68) is observability; legacy-vs-new state field unification (#69) is data-model drift cleanup; `resolve_audit_awb` helper extraction (#70) is refactor; sweep cooldown tuning (#71) is post-shadow analysis.
-- **Cumulative ADR drift work** — blocked on Issue #51 resolution. Until #51 is reconciled, downstream ADR work (e.g. ADR-018 follow-ups in Issue #42, ADR-019 successor expectations) carries semantic risk of stacking onto unreconciled successor relationships.
+- **When does the Windows machine catch up on the merged PRs (#41, #43, #46, #47, #50, #52, #57, #61)?** Answerer: operator. Impact: production at `C:\PZ` runs ~8 PRs behind main, including the entire admin runtime-flags combined-state validator stack. Per CLAUDE.md "Production deployment rule": deploy requires the 7-agent gate. Single-process NSSM constraint is what keeps the per-phase lock correct — any change in deployment topology unblocks Issue #53.
+- **Should the 4 obsolete `feat/doc-1..4` branches and the 5 newly-eligible-for-archive `chore/admin-runtime-flags-*` + `chore/adr-salvage-*` + `chore/observation-layer-*` branches be tagged-and-deleted?** Answerer: operator preference. Impact: branch hygiene; harmless if left.
+- **Issue #51 ADR drift reconciliation — when is it fired?** Answerer: operator scheduling. Impact: blocks downstream ADR-drift cleanup. The 8 salvaged ADRs (subset of 10 from PR #52) need successor ADRs documenting how P0/P2 superseded them. Until reconciled, ADR README index resolves but semantic drift remains.
+- **Issue #53 cross-worker safety hardening — when does it fire?** Answerer: operator (likely never unless deployment topology shifts off single-process NSSM). Impact: dormant correctness debt. If it fires, it gates any move to multi-worker uvicorn / gunicorn.
+- **Issues #54/#55/#56 lock-hardening polish (write-ordering durability, audit observability, Windows file-locking)** — when do they fire? Answerer: operator scheduling. Impact: incremental hardening of the per-phase lock; none currently blocking.
+- **Issues #58/#59/#60 override polish (cascade endpoint, request_id correlation, GET /audit endpoint)** — when do they fire? Answerer: operator scheduling. Impact: operator UX improvements on top of the predecessor-override mechanic; none currently blocking.
+- **Cumulative ADR drift work** — blocked on Issue #51 resolution. Until #51 is reconciled, downstream ADR work (e.g. ADR-018 follow-ups in Issue #42) carries semantic risk of stacking onto unreconciled successor relationships.
 - **Is the `_TOP_LEVEL_FIELDS` enforcement gap on `dhl_clearance_manifest.py` (system-architect LOW finding) acceptable to defer to P2 kickoff, or should it be addressed in a hotfix PR?** Answerer: operator. Impact: a future phase implementer could write a top-level field that bypasses the schema fence. Filed in Issue #38 as SCHEDULED for P2.
 
 ---
