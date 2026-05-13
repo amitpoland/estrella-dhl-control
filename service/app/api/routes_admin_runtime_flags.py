@@ -210,7 +210,7 @@ def _enforce_startup_combined_states() -> Dict[str, Dict[str, bool]]:
     re-implement the (False, True) check.
     """
     repaired: Dict[str, Dict[str, bool]] = {}
-    for phase in ("p2", "p3", "p4", "p5"):
+    for phase in _PHASES:
         shadow_attr = f"dhl_selfclearance_{phase}_shadow_mode"
         live_attr   = f"dhl_selfclearance_{phase}_live_enabled"
         prior_shadow = bool(getattr(settings, shadow_attr, False))
@@ -478,6 +478,15 @@ _PHASE_PAIR_RE = re.compile(
 #   def handlers in a starlette threadpool. The current POST handler is
 #   sync def; switching to async would require broader refactor.
 
+# Single source of truth for the canonical DHL self-clearance phase pairs
+# (gap-hunter F6 — quadruple-coupling reduction). Adding a new phase
+# requires updating ONLY this tuple plus `_ALLOWED_FLAGS` (config-derived)
+# plus `_PHASE_PAIR_RE` (regex character class) plus `_PREDECESSOR_MAP`
+# (chain). The boot-replay loop, GET phase classification, and lock map
+# all derive from this tuple to avoid drift.
+_PHASES: Tuple[str, ...] = ("p2", "p3", "p4", "p5")
+
+
 LOCK_ACQUISITION_TIMEOUT_SECONDS: float = 5.0
 
 # IMPORTANT — single-process deployment assumption.
@@ -512,12 +521,7 @@ LOCK_ACQUISITION_TIMEOUT_SECONDS: float = 5.0
 # pairs against ADR-018 truth table BEFORE the route is mounted, so
 # no FORBIDDEN combination can survive a crash mid-flip.
 
-_PHASE_LOCKS: Dict[str, threading.Lock] = {
-    "p2": threading.Lock(),
-    "p3": threading.Lock(),
-    "p4": threading.Lock(),
-    "p5": threading.Lock(),
-}
+_PHASE_LOCKS: Dict[str, threading.Lock] = {p: threading.Lock() for p in _PHASES}
 
 
 @contextmanager
@@ -713,12 +717,22 @@ class FlagFlipBody(BaseModel):
     value:            Any
     actor:            str
     reason:           Optional[str] = None
-    # Issue #49 — predecessor-live override mechanism. Default False; only
-    # consulted when posting `live_enabled=True` for a phase whose
-    # predecessor's live_enabled is False. Override requires a non-empty
-    # `override_reason` (min 10 chars) AND `actor` (min 3 chars) for
-    # operator accountability. ADR-018 combined-state invariant is NOT
-    # affected by override — FORBIDDEN remains FORBIDDEN regardless.
+    # Issue #49 — predecessor-live override mechanism.
+    #
+    # Override is **per-POST and ephemeral**: not persisted, not
+    # accumulating, not auto-revoked. Each POST that needs to bypass the
+    # predecessor-live check must carry its own `override=True` +
+    # `override_reason` (min 10 chars) + `actor` (min 3 chars).
+    #
+    # Override applies ONLY to predecessor-live check. It does NOT bypass
+    # ADR-018 combined-state validator (FORBIDDEN remains FORBIDDEN
+    # regardless), type validation, or unknown-flag rejection.
+    #
+    # If `override=True` is sent on a POST where the predecessor check
+    # would not have applied anyway (shadow_mode flip, live=False flip,
+    # P2 phase, predecessor already live), the override is recorded as
+    # `admin_runtime_flag_override_ignored` audit event so operator
+    # intent is never silently dropped (gap-hunter F4/F5).
     override:         Optional[bool] = False
     override_reason:  Optional[str]  = None
 
@@ -728,6 +742,16 @@ class FlagFlipBody(BaseModel):
 # - P3 predecessor = P2
 # - P4 predecessor = P3
 # - P5 predecessor = P4
+#
+# INVARIANT (gap-hunter F10): every value in this map MUST correspond to
+# a `dhl_selfclearance_<phase>_live_enabled` attribute on `settings`,
+# declared in `service/app/core/config.py` AND included in
+# `_ALLOWED_FLAGS`. Removing a phase from `_ALLOWED_FLAGS` while it
+# remains a predecessor would silently break the dependent phase's
+# flip path (validator's `getattr(settings, attr, False)` would
+# perpetually return False and reject every dependent live flip).
+# A regression test asserts this invariant; see
+# test_predecessor_map_values_all_in_allowed_flags.
 _PREDECESSOR_MAP: Dict[str, str] = {
     "p3": "p2",
     "p4": "p3",
@@ -771,23 +795,57 @@ def _enforce_predecessor_live(
     other's phase locks; benign retry is the chosen trade-off.
     """
     parsed = _parse_phase_pair(flag_name)
+
+    # gap-hunter F4/F5: if override=True is sent on a POST that bypasses the
+    # predecessor check entirely (non-phase-pair flag, shadow_mode flip,
+    # value=False flip, P2 phase, predecessor already live), the operator
+    # may have believed they were exercising elevated authority. Record the
+    # override as `admin_runtime_flag_override_ignored` audit event so
+    # intent is never silently dropped. This is an audit-only signal — the
+    # POST proceeds normally.
+    def _record_override_ignored(reason: str, phase_label: Optional[str] = None) -> None:
+        if not override:
+            return
+        try:
+            _append_audit({
+                "event":           "admin_runtime_flag_override_ignored",
+                "flag_name":       flag_name,
+                "phase":           phase_label,
+                "actor":           actor or "",
+                "ignore_reason":   reason,
+                "override_reason": (override_reason or "").strip(),
+                "timestamp":       int(time.time()),
+                "log_level":       "WARNING",
+            })
+            log.warning(
+                "admin_runtime_flag_override_ignored flag=%s ignore_reason=%s actor=%s",
+                flag_name, reason, actor,
+            )
+        except Exception:  # pragma: no cover — best-effort
+            log.warning("override_ignored_audit_write_failed flag=%s", flag_name)
+
     if parsed is None:
-        return  # not a phase-pair flag — predecessor rule does not apply
+        _record_override_ignored("not_a_phase_pair_flag")
+        return
 
     phase, dimension = parsed
     # Only applies to live_enabled=True flips.
     if dimension != "live_enabled":
+        _record_override_ignored("dimension_is_shadow_mode_not_live", phase)
         return
     if new_value is not True:
+        _record_override_ignored("value_is_false_not_true", phase)
         return
 
     predecessor = _PREDECESSOR_MAP.get(phase)
     if predecessor is None:
+        _record_override_ignored("phase_has_no_predecessor", phase)
         return  # P2 has no predecessor
 
     pred_live_attr = f"dhl_selfclearance_{predecessor}_live_enabled"
     pred_live      = bool(getattr(settings, pred_live_attr, False))
     if pred_live:
+        _record_override_ignored("predecessor_already_live", phase)
         return  # predecessor live — no override needed
 
     # Predecessor NOT live. Decide based on override flag.
@@ -865,6 +923,13 @@ def _enforce_predecessor_live(
     # Override path approved. Emit WARNING-level log AND structured audit
     # entry. Filterable by event="admin_runtime_flag_predecessor_override"
     # for downstream operator review.
+    #
+    # gap-hunter F12: override audit is the PRIMARY record of operator-
+    # elevated authority. If the audit write fails, the flip still
+    # proceeds (state mutation already lives in the caller's POST handler
+    # path), but the operator must be told. We surface failure via a
+    # thread-local marker that the POST handler reads and includes in the
+    # response payload as `override_audit_write_failed: true`.
     reason_clean = override_reason.strip()
     log.warning(
         "admin_runtime_flag_predecessor_override phase=%s predecessor=%s "
@@ -883,9 +948,21 @@ def _enforce_predecessor_live(
             "log_level":          "WARNING",
         })
     except Exception:  # pragma: no cover — best-effort
-        log.warning(
-            "predecessor_override_audit_write_failed phase=%s", phase,
+        log.error(
+            "predecessor_override_audit_write_failed phase=%s actor=%s — "
+            "operator-elevated authority NOT durably recorded",
+            phase, actor,
         )
+        # Mark the failure so the POST handler can surface it in the
+        # response payload. Module-level mutable carrier is acceptable
+        # because the per-phase lock serialises POSTs for `phase`; no
+        # cross-phase contention reads this flag.
+        _OVERRIDE_AUDIT_FAILURE_MARKER[phase] = True
+
+
+# Module-level carrier for override-audit-write failures (gap-hunter F12).
+# Keyed by phase. Cleared by the POST handler after each operation.
+_OVERRIDE_AUDIT_FAILURE_MARKER: Dict[str, bool] = {}
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -922,7 +999,7 @@ def get_self_clearance_flags() -> Dict[str, Any]:
     # so it cannot collide with any current or future flag name in
     # `_ALLOWED_FLAGS`, which are all `dhl_selfclearance_*`).
     phases: Dict[str, Dict[str, Any]] = {}
-    for phase in ("p2", "p3", "p4", "p5"):
+    for phase in _PHASES:
         shadow = bool(getattr(settings, f"dhl_selfclearance_{phase}_shadow_mode", False))
         live   = bool(getattr(settings, f"dhl_selfclearance_{phase}_live_enabled", False))
         phases[phase] = {
@@ -1062,11 +1139,19 @@ def post_self_clearance_flag(body: FlagFlipBody = Body(...)) -> Dict[str, Any]:
             audit_write_failed = True
             log.warning("audit_log_write_failed flag=%s actor=%s", flag_name, actor)
 
+    # Pop and surface override-audit-write failure flag (gap-hunter F12).
+    # Cleared after read so the next POST against the same phase starts
+    # with a clean slate.
+    override_audit_failed = bool(
+        _OVERRIDE_AUDIT_FAILURE_MARKER.pop(phase_for_lock, False)
+    ) if phase_for_lock else False
+
     return {
-        "status":             "ok",
-        "flag_name":          flag_name,
-        "old_value":          old_value,
-        "new_value":          new_value,
-        "audit_at":           ts,
-        "audit_write_failed": audit_write_failed,
+        "status":                      "ok",
+        "flag_name":                   flag_name,
+        "old_value":                   old_value,
+        "new_value":                   new_value,
+        "audit_at":                    ts,
+        "audit_write_failed":          audit_write_failed,
+        "override_audit_write_failed": override_audit_failed,
     }

@@ -443,3 +443,236 @@ def test_predecessor_rejection_audit_carries_context(client, tmp_path):
     assert e["predecessor"] == "p2"
     assert e["predecessor_live"] is False
     assert e["override_attempted"] is False
+
+
+# ── Boundary tests (testing-verification F4 recommendations) ────────────────
+
+def test_override_reason_exactly_10_chars_accepted(client):
+    """Boundary: reason of exactly 10 chars passes (validator uses < 10)."""
+    _set_phase_pair("p2", shadow=True, live=False)
+    _set_phase_pair("p3", shadow=True, live=False)
+    r = _post(client, {
+        "flag_name": "dhl_selfclearance_p3_live_enabled",
+        "value": True, "actor": "amit",
+        "override": True,
+        "override_reason": "1234567890",  # exactly 10 chars
+    })
+    assert r.status_code == 200, r.json()
+
+
+def test_override_actor_exactly_3_chars_accepted(client):
+    """Boundary: actor of exactly 3 chars passes (validator uses < 3)."""
+    _set_phase_pair("p2", shadow=True, live=False)
+    _set_phase_pair("p3", shadow=True, live=False)
+    r = _post(client, {
+        "flag_name": "dhl_selfclearance_p3_live_enabled",
+        "value": True, "actor": "abc",  # exactly 3 chars
+        "override": True,
+        "override_reason": "Valid override reason text here",
+    })
+    assert r.status_code == 200, r.json()
+
+
+def test_override_reason_whitespace_only_rejected(client):
+    """Whitespace-padded reason that strips to <10 chars must be rejected.
+    Guards against a future refactor that removes the .strip() call."""
+    _set_phase_pair("p2", shadow=True, live=False)
+    _set_phase_pair("p3", shadow=True, live=False)
+    r = _post(client, {
+        "flag_name": "dhl_selfclearance_p3_live_enabled",
+        "value": True, "actor": "amit",
+        "override": True,
+        "override_reason": "          ",  # 10 spaces; strips to ""
+    })
+    assert r.status_code == 400
+    assert r.json()["detail"]["error_code"] == "MISSING_OVERRIDE_REASON"
+
+
+# ── gap-hunter F4/F5: override silently ignored gets audited ─────────────────
+
+def test_override_ignored_audited_for_shadow_mode_flip(client, tmp_path):
+    """gap-hunter F4: override=True on shadow_mode flip is bypassed but
+    operator intent must be recorded as `admin_runtime_flag_override_ignored`."""
+    _set_phase_pair("p3", shadow=False, live=False)
+    r = _post(client, {
+        "flag_name": "dhl_selfclearance_p3_shadow_mode",
+        "value": True, "actor": "amit",
+        "override": True,
+        "override_reason": "Operator believed override was needed here",
+    })
+    assert r.status_code == 200
+
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+    ignored = [e for e in lines if e.get("event") == "admin_runtime_flag_override_ignored"]
+    assert len(ignored) == 1
+    assert ignored[0]["ignore_reason"] == "dimension_is_shadow_mode_not_live"
+    assert ignored[0]["log_level"] == "WARNING"
+
+
+def test_override_ignored_audited_for_live_false_flip(client, tmp_path):
+    """gap-hunter F5: override=True on live_enabled=False flip bypassed."""
+    _set_phase_pair("p2", shadow=True, live=True)
+    _set_phase_pair("p3", shadow=True, live=True)
+    r = _post(client, {
+        "flag_name": "dhl_selfclearance_p3_live_enabled",
+        "value": False, "actor": "amit",
+        "override": True,
+        "override_reason": "Disable predecessor protection during shutdown",
+    })
+    assert r.status_code == 200
+
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+    ignored = [e for e in lines if e.get("event") == "admin_runtime_flag_override_ignored"]
+    assert len(ignored) == 1
+    assert ignored[0]["ignore_reason"] == "value_is_false_not_true"
+
+
+def test_override_ignored_audited_for_p2_no_predecessor(client, tmp_path):
+    _set_phase_pair("p2", shadow=True, live=False)
+    r = _post(client, {
+        "flag_name": "dhl_selfclearance_p2_live_enabled",
+        "value": True, "actor": "amit",
+        "override": True,
+        "override_reason": "Just being cautious about predecessor checks",
+    })
+    assert r.status_code == 200
+
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+    ignored = [e for e in lines if e.get("event") == "admin_runtime_flag_override_ignored"]
+    assert len(ignored) == 1
+    assert ignored[0]["ignore_reason"] == "phase_has_no_predecessor"
+
+
+def test_override_ignored_audited_when_predecessor_already_live(client, tmp_path):
+    _set_phase_pair("p2", shadow=True, live=True)
+    _set_phase_pair("p3", shadow=True, live=False)
+    r = _post(client, {
+        "flag_name": "dhl_selfclearance_p3_live_enabled",
+        "value": True, "actor": "amit",
+        "override": True,
+        "override_reason": "Belt-and-braces override on already-live chain",
+    })
+    assert r.status_code == 200
+
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+    ignored = [e for e in lines if e.get("event") == "admin_runtime_flag_override_ignored"]
+    assert len(ignored) == 1
+    assert ignored[0]["ignore_reason"] == "predecessor_already_live"
+
+
+def test_override_false_does_not_emit_ignored_audit(client, tmp_path):
+    """Defensive: override=False on a phase flip must NOT produce an
+    `override_ignored` audit (operator did not signal intent)."""
+    _set_phase_pair("p3", shadow=False, live=False)
+    r = _post(client, {
+        "flag_name": "dhl_selfclearance_p3_shadow_mode",
+        "value": True, "actor": "amit",
+        "override": False,
+    })
+    assert r.status_code == 200
+
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    if audit_path.exists():
+        lines = [_json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()]
+        ignored = [e for e in lines if e.get("event") == "admin_runtime_flag_override_ignored"]
+        assert ignored == []
+
+
+# ── gap-hunter F10: predecessor map invariant ────────────────────────────────
+
+def test_predecessor_map_values_all_in_allowed_flags():
+    """Every predecessor in _PREDECESSOR_MAP must have its live_enabled
+    flag declared in _ALLOWED_FLAGS. Removing one would silently break
+    the dependent phase's flip path."""
+    from app.api.routes_admin_runtime_flags import (
+        _PREDECESSOR_MAP,
+        _ALLOWED_FLAGS,
+    )
+    for pred in _PREDECESSOR_MAP.values():
+        attr = f"dhl_selfclearance_{pred}_live_enabled"
+        assert attr in _ALLOWED_FLAGS, (
+            f"Predecessor {pred!r} live_enabled flag missing from "
+            f"_ALLOWED_FLAGS — would silently break dependent phases"
+        )
+
+
+def test_predecessor_map_values_all_have_settings_attribute():
+    """Defensive: every predecessor must have a settings attribute the
+    validator can read. Catches a removal in config.py."""
+    from app.api.routes_admin_runtime_flags import _PREDECESSOR_MAP
+    for pred in _PREDECESSOR_MAP.values():
+        attr = f"dhl_selfclearance_{pred}_live_enabled"
+        assert hasattr(settings, attr), (
+            f"Predecessor {pred!r} live_enabled missing from settings — "
+            f"config.py drift relative to _PREDECESSOR_MAP"
+        )
+
+
+def test_phases_constant_matches_predecessor_chain():
+    """gap-hunter F6: _PHASES is the single source of truth. Verify it
+    contains every phase referenced by _PREDECESSOR_MAP (keys + values)."""
+    from app.api.routes_admin_runtime_flags import _PHASES, _PREDECESSOR_MAP
+    referenced = set(_PREDECESSOR_MAP.keys()) | set(_PREDECESSOR_MAP.values())
+    assert referenced.issubset(set(_PHASES)), (
+        f"_PREDECESSOR_MAP references phases {referenced - set(_PHASES)} "
+        f"not in _PHASES; coupling drift"
+    )
+
+
+# ── gap-hunter F12: override-audit-write failure surfaced in response ────────
+
+def test_override_audit_write_failure_surfaces_in_response(client, monkeypatch):
+    """If the override audit_append fails, the response must carry
+    `override_audit_write_failed: true` so operator knows the elevated-
+    authority record did not durably land."""
+    import app.api.routes_admin_runtime_flags as route_mod
+
+    _set_phase_pair("p2", shadow=True, live=False)
+    _set_phase_pair("p3", shadow=True, live=False)
+
+    # Make _append_audit fail ONLY when called for the override event.
+    real_append = route_mod._append_audit
+
+    def _selective_failing_append(entry):
+        if entry.get("event") == "admin_runtime_flag_predecessor_override":
+            raise OSError("simulated audit-disk full")
+        return real_append(entry)
+
+    monkeypatch.setattr(route_mod, "_append_audit", _selective_failing_append)
+
+    r = _post(client, {
+        "flag_name": "dhl_selfclearance_p3_live_enabled",
+        "value": True, "actor": "amit",
+        "override": True,
+        "override_reason": "Forensic test — simulated audit failure",
+    })
+    # The flip succeeds (state mutation already happened) but the response
+    # must signal that the override audit was lost.
+    assert r.status_code == 200
+    body = r.json()
+    assert body["override_audit_write_failed"] is True
+
+
+def test_override_audit_failure_marker_cleared_after_post(client):
+    """Marker must be cleared after each POST so a stale failure flag
+    doesn't bleed into the next POST's response."""
+    import app.api.routes_admin_runtime_flags as route_mod
+
+    # Manually set a stale marker for p3.
+    route_mod._OVERRIDE_AUDIT_FAILURE_MARKER["p3"] = True
+
+    _set_phase_pair("p2", shadow=True, live=True)
+    _set_phase_pair("p3", shadow=True, live=False)
+    r = _post(client, {
+        "flag_name": "dhl_selfclearance_p3_live_enabled",
+        "value": True, "actor": "amit",
+    })
+    assert r.status_code == 200
+    # Stale marker IS surfaced on this POST (marker semantic: it's "the
+    # most recent override write status for this phase"). After the POST,
+    # marker is cleared.
+    assert "p3" not in route_mod._OVERRIDE_AUDIT_FAILURE_MARKER
