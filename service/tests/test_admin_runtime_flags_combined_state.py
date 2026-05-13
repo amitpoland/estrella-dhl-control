@@ -60,21 +60,31 @@ _AUTH = {"X-API-Key": "test-key-secret"}
 _URL = "/api/v1/admin/runtime-flags/self-clearance"
 
 
-@pytest.fixture()
-def client(monkeypatch, tmp_path):
+@pytest.fixture(autouse=True)
+def _restore_phase_pair_flags():
+    """Autouse: snapshot/restore ALL phase-pair flag values around every test
+    in this file — including tests that don't use the `client` fixture
+    (e.g. boot-replay tests that drive `load_persisted_flags_into_settings`
+    directly via `setattr`). Prevents inter-file test pollution where a
+    DORMANT-leaving test breaks downstream tests in
+    test_dhl_selfclearance_p0_admin_runtime_flags.py that assume default
+    SHADOW state."""
     snapshot = {name: getattr(settings, name) for name in _PHASE_PAIR_FLAGS}
-
-    monkeypatch.setattr(settings, "storage_root", tmp_path)
-    monkeypatch.setattr(settings, "api_key", "test-key-secret")
-
-    from app.main import app
-    yield TestClient(app)
-
+    yield
     for name, value in snapshot.items():
         try:
             setattr(settings, name, value)
         except Exception:
             pass
+
+
+@pytest.fixture()
+def client(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "api_key", "test-key-secret")
+
+    from app.main import app
+    yield TestClient(app)
 
 
 def _set_phase_pair(phase: str, *, shadow: bool, live: bool) -> None:
@@ -198,6 +208,80 @@ def test_forbidden_attempt_does_not_mutate_settings(client, phase):
     assert getattr(settings, f"dhl_selfclearance_{phase}_live_enabled") is True
 
 
+@pytest.mark.parametrize("phase", ["p2", "p3", "p4", "p5"])
+def test_forbidden_attempt_does_not_mutate_store_or_emit_flipped_audit(client, tmp_path, phase):
+    """Per security review: rejection must leave settings AND store AND
+    audit-log unchanged with respect to a successful flip. The rejection
+    audit entry IS expected (tamper-evidence), but no `flipped` event."""
+    import json as _json
+
+    _set_phase_pair(phase, shadow=True, live=True)
+
+    store_path = tmp_path / "dhl_selfclearance_runtime_flags.json"
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+
+    r = _post(client, f"dhl_selfclearance_{phase}_shadow_mode", False)
+    assert r.status_code == 400
+
+    # Persistent store: must contain NO entry for the rejected flag.
+    if store_path.exists():
+        store = _json.loads(store_path.read_text())
+        assert f"dhl_selfclearance_{phase}_shadow_mode" not in store
+
+    # Audit log: must contain a `rejected` entry for this attempt, but NO
+    # `flipped` entry for the same flag.
+    assert audit_path.exists(), "Rejection should produce tamper-evidence audit entry"
+    lines = [
+        _json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()
+    ]
+    rejected = [
+        e for e in lines
+        if e.get("event") == "admin_runtime_flag_rejected"
+        and e.get("flag_name") == f"dhl_selfclearance_{phase}_shadow_mode"
+    ]
+    flipped = [
+        e for e in lines
+        if e.get("event") == "admin_runtime_flag_flipped"
+        and e.get("flag_name") == f"dhl_selfclearance_{phase}_shadow_mode"
+    ]
+    assert len(rejected) == 1, f"Expected exactly 1 rejection entry, got {rejected}"
+    assert len(flipped) == 0,  f"Expected NO flipped entry on rejected POST, got {flipped}"
+
+
+@pytest.mark.parametrize("phase", ["p2", "p3", "p4", "p5"])
+def test_rejection_audit_entry_carries_full_forensic_context(client, tmp_path, phase):
+    """Per security AUDIT-TRACE-COMPLETENESS: rejection audit entries must
+    include phase, attempted_value, current_shadow, current_live,
+    resulting_shadow, resulting_live so probing patterns can be forensically
+    reconstructed."""
+    import json as _json
+
+    _set_phase_pair(phase, shadow=True, live=True)
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+
+    r = _post(client, f"dhl_selfclearance_{phase}_shadow_mode", False)
+    assert r.status_code == 400
+
+    lines = [
+        _json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()
+    ]
+    rejected = [
+        e for e in lines
+        if e.get("event") == "admin_runtime_flag_rejected"
+        and e.get("error_code") == "FORBIDDEN_FLAG_COMBINATION"
+    ]
+    assert len(rejected) == 1
+    entry = rejected[0]
+    assert entry.get("phase") == phase
+    assert entry.get("dimension") == "shadow_mode"
+    assert entry.get("attempted_value") is False
+    assert entry.get("current_shadow") is True
+    assert entry.get("current_live") is True
+    assert entry.get("resulting_shadow") is False
+    assert entry.get("resulting_live") is True
+    assert entry.get("actor") == "test"
+
+
 # ── Idempotent no-ops ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("phase", ["p2", "p3", "p4", "p5"])
@@ -298,3 +382,184 @@ def test_parse_phase_pair_rejects_partial_matches():
     assert _parse_phase_pair("prefix_dhl_selfclearance_p2_shadow_mode") is None
     assert _parse_phase_pair("dhl_selfclearance_p2_shadow_mode_suffix") is None
     assert _parse_phase_pair("") is None
+
+
+# ── GET endpoint: derived phase-state labels (gap-hunter F3) ─────────────────
+
+def test_get_returns_phases_block_with_state_labels(client):
+    _set_phase_pair("p2", shadow=False, live=False)   # DORMANT
+    _set_phase_pair("p3", shadow=True,  live=False)   # SHADOW
+    _set_phase_pair("p4", shadow=True,  live=True)    # LIVE
+    _set_phase_pair("p5", shadow=False, live=False)   # DORMANT
+
+    r = client.get(_URL, headers=_AUTH)
+    assert r.status_code == 200
+    body = r.json()
+
+    # Backwards-compat: flat flag map still at top level.
+    assert "dhl_selfclearance_p2_live_enabled" in body
+    assert body["dhl_selfclearance_p2_live_enabled"] is False
+
+    # Adjunct phase-state classification under `_phases`.
+    phases = body["_phases"]
+    assert phases["p2"]["state"] == "DORMANT"
+    assert phases["p3"]["state"] == "SHADOW"
+    assert phases["p4"]["state"] == "LIVE"
+    assert phases["p5"]["state"] == "DORMANT"
+    # Tuple values surfaced for completeness.
+    assert phases["p3"]["shadow_mode"] is True
+    assert phases["p3"]["live_enabled"] is False
+
+
+def test_classify_phase_state_truth_table():
+    from app.api.routes_admin_runtime_flags import _classify_phase_state
+    # ADR-018 truth table
+    assert _classify_phase_state(False, False) == "DORMANT"
+    assert _classify_phase_state(True,  False) == "SHADOW"
+    assert _classify_phase_state(True,  True)  == "LIVE"
+    assert _classify_phase_state(False, True)  == "FORBIDDEN"
+
+
+def test_get_does_not_include_underscore_phases_as_flag_name(client):
+    """Defensive: `_phases` adjunct key must NOT be confused with a real
+    flag name. Verify the existing `_ALLOWED_FLAGS` set excludes it."""
+    from app.api.routes_admin_runtime_flags import ALLOWED_FLAG_NAMES
+    assert "_phases" not in ALLOWED_FLAG_NAMES
+
+
+# ── Boot-time replay: ADR-018 §a startup enforcement (gap-hunter F1) ─────────
+
+def test_startup_replay_repairs_persisted_forbidden_combination(monkeypatch, tmp_path):
+    """If the persisted JSON store contains a (False, True) combination —
+    whether by hand-edit, race condition, or pre-validator-era state — the
+    boot-time replay MUST detect it and force the affected phase back to
+    DORMANT before any phase code can act on the corrupt state."""
+    import json as _json
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+
+    # Seed a persisted store with a FORBIDDEN p3 combination.
+    store = {
+        "dhl_selfclearance_p3_shadow_mode":  False,
+        "dhl_selfclearance_p3_live_enabled": True,   # FORBIDDEN with shadow=False
+        "dhl_selfclearance_p2_shadow_mode":  True,   # SHADOW (legal)
+    }
+    store_path = tmp_path / "dhl_selfclearance_runtime_flags.json"
+    store_path.write_text(_json.dumps(store))
+
+    # Ensure starting in-memory state is DORMANT for both phases (so any
+    # post-replay corruption is attributable to the replay itself).
+    _set_phase_pair("p2", shadow=False, live=False)
+    _set_phase_pair("p3", shadow=False, live=False)
+
+    from app.api.routes_admin_runtime_flags import load_persisted_flags_into_settings
+
+    applied = load_persisted_flags_into_settings()
+
+    # All three flags were applied — but the p3 FORBIDDEN combination must
+    # have been REPAIRED back to DORMANT after the per-flag replay.
+    assert "dhl_selfclearance_p3_live_enabled" in applied
+    assert getattr(settings, "dhl_selfclearance_p3_shadow_mode")  is False
+    assert getattr(settings, "dhl_selfclearance_p3_live_enabled") is False, (
+        "Boot replay must repair FORBIDDEN persisted state to DORMANT — "
+        "ADR-018 §a startup enforcement"
+    )
+
+    # p2 SHADOW state must be preserved (legal combination).
+    assert getattr(settings, "dhl_selfclearance_p2_shadow_mode")  is True
+    assert getattr(settings, "dhl_selfclearance_p2_live_enabled") is False
+
+    # Audit log must record the repair for forensic visibility.
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    assert audit_path.exists()
+    repair_entries = [
+        _json.loads(line) for line in audit_path.read_text().splitlines()
+        if line.strip()
+        and _json.loads(line).get("event") == "runtime_flags_startup_forbidden_combo_repaired"
+    ]
+    assert len(repair_entries) == 1
+    repair = repair_entries[0]
+    assert repair["phase"] == "p3"
+    assert repair["prior_shadow"] is False
+    assert repair["prior_live"]   is True
+    assert repair["forced_shadow"] is False
+    assert repair["forced_live"]   is False
+
+
+def test_startup_replay_no_repair_when_all_states_legal(monkeypatch, tmp_path):
+    """The startup sweep must NOT touch any phase whose persisted state is
+    already DORMANT/SHADOW/LIVE. Only FORBIDDEN combinations get repaired."""
+    import json as _json
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+
+    # All four phases in legal states.
+    store = {
+        "dhl_selfclearance_p2_shadow_mode":  True,   # SHADOW
+        "dhl_selfclearance_p3_shadow_mode":  True,   # SHADOW
+        "dhl_selfclearance_p3_live_enabled": True,   # → LIVE (with shadow=True)
+        "dhl_selfclearance_p4_shadow_mode":  False,  # DORMANT
+        "dhl_selfclearance_p5_shadow_mode":  True,   # SHADOW
+    }
+    (tmp_path / "dhl_selfclearance_runtime_flags.json").write_text(_json.dumps(store))
+
+    _set_phase_pair("p2", shadow=False, live=False)
+    _set_phase_pair("p3", shadow=False, live=False)
+    _set_phase_pair("p4", shadow=False, live=False)
+    _set_phase_pair("p5", shadow=False, live=False)
+
+    from app.api.routes_admin_runtime_flags import load_persisted_flags_into_settings
+    load_persisted_flags_into_settings()
+
+    # Verify no repair happened.
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    if audit_path.exists():
+        lines = [_json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
+        repairs = [e for e in lines if e.get("event") == "runtime_flags_startup_forbidden_combo_repaired"]
+        assert repairs == [], f"Expected no repair audit entries, got {repairs}"
+
+    # Verify states are preserved.
+    assert getattr(settings, "dhl_selfclearance_p3_shadow_mode")  is True
+    assert getattr(settings, "dhl_selfclearance_p3_live_enabled") is True
+
+
+def test_startup_replay_repairs_multiple_phases_independently(monkeypatch, tmp_path):
+    """Two phases simultaneously corrupt → both repaired, two audit entries."""
+    import json as _json
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+
+    store = {
+        "dhl_selfclearance_p2_shadow_mode":  False,
+        "dhl_selfclearance_p2_live_enabled": True,    # FORBIDDEN
+        "dhl_selfclearance_p4_shadow_mode":  False,
+        "dhl_selfclearance_p4_live_enabled": True,    # FORBIDDEN
+    }
+    (tmp_path / "dhl_selfclearance_runtime_flags.json").write_text(_json.dumps(store))
+
+    for ph in ("p2", "p3", "p4", "p5"):
+        _set_phase_pair(ph, shadow=False, live=False)
+
+    from app.api.routes_admin_runtime_flags import load_persisted_flags_into_settings
+    load_persisted_flags_into_settings()
+
+    assert getattr(settings, "dhl_selfclearance_p2_live_enabled") is False
+    assert getattr(settings, "dhl_selfclearance_p4_live_enabled") is False
+
+    audit_path = tmp_path / "dhl_selfclearance_runtime_flags_audit.jsonl"
+    lines = [_json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
+    repairs = [e for e in lines if e.get("event") == "runtime_flags_startup_forbidden_combo_repaired"]
+    repaired_phases = {e["phase"] for e in repairs}
+    assert repaired_phases == {"p2", "p4"}
+
+
+def test_startup_enforcement_helper_uses_coordinator_function(monkeypatch, tmp_path):
+    """Single-source-of-truth: the startup sweep helper must reuse
+    `_enforce_flag_combination` from the coordinator — same binding identity
+    rule as the runtime POST validator."""
+    import app.api.routes_admin_runtime_flags as route_mod
+    import app.services.dhl_clearance_coordinator as coord_mod
+    # The function imported at module scope must be the same object.
+    assert route_mod._enforce_flag_combination is coord_mod._enforce_flag_combination
+    # Sanity: the startup helper is exported for direct testing.
+    assert hasattr(route_mod, "_enforce_startup_combined_states")
