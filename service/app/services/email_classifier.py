@@ -107,7 +107,11 @@ _GANTHER_DOMAINS = {"ganther.com.pl"}
 
 _AWB_DHL_RE    = re.compile(r'\b(\d{10})\b')
 _AWB_FEDEX_RE  = re.compile(r'\b(\d{12})\b')
-_DHL_TICKET_RE = re.compile(r'\[T#1WA\d+\]')
+# Matches T# tickets with OR without surrounding brackets.
+# DHL's original notification arrives WITHOUT brackets (e.g. "T#1WA2605130000195 - ...").
+# Reply threads and internal forwards may add brackets (e.g. "[T#1WA2605130000195]").
+# Both forms must be accepted to avoid silent ticket extraction failure.
+_DHL_TICKET_RE = re.compile(r'\[?T#([A-Z0-9]+)\]?')
 _MRN_RE        = re.compile(r'(?:ZC429_)?([A-Z0-9]{18,20})(?:_\d+_PL)?', re.IGNORECASE)
 _PLN_RE        = re.compile(r'(\d[\d\s,.]+)\s*PLN', re.IGNORECASE)
 _ZC429_FILE_RE = re.compile(r'ZC429_([A-Z0-9]+)_\d+_PL\.pdf', re.IGNORECASE)
@@ -280,7 +284,7 @@ def classify_email(
         awb = _extract_awb(f"{subject} {body}", "DHL")
         ticket_m = _DHL_TICKET_RE.search(subject)
         result["awb"]        = awb
-        result["dhl_ticket"] = ticket_m.group(0) if ticket_m else None
+        result["dhl_ticket"] = f"T#{ticket_m.group(1)}" if ticket_m else None
         result["confidence"] = "high"
 
         body_kw = combined

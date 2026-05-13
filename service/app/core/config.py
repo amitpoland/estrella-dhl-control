@@ -143,7 +143,11 @@ class Settings(BaseSettings):
     zoho_client_id:          Optional[str] = Field(default=None, env="ZOHO_CLIENT_ID")
     zoho_client_secret:      Optional[str] = Field(default=None, env="ZOHO_CLIENT_SECRET")
     zoho_accounts_base:      str           = Field(default="https://accounts.zoho.eu", env="ZOHO_ACCOUNTS_BASE")
-    zoho_mail_api_base:      str           = Field(default="https://mail.zoho.eu/api", env="ZOHO_MAIL_API_BASE")
+    # NOTE: The Estrella mailbox (account 2261204000000002002) is hosted on Zoho's
+    # India data centre. The .eu and .com API bases reject its tokens with
+    # 401 INVALID_OAUTHTOKEN. zmail.zoho.in is empirically verified as correct.
+    # Override via ZOHO_MAIL_API_BASE env var if the mailbox region ever changes.
+    zoho_mail_api_base:      str           = Field(default="https://zmail.zoho.in/api", env="ZOHO_MAIL_API_BASE")
     zoho_mail_account_id:    Optional[str] = Field(default=None, env="ZOHO_MAIL_ACCOUNT_ID")
 
     # ── Email scan routing ────────────────────────────────────────────────────

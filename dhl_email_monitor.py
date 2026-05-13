@@ -662,8 +662,20 @@ def _fetch_messages(
     }
     base = api_base.rstrip("/")
 
+    # Tracks whether any search attempt returned a 401 so callers can
+    # propagate the auth-failure signal instead of treating it as empty results.
+    _auth_failure: list[bool] = [False]  # mutable cell for closure
+
     def _do_search(search_key: str) -> list[dict]:
-        """Issue a single Zoho search; return [] on failure (warn on 400/INVALID)."""
+        """
+        Issue a single Zoho search; return [] on any failure.
+
+        Side-effect: sets _auth_failure[0] = True when Zoho returns HTTP 401
+        so that _fetch_messages can report scan_method="auth_error" to the
+        caller instead of silently returning 0 matches.  Without this signal
+        the route layer cannot distinguish "genuinely empty inbox" from
+        "wrong API region / expired token".
+        """
         try:
             _assert_search_key_valid(search_key, context="_fetch_messages")
         except ValueError:
@@ -676,6 +688,16 @@ def _fetch_messages(
         }
         try:
             resp = _req.get(url, headers=headers, params=params, timeout=15)
+            if resp.status_code == 401:
+                # Auth failure — wrong region or expired token.  Log prominently
+                # so the operator can diagnose, then signal via _auth_failure.
+                log.warning(
+                    "[zoho] 401 UNAUTHORIZED on searchKey=%r — check ZOHO_MAIL_API_BASE "
+                    "and token validity.  api_base=%r body=%r",
+                    search_key, api_base, (resp.text or "")[:300],
+                )
+                _auth_failure[0] = True
+                return []
             if resp.status_code == 400 or "INVALID_METHOD" in (resp.text or ""):
                 log.warning(
                     "[zoho] HTTP %s on searchKey=%r body=%r",
@@ -716,6 +738,11 @@ def _fetch_messages(
                     messages    = ticket_messages
                     scan_method = "rest_api_search_ticket"
                     query_used  = f"searchKey={ticket_key} (ticket fallback)"
+
+        # If every search returned empty AND at least one returned 401, signal
+        # auth_error so the route can fall back to AI Bridge automatically.
+        if not messages and _auth_failure[0]:
+            scan_method = "auth_error"
 
         return messages, len(messages), query_used, scan_method
     else:
