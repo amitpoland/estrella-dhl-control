@@ -94,8 +94,8 @@ class TestPzCreateOperatorHeader:
     def test_executepz_gate_confirm_flow_intact(self):
         _legacy, gate = self._create_blocks()
         assert "window.confirm(" in gate
-        # Phase 3: confirm dialog updated from "Execute PZ in wFirma?" to more descriptive text.
-        assert "Create goods receipt in wFirma?" in gate or "Execute PZ in wFirma?" in gate
+        # Phase 3: confirm dialog must use new operator language; old string is banned
+        assert "Create goods receipt in wFirma?" in gate
         # The confirm runs BEFORE _resolveOperator (don't prompt for
         # name when the user already cancelled the action)
         idx_confirm = gate.index("window.confirm(")
