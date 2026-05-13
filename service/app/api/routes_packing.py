@@ -370,6 +370,22 @@ async def upload_packing_list(
     # Idempotent on re-upload; failures must not break this route.
     seed_purchase_transit(batch_id, line_records)
 
+    # Auto-create / sync proforma drafts from sales_packing_lines (non-blocking).
+    # Uses sales_packing_lines (not packing_lines) as the source of truth for
+    # client grouping and pricing. A no-op if no sales packing lines exist yet.
+    try:
+        from ..services.proforma_draft_sync import sync_draft_from_packing_upload
+        _pf_db_path = settings.storage_root / "proforma_links.db"
+        _sync_result = sync_draft_from_packing_upload(
+            batch_id=batch_id,
+            operator="packing_upload",
+            db_path=_pf_db_path,
+            audit_path=output_dir / "audit.json",
+        )
+        log.info("[%s] proforma draft sync: %s", batch_id, _sync_result)
+    except Exception as _pf_exc:
+        log.warning("[%s] proforma draft sync failed (non-fatal): %s", batch_id, _pf_exc)
+
     # Register packing file in unified document registry (non-blocking)
     try:
         import hashlib as _hl

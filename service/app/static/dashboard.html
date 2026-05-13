@@ -17200,6 +17200,16 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   res: {d.reservation_status}
                 </span>
               )}
+              {d.last_packing_sync_at && !d.packing_sync_warning && (
+                <span data-testid={`draft-sync-chip-${d.id}`}
+                      style={{ marginLeft: 8, fontSize: 9.5,
+                                color: 'var(--text-3)',
+                                background: 'var(--bg-subtle)',
+                                padding: '1px 5px', borderRadius: 3 }}
+                      title={`Lines synced from packing upload: ${d.last_packing_sync_at.slice(0,19).replace('T',' ')}`}>
+                  ↻ packing synced
+                </span>
+              )}
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
               {d.draft_state === 'posting' && d.posting_started_at
@@ -17364,6 +17374,26 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   {openDraft.posted_at && (
                     <span style={{ marginLeft: 6 }}>
                       {openDraft.posted_at.slice(0, 19).replace('T', ' ')}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Auto-sync badge — shown when lines were synced from packing upload */}
+              {openDraft.last_packing_sync_at && (
+                <div data-testid="draft-packing-sync-badge"
+                     style={{ marginBottom: 8, display: 'flex', alignItems: 'center',
+                                gap: 6, fontSize: 10,
+                                color: openDraft.packing_sync_warning
+                                  ? 'var(--badge-amber-text, #92400e)'
+                                  : 'var(--text-3)' }}>
+                  <span style={{ fontWeight: 600 }}>
+                    {openDraft.packing_sync_warning ? '⚠ Auto-synced (blocked)' : '↻ Auto-synced from packing list'}
+                  </span>
+                  <span>{openDraft.last_packing_sync_at.slice(0, 19).replace('T', ' ')}</span>
+                  {openDraft.packing_sync_warning && (
+                    <span style={{ fontSize: 9, opacity: 0.75 }}>
+                      ({openDraft.packing_sync_warning})
                     </span>
                   )}
                 </div>

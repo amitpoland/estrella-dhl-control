@@ -2611,6 +2611,9 @@ def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "error_hint":                 notes_hint,
         "created_at":                 d.created_at,
         "updated_at":                 d.updated_at,
+        # Phase 6 — packing-upload auto-sync metadata
+        "last_packing_sync_at":       d.last_packing_sync_at,
+        "packing_sync_warning":       d.packing_sync_warning,
     }
 
 
