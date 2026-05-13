@@ -79,6 +79,28 @@ def queue_email(
     _append_to_queue(entry)
     log.info("Email queued id=%s to=%s cc=%s subject=%r", email_id, to, cc or "—", subject)
 
+    # ── Attempt immediate SMTP delivery ───────────────────────────────────
+    # Try to send the moment an email is queued so the queue doesn't
+    # accumulate stale pending entries. Non-fatal: if SMTP is not configured
+    # or the send fails, the entry stays 'pending' for manual retry via
+    # POST /api/v1/admin/email-queue/{id}/send.
+    try:
+        from .email_sender import send_queued_email as _smtp_send, _smtp_configured
+        if _smtp_configured():
+            _result = _smtp_send(email_id, method="smtp")
+            if _result.get("ok"):
+                log.info("Email sent immediately id=%s to=%s", email_id, to)
+            else:
+                log.warning(
+                    "Immediate SMTP send failed — email stays pending id=%s error=%s detail=%s",
+                    email_id, _result.get("error"), _result.get("error_detail", ""),
+                )
+    except Exception as _send_exc:
+        log.warning(
+            "Immediate SMTP send attempt raised (non-fatal) id=%s: %s",
+            email_id, _send_exc,
+        )
+
     # ── Email Evidence V2 — record outbound at the moment of queueing ──────
     # Deterministic & cheap; avoids racy Sent-folder scrapes. Best-effort: a
     # failure here must NEVER block the queue write that already succeeded.
