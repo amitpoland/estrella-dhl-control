@@ -489,23 +489,64 @@ def get_packing_lines(batch_id: str) -> Dict[str, Any]:
 
 # ── Helpers for link-as-sales ────────────────────────────────────────────────
 
-# Matches filenames like "148 Client SUOKKO.xlsx" or "149 Cilent Diamond Point".
-# Handles both the correct spelling "Client" and the common typo "Cilent".
-# Optional file extension is consumed but not captured.
+# Two filename patterns for client name extraction:
+#   Short:  "148 Client SUOKKO.xlsx"      → leading number + space + Client + name
+#   Long:   "148 EJL-26-27-148-PND-18KT-...-Client SUOKKO.xlsx"
+#                                          → dash + Client + name anywhere in stem
+# Handles both "Client" and the common "Cilent" typo.
+# Requires either a numeric prefix OR a dash separator so bare "Client NAME.xlsx"
+# (no invoice number, no dash) does not match — preserving prior behavior.
 _CLIENT_NAME_RE = re.compile(
-    r"^\d+\s+(?:client|cilent)\s+(.+?)(?:\.\w+)?$",
+    r"(?:^\d+\s+|-)(?:client|cilent)\s+(.+)",
+    re.IGNORECASE,
+)
+
+# Preamble-level label pattern for Excel header-row fallback.
+_CLIENT_PREAMBLE_RE = re.compile(
+    r"^(?:client|consignee|buyer|ship\s*to)\s*[:#\-]?\s*(.+)",
     re.IGNORECASE,
 )
 
 
 def _guess_client_from_filename(filename: str) -> str:
     """
-    Parse the client name from filenames like '148 Client SUOKKO.xlsx'.
-    Also handles the 'Cilent' typo.  Returns '' if the pattern does not match.
+    Parse the client name from filenames like:
+      '148 Client SUOKKO.xlsx'                              (short format)
+      '148 EJL-26-27-148-PND-18KT-...-Client SUOKKO.xlsx'  (long format)
+    Also handles the 'Cilent' typo.  Returns '' if pattern not found.
     """
     stem = Path(filename).stem
-    m = _CLIENT_NAME_RE.match(stem.strip())
+    m = _CLIENT_NAME_RE.search(stem.strip())
     return m.group(1).strip() if m else ""
+
+
+def _guess_client_from_preamble(file_path: str) -> str:
+    """
+    Fallback: scan the top rows of the Excel packing file for a 'Client:' /
+    'Consignee:' / 'Buyer:' / 'Ship To:' label and return the value.
+    Returns '' on any failure (missing file, unreadable format, no match).
+    """
+    if not file_path:
+        return ""
+    try:
+        import openpyxl as _opx  # type: ignore
+        wb = _opx.load_workbook(str(file_path), read_only=True, data_only=True)
+        ws = wb.active
+        for row in ws.iter_rows(min_row=1, max_row=12, values_only=True):
+            for cell in row:
+                raw = str(cell or "").strip()
+                if not raw:
+                    continue
+                m = _CLIENT_PREAMBLE_RE.match(raw)
+                if m:
+                    val = m.group(1).strip().strip(":")
+                    if val and len(val) < 80:
+                        wb.close()
+                        return val
+        wb.close()
+    except Exception:
+        pass
+    return ""
 
 
 # ── GET /api/v1/packing/{batch_id}/packing-documents ─────────────────────────
@@ -546,7 +587,10 @@ def get_packing_documents(batch_id: str) -> Dict[str, Any]:
     line_counts = pdb.get_line_counts_for_batch(batch_id)
     for d in docs:
         raw_name = Path(d.get("source_file_path", "")).name
-        d["suggested_client_name"] = _guess_client_from_filename(raw_name)
+        d["suggested_client_name"] = (
+            _guess_client_from_filename(raw_name)
+            or _guess_client_from_preamble(d.get("source_file_path", ""))
+        )
         d["line_count"] = line_counts.get(d["id"], 0)
 
     # ── Detect duplicates: group by non-empty source_file_hash ───────────────

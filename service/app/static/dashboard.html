@@ -9226,9 +9226,13 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     const runPzDisabled = !!busy.runPz || status === 'blocked' || !canRunPZ;
                     const runPzTitle = status === 'blocked'
                       ? 'Blocked — resolve verification mismatch before reprocessing'
-                      : !canRunPZ
-                        ? `SAD validation: ${sadBlockReason}`
-                        : '';
+                      : status === 'failed'
+                        ? 'Previous run failed — click to retry'
+                        : status === 'processing'
+                          ? 'Previous run may be stuck — click to restart'
+                          : !canRunPZ
+                            ? `SAD validation: ${sadBlockReason}`
+                            : '';
                   return (
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <Btn variant="gold" disabled={runPzDisabled} style={!canRunPZ && !busy.runPz && status !== 'blocked' ? { opacity: 0.5 } : {}} title={runPzTitle} onClick={() => doAction('runPz', 'Run PZ', async () => {
@@ -9242,13 +9246,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           if (body.mrn_declared) msg += ` — Declared MRN: ${body.mrn_declared}`;
                           throw new Error(msg);
                         }
-                        const text = await res.text().catch(() => '');
-                        throw new Error(`HTTP 409: ${text.slice(0, 200)}`);
+                        let detail = '';
+                        try { const b = await res.json(); detail = b.detail || JSON.stringify(b); } catch { detail = await res.text().catch(() => ''); }
+                        throw new Error(`Cannot run PZ: ${detail.slice(0, 300)}`);
                       }
                       if (!res.ok) { const text = await res.text().catch(() => ''); throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`); }
                       return res.headers.get('content-type')?.includes('json') ? res.json() : res.text();
                     })}>
-                      {busy.runPz ? '⟳ Processing…' : (status === 'blocked' ? '✗ PZ Blocked' : !canRunPZ ? '⛔ SAD validation failed' : (pzGenerated ? '↺ Regenerate PZ' : '▶ Run PZ'))}
+                      {busy.runPz ? '⟳ Processing…' : (status === 'blocked' ? '✗ PZ Blocked' : !canRunPZ ? '⛔ SAD validation failed' : status === 'failed' ? '↺ Retry PZ' : status === 'processing' ? '↺ Restart PZ' : (pzGenerated ? '↺ Regenerate PZ' : '▶ Run PZ'))}
                     </Btn>
                     {pzGenerated && (() => {
                       // Canonical mapping check. ``wfirma_pz_fullnumber`` is
@@ -11718,8 +11723,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     <div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Values & Checks</div>
                       <InfoRow label="SAD Exchange Rate" value={cd.sad_customs_rate ? `${invCurrency}/PLN ${cd.sad_customs_rate}` : hasSad ? 'Not in SAD' : '—'} />
-                      <InfoRow label="NBP Accounting Rate" value={cd.nbp_rate ? `${invCurrency}/PLN ${cd.nbp_rate}` + (cd.nbp_table ? ` (${cd.nbp_table}, ${cd.nbp_date || ''})` : '') : hasSad ? 'Not parsed' : '—'} />
-                      <InfoRow label="Rate Delta" value={cd.rate_delta_pct != null ? `${cd.rate_delta_pct > 0 ? '+' : ''}${cd.rate_delta_pct.toFixed(3)}%` + (cd.rate_alert ? ' ⚠' : ' ✓') : hasSad ? 'Not calculated' : '—'} />
+                      <InfoRow label="NBP Accounting Rate" value={cd.nbp_rate ? `${invCurrency}/PLN ${cd.nbp_rate}` + (cd.nbp_table ? ` (${cd.nbp_table}, ${cd.nbp_date || ''})` : '') : hasSad ? 'Fetched during Run PZ' : '—'} />
+                      <InfoRow label="Rate Delta" value={cd.rate_delta_pct != null ? `${cd.rate_delta_pct > 0 ? '+' : ''}${cd.rate_delta_pct.toFixed(3)}%` + (cd.rate_alert ? ' ⚠' : ' ✓') : hasSad ? 'Calculated during Run PZ' : '—'} />
                       <InfoRow label="A00 Duty (PLN)" value={fmtPLN(cd.duty_a00_pln ?? t.duty)} />
                       <InfoRow label="B00 VAT (PLN)" value={cd.vat_b00_pln != null ? fmtPLN(cd.vat_b00_pln) + ' (ref only — not in landed cost)' : hasSad ? 'Not parsed from SAD' : '—'} />
                     </div>
@@ -17013,9 +17018,11 @@ function ProformaDraftPanel({ batchId, onToast }) {
   }, [batchId, onToast]);
 
   const submitLinkAsSales = React.useCallback(async () => {
-    // Only active (not ignored) rows with a non-blank client name are submitted
+    // Only active (not ignored, not ghost-duplicate) rows with a non-blank client name are submitted
     const mappings = packDocs
-      .filter(doc => !ignoredDocs.has(doc.id) && (clientNames[doc.id] || '').trim())
+      .filter(doc => !ignoredDocs.has(doc.id)
+                     && !(doc.is_duplicate && doc.line_count === 0)
+                     && (clientNames[doc.id] || '').trim())
       .map(doc => ({ packing_document_id: doc.id, client_name: clientNames[doc.id].trim() }));
     if (!mappings.length) {
       onToast && onToast('Enter at least one client name to link (or restore an ignored row).', 'error');
@@ -17279,7 +17286,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {packDocs.map(doc => {
+                  {packDocs.filter(doc => !(doc.is_duplicate && doc.line_count === 0)).map(doc => {
                     const isIgnored = ignoredDocs.has(doc.id);
                     return (
                     <tr key={doc.id} data-testid={isIgnored ? `link-packing-doc-ignored-${doc.id}` : undefined}
@@ -17354,6 +17361,16 @@ function ProformaDraftPanel({ batchId, onToast }) {
                 </tbody>
               </table>
             )}
+            {!packDocsLoading && (() => {
+              const ghostCount = packDocs.filter(doc => doc.is_duplicate && doc.line_count === 0).length;
+              return ghostCount > 0 ? (
+                <div data-testid="link-packing-ghost-count"
+                     style={{ fontSize: 11, color: 'var(--text-3)', padding: '6px 8px',
+                              fontStyle: 'italic' }}>
+                  {ghostCount} duplicate upload{ghostCount !== 1 ? 's' : ''} hidden (zero lines)
+                </div>
+              ) : null;
+            })()}
 
             <div style={{ display: 'flex', gap: 8 }}>
               <button
@@ -17918,7 +17935,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {packDocs.map(doc => {
+                  {packDocs.filter(doc => !(doc.is_duplicate && doc.line_count === 0)).map(doc => {
                     const isIgnored = ignoredDocs.has(doc.id);
                     return (
                     <tr key={doc.id}
@@ -17972,6 +17989,16 @@ function ProformaDraftPanel({ batchId, onToast }) {
                 </tbody>
               </table>
             )}
+            {!packDocsLoading && (() => {
+              const ghostCountMain = packDocs.filter(doc => doc.is_duplicate && doc.line_count === 0).length;
+              return ghostCountMain > 0 ? (
+                <div data-testid="link-packing-ghost-count-main"
+                     style={{ fontSize: 11, color: 'var(--text-3)', padding: '6px 8px',
+                              fontStyle: 'italic' }}>
+                  {ghostCountMain} duplicate upload{ghostCountMain !== 1 ? 's' : ''} hidden (zero lines)
+                </div>
+              ) : null;
+            })()}
 
             <div style={{ display: 'flex', gap: 8 }}>
               <button

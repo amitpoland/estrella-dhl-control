@@ -3573,6 +3573,60 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
                 ver["invoice_cif_total_usd"] = cif
         if cd.get("duty_a00_pln") is not None:
             ver["duty_a00"] = cd["duty_a00_pln"]
+
+        # ── Recompute CIF difference whenever either CIF value is refreshed ──
+        # Without this the difference stays stale from the last engine run,
+        # causing the CIF Comparison panel to show a non-zero diff even when
+        # invoice CIF == SAD CIF.
+        _inv_cif = ver.get("invoice_cif_total_usd")
+        _sad_cif = ver.get("sad_cif_total_usd") or cd.get("sad_cif_usd")
+        if _inv_cif is not None and _sad_cif is not None:
+            _diff = round(_inv_cif - _sad_cif, 2)
+            ver["cif_difference_usd"] = _diff
+            _match = abs(_diff) < 1.0   # tolerance: $1 rounding
+            ver["cif_match"] = _match
+            if _match:
+                ver["cif_status"] = "Verified"
+                # Clear the stale CIF-mismatch amendment flag so the engine
+                # run result no longer poisons the panel after a correct recheck.
+                _flags = audit.get("amendment_flags") or []
+                audit["amendment_flags"] = [
+                    f for f in _flags if "CIF mismatch" not in f
+                ]
+                # Sync customs_declaration CIF fields too
+                if cd:
+                    cd["invoice_cif_usd"]  = _inv_cif
+                    cd["cif_diff_usd"]     = _diff
+                    cd["cif_alert"]        = False
+                # Sync cif_reconciliation if present
+                _rec = audit.get("cif_reconciliation")
+                if _rec:
+                    _rec["invoice_cif_total_usd"] = _inv_cif
+                    _rec["difference_usd"]         = _diff
+                    _rec["status"]                 = "Verified"
+                    _rec["explanation"]            = "Verified by recheck"
+                # ── Clear cif_match from failed_checks ──────────────────────
+                # Stale failed_checks entry blocks the wFirma PZ guard even
+                # after CIF is verified.  Mirrors the accept_sad pattern.
+                _fc = list(audit.get("failed_checks") or [])
+                if "cif_match" in _fc:
+                    _fc = [c for c in _fc if c != "cif_match"]
+                    audit["failed_checks"] = _fc
+                    updated["failed_checks"] = True
+                    # Upgrade blocked → partial when no checks remain and PZ files exist
+                    if not _fc and audit.get("status") == "blocked":
+                        _pz_exists = bool(
+                            audit.get("pz_output", {}).get("generated_at")
+                            or (audit.get("files", {}).get("pdf") or {}).get("sha256")
+                        )
+                        if _pz_exists:
+                            audit["status"] = "partial"
+                            updated["status"] = True
+                            log.info(
+                                "[recheck] status upgraded blocked → partial"
+                                " (cif_match cleared from failed_checks)"
+                            )
+
         updated["verification"] = True
 
     # ── D2. Upgrade status if customs data fully parsed ────────────────────
