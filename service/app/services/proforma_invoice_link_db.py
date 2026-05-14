@@ -1077,13 +1077,14 @@ def auto_create_draft_from_sales_packing(
     if not (client_name or "").strip():
         raise ValueError("client_name is required")
 
-    # Normalise lines defensively. Skip rows with no product_code AND no
-    # design_no — they're useless on a Proforma anyway.
+    # Normalise lines defensively. Skip rows with no product_code —
+    # product_code is required for sales/proforma identity; design_no alone
+    # is not invoiceable.
     editable: List[Dict[str, Any]] = []
     for ln in (lines or []):
         product_code = str(ln.get("product_code") or "").strip()
         design_no    = str(ln.get("design_no") or "").strip()
-        if not product_code and not design_no:
+        if not product_code:
             continue
         qty = ln.get("qty", ln.get("quantity", 0)) or 0
         try:
@@ -1952,11 +1953,13 @@ def reset_draft_from_sales_packing(
     d = _load_for_edit(db_path, draft_id, expected_updated_at)
 
     # Reshape sales_packing_lines columns into editable_lines shape.
+    # Skip rows with no product_code — product_code is required for
+    # sales/proforma identity; design_no alone is not invoiceable.
     rebuilt: List[Dict[str, Any]] = []
     for r in sales_lines:
         product_code = str(r.get("product_code") or "").strip()
         design_no    = str(r.get("design_no") or "").strip()
-        if not product_code and not design_no:
+        if not product_code:
             continue
         try:
             qty_f = float(r.get("qty", r.get("quantity", 0)) or 0)

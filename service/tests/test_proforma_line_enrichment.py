@@ -384,3 +384,53 @@ def test_dashboard_has_enrich_button_and_columns():
         "'item_type' column reference missing from dashboard.html"
     assert "name_pl" in html, \
         "'name_pl' column reference missing from dashboard.html"
+
+
+# ── 13. Enrichment 100% when unmatched rows already filtered out ──────────────
+
+def test_enrich_100pct_after_unmatched_filter(db_path):
+    """
+    A draft built exclusively from matched lines (no blank product_code) must
+    reach 100% enrichment — n_miss == 0.
+    """
+    # Seed a draft whose lines ALL have a known product_code (no unmatched rows).
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path,
+        batch_id    = "B_FILTERED",
+        client_name = "SUOKKO",
+        currency    = "EUR",
+        lines       = [
+            {
+                "product_code": "EJL-RNG-417G",
+                "design_no":    "D100",
+                "qty":           2,
+                "unit_price":    25.50,
+                "currency":      "EUR",
+                "price_source":  "packing_promote",
+                "client_ref":    "",
+            },
+            {
+                "product_code": "EJL-PND-ROSE",
+                "design_no":    "D200",
+                "qty":           1,
+                "unit_price":    100.0,
+                "currency":      "EUR",
+                "price_source":  "packing_promote",
+                "client_ref":    "",
+            },
+        ],
+        operator = "intake",
+    )
+    refreshed = pildb.enrich_draft_lines(
+        db_path, draft.id, "alice", draft.updated_at, _lookup_both
+    )
+    events = pildb.list_draft_events(db_path, draft.id)
+    enriched_events = [
+        e for e in events
+        if e.get("event") == "lines_enriched_from_product_descriptions"
+    ]
+    detail = json.loads(enriched_events[-1]["detail_json"])
+    assert detail["missing_count"] == 0, (
+        f"expected 0 missing after unmatched rows filtered; got {detail['missing_count']}"
+    )
+    assert detail["enriched_count"] == 2
