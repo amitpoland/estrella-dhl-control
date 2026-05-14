@@ -706,3 +706,120 @@ class TestNewUIControlsAndMigration:
         # And NOT a hardcoded lone dash literal in the lines cell
         # (The old code was: <span ...>—</span> with no JS expression)
         assert 'doc.line_count != null' in html
+
+
+# ── 29–32: Unmatched-row filtering (PR 2C.1) ─────────────────────────────────
+
+class TestUnmatchedRowFiltering:
+    """Unmatched packing rows must NOT be promoted to sales_packing_lines."""
+
+    # ── 29: product_code=None/'' rows are excluded ────────────────────────────
+
+    def test_link_as_sales_skips_blank_product_code(self, tmp_path):
+        """
+        Rows where product_code is None or '' after strip must not appear in
+        the sales_lines list built inside link_packing_as_sales.
+        """
+        from app.api.routes_packing import _build_matched_sales_lines
+
+        packing_lines = [
+            {"product_code": "PC-001", "design_no": "D001", "requires_manual_review": False,
+             "invoice_no": "INV-1", "bag_id": "", "quantity": 1.0, "remarks": ""},
+            {"product_code": None,     "design_no": "D002", "requires_manual_review": False,
+             "invoice_no": "INV-2", "bag_id": "", "quantity": 2.0, "remarks": ""},
+            {"product_code": "",       "design_no": "D003", "requires_manual_review": False,
+             "invoice_no": "INV-3", "bag_id": "", "quantity": 3.0, "remarks": ""},
+            {"product_code": "  ",     "design_no": "D004", "requires_manual_review": False,
+             "invoice_no": "INV-4", "bag_id": "", "quantity": 4.0, "remarks": ""},
+        ]
+        matched, skipped = _build_matched_sales_lines(packing_lines, "ACME")
+        assert len(matched)  == 1
+        assert skipped       == 3
+        assert matched[0]["product_code"] == "PC-001"
+
+    # ── 30: requires_manual_review=True rows are excluded ─────────────────────
+
+    def test_link_as_sales_skips_manual_review_rows(self, tmp_path):
+        """Rows with requires_manual_review=True must also be excluded."""
+        from app.api.routes_packing import _build_matched_sales_lines
+
+        packing_lines = [
+            {"product_code": "PC-GOOD", "design_no": "D001", "requires_manual_review": False,
+             "invoice_no": "INV-1", "bag_id": "", "quantity": 1.0, "remarks": ""},
+            {"product_code": "PC-BAD",  "design_no": "D002", "requires_manual_review": True,
+             "invoice_no": "INV-2", "bag_id": "", "quantity": 2.0, "remarks": ""},
+        ]
+        matched, skipped = _build_matched_sales_lines(packing_lines, "ACME")
+        assert len(matched) == 1
+        assert skipped      == 1
+        assert matched[0]["product_code"] == "PC-GOOD"
+
+    # ── 31: auto_create_draft_from_sales_packing skips blank product_code ─────
+
+    def test_auto_create_draft_skips_blank_product_code(self, tmp_path):
+        """
+        auto_create_draft_from_sales_packing must NOT include lines whose
+        product_code is blank, even if design_no is set.
+        """
+        _init_proforma(tmp_path)
+        from app.services import proforma_invoice_link_db as pildb
+
+        db = tmp_path / "proforma_links.db"
+        lines = [
+            {"product_code": "PC-001", "design_no": "D001", "qty": 2.0,
+             "unit_price": 25.0, "currency": "EUR", "price_source": "packing_promote",
+             "client_ref": ""},
+            {"product_code": "",       "design_no": "D002", "qty": 1.0,
+             "unit_price": 0.0,  "currency": "EUR", "price_source": "packing_promote",
+             "client_ref": ""},
+            {"product_code": None,     "design_no": "D003", "qty": 1.0,
+             "unit_price": 0.0,  "currency": "EUR", "price_source": "packing_promote",
+             "client_ref": ""},
+        ]
+        draft, _ = pildb.auto_create_draft_from_sales_packing(
+            db, batch_id="B1", client_name="ACME", currency="EUR",
+            lines=lines, operator="test",
+        )
+        import json
+        editable = json.loads(draft.editable_lines_json)
+        assert len(editable) == 1, \
+            f"expected 1 editable line (blank product_code skipped), got {len(editable)}"
+        assert editable[0]["product_code"] == "PC-001"
+
+    # ── 32: reset_draft_from_sales_packing skips blank product_code ───────────
+
+    def test_reset_draft_skips_blank_product_code(self, tmp_path):
+        """
+        reset_draft_from_sales_packing must skip lines whose product_code is
+        blank even if design_no is present.
+        """
+        _init_proforma(tmp_path)
+        from app.services import proforma_invoice_link_db as pildb
+
+        db = tmp_path / "proforma_links.db"
+        # Seed the draft with good lines first
+        draft, _ = pildb.auto_create_draft_from_sales_packing(
+            db, batch_id="B1", client_name="ACME", currency="EUR",
+            lines=[{"product_code": "PC-001", "design_no": "D001", "qty": 1.0,
+                    "unit_price": 10.0, "currency": "EUR", "price_source": "test",
+                    "client_ref": ""}],
+            operator="seed",
+        )
+        # Now reset with one good line + two bad (blank product_code)
+        new_lines = [
+            {"product_code": "PC-002", "design_no": "D002", "qty": 3.0,
+             "unit_price": 30.0, "currency": "EUR", "price_source": "packing_promote",
+             "client_ref": ""},
+            {"product_code": "",       "design_no": "D-UNMATCHED", "qty": 1.0,
+             "unit_price": 0.0,  "currency": "EUR", "price_source": "packing_promote",
+             "client_ref": ""},
+        ]
+        refreshed = pildb.reset_draft_from_sales_packing(
+            db, draft.id, "test", draft.updated_at,
+            sales_lines=new_lines, reset_all=True,
+        )
+        import json
+        editable = json.loads(refreshed.editable_lines_json)
+        assert len(editable) == 1, \
+            f"expected 1 editable line after reset, got {len(editable)}"
+        assert editable[0]["product_code"] == "PC-002"
