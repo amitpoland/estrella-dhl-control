@@ -3006,6 +3006,72 @@ def reset_proforma_draft_from_sales_packing(
     ))
 
 
+@router.post("/draft/{draft_id}/enrich-from-product-descriptions",
+             dependencies=[_auth])
+def enrich_proforma_draft_lines(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Enrich editable lines with canonical product-description annotations.
+
+    Pure annotation — no price changes, no state changes, no wFirma calls.
+    ``source_lines_json`` is never modified.
+
+    Body::
+        {"expected_updated_at": "..."}
+
+    Response::
+        {"ok": true, "draft_id": N, "enriched_count": N, "missing_count": M,
+         "draft": {...}}
+
+    Errors:
+        400 — missing expected_updated_at
+        404 — draft not found
+        409 — draft not in editable state, or OCC conflict
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = (x_operator or "").strip() or "system"
+    expected = str(body.get("expected_updated_at") or "")
+    if not expected:
+        raise HTTPException(status_code=400,
+                            detail="expected_updated_at is required")
+
+    def _lookup(pc: str) -> Optional[Dict[str, Any]]:
+        return ddb.get_product_description(pc)
+
+    try:
+        refreshed = pildb.enrich_draft_lines(
+            _proforma_db_path(),
+            int(draft_id),
+            operator,
+            expected,
+            _lookup,
+        )
+    except pildb.DraftNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except pildb.DraftNotEditable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except pildb.DraftConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    lines = json.loads(refreshed.editable_lines_json or "[]") or []
+    n_hit  = sum(1 for ln in lines if ln.get("name_pl") is not None)
+    n_miss = sum(1 for ln in lines if ln.get("name_pl") is None)
+    return JSONResponse({
+        "ok":             True,
+        "draft_id":       draft_id,
+        "enriched_count": n_hit,
+        "missing_count":  n_miss,
+        "draft":          _draft_to_full(refreshed),
+    })
+
+
 @router.post("/draft/{draft_id}/lines", dependencies=[_auth])
 def post_proforma_draft_line(
     draft_id:  int,

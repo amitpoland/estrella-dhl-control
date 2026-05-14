@@ -17193,6 +17193,22 @@ function ProformaDraftPanel({ batchId, onToast }) {
     });
   };
 
+  const onEnrichProductNames = () => {
+    if (!openDraft || !isEditable) return;
+    if (!(openDraft.editable_lines || []).length) return;
+    _writeCall('Enrich product names',
+               `/api/v1/proforma/draft/${openId}/enrich-from-product-descriptions`, {
+      method: 'POST',
+      body: JSON.stringify({ expected_updated_at: openDraft.updated_at }),
+    }).then(result => {
+      if (result && result.ok) {
+        const n = result.enriched_count || 0;
+        const m = result.missing_count  || 0;
+        onToast && onToast(`Enriched ${n} line${n !== 1 ? 's' : ''} (${m} without description)`, 'success');
+      }
+    });
+  };
+
   // POST is special: only allowed when state=approved, double-confirmed.
   // Manual handler ONLY — must NEVER be invoked from any auto-effect.
   const onPostToWfirma = () => {
@@ -17733,6 +17749,8 @@ function ProformaDraftPanel({ batchId, onToast }) {
                     <tr style={{ color: 'var(--text-3)', textAlign: 'left' }}>
                       <th>#</th>
                       <th>product_code</th>
+                      <th>item_type</th>
+                      <th>name_pl</th>
                       <th>design_no</th>
                       <th>qty</th>
                       <th>unit_price</th>
@@ -17819,6 +17837,13 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   <React.Fragment>
                     <Btn small variant="primary" onClick={onApprove}
                          data-testid="btn-draft-approve">Approve</Btn>
+                    {(openDraft.editable_lines || []).length > 0 && (
+                      <Btn small variant="outline" onClick={onEnrichProductNames}
+                           data-testid="btn-enrich-product-names"
+                           title="Copy item_type, name_pl, description from product_descriptions">
+                        Enrich product names
+                      </Btn>
+                    )}
                     <Btn small onClick={onReset}
                          data-testid="btn-draft-reset">Reload items from warehouse data</Btn>
                     <Btn small onClick={onResetAll}
@@ -18037,10 +18062,21 @@ function ProformaDraftLineRow({ line, editable, onPatch }) {
   const dirty = (parseFloat(qty)   !== Number(line.qty)) ||
                 (parseFloat(price) !== Number(line.unit_price));
 
+  const namePlFull = line.name_pl || '';
+  const namePlShort = namePlFull.length > 35 ? namePlFull.slice(0, 35) + '…' : namePlFull;
   return (
     <tr data-testid={`draft-line-${line.line_id}`}>
       <td>{line.line_id}</td>
       <td><code>{line.product_code}</code></td>
+      <td style={{ fontSize: 11, color: line.item_type ? 'var(--text-2)' : 'var(--text-3)' }}>
+        {line.item_type || '—'}
+      </td>
+      <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis',
+                   whiteSpace: 'nowrap', color: line.name_pl ? 'var(--text)' : 'var(--text-3)' }}
+          title={namePlFull || undefined}
+          data-testid={`draft-line-name-pl-${line.line_id}`}>
+        {namePlShort || '—'}
+      </td>
       <td>{line.design_no || '—'}</td>
       <td style={{ width: 90 }}>
         {editable
