@@ -556,10 +556,10 @@ def _build_matched_sales_lines(
             "bag_id":       str(ln.get("bag_id", "") or ""),
             "quantity":     float(ln.get("quantity", 0) or 0),
             "remarks":      str(ln.get("remarks", "") or ""),
-            "unit_price":   0.0,
-            "currency":     "EUR",
-            "total_value":  0.0,
-            "price_source": "packing_promote",
+            "unit_price":   float(ln.get("unit_price_eur") or 0),
+            "currency":     str(ln.get("currency") or "EUR"),
+            "total_value":  float(ln.get("quantity") or 0) * float(ln.get("unit_price_eur") or 0),
+            "price_source": "packing_xlsx_value" if float(ln.get("unit_price_eur") or 0) > 0 else "packing_promote",
         }
         for ln in matched
     ]
