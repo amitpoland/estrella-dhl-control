@@ -2636,6 +2636,14 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     # copy on its own.
     editable_lines = pildb._ensure_line_ids(raw_lines)
 
+    # PR 2C.2 — display-only flag: true when any line still has unit_price ≤ 0.
+    # Signals to the dashboard that "Reset draft from packing" is needed to
+    # carry through real EUR billing prices. No DB write; derived on read.
+    needs_pricing_refresh = any(
+        float(ln.get("unit_price", 0) or 0) <= 0
+        for ln in editable_lines
+    )
+
     return {
         **_draft_to_summary(d),
         "remarks":               d.remarks,
@@ -2651,6 +2659,8 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "notes":                 d.notes,
         "exchange_rate":         d.exchange_rate,
         "status_legacy":         d.status,
+        # PR 2C.2 — read-only pricing health flag (no write, no mutation)
+        "needs_pricing_refresh": needs_pricing_refresh,
     }
 
 
@@ -3403,6 +3413,27 @@ def post_proforma_draft_to_wfirma(
             status_code=409,
             detail=f"draft {draft_id} already has wfirma_proforma_id="
                    f"{pre.wfirma_proforma_id!r}",
+        )
+
+    # ── Zero-price guard ───────────────────────────────────────────────────
+    # PR 2C.2: every line must carry a positive unit_price before posting.
+    # Lines with unit_price == 0 indicate the EUR billing price was never
+    # populated (packing list not yet promoted, or an old draft created
+    # before the price passthrough was deployed).  The operator must
+    # reset the draft from the packing list to pick up real prices.
+    try:
+        _pre_lines = json.loads(pre.editable_lines_json or "[]") or []
+    except Exception:
+        _pre_lines = []
+    zero_price_lines = [
+        ln for ln in _pre_lines
+        if float(ln.get("unit_price", 0) or 0) <= 0
+    ]
+    if zero_price_lines:
+        return _post_validation_error(
+            draft_id,
+            f"{len(zero_price_lines)} line(s) have unit_price ≤ 0 — "
+            "refresh prices from packing list before posting",
         )
 
     # Build the wFirma request from persisted fields BEFORE start_post —
