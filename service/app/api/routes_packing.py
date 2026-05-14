@@ -532,6 +532,40 @@ def _guess_client_from_filename(filename: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _build_matched_sales_lines(
+    packing_lines: List[Dict[str, Any]],
+    client: str,
+) -> tuple:
+    """Filter *packing_lines* to invoiceable rows and build sales_packing_lines dicts.
+
+    Returns (matched_list, skipped_count).  Excludes rows where product_code
+    is absent/blank or requires_manual_review is set.
+    """
+    matched = [
+        ln for ln in packing_lines
+        if str(ln.get("product_code") or "").strip()
+        and not ln.get("requires_manual_review")
+    ]
+    skipped = len(packing_lines) - len(matched)
+    sales_lines = [
+        {
+            "client_name":  client,
+            "client_ref":   str(ln.get("invoice_no", "") or ""),
+            "product_code": str(ln.get("product_code", "") or ""),
+            "design_no":    str(ln.get("design_no", "") or ""),
+            "bag_id":       str(ln.get("bag_id", "") or ""),
+            "quantity":     float(ln.get("quantity", 0) or 0),
+            "remarks":      str(ln.get("remarks", "") or ""),
+            "unit_price":   0.0,
+            "currency":     "EUR",
+            "total_value":  0.0,
+            "price_source": "packing_promote",
+        }
+        for ln in matched
+    ]
+    return sales_lines, skipped
+
+
 def _guess_client_from_preamble(file_path: str) -> str:
     """
     Fallback: scan the top rows of the Excel packing file for a 'Client:' /
@@ -726,26 +760,8 @@ def link_packing_as_sales(
             client_name=client,
         )
 
-        # Map packing_lines columns → sales_packing_lines format.
-        # unit_price / total_value are intentionally 0.0: the packing list
-        # carries no price data.  The draft editor allows the operator to fill
-        # these in, or they are populated later from the purchase invoice match.
-        sales_lines = [
-            {
-                "client_name":   client,
-                "client_ref":    str(ln.get("invoice_no", "") or ""),
-                "product_code":  str(ln.get("product_code", "") or ""),
-                "design_no":     str(ln.get("design_no", "") or ""),
-                "bag_id":        str(ln.get("bag_id", "") or ""),
-                "quantity":      float(ln.get("quantity", 0) or 0),
-                "remarks":       str(ln.get("remarks", "") or ""),
-                "unit_price":    0.0,
-                "currency":      "EUR",
-                "total_value":   0.0,
-                "price_source":  "packing_promote",
-            }
-            for ln in packing_lines
-        ]
+        # Map packing_lines → sales_packing_lines, excluding unmatched rows.
+        sales_lines, unmatched_skipped = _build_matched_sales_lines(packing_lines, client)
 
         # Atomically replace (idempotent for this sales_document scope)
         repl = ddb.replace_sales_packing_lines(
@@ -759,10 +775,12 @@ def link_packing_as_sales(
             "ok":                  True,
             "packing_lines_read":  len(packing_lines),
             "sales_lines_written": repl["inserted"],
+            "unmatched_skipped":   unmatched_skipped,
         })
         log.info(
-            "[%s] link_as_sales: client=%s pdoc=%s lines=%d→%d",
+            "[%s] link_as_sales: client=%s pdoc=%s lines=%d→%d (skipped=%d unmatched)",
             batch_id, client, pdoc_id, len(packing_lines), repl["inserted"],
+            unmatched_skipped,
         )
 
     # Trigger proforma draft auto-sync (non-blocking; any error is logged, not raised)

@@ -384,3 +384,186 @@ def test_dashboard_has_enrich_button_and_columns():
         "'item_type' column reference missing from dashboard.html"
     assert "name_pl" in html, \
         "'name_pl' column reference missing from dashboard.html"
+
+
+# ── PR 2C.1 regression tests ─────────────────────────────────────────────────
+#
+# These tests assert the AND→OR guard fix in auto_create_draft_from_sales_packing
+# and reset_draft_from_sales_packing.  A row with product_code='' but a non-empty
+# design_no must NOT appear in editable_lines_json.
+
+def test_auto_create_draft_skips_blank_product_code_with_design_no(db_path):
+    """Regression: blank product_code + non-empty design_no must be skipped.
+
+    Before the fix the guard was ``if not product_code and not design_no: continue``
+    which let these rows slip through.  After the fix it is ``if not product_code:
+    continue``.
+    """
+    lines = [
+        {
+            "product_code": "",           # blank — must be skipped
+            "design_no":    "J3609R01707",  # non-empty design_no (the old guard let this pass)
+            "qty":           1,
+            "unit_price":    50.0,
+            "currency":      "EUR",
+            "price_source":  "packing_promote",
+        },
+        {
+            "product_code": "EJL-RNG-417G",  # valid — must be kept
+            "design_no":    "D100",
+            "qty":           2,
+            "unit_price":    25.50,
+            "currency":      "EUR",
+            "price_source":  "packing_promote",
+        },
+    ]
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path,
+        batch_id    = "B_REGRESSION_AUTO",
+        client_name = "SUOKKO",
+        currency    = "EUR",
+        lines       = lines,
+        operator    = "intake",
+    )
+    editable = json.loads(draft.editable_lines_json)
+    codes = [ln["product_code"] for ln in editable]
+    assert "" not in codes, (
+        "blank product_code row appeared in editable_lines_json — AND guard not fixed"
+    )
+    assert "EJL-RNG-417G" in codes
+    assert len(editable) == 1
+
+
+def test_reset_draft_skips_blank_product_code_with_design_no(db_path):
+    """Regression: reset_draft_from_sales_packing must apply the same guard."""
+    # Seed a valid draft first.
+    draft = _seed_draft(db_path)
+
+    lines_with_blank = [
+        {
+            "product_code": "",            # blank — must be skipped
+            "design_no":    "J3609R01707",
+            "qty":           1,
+            "unit_price":    50.0,
+            "currency":      "EUR",
+            "price_source":  "packing_promote",
+        },
+        {
+            "product_code": "EJL-RNG-417G",  # valid
+            "design_no":    "D100",
+            "qty":           3,
+            "unit_price":    30.0,
+            "currency":      "EUR",
+            "price_source":  "packing_promote",
+        },
+    ]
+    reset = pildb.reset_draft_from_sales_packing(
+        db_path,
+        draft_id           = draft.id,
+        operator           = "intake",
+        sales_lines        = lines_with_blank,
+        expected_updated_at = draft.updated_at,
+    )
+    editable = json.loads(reset.editable_lines_json)
+    codes = [ln["product_code"] for ln in editable]
+    assert "" not in codes, (
+        "blank product_code row appeared after reset — AND guard not fixed in reset path"
+    )
+    assert "EJL-RNG-417G" in codes
+    assert len(editable) == 1
+
+
+def test_existing_blank_draft_line_enrichment_still_safe(db_path):
+    """Grandfathered blank-product_code line in editable_lines_json must not crash enrichment.
+
+    Historical drafts created before the fix may contain rows with product_code=''.
+    enrich_lines_from_product_descriptions must handle them gracefully: no exception,
+    and all annotation fields set to None for that row.
+    """
+    # Seed a normal draft then manually inject a blank-code line into editable_lines_json.
+    draft = _seed_draft(db_path)
+    existing = json.loads(draft.editable_lines_json)
+    blank_line = {
+        "product_code": "",
+        "design_no":    "J3609R01707",
+        "qty":           1.0,
+        "unit_price":    50.0,
+        "currency":      "EUR",
+        "price_source":  "packing_promote",
+        "line_id":       999,
+    }
+    existing.append(blank_line)
+    with __import__("sqlite3").connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE proforma_drafts SET editable_lines_json=? WHERE id=?",
+            (json.dumps(existing), draft.id),
+        )
+        conn.commit()
+
+    # Re-load so updated_at is fresh.
+    fresh = pildb.get_draft_by_id(db_path, draft.id)
+
+    # Must not raise.
+    enriched_lines, n_hit, n_miss = pildb.enrich_lines_from_product_descriptions(
+        json.loads(fresh.editable_lines_json),
+        _lookup_none,  # returns None for every code
+    )
+
+    # All annotation fields for the blank-code row must be None, no crash.
+    blank_enriched = next(
+        (ln for ln in enriched_lines if ln.get("product_code") == ""), None
+    )
+    assert blank_enriched is not None, "blank-code line disappeared unexpectedly"
+    assert blank_enriched["item_type"]    is None
+    assert blank_enriched["name_pl"]      is None
+    assert blank_enriched["description_pl"] is None
+
+
+# ── 13. Enrichment 100% when unmatched rows already filtered out ──────────────
+
+def test_enrich_100pct_after_unmatched_filter(db_path):
+    """
+    A draft built exclusively from matched lines (no blank product_code) must
+    reach 100% enrichment — n_miss == 0.
+    """
+    # Seed a draft whose lines ALL have a known product_code (no unmatched rows).
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path,
+        batch_id    = "B_FILTERED",
+        client_name = "SUOKKO",
+        currency    = "EUR",
+        lines       = [
+            {
+                "product_code": "EJL-RNG-417G",
+                "design_no":    "D100",
+                "qty":           2,
+                "unit_price":    25.50,
+                "currency":      "EUR",
+                "price_source":  "packing_promote",
+                "client_ref":    "",
+            },
+            {
+                "product_code": "EJL-PND-ROSE",
+                "design_no":    "D200",
+                "qty":           1,
+                "unit_price":    100.0,
+                "currency":      "EUR",
+                "price_source":  "packing_promote",
+                "client_ref":    "",
+            },
+        ],
+        operator = "intake",
+    )
+    refreshed = pildb.enrich_draft_lines(
+        db_path, draft.id, "alice", draft.updated_at, _lookup_both
+    )
+    events = pildb.list_draft_events(db_path, draft.id)
+    enriched_events = [
+        e for e in events
+        if e.get("event") == "lines_enriched_from_product_descriptions"
+    ]
+    detail = json.loads(enriched_events[-1]["detail_json"])
+    assert detail["missing_count"] == 0, (
+        f"expected 0 missing after unmatched rows filtered; got {detail['missing_count']}"
+    )
+    assert detail["enriched_count"] == 2
