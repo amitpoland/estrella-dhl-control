@@ -334,6 +334,33 @@ def init_document_db(db_path: Path) -> None:
             except sqlite3.OperationalError:
                 pass  # column already exists
 
+        # ── Product identity fields (PR: product-identity-engine-foundation)
+        # Extends product_descriptions with packing-derived identity fields:
+        #   karat / metal_color / quality_string / stone_type — from packing XLSX
+        #   unit_price_eur — per-piece EUR price from packing XLSX Value column
+        #   unit_price_usd — per-piece USD from invoice_lines
+        #   confidence — HIGH / MEDIUM / LOW (assigned by product_identity_engine)
+        #   supplier_prefix — "EJL" | "417G" | "UNKNOWN"
+        #   is_globally_unique — 0 for 417G codes, 1 for EJL codes
+        # All idempotent: safe to run against existing production DB.
+        for col, ddl in (
+            ("karat",              "TEXT NOT NULL DEFAULT ''"),
+            ("metal_color",        "TEXT NOT NULL DEFAULT ''"),
+            ("quality_string",     "TEXT NOT NULL DEFAULT ''"),
+            ("stone_type",         "TEXT NOT NULL DEFAULT ''"),
+            ("unit_price_eur",     "REAL NOT NULL DEFAULT 0.0"),
+            ("unit_price_usd",     "REAL NOT NULL DEFAULT 0.0"),
+            ("confidence",         "TEXT NOT NULL DEFAULT ''"),
+            ("supplier_prefix",    "TEXT NOT NULL DEFAULT ''"),
+            ("is_globally_unique", "INTEGER NOT NULL DEFAULT 1"),
+        ):
+            try:
+                con.execute(
+                    f"ALTER TABLE product_descriptions ADD COLUMN {col} {ddl}"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
 
 _V_SALES_TO_WFIRMA_DDL = """
 CREATE TEMP VIEW IF NOT EXISTS v_sales_to_wfirma AS
