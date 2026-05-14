@@ -81,12 +81,32 @@ class CustomerMaster:
     freight_currency:        Optional[str] = None
     freight_mode:            Optional[str] = None         # fixed | variable | manual | no_data
 
+    # Freight — currency-safe standing amounts (PR 2C.3a)
+    # EUR draft → freight_fixed_amount_eur.  USD draft → freight_fixed_amount_usd.
+    # No cross-currency fallback.  2D reads freight_service_id as wFirma invoicecontent good_id.
+    freight_fixed_amount_eur: Optional[Decimal] = None
+    freight_fixed_amount_usd: Optional[Decimal] = None
+    freight_label_pl:         Optional[str] = None        # Polish billing label
+    freight_label_en:         Optional[str] = None        # English billing label
+
     # Insurance defaults
     insurance_service_id:    Optional[str] = "13102217"   # wFirma good_id
-    insurance_min_amount:    Optional[Decimal] = None     # auto-detected min
-    insurance_min_override:  Optional[Decimal] = None     # operator override beats _amount
+    insurance_min_amount:    Optional[Decimal] = None     # auto-detected min (legacy)
+    insurance_min_override:  Optional[Decimal] = None     # operator override beats _amount (legacy)
     insurance_rate:          Optional[Decimal] = Decimal("0.0035")
     insurance_mode:          Optional[str] = None         # fixed | formula | manual | no_data
+
+    # Insurance — currency-safe amounts (PR 2C.3a)
+    # EUR draft → insurance_min_eur / insurance_fixed_amount_eur.
+    # USD draft → insurance_min_usd / insurance_fixed_amount_usd.
+    # No cross-currency fallback.  2D reads insurance_service_id as wFirma invoicecontent good_id.
+    insurance_fixed_amount_eur: Optional[Decimal] = None
+    insurance_fixed_amount_usd: Optional[Decimal] = None
+    insurance_min_eur:          Optional[Decimal] = None  # formula floor for EUR drafts
+    insurance_min_usd:          Optional[Decimal] = None  # formula floor for USD drafts
+    insurance_label_pl:         Optional[str] = None      # Polish billing label
+    insurance_label_en:         Optional[str] = None      # English billing label
+    insurance_enabled:          bool = True               # False → suggest-insurance returns blocked
 
     # Credit / Kuke (stored only — Layer 1 does NOT enforce)
     credit_limit:            Optional[Decimal] = None
@@ -144,6 +164,22 @@ def validate(c: CustomerMaster) -> List[str]:
         rate = Decimal(c.insurance_rate)
         if rate < 0 or rate > 1:
             blockers.append(f"insurance_rate must be in [0,1], got {rate}")
+    # PR 2C.3a: currency-safe amounts must be positive (> 0) if set
+    for label, value in (
+        ("freight_fixed_amount_eur",   c.freight_fixed_amount_eur),
+        ("freight_fixed_amount_usd",   c.freight_fixed_amount_usd),
+        ("insurance_fixed_amount_eur", c.insurance_fixed_amount_eur),
+        ("insurance_fixed_amount_usd", c.insurance_fixed_amount_usd),
+        ("insurance_min_eur",          c.insurance_min_eur),
+        ("insurance_min_usd",          c.insurance_min_usd),
+    ):
+        if value is not None and Decimal(value) <= 0:
+            blockers.append(f"{label} must be > 0, got {value}")
+    # Service IDs must be non-empty strings if provided
+    if c.freight_service_id is not None and not str(c.freight_service_id).strip():
+        blockers.append("freight_service_id must be a non-empty string if provided")
+    if c.insurance_service_id is not None and not str(c.insurance_service_id).strip():
+        blockers.append("insurance_service_id must be a non-empty string if provided")
     return blockers
 
 
@@ -235,6 +271,18 @@ def init_db(db_path: Path) -> None:
             ("insurance_min_amount",         "TEXT"),
             ("insurance_rate",               "TEXT DEFAULT '0.0035'"),
             ("insurance_mode",               "TEXT"),
+            # PR 2C.3a — currency-safe freight/insurance standing amounts
+            ("freight_fixed_amount_eur",   "TEXT"),
+            ("freight_fixed_amount_usd",   "TEXT"),
+            ("freight_label_pl",           "TEXT"),
+            ("freight_label_en",           "TEXT"),
+            ("insurance_fixed_amount_eur", "TEXT"),
+            ("insurance_fixed_amount_usd", "TEXT"),
+            ("insurance_min_eur",          "TEXT"),
+            ("insurance_min_usd",          "TEXT"),
+            ("insurance_label_pl",         "TEXT"),
+            ("insurance_label_en",         "TEXT"),
+            ("insurance_enabled",          "INTEGER NOT NULL DEFAULT 1"),
         ])
 
 
@@ -311,11 +359,22 @@ def _row_to_customer(row: sqlite3.Row) -> CustomerMaster:
         freight_avg_amount            = _str_to_dec(_row_get(row, "freight_avg_amount")),
         freight_currency              = _row_get(row, "freight_currency"),
         freight_mode                  = _row_get(row, "freight_mode"),
+        freight_fixed_amount_eur      = _str_to_dec(_row_get(row, "freight_fixed_amount_eur")),
+        freight_fixed_amount_usd      = _str_to_dec(_row_get(row, "freight_fixed_amount_usd")),
+        freight_label_pl              = _row_get(row, "freight_label_pl"),
+        freight_label_en              = _row_get(row, "freight_label_en"),
         insurance_service_id          = _row_get(row, "insurance_service_id", "13102217"),
         insurance_min_amount          = _str_to_dec(_row_get(row, "insurance_min_amount")),
         insurance_min_override        = _str_to_dec(row["insurance_min_override"]),
         insurance_rate                = _str_to_dec(_row_get(row, "insurance_rate")) or Decimal("0.0035"),
         insurance_mode                = _row_get(row, "insurance_mode"),
+        insurance_fixed_amount_eur    = _str_to_dec(_row_get(row, "insurance_fixed_amount_eur")),
+        insurance_fixed_amount_usd    = _str_to_dec(_row_get(row, "insurance_fixed_amount_usd")),
+        insurance_min_eur             = _str_to_dec(_row_get(row, "insurance_min_eur")),
+        insurance_min_usd             = _str_to_dec(_row_get(row, "insurance_min_usd")),
+        insurance_label_pl            = _row_get(row, "insurance_label_pl"),
+        insurance_label_en            = _row_get(row, "insurance_label_en"),
+        insurance_enabled             = bool(int(_row_get(row, "insurance_enabled", 1))),
         credit_limit                  = _str_to_dec(row["credit_limit"]),
         credit_currency               = row["credit_currency"],
         kuke_approved                 = _to_bool(row["kuke_approved"]),
@@ -367,11 +426,22 @@ def upsert_customer(db_path: Path, c: CustomerMaster) -> int:
         "freight_avg_amount":           _dec_to_str(c.freight_avg_amount),
         "freight_currency":             c.freight_currency,
         "freight_mode":                 c.freight_mode,
+        "freight_fixed_amount_eur":     _dec_to_str(c.freight_fixed_amount_eur),
+        "freight_fixed_amount_usd":     _dec_to_str(c.freight_fixed_amount_usd),
+        "freight_label_pl":             c.freight_label_pl,
+        "freight_label_en":             c.freight_label_en,
         "insurance_service_id":         c.insurance_service_id,
         "insurance_min_amount":         _dec_to_str(c.insurance_min_amount),
         "insurance_min_override":       _dec_to_str(c.insurance_min_override),
         "insurance_rate":               _dec_to_str(c.insurance_rate),
         "insurance_mode":               c.insurance_mode,
+        "insurance_fixed_amount_eur":   _dec_to_str(c.insurance_fixed_amount_eur),
+        "insurance_fixed_amount_usd":   _dec_to_str(c.insurance_fixed_amount_usd),
+        "insurance_min_eur":            _dec_to_str(c.insurance_min_eur),
+        "insurance_min_usd":            _dec_to_str(c.insurance_min_usd),
+        "insurance_label_pl":           c.insurance_label_pl,
+        "insurance_label_en":           c.insurance_label_en,
+        "insurance_enabled":            1 if c.insurance_enabled else 0,
         "credit_limit":                 _dec_to_str(c.credit_limit),
         "credit_currency":         c.credit_currency,
         "kuke_approved":           _to_int(c.kuke_approved),
