@@ -77,7 +77,7 @@ except ImportError as _e:
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
 _DEFAULT_OUTPUTS_ROOT = Path("C:/PZ/storage/outputs")
-_DEFAULT_DB_PATH      = Path("C:/PZ/storage/document.db")
+_DEFAULT_DB_PATH      = Path("C:/PZ/storage/documents.db")   # note: documents.db (with 's')
 
 # Generic stubs that must be removed from product_descriptions before backfill.
 # These are keyed by item_type names — they are legacy noise, never real codes.
