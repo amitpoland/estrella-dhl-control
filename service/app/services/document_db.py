@@ -1438,3 +1438,140 @@ def upsert_product_description(
                  description_en, material_pl, purpose_pl, description_block,
                  description_line, source, now, now),
             )
+
+
+# ── Product identity backfill (write-mode, guarded) ──────────────────────────
+
+_BACKFILL_SOURCE = "pz_rows_backfill"
+
+#: Disposition strings returned by upsert_product_identity_from_backfill.
+#: Dry-run variants are prefixed with "dry_run_".
+BACKFILL_DISPOSITIONS = frozenset({
+    "inserted",
+    "updated",
+    "skipped_manual",
+    "skipped_417g",
+    "skipped_generic",
+    "dry_run_insert",
+    "dry_run_update",
+    "dry_run_skip_manual",
+    "dry_run_skip_417g",
+    "dry_run_skip_generic",
+})
+
+
+def upsert_product_identity_from_backfill(
+    con,              # sqlite3.Connection — caller holds the connection
+    product_code: str,
+    identity,         # ProductIdentity from product_identity_engine
+    *,
+    dry_run: bool = True,
+) -> str:
+    """
+    Insert or update a product_descriptions row from a ProductIdentity record.
+
+    Guard order (evaluated before any write or dry-run check):
+      1. supplier_prefix == "417G"  → skip (non-unique key, corruption risk)
+      2. is_generic_description()   → skip
+      3. product_code in FORBIDDEN_PRODUCT_CODE_KEYS → skip (legacy stubs)
+      4. existing row source == 'manual' → skip (never overwrite manual rows)
+
+    In dry-run mode (dry_run=True, the default):
+      Returns a "dry_run_*" disposition string; NO writes are made.
+
+    In write mode (dry_run=False):
+      INSERT new row or UPDATE existing non-manual row with all 9 identity
+      columns.  source is always set to 'pz_rows_backfill'.
+
+    Returns one of the strings in BACKFILL_DISPOSITIONS.
+    """
+    # Lazy import — keeps document_db.py free of a hard dependency on
+    # product_identity_engine at module load time.
+    from app.services.product_identity_engine import (  # noqa: PLC0415
+        is_generic_description,
+        FORBIDDEN_PRODUCT_CODE_KEYS,
+    )
+
+    pc = str(product_code or "").strip()
+
+    # ── Guard 1: 417G non-unique codes ──────────────────────────────────────
+    if getattr(identity, "supplier_prefix", "") == "417G":
+        return "dry_run_skip_417g" if dry_run else "skipped_417g"
+
+    # ── Guard 2: generic description ────────────────────────────────────────
+    desc_pl = str(getattr(identity, "description_pl", "") or "").strip()
+    if is_generic_description(desc_pl):
+        return "dry_run_skip_generic" if dry_run else "skipped_generic"
+
+    # ── Guard 3: forbidden stub key ─────────────────────────────────────────
+    if pc.upper() in FORBIDDEN_PRODUCT_CODE_KEYS:
+        return "dry_run_skip_generic" if dry_run else "skipped_generic"
+
+    # ── Guard 4: existing manual row ────────────────────────────────────────
+    existing = con.execute(
+        "SELECT source FROM product_descriptions WHERE product_code=?",
+        (pc,),
+    ).fetchone()
+    if existing is not None and existing["source"] == "manual":
+        return "dry_run_skip_manual" if dry_run else "skipped_manual"
+
+    # ── Dry-run gate ────────────────────────────────────────────────────────
+    if dry_run:
+        return "dry_run_update" if existing is not None else "dry_run_insert"
+
+    # ── Write ───────────────────────────────────────────────────────────────
+    now = _now()
+    # Map ProductIdentity fields to the product_descriptions schema.
+    # For pz_rows backfill: name_pl and description_pl both take description_pl
+    # (we have no separate short-name field from pz_rows).  material_pl and
+    # purpose_pl are left empty — they may be enriched by future passes.
+    row_values = (
+        str(getattr(identity, "item_type",           "") or ""),
+        desc_pl,                                          # name_pl
+        desc_pl,                                          # description_pl
+        str(getattr(identity, "description_en",      "") or ""),
+        "",                                               # material_pl (not in pz_rows)
+        "",                                               # purpose_pl  (not in pz_rows)
+        str(getattr(identity, "description_bilingual","") or ""),  # description_block
+        str(getattr(identity, "description_bilingual","") or ""),  # description_line
+        _BACKFILL_SOURCE,                                 # source
+        str(getattr(identity, "karat",               "") or ""),
+        str(getattr(identity, "metal_color",         "") or ""),
+        str(getattr(identity, "quality_string",      "") or ""),
+        str(getattr(identity, "stone_type",          "") or ""),
+        float(getattr(identity, "unit_price_eur",  0.0) or 0.0),
+        float(getattr(identity, "unit_price_usd",  0.0) or 0.0),
+        str(getattr(identity, "confidence",          "") or ""),
+        str(getattr(identity, "supplier_prefix",     "") or ""),
+        1 if getattr(identity, "is_globally_unique", False) else 0,
+    )
+
+    if existing is not None:
+        # UPDATE — preserves created_at; the WHERE source != 'manual' is a
+        # belt-and-suspenders guard on top of the pre-check above.
+        con.execute(
+            """UPDATE product_descriptions
+               SET item_type=?, name_pl=?, description_pl=?, description_en=?,
+                   material_pl=?, purpose_pl=?, description_block=?,
+                   description_line=?, source=?,
+                   karat=?, metal_color=?, quality_string=?, stone_type=?,
+                   unit_price_eur=?, unit_price_usd=?, confidence=?,
+                   supplier_prefix=?, is_globally_unique=?,
+                   updated_at=?
+               WHERE product_code=? AND source != 'manual'""",
+            (*row_values, now, pc),
+        )
+        return "updated"
+    else:
+        con.execute(
+            """INSERT INTO product_descriptions
+               (product_code, item_type, name_pl, description_pl, description_en,
+                material_pl, purpose_pl, description_block, description_line, source,
+                karat, metal_color, quality_string, stone_type,
+                unit_price_eur, unit_price_usd, confidence,
+                supplier_prefix, is_globally_unique,
+                created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (pc, *row_values, now, now),
+        )
+        return "inserted"
