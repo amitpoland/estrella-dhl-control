@@ -630,7 +630,11 @@ async def process_shipment(
     effectively_unblocked = (
         current_status == "blocked" and not _compute_effective_blocked(audit)
     )
-    if current_status not in ("ready", "partial", "success") and not effectively_unblocked:
+    # Allow re-run from:
+    #   ready/partial/success  — normal re-run path
+    #   failed                 — engine threw an exception on a previous attempt; operator retries
+    #   processing             — background task crashed / server restarted mid-run; status stuck
+    if current_status not in ("ready", "partial", "success", "failed", "processing") and not effectively_unblocked:
         raise HTTPException(
             status_code=409,
             detail=f"Shipment must be in 'ready', 'partial', or 'success' state to process. Current: {current_status}",
