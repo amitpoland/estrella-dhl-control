@@ -36,7 +36,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 # ── Public types ──────────────────────────────────────────────────────────────
@@ -2001,6 +2001,122 @@ def reset_draft_from_sales_packing(
             "lines_after":     len(rebuilt),
         }, ensure_ascii=False, sort_keys=True),
         operator=operator,
+    )
+    return refreshed
+
+
+# ── PR 2C — product-description enrichment ──────────────────────────────────
+
+def enrich_lines_from_product_descriptions(
+    lines:     List[Dict[str, Any]],
+    lookup_fn: Callable[[str], Optional[Dict[str, Any]]],
+) -> Tuple[List[Dict[str, Any]], int, int]:
+    """Annotate each editable line with canonical product-description fields.
+
+    Pure function — no DB I/O.  The caller supplies *lookup_fn* so this
+    module stays free from document_db imports.
+
+    For each line the following annotation keys are added (or overwritten):
+        item_type, name_pl, description_pl, description_en,
+        description_bilingual, pd_confidence
+
+    If no product_descriptions row exists for the line's product_code all
+    six keys are set to ``None``.
+
+    ``description_bilingual`` resolution priority:
+        1. row["description_bilingual"]
+        2. row["description_block"]
+        3. "<description_pl> / <description_en>" when both are non-empty
+        4. None
+
+    All existing fields (qty, unit_price, currency, price_source, client_ref,
+    product_code, design_no, line_id …) are preserved unchanged.
+
+    Returns:
+        (enriched_lines, enriched_count, missing_count)
+    """
+    enriched: List[Dict[str, Any]] = []
+    n_hit = 0
+    n_miss = 0
+    for ln in lines:
+        pc  = str(ln.get("product_code") or "").strip()
+        row = lookup_fn(pc) if pc else None
+        if row:
+            # Resolve description_bilingual with fallback chain.
+            bil = (str(row.get("description_bilingual") or "").strip()
+                   or str(row.get("description_block") or "").strip()
+                   or None)
+            if bil is None:
+                dp = str(row.get("description_pl") or "").strip()
+                de = str(row.get("description_en") or "").strip()
+                if dp and de:
+                    bil = f"{dp} / {de}"
+            enriched.append({
+                **ln,
+                "item_type":             str(row.get("item_type") or "").strip() or None,
+                "name_pl":               str(row.get("name_pl") or "").strip() or None,
+                "description_pl":        str(row.get("description_pl") or "").strip() or None,
+                "description_en":        str(row.get("description_en") or "").strip() or None,
+                "description_bilingual": bil,
+                "pd_confidence":         str(row.get("confidence") or "").strip() or None,
+            })
+            n_hit += 1
+        else:
+            enriched.append({
+                **ln,
+                "item_type":             None,
+                "name_pl":               None,
+                "description_pl":        None,
+                "description_en":        None,
+                "description_bilingual": None,
+                "pd_confidence":         None,
+            })
+            n_miss += 1
+    return enriched, n_hit, n_miss
+
+
+def enrich_draft_lines(
+    db_path:             Path,
+    draft_id:            int,
+    operator:            str,
+    expected_updated_at: str,
+    lookup_fn:           Callable[[str], Optional[Dict[str, Any]]],
+) -> ProformaDraft:
+    """Enrich ``editable_lines_json`` with product-description annotations.
+
+    ``source_lines_json`` is NEVER touched.  ``draft_state`` is preserved
+    unchanged (enrichment is a pure annotation, not a lifecycle transition).
+    Allowed only from :data:`EDITABLE_STATES`.
+
+    Records event ``lines_enriched_from_product_descriptions`` with detail::
+
+        {"enriched_count": N, "missing_count": M, "line_count": total}
+
+    Returns the refreshed :class:`ProformaDraft`.
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+
+    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+    lines = _ensure_line_ids(json.loads(d.editable_lines_json or "[]") or [])
+    enriched, n_hit, n_miss = enrich_lines_from_product_descriptions(lines, lookup_fn)
+
+    refreshed = _commit_draft_update(
+        db_path,
+        d.id,
+        new_state          = d.draft_state,   # state unchanged
+        new_editable_lines = enriched,
+    )
+    _record_draft_event(
+        db_path,
+        draft_id    = d.id,
+        event       = "lines_enriched_from_product_descriptions",
+        detail_json = json.dumps({
+            "enriched_count": n_hit,
+            "missing_count":  n_miss,
+            "line_count":     len(enriched),
+        }, ensure_ascii=False, sort_keys=True),
+        operator    = operator or "",
     )
     return refreshed
 
