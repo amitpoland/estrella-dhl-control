@@ -181,7 +181,7 @@ _FIELD_ALIASES: Dict[str, str] = {
     "gross_weight": "gross_weight",  "gross_wt": "gross_weight","gw":  "gross_weight",
     "net_weight":   "net_weight",    "net_wt":   "net_weight",  "nw":  "net_weight",
     "dia_wt":       "diamond_weight","col_wt":   "color_weight",
-    "qualtity":     "quality",       # observed typo in supplier templates
+    "qualtity":     "quality_string",  # observed typo in Pkg3806Rpt template
     # metal / karat / colour
     # EJL packing variants: "Kt/Color" combined OR "Kt"+"Col" separate cells.
     "metal":  "metal",  "material": "metal",  "kt_color": "metal",  "kt": "metal",
@@ -189,8 +189,8 @@ _FIELD_ALIASES: Dict[str, str] = {
     "col":    "metal_color",         # secondary (W/Y/RG indicator)
     "color":  "metal_color",
     "karat":  "karat",  "purity": "karat",  "fineness": "karat",
-    # quality / stone
-    "quality":    "quality",
+    # quality / stone — canonical field is quality_string
+    "quality":    "quality_string",
     "stone_type": "stone_type", "stone": "stone_type",  "gemstone": "stone_type",
     # value (EJL packing list — used for fuzzy matching to invoice rate/amount)
     "value":       "unit_price",
@@ -522,10 +522,31 @@ def _extract_packing_excel(path: Path, engine: str = "openpyxl") -> List[Dict[st
         if not design_present and not item_type:
             continue
 
-        # Some sales-side templates put metal in two cells: "Kt" (e.g. "14KT")
-        # and "Col" (e.g. "W"). Combine them into a single metal token.
+        # ── Metal / color split handling ─────────────────────────────────────
+        # Three template variants produce different raw row shapes:
+        #   Variant A (separate Kt + Col cells):
+        #     col_map assigns metal="14KT", metal_color="W" (two distinct cells)
+        #   Variant B (combined "14KT/Y" in one Kt/Color or Kt/Col cell):
+        #     col_map assigns metal="14KT/Y", metal_color="" (combined cell)
+        #   Variant C (separate Karat + Color):
+        #     same as variant A
+        #
+        # Goal: after this block, `metal` holds the full combined string (e.g.
+        # "14KT/W") AND `metal_color` holds the standalone color code (e.g. "W").
         if d.get("metal_color") and d.get("metal"):
+            # Variant A / C: separate cells — merge karat + color into metal,
+            # metal_color already populated (left unchanged for DB storage).
             d["metal"] = f"{d['metal']}/{d['metal_color']}"
+        elif not d.get("metal_color") and d.get("metal"):
+            # Variant B: combined cell like "14KT/Y" — extract the color suffix.
+            # Color codes are short (1–4 chars): W, Y, R, RG, WY, RW, etc.
+            # A dash or hyphen ("-") means no color / neutral — leave empty.
+            combined = str(d["metal"]).strip()
+            if "/" in combined:
+                _, _, color_part = combined.partition("/")
+                color_part = color_part.strip().rstrip("-").strip()
+                if color_part and len(color_part) <= 4:
+                    d["metal_color"] = color_part
 
         # Stamp invoice_no from sheet header if not already on the row
         if invoice_no_from_sheet and not d.get("invoice_no"):

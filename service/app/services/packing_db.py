@@ -137,6 +137,15 @@ def init_packing_db(db_path: Path) -> None:
         # source_file_hash — added to packing_documents after initial schema;
         # guard ensures existing DBs pick it up without a manual migration.
         _add_column_if_missing(con, "packing_documents", "source_file_hash", "TEXT NOT NULL DEFAULT ''")
+        # PR 2A — product identity enrichment fields.
+        # unit_price_eur: client billing price from packing XLSX Value column (EUR
+        #   namespace, distinct from unit_price which carries USD supplier rate).
+        # metal_color: standalone color code (W/Y/RG/R) from Col or Kt/Color split.
+        # quality_string: raw quality/grade string from Quality column including
+        #   compound values like "G-VS LAB,E-VVS LAB" and the "Qualtity" typo variant.
+        _add_column_if_missing(con, "packing_lines", "unit_price_eur", "REAL NOT NULL DEFAULT 0.0")
+        _add_column_if_missing(con, "packing_lines", "metal_color",    "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "quality_string", "TEXT NOT NULL DEFAULT ''")
 
         # Index for O(1) warehouse scan lookups (added lazily so existing DBs pick it up)
         con.execute(
@@ -343,7 +352,9 @@ def upsert_packing_lines(
                                item_type=?, uom=?, quantity=?, gross_weight=?, net_weight=?,
                                metal=?, karat=?, stone_type=?, remarks=?,
                                extracted_confidence=?, requires_manual_review=?,
-                               scan_code=?, updated_at=?
+                               scan_code=?,
+                               unit_price_eur=?, metal_color=?, quality_string=?,
+                               updated_at=?
                            WHERE id=?""",
                         (
                             line.get("packing_document_id", ""),
@@ -364,6 +375,9 @@ def upsert_packing_lines(
                             float(line.get("extracted_confidence", 0)),
                             1 if line.get("requires_manual_review") else 0,
                             scan_code or None,
+                            float(line.get("unit_price_eur", 0) or 0),
+                            str(line.get("metal_color", "") or ""),
+                            str(line.get("quality_string", "") or ""),
                             now,
                             existing["id"],
                         ),
@@ -380,8 +394,9 @@ def upsert_packing_lines(
                             metal, karat, stone_type, remarks,
                             extracted_confidence, requires_manual_review,
                             pack_sr, unit_price, total_value, scan_code,
+                            unit_price_eur, metal_color, quality_string,
                             created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         line_id, line.get("packing_document_id", ""),
                         batch_id,
@@ -406,6 +421,9 @@ def upsert_packing_lines(
                         unit_price,
                         float(line.get("total_value", 0) or 0),
                         scan_code or None,
+                        float(line.get("unit_price_eur", 0) or 0),
+                        str(line.get("metal_color", "") or ""),
+                        str(line.get("quality_string", "") or ""),
                         now, now,
                     ),
                 )

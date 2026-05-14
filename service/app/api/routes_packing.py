@@ -364,6 +364,18 @@ async def upload_packing_list(
             "remarks":              str(row.get("remarks", "") or ""),
             "extracted_confidence": float(row.get("extracted_confidence", 0) or 0),
             "requires_manual_review": bool(row.get("requires_manual_review", False)),
+            # PR 2A — product identity enrichment from packing XLSX
+            # unit_price_eur: client billing price (packing list Value column, EUR
+            #   namespace) — distinct from unit_price which carries the supplier
+            #   USD rate set at upsert from unit_price field above.
+            "unit_price_eur":       float(row.get("unit_price", 0) or 0),
+            # metal_color: standalone color code (W/Y/RG/R) — preserved from the
+            #   "Col" column or parsed from combined "14KT/Y" tokens by extractor.
+            "metal_color":          str(row.get("metal_color", "") or ""),
+            # quality_string: full quality/grade string as-is from the packing
+            #   list (may be compound, e.g. "G-VS LAB,E-VVS LAB"). Captures both
+            #   the standard "Quality" column and the "Qualtity" typo variant.
+            "quality_string":       str(row.get("quality_string", "") or ""),
         })
 
     inserted = pdb.upsert_packing_lines(line_records, force_reextract=force_reextract)
