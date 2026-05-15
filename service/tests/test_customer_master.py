@@ -464,3 +464,186 @@ def test_resolver_module_does_not_import_wfirma_client():
     import app.services.customer_master as mod
     src = Path(mod.__file__).read_text(encoding="utf-8")
     assert "wfirma_client" not in src
+
+
+# ── MasterData-2: KYC / Compliance + KUKE extras + payment terms ─────────────
+
+def test_kyc_fields_round_trip(tmp_path: Path):
+    db = tmp_path / "cm.db"
+    upsert_customer(db, _minimal(
+        kyc_status       = "approved",
+        kyc_approved_on  = "2025-01-15",
+        kyc_expiry       = "2027-01-15",
+        beneficial_owner = "Jane Doe",
+        owner_id_type    = "passport",
+        owner_id_number  = "XY123456",
+        aml_risk_rating  = "low",
+        pep_check_result = "clear",
+        compliance_notes = "All checks passed",
+    ))
+    got = get_customer(db, "38582303")
+    assert got.kyc_status       == "approved"
+    assert got.kyc_approved_on  == "2025-01-15"
+    assert got.kyc_expiry       == "2027-01-15"
+    assert got.beneficial_owner == "Jane Doe"
+    assert got.owner_id_type    == "passport"
+    assert got.owner_id_number  == "XY123456"
+    assert got.aml_risk_rating  == "low"
+    assert got.pep_check_result == "clear"
+    assert got.compliance_notes == "All checks passed"
+
+
+def test_kuke_extras_round_trip(tmp_path: Path):
+    db = tmp_path / "cm.db"
+    upsert_customer(db, _minimal(
+        kuke_approved           = True,
+        kuke_limit              = Decimal("50000"),
+        kuke_policy_number      = "POL-2024-001",
+        kuke_self_retention_pct = Decimal("10"),
+        payment_terms_days      = 30,
+    ))
+    got = get_customer(db, "38582303")
+    assert got.kuke_policy_number      == "POL-2024-001"
+    assert got.kuke_self_retention_pct == Decimal("10")
+    assert got.payment_terms_days      == 30
+
+
+def test_validate_kyc_status_enum_rejected():
+    blockers = validate(_minimal(kyc_status="invalid"))
+    assert any("kyc_status" in b for b in blockers)
+
+
+def test_validate_kyc_status_valid_values_pass():
+    for v in ("approved", "pending", "review", "rejected"):
+        assert validate(_minimal(kyc_status=v)) == [], f"expected {v!r} to pass"
+
+
+def test_validate_owner_id_type_enum_rejected():
+    blockers = validate(_minimal(owner_id_type="nric"))
+    assert any("owner_id_type" in b for b in blockers)
+
+
+def test_validate_aml_risk_rating_enum_rejected():
+    blockers = validate(_minimal(aml_risk_rating="extreme"))
+    assert any("aml_risk_rating" in b for b in blockers)
+
+
+def test_validate_pep_check_result_enum_rejected():
+    blockers = validate(_minimal(pep_check_result="unknown"))
+    assert any("pep_check_result" in b for b in blockers)
+
+
+def test_validate_self_retention_pct_range():
+    assert any("kuke_self_retention_pct" in b
+               for b in validate(_minimal(kuke_self_retention_pct=Decimal("101"))))
+    assert any("kuke_self_retention_pct" in b
+               for b in validate(_minimal(kuke_self_retention_pct=Decimal("-1"))))
+    # Boundary values must pass
+    assert validate(_minimal(kuke_self_retention_pct=Decimal("0")))   == []
+    assert validate(_minimal(kuke_self_retention_pct=Decimal("100"))) == []
+
+
+def test_validate_payment_terms_days_negative_rejected():
+    blockers = validate(_minimal(payment_terms_days=-1))
+    assert any("payment_terms_days" in b for b in blockers)
+    assert validate(_minimal(payment_terms_days=0))  == []
+    assert validate(_minimal(payment_terms_days=30)) == []
+
+
+# ── MasterData-2 API tests ────────────────────────────────────────────────────
+
+import unittest.mock as _mock  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def cm_api_client(tmp_path_factory):
+    api_tmp = tmp_path_factory.mktemp("cm_api_md2")
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.core.config import settings
+    with _mock.patch.object(settings, "storage_root", api_tmp):
+        import app.api.routes_customer_master as mod
+        mod._DB_PATH = api_tmp / "customer_master.sqlite"
+        with TestClient(app, raise_server_exceptions=True) as c:
+            yield c
+
+
+def _cm_hdr():
+    from app.core.config import settings
+    return {"X-API-KEY": settings.api_key or "test-key"}
+
+
+def test_api_put_kyc_fields_persisted(cm_api_client):
+    r = cm_api_client.put(
+        "/api/v1/customer-master/KYC_TEST_01",
+        json={
+            "bill_to_name":    "KYC Corp",
+            "country":         "PL",
+            "kyc_status":      "approved",
+            "kyc_approved_on": "2025-03-01",
+            "kyc_expiry":      "2027-03-01",
+            "beneficial_owner": "Ana Smith",
+            "owner_id_type":   "passport",
+            "owner_id_number": "AB999888",
+            "aml_risk_rating": "low",
+            "pep_check_result": "clear",
+            "compliance_notes": "Verified by compliance team",
+        },
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    r2 = cm_api_client.get("/api/v1/customer-master/KYC_TEST_01", headers=_cm_hdr())
+    data = r2.json()
+    assert data["kyc_status"]       == "approved"
+    assert data["kyc_approved_on"]  == "2025-03-01"
+    assert data["kyc_expiry"]       == "2027-03-01"
+    assert data["beneficial_owner"] == "Ana Smith"
+    assert data["owner_id_type"]    == "passport"
+    assert data["owner_id_number"]  == "AB999888"
+    assert data["aml_risk_rating"]  == "low"
+    assert data["pep_check_result"] == "clear"
+    assert data["compliance_notes"] == "Verified by compliance team"
+
+
+def test_api_put_kuke_extras_persisted(cm_api_client):
+    r = cm_api_client.put(
+        "/api/v1/customer-master/KUKE_TEST_01",
+        json={
+            "bill_to_name":             "KUKE Corp",
+            "country":                  "DE",
+            "kuke_approved":            True,
+            "kuke_limit":               "50000",
+            "kuke_policy_number":       "POL-2024-001",
+            "kuke_self_retention_pct":  "10",
+            "payment_terms_days":       30,
+        },
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    r2 = cm_api_client.get("/api/v1/customer-master/KUKE_TEST_01", headers=_cm_hdr())
+    data = r2.json()
+    assert data["kuke_policy_number"]      == "POL-2024-001"
+    assert data["kuke_self_retention_pct"] == "10"
+    assert data["payment_terms_days"]      == 30
+
+
+def test_api_put_payment_terms_empty_string_becomes_null(cm_api_client):
+    """Empty string for payment_terms_days must be stored as null, not 422."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/PT_NULL_TEST",
+        json={"bill_to_name": "PT Corp", "country": "DE", "payment_terms_days": ""},
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["payment_terms_days"] is None
+
+
+def test_api_kyc_enum_validation_422(cm_api_client):
+    """Invalid enum values must be rejected with 422."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/BAD_KYC_01",
+        json={"bill_to_name": "X", "country": "PL", "kyc_status": "verified"},
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 422, r.text

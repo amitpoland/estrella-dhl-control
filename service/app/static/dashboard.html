@@ -2374,6 +2374,18 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
       credit_limit:         cm.credit_limit  != null ? String(cm.credit_limit)  : '',
       credit_currency:      cm.credit_currency      || 'EUR',
       risk_status:          cm.risk_status          || '',
+      kuke_policy_number:       cm.kuke_policy_number      || '',
+      kuke_self_retention_pct:  cm.kuke_self_retention_pct != null ? String(cm.kuke_self_retention_pct) : '',
+      payment_terms_days:       cm.payment_terms_days      != null ? String(cm.payment_terms_days)      : '',
+      kyc_status:           cm.kyc_status        || '',
+      kyc_approved_on:      cm.kyc_approved_on   || '',
+      kyc_expiry:           cm.kyc_expiry        || '',
+      beneficial_owner:     cm.beneficial_owner  || '',
+      owner_id_type:        cm.owner_id_type     || '',
+      owner_id_number:      cm.owner_id_number   || '',
+      aml_risk_rating:      cm.aml_risk_rating   || '',
+      pep_check_result:     cm.pep_check_result  || '',
+      compliance_notes:     cm.compliance_notes  || '',
       freight_service_id:        cm.freight_service_id        || '',
       freight_fixed_amount_eur:  cm.freight_fixed_amount_eur  != null ? String(cm.freight_fixed_amount_eur)  : '',
       freight_fixed_amount_usd:  cm.freight_fixed_amount_usd  != null ? String(cm.freight_fixed_amount_usd)  : '',
@@ -2512,7 +2524,7 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
     try {
       const CM_DECIMAL = ['freight_fixed_amount_eur','freight_fixed_amount_usd',
                           'insurance_rate','insurance_min_eur','insurance_min_usd',
-                          'kuke_limit','credit_limit'];
+                          'kuke_limit','credit_limit','kuke_self_retention_pct'];
       const payload = { ...form };
       for (const f of CM_DECIMAL) {
         if (payload[f] === '' || payload[f] == null) payload[f] = null;
@@ -3054,8 +3066,8 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
 
           {kycTab === 'kyc' && (
             <div data-testid="kyc-panel-kyc">
-              <div style={sectionHeadStyle}>KYC Status{pendingBadge}</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, opacity: 0.55 }}>
+              <div style={sectionHeadStyle}>KYC Status</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 {[['kyc_status','KYC Status','select',['approved','pending','review','rejected']],
                   ['kyc_approved_on','Approved on','date'],
                   ['kyc_expiry','Expiry date','date'],
@@ -3067,29 +3079,33 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                   <label key={k} style={labelStyle}>
                     <span style={labelTextStyle}>{label}</span>
                     {type === 'select'
-                      ? <select disabled style={{ ...inputStyle, cursor: 'not-allowed' }}>
+                      ? <select value={form[k] || ''} onChange={e => setField(k, e.target.value)}
+                          style={inputStyle}>
                           <option value="">—</option>
-                          {(opts || []).map(o => <option key={o}>{o}</option>)}
+                          {(opts || []).map(o => <option key={o} value={o}>{o}</option>)}
                         </select>
-                      : <input type={type} disabled style={{ ...inputStyle, cursor: 'not-allowed' }} />
+                      : <input type={type} value={form[k] || ''}
+                          onChange={e => setField(k, e.target.value)}
+                          style={inputStyle} />
                     }
                   </label>
                 ))}
                 <label style={{ ...labelStyle, gridColumn: '1/-1' }}>
                   <span style={labelTextStyle}>PEP check result</span>
-                  <select disabled style={{ ...inputStyle, cursor: 'not-allowed' }}><option>—</option></select>
+                  <select data-testid="kyc-pep-check-result"
+                    value={form.pep_check_result || ''} onChange={e => setField('pep_check_result', e.target.value)}
+                    style={inputStyle}>
+                    <option value="">—</option>
+                    {['clear','flagged','pending'].map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
                 </label>
                 <label style={{ ...labelStyle, gridColumn: '1/-1' }}>
                   <span style={labelTextStyle}>Compliance notes</span>
-                  <textarea disabled
-                    style={{ ...inputStyle, height: 60, resize: 'vertical', cursor: 'not-allowed' }} />
+                  <textarea data-testid="kyc-compliance-notes"
+                    value={form.compliance_notes || ''}
+                    onChange={e => setField('compliance_notes', e.target.value)}
+                    style={{ ...inputStyle, height: 60, resize: 'vertical' }} />
                 </label>
-              </div>
-              <div style={{ marginTop: 12, padding: '8px 12px',
-                background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
-                borderRadius: 6, fontSize: 10, color: 'var(--badge-amber-text)' }}>
-                KYC/Compliance fields require a dedicated backend schema and AML screening integration.
-                All fields shown for structure preview only.
               </div>
             </div>
           )}
@@ -3127,14 +3143,18 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                     style={inputStyle} />
                 </label>
                 <label style={labelStyle}>
-                  <span style={labelTextStyle}>Policy number{pendingBadge}</span>
-                  <input type="text" disabled placeholder="Backend pending"
-                    style={{ ...inputStyle, opacity: 0.5, cursor: 'not-allowed' }} />
+                  <span style={labelTextStyle}>Policy number</span>
+                  <input data-testid="kyc-kuke-policy-number" type="text"
+                    value={form.kuke_policy_number}
+                    onChange={e => setField('kuke_policy_number', e.target.value)}
+                    placeholder="e.g. POL-2024-001" style={inputStyle} />
                 </label>
                 <label style={labelStyle}>
-                  <span style={labelTextStyle}>Self-retention %{pendingBadge}</span>
-                  <input type="text" disabled placeholder="Backend pending"
-                    style={{ ...inputStyle, opacity: 0.5, cursor: 'not-allowed' }} />
+                  <span style={labelTextStyle}>Self-retention %</span>
+                  <input data-testid="kyc-kuke-self-retention" type="text"
+                    value={form.kuke_self_retention_pct}
+                    onChange={e => setField('kuke_self_retention_pct', e.target.value)}
+                    placeholder="e.g. 10" style={inputStyle} />
                 </label>
               </div>
               <div style={sectionHeadStyle}>Credit</div>
@@ -3154,9 +3174,11 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                   </select>
                 </label>
                 <label style={labelStyle}>
-                  <span style={labelTextStyle}>Payment terms (days){pendingBadge}</span>
-                  <input type="number" disabled placeholder="e.g. 30"
-                    style={{ ...inputStyle, opacity: 0.5, cursor: 'not-allowed' }} />
+                  <span style={labelTextStyle}>Payment terms (days)</span>
+                  <input data-testid="kyc-payment-terms" type="number"
+                    value={form.payment_terms_days}
+                    onChange={e => setField('payment_terms_days', e.target.value)}
+                    placeholder="e.g. 30" style={inputStyle} />
                 </label>
                 <label style={labelStyle}>
                   <span style={labelTextStyle}>Risk status</span>
@@ -3196,7 +3218,7 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                    fontSize: 11, color: 'var(--badge-red-text)' }}>{saveError}</div>
           )}
           <div style={{ flex: 1 }} />
-          {(kycTab === 'kyc' || kycTab === 'invoices') && (
+          {kycTab === 'invoices' && (
             <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
               Save disabled for this tab — backend pending
             </span>
@@ -3205,7 +3227,7 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
             style={{ padding: '7px 16px', fontSize: 12, background: 'var(--card)',
               color: 'var(--text-2)', border: '1px solid var(--border)',
               borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
-          {!['kyc','invoices'].includes(kycTab) && (
+          {kycTab !== 'invoices' && (
             <button data-testid="kyc-btn-save" onClick={handleSave}
               disabled={saving || !canSave}
               style={{ padding: '7px 20px', fontSize: 12, fontWeight: 700,
