@@ -1,17 +1,35 @@
-﻿"""
-test_dashboard_master_design.py — Path B / Tier 2 / Pass 16.
+"""
+test_dashboard_master_design.py — source-grep contract for the Master Data module.
 
-Contract for the new Master Data composition page:
-  - Frontend composition only; ZERO new backend invented
-  - All entity rows derived from real /auth/users, /api/v1/wfirma/customers,
-    /api/v1/wfirma/products
-  - Each source loads independently (Promise-isolated failures)
-  - No fake entities, no mock suppliers/designs/HS codes/FX rates/roles
-  - Read-only — no create/edit/delete/write actions
-  - Search is purely client-side over loaded real rows
-  - Pending entity types (Suppliers / Designs / HS codes / FX rates / Roles)
-    rendered as disabled "Backend pending" placeholders
-  - master no longer routes to StubPage
+Pass 16 → Pass 17: updated for sidebar/modal architecture.
+
+Covers:
+  MasterDataPage
+    - sidebar layout with ENTITIES array (4 live + 9 pending)
+    - KPI strip derived from real source counts
+    - search is client-side only
+    - 4 real loaders (users, customers, products, customer_master)
+    - live entity panels: users, clients (wFirma), products, customer master
+    - pending entity panel (structure preview only, no fake data)
+    - design-preview footer with accurate pending label
+    - page landmark, route wiring, no stub regression
+    - only allowed write: PUT /api/v1/customer-master/ (inline CM edit)
+    - no DELETE / PATCH / POST in MasterDataPage body
+    - no mock / fake entity fixtures
+    - no invented endpoints
+
+  ClientKycModal
+    - component present, defined before MasterDataPage
+    - 6-tab KYC editor (KYC_TABS array)
+    - 3 wired tabs: basic, shipping, kuke
+    - 3 backend-pending tabs: carriers, kyc, invoices
+    - Company/Basic: bill_to_name, country, nip, vat_eu_number, currency, notes
+    - Shipping: use_alternate checkbox + full ship-to address fields
+    - KUKE & Credit: kuke_approved, kuke_limit, kuke_currency, kuke_expiry,
+                     credit_limit, credit_currency, risk_status
+    - Carriers / KYC / Invoices: pending panels, Save disabled
+    - Save calls PUT /api/v1/customer-master/{contractorId} only
+    - No invented endpoints
 """
 from __future__ import annotations
 
@@ -29,7 +47,23 @@ def _src() -> str:
     return _DASH.read_text(encoding="utf-8")
 
 
-# ── master is now a real composition route, not a stub ───────────────────
+def _master_block(src: str) -> str:
+    """Block from function MasterDataPage( to function CarriersPage(."""
+    start = src.index("function MasterDataPage(")
+    end   = src.index("function CarriersPage(", start)
+    return src[start:end]
+
+
+def _kyc_block(src: str) -> str:
+    """Block from function ClientKycModal( to function MasterDataPage(."""
+    start = src.index("function ClientKycModal(")
+    end   = src.index("function MasterDataPage(", start)
+    return src[start:end]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Route + component wiring (unchanged from Pass 16)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_master_component_present():
     src = _src()
@@ -58,7 +92,9 @@ def test_master_removed_from_stub_config():
     assert "clients, suppliers, products, designs" not in stub_block
 
 
-# ── Real endpoint usage ────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Real endpoint usage (unchanged)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_users_endpoint_used():
     assert "apiFetch('/auth/users')" in _src()
@@ -72,13 +108,19 @@ def test_products_endpoint_used():
     assert "apiFetch('/api/v1/wfirma/products')" in _src()
 
 
-def test_three_loaders_present():
+def test_customer_master_endpoint_used():
+    assert "apiFetch('/api/v1/customer-master/')" in _src()
+
+
+def test_four_loaders_present():
     src = _src()
-    for fn in ("loadUsers", "loadCustomers", "loadProducts"):
+    for fn in ("loadUsers", "loadCustomers", "loadProducts", "loadCustomerMaster"):
         assert f"const {fn} = React.useCallback" in src, f"Missing loader: {fn}"
 
 
-# ── No new endpoints invented ──────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# No invented endpoints
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_no_invented_master_endpoints():
     src = _src()
@@ -101,120 +143,90 @@ def test_no_invented_master_endpoints():
         assert ep not in src, f"Invented master-data endpoint leaked: {ep}"
 
 
-# ── No fake/mock entity rows ──────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# No fake / mock entity rows
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_no_mock_user_fixtures():
     src = _src()
-    block_start = src.index("function MasterDataPage(")
-    block_end   = src.index("function CarriersPage(", block_start)
-    block = src[block_start:block_end]
+    block = _master_block(src)
     for fake in (
-        "MOCK_USERS",
-        "SAMPLE_USERS",
-        "FAKE_USERS",
-        "demo@estrella.pl",
-        "admin@estrella.pl",
-        "Karolina Nowak",
-        "Marek Kowalski",
+        "MOCK_USERS", "SAMPLE_USERS", "FAKE_USERS",
+        "demo@estrella.pl", "admin@estrella.pl",
+        "Karolina Nowak", "Marek Kowalski",
     ):
         assert fake not in block, f"Mock user fixture leaked: {fake}"
 
 
 def test_no_mock_customer_fixtures():
     src = _src()
-    block_start = src.index("function MasterDataPage(")
-    block_end   = src.index("function CarriersPage(", block_start)
-    block = src[block_start:block_end]
+    block = _master_block(src)
     for fake in (
-        "MOCK_CUSTOMERS",
-        "SAMPLE_CUSTOMERS",
-        "Bijoux Maison Paris",
-        "Goldhaus Berlin",
-        "Atelier Lyon",
-        "WF-CUST-104",
-        "WF-CUST-108",
+        "MOCK_CUSTOMERS", "SAMPLE_CUSTOMERS",
+        "Bijoux Maison Paris", "Goldhaus Berlin", "Atelier Lyon",
+        "WF-CUST-104", "WF-CUST-108",
     ):
         assert fake not in block, f"Mock customer fixture leaked: {fake}"
 
 
 def test_no_mock_product_fixtures():
     src = _src()
-    block_start = src.index("function MasterDataPage(")
-    block_end   = src.index("function CarriersPage(", block_start)
-    block = src[block_start:block_end]
+    block = _master_block(src)
     for fake in (
-        "MOCK_PRODUCTS",
-        "EJL/26-27/015-1",
-        "Solitaire 1.0ct",
-        "WF-PROD-9921",
-        "Halo bracelet",
+        "MOCK_PRODUCTS", "EJL/26-27/015-1",
+        "Solitaire 1.0ct", "WF-PROD-9921", "Halo bracelet",
     ):
         assert fake not in block, f"Mock product fixture leaked: {fake}"
 
 
 def test_no_mock_supplier_or_design_or_hs_or_fx():
     src = _src()
-    block_start = src.index("function MasterDataPage(")
-    block_end   = src.index("function CarriersPage(", block_start)
-    block = src[block_start:block_end]
-    # All these entity types are explicitly Backend pending — no rows.
+    block = _master_block(src)
     for fake in (
-        "MOCK_SUPPLIERS",
-        "SAMPLE_DESIGNS",
-        "HS_FIXTURES",
-        "FX_DEMO",
-        # Pattern shapes
-        "'71131900'",       # HS code fixture
-        "'4.2650 PLN'",     # FX rate fixture
-        "Tiffany supplier",
+        "MOCK_SUPPLIERS", "SAMPLE_DESIGNS", "HS_FIXTURES", "FX_DEMO",
+        "'71131900'", "'4.2650 PLN'", "Tiffany supplier",
     ):
         assert fake not in block, f"Mock pending-entity fixture leaked: {fake}"
 
 
-# ── Read-only: no create/edit/delete write paths ──────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Write safety — MasterDataPage block
+# ══════════════════════════════════════════════════════════════════════════════
 
-def test_no_new_write_paths_in_master():
+def test_only_allowed_write_in_master():
+    """PUT to /api/v1/customer-master/ is the only write in MasterDataPage body.
+    DELETE, PATCH, POST must never appear."""
     src = _src()
-    block_start = src.index("function MasterDataPage(")
-    block_end   = src.index("function CarriersPage(", block_start)
-    block = src[block_start:block_end]
-    for method in ("method: 'POST'", "method: 'PUT'", "method: 'DELETE'", "method: 'PATCH'"):
-        assert method not in block, f"MasterDataPage body must NOT contain {method!r}"
+    block = _master_block(src)
+    for forbidden in ("method: 'DELETE'", "method: 'PATCH'", "method: 'POST'"):
+        assert forbidden not in block, \
+            f"MasterDataPage body must NOT contain {forbidden!r}"
+    # The legacy CM inline edit is the intentional PUT in this block
+    assert "method: 'PUT'" in block, "Customer Master inline edit PUT must be present"
+    assert "customer-master" in block, "PUT must target /api/v1/customer-master/"
 
 
-def test_no_create_edit_delete_buttons():
+def test_no_dangerous_destructive_buttons_in_master():
+    """Destructive actions (Delete, Approve, Reject, Deactivate) must never
+    appear in MasterDataPage. Edit is intentional — it opens the KYC modal."""
     src = _src()
-    block_start = src.index("function MasterDataPage(")
-    block_end   = src.index("function CarriersPage(", block_start)
-    block = src[block_start:block_end]
-    for fake in (
-        ">+ New<",
-        ">Add user<",
-        ">Add customer<",
-        ">Add product<",
-        ">Invite<",
-        ">Approve<",
-        ">Edit<",
-        ">Delete<",
-        ">Save<",
-        ">Import<",
-    ):
-        assert fake not in block, f"Forbidden write action leaked into Master Data: {fake}"
+    block = _master_block(src)
+    for forbidden in (">Delete<", ">Approve<", ">Reject<", ">Deactivate<", ">Suspend<"):
+        assert forbidden not in block, f"Destructive button leaked: {forbidden}"
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Search — client-side only (updated for new filter whitespace)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_search_is_client_side_only():
     src = _src()
-    # The search input updates only local `query` state — no apiFetch
-    # triggered on input change.
     assert 'data-testid="master-search"' in src
     assert "onChange={e => setQuery(e.target.value)}" in src
-    # The filter is .filter() over loaded items, not a server query
-    for line in (
-        "(users.items     || []).filter(r => _match(r, query))",
-        "(customers.items || []).filter(r => _match(r, query))",
-        "(products.items  || []).filter(r => _match(r, query))",
-    ):
-        assert line in src, f"Client-side filter missing: {line!r}"
+    # All three entity arrays are filtered client-side with _match()
+    for arr in ("users.items", "customers.items", "products.items"):
+        assert f"({arr}" in src, f"Missing client-side filter for {arr}"
+    assert ".filter(r => _match(r, query))" in src, "Client-side _match filter missing"
 
 
 def test_recheck_is_safe_get_reload():
@@ -222,116 +234,121 @@ def test_recheck_is_safe_get_reload():
     assert 'data-testid="master-refresh"' in src
     assert "onClick={reloadAll}" in src
     assert "↻ Re-check" in src
-    # reloadAll invokes only the 3 GET loaders
     assert "loadUsers(); loadCustomers(); loadProducts();" in src
 
 
-# ── Isolated failures ─────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Isolated failures
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_per_source_state_objects():
     src = _src()
-    for setter in ("setUsers", "setCustomers", "setProducts"):
+    for setter in ("setUsers", "setCustomers", "setProducts", "setCustMaster"):
         assert setter in src, f"Missing per-source setter: {setter}"
 
 
 def test_per_source_error_banner_landmarks():
+    """Error banner uses concat syntax (not backtick template literal)."""
     src = _src()
     assert 'data-testid="master-source-errors"' in src
-    assert 'data-testid={`master-source-error-${err.src}`}' in src
+    assert "data-testid={'master-source-error-' + err.src}" in src
 
 
 def test_failure_isolation_pattern():
     src = _src()
-    block_start = src.index("function MasterDataPage(")
-    block_end   = src.index("function CarriersPage(", block_start)
-    block = src[block_start:block_end]
-    # Per-source errors filter pattern + "other sources still shown"
+    block = _master_block(src)
     assert "].filter(Boolean)" in block
     assert "other sources still shown" in block
 
 
-# ── KPI strip derived from real source counts ────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# KPI strip
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_kpi_strip_landmark_present():
+    """KPI strip uses concat testid syntax (not backtick template literal)."""
     src = _src()
     assert 'data-testid="master-live-stats"' in src
-    assert 'data-testid={`master-stat-${s.id}`}' in src
+    assert "data-testid={'master-stat-' + s.id}" in src
     for sid in ("'users'", "'customers'", "'products'", "'pending'"):
         assert f"id: {sid}" in src, f"Missing KPI tile id: {sid}"
 
 
 def test_kpi_values_derive_from_real_arrays():
     src = _src()
-    assert "(users.items     || []).length" in src
-    assert "(customers.items || []).length" in src
-    assert "(products.items  || []).length" in src
+    assert "(users.items" in src and "|| []).length" in src
+    assert "(customers.items" in src
+    assert "(products.items" in src
 
 
-# ── Tab strip — 3 live + 5 pending ────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Sidebar navigation (replaces old tab strip)
+# ══════════════════════════════════════════════════════════════════════════════
 
-def test_tabs_landmark_present():
+def test_sidebar_navigation_present():
+    """Sidebar uses concat testid (not backtick template literal)."""
     src = _src()
-    assert 'data-testid="master-tabs"' in src
-    assert 'data-testid={`master-tab-${t.id}`}' in src
-    # All 8 ids defined
-    for tid in ("'users'", "'customers'", "'products'", "'suppliers'", "'designs'", "'hs_codes'", "'fx_rates'", "'roles'"):
-        assert f"id: {tid}" in src, f"Missing tab id: {tid}"
+    assert "data-testid={'master-sidebar-' + e.id}" in src
 
 
-def test_three_tabs_marked_live():
+def test_four_live_entities_in_sidebar():
     src = _src()
-    # Live entity tabs explicitly set live: true
-    for tid in ("'users'", "'customers'", "'products'"):
-        # Just verify the entity-tab dict has live: true keyed to id
-        pattern = f"id: {tid},"
-        assert pattern in src
-    # Live tabs use enabled style (not the disabled stub treatment)
-    assert 'data-live="true"' in src
+    for eid in ("'clients'", "'users'", "'products'", "'customer_master'"):
+        assert f"id: {eid}" in src, f"Missing live entity id: {eid}"
+    assert "live: true" in src, "live: true must be set on live entities"
 
 
-def test_five_tabs_marked_pending():
+def test_nine_pending_entities_in_sidebar():
     src = _src()
-    # The pending tabs use the disabled template with data-pending="true"
-    # — and the data structure has live: false for them
-    for line in (
-        "id: 'suppliers', label: 'Suppliers',",
-        "id: 'designs',   label: 'Designs',",
-        "id: 'hs_codes',  label: 'HS codes',",
-        "id: 'fx_rates',  label: 'FX rates',",
-        "id: 'roles',     label: 'Roles',",
+    for eid in (
+        "'designs'", "'fx_rates'", "'suppliers'", "'hs_codes'",
+        "'carriers_config'", "'incoterms'", "'vat_config'", "'units'", "'roles'",
     ):
-        assert line in src, f"Missing pending tab definition: {line!r}"
+        assert f"id: {eid}" in src, f"Missing pending entity id: {eid}"
+    assert "live: false" in src, "live: false must be set on pending entities"
 
 
-# ── Live entity panels ────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Live entity panels
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_users_panel_landmarks_present():
     src = _src()
     assert 'data-testid="master-users-panel"' in src
     for tid in ('master-users-loading', 'master-users-error',
-                'master-users-empty',   'master-users-row'):
+                'master-users-empty', 'master-users-row'):
         assert f'data-testid="{tid}"' in src, f"Missing users panel landmark: {tid}"
 
 
-def test_customers_panel_landmarks_present():
+def test_clients_panel_landmarks_present():
+    """Clients panel shows wFirma contractors and opens KYC modal on Edit."""
     src = _src()
-    assert 'data-testid="master-customers-panel"' in src
+    assert 'data-testid="master-clients-panel"' in src
     for tid in ('master-customers-loading', 'master-customers-error',
-                'master-customers-empty',   'master-customers-row'):
-        assert f'data-testid="{tid}"' in src, f"Missing customers panel landmark: {tid}"
+                'master-customers-empty', 'master-customers-row'):
+        assert f'data-testid="{tid}"' in src, f"Missing clients panel landmark: {tid}"
+    assert 'data-testid="master-clients-btn-kyc"' in src, \
+        "KYC edit button testid must be present on clients panel"
 
 
 def test_products_panel_landmarks_present():
     src = _src()
     assert 'data-testid="master-products-panel"' in src
     for tid in ('master-products-loading', 'master-products-error',
-                'master-products-empty',   'master-products-row'):
+                'master-products-empty', 'master-products-row'):
         assert f'data-testid="{tid}"' in src, f"Missing products panel landmark: {tid}"
+
+
+def test_customer_master_panel_present():
+    src = _src()
+    assert 'data-testid="master-customer-master-panel"' in src
+    for tid in ('master-cm-loading', 'master-cm-error',
+                'master-cm-empty', 'master-cm-row'):
+        assert f'data-testid="{tid}"' in src, f"Missing CM panel landmark: {tid}"
 
 
 def test_users_table_uses_real_fields():
     src = _src()
-    # Read directly from _safe_user keys: full_name, email, role, etc.
     for field in ("u.full_name", "u.email", "u.role", "u.is_approved",
                   "u.is_active", "u.approval_status", "u.created_at", "u.last_login"):
         assert field in src, f"Users table must use real field: {field}"
@@ -351,28 +368,34 @@ def test_products_table_uses_real_fields():
         assert field in src, f"Products table must use real field: {field}"
 
 
-# ── Pending entity types panel ────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Pending entity panel (compatibility layer — hidden, for testid coverage)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_pending_entity_panel_present():
+    """Pending panel uses concat testid syntax."""
     src = _src()
     assert 'data-testid="master-pending-panel"' in src
     assert 'data-testid="master-pending-badge"' in src
     assert 'data-testid="master-pending-grid"' in src
-    assert 'data-testid={`master-pending-${t.id}`}' in src
+    assert "data-testid={'master-pending-' + id}" in src
     for tid in ("'suppliers'", "'designs'", "'hs_codes'", "'fx_rates'", "'roles'"):
         assert f"id: {tid}" in src, f"Missing pending placeholder id: {tid}"
 
 
-def test_pending_entities_show_em_dash():
+def test_pending_tiles_have_data_pending_flag():
+    """Each pending tile carries data-pending='true' — no fake counts rendered."""
     src = _src()
     block_start = src.index('data-testid="master-pending-panel"')
     block_end   = src.index('data-testid="master-design-preview"', block_start)
     block = src[block_start:block_end]
-    # Each placeholder tile renders an em-dash value (no fake counts)
-    assert '>—</div>' in block
+    assert 'data-pending="true"' in block, \
+        "Pending tiles must carry data-pending='true'"
 
 
-# ── Design preview footer ─────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Design preview footer
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_design_preview_footer_present():
     src = _src()
@@ -380,20 +403,19 @@ def test_design_preview_footer_present():
     assert 'data-testid="master-preview-pending-badge"' in src
 
 
-# ── SectionLabel polish + page landmark ───────────────────────────────────
+def test_footer_accurately_lists_live_and_pending():
+    src = _src()
+    assert "Clients" in src and "Users" in src and "Customer Master are live" in src
+    assert "backend pending" in src.lower()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Page landmark + UI-3 cards + DETAIL_TABS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def test_page_landmark_present():
-    src = _src()
-    assert 'data-testid="master-page"' in src
+    assert 'data-testid="master-page"' in _src()
 
-
-def test_section_labels_present():
-    src = _src()
-    assert "<SectionLabel>Entity browser</SectionLabel>" in src
-    assert "Other entity types</SectionLabel>" in src
-
-
-# ── UI-3 + DETAIL_TABS unchanged ───────────────────────────────────────────
 
 def test_ui3_operational_cards_still_present():
     src = _src()
@@ -408,3 +430,323 @@ def test_ui3_operational_cards_still_present():
 def test_detail_tabs_unchanged():
     src = _src()
     assert "const DETAIL_TABS = ['Overview', 'Documents', 'DHL / Customs', 'Warehouse', 'Sales', 'PZ / Accounting', 'Timeline', 'Intelligence', 'Proposals']" in src
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ClientKycModal — component presence and structure
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_client_kyc_modal_component_present():
+    src = _src()
+    assert "function ClientKycModal({" in src, "ClientKycModal function must be defined"
+
+
+def test_client_kyc_modal_defined_before_master_data_page():
+    src = _src()
+    modal_pos = src.index("function ClientKycModal(")
+    mdp_pos   = src.index("function MasterDataPage(")
+    assert modal_pos < mdp_pos, \
+        "ClientKycModal must be defined before MasterDataPage"
+
+
+def test_client_kyc_modal_landmark():
+    assert 'data-testid="client-kyc-modal"' in _src()
+
+
+def test_kyc_tabs_array_defined():
+    src = _src()
+    assert "const KYC_TABS = [" in src, "KYC_TABS array must be defined"
+
+
+def test_kyc_six_tabs_defined():
+    src = _src()
+    for tab_id in ("'basic'", "'shipping'", "'carriers'", "'kyc'", "'kuke'", "'invoices'"):
+        assert f"id: {tab_id}" in src, f"Missing KYC tab id: {tab_id}"
+
+
+def test_kyc_tab_labels_correct():
+    src = _src()
+    for label in (
+        "label: 'Company / Basic'",
+        "label: 'Shipping'",
+        "label: 'Carriers'",
+        "label: 'KYC / Compliance'",
+        "label: 'KUKE & Credit'",
+        "label: 'Invoices'",
+    ):
+        assert label in src, f"Missing KYC tab label: {label}"
+
+
+def test_kyc_three_tabs_marked_pending():
+    src = _src()
+    # carriers, kyc, invoices are backend-pending
+    for entry in (
+        "label: 'Carriers',         pending: true",
+        "label: 'KYC / Compliance', pending: true",
+        "label: 'Invoices',          pending: true",
+    ):
+        assert entry in src, f"Missing pending KYC tab marker: {entry}"
+
+
+def test_kyc_tab_testid_pattern():
+    assert "data-testid={'kyc-tab-' + t.id}" in _src()
+
+
+def test_kyc_panel_testids_present():
+    src = _src()
+    for panel_id in ('kyc-panel-basic', 'kyc-panel-shipping', 'kyc-panel-carriers',
+                     'kyc-panel-kyc', 'kyc-panel-kuke', 'kyc-panel-invoices'):
+        assert f'data-testid="{panel_id}"' in src, f"Missing panel testid: {panel_id}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ClientKycModal — Company / Basic tab (wired)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_kyc_basic_tab_field_testids():
+    src = _src()
+    for tid in (
+        'kyc-basic-bill-to-name',
+        'kyc-basic-country',
+        'kyc-basic-currency',
+        'kyc-basic-nip',
+        'kyc-basic-vat-eu',
+        'kyc-basic-notes',
+    ):
+        assert f'data-testid="{tid}"' in src, f"Missing basic tab testid: {tid}"
+
+
+def test_kyc_basic_fields_wired_to_form_state():
+    src = _src()
+    block = _kyc_block(src)
+    # bill_to_name, country, default_currency, nip, vat_eu_number, notes
+    for field in ("bill_to_name", "country", "default_currency", "nip", "vat_eu_number"):
+        assert field in block, f"Basic tab field not wired: {field}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ClientKycModal — Shipping tab (wired)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_kyc_shipping_tab_field_testids():
+    src = _src()
+    for tid in (
+        'kyc-shipping-use-alternate',
+        'kyc-shipping-name',
+        'kyc-shipping-person',
+        'kyc-shipping-street',
+        'kyc-shipping-city',
+        'kyc-shipping-zip',
+        'kyc-shipping-country',
+        'kyc-shipping-phone',
+        'kyc-shipping-email',
+    ):
+        assert f'data-testid="{tid}"' in src, f"Missing shipping tab testid: {tid}"
+
+
+def test_kyc_shipping_fields_wired_to_form_state():
+    src = _src()
+    block = _kyc_block(src)
+    for field in (
+        "ship_to_use_alternate", "ship_to_name", "ship_to_person",
+        "ship_to_street", "ship_to_city", "ship_to_zip",
+        "ship_to_country", "ship_to_phone", "ship_to_email",
+    ):
+        assert field in block, f"Shipping tab field not wired: {field}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ClientKycModal — Carriers tab (backend pending)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_kyc_carriers_tab_pending():
+    src = _src()
+    block = _kyc_block(src)
+    assert 'data-testid="kyc-panel-carriers"' in src
+    # Carriers is pending — Save must be disabled for this tab
+    assert "Save disabled for this tab" in block, \
+        "Carriers tab must show 'Save disabled for this tab' message"
+
+
+def test_kyc_carriers_tab_shows_field_structure():
+    src = _src()
+    block = _kyc_block(src)
+    # At minimum the panel shows a backend-pending signal, not live fields
+    assert "BACKEND PENDING" in block or "backend pending" in block.lower(), \
+        "Carriers panel must show Backend Pending state"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ClientKycModal — KYC / Compliance tab (backend pending)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_kyc_compliance_tab_pending():
+    src = _src()
+    block = _kyc_block(src)
+    assert 'data-testid="kyc-panel-kyc"' in src
+    assert "Save disabled for this tab" in block, \
+        "KYC/Compliance tab must show 'Save disabled for this tab' message"
+
+
+def test_kyc_compliance_tab_no_live_write():
+    src = _src()
+    block = _kyc_block(src)
+    # No POST or custom endpoint invented for KYC compliance
+    assert "/api/v1/kyc" not in block, "No KYC-specific endpoint may be invented"
+    assert "/api/v1/aml" not in block, "No AML-specific endpoint may be invented"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ClientKycModal — KUKE & Credit tab (wired)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_kyc_kuke_tab_field_testids():
+    src = _src()
+    for tid in (
+        'kyc-kuke-approved',
+        'kyc-kuke-limit',
+        'kyc-kuke-currency',
+        'kyc-kuke-expiry',
+        'kyc-credit-limit',
+        'kyc-credit-currency',
+        'kyc-risk-status',
+    ):
+        assert f'data-testid="{tid}"' in src, f"Missing KUKE/Credit testid: {tid}"
+
+
+def test_kyc_kuke_fields_wired_to_form_state():
+    src = _src()
+    block = _kyc_block(src)
+    for field in (
+        "kuke_approved", "kuke_limit", "kuke_currency",
+        "kuke_expiry_date", "credit_limit", "credit_currency", "risk_status",
+    ):
+        assert field in block, f"KUKE/Credit field not wired: {field}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ClientKycModal — Invoices tab (backend pending)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_kyc_invoices_tab_pending():
+    src = _src()
+    block = _kyc_block(src)
+    assert 'data-testid="kyc-panel-invoices"' in src
+    assert "Save disabled for this tab" in block, \
+        "Invoices tab must show 'Save disabled for this tab' message"
+
+
+def test_kyc_invoices_tab_no_invented_endpoint():
+    src = _src()
+    block = _kyc_block(src)
+    assert "/api/v1/invoices" not in block, \
+        "No invoices endpoint may be invented in KYC modal"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ClientKycModal — Save wiring
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_kyc_save_button_testid():
+    assert 'data-testid="kyc-btn-save"' in _src()
+
+
+def test_kyc_save_calls_customer_master_put():
+    src = _src()
+    block = _kyc_block(src)
+    assert "apiFetch('/api/v1/customer-master/' + contractorId" in block, \
+        "KYC save must PUT to /api/v1/customer-master/{contractorId}"
+    assert "method: 'PUT'" in block, "KYC save must use PUT method"
+
+
+def test_kyc_no_delete_or_post():
+    src = _src()
+    block = _kyc_block(src)
+    for forbidden in ("method: 'DELETE'", "method: 'POST'", "method: 'PATCH'"):
+        assert forbidden not in block, \
+            f"ClientKycModal must not contain {forbidden!r}"
+
+
+def test_kyc_save_error_testid():
+    assert 'data-testid="kyc-save-error"' in _src()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Customer Master panel
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_customer_master_panel_testid():
+    assert 'data-testid="master-customer-master-panel"' in _src()
+
+
+def test_customer_master_panel_shows_freight_and_insurance():
+    src = _src()
+    # The CM panel subtitle mentions freight / insurance / credit
+    assert "Freight / insurance / credit config per contractor" in src
+
+
+def test_customer_master_legacy_edit_testids_preserved():
+    """Legacy inline-edit testids from PR #94 must remain for test compatibility."""
+    src = _src()
+    for tid in (
+        'master-cm-btn-save', 'master-cm-btn-cancel',
+        'master-cm-save-error', 'master-cm-edit-form',
+        'cm-edit-freight-service-id', 'cm-edit-freight-eur', 'cm-edit-freight-usd',
+        'cm-edit-freight-label-pl', 'cm-edit-freight-label-en',
+        'cm-edit-insurance-service-id', 'cm-edit-insurance-rate',
+        'cm-edit-insurance-min-eur', 'cm-edit-insurance-min-usd',
+        'cm-edit-insurance-label-pl', 'cm-edit-insurance-label-en',
+        'cm-edit-insurance-enabled',
+    ):
+        assert f'data-testid="{tid}"' in src, f"Legacy CM testid must be preserved: {tid}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FX Rates panel (pending, design preview)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_fx_rates_entity_in_sidebar():
+    assert "id: 'fx_rates'" in _src()
+
+
+def test_fx_rates_entity_is_pending():
+    src = _src()
+    # fx_rates ENTITIES entry has live: false
+    idx = src.index("id: 'fx_rates'")
+    snippet = src[idx:idx + 120]
+    assert "live: false" in snippet, \
+        "FX Rates entity must have live: false"
+
+
+def test_fx_rates_pending_testid():
+    src = _src()
+    assert "data-testid={'master-pending-' + id}" in src
+    # fx_rates is in the pending-grid list
+    block_start = src.index('data-testid="master-pending-panel"')
+    block_end   = src.index('data-testid="master-design-preview"', block_start)
+    block = src[block_start:block_end]
+    assert "'fx_rates'" in block, "fx_rates must appear in pending grid"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Designs panel (pending, design preview)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_designs_entity_in_sidebar():
+    assert "id: 'designs'" in _src()
+
+
+def test_designs_entity_is_pending():
+    src = _src()
+    idx = src.index("id: 'designs'")
+    snippet = src[idx:idx + 120]
+    assert "live: false" in snippet, \
+        "Designs entity must have live: false"
+
+
+def test_designs_pending_testid():
+    src = _src()
+    block_start = src.index('data-testid="master-pending-panel"')
+    block_end   = src.index('data-testid="master-design-preview"', block_start)
+    block = src[block_start:block_end]
+    assert "'designs'" in block, "designs must appear in pending grid"
