@@ -52,6 +52,7 @@ def _acct_dict(a) -> dict:
 @router.get("/", dependencies=[_auth], summary="List carrier accounts")
 def list_accounts_endpoint(contractor_id: str) -> JSONResponse:
     try:
+        init_db(_DB_PATH)
         accts = list_accounts(_DB_PATH, contractor_id)
     except Exception as exc:
         log.error("list_accounts failed contractor_id=%s: %s", contractor_id, exc, exc_info=True)
@@ -103,6 +104,7 @@ async def update_account_endpoint(contractor_id: str, acct_id: int, request: Req
     if errs:
         raise HTTPException(status_code=422, detail={"validation_errors": errs})
     try:
+        init_db(_DB_PATH)
         stored = update_account(_DB_PATH, acct_id, contractor_id, body)
     except ValueError as exc:
         if "DUPLICATE_ACCOUNT" in str(exc):
@@ -128,6 +130,7 @@ async def update_account_endpoint(contractor_id: str, acct_id: int, request: Req
                status_code=204)
 def delete_account_endpoint(contractor_id: str, acct_id: int) -> None:
     try:
+        init_db(_DB_PATH)
         removed = delete_account(_DB_PATH, acct_id, contractor_id)
     except Exception as exc:
         log.error("delete_account failed acct_id=%d: %s", acct_id, exc, exc_info=True)

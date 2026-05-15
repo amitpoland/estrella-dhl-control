@@ -56,6 +56,7 @@ def _addr_dict(a) -> dict:
 @router.get("/", dependencies=[_auth], summary="List shipping addresses")
 def list_addresses_endpoint(contractor_id: str) -> JSONResponse:
     try:
+        init_db(_DB_PATH)
         addrs = list_addresses(_DB_PATH, contractor_id)
     except Exception as exc:
         log.error("list_addresses failed contractor_id=%s: %s", contractor_id, exc, exc_info=True)
@@ -99,6 +100,7 @@ async def update_address_endpoint(contractor_id: str, addr_id: int, request: Req
     if errs:
         raise HTTPException(status_code=422, detail={"validation_errors": errs})
     try:
+        init_db(_DB_PATH)
         stored = update_address(_DB_PATH, addr_id, contractor_id, body)
     except Exception as exc:
         log.error("update_address failed addr_id=%d: %s", addr_id, exc, exc_info=True)
@@ -116,6 +118,7 @@ async def update_address_endpoint(contractor_id: str, addr_id: int, request: Req
                status_code=204)
 def delete_address_endpoint(contractor_id: str, addr_id: int) -> None:
     try:
+        init_db(_DB_PATH)
         removed = delete_address(_DB_PATH, addr_id, contractor_id)
     except Exception as exc:
         log.error("delete_address failed addr_id=%d: %s", addr_id, exc, exc_info=True)
