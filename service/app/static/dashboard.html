@@ -301,6 +301,7 @@ async function apiFetch(url, opts = {}) {
     const text = await res.text().catch(() => '');
     throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
   }
+  if (res.status === 204 || res.status === 205) return null;
   const ct = res.headers.get('content-type') || '';
   return ct.includes('json') ? res.json() : res.text();
 }
@@ -2341,7 +2342,7 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
   const KYC_TABS = [
     { id: 'basic',    label: 'Company / Basic' },
     { id: 'shipping', label: 'Shipping' },
-    { id: 'carriers', label: 'Carriers',         pending: true },
+    { id: 'carriers', label: 'Carriers' },
     { id: 'kyc',      label: 'KYC / Compliance', pending: true },
     { id: 'kuke',     label: 'KUKE & Credit' },
     { id: 'invoices', label: 'Invoices',          pending: true },
@@ -2390,11 +2391,120 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
   const [saving, setSaving] = React.useState(false);
   const [saveError, setSaveError] = React.useState(null);
 
+  // MasterData-1: shipping addresses + carrier accounts sub-resources
+  const [shippingAddrs, setShippingAddrs] = React.useState([]);
+  const [addrLoading, setAddrLoading] = React.useState(false);
+  const [addrError, setAddrError]     = React.useState(null);
+  const [addrForm, setAddrForm]       = React.useState(null); // null=hidden, {}=add, {id,...}=edit
+  const [addrSaving, setAddrSaving]   = React.useState(false);
+
+  const [carrierAccts, setCarrierAccts] = React.useState([]);
+  const [carrierLoading, setCarrierLoading] = React.useState(false);
+  const [carrierError, setCarrierError]     = React.useState(null);
+  const [carrierForm, setCarrierForm]       = React.useState(null);
+  const [carrierSaving, setCarrierSaving]   = React.useState(false);
+
   const contractorId = (custMasterRec && custMasterRec.bill_to_contractor_id)
                        || (rec && rec.wfirma_customer_id);
   const canSave = !!contractorId;
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  React.useEffect(() => {
+    if (!contractorId) return;
+    // Load shipping addresses
+    setAddrLoading(true);
+    apiFetch('/api/v1/customer-master/' + contractorId + '/shipping-addresses')
+      .then(d => { setShippingAddrs(d.addresses || []); setAddrError(null); })
+      .catch(e => setAddrError(e.message || 'Failed to load addresses'))
+      .finally(() => setAddrLoading(false));
+    // Load carrier accounts
+    setCarrierLoading(true);
+    apiFetch('/api/v1/customer-master/' + contractorId + '/carrier-accounts')
+      .then(d => { setCarrierAccts(d.accounts || []); setCarrierError(null); })
+      .catch(e => setCarrierError(e.message || 'Failed to load carrier accounts'))
+      .finally(() => setCarrierLoading(false));
+  }, [contractorId]);
+
+  // ── Shipping address helpers ───────────────────────────────────────────────
+  const refreshAddrs = () => {
+    if (!contractorId) return;
+    apiFetch('/api/v1/customer-master/' + contractorId + '/shipping-addresses')
+      .then(d => setShippingAddrs(d.addresses || []))
+      .catch(() => {});
+  };
+
+  const handleAddrSave = async () => {
+    if (!addrForm) return;
+    setAddrSaving(true);
+    try {
+      if (addrForm.id) {
+        await apiFetch('/api/v1/customer-master/' + contractorId + '/shipping-addresses/' + addrForm.id,
+          { method: 'PUT', body: JSON.stringify(addrForm) });
+      } else {
+        await apiFetch('/api/v1/customer-master/' + contractorId + '/shipping-addresses',
+          { method: 'POST', body: JSON.stringify(addrForm) });
+      }
+      setAddrForm(null);
+      refreshAddrs();
+      if (onToast) onToast('Address saved.', 'success');
+    } catch (e) {
+      setAddrError(e.message || 'Save failed');
+    } finally {
+      setAddrSaving(false);
+    }
+  };
+
+  const handleAddrDelete = async (addrId) => {
+    try {
+      await apiFetch('/api/v1/customer-master/' + contractorId + '/shipping-addresses/' + addrId,
+        { method: 'DELETE' });
+      refreshAddrs();
+      if (onToast) onToast('Address deleted.', 'success');
+    } catch (e) {
+      setAddrError(e.message || 'Delete failed');
+    }
+  };
+
+  // ── Carrier account helpers ────────────────────────────────────────────────
+  const refreshCarriers = () => {
+    if (!contractorId) return;
+    apiFetch('/api/v1/customer-master/' + contractorId + '/carrier-accounts')
+      .then(d => setCarrierAccts(d.accounts || []))
+      .catch(() => {});
+  };
+
+  const handleCarrierSave = async () => {
+    if (!carrierForm) return;
+    setCarrierSaving(true);
+    try {
+      if (carrierForm.id) {
+        await apiFetch('/api/v1/customer-master/' + contractorId + '/carrier-accounts/' + carrierForm.id,
+          { method: 'PUT', body: JSON.stringify(carrierForm) });
+      } else {
+        await apiFetch('/api/v1/customer-master/' + contractorId + '/carrier-accounts',
+          { method: 'POST', body: JSON.stringify(carrierForm) });
+      }
+      setCarrierForm(null);
+      refreshCarriers();
+      if (onToast) onToast('Carrier account saved.', 'success');
+    } catch (e) {
+      setCarrierError(e.message || 'Save failed');
+    } finally {
+      setCarrierSaving(false);
+    }
+  };
+
+  const handleCarrierDelete = async (acctId) => {
+    try {
+      await apiFetch('/api/v1/customer-master/' + contractorId + '/carrier-accounts/' + acctId,
+        { method: 'DELETE' });
+      refreshCarriers();
+      if (onToast) onToast('Carrier account deleted.', 'success');
+    } catch (e) {
+      setCarrierError(e.message || 'Delete failed');
+    }
+  };
 
   const handleSave = async () => {
     if (!contractorId) return;
@@ -2636,34 +2746,309 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                     disabled={!form.ship_to_use_alternate} style={inputStyle} />
                 </label>
               </div>
-              <div style={{ marginTop: 14, padding: '8px 12px',
-                background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
-                borderRadius: 6, fontSize: 10, color: 'var(--badge-amber-text)' }}>
-                Multiple delivery addresses{pendingBadge} — Only one ship-to address is supported today.
-                Multi-address support is backend pending.
+              <div style={{ marginTop: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                    textTransform: 'uppercase', letterSpacing: '0.08em', flex: 1 }}>
+                    Saved delivery addresses
+                  </div>
+                  <button data-testid="kyc-shipping-add-btn"
+                    onClick={() => setAddrForm({ label: '', name: '', person: '', street: '',
+                      city: '', zip: '', country: '', phone: '', email: '', is_default: false })}
+                    disabled={!!addrForm}
+                    style={{ padding: '3px 10px', fontSize: 10, cursor: 'pointer',
+                      background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4 }}>
+                    + Add address
+                  </button>
+                </div>
+                {addrError && (
+                  <div style={{ padding: '6px 10px', background: 'var(--badge-red-bg)',
+                    border: '1px solid var(--badge-red-border)', borderRadius: 4,
+                    fontSize: 10, color: 'var(--badge-red-text)', marginBottom: 8 }}>
+                    {addrError}
+                  </div>
+                )}
+                {addrLoading && (
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '6px 0' }}>Loading addresses…</div>
+                )}
+                <div data-testid="kyc-shipping-addr-list">
+                  {shippingAddrs.map(addr => (
+                    <div key={addr.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8,
+                      padding: '7px 10px', background: 'var(--bg-subtle)',
+                      border: '1px solid var(--border-subtle)', borderRadius: 5, marginBottom: 5 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {addr.label}
+                          {addr.is_default && (
+                            <span style={{ fontSize: 9, padding: '1px 5px',
+                              background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)',
+                              border: '1px solid var(--badge-green-border)', borderRadius: 8,
+                              fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                              default
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--text-2)', marginTop: 2 }}>
+                          {[addr.name, addr.street, addr.city, addr.zip, addr.country].filter(Boolean).join(', ')}
+                        </div>
+                      </div>
+                      <button data-testid={'kyc-shipping-addr-' + addr.id + '-edit'}
+                        onClick={() => setAddrForm({ ...addr })}
+                        style={{ fontSize: 10, padding: '2px 7px', cursor: 'pointer',
+                          background: 'none', border: '1px solid var(--border)', borderRadius: 3,
+                          color: 'var(--text-2)' }}>
+                        Edit
+                      </button>
+                      <button data-testid={'kyc-shipping-addr-' + addr.id + '-delete'}
+                        onClick={() => handleAddrDelete(addr.id)}
+                        style={{ fontSize: 10, padding: '2px 7px', cursor: 'pointer',
+                          background: 'none', border: '1px solid var(--border)', borderRadius: 3,
+                          color: 'var(--text-2)' }}>
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  {!addrLoading && shippingAddrs.length === 0 && (
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '8px 0' }}>
+                      No saved delivery addresses yet.
+                    </div>
+                  )}
+                </div>
+                {addrForm !== null && (
+                  <div style={{ marginTop: 12, padding: '12px', background: 'var(--card)',
+                    border: '1px solid var(--border)', borderRadius: 6 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                      textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+                      {addrForm.id ? 'Edit address' : 'New address'}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>
+                        <span style={labelTextStyle}>Label *</span>
+                        <input data-testid="kyc-shipping-addr-form-label" type="text"
+                          value={addrForm.label || ''}
+                          onChange={e => setAddrForm(f => ({ ...f, label: e.target.value }))}
+                          style={inputStyle} placeholder="e.g. Main warehouse" />
+                      </label>
+                      <label style={labelStyle}>
+                        <span style={labelTextStyle}>Company name</span>
+                        <input type="text" value={addrForm.name || ''}
+                          onChange={e => setAddrForm(f => ({ ...f, name: e.target.value }))}
+                          style={inputStyle} />
+                      </label>
+                      <label style={labelStyle}>
+                        <span style={labelTextStyle}>Contact person</span>
+                        <input type="text" value={addrForm.person || ''}
+                          onChange={e => setAddrForm(f => ({ ...f, person: e.target.value }))}
+                          style={inputStyle} />
+                      </label>
+                      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>
+                        <span style={labelTextStyle}>Street</span>
+                        <input type="text" value={addrForm.street || ''}
+                          onChange={e => setAddrForm(f => ({ ...f, street: e.target.value }))}
+                          style={inputStyle} />
+                      </label>
+                      <label style={labelStyle}>
+                        <span style={labelTextStyle}>City</span>
+                        <input type="text" value={addrForm.city || ''}
+                          onChange={e => setAddrForm(f => ({ ...f, city: e.target.value }))}
+                          style={inputStyle} />
+                      </label>
+                      <label style={labelStyle}>
+                        <span style={labelTextStyle}>ZIP</span>
+                        <input type="text" value={addrForm.zip || ''}
+                          onChange={e => setAddrForm(f => ({ ...f, zip: e.target.value }))}
+                          style={inputStyle} />
+                      </label>
+                      <label style={labelStyle}>
+                        <span style={labelTextStyle}>Country (ISO alpha-2)</span>
+                        <input type="text" value={addrForm.country || ''}
+                          onChange={e => setAddrForm(f => ({ ...f, country: e.target.value.toUpperCase() }))}
+                          maxLength={2} style={inputStyle} placeholder="DE" />
+                      </label>
+                      <label style={labelStyle}>
+                        <span style={labelTextStyle}>Phone</span>
+                        <input type="text" value={addrForm.phone || ''}
+                          onChange={e => setAddrForm(f => ({ ...f, phone: e.target.value }))}
+                          style={inputStyle} />
+                      </label>
+                      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>
+                        <span style={labelTextStyle}>Email</span>
+                        <input type="email" value={addrForm.email || ''}
+                          onChange={e => setAddrForm(f => ({ ...f, email: e.target.value }))}
+                          style={inputStyle} />
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, gridColumn: '1 / -1' }}>
+                        <input type="checkbox" checked={!!addrForm.is_default}
+                          onChange={e => setAddrForm(f => ({ ...f, is_default: e.target.checked }))} />
+                        Set as default delivery address
+                      </label>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                      <button data-testid="kyc-shipping-addr-form-save"
+                        onClick={handleAddrSave} disabled={addrSaving}
+                        style={{ padding: '4px 14px', fontSize: 11, cursor: 'pointer',
+                          background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4 }}>
+                        {addrSaving ? 'Saving…' : 'Save'}
+                      </button>
+                      <button onClick={() => { setAddrForm(null); setAddrError(null); }}
+                        style={{ padding: '4px 14px', fontSize: 11, cursor: 'pointer',
+                          background: 'none', border: '1px solid var(--border)', borderRadius: 4,
+                          color: 'var(--text-2)' }}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
 
           {kycTab === 'carriers' && (
             <div data-testid="kyc-panel-carriers">
-              <div style={{ padding: '32px 20px', textAlign: 'center' }}>
-                {pendingBadge}
-                <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text-2)' }}>
-                  Per-client carrier account configuration is backend pending.
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                  textTransform: 'uppercase', letterSpacing: '0.08em', flex: 1 }}>
+                  Carrier accounts
                 </div>
-                <div style={{ marginTop: 10, background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)',
-                  borderRadius: 8, padding: '14px 16px', textAlign: 'left', maxWidth: 480, margin: '14px auto 0' }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase',
-                    letterSpacing: '0.08em', marginBottom: 10 }}>Field structure</div>
-                  {['preferred_carrier','dhl_account_number','dhl_account_name',
-                    'dhl_payment_type','dhl_service_level','fedex_account_number'].map(f => (
-                    <div key={f} style={{ padding: '4px 8px', marginBottom: 4, background: 'var(--card)',
-                      border: '1px dashed var(--border)', borderRadius: 4,
-                      fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace' }}>{f}</div>
-                  ))}
-                </div>
+                <button data-testid="kyc-carriers-add-btn"
+                  onClick={() => setCarrierForm({ carrier: 'dhl', account_number: '',
+                    account_name: '', payment_type: '', service_level: '', is_default: false })}
+                  disabled={!!carrierForm}
+                  style={{ padding: '3px 10px', fontSize: 10, cursor: 'pointer',
+                    background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4 }}>
+                  + Add account
+                </button>
               </div>
+              {carrierError && (
+                <div style={{ padding: '6px 10px', background: 'var(--badge-red-bg)',
+                  border: '1px solid var(--badge-red-border)', borderRadius: 4,
+                  fontSize: 10, color: 'var(--badge-red-text)', marginBottom: 8 }}>
+                  {carrierError}
+                </div>
+              )}
+              {carrierLoading && (
+                <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '6px 0' }}>Loading carrier accounts…</div>
+              )}
+              <div data-testid="kyc-carriers-list">
+                {carrierAccts.map(acct => (
+                  <div key={acct.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8,
+                    padding: '7px 10px', background: 'var(--bg-subtle)',
+                    border: '1px solid var(--border-subtle)', borderRadius: 5, marginBottom: 5 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ textTransform: 'uppercase' }}>{acct.carrier}</span>
+                        <span style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--text-2)' }}>
+                          {acct.account_number}
+                        </span>
+                        {acct.is_default && (
+                          <span style={{ fontSize: 9, padding: '1px 5px',
+                            background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)',
+                            border: '1px solid var(--badge-green-border)', borderRadius: 8,
+                            fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                            default
+                          </span>
+                        )}
+                      </div>
+                      {(acct.account_name || acct.payment_type) && (
+                        <div style={{ fontSize: 10, color: 'var(--text-2)', marginTop: 2 }}>
+                          {[acct.account_name, acct.payment_type].filter(Boolean).join(' · ')}
+                        </div>
+                      )}
+                    </div>
+                    <button data-testid={'kyc-carriers-acct-' + acct.id + '-edit'}
+                      onClick={() => setCarrierForm({ ...acct })}
+                      style={{ fontSize: 10, padding: '2px 7px', cursor: 'pointer',
+                        background: 'none', border: '1px solid var(--border)', borderRadius: 3,
+                        color: 'var(--text-2)' }}>
+                      Edit
+                    </button>
+                    <button data-testid={'kyc-carriers-acct-' + acct.id + '-delete'}
+                      onClick={() => handleCarrierDelete(acct.id)}
+                      style={{ fontSize: 10, padding: '2px 7px', cursor: 'pointer',
+                        background: 'none', border: '1px solid var(--border)', borderRadius: 3,
+                        color: 'var(--text-2)' }}>
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {!carrierLoading && carrierAccts.length === 0 && (
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '8px 0' }}>
+                    No carrier accounts configured yet.
+                  </div>
+                )}
+              </div>
+              {carrierForm !== null && (
+                <div style={{ marginTop: 12, padding: '12px', background: 'var(--card)',
+                  border: '1px solid var(--border)', borderRadius: 6 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                    textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+                    {carrierForm.id ? 'Edit carrier account' : 'New carrier account'}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <label style={labelStyle}>
+                      <span style={labelTextStyle}>Carrier *</span>
+                      <select data-testid="kyc-carriers-form-carrier"
+                        value={carrierForm.carrier || 'dhl'}
+                        onChange={e => setCarrierForm(f => ({ ...f, carrier: e.target.value }))}
+                        style={{ ...inputStyle, padding: '4px 8px' }}>
+                        <option value="dhl">DHL</option>
+                        <option value="fedex">FedEx</option>
+                        <option value="ups">UPS</option>
+                        <option value="other">Other</option>
+                      </select>
+                    </label>
+                    <label style={labelStyle}>
+                      <span style={labelTextStyle}>Account number *</span>
+                      <input data-testid="kyc-carriers-form-account-number" type="text"
+                        value={carrierForm.account_number || ''}
+                        onChange={e => setCarrierForm(f => ({ ...f, account_number: e.target.value }))}
+                        style={inputStyle} />
+                    </label>
+                    <label style={labelStyle}>
+                      <span style={labelTextStyle}>Account name</span>
+                      <input type="text" value={carrierForm.account_name || ''}
+                        onChange={e => setCarrierForm(f => ({ ...f, account_name: e.target.value }))}
+                        style={inputStyle} />
+                    </label>
+                    <label style={labelStyle}>
+                      <span style={labelTextStyle}>Payment type</span>
+                      <select value={carrierForm.payment_type || ''}
+                        onChange={e => setCarrierForm(f => ({ ...f, payment_type: e.target.value }))}
+                        style={{ ...inputStyle, padding: '4px 8px' }}>
+                        <option value="">— none —</option>
+                        <option value="shipper">Shipper</option>
+                        <option value="receiver">Receiver</option>
+                        <option value="third_party">Third party</option>
+                      </select>
+                    </label>
+                    <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>
+                      <span style={labelTextStyle}>Service level</span>
+                      <input type="text" value={carrierForm.service_level || ''}
+                        onChange={e => setCarrierForm(f => ({ ...f, service_level: e.target.value }))}
+                        style={inputStyle} placeholder="e.g. EXPRESS_WORLDWIDE" />
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, gridColumn: '1 / -1' }}>
+                      <input type="checkbox" checked={!!carrierForm.is_default}
+                        onChange={e => setCarrierForm(f => ({ ...f, is_default: e.target.checked }))} />
+                      Set as default carrier account
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <button data-testid="kyc-carriers-form-save"
+                      onClick={handleCarrierSave} disabled={carrierSaving}
+                      style={{ padding: '4px 14px', fontSize: 11, cursor: 'pointer',
+                        background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4 }}>
+                      {carrierSaving ? 'Saving…' : 'Save'}
+                    </button>
+                    <button onClick={() => { setCarrierForm(null); setCarrierError(null); }}
+                      style={{ padding: '4px 14px', fontSize: 11, cursor: 'pointer',
+                        background: 'none', border: '1px solid var(--border)', borderRadius: 4,
+                        color: 'var(--text-2)' }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -2811,7 +3196,7 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                    fontSize: 11, color: 'var(--badge-red-text)' }}>{saveError}</div>
           )}
           <div style={{ flex: 1 }} />
-          {(kycTab === 'carriers' || kycTab === 'kyc' || kycTab === 'invoices') && (
+          {(kycTab === 'kyc' || kycTab === 'invoices') && (
             <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
               Save disabled for this tab — backend pending
             </span>
@@ -2820,7 +3205,7 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
             style={{ padding: '7px 16px', fontSize: 12, background: 'var(--card)',
               color: 'var(--text-2)', border: '1px solid var(--border)',
               borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
-          {!['carriers','kyc','invoices'].includes(kycTab) && (
+          {!['kyc','invoices'].includes(kycTab) && (
             <button data-testid="kyc-btn-save" onClick={handleSave}
               disabled={saving || !canSave}
               style={{ padding: '7px 20px', fontSize: 12, fontWeight: 700,
