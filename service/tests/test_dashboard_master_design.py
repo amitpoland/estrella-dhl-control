@@ -477,15 +477,17 @@ def test_kyc_tab_labels_correct():
         assert label in src, f"Missing KYC tab label: {label}"
 
 
-def test_kyc_three_tabs_marked_pending():
+def test_kyc_two_tabs_marked_pending():
     src = _src()
-    # carriers, kyc, invoices are backend-pending
+    # kyc and invoices are backend-pending; carriers is now live (MasterData-1)
     for entry in (
-        "label: 'Carriers',         pending: true",
         "label: 'KYC / Compliance', pending: true",
         "label: 'Invoices',          pending: true",
     ):
         assert entry in src, f"Missing pending KYC tab marker: {entry}"
+    # carriers must NOT be marked pending any more
+    assert "label: 'Carriers',         pending: true" not in src, \
+        "Carriers tab must no longer be backend-pending (MasterData-1 wired it)"
 
 
 def test_kyc_tab_testid_pattern():
@@ -556,24 +558,32 @@ def test_kyc_shipping_fields_wired_to_form_state():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ClientKycModal — Carriers tab (backend pending)
+# ClientKycModal — Carriers tab (MasterData-1: now live)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_kyc_carriers_tab_pending():
+def test_kyc_carriers_tab_live():
+    """Carriers tab is now live (MasterData-1). Panel must be present with real UI."""
     src = _src()
     block = _kyc_block(src)
     assert 'data-testid="kyc-panel-carriers"' in src
-    # Carriers is pending — Save must be disabled for this tab
-    assert "Save disabled for this tab" in block, \
-        "Carriers tab must show 'Save disabled for this tab' message"
+    # Carriers is now live — Save disabled message must NOT appear for carriers tab
+    # (it still appears for kyc/invoices, just not in the carriers panel itself)
+    assert 'data-testid="kyc-carriers-add-btn"' in src, \
+        "Carriers tab must have an Add account button (live MasterData-1)"
+    assert 'data-testid="kyc-carriers-list"' in src, \
+        "Carriers tab must have a carrier accounts list"
 
 
-def test_kyc_carriers_tab_shows_field_structure():
+def test_kyc_carriers_tab_form_testids():
     src = _src()
-    block = _kyc_block(src)
-    # At minimum the panel shows a backend-pending signal, not live fields
-    assert "BACKEND PENDING" in block or "backend pending" in block.lower(), \
-        "Carriers panel must show Backend Pending state"
+    for tid in (
+        'kyc-carriers-add-btn',
+        'kyc-carriers-list',
+        'kyc-carriers-form-carrier',
+        'kyc-carriers-form-account-number',
+        'kyc-carriers-form-save',
+    ):
+        assert f'data-testid="{tid}"' in src, f"Missing carriers tab testid: {tid}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -659,12 +669,19 @@ def test_kyc_save_calls_customer_master_put():
     assert "method: 'PUT'" in block, "KYC save must use PUT method"
 
 
-def test_kyc_no_delete_or_post():
+def test_kyc_no_patch_and_sub_resource_only_writes():
+    """PATCH is never allowed. POST/DELETE are only allowed for sub-resource routes
+    (shipping-addresses and carrier-accounts). No direct customer-master POST/DELETE."""
     src = _src()
     block = _kyc_block(src)
-    for forbidden in ("method: 'DELETE'", "method: 'POST'", "method: 'PATCH'"):
-        assert forbidden not in block, \
-            f"ClientKycModal must not contain {forbidden!r}"
+    assert "method: 'PATCH'" not in block, \
+        "ClientKycModal must not contain method: 'PATCH'"
+    # Sub-resource POST/DELETE are allowed (shipping-addresses, carrier-accounts)
+    # but customer-master itself must never be POST/DELETE'd
+    assert "method: 'POST', body: JSON.stringify(payload)" not in block, \
+        "customer-master must not be POST'd directly in ClientKycModal"
+    assert "shipping-addresses" in block or "carrier-accounts" in block, \
+        "ClientKycModal sub-resource routes must be present"
 
 
 def test_kyc_save_error_testid():
