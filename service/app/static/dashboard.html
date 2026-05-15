@@ -301,6 +301,7 @@ async function apiFetch(url, opts = {}) {
     const text = await res.text().catch(() => '');
     throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
   }
+  if (res.status === 204 || res.status === 205) return null;
   const ct = res.headers.get('content-type') || '';
   return ct.includes('json') ? res.json() : res.text();
 }
