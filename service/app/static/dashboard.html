@@ -17095,6 +17095,8 @@ function ProformaDraftPanel({ batchId, onToast }) {
       }),
     });
 
+  const [chargePrefill, setChargePrefill] = React.useState(null);
+
   const onAddCharge = (charge) =>
     _writeCall('Add service charge',
                `/api/v1/proforma/draft/${openId}/service-charges`, {
@@ -17110,6 +17112,44 @@ function ProformaDraftPanel({ batchId, onToast }) {
                `/api/v1/proforma/draft/${openId}/service-charges/${chargeId}`
                + `?expected_updated_at=${encodeURIComponent(openDraft.updated_at)}`,
                { method: 'DELETE' });
+
+  const onSuggestFreight = React.useCallback(async () => {
+    try {
+      const r = await apiFetch(`/api/v1/proforma/draft/${openId}/suggest-freight`);
+      if (r && r.ok && r.suggestion) {
+        setChargePrefill({
+          charge_type: 'freight',
+          amount:      r.suggestion.amount,
+          currency:    r.draft_currency || openDraft.currency || 'EUR',
+          label:       r.suggestion.label || '',
+        });
+      } else {
+        const reason = (r && r.reason) ? r.reason : 'no freight data configured';
+        onToast && onToast(`Freight suggestion blocked: ${reason}`, 'warn');
+      }
+    } catch (e) {
+      onToast && onToast(`Suggest freight failed: ${e.message}`, 'error');
+    }
+  }, [openId, openDraft, onToast]);
+
+  const onSuggestInsurance = React.useCallback(async () => {
+    try {
+      const r = await apiFetch(`/api/v1/proforma/draft/${openId}/suggest-insurance`);
+      if (r && r.ok && r.suggestion) {
+        setChargePrefill({
+          charge_type: 'insurance',
+          amount:      r.suggestion.amount,
+          currency:    r.draft_currency || openDraft.currency || 'EUR',
+          label:       r.suggestion.label || '',
+        });
+      } else {
+        const reason = (r && r.reason) ? r.reason : 'no insurance data configured';
+        onToast && onToast(`Insurance suggestion blocked: ${reason}`, 'warn');
+      }
+    } catch (e) {
+      onToast && onToast(`Suggest insurance failed: ${e.message}`, 'error');
+    }
+  }, [openId, openDraft, onToast]);
 
   const onApprove = () => {
     const token = window.prompt(
@@ -17799,8 +17839,21 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   </tbody>
                 </table>
                 {isEditable && (
-                  <ProformaDraftAddChargeForm onAdd={onAddCharge}
-                                               draftCurrency={openDraft.currency} />
+                  <div>
+                    <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                      <Btn small onClick={onSuggestFreight}
+                           data-testid="btn-suggest-freight">
+                        Suggest freight from master
+                      </Btn>
+                      <Btn small onClick={onSuggestInsurance}
+                           data-testid="btn-suggest-insurance">
+                        Calculate insurance
+                      </Btn>
+                    </div>
+                    <ProformaDraftAddChargeForm onAdd={onAddCharge}
+                                               draftCurrency={openDraft.currency}
+                                               prefill={chargePrefill} />
+                  </div>
                 )}
               </div>
 
@@ -18132,11 +18185,21 @@ function ProformaDraftRemarksEditor({ value, editable, onSave }) {
   );
 }
 
-function ProformaDraftAddChargeForm({ onAdd, draftCurrency }) {
+function ProformaDraftAddChargeForm({ onAdd, draftCurrency, prefill }) {
   const [type,   setType]   = React.useState('freight');
   const [amount, setAmount] = React.useState('');
   const [ccy,    setCcy]    = React.useState(draftCurrency || 'EUR');
   const [label,  setLabel]  = React.useState('');
+
+  // When a suggestion arrives via `prefill`, populate the form fields.
+  React.useEffect(() => {
+    if (!prefill) return;
+    if (prefill.charge_type) setType(prefill.charge_type);
+    if (prefill.amount != null) setAmount(String(prefill.amount));
+    if (prefill.currency) setCcy(String(prefill.currency).toUpperCase());
+    if (prefill.label != null) setLabel(prefill.label);
+  }, [prefill]);
+
   const submit = () => {
     const a = parseFloat(amount);
     if (!isFinite(a) || a < 0) return;
