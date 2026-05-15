@@ -1224,6 +1224,12 @@ EDITABLE_LINE_FIELDS = (
 
 ALLOWED_SERVICE_CHARGE_TYPES = ("freight", "insurance")
 
+# Keys that must never appear in formula_basis — they would bleed
+# customs / import cost data into a service charge formula.
+_FORBIDDEN_FORMULA_BASIS_PREFIXES = (
+    "cif", "customs", "import_cost", "pz_", "sad_", "zc429_",
+)
+
 
 class DraftNotFound(Exception):
     """Raised when a draft id has no matching row."""
@@ -1677,6 +1683,26 @@ def add_draft_service_charge(
         raise ValueError("amount must be >= 0")
     ccy = _validate_currency(str(charge.get("currency") or ""))
 
+    # Validate wfirma_service_id if present
+    wsid = charge.get("wfirma_service_id")
+    if wsid is not None and not str(wsid).strip():
+        raise ValueError("wfirma_service_id must be a non-empty string if provided")
+
+    # Validate formula_basis if present
+    formula_basis = charge.get("formula_basis")
+    if formula_basis is not None:
+        if not isinstance(formula_basis, dict):
+            raise ValueError("formula_basis must be a JSON object")
+        for k in formula_basis:
+            if any(
+                str(k).startswith(pfx) or str(k) == pfx
+                for pfx in _FORBIDDEN_FORMULA_BASIS_PREFIXES
+            ):
+                raise ValueError(
+                    f"formula_basis key {k!r} is not allowed; "
+                    "only sales_total, rate_pct, minimum_eur, minimum_usd are permitted"
+                )
+
     d = _load_for_edit(db_path, draft_id, expected_updated_at)
 
     # Currency-match check vs existing lines.
@@ -1695,15 +1721,26 @@ def add_draft_service_charge(
         charges = json.loads(d.service_charges_json or "[]") or []
     except Exception:
         charges = []
+
+    # One-per-type constraint: block a duplicate charge_type
+    existing_types = {c.get("charge_type") for c in charges}
+    if ctype in existing_types:
+        raise ValueError(
+            f"A service charge of type {ctype!r} already exists on this draft. "
+            "Remove it first before adding another."
+        )
+
     used_ids = {int(c.get("charge_id") or 0) for c in charges
                 if isinstance(c.get("charge_id"), int)}
     new_id = (max(used_ids) if used_ids else 0) + 1
-    new_charge = {
-        "charge_id":   new_id,
-        "charge_type": ctype,
-        "amount":      amount,
-        "currency":    ccy,
-        "label":       str(charge.get("label") or "").strip(),
+    new_charge: Dict[str, Any] = {
+        "charge_id":         new_id,
+        "charge_type":       ctype,
+        "amount":            amount,
+        "currency":          ccy,
+        "label":             str(charge.get("label") or "").strip(),
+        "wfirma_service_id": str(wsid).strip() if wsid is not None else None,
+        "formula_basis":     formula_basis,
     }
     charges.append(new_charge)
 
@@ -2505,6 +2542,7 @@ __all__ = [
     "EDITABLE_DRAFT_FIELDS",
     "EDITABLE_LINE_FIELDS",
     "ALLOWED_SERVICE_CHARGE_TYPES",
+    "_FORBIDDEN_FORMULA_BASIS_PREFIXES",
     "DraftNotFound",
     "DraftNotEditable",
     "DraftConflict",

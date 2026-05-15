@@ -33,6 +33,8 @@ from ..services import wfirma_db   as wfdb
 from ..services import inventory_state_engine as ise
 from ..services import proforma_invoice_link_db as pildb
 from ..services import wfirma_client
+from ..services.customer_master_db import get_customer as get_customer_master
+from ..services.customer_master import pick_freight, compute_insurance_suggestion
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/proforma", tags=["proforma"])
@@ -752,6 +754,10 @@ def proforma_preview(batch_id: str, client_name: str) -> JSONResponse:
 
 def _proforma_db_path():
     return settings.storage_root / "proforma_links.db"
+
+
+def _customer_master_db_path():
+    return settings.storage_root / "customer_master.sqlite"
 
 
 def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaRequest":
@@ -3160,6 +3166,181 @@ def delete_proforma_draft_service_charge(
         operator,
         str(expected_updated_at or ""),
     ))
+
+
+# ── PR 2C.3b — customer-master suggestions ────────────────────────────────────
+
+def _suggest_lookup(draft_id: int):
+    """Shared setup for suggest-freight / suggest-insurance.
+
+    Returns ``(draft, draft_currency, customer_master | None, blocked_reason | None)``.
+    ``blocked_reason`` is a non-empty string when the call should return a
+    blocked response; the other values are only meaningful when it is ``None``.
+    """
+    d = pildb.get_draft_by_id(_proforma_db_path(), draft_id)
+    if d is None:
+        return None, None, None, f"draft id={draft_id} not found"
+
+    draft_currency = (d.currency or "").upper()
+    if draft_currency not in ("EUR", "USD"):
+        return d, draft_currency, None, (
+            f"draft currency {draft_currency!r} is not supported; "
+            "only EUR and USD drafts can receive suggestions"
+        )
+
+    # Resolve customer via wFirma name → contractor_id → customer master
+    resolution = _resolve_customer(d.client_name)
+    if not resolution.get("found") or not resolution.get("wfirma_customer_id"):
+        return d, draft_currency, None, (
+            f"customer {d.client_name!r} not found in wFirma mapping — "
+            "cannot look up customer master"
+        )
+
+    contractor_id = resolution["wfirma_customer_id"]
+    cm = get_customer_master(_customer_master_db_path(), contractor_id)
+    if cm is None:
+        return d, draft_currency, None, (
+            f"no customer master record for contractor_id={contractor_id!r} "
+            f"(client_name={d.client_name!r})"
+        )
+
+    return d, draft_currency, cm, None
+
+
+@router.get("/draft/{draft_id}/suggest-freight", dependencies=[_auth],
+            summary="Suggest freight service charge from customer master")
+def suggest_freight_endpoint(draft_id: int) -> JSONResponse:
+    """Return a freight amount suggestion derived from the customer master.
+
+    Reads ``freight_fixed_amount_eur`` / ``freight_fixed_amount_usd`` for the
+    customer linked to this draft.  Returns a structured suggestion the UI can
+    use to pre-fill the service-charge add form.  Does NOT write any data.
+
+    Response shape (success)::
+
+        {
+          "ok": true,
+          "draft_id": 42,
+          "draft_currency": "EUR",
+          "suggestion": {
+            "amount": "120.00",
+            "wfirma_service_id": "13002743",
+            "label": "FedEx Courier",
+            "legacy_fallback": false
+          }
+        }
+
+    Response shape (blocked)::
+
+        {
+          "ok": false,
+          "blocked": true,
+          "reason": "...",
+          "draft_id": 42,
+          "draft_currency": "EUR"
+        }
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+
+    d, draft_currency, cm, blocked_reason = _suggest_lookup(draft_id)
+    base = {"draft_id": draft_id, "draft_currency": draft_currency or ""}
+
+    if blocked_reason:
+        return JSONResponse({**base, "ok": False, "blocked": True, "reason": blocked_reason})
+
+    result = pick_freight(cm, draft_currency)
+    if not result.get("ok"):
+        return JSONResponse({**base, "ok": False, "blocked": True,
+                             "reason": result.get("reason", "unknown")})
+
+    from decimal import Decimal as _Dec
+    return JSONResponse({
+        **base,
+        "ok": True,
+        "suggestion": {
+            "amount":            str(result["amount"]),
+            "wfirma_service_id": result["wfirma_service_id"],
+            "label":             result.get("label"),
+            "legacy_fallback":   bool(result.get("legacy_fallback", False)),
+        },
+    })
+
+
+@router.get("/draft/{draft_id}/suggest-insurance", dependencies=[_auth],
+            summary="Calculate insurance service charge from customer master")
+def suggest_insurance_endpoint(draft_id: int) -> JSONResponse:
+    """Return an insurance amount suggestion derived from the customer master.
+
+    Uses ``insurance_fixed_amount_eur`` / ``insurance_fixed_amount_usd`` (fixed
+    mode) or ``insurance_rate`` + minimum (formula mode).  Blocked when
+    ``insurance_enabled`` is ``False`` or when the draft has unpriced lines
+    (``needs_pricing_refresh``).  Does NOT write any data.
+
+    Response shape (success)::
+
+        {
+          "ok": true,
+          "draft_id": 42,
+          "draft_currency": "EUR",
+          "suggestion": {
+            "amount": "35.00",
+            "wfirma_service_id": "13102217",
+            "label": "Insurance",
+            "formula_basis": null
+          }
+        }
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+
+    d, draft_currency, cm, blocked_reason = _suggest_lookup(draft_id)
+    base = {"draft_id": draft_id, "draft_currency": draft_currency or ""}
+
+    if blocked_reason:
+        return JSONResponse({**base, "ok": False, "blocked": True, "reason": blocked_reason})
+
+    # Block on unpriced lines — insurance formula would be meaningless
+    import json as _json
+    try:
+        lines = _json.loads(d.editable_lines_json or "[]") or []
+    except Exception:
+        lines = []
+    needs_pricing_refresh = any(
+        float(ln.get("unit_price", 0) or 0) <= 0 for ln in lines
+    )
+    if needs_pricing_refresh:
+        return JSONResponse({
+            **base,
+            "ok": False, "blocked": True,
+            "reason": (
+                "draft has lines with unit_price <= 0 — "
+                "reset draft from packing to populate prices before suggesting insurance"
+            ),
+        })
+
+    # Sales total = sum of (qty × unit_price) across editable lines
+    from decimal import Decimal as _Dec
+    sales_total = sum(
+        _Dec(str(ln.get("qty", 0) or 0)) * _Dec(str(ln.get("unit_price", 0) or 0))
+        for ln in lines
+    )
+
+    result = compute_insurance_suggestion(cm, draft_currency, sales_total)
+    if not result.get("ok"):
+        return JSONResponse({**base, "ok": False, "blocked": True,
+                             "reason": result.get("reason", "unknown")})
+
+    return JSONResponse({
+        **base,
+        "ok": True,
+        "suggestion": {
+            "amount":            str(result["amount"]),
+            "wfirma_service_id": result["wfirma_service_id"],
+            "label":             result.get("label"),
+            "formula_basis":     result.get("formula_basis"),
+        },
+    })
 
 
 # ── Phase 5 — operator-driven posting to wFirma ────────────────────────────
