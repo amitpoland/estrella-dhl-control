@@ -115,7 +115,21 @@ class CustomerMaster:
     kuke_limit:              Optional[Decimal] = None
     kuke_currency:           Optional[str] = None
     kuke_expiry_date:        Optional[str] = None      # ISO date
-    risk_status:             Optional[str] = None      # e.g. "approved","watch","blocked"
+    risk_status:             Optional[str] = None      # e.g. "low","medium","high","blocked"
+    kuke_policy_number:      Optional[str] = None
+    kuke_self_retention_pct: Optional[Decimal] = None  # 0–100
+    payment_terms_days:      Optional[int] = None      # ≥ 0
+
+    # KYC / Compliance (operator-managed; no AML integration in Layer 1)
+    kyc_status:              Optional[str] = None      # approved|pending|review|rejected
+    kyc_approved_on:         Optional[str] = None      # ISO date
+    kyc_expiry:              Optional[str] = None      # ISO date
+    beneficial_owner:        Optional[str] = None
+    owner_id_type:           Optional[str] = None      # passport|id_card|drivers_license
+    owner_id_number:         Optional[str] = None
+    aml_risk_rating:         Optional[str] = None      # low|medium|high
+    pep_check_result:        Optional[str] = None      # clear|flagged|pending
+    compliance_notes:        Optional[str] = None
 
     # Audit
     notes:                   Optional[str] = None
@@ -152,6 +166,30 @@ def validate(c: CustomerMaster) -> List[str]:
             blockers.append(f"{label} must be >= 0, got {value}")
     if c.kuke_approved and not c.kuke_limit:
         blockers.append("kuke_approved=True requires kuke_limit to be set")
+    # KUKE extras
+    if c.kuke_self_retention_pct is not None:
+        pct = Decimal(c.kuke_self_retention_pct)
+        if pct < 0 or pct > 100:
+            blockers.append(f"kuke_self_retention_pct must be between 0 and 100, got {pct}")
+    if c.payment_terms_days is not None and c.payment_terms_days < 0:
+        blockers.append(f"payment_terms_days must be >= 0, got {c.payment_terms_days}")
+    # KYC / Compliance enum checks
+    _KYC_STATUS    = {"approved", "pending", "review", "rejected"}
+    _OWNER_ID_TYPE = {"passport", "id_card", "drivers_license"}
+    _AML_RATING    = {"low", "medium", "high"}
+    _PEP_RESULT    = {"clear", "flagged", "pending"}
+    if c.kyc_status and c.kyc_status not in _KYC_STATUS:
+        blockers.append(
+            f"kyc_status must be one of {sorted(_KYC_STATUS)}, got {c.kyc_status!r}")
+    if c.owner_id_type and c.owner_id_type not in _OWNER_ID_TYPE:
+        blockers.append(
+            f"owner_id_type must be one of {sorted(_OWNER_ID_TYPE)}, got {c.owner_id_type!r}")
+    if c.aml_risk_rating and c.aml_risk_rating not in _AML_RATING:
+        blockers.append(
+            f"aml_risk_rating must be one of {sorted(_AML_RATING)}, got {c.aml_risk_rating!r}")
+    if c.pep_check_result and c.pep_check_result not in _PEP_RESULT:
+        blockers.append(
+            f"pep_check_result must be one of {sorted(_PEP_RESULT)}, got {c.pep_check_result!r}")
     if c.vat_mode is not None and c.vat_mode not in (222, 228, 229):
         blockers.append(f"vat_mode must be one of 222/228/229, got {c.vat_mode!r}")
     if c.freight_currency and c.freight_currency not in ("PLN", "USD", "EUR"):
@@ -246,6 +284,18 @@ def init_db(db_path: Path) -> None:
                 kuke_currency            TEXT,
                 kuke_expiry_date         TEXT,
                 risk_status              TEXT,
+                kuke_policy_number       TEXT,
+                kuke_self_retention_pct  TEXT,
+                payment_terms_days       INTEGER,
+                kyc_status               TEXT,
+                kyc_approved_on          TEXT,
+                kyc_expiry               TEXT,
+                beneficial_owner         TEXT,
+                owner_id_type            TEXT,
+                owner_id_number          TEXT,
+                aml_risk_rating          TEXT,
+                pep_check_result         TEXT,
+                compliance_notes         TEXT,
 
                 notes                    TEXT,
                 created_at               TEXT NOT NULL,
@@ -283,6 +333,19 @@ def init_db(db_path: Path) -> None:
             ("insurance_label_pl",         "TEXT"),
             ("insurance_label_en",         "TEXT"),
             ("insurance_enabled",          "INTEGER NOT NULL DEFAULT 1"),
+            # MasterData-2 — KUKE extras + KYC/Compliance
+            ("kuke_policy_number",        "TEXT"),
+            ("kuke_self_retention_pct",   "TEXT"),
+            ("payment_terms_days",        "INTEGER"),
+            ("kyc_status",                "TEXT"),
+            ("kyc_approved_on",           "TEXT"),
+            ("kyc_expiry",                "TEXT"),
+            ("beneficial_owner",          "TEXT"),
+            ("owner_id_type",             "TEXT"),
+            ("owner_id_number",           "TEXT"),
+            ("aml_risk_rating",           "TEXT"),
+            ("pep_check_result",          "TEXT"),
+            ("compliance_notes",          "TEXT"),
         ])
 
 
@@ -382,6 +445,18 @@ def _row_to_customer(row: sqlite3.Row) -> CustomerMaster:
         kuke_currency                 = row["kuke_currency"],
         kuke_expiry_date              = row["kuke_expiry_date"],
         risk_status                   = row["risk_status"],
+        kuke_policy_number            = _row_get(row, "kuke_policy_number"),
+        kuke_self_retention_pct       = _str_to_dec(_row_get(row, "kuke_self_retention_pct")),
+        payment_terms_days            = _row_get(row, "payment_terms_days"),
+        kyc_status                    = _row_get(row, "kyc_status"),
+        kyc_approved_on               = _row_get(row, "kyc_approved_on"),
+        kyc_expiry                    = _row_get(row, "kyc_expiry"),
+        beneficial_owner              = _row_get(row, "beneficial_owner"),
+        owner_id_type                 = _row_get(row, "owner_id_type"),
+        owner_id_number               = _row_get(row, "owner_id_number"),
+        aml_risk_rating               = _row_get(row, "aml_risk_rating"),
+        pep_check_result              = _row_get(row, "pep_check_result"),
+        compliance_notes              = _row_get(row, "compliance_notes"),
         notes                         = row["notes"],
         created_at                    = row["created_at"],
         updated_at                    = row["updated_at"],
@@ -443,13 +518,25 @@ def upsert_customer(db_path: Path, c: CustomerMaster) -> int:
         "insurance_label_en":           c.insurance_label_en,
         "insurance_enabled":            1 if c.insurance_enabled else 0,
         "credit_limit":                 _dec_to_str(c.credit_limit),
-        "credit_currency":         c.credit_currency,
-        "kuke_approved":           _to_int(c.kuke_approved),
-        "kuke_limit":              _dec_to_str(c.kuke_limit),
-        "kuke_currency":           c.kuke_currency,
-        "kuke_expiry_date":        c.kuke_expiry_date,
-        "risk_status":             c.risk_status,
-        "notes":                   c.notes,
+        "credit_currency":              c.credit_currency,
+        "kuke_approved":                _to_int(c.kuke_approved),
+        "kuke_limit":                   _dec_to_str(c.kuke_limit),
+        "kuke_currency":                c.kuke_currency,
+        "kuke_expiry_date":             c.kuke_expiry_date,
+        "risk_status":                  c.risk_status,
+        "kuke_policy_number":           c.kuke_policy_number,
+        "kuke_self_retention_pct":      _dec_to_str(c.kuke_self_retention_pct),
+        "payment_terms_days":           int(c.payment_terms_days) if c.payment_terms_days is not None else None,
+        "kyc_status":                   c.kyc_status,
+        "kyc_approved_on":              c.kyc_approved_on,
+        "kyc_expiry":                   c.kyc_expiry,
+        "beneficial_owner":             c.beneficial_owner,
+        "owner_id_type":                c.owner_id_type,
+        "owner_id_number":              c.owner_id_number,
+        "aml_risk_rating":              c.aml_risk_rating,
+        "pep_check_result":             c.pep_check_result,
+        "compliance_notes":             c.compliance_notes,
+        "notes":                        c.notes,
         "updated_at":              now,
     }
 

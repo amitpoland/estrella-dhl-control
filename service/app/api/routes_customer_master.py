@@ -107,6 +107,19 @@ def _customer_to_dict(c: CustomerMaster) -> Dict[str, Any]:
         "kuke_currency":                 c.kuke_currency,
         "kuke_expiry_date":              c.kuke_expiry_date,
         "risk_status":                   c.risk_status,
+        "kuke_policy_number":            c.kuke_policy_number,
+        "kuke_self_retention_pct":       _dec_or_none(c.kuke_self_retention_pct),
+        "payment_terms_days":            c.payment_terms_days,
+        # KYC / Compliance
+        "kyc_status":                    c.kyc_status,
+        "kyc_approved_on":               c.kyc_approved_on,
+        "kyc_expiry":                    c.kyc_expiry,
+        "beneficial_owner":              c.beneficial_owner,
+        "owner_id_type":                 c.owner_id_type,
+        "owner_id_number":               c.owner_id_number,
+        "aml_risk_rating":               c.aml_risk_rating,
+        "pep_check_result":              c.pep_check_result,
+        "compliance_notes":              c.compliance_notes,
         "notes":                         c.notes,
         "created_at":                    c.created_at,
         "updated_at":                    c.updated_at,
@@ -122,13 +135,14 @@ _DECIMAL_FIELDS = frozenset({
     "insurance_fixed_amount_eur", "insurance_fixed_amount_usd",
     "insurance_min_eur", "insurance_min_usd",
     "credit_limit", "kuke_limit",
+    "kuke_self_retention_pct",
 })
 
 _BOOL_FIELDS = frozenset({
     "ship_to_use_alternate", "vat_eu_valid", "kuke_approved", "insurance_enabled",
 })
 
-_INT_FIELDS = frozenset({"vat_mode"})
+_INT_FIELDS = frozenset({"vat_mode", "payment_terms_days"})
 
 
 def _parse_body(contractor_id: str, body: Dict[str, Any]) -> CustomerMaster:
@@ -158,9 +172,12 @@ def _parse_body(contractor_id: str, body: Dict[str, Any]) -> CustomerMaster:
         if fname in body and body[fname] is not None:
             body[fname] = bool(body[fname])
 
-    # Int coercions
+    # Int coercions — empty string becomes None first
     for fname in _INT_FIELDS:
-        if fname in body and body[fname] is not None:
+        if fname in body:
+            if body[fname] == "" or body[fname] is None:
+                body[fname] = None
+                continue
             try:
                 body[fname] = int(body[fname])
             except (TypeError, ValueError):
