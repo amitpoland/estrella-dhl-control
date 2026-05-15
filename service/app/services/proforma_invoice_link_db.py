@@ -1244,6 +1244,21 @@ class DraftConflict(Exception):
     current ``updated_at`` (optimistic-lock violation)."""
 
 
+class OverwriteRequired(ValueError):
+    """Raised when bulk_price_recovery would overwrite existing non-zero
+    prices without ``confirm_overwrite=True``.
+
+    ``codes`` lists every product_code that would be overwritten.
+    """
+
+    def __init__(self, codes: List[str]) -> None:
+        self.codes = list(codes)
+        super().__init__(
+            f"confirm_overwrite required: {len(self.codes)} line(s) already "
+            f"have unit_price > 0: {self.codes}"
+        )
+
+
 def _next_state_after_edit(current: str) -> str:
     """First successful edit on a ``draft`` row promotes it to ``editing``.
 
@@ -1642,6 +1657,134 @@ def update_draft_line(
             "patch":     patch,
             "from_state": d.draft_state,
             "to_state":   refreshed.draft_state,
+        }, ensure_ascii=False, sort_keys=True),
+        operator=operator,
+    )
+    return refreshed
+
+
+def bulk_price_recovery(
+    db_path:             Path,
+    draft_id:            int,
+    prices:              List[Dict[str, Any]],
+    operator:            str,
+    expected_updated_at: str,
+    *,
+    confirm_overwrite:   bool = False,
+) -> ProformaDraft:
+    """Apply a bulk unit-price update to editable lines, matched by ``product_code``.
+
+    ``prices`` is a list of ``{"product_code": str, "unit_price": float}``
+    dicts.  Only ``unit_price`` and ``price_source`` are written on matched
+    lines; all other fields (qty, currency, design_no, client_ref, item_type,
+    name_pl, description_*) are preserved exactly.  ``source_lines_json`` is
+    **never** read or written.
+
+    Parameters
+    ----------
+    prices:
+        Each entry must have a non-blank ``product_code`` and a numeric
+        ``unit_price > 0``.  Duplicate product codes in the list are rejected.
+    confirm_overwrite:
+        Set to ``True`` to allow overwriting lines that already have a
+        positive ``unit_price``.  If any such lines exist and this flag is
+        ``False``, raises :class:`OverwriteRequired`.
+
+    Returns
+    -------
+    The refreshed :class:`ProformaDraft` after the atomic write.
+
+    Raises
+    ------
+    ValueError           — invalid input (bad prices, duplicates, empty list)
+    OverwriteRequired    — non-zero prices would be overwritten without consent
+    DraftNotFound        — draft_id unknown
+    DraftNotEditable     — draft is not in an editable state
+    DraftConflict        — stale expected_updated_at
+    """
+    # ── 1. Input validation (all before any DB access) ───────────────────────
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+    if not isinstance(prices, list) or len(prices) == 0:
+        raise ValueError("prices must be a non-empty list")
+
+    price_map: Dict[str, float] = {}
+    for entry in prices:
+        code = str(entry.get("product_code") or "").strip()
+        if not code:
+            raise ValueError("each price entry must have a non-blank product_code")
+        try:
+            up = float(entry["unit_price"])
+        except (TypeError, ValueError, KeyError):
+            raise ValueError(
+                f"unit_price for {code!r} must be numeric, "
+                f"got {entry.get('unit_price')!r}"
+            )
+        if up <= 0:
+            raise ValueError(
+                f"unit_price for {code!r} must be > 0, got {up!r}"
+            )
+        if code in price_map:
+            raise ValueError(f"duplicate product_code in prices list: {code!r}")
+        price_map[code] = up
+
+    # ── 2. Load draft + OCC + editable check ─────────────────────────────────
+    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+
+    # ── 3. Parse current editable lines ──────────────────────────────────────
+    try:
+        lines_raw = json.loads(d.editable_lines_json or "[]")
+    except Exception:
+        lines_raw = []
+    if not isinstance(lines_raw, list):
+        lines_raw = []
+    lines = _ensure_line_ids(lines_raw)
+
+    # ── 4. Overwrite detection ────────────────────────────────────────────────
+    would_overwrite = [
+        str(ln.get("product_code") or "")
+        for ln in lines
+        if str(ln.get("product_code") or "") in price_map
+        and float(ln.get("unit_price", 0) or 0) > 0
+    ]
+    if would_overwrite and not confirm_overwrite:
+        raise OverwriteRequired(would_overwrite)
+
+    # ── 5. Apply updates ──────────────────────────────────────────────────────
+    known_codes = {str(ln.get("product_code") or "") for ln in lines}
+    updated_count    = 0
+    overwritten_count = 0
+    for i, ln in enumerate(lines):
+        code = str(ln.get("product_code") or "")
+        if code in price_map:
+            was_nonzero = float(ln.get("unit_price", 0) or 0) > 0
+            lines[i] = {**ln, "unit_price": price_map[code], "price_source": "bulk_recovery"}
+            updated_count += 1
+            if was_nonzero:
+                overwritten_count += 1
+
+    unmatched_codes = [c for c in price_map if c not in known_codes]
+    still_zero_count = sum(
+        1 for ln in lines if float(ln.get("unit_price", 0) or 0) <= 0
+    )
+
+    # ── 6. Atomic commit ──────────────────────────────────────────────────────
+    refreshed = _commit_draft_update(
+        db_path, d.id,
+        new_state          = _next_state_after_edit(d.draft_state),
+        new_editable_lines = lines,
+    )
+
+    # ── 7. Event record ───────────────────────────────────────────────────────
+    _record_draft_event(
+        db_path, draft_id=d.id, event="draft_bulk_price_recovery",
+        detail_json=json.dumps({
+            "updated_count":     updated_count,
+            "unmatched_codes":   unmatched_codes,
+            "still_zero_count":  still_zero_count,
+            "overwritten_count": overwritten_count,
+            "from_state":        d.draft_state,
+            "to_state":          refreshed.draft_state,
         }, ensure_ascii=False, sort_keys=True),
         operator=operator,
     )
@@ -2546,8 +2689,10 @@ __all__ = [
     "DraftNotFound",
     "DraftNotEditable",
     "DraftConflict",
+    "OverwriteRequired",
     "update_draft_fields",
     "update_draft_line",
+    "bulk_price_recovery",
     "add_draft_service_charge",
     "remove_draft_service_charge",
     # ── Phase 4 — lifecycle controls + line add/remove ──
