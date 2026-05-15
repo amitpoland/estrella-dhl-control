@@ -16921,6 +16921,32 @@ function ProformaDraftStateChip({ state }) {
   );
 }
 
+// ── PR 2C.3c — parse CSV bulk-price text (standalone, outside component) ─────
+// Input: "product_code, unit_price\n..." (one pair per line, comma-separated)
+// Returns: { ok: bool, prices: [{product_code, unit_price}], errors: string[] }
+function parseBulkPriceText(text) {
+  const lines  = (text || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const prices = [];
+  const errors = [];
+  const seen   = new Set();
+  for (const line of lines) {
+    const idx = line.indexOf(',');
+    if (idx === -1) { errors.push(`No comma in: ${line}`); continue; }
+    const code     = line.slice(0, idx).trim();
+    const rawPrice = line.slice(idx + 1).trim();
+    if (!code) { errors.push(`Empty product_code in: ${line}`); continue; }
+    const up = parseFloat(rawPrice);
+    if (isNaN(up) || up <= 0) {
+      errors.push(`Invalid price for ${code}: "${rawPrice}" (must be > 0)`);
+      continue;
+    }
+    if (seen.has(code)) { errors.push(`Duplicate product_code: ${code}`); continue; }
+    seen.add(code);
+    prices.push({ product_code: code, unit_price: up });
+  }
+  return { ok: errors.length === 0 && prices.length > 0, prices, errors };
+}
+
 function ProformaDraftPanel({ batchId, onToast }) {
   const [drafts, setDrafts]       = React.useState([]);
   const [loading, setLoading]     = React.useState(true);
@@ -16956,9 +16982,15 @@ function ProformaDraftPanel({ batchId, onToast }) {
     setOpenBusy(true);
     setEventsOpen(false);
     setEvents(null);
+    // Reset bulk-price state on open (PR 2C.3c)
+    setBulkPriceText('');
+    setBulkPriceResult(null);
+    setBulkPriceNeedsConfirm(null);
     try {
       const d = await apiFetch(`/api/v1/proforma/draft/${draftId}`);
       setOpenDraft(d.draft);
+      // PR 2C.3c: auto-open bulk price panel when pricing refresh is needed
+      setPriceRecoveryOpen(!!(d.draft && d.draft.needs_pricing_refresh));
     } catch (e) {
       onToast && onToast('Failed to load draft: ' + e.message, 'error');
       setOpenDraft(null);
@@ -17096,6 +17128,43 @@ function ProformaDraftPanel({ batchId, onToast }) {
     });
 
   const [chargePrefill, setChargePrefill] = React.useState(null);
+
+  // ── PR 2C.3c — bulk price recovery state ─────────────────────────────────
+  const [priceRecoveryOpen,     setPriceRecoveryOpen]     = React.useState(false);
+  const [bulkPriceText,         setBulkPriceText]         = React.useState('');
+  const [bulkPriceResult,       setBulkPriceResult]       = React.useState(null);
+  const [bulkPriceNeedsConfirm, setBulkPriceNeedsConfirm] = React.useState(null);
+
+  const onApplyBulkPrices = React.useCallback(async (withConfirm) => {
+    const parsed = parseBulkPriceText(bulkPriceText);
+    if (!parsed.ok) {
+      setBulkPriceResult({ ok: false, detail: parsed.errors.join('; ') });
+      return;
+    }
+    const bodyObj = {
+      expected_updated_at: openDraft.updated_at,
+      prices: parsed.prices,
+    };
+    if (withConfirm) bodyObj.confirm_overwrite = 'YES_OVERWRITE_EXISTING_PRICES';
+    try {
+      const r = await _writeCall('Bulk price recovery',
+        `/api/v1/proforma/draft/${openId}/bulk-price-recovery`, {
+        method: 'POST',
+        body: JSON.stringify(bodyObj),
+      });
+      if (r && r.ok) {
+        setBulkPriceResult(r);
+        setBulkPriceNeedsConfirm(null);
+      } else if (r && r.requires_confirm_overwrite) {
+        setBulkPriceNeedsConfirm(r.codes_with_existing_price || []);
+        setBulkPriceResult(null);
+      } else {
+        setBulkPriceResult({ ok: false, detail: (r && r.detail) || 'Unknown error' });
+      }
+    } catch (e) {
+      setBulkPriceResult({ ok: false, detail: e.message });
+    }
+  }, [openId, openDraft, bulkPriceText, _writeCall]);
 
   const onAddCharge = (charge) =>
     _writeCall('Add service charge',
@@ -17773,6 +17842,136 @@ function ProformaDraftPanel({ batchId, onToast }) {
                       ({openDraft.packing_sync_warning})
                     </span>
                   )}
+                </div>
+              )}
+
+              {/* PR 2C.3c — pricing-refresh banner + bulk price entry panel */}
+              {openDraft.needs_pricing_refresh && isEditable && (
+                <div data-testid="draft-pricing-refresh-banner"
+                     style={{ padding: '10px 14px', marginBottom: 12,
+                              background: 'var(--badge-amber-bg, #fffbeb)',
+                              border: '1px solid var(--badge-amber-border, #fbbf24)',
+                              borderRadius: 4, fontSize: 12 }}>
+                  <div style={{ fontWeight: 700,
+                                color: 'var(--badge-amber-text, #92400e)',
+                                marginBottom: 4 }}>
+                    ⚠ Pricing refresh required
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+                    {(openDraft.editable_lines || []).filter(l => !(l.unit_price > 0)).length} line(s)
+                    have unit_price ≤ 0. This draft cannot be approved until all prices are filled.
+                  </div>
+                  <Btn small
+                       data-testid="btn-toggle-bulk-price-recovery"
+                       onClick={() => setPriceRecoveryOpen(v => !v)}>
+                    {priceRecoveryOpen ? '▲ Hide bulk price entry' : '▼ Bulk price entry'}
+                  </Btn>
+                </div>
+              )}
+
+              {priceRecoveryOpen && isEditable && (
+                <div data-testid="draft-bulk-price-panel"
+                     style={{ padding: '10px 14px', marginBottom: 12,
+                              background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border-1)',
+                              borderRadius: 4, fontSize: 12 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Bulk price entry</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+                    One <code>product_code, unit_price</code> per line.
+                    Currency: {openDraft.currency || 'EUR'}. Prices must be &gt; 0.
+                  </div>
+                  <textarea
+                    data-testid="bulk-price-textarea"
+                    placeholder={"EJL/26-27/148-1, 61.00\nEJL/26-27/148-2, 45.50"}
+                    value={bulkPriceText}
+                    onChange={e => setBulkPriceText(e.target.value)}
+                    rows={8}
+                    style={{ width: '100%', fontFamily: 'monospace', fontSize: 12,
+                             padding: '6px 8px', borderRadius: 4, boxSizing: 'border-box',
+                             border: '1px solid var(--border-1)',
+                             background: 'var(--bg-1)', color: 'var(--text-1)' }}
+                  />
+                  {bulkPriceResult && (
+                    <div data-testid="bulk-price-result"
+                         style={{ marginTop: 8, padding: '6px 10px',
+                                  background: bulkPriceResult.ok
+                                    ? 'var(--badge-green-bg, #f0fdf4)'
+                                    : 'var(--badge-red-bg)',
+                                  border: `1px solid ${bulkPriceResult.ok
+                                    ? 'var(--badge-green-border, #86efac)'
+                                    : 'var(--badge-red-border)'}`,
+                                  borderRadius: 4, fontSize: 11 }}>
+                      {bulkPriceResult.ok ? (
+                        <React.Fragment>
+                          <span data-testid="bulk-price-updated-count"
+                                style={{ fontWeight: 700 }}>
+                            ✓ Updated {bulkPriceResult.updated_count} line(s).
+                          </span>
+                          {bulkPriceResult.still_zero_count > 0 && (
+                            <span data-testid="bulk-price-still-zero"
+                                  style={{ marginLeft: 8,
+                                           color: 'var(--badge-amber-text, #92400e)' }}>
+                              {bulkPriceResult.still_zero_count} still zero.
+                            </span>
+                          )}
+                          {(bulkPriceResult.unmatched_codes || []).length > 0 && (
+                            <div data-testid="bulk-price-unmatched"
+                                 style={{ marginTop: 4, color: 'var(--text-3)' }}>
+                              Unmatched: {bulkPriceResult.unmatched_codes.join(', ')}
+                            </div>
+                          )}
+                        </React.Fragment>
+                      ) : (
+                        <span style={{ color: 'var(--badge-red-text)' }}>
+                          {bulkPriceResult.detail}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {bulkPriceNeedsConfirm && (
+                    <div data-testid="bulk-price-confirm-overwrite"
+                         style={{ marginTop: 8, padding: '8px 10px',
+                                  background: 'var(--badge-amber-bg, #fffbeb)',
+                                  border: '1px solid var(--badge-amber-border, #fbbf24)',
+                                  borderRadius: 4, fontSize: 11 }}>
+                      <div style={{ fontWeight: 700,
+                                    color: 'var(--badge-amber-text, #92400e)',
+                                    marginBottom: 4 }}>
+                        ⚠ Overwrite warning
+                      </div>
+                      <div style={{ marginBottom: 6 }}>
+                        These codes already have prices and will be overwritten:
+                        {' '}<strong data-testid="bulk-price-overwrite-codes">
+                          {bulkPriceNeedsConfirm.join(', ')}
+                        </strong>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <Btn small
+                             data-testid="btn-bulk-price-confirm-overwrite"
+                             onClick={() => onApplyBulkPrices(true)}>
+                          Confirm overwrite
+                        </Btn>
+                        <Btn small onClick={() => setBulkPriceNeedsConfirm(null)}>
+                          Cancel
+                        </Btn>
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    <Btn small variant="primary"
+                         data-testid="btn-apply-bulk-prices"
+                         onClick={() => onApplyBulkPrices(false)}
+                         disabled={!bulkPriceText.trim()}>
+                      Apply bulk prices
+                    </Btn>
+                    <Btn small onClick={() => {
+                      setBulkPriceText('');
+                      setBulkPriceResult(null);
+                      setBulkPriceNeedsConfirm(null);
+                    }}>
+                      Clear
+                    </Btn>
+                  </div>
                 </div>
               )}
 

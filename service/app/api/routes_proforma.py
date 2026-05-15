@@ -3168,6 +3168,135 @@ def delete_proforma_draft_service_charge(
     ))
 
 
+# ── PR 2C.3c — bulk price recovery ───────────────────────────────────────────
+
+@router.post("/draft/{draft_id}/bulk-price-recovery", dependencies=[_auth])
+def post_bulk_price_recovery(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Bulk-apply unit prices to editable lines, matched by ``product_code``.
+
+    Body shape::
+
+        {
+          "expected_updated_at": "<iso-utc>",
+          "prices": [
+            {"product_code": "EJL/26-27/148-1", "unit_price": 61.00},
+            ...
+          ],
+          "confirm_overwrite": "YES_OVERWRITE_EXISTING_PRICES"   // optional
+        }
+
+    Only ``unit_price`` and ``price_source="bulk_recovery"`` are written.
+    All other line fields (qty, currency, design_no, client_ref, item_type,
+    name_pl, description_*) are preserved.  ``source_lines_json`` is never
+    read or written.
+
+    When any line already has ``unit_price > 0`` and ``confirm_overwrite`` is
+    absent or wrong, returns HTTP 400::
+
+        {
+          "ok": false,
+          "requires_confirm_overwrite": true,
+          "codes_with_existing_price": [...],
+          "detail": "..."
+        }
+
+    Success response::
+
+        {
+          "ok": true,
+          "draft_id": <int>,
+          "updated_count": <int>,
+          "unmatched_codes": [...],
+          "still_zero_count": <int>,
+          "overwritten_count": <int>,
+          "needs_pricing_refresh": <bool>,
+          "draft": { ... full draft payload ... }
+        }
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    operator    = _require_operator(x_operator)
+    expected    = str(body.get("expected_updated_at") or "")
+    prices      = body.get("prices")
+    raw_confirm = body.get("confirm_overwrite")
+
+    if not isinstance(prices, list):
+        raise HTTPException(status_code=400, detail="prices must be a list")
+
+    confirm_overwrite = (
+        isinstance(raw_confirm, str)
+        and raw_confirm.strip() == "YES_OVERWRITE_EXISTING_PRICES"
+    )
+
+    # Run the DB operation.  OverwriteRequired gets its own structured 400
+    # so the dashboard can display the confirmation panel without parsing
+    # a generic error string.
+    try:
+        refreshed = pildb.bulk_price_recovery(
+            _proforma_db_path(),
+            int(draft_id),
+            prices,
+            operator,
+            expected,
+            confirm_overwrite=confirm_overwrite,
+        )
+    except pildb.OverwriteRequired as exc:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok":                         False,
+                "requires_confirm_overwrite":  True,
+                "codes_with_existing_price":   exc.codes,
+                "detail":                     str(exc),
+            },
+        )
+    except pildb.DraftNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except pildb.DraftConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except pildb.DraftNotEditable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Pull operation metrics from the most-recent event logged by
+    # bulk_price_recovery (updated_count / unmatched_codes / etc.).
+    events = pildb.list_draft_events(_proforma_db_path(), int(draft_id))
+    metrics: Dict[str, Any] = {}
+    if events:
+        try:
+            metrics = json.loads(events[-1].get("detail_json") or "{}")
+        except Exception:
+            metrics = {}
+
+    # Recompute needs_pricing_refresh from the freshly committed lines.
+    try:
+        refreshed_lines = json.loads(refreshed.editable_lines_json or "[]") or []
+    except Exception:
+        refreshed_lines = []
+    needs_pricing_refresh = any(
+        float(ln.get("unit_price", 0) or 0) <= 0 for ln in refreshed_lines
+    )
+
+    return JSONResponse({
+        "ok":                    True,
+        "draft_id":              int(draft_id),
+        "updated_count":         metrics.get("updated_count", 0),
+        "unmatched_codes":       metrics.get("unmatched_codes", []),
+        "still_zero_count":      metrics.get("still_zero_count", 0),
+        "overwritten_count":     metrics.get("overwritten_count", 0),
+        "needs_pricing_refresh": needs_pricing_refresh,
+        "draft":                 _draft_to_full(refreshed),
+    })
+
+
 # ── PR 2C.3b — customer-master suggestions ────────────────────────────────────
 
 def _suggest_lookup(draft_id: int):
