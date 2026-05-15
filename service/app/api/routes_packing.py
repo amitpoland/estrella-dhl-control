@@ -6,6 +6,11 @@ POST /api/v1/packing/{batch_id}/upload
     Extracts rows, matches to invoice lines, stores in DB.
     Optional query param: force_reextract=true
 
+POST /api/v1/packing/{batch_id}/reprocess-prices
+    Re-read saved packing files and backfill unit_price_eur for rows where
+    the current DB value is 0.  Used to recover prices after PR 2A migration
+    (packing uploaded before the unit_price_eur column was added).
+
 GET  /api/v1/packing/{batch_id}
     Return combined invoice lines + packing rows for a batch.
 
@@ -453,6 +458,115 @@ async def upload_packing_list(
         "unmatched_count":  result["unmatched_count"],
         "inserted_count":   inserted,
         "force_reextract":  force_reextract,
+    }
+
+
+# ── POST /api/v1/packing/{batch_id}/reprocess-prices ─────────────────────────
+
+@router.post("/{batch_id}/reprocess-prices", dependencies=[_auth])
+async def reprocess_packing_prices(batch_id: str) -> Dict[str, Any]:
+    """
+    Re-read saved packing XLSX files for this batch and backfill unit_price_eur
+    in packing_lines where the current value is 0.
+
+    Does NOT overwrite rows that already have unit_price_eur > 0.
+    Does NOT re-run the full upload pipeline; only updates the price field.
+
+    Use-case: recover prices after PR 2A migration when packing was uploaded
+    before the unit_price_eur column was added (batch uploaded before 2026-05-14).
+
+    Returns:
+      { batch_id, diagnostic: { rows_with_price_before, rows_updated, rows_with_price_after },
+        files: [{file, rows_extracted, rows_updated}] }
+    """
+    output_dir = _validate_batch(batch_id)
+
+    packing_dir = output_dir / "source" / "packing"
+    if not packing_dir.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No packing source directory for batch {batch_id!r}",
+        )
+
+    xlsx_files = sorted(
+        list(packing_dir.glob("*.xlsx")) + list(packing_dir.glob("*.xls")),
+    )
+    if not xlsx_files:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No packing XLSX files found in source directory for batch {batch_id!r}",
+        )
+
+    # Snapshot before
+    all_lines_before = pdb.get_packing_lines_for_batch(batch_id)
+    rows_with_price_before = sum(
+        1 for r in all_lines_before if float(r.get("unit_price_eur", 0) or 0) > 0
+    )
+
+    file_results: List[Dict[str, Any]] = []
+    total_updated = 0
+
+    for pf in xlsx_files:
+        file_entry: Dict[str, Any] = {"file": pf.name, "rows_extracted": 0,
+                                      "rows_updated": 0, "error": None}
+        try:
+            result = process_packing_upload(
+                batch_id         = batch_id,
+                batch_output_dir = output_dir,
+                packing_file_path= pf,
+                force_reextract  = False,   # read-only extraction; no DB upsert here
+            )
+            packing_rows = result["packing_rows"]
+            file_entry["rows_extracted"] = len(packing_rows)
+
+            # Build line_records carrying unit_price_eur from the Value column
+            line_records: List[Dict[str, Any]] = []
+            for row in packing_rows:
+                upe = float(row.get("unit_price", 0) or 0)
+                if upe <= 0:
+                    continue  # no Value column data for this row
+                doc_id = ""  # we don't upsert documents here; matching is positional
+                line_records.append({
+                    "packing_document_id":  doc_id,
+                    "batch_id":             batch_id,
+                    "invoice_no":           row.get("invoice_no", ""),
+                    "invoice_line_position":row.get("invoice_line_position"),
+                    "product_code":         row.get("product_code"),
+                    "design_no":            str(row.get("design_no", "") or ""),
+                    "bag_id":               str(row.get("bag_id", "") or ""),
+                    "pack_sr":              row.get("pack_sr"),
+                    "unit_price_eur":       upe,
+                })
+
+            updated = pdb.backfill_unit_price_eur(batch_id, line_records)
+            file_entry["rows_updated"] = updated
+            total_updated += updated
+        except Exception as exc:
+            log.warning("[%s] reprocess-prices failed for %s: %s", batch_id, pf.name, exc)
+            file_entry["error"] = str(exc)
+        file_results.append(file_entry)
+
+    # Snapshot after
+    all_lines_after = pdb.get_packing_lines_for_batch(batch_id)
+    rows_with_price_after = sum(
+        1 for r in all_lines_after if float(r.get("unit_price_eur", 0) or 0) > 0
+    )
+
+    log.info(
+        "[%s] reprocess-prices: %d rows updated, price coverage %d→%d/%d",
+        batch_id, total_updated,
+        rows_with_price_before, rows_with_price_after, len(all_lines_after),
+    )
+    return {
+        "ok":      True,
+        "batch_id": batch_id,
+        "diagnostic": {
+            "rows_with_price_before": rows_with_price_before,
+            "rows_updated":           total_updated,
+            "rows_with_price_after":  rows_with_price_after,
+            "total_packing_rows":     len(all_lines_after),
+        },
+        "files": file_results,
     }
 
 

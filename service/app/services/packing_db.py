@@ -452,6 +452,66 @@ def get_line_counts_for_batch(batch_id: str) -> Dict[str, int]:
     return {r[0]: r[1] for r in rows}
 
 
+def backfill_unit_price_eur(batch_id: str, line_records: List[Dict[str, Any]]) -> int:
+    """
+    Update unit_price_eur for packing_lines rows where the current value is 0
+    and the supplied line_record has unit_price_eur > 0.
+
+    Matching strategy (same priority as upsert_packing_lines):
+      1. pack_sr  → (batch_id, invoice_no, packing_document_id, pack_sr)
+      2. fallback → (batch_id, invoice_no, invoice_line_position, design_no)
+
+    Returns the number of rows actually updated.
+    Used to recover prices after PR 2A migration when packing was uploaded
+    before the unit_price_eur column was added.
+    """
+    if _db_path is None:
+        return 0
+    updated = 0
+    now = _now_iso()
+    with _lock:
+        with _connect() as con:
+            for line in line_records:
+                upe = float(line.get("unit_price_eur", 0) or 0)
+                if upe <= 0:
+                    continue  # nothing to backfill for this row
+                batch     = line.get("batch_id", "")
+                inv_no    = line.get("invoice_no", "")
+                inv_pos   = line.get("invoice_line_position")
+                design_no = line.get("design_no", "")
+                pack_sr   = line.get("pack_sr")
+                doc_id    = line.get("packing_document_id", "")
+
+                if pack_sr is not None:
+                    row = con.execute(
+                        """SELECT id, unit_price_eur FROM packing_lines
+                           WHERE batch_id=? AND invoice_no=?
+                             AND packing_document_id=? AND pack_sr IS ?
+                           LIMIT 1""",
+                        (batch, inv_no, doc_id, pack_sr),
+                    ).fetchone()
+                else:
+                    row = con.execute(
+                        """SELECT id, unit_price_eur FROM packing_lines
+                           WHERE batch_id=? AND invoice_no=?
+                             AND invoice_line_position IS ?
+                             AND design_no=?
+                           LIMIT 1""",
+                        (batch, inv_no, inv_pos, design_no),
+                    ).fetchone()
+
+                if row is None:
+                    continue
+                if float(row["unit_price_eur"] or 0) > 0:
+                    continue  # already has a price — do not overwrite
+                con.execute(
+                    "UPDATE packing_lines SET unit_price_eur=?, updated_at=? WHERE id=?",
+                    (upe, now, row["id"]),
+                )
+                updated += 1
+    return updated
+
+
 def get_packing_lines_for_batch(batch_id: str) -> List[Dict[str, Any]]:
     if _db_path is None:
         return []
