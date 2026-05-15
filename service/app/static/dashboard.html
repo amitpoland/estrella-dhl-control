@@ -2341,6 +2341,12 @@ function MasterDataPage({ onNav, onToast }) {
   const [users,     setUsers]     = React.useState({ loading: true, error: null, items: [],  ts: null });
   const [customers, setCustomers] = React.useState({ loading: true, error: null, items: [],  ts: null });
   const [products,  setProducts]  = React.useState({ loading: true, error: null, items: [],  ts: null });
+  // Customer Master (freight / insurance config per contractor)
+  const [custMaster,    setCustMaster]    = React.useState({ loading: false, error: null, items: [], ts: null });
+  const [cmEditId,      setCmEditId]      = React.useState(null);   // contractor_id being edited
+  const [cmEditForm,    setCmEditForm]    = React.useState({});
+  const [cmSaving,      setCmSaving]      = React.useState(false);
+  const [cmSaveError,   setCmSaveError]   = React.useState(null);
 
   const [activeTab, setActiveTab] = React.useState('users');
   const [query,     setQuery]     = React.useState('');
@@ -2378,12 +2384,69 @@ function MasterDataPage({ onNav, onToast }) {
     }
   }, []);
 
+  const loadCustomerMaster = React.useCallback(async () => {
+    setCustMaster(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/api/v1/customer-master/');
+      const list = Array.isArray(d) ? d : (d.customers || d.items || []);
+      setCustMaster({ loading: false, error: null, items: list, ts: new Date().toISOString() });
+    } catch (e) {
+      setCustMaster({ loading: false, error: e.message || 'load failed', items: [], ts: new Date().toISOString() });
+    }
+  }, []);
+
   React.useEffect(() => {
     loadUsers(); loadCustomers(); loadProducts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const reloadAll = () => { loadUsers(); loadCustomers(); loadProducts(); };
+
+  // ── Customer Master edit helpers ───────────────────────────────────────
+  const CM_DECIMAL_FIELDS = ['freight_fixed_amount_eur','freight_fixed_amount_usd',
+                              'insurance_rate','insurance_min_eur','insurance_min_usd'];
+  const openCmEdit = (rec) => {
+    const form = {
+      freight_service_id:       rec.freight_service_id       || '',
+      freight_fixed_amount_eur: rec.freight_fixed_amount_eur != null ? String(rec.freight_fixed_amount_eur) : '',
+      freight_fixed_amount_usd: rec.freight_fixed_amount_usd != null ? String(rec.freight_fixed_amount_usd) : '',
+      freight_label_pl:         rec.freight_label_pl         || '',
+      freight_label_en:         rec.freight_label_en         || '',
+      insurance_service_id:     rec.insurance_service_id     || '',
+      insurance_rate:           rec.insurance_rate           != null ? String(rec.insurance_rate) : '',
+      insurance_min_eur:        rec.insurance_min_eur        != null ? String(rec.insurance_min_eur) : '',
+      insurance_min_usd:        rec.insurance_min_usd        != null ? String(rec.insurance_min_usd) : '',
+      insurance_enabled:        rec.insurance_enabled !== false,
+      insurance_label_pl:       rec.insurance_label_pl       || '',
+      insurance_label_en:       rec.insurance_label_en       || '',
+    };
+    setCmEditForm(form);
+    setCmEditId(rec.bill_to_contractor_id);
+    setCmSaveError(null);
+  };
+  const closeCmEdit = () => { setCmEditId(null); setCmEditForm({}); setCmSaveError(null); };
+  const onCmField = (k, v) => setCmEditForm(f => ({ ...f, [k]: v }));
+  const saveCmEdit = async () => {
+    if (!cmEditId) return;
+    setCmSaving(true); setCmSaveError(null);
+    try {
+      const payload = { ...cmEditForm };
+      // Coerce numeric strings → null when empty (API accepts null for optional decimals)
+      for (const f of CM_DECIMAL_FIELDS) {
+        if (payload[f] === '' || payload[f] == null) {
+          payload[f] = null;
+        }
+      }
+      await apiFetch(`/api/v1/customer-master/${cmEditId}`, { method: 'PUT', body: JSON.stringify(payload) });
+      await loadCustomerMaster();
+      closeCmEdit();
+      if (onToast) onToast('Customer master saved.', 'success');
+    } catch (e) {
+      setCmSaveError(e.message || 'Save failed');
+    } finally {
+      setCmSaving(false);
+    }
+  };
 
   // ── Client-side search over real loaded rows ───────────────────────────
   const _match = (row, q) => {
@@ -2395,9 +2458,10 @@ function MasterDataPage({ onNav, onToast }) {
     });
   };
 
-  const filteredUsers     = (users.items     || []).filter(r => _match(r, query));
-  const filteredCustomers = (customers.items || []).filter(r => _match(r, query));
-  const filteredProducts  = (products.items  || []).filter(r => _match(r, query));
+  const filteredUsers      = (users.items      || []).filter(r => _match(r, query));
+  const filteredCustomers  = (customers.items  || []).filter(r => _match(r, query));
+  const filteredProducts   = (products.items   || []).filter(r => _match(r, query));
+  const filteredCustMaster = (custMaster.items || []).filter(r => _match(r, query));
 
   // ── KPI strip — derived from real source counts ────────────────────────
   const PENDING_TYPES = ['suppliers', 'designs', 'hs_codes', 'fx_rates', 'roles'];
@@ -2409,21 +2473,31 @@ function MasterDataPage({ onNav, onToast }) {
   ];
 
   const errorRows = [
-    users.error     ? { src: 'users',     name: 'Users',     source: '/auth/users',                  msg: users.error }     : null,
-    customers.error ? { src: 'customers', name: 'Customers', source: '/api/v1/wfirma/customers',     msg: customers.error } : null,
-    products.error  ? { src: 'products',  name: 'Products',  source: '/api/v1/wfirma/products',      msg: products.error }  : null,
+    users.error      ? { src: 'users',           name: 'Users',           source: '/auth/users',                     msg: users.error }      : null,
+    customers.error  ? { src: 'customers',        name: 'Customers',       source: '/api/v1/wfirma/customers',        msg: customers.error }  : null,
+    products.error   ? { src: 'products',         name: 'Products',        source: '/api/v1/wfirma/products',         msg: products.error }   : null,
+    custMaster.error ? { src: 'customer_master',  name: 'Customer master', source: '/api/v1/customer-master/',        msg: custMaster.error } : null,
   ].filter(Boolean);
 
   const ENTITY_TABS = [
-    { id: 'users',     label: 'Users',         count: users.error     ? null : (users.items     || []).length, live: true  },
-    { id: 'customers', label: 'Customers',     count: customers.error ? null : (customers.items || []).length, live: true  },
-    { id: 'products',  label: 'Products',      count: products.error  ? null : (products.items  || []).length, live: true  },
-    { id: 'suppliers', label: 'Suppliers',     count: null, live: false },
-    { id: 'designs',   label: 'Designs',       count: null, live: false },
-    { id: 'hs_codes',  label: 'HS codes',      count: null, live: false },
-    { id: 'fx_rates',  label: 'FX rates',      count: null, live: false },
-    { id: 'roles',     label: 'Roles',         count: null, live: false },
+    { id: 'users',           label: 'Users',           count: users.error      ? null : (users.items      || []).length, live: true  },
+    { id: 'customers',       label: 'Customers',       count: customers.error  ? null : (customers.items  || []).length, live: true  },
+    { id: 'products',        label: 'Products',        count: products.error   ? null : (products.items   || []).length, live: true  },
+    { id: 'customer_master', label: 'Customer master', count: custMaster.items.length > 0 ? custMaster.items.length : null, live: true  },
+    { id: 'suppliers',       label: 'Suppliers',       count: null, live: false },
+    { id: 'designs',         label: 'Designs',         count: null, live: false },
+    { id: 'hs_codes',        label: 'HS codes',        count: null, live: false },
+    { id: 'fx_rates',        label: 'FX rates',        count: null, live: false },
+    { id: 'roles',           label: 'Roles',           count: null, live: false },
   ];
+
+  // Lazy-load Customer Master when its tab is first opened
+  React.useEffect(() => {
+    if (activeTab === 'customer_master' && !custMaster.ts && !custMaster.loading) {
+      loadCustomerMaster();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   return (
     <div data-testid="master-page" style={{ flex: 1, overflowY: 'auto', padding: '0 32px 32px' }}>
@@ -2596,6 +2670,212 @@ function MasterDataPage({ onNav, onToast }) {
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+      )}
+
+      {/* ── Customer Master freight / insurance config panel ────────── */}
+      {activeTab === 'customer_master' && (
+        <div data-testid="master-customer-master-panel"
+             style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+          {custMaster.loading && (
+            <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}
+                 data-testid="master-cm-loading">Loading customer master…</div>
+          )}
+          {!custMaster.loading && custMaster.error && (
+            <div style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}
+                 data-testid="master-cm-error">Load failed: {custMaster.error}</div>
+          )}
+          {!custMaster.loading && !custMaster.error && filteredCustMaster.length === 0 && (
+            <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}
+                 data-testid="master-cm-empty">
+              {(custMaster.items || []).length === 0
+                ? <span>No customer master records.{' '}
+                    <button onClick={loadCustomerMaster}
+                      style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 12, textDecoration: 'underline' }}>
+                      Load
+                    </button>
+                  </span>
+                : 'No records match the search.'}
+            </div>
+          )}
+          {!custMaster.loading && !custMaster.error && filteredCustMaster.length > 0 && (
+            <React.Fragment>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)' }}>
+                    {['Customer', 'Contractor ID', 'Country', 'Freight EUR', 'Freight USD', 'Ins. rate', 'Ins. enabled', ''].map(h => (
+                      <th key={h} style={{ textAlign: 'left', padding: '8px 12px', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredCustMaster.map((c) => {
+                    const isEditing = cmEditId === c.bill_to_contractor_id;
+                    return (
+                      <React.Fragment key={c.bill_to_contractor_id || c.id}>
+                        <tr data-testid="master-cm-row" style={{ borderBottom: isEditing ? 'none' : '1px solid var(--border-subtle)', background: isEditing ? 'var(--accent-subtle)' : undefined }}>
+                          <td style={{ padding: '8px 12px', fontWeight: 600 }}>{c.bill_to_name || <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)' }}>{c.bill_to_contractor_id || '—'}</td>
+                          <td style={{ padding: '8px 12px', fontSize: 11 }}>{c.country || '—'}</td>
+                          <td style={{ padding: '8px 12px', fontSize: 11, fontFamily: 'monospace' }}>{c.freight_fixed_amount_eur != null ? `€${c.freight_fixed_amount_eur}` : '—'}</td>
+                          <td style={{ padding: '8px 12px', fontSize: 11, fontFamily: 'monospace' }}>{c.freight_fixed_amount_usd != null ? `$${c.freight_fixed_amount_usd}` : '—'}</td>
+                          <td style={{ padding: '8px 12px', fontSize: 11, fontFamily: 'monospace' }}>{c.insurance_rate != null ? `${(parseFloat(c.insurance_rate)*100).toFixed(2)}%` : '—'}</td>
+                          <td style={{ padding: '8px 12px', fontSize: 11 }}>
+                            {c.insurance_enabled === false
+                              ? <span style={{ color: 'var(--badge-red-text)' }}>✗ off</span>
+                              : <span style={{ color: 'var(--badge-green-text)' }}>● on</span>}
+                          </td>
+                          <td style={{ padding: '8px 12px' }}>
+                            {isEditing
+                              ? <button data-testid="master-cm-btn-close" onClick={closeCmEdit}
+                                  style={{ padding: '3px 10px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card)', cursor: 'pointer', color: 'var(--text-2)' }}>✕ Cancel</button>
+                              : <button data-testid="master-cm-btn-edit" onClick={() => openCmEdit(c)}
+                                  style={{ padding: '3px 10px', fontSize: 11, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--accent-subtle)', cursor: 'pointer', color: 'var(--text)', fontWeight: 600 }}>Edit</button>
+                            }
+                          </td>
+                        </tr>
+                        {isEditing && (
+                          <tr data-testid="master-cm-edit-row">
+                            <td colSpan={8} style={{ padding: '0 0 8px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                              <div data-testid="master-cm-edit-form"
+                                   style={{ padding: '14px 18px', background: 'var(--bg-subtle)', margin: '0 1px', borderRadius: '0 0 8px 8px' }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                  Edit freight &amp; insurance — {c.bill_to_name}
+                                </div>
+
+                                {/* Freight section */}
+                                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Freight</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 12 }}>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Service ID (wFirma)</span>
+                                    <input data-testid="cm-edit-freight-service-id" type="text"
+                                      value={cmEditForm.freight_service_id || ''}
+                                      onChange={e => onCmField('freight_service_id', e.target.value)}
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }} />
+                                  </label>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Fixed amount EUR</span>
+                                    <input data-testid="cm-edit-freight-eur" type="text"
+                                      value={cmEditForm.freight_fixed_amount_eur || ''}
+                                      onChange={e => onCmField('freight_fixed_amount_eur', e.target.value)}
+                                      placeholder="e.g. 35.00"
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4 }} />
+                                  </label>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Fixed amount USD</span>
+                                    <input data-testid="cm-edit-freight-usd" type="text"
+                                      value={cmEditForm.freight_fixed_amount_usd || ''}
+                                      onChange={e => onCmField('freight_fixed_amount_usd', e.target.value)}
+                                      placeholder="e.g. 50.00"
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4 }} />
+                                  </label>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Label (PL)</span>
+                                    <input data-testid="cm-edit-freight-label-pl" type="text"
+                                      value={cmEditForm.freight_label_pl || ''}
+                                      onChange={e => onCmField('freight_label_pl', e.target.value)}
+                                      placeholder="e.g. Fracht"
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4 }} />
+                                  </label>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Label (EN)</span>
+                                    <input data-testid="cm-edit-freight-label-en" type="text"
+                                      value={cmEditForm.freight_label_en || ''}
+                                      onChange={e => onCmField('freight_label_en', e.target.value)}
+                                      placeholder="e.g. Courier"
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4 }} />
+                                  </label>
+                                </div>
+
+                                {/* Insurance section */}
+                                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Insurance</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 12 }}>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Service ID (wFirma)</span>
+                                    <input data-testid="cm-edit-insurance-service-id" type="text"
+                                      value={cmEditForm.insurance_service_id || ''}
+                                      onChange={e => onCmField('insurance_service_id', e.target.value)}
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }} />
+                                  </label>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Rate (decimal, e.g. 0.0035 = 0.35%)</span>
+                                    <input data-testid="cm-edit-insurance-rate" type="text"
+                                      value={cmEditForm.insurance_rate || ''}
+                                      onChange={e => onCmField('insurance_rate', e.target.value)}
+                                      placeholder="e.g. 0.0035"
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4 }} />
+                                  </label>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Min EUR (leave blank for none)</span>
+                                    <input data-testid="cm-edit-insurance-min-eur" type="text"
+                                      value={cmEditForm.insurance_min_eur || ''}
+                                      onChange={e => onCmField('insurance_min_eur', e.target.value)}
+                                      placeholder="e.g. 10.00"
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4 }} />
+                                  </label>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Min USD (leave blank for none)</span>
+                                    <input data-testid="cm-edit-insurance-min-usd" type="text"
+                                      value={cmEditForm.insurance_min_usd || ''}
+                                      onChange={e => onCmField('insurance_min_usd', e.target.value)}
+                                      placeholder="e.g. 11.00"
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4 }} />
+                                  </label>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Label (PL)</span>
+                                    <input data-testid="cm-edit-insurance-label-pl" type="text"
+                                      value={cmEditForm.insurance_label_pl || ''}
+                                      onChange={e => onCmField('insurance_label_pl', e.target.value)}
+                                      placeholder="e.g. Ubezpieczenie"
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4 }} />
+                                  </label>
+                                  <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                    <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Label (EN)</span>
+                                    <input data-testid="cm-edit-insurance-label-en" type="text"
+                                      value={cmEditForm.insurance_label_en || ''}
+                                      onChange={e => onCmField('insurance_label_en', e.target.value)}
+                                      placeholder="e.g. Insurance"
+                                      style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4 }} />
+                                  </label>
+                                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+                                    <input data-testid="cm-edit-insurance-enabled" type="checkbox"
+                                      checked={!!cmEditForm.insurance_enabled}
+                                      onChange={e => onCmField('insurance_enabled', e.target.checked)} />
+                                    Insurance enabled
+                                  </label>
+                                </div>
+
+                                {/* Save / error */}
+                                {cmSaveError && (
+                                  <div data-testid="master-cm-save-error"
+                                       style={{ marginBottom: 8, padding: '6px 10px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 4, fontSize: 11, color: 'var(--badge-red-text)' }}>
+                                    {cmSaveError}
+                                  </div>
+                                )}
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                  <button data-testid="master-cm-btn-save"
+                                    onClick={saveCmEdit}
+                                    disabled={cmSaving}
+                                    style={{ padding: '6px 18px', fontSize: 12, fontWeight: 700, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4, cursor: cmSaving ? 'not-allowed' : 'pointer', opacity: cmSaving ? 0.6 : 1 }}>
+                                    {cmSaving ? 'Saving…' : 'Save'}
+                                  </button>
+                                  <button data-testid="master-cm-btn-cancel"
+                                    onClick={closeCmEdit}
+                                    style={{ padding: '6px 12px', fontSize: 12, background: 'var(--card)', color: 'var(--text-2)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer' }}>
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </React.Fragment>
           )}
         </div>
       )}
