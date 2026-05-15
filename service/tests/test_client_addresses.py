@@ -241,3 +241,53 @@ def test_api_requires_auth(client, api_tmp):
     route_src = Path(mod.__file__).read_text(encoding="utf-8")
     assert "require_api_key" in route_src, \
         "routes_client_addresses must declare require_api_key dependency"
+
+
+# ── Fresh-DB tests (tables never initialised before request) ──────────────────
+# These verify the init_db-on-every-handler fix: GET/PUT/DELETE must not crash
+# with "no such table" when production DB is brand-new.
+
+@pytest.fixture()
+def fresh_client(tmp_path_factory):
+    """Each test gets a completely empty DB directory — no init_db called yet."""
+    fresh_tmp = tmp_path_factory.mktemp("addr_fresh")
+    from app.main import app
+    with patch.object(settings, "storage_root", fresh_tmp):
+        import app.api.routes_client_addresses as mod
+        mod._DB_PATH = fresh_tmp / "customer_master.sqlite"
+        with TestClient(app, raise_server_exceptions=True) as c:
+            yield c, fresh_tmp
+
+
+def test_api_get_list_fresh_db_200(fresh_client):
+    """GET on a brand-new DB (no tables) must return 200 with count=0."""
+    c, _ = fresh_client
+    r = c.get(
+        "/api/v1/customer-master/FRESH_C/shipping-addresses/",
+        headers=_hdr(),
+    )
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    data = r.json()
+    assert data["count"] == 0
+    assert data["addresses"] == []
+
+
+def test_api_delete_missing_fresh_db_404(fresh_client):
+    """DELETE on a fresh DB (no tables, no rows) must return 404, not 500."""
+    c, _ = fresh_client
+    r = c.delete(
+        "/api/v1/customer-master/FRESH_C/shipping-addresses/9999",
+        headers=_hdr(),
+    )
+    assert r.status_code == 404, f"Expected 404, got {r.status_code}: {r.text}"
+
+
+def test_api_put_missing_fresh_db_404(fresh_client):
+    """PUT on a fresh DB (no tables, no rows) must return 404, not 500."""
+    c, _ = fresh_client
+    r = c.put(
+        "/api/v1/customer-master/FRESH_C/shipping-addresses/9999",
+        json={"label": "Ghost"},
+        headers=_hdr(),
+    )
+    assert r.status_code == 404, f"Expected 404, got {r.status_code}: {r.text}"
