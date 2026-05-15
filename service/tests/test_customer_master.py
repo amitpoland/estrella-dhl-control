@@ -647,3 +647,170 @@ def test_api_kyc_enum_validation_422(cm_api_client):
         headers=_cm_hdr(),
     )
     assert r.status_code == 422, r.text
+
+
+# ── MasterData-2.1 blank-normalisation regression tests ──────────────────────
+# These guard against the "422 on normal save" regression where the UI sends
+# empty strings for optional fields and the backend incorrectly rejects them.
+
+def test_api_freight_service_id_empty_string_becomes_null(cm_api_client):
+    """PUT with freight_service_id='' must return 200 and store null, not 422."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/BLANK_FREIGHT_01",
+        json={"bill_to_name": "Blank Freight", "country": "PL",
+              "freight_service_id": ""},
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["freight_service_id"] is None
+
+
+def test_api_insurance_service_id_empty_string_becomes_null(cm_api_client):
+    """PUT with insurance_service_id='' must return 200 and store null, not 422."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/BLANK_INS_01",
+        json={"bill_to_name": "Blank Insurance", "country": "PL",
+              "insurance_service_id": ""},
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["insurance_service_id"] is None
+
+
+def test_api_kuke_approved_false_blank_limit_is_200(cm_api_client):
+    """kuke_approved=false with blank kuke_limit must return 200."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/KUKE_FALSE_01",
+        json={"bill_to_name": "KUKE False", "country": "FI",
+              "kuke_approved": False, "kuke_limit": ""},
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["kuke_approved"] is False
+    assert data["kuke_limit"] is None
+
+
+def test_api_kuke_approved_true_blank_limit_is_422(cm_api_client):
+    """kuke_approved=true with missing kuke_limit must return 422 with clear message."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/KUKE_TRUE_NOLIMIT",
+        json={"bill_to_name": "KUKE True", "country": "FI",
+              "kuke_approved": True, "kuke_limit": ""},
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 422, r.text
+    detail = r.json().get("detail", "")
+    assert "kuke_approved" in str(detail).lower() or "kuke_limit" in str(detail).lower()
+
+
+def test_api_payment_terms_empty_string_null_via_route(cm_api_client):
+    """PUT with payment_terms_days='' returns 200 and stores null (route layer)."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/PT_NULL_ROUTE",
+        json={"bill_to_name": "PT Route", "country": "DE",
+              "payment_terms_days": ""},
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["payment_terms_days"] is None
+
+
+def test_api_kuke_self_retention_empty_string_becomes_null(cm_api_client):
+    """PUT with kuke_self_retention_pct='' returns 200 and stores null."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/KSR_NULL_01",
+        json={"bill_to_name": "KSR Null", "country": "DE",
+              "kuke_self_retention_pct": ""},
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["kuke_self_retention_pct"] is None
+
+
+def test_api_all_blank_optional_fields_200(cm_api_client):
+    """A payload that mimics the UI sending '' for every optional field must return 200.
+
+    This is the exact scenario that caused the 422 regression: the ClientKycModal
+    opens for a client with no customer master record (custMasterRec=null → cm={})
+    and every optional field defaults to ''.
+    """
+    r = cm_api_client.put(
+        "/api/v1/customer-master/ALL_BLANK_UI",
+        json={
+            "bill_to_name":           "All Blank UI Client",
+            "country":                "PL",
+            "freight_service_id":     "",
+            "insurance_service_id":   "",
+            "freight_mode":           "",
+            "freight_currency":       "",
+            "freight_label_pl":       "",
+            "freight_label_en":       "",
+            "insurance_mode":         "",
+            "insurance_label_pl":     "",
+            "insurance_label_en":     "",
+            "kuke_policy_number":     "",
+            "kuke_currency":          "",
+            "kuke_expiry_date":       "",
+            "risk_status":            "",
+            "credit_currency":        "",
+            "kyc_status":             "",
+            "kyc_approved_on":        "",
+            "kyc_expiry":             "",
+            "beneficial_owner":       "",
+            "owner_id_type":          "",
+            "owner_id_number":        "",
+            "aml_risk_rating":        "",
+            "pep_check_result":       "",
+            "compliance_notes":       "",
+            "kuke_limit":             "",
+            "credit_limit":           "",
+            "kuke_self_retention_pct": "",
+            "payment_terms_days":     "",
+            "kuke_approved":          False,
+        },
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["freight_service_id"]   is None
+    assert data["insurance_service_id"] is None
+    assert data["kuke_limit"]           is None
+    assert data["payment_terms_days"]   is None
+
+
+def test_api_existing_service_ids_preserved_on_roundtrip(cm_api_client):
+    """When freight/insurance service IDs are already configured, a round-trip
+    PUT (GET → re-send) must preserve them, not wipe them."""
+    # First PUT with explicit service IDs
+    r1 = cm_api_client.put(
+        "/api/v1/customer-master/PRESERVE_IDS",
+        json={
+            "bill_to_name":          "Preserve IDs Corp",
+            "country":               "FI",
+            "freight_service_id":    "13002743",
+            "insurance_service_id":  "13102217",
+            "freight_fixed_amount_eur": "35",
+        },
+        headers=_cm_hdr(),
+    )
+    assert r1.status_code == 200, r1.text
+
+    # Second PUT re-sends the same IDs (simulating round-trip from GET)
+    r2 = cm_api_client.put(
+        "/api/v1/customer-master/PRESERVE_IDS",
+        json={
+            "bill_to_name":          "Preserve IDs Corp",
+            "country":               "FI",
+            "freight_service_id":    "13002743",
+            "insurance_service_id":  "13102217",
+            "freight_fixed_amount_eur": "35",
+        },
+        headers=_cm_hdr(),
+    )
+    assert r2.status_code == 200, r2.text
+    data = r2.json()
+    assert data["freight_service_id"]   == "13002743"
+    assert data["insurance_service_id"] == "13102217"
