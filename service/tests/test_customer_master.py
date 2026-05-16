@@ -814,3 +814,62 @@ def test_api_existing_service_ids_preserved_on_roundtrip(cm_api_client):
     data = r2.json()
     assert data["freight_service_id"]   == "13002743"
     assert data["insurance_service_id"] == "13102217"
+
+
+# ── B2: Invoices-tab round-trip ──────────────────────────────────────────────
+# The Invoices tab (KycModal) writes wFirma document defaults via the existing
+# PUT /api/v1/customer-master/{cid} — no new endpoint. These tests guard the
+# round-trip for the fields the new tab body binds.
+
+def test_api_invoices_tab_round_trip(cm_api_client):
+    """Proforma/invoice series ids, vat_mode, language_id, payment_terms,
+    default_currency must round-trip through PUT → GET cleanly.
+    vat_mode must be a valid wFirma code (222/228/229)."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/INV_TAB_RT",
+        json={
+            "bill_to_name":                 "Invoices RT Co",
+            "country":                      "FR",
+            "preferred_proforma_series_id": "WF_PROF_1",
+            "preferred_invoice_series_id":  "WF_INV_2",
+            "vat_mode":                     222,
+            "default_language_id":          "en",
+            "payment_terms_days":           45,
+            "default_currency":             "EUR",
+        },
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    g = cm_api_client.get("/api/v1/customer-master/INV_TAB_RT", headers=_cm_hdr())
+    assert g.status_code == 200
+    data = g.json()
+    assert data["preferred_proforma_series_id"] == "WF_PROF_1"
+    assert data["preferred_invoice_series_id"]  == "WF_INV_2"
+    assert data["vat_mode"]                     == 222
+    assert data["default_language_id"]          == "en"
+    assert data["payment_terms_days"]           == 45
+    assert data["default_currency"]             == "EUR"
+
+
+def test_api_invoices_tab_blank_optionals_200(cm_api_client):
+    """Blank optional series ids and language id from the form must store as null
+    rather than '', mirroring B0 normalisation."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/INV_TAB_BLANK",
+        json={
+            "bill_to_name":                 "Invoices Blank Co",
+            "country":                      "DE",
+            "preferred_proforma_series_id": "",
+            "preferred_invoice_series_id":  "",
+            "default_language_id":          "",
+            "payment_terms_days":           "",
+            "default_currency":             "EUR",
+        },
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["preferred_proforma_series_id"] is None
+    assert data["preferred_invoice_series_id"]  is None
+    assert data["default_language_id"]          is None
+    assert data["payment_terms_days"]           is None

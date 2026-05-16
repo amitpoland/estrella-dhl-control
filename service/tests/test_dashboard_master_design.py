@@ -477,17 +477,21 @@ def test_kyc_tab_labels_correct():
         assert label in src, f"Missing KYC tab label: {label}"
 
 
-def test_kyc_two_tabs_marked_pending():
+def test_kyc_no_tabs_marked_pending():
+    """B2 (MasterData-2.2): all 6 KYC tabs are now wired — no `pending: true` flag
+    remains on KYC_TABS entries. Save button is active across every tab."""
     src = _src()
-    # kyc and invoices are backend-pending; carriers is now live (MasterData-1)
-    for entry in (
-        "label: 'KYC / Compliance', pending: true",
-        "label: 'Invoices',          pending: true",
-    ):
-        assert entry in src, f"Missing pending KYC tab marker: {entry}"
-    # carriers must NOT be marked pending any more
+    # No KYC_TABS entry may carry pending: true now
+    assert "label: 'KYC / Compliance', pending: true" not in src, \
+        "KYC / Compliance tab must no longer be backend-pending (B2 wired it)"
+    assert "label: 'Invoices',          pending: true" not in src, \
+        "Invoices tab must no longer be backend-pending (B2 wired it)"
     assert "label: 'Carriers',         pending: true" not in src, \
-        "Carriers tab must no longer be backend-pending (MasterData-1 wired it)"
+        "Carriers tab must no longer be backend-pending"
+    # Each tab definition is present
+    for tab_label in ("'Company / Basic'", "'Shipping'", "'Carriers'",
+                      "'KYC / Compliance'", "'KUKE & Credit'", "'Invoices'"):
+        assert tab_label in src, f"Missing KYC tab label: {tab_label}"
 
 
 def test_kyc_tab_testid_pattern():
@@ -590,12 +594,18 @@ def test_kyc_carriers_tab_form_testids():
 # ClientKycModal — KYC / Compliance tab (backend pending)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_kyc_compliance_tab_pending():
+def test_kyc_compliance_tab_live():
+    """B2: KYC/Compliance tab body renders the bound form fields; Save is active.
+    No invented endpoint — the existing PUT /customer-master/ writes these columns."""
     src = _src()
     block = _kyc_block(src)
     assert 'data-testid="kyc-panel-kyc"' in src
-    assert "Save disabled for this tab" in block, \
-        "KYC/Compliance tab must show 'Save disabled for this tab' message"
+    # The "Save disabled" message must no longer appear anywhere in the KYC modal
+    assert "Save disabled for this tab" not in block, \
+        "KYC modal must not show 'Save disabled' — all tabs are wired in B2"
+    # Compliance field testids must be present
+    for tid in ('kyc-pep-check-result', 'kyc-compliance-notes'):
+        assert f'data-testid="{tid}"' in src, f"Missing KYC compliance testid: {tid}"
 
 
 def test_kyc_compliance_tab_no_live_write():
@@ -638,12 +648,43 @@ def test_kyc_kuke_fields_wired_to_form_state():
 # ClientKycModal — Invoices tab (backend pending)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_kyc_invoices_tab_pending():
+def test_kyc_invoices_tab_live():
+    """B2: Invoices tab body renders bound form for wFirma defaults
+    (proforma/invoice series, VAT mode, language, payment terms, currency).
+    Save uses the existing PUT /customer-master/ — no new endpoint invented."""
+    src = _src()
+    assert 'data-testid="kyc-panel-invoices"' in src
+    for tid in (
+        'kyc-invoices-proforma-series',
+        'kyc-invoices-invoice-series',
+        'kyc-invoices-vat-mode',
+        'kyc-invoices-language-id',
+        'kyc-invoices-payment-terms',
+        'kyc-invoices-currency',
+    ):
+        assert f'data-testid="{tid}"' in src, f"Missing invoices tab testid: {tid}"
+
+
+def test_kyc_invoices_fields_wired_to_form_state():
     src = _src()
     block = _kyc_block(src)
-    assert 'data-testid="kyc-panel-invoices"' in src
-    assert "Save disabled for this tab" in block, \
-        "Invoices tab must show 'Save disabled for this tab' message"
+    for field in (
+        "preferred_proforma_series_id", "preferred_invoice_series_id",
+        "vat_mode", "default_language_id",
+        "payment_terms_days", "default_currency",
+    ):
+        assert field in block, f"Invoices tab field not wired: {field}"
+
+
+def test_cm_open_profile_button_present():
+    """B2: CM-tab row offers an 'Open full profile' button that opens ClientKycModal."""
+    src = _src()
+    assert 'data-testid="master-cm-btn-open-profile"' in src, \
+        "Open-profile button must be present on CM-tab row"
+    block = _master_block(src)
+    assert "Open full profile" in block, \
+        "Open-profile button label must be present in MasterDataPage"
+    assert "setKycModal" in block, "Open-profile button must trigger setKycModal"
 
 
 def test_kyc_invoices_tab_no_invented_endpoint():
