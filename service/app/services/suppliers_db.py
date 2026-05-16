@@ -45,6 +45,18 @@ class Supplier:
     created_at:    Optional[str] = None
     updated_at:    Optional[str] = None
 
+    # B0 supplier deep-enrichment 2026-05-17 — wFirma contractor-detail
+    # fields. Filled-when-empty by ``upsert_identity_from_wfirma``; never
+    # overwrites operator-set values. Mirrors the Client Master plumbing
+    # (PR #154) for symmetry.
+    street:              Optional[str] = None
+    city:                Optional[str] = None
+    postal_code:         Optional[str] = None
+    contact_mobile:      Optional[str] = None
+    bank_account:        Optional[str] = None
+    last_wfirma_sync_at: Optional[str] = None
+    wfirma_sync_source:  Optional[str] = None
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -53,12 +65,14 @@ def _now() -> str:
 
 
 def _row_to_supplier(row: sqlite3.Row) -> Supplier:
-    # Use dict access via row.keys() to tolerate legacy schemas pre-B0
-    # that may lack the wfirma_id column on already-open connections.
-    try:
-        wfid = row["wfirma_id"]
-    except (IndexError, KeyError):
-        wfid = None
+    # Use dict access via row.keys() to tolerate legacy schemas that may
+    # lack the wfirma_id or deep-enrichment columns on already-open
+    # connections.
+    def _get(col: str):
+        try:
+            return row[col]
+        except (IndexError, KeyError):
+            return None
     return Supplier(
         id            = row["id"],
         supplier_code = row["supplier_code"],
@@ -71,9 +85,17 @@ def _row_to_supplier(row: sqlite3.Row) -> Supplier:
         contact_phone = row["contact_phone"],
         active        = bool(int(row["active"])),
         notes         = row["notes"],
-        wfirma_id     = wfid,
+        wfirma_id     = _get("wfirma_id"),
         created_at    = row["created_at"],
         updated_at    = row["updated_at"],
+        # Deep-enrichment columns — None for rows pre-additive-migration.
+        street              = _get("street"),
+        city                = _get("city"),
+        postal_code         = _get("postal_code"),
+        contact_mobile      = _get("contact_mobile"),
+        bank_account        = _get("bank_account"),
+        last_wfirma_sync_at = _get("last_wfirma_sync_at"),
+        wfirma_sync_source  = _get("wfirma_sync_source"),
     )
 
 
@@ -151,6 +173,23 @@ def init_db(db_path: Path) -> None:
         if "wfirma_id" not in cols:
             conn.execute("ALTER TABLE suppliers ADD COLUMN wfirma_id TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_suppliers_wfirma_id ON suppliers (wfirma_id)")
+        # ── B0 supplier deep-enrichment 2026-05-17 — additive columns ────────
+        # Mirrors the Client Master schema additions (PR #154). Each column
+        # is nullable; existing rows retain NULL until apply fills them.
+        for c, t in (
+            ("street",              "TEXT"),
+            ("city",                "TEXT"),
+            ("postal_code",         "TEXT"),
+            ("contact_mobile",      "TEXT"),
+            ("bank_account",        "TEXT"),
+            ("last_wfirma_sync_at", "TEXT"),
+            ("wfirma_sync_source",  "TEXT"),
+        ):
+            if c not in cols:
+                try:
+                    conn.execute(f"ALTER TABLE suppliers ADD COLUMN {c} {t}")
+                except sqlite3.OperationalError:
+                    pass
         conn.commit()
 
 
@@ -685,3 +724,132 @@ def sync_from_wfirma(
 
     counts.update(applied)
     return {**counts, "examples": examples, "proposals": proposals}
+
+
+# ── B0 supplier deep-enrichment 2026-05-17 ────────────────────────────────────
+#
+# upsert_supplier_identity_from_wfirma() mirrors customer_master_db.
+# upsert_identity_only(): fill-when-empty COALESCE-NULLIF semantics, never
+# overwrites operator-set values. Insert path creates a minimal supplier
+# row keyed by wfirma_id; update path refreshes identity (name, country)
+# always and back-fills empty enrichment columns from wFirma. Last-sync
+# audit columns are always stamped.
+
+def upsert_supplier_identity_from_wfirma(
+    db_path: Path,
+    *,
+    wfirma_id:     str,
+    name:          str,
+    country:       str,
+    vat_id:        Optional[str] = None,
+    # Deep-enrichment fields (all optional, all fill-when-empty)
+    street:         Optional[str] = None,
+    city:           Optional[str] = None,
+    postal_code:    Optional[str] = None,
+    contact_email:  Optional[str] = None,
+    contact_phone:  Optional[str] = None,
+    contact_mobile: Optional[str] = None,
+    bank_account:   Optional[str] = None,
+    address_fallback: Optional[str] = None,  # legacy free-form address line
+    sync_source:    str           = "review_assign",
+) -> Dict[str, Any]:
+    """Symmetric supplier upsert from wFirma contractor detail.
+
+    Hard rules:
+    - Read-only against wFirma (caller has already fetched).
+    - Fill-when-empty: operator-set local values ALWAYS win on UPDATE
+      via ``COALESCE(NULLIF(local, ''), NULLIF(?, ''))``.
+    - Insert path writes only the minimum identity + enrichment stub.
+      eori, notes, active stay at table defaults.
+    - Identity columns (``name``, ``country``) ARE always rewritten so
+      the operator can refresh the canonical wFirma name.
+
+    Returns ``{"id", "action", "row"}`` where action ∈ {inserted, updated}.
+    Raises ``ValueError`` if any required field is missing/malformed.
+    """
+    wfid = (wfirma_id or "").strip()
+    nm   = (name or "").strip()
+    cty  = (country or "").strip().upper()
+
+    blockers: List[str] = []
+    if not wfid:
+        blockers.append("wfirma_id is required")
+    if not nm:
+        blockers.append("name is required")
+    if not cty or len(cty) != 2:
+        blockers.append("country must be ISO-3166 alpha-2 (2 letters)")
+    if blockers:
+        raise ValueError("supplier identity validation failed: " + "; ".join(blockers))
+
+    # Normalise enrichment values.
+    vid  = (vat_id or "").strip()
+    str_ = (street or "").strip()
+    cit  = (city or "").strip()
+    zp   = (postal_code or "").strip()
+    em   = (contact_email or "").strip()
+    ph   = (contact_phone or "").strip()
+    mob  = (contact_mobile or "").strip()
+    bnk  = (bank_account or "").strip()
+    addr = (address_fallback or "").strip()
+    src  = (sync_source or "review_assign").strip() or "review_assign"
+
+    init_db(db_path)
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute(
+            "SELECT id, supplier_code FROM suppliers WHERE wfirma_id = ?",
+            (wfid,),
+        ).fetchone()
+        if existing is None:
+            # New supplier — deterministic code (same convention as
+            # sync_from_wfirma's INSERT path).
+            sup_code = _supplier_code_from_wfirma(wfid, nm)
+            cur = conn.execute(
+                """INSERT INTO suppliers
+                       (supplier_code, name, country, vat_id, eori, address,
+                        contact_email, contact_phone, active, notes, wfirma_id,
+                        street, city, postal_code, contact_mobile, bank_account,
+                        last_wfirma_sync_at, wfirma_sync_source,
+                        created_at, updated_at)
+                   VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sup_code, nm, cty, (vid or None), (addr or None),
+                 (em or None), (ph or None), wfid,
+                 (str_ or None), (cit or None), (zp or None),
+                 (mob or None), (bnk or None),
+                 now, src, now, now),
+            )
+            row_id = int(cur.lastrowid or 0)
+            action = "inserted"
+        else:
+            row_id = int(existing["id"])
+            # UPDATE — fill-when-empty for every enrichment column;
+            # name + country always refreshed; eori / notes / active
+            # never touched here.
+            conn.execute(
+                """UPDATE suppliers
+                       SET name                = ?,
+                           country             = ?,
+                           vat_id              = COALESCE(NULLIF(vat_id, ''),         NULLIF(?, '')),
+                           address             = COALESCE(NULLIF(address, ''),        NULLIF(?, '')),
+                           contact_email       = COALESCE(NULLIF(contact_email, ''),  NULLIF(?, '')),
+                           contact_phone       = COALESCE(NULLIF(contact_phone, ''),  NULLIF(?, '')),
+                           street              = COALESCE(NULLIF(street, ''),         NULLIF(?, '')),
+                           city                = COALESCE(NULLIF(city, ''),           NULLIF(?, '')),
+                           postal_code         = COALESCE(NULLIF(postal_code, ''),    NULLIF(?, '')),
+                           contact_mobile      = COALESCE(NULLIF(contact_mobile, ''), NULLIF(?, '')),
+                           bank_account        = COALESCE(NULLIF(bank_account, ''),   NULLIF(?, '')),
+                           last_wfirma_sync_at = ?,
+                           wfirma_sync_source  = ?,
+                           updated_at          = ?
+                       WHERE id = ?""",
+                (nm, cty,
+                 vid, addr, em, ph,
+                 str_, cit, zp, mob, bnk,
+                 now, src, now, row_id),
+            )
+            action = "updated"
+        conn.commit()
+
+    rec = get_supplier(db_path, row_id)
+    return {"id": row_id, "action": action, "row": rec}

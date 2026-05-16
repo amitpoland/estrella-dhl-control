@@ -66,6 +66,14 @@ def _supplier_dict(s: Supplier) -> dict:
         "wfirma_id":     s.wfirma_id,
         "created_at":    s.created_at,
         "updated_at":    s.updated_at,
+        # B0 supplier deep-enrichment 2026-05-17
+        "street":              s.street,
+        "city":                s.city,
+        "postal_code":         s.postal_code,
+        "contact_mobile":      s.contact_mobile,
+        "bank_account":        s.bank_account,
+        "last_wfirma_sync_at": s.last_wfirma_sync_at,
+        "wfirma_sync_source":  s.wfirma_sync_source,
     }
 
 
@@ -272,8 +280,56 @@ async def suppliers_sync_apply_endpoint(request: Request) -> JSONResponse:
                     "error": f"{type(exc).__name__}: {exc}"},
         )
 
-    # Trim proposals to just the requested ids so the response is bounded.
+    # B0 supplier deep-enrichment 2026-05-17 — for each successfully-applied
+    # id, deep-fetch the wFirma contractor detail and fill empty
+    # supplier_master enrichment columns (street/city/postal_code/
+    # contact_mobile/bank_account). Fill-when-empty COALESCE protects
+    # operator-set local values. Per-row failure is non-fatal — the
+    # identity row already exists by this point.
     requested = set(wfirma_ids)
+    deep_filled = 0
+    deep_errors: List[Dict[str, Any]] = []
+    try:
+        from ..services import wfirma_client as wfc
+        from ..services.suppliers_db import upsert_supplier_identity_from_wfirma
+        for p in result.get("proposals", []):
+            wfid = p.get("wfirma_id")
+            if not wfid or wfid not in requested:
+                continue
+            # Only enrich rows the apply actually wrote (skipped_invalid /
+            # needs_operator_review never touch the DB).
+            if p.get("status") in ("skipped_invalid", "needs_operator_review"):
+                continue
+            try:
+                cd = wfc.fetch_contractor_by_id(wfid)
+                if not cd.ok:
+                    continue
+                # Compose a single-line address fallback from non-empty parts.
+                addr_parts = [s for s in (cd.street, cd.zip, cd.city, cd.country) if s]
+                upsert_supplier_identity_from_wfirma(
+                    _DB_PATH,
+                    wfirma_id=wfid,
+                    name=cd.name or p.get("name", ""),
+                    country=(cd.country or p.get("country", "")),
+                    vat_id=(cd.nip or p.get("vat_id") or None),
+                    street=cd.street or None,
+                    city=cd.city or None,
+                    postal_code=cd.zip or None,
+                    contact_email=cd.email or None,
+                    contact_phone=cd.phone or None,
+                    contact_mobile=cd.mobile or None,
+                    bank_account=cd.account_number or None,
+                    address_fallback=", ".join(addr_parts) if addr_parts else None,
+                )
+                deep_filled += 1
+            except Exception as exc:
+                log.warning("supplier deep-fetch failed for wfid=%s: %s", wfid, exc)
+                deep_errors.append({"wfirma_id": wfid, "error": str(exc)})
+    except Exception as exc:
+        # The deep-fetch layer is best-effort — never escalate to a 5xx.
+        log.warning("supplier deep-fetch wrapper error: %s", exc)
+
+    # Trim proposals to just the requested ids so the response is bounded.
     filtered = [p for p in result.get("proposals", []) if p["wfirma_id"] in requested]
     body_out = {
         "ok":            True,
@@ -286,12 +342,14 @@ async def suppliers_sync_apply_endpoint(request: Request) -> JSONResponse:
         "conflicts":     result["conflicts"],
         "dry_run":       result["dry_run"],
         "applied_count": result["inserted"] + result["updated_match"] + result["backfilled"],
+        "deep_filled":   deep_filled,
+        "deep_errors":   deep_errors,
         "proposals":     filtered,
     }
     log.info(
-        "suppliers_sync_apply mode=write requested=%d inserted=%d updated=%d backfilled=%d skipped=%d",
+        "suppliers_sync_apply mode=write requested=%d inserted=%d updated=%d backfilled=%d skipped=%d deep_filled=%d",
         len(requested), body_out["inserted"], body_out["updated_match"],
-        body_out["backfilled"], body_out["skipped"],
+        body_out["backfilled"], body_out["skipped"], deep_filled,
     )
     return JSONResponse(body_out)
 

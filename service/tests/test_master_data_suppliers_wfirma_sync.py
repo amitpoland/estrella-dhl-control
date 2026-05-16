@@ -605,6 +605,230 @@ def test_apply_for_new_candidate_creates_minimal_row_only(tmp_path, fake_contrac
 
 # ── 18. hard rule: no live wFirma write call introduced in changed files ────
 
+# ── B0 supplier deep-enrichment 2026-05-17 — symmetric Client Master plumbing
+
+
+def test_upsert_supplier_identity_from_wfirma_inserts_with_enrichment(tmp_path):
+    """The new helper inserts a minimal supplier row keyed by wfirma_id +
+    fills street/city/postal/email/phone/mobile/bank when supplied."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    res = suppliers_db.upsert_supplier_identity_from_wfirma(
+        db,
+        wfirma_id="DEEP-S1", name="ALPHA SUPPLY", country="DE",
+        vat_id="DE111222333",
+        street="Hauptstr 1", city="Berlin", postal_code="10115",
+        contact_email="ops@alpha.example", contact_phone="+49 30 555",
+        contact_mobile="+49 170 555", bank_account="DE89 3704 0044",
+    )
+    assert res["action"] == "inserted"
+    rec = suppliers_db.get_supplier_by_code(db, suppliers_db._supplier_code_from_wfirma("DEEP-S1", "ALPHA SUPPLY"))
+    assert rec is not None
+    assert rec.wfirma_id      == "DEEP-S1"
+    assert rec.country        == "DE"
+    assert rec.street         == "Hauptstr 1"
+    assert rec.city           == "Berlin"
+    assert rec.postal_code    == "10115"
+    assert rec.contact_email  == "ops@alpha.example"
+    assert rec.contact_phone  == "+49 30 555"
+    assert rec.contact_mobile == "+49 170 555"
+    assert rec.bank_account   == "DE89 3704 0044"
+    assert rec.wfirma_sync_source == "review_assign"
+
+
+def test_upsert_supplier_identity_from_wfirma_preserves_local(tmp_path):
+    """Operator-edited supplier fields survive a re-sync."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    # First write
+    suppliers_db.upsert_supplier_identity_from_wfirma(
+        db, wfirma_id="DEEP-S2", name="OLD NAME", country="PL",
+        street="OPERATOR STREET", city="OPERATOR CITY",
+        contact_email="kept@operator.example",
+    )
+    # Re-sync with different wFirma values — operator values must win.
+    suppliers_db.upsert_supplier_identity_from_wfirma(
+        db, wfirma_id="DEEP-S2", name="NEW NAME FROM WFIRMA", country="PL",
+        street="WFIRMA STREET", city="WFIRMA CITY",
+        contact_email="wfirma@remote.example",
+    )
+    rec = suppliers_db.list_suppliers(db, limit=100)[0]
+    # Identity refreshed
+    assert rec.name == "NEW NAME FROM WFIRMA"
+    # Operator-set enrichment preserved
+    assert rec.street        == "OPERATOR STREET"
+    assert rec.city          == "OPERATOR CITY"
+    assert rec.contact_email == "kept@operator.example"
+
+
+def test_upsert_supplier_identity_from_wfirma_validates_required_fields(tmp_path):
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    with pytest.raises(ValueError) as ei:
+        suppliers_db.upsert_supplier_identity_from_wfirma(
+            db, wfirma_id="", name="X", country="PL")
+    assert "wfirma_id" in str(ei.value)
+    with pytest.raises(ValueError):
+        suppliers_db.upsert_supplier_identity_from_wfirma(
+            db, wfirma_id="X", name="X", country="")
+    with pytest.raises(ValueError):
+        suppliers_db.upsert_supplier_identity_from_wfirma(
+            db, wfirma_id="X", name="", country="PL")
+
+
+def test_supplier_apply_deep_fetches_and_fills(tmp_path, fake_contractors, monkeypatch):
+    """End-to-end: POST /sync-from-wfirma/apply triggers a deep fetch and
+    writes the enrichment columns on the supplier row."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    fake_contractors.set([_mk("E2E-SUP", "DEEP CO", nip="PL999", country="PL")])
+
+    # Patch fetch_contractor_by_id to return rich data with the verified
+    # XML key names (street/zip/city/email/phone/mobile/account_number).
+    def _fetch(cid):
+        return wfirma_client.ContractorFetchResult(
+            ok=True, contractor_id=cid, name="DEEP CO", nip="PL999", country="PL",
+            street="ul. Test 1", city="Warsaw", zip="00-001",
+            email="deep@example.com", phone="+48 22 555", mobile="+48 600 111",
+            account_number="PL12 1234 5678",
+        )
+    monkeypatch.setattr(wfirma_client, "fetch_contractor_by_id", _fetch)
+
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    r = client.post("/api/v1/suppliers/sync-from-wfirma/apply",
+                    json={"wfirma_ids": ["E2E-SUP"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["deep_filled"] == 1
+    rows = suppliers_db.list_suppliers(db, limit=100)
+    assert len(rows) == 1
+    rec = rows[0]
+    assert rec.wfirma_id      == "E2E-SUP"
+    assert rec.street         == "ul. Test 1"
+    assert rec.city           == "Warsaw"
+    assert rec.postal_code    == "00-001"
+    assert rec.contact_email  == "deep@example.com"
+    assert rec.contact_phone  == "+48 22 555"
+    assert rec.contact_mobile == "+48 600 111"
+    assert rec.bank_account   == "PL12 1234 5678"
+    assert rec.last_wfirma_sync_at is not None
+    assert rec.wfirma_sync_source  == "review_assign"
+
+
+def test_supplier_apply_deep_fetch_preserves_operator_local(tmp_path, fake_contractors, monkeypatch):
+    """If the operator has hand-set supplier fields BEFORE the apply, wFirma
+    deep-fetch must not overwrite them."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    # Pre-seed with operator values
+    suppliers_db.create_supplier(db, {
+        "supplier_code": "LOCAL-OP-1",
+        "name": "OPERATOR NAME", "country": "PL",
+        "vat_id": "PL999",
+        "contact_email": "kept@local.example",
+        "wfirma_id": "PRES-SUP",
+    })
+    fake_contractors.set([_mk("PRES-SUP", "WFIRMA NAME", nip="PL999", country="PL")])
+    def _fetch(cid):
+        return wfirma_client.ContractorFetchResult(
+            ok=True, contractor_id=cid, name="WFIRMA NAME", nip="PL999", country="PL",
+            email="wfirma@remote.example", phone="+48 22 555",
+            street="ul. Wfirma 1", city="Krakow", zip="30-001",
+        )
+    monkeypatch.setattr(wfirma_client, "fetch_contractor_by_id", _fetch)
+
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    r = client.post("/api/v1/suppliers/sync-from-wfirma/apply",
+                    json={"wfirma_ids": ["PRES-SUP"]})
+    assert r.status_code == 200
+    rec = suppliers_db.get_supplier_by_code(db, "LOCAL-OP-1")
+    # Identity refreshed
+    assert rec.name == "WFIRMA NAME"
+    # Operator-set email preserved
+    assert rec.contact_email == "kept@local.example"
+    # Empty fields filled from wFirma
+    assert rec.street == "ul. Wfirma 1"
+    assert rec.city   == "Krakow"
+
+
+def test_supplier_apply_does_not_call_wfirma_write(tmp_path, fake_contractors, monkeypatch):
+    """Trip-wire on every wFirma write entry point — none must fire during
+    a supplier apply."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    fake_contractors.set([_mk("WGUARD", "WRITE GUARD", nip="PL999", country="PL")])
+    forbidden: List[str] = []
+    for attr in ("create_customer", "create_contractor",
+                 "update_customer", "update_contractor",
+                 "delete_customer", "delete_contractor"):
+        if hasattr(wfirma_client, attr):
+            def _trip(*_a, _n=attr, **_k):
+                forbidden.append(_n)
+                raise AssertionError(f"forbidden wFirma write: {_n}")
+            monkeypatch.setattr(wfirma_client, attr, _trip)
+    # Stub deep-fetch so the apply path's deep-enrichment block runs.
+    monkeypatch.setattr(wfirma_client, "fetch_contractor_by_id",
+                        lambda cid: wfirma_client.ContractorFetchResult(
+                            ok=True, contractor_id=cid, name="WRITE GUARD",
+                            nip="PL999", country="PL"))
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    client.post("/api/v1/suppliers/sync-from-wfirma/apply",
+                json={"wfirma_ids": ["WGUARD"]})
+    assert forbidden == []
+
+
+def test_supplier_preview_remains_read_only_after_deep_enrichment(tmp_path, fake_contractors, monkeypatch):
+    """GET /sync-from-wfirma/preview MUST NOT trigger any DB write, even
+    after the deep-enrichment apply path landed."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    fake_contractors.set([_mk("READ-ONLY-1", "RO CO", nip="PL1", country="PL")])
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    r = client.get("/api/v1/suppliers/sync-from-wfirma/preview")
+    assert r.status_code == 200
+    # No rows should have been inserted by preview.
+    assert suppliers_db.list_suppliers(db, limit=100) == []
+
+
+def test_supplier_apply_does_not_mutate_customer_master(tmp_path, fake_contractors, monkeypatch):
+    """Hard rule: supplier apply must not write to customer_master.
+    We monkey-patch the customer-master upsert paths and confirm zero
+    invocations during a supplier apply call."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    fake_contractors.set([_mk("CM-GUARD", "GUARD CO", nip="PL1", country="PL")])
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    monkeypatch.setattr(wfirma_client, "fetch_contractor_by_id",
+                        lambda cid: wfirma_client.ContractorFetchResult(
+                            ok=True, contractor_id=cid, name="GUARD CO",
+                            nip="PL1", country="PL"))
+
+    # Trip-wire on every customer_master_db write entry.
+    from service.app.services import customer_master_db as cmdb
+    cm_calls: List[str] = []
+    for attr in ("upsert_customer", "upsert_identity_only"):
+        original = getattr(cmdb, attr)
+        def _trip(*a, _n=attr, _orig=original, **k):
+            cm_calls.append(_n)
+            return _orig(*a, **k)
+        monkeypatch.setattr(cmdb, attr, _trip)
+
+    client = _make_app(monkeypatch, flag=True)
+    client.post("/api/v1/suppliers/sync-from-wfirma/apply",
+                json={"wfirma_ids": ["CM-GUARD"]})
+    assert cm_calls == [], f"customer_master mutated during supplier apply: {cm_calls}"
+
+
 def test_no_wfirma_write_call_in_supplier_cache_files():
     """Source-grep guard: the supplier identity-cache implementation must
     never call wFirma write primitives. Reads/list calls only."""
