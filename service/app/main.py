@@ -69,6 +69,7 @@ from .api.routes_master_data import (
     vat_router as md_vat_router,
     fx_router as md_fx_router,
     carriers_config_router as md_carriers_config_router,
+    designs_router as md_designs_router,
 )
 from .api.routes_finance_postings import router as finance_postings_router
 from .core.config import settings
@@ -283,6 +284,7 @@ app.include_router(md_incoterms_router)             # MasterData-B7: Incoterms r
 app.include_router(md_vat_router)                   # MasterData-B7: VAT config (local; READ-ONLY w.r.t. wFirma invoicing)
 app.include_router(md_fx_router)                    # MasterData-B8: FX rates (REFERENCE-ONLY; NOT a PZ override path)
 app.include_router(md_carriers_config_router)       # MasterData-B9: Carrier config (LOCAL, NON-SECRET; runtime untouched)
+app.include_router(md_designs_router)                # B-MD2 (MDOC): Designs master (LOCAL, additive; product_identity_engine read-only consumer)
 app.include_router(finance_postings_router)         # Phase 6F.3: read-only breakdown endpoint (no writes, no posting/settlement/FX/wFirma coupling; init_db lazy-on-call)
 
 

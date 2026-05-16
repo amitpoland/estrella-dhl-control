@@ -5,7 +5,7 @@
 > Operational Stabilization + Observation campaign closed P0-P4 on 2026-05-16.
 > **Phase 6F PAUSED at steady-state (2026-05-16).** 14 batches, 6 deployed (5 live + 6F.5 deployed default-OFF), 4 operator-gated blocks. Resume: **`tasks/phase-6f-campaign-close.md`**.
 >
-> **MDOC-2026-05** in progress: B-MD0 / B-MD1-approval / B-MD1 / B-MD1-closure merged. AdminUsersPage live in production. **B-MD2-approval PR_OPEN** (`tasks/master-data-designs-roles-approval-package.md` — 17 sections; Designs schema + Roles Option A vs Option B; two-PR split; 11 hard stops; operator decision §16). B-MD2 implementation BLOCKED pending sign-off.
+> **MDOC-2026-05** in progress: B-MD0 / B-MD1-approval / B-MD1 / B-MD1-closure / B-MD2-approval merged. AdminUsersPage live. **B-MD2 PR_OPEN** — Designs master live (additive `designs` table in `master_data.sqlite`; 4 routes `/api/v1/designs/`; UI panel under MasterDataPage) + Roles read-only explainer panel (no schema change, no permission engine). 342 tests green. Implementation plan: approval package + Option A path. B-MD3/B-MD4 planned.
 >
 > See `tasks/campaign-state.json` for the canonical state of all 3 campaigns (23 batches tracked).
 > See `tasks/campaign-runner.md` for the controller doc.

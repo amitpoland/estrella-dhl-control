@@ -130,9 +130,37 @@ class VatConfig:
     updated_at:     Optional[str] = None
 
 
+@dataclass
+class Design:
+    """B-MD2 Designs master (MDOC-2026-05).
+
+    Local additive master. Soft references only — ``product_ref``,
+    ``hs_code``, ``unit`` are documented FK-by-value into wFirma products /
+    ``hs_codes`` / ``units`` but no SQL FK constraint is enforced (consistent
+    with the rest of the master-data style).
+
+    ``product_identity_engine`` MUST NOT read this table; the engine remains
+    a read-only consumer of its own raw inputs.
+    """
+    design_code:   str
+    display_name:  Optional[str] = None
+    product_ref:   Optional[str] = None
+    design_family: Optional[str] = None
+    collection:    Optional[str] = None
+    metal:         Optional[str] = None
+    stone_summary: Optional[str] = None
+    hs_code:       Optional[str] = None
+    unit:          Optional[str] = None
+    active:        bool = True
+    notes:         Optional[str] = None
+    created_at:    Optional[str] = None
+    updated_at:    Optional[str] = None
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _HS_CODE_RE = re.compile(r"^[0-9]{4,12}$")
+_DESIGN_CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-./]{0,63}$")
 
 
 def _now() -> str:
@@ -271,6 +299,31 @@ def init_db(db_path: Path) -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_carriers_active ON carriers_config (active)")
+
+        # ── B-MD2 Designs master (MDOC-2026-05) ────────────────────────
+        # Additive local master. Soft references only — no SQL FK.
+        # product_identity_engine MUST NOT read this table.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS designs (
+                design_code    TEXT PRIMARY KEY,
+                display_name   TEXT,
+                product_ref    TEXT,
+                design_family  TEXT,
+                collection     TEXT,
+                metal          TEXT,
+                stone_summary  TEXT,
+                hs_code        TEXT,
+                unit           TEXT,
+                active         INTEGER NOT NULL DEFAULT 1,
+                notes          TEXT,
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_designs_active ON designs (active)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_designs_family ON designs (design_family)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_designs_collection ON designs (collection)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_designs_product_ref ON designs (product_ref)")
 
         conn.commit()
 
@@ -1105,6 +1158,165 @@ def delete_product_local(db_path: Path, product_code: str) -> bool:
     with sqlite3.connect(str(db_path)) as conn:
         try:
             cur = conn.execute("DELETE FROM product_local WHERE product_code=?", (product_code,))
+            conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.OperationalError:
+            return False
+
+
+# ── B-MD2 Designs master (MDOC-2026-05) ───────────────────────────────────────
+#
+# Soft references only — no SQL FK constraint. ``product_identity_engine``
+# MUST NOT read this table; this isolation is pinned by a source-grep
+# contract in test_master_data_hard_rules.py.
+
+def validate_design(data: Dict[str, Any]) -> List[str]:
+    errs: List[str] = []
+    code = _clean(data.get("design_code"))
+    if not code:
+        errs.append("design_code is required")
+    elif not _DESIGN_CODE_RE.match(code):
+        errs.append(
+            "design_code must be 1-64 chars of letters/digits/_-./, "
+            "starting with letter or digit"
+        )
+    # hs_code is optional; if present, follow the same shape as hs_codes table
+    hs = _clean(data.get("hs_code"))
+    if hs and not _HS_CODE_RE.match(hs):
+        errs.append("hs_code (when set) must be 4-12 digits")
+    return errs
+
+
+def _row_to_design(row: sqlite3.Row) -> Design:
+    return Design(
+        design_code   = row["design_code"],
+        display_name  = row["display_name"],
+        product_ref   = row["product_ref"],
+        design_family = row["design_family"],
+        collection    = row["collection"],
+        metal         = row["metal"],
+        stone_summary = row["stone_summary"],
+        hs_code       = row["hs_code"],
+        unit          = row["unit"],
+        active        = bool(row["active"]),
+        notes         = row["notes"],
+        created_at    = row["created_at"],
+        updated_at    = row["updated_at"],
+    )
+
+
+def upsert_design(db_path: Path, data: Dict[str, Any]) -> Design:
+    errs = validate_design(data)
+    if errs:
+        raise ValueError("; ".join(errs))
+    init_db(db_path)
+    now = _now()
+    p = {
+        "design_code":   _clean(data.get("design_code")),
+        "display_name":  _clean(data.get("display_name")),
+        "product_ref":   _clean(data.get("product_ref")),
+        "design_family": _clean(data.get("design_family")),
+        "collection":    _clean(data.get("collection")),
+        "metal":         _clean(data.get("metal")),
+        "stone_summary": _clean(data.get("stone_summary")),
+        "hs_code":       _clean(data.get("hs_code")),
+        "unit":          _clean(data.get("unit")),
+        "active":        1 if (data.get("active", True) is not False
+                               and str(data.get("active", "true")).lower()
+                               not in ("false", "0", "no")) else 0,
+        "notes":         _clean(data.get("notes")),
+    }
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute(
+            "SELECT created_at FROM designs WHERE design_code=?",
+            (p["design_code"],),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE designs SET display_name=?, product_ref=?, design_family=?,
+                                       collection=?, metal=?, stone_summary=?,
+                                       hs_code=?, unit=?, active=?, notes=?,
+                                       updated_at=?
+                                  WHERE design_code=?""",
+                (p["display_name"], p["product_ref"], p["design_family"],
+                 p["collection"], p["metal"], p["stone_summary"],
+                 p["hs_code"], p["unit"], p["active"], p["notes"],
+                 now, p["design_code"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO designs (design_code, display_name, product_ref,
+                                         design_family, collection, metal,
+                                         stone_summary, hs_code, unit, active,
+                                         notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (p["design_code"], p["display_name"], p["product_ref"],
+                 p["design_family"], p["collection"], p["metal"],
+                 p["stone_summary"], p["hs_code"], p["unit"], p["active"],
+                 p["notes"], now, now),
+            )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM designs WHERE design_code=?", (p["design_code"],)
+        ).fetchone()
+    return _row_to_design(row)
+
+
+def get_design(db_path: Path, design_code: str) -> Optional[Design]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT * FROM designs WHERE design_code=?", (design_code,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return _row_to_design(row) if row else None
+
+
+def list_designs(db_path: Path, *, active: Optional[bool] = None,
+                 design_family: Optional[str] = None,
+                 collection: Optional[str] = None,
+                 limit: int = 500) -> List[Design]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    where, params = [], []
+    if active is not None:
+        where.append("active=?")
+        params.append(1 if active else 0)
+    if design_family:
+        where.append("design_family=?")
+        params.append(design_family)
+    if collection:
+        where.append("collection=?")
+        params.append(collection)
+    sql = "SELECT * FROM designs"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY design_code ASC LIMIT ?"
+    params.append(int(limit))
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            return [_row_to_design(r) for r in conn.execute(sql, params).fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+
+def delete_design(db_path: Path, design_code: str) -> bool:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    with sqlite3.connect(str(db_path)) as conn:
+        try:
+            cur = conn.execute(
+                "DELETE FROM designs WHERE design_code=?", (design_code,),
+            )
             conn.commit()
             return cur.rowcount > 0
         except sqlite3.OperationalError:

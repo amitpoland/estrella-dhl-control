@@ -440,3 +440,92 @@ def test_6F1_charge_types_allow_list_in_source():
     for t in ("net_goods", "freight", "insurance", "customs_duty",
               "vat_eu", "vat_pl", "rounding_adjustment", "fx_delta_at_settlement"):
         assert f'"{t}"' in src, f"6F.1 must enumerate charge type literal: {t}"
+
+
+# ── B-MD2 Designs master isolation contracts (MDOC-2026-05) ──────────────────
+
+def test_b_md2_product_identity_engine_does_not_read_designs_table():
+    """Hard rule: product_identity_engine MUST NOT read the designs master.
+
+    The engine must stay a read-only consumer of its raw inputs
+    (karat, metal_color, description_pl, ...). Coupling to a writable
+    master would create a corruption path during operator edits.
+    """
+    pie = _APP_ROOT / "services" / "product_identity_engine.py"
+    if not pie.exists():
+        pytest.skip("product_identity_engine.py missing")
+    src = pie.read_text(encoding="utf-8")
+    for forbidden in (
+        "designs_db",
+        "from .master_data_db import",
+        "from ..services.master_data_db import",
+        "import master_data_db",
+        "list_designs", "get_design", "upsert_design", "delete_design",
+        "FROM designs", "INSERT INTO designs", "UPDATE designs",
+    ):
+        assert forbidden not in src, (
+            f"product_identity_engine.py must not reference designs master: "
+            f"forbidden token {forbidden!r}"
+        )
+
+
+def test_b_md2_design_product_bridge_does_not_write_to_designs():
+    """The packing-side design_product_bridge must stay read-only against
+    the NEW Designs master (it operates on packing-side records via the
+    separate reservation_db.upsert_design_mapping DAO, NOT on the new
+    master_data_db.upsert_design DAO).
+    """
+    bridge = _APP_ROOT / "services" / "design_product_bridge.py"
+    if not bridge.exists():
+        pytest.skip("design_product_bridge.py missing")
+    src = bridge.read_text(encoding="utf-8")
+    for forbidden in (
+        "master_data_db.upsert_design",
+        "master_data_db.delete_design",
+        "from ..services.master_data_db import",
+        "from .master_data_db import",
+        "INSERT INTO designs (",
+        "UPDATE designs SET",
+        "DELETE FROM designs",
+    ):
+        assert forbidden not in src, (
+            f"design_product_bridge.py must not write to NEW designs master "
+            f"(use reservation_db packing-side DAO instead): {forbidden!r}"
+        )
+
+
+def test_b_md2_designs_table_has_no_fk_constraints():
+    """designs table must use soft references only — no SQL FK."""
+    md = _APP_ROOT / "services" / "master_data_db.py"
+    src = md.read_text(encoding="utf-8")
+    # Locate the CREATE TABLE designs block and assert no FOREIGN KEY clause.
+    import re
+    m = re.search(r"CREATE TABLE IF NOT EXISTS designs\s*\([\s\S]*?\)", src)
+    assert m is not None, "designs table CREATE statement must exist"
+    block = m.group(0)
+    assert "FOREIGN KEY" not in block.upper(), (
+        "designs table must have no FOREIGN KEY constraint"
+    )
+    assert "REFERENCES " not in block.upper(), (
+        "designs table must have no SQL REFERENCES clause"
+    )
+
+
+def test_b_md2_designs_routes_use_only_local_md_db():
+    """routes for /api/v1/designs must operate ONLY on master_data.sqlite
+    via the master_data_db DAO. No wFirma / finance / proforma / PZ imports
+    inside the designs router block."""
+    rm = _APP_ROOT / "api" / "routes_master_data.py"
+    src = rm.read_text(encoding="utf-8")
+    # Find the designs router section.
+    start = src.find("designs_router = APIRouter")
+    assert start >= 0, "designs_router must be declared"
+    block = src[start:]
+    for forbidden in (
+        "wfirma_client", "finance_postings", "proforma_invoice",
+        "landed_cost", "fx_rate_at_issue", "settle",
+        "/api/v1/wfirma", "/api/v1/finance", "/api/v1/proforma",
+    ):
+        assert forbidden not in block, (
+            f"designs router block must not reference {forbidden!r}"
+        )
