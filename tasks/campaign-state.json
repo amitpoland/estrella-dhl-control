@@ -820,8 +820,8 @@
         {
           "batch_id": "B-MD1",
           "title": "Users/Roles writes implementation (new AdminUsersPage)",
-          "status": "pr_open",
-          "pr_url": null,
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/128",
           "depends_on": [
             "B-MD1-approval"
           ],
@@ -843,12 +843,31 @@
             "finance_postings_contracts": "38/38",
             "finance_panel_contracts": "12/12",
             "pz_regression": "160/160"
-          }
+          },
+          "pr_number": 128,
+          "merge_sha": "2101e70daa0c2ea4a65479398ad582d5d11f0691",
+          "deployed_sha": "2101e70daa0c2ea4a65479398ad582d5d11f0691",
+          "deployed_at": "2026-05-16T15:08:00+00:00",
+          "smoke_report": "tasks/smoke-reports/2026-05-16-b-md1-admin-users.md",
+          "smoke": {
+            "mechanical_anchors": "15 in deployed dashboard.html",
+            "nav_entry": "admin_users present",
+            "route_wiring": "page === admin_users present",
+            "role_allowlist": "frontend = backend = (admin,accounts,logistics,auditor,viewer)",
+            "auth_required_get": "HTTP 401 unauth",
+            "auth_required_post": "HTTP 401 unauth",
+            "masterdata_isolation": "zero /auth/users writes in MasterDataPage",
+            "browser_write_smoke": "deferred to operator (no safe test user available)",
+            "local_health": "200",
+            "public_health": "200",
+            "stderr_tail": "clean"
+          },
+          "rollback_command": "git revert -m 1 2101e70 --no-edit"
         },
         {
           "batch_id": "B-MD2-approval",
           "title": "Designs master + Roles table — approval package (docs-only)",
-          "status": "planned",
+          "status": "active",
           "pr_url": null,
           "depends_on": [],
           "next_batch": "B-MD2",
