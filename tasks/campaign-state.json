@@ -364,31 +364,60 @@
         {
           "batch_id": "6F.1",
           "title": "New SQLite schema + DB module (finance_postings_db)",
-          "status": "active",
-          "pr_url": null,
-          "next_batch": null,
-          "block_reason": null,
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/112",
+          "pr_number": 112,
+          "merge_sha": "f8b17a1",
+          "deployed_sha": "f8b17a1",
           "tests": {
             "finance_postings_db": "38/38",
             "hard_rule_contracts": "7/7 new",
             "pz_regression": "160/160"
-          }
+          },
+          "smoke_report": "tasks/phase-6f-2-backfill-implementation-spec.md",
+          "next_batch": "6F.1.5",
+          "block_reason": null
         },
         {
           "batch_id": "6F.1.5",
-          "title": "Contract tests pinning additive nature (planned)",
-          "status": "active",
-          "pr_url": null,
-          "next_batch": null,
+          "title": "Contract tests pinning additive nature",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/113",
+          "pr_number": 113,
+          "merge_sha": "d3bbff3",
+          "deployed_sha": "d3bbff3",
+          "tests": {
+            "finance_postings_contracts": "7/7",
+            "pz_regression": "160/160"
+          },
+          "smoke_report": "tasks/phase-6f-2-backfill-implementation-spec.md",
+          "next_batch": "6F.3",
           "block_reason": null
         },
         {
           "batch_id": "6F.3",
-          "title": "Read-only /breakdown endpoint (planned)",
+          "title": "Read-only /breakdown endpoint",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/115",
+          "pr_number": 115,
+          "merge_sha": "ba9017d",
+          "deployed_sha": "ba9017d",
+          "tests": {
+            "breakdown_endpoint": "12/12",
+            "pz_regression": "160/160"
+          },
+          "smoke_report": "tasks/phase-6f-2-backfill-implementation-spec.md",
+          "next_batch": "6F.2",
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.2",
+          "title": "Backfill from proforma_service_charges (umbrella)",
           "status": "active",
           "pr_url": null,
-          "next_batch": null,
-          "block_reason": null
+          "next_batch": "6F.2.a",
+          "block_reason": null,
+          "notes": "Expanded into sub-batches 6F.2.a/b/c/d/e/f. See those entries for live state."
         },
         {
           "batch_id": "6F.2.a",
