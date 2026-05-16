@@ -615,13 +615,48 @@ def client_master_dictionaries() -> JSONResponse:
     """Read-only dictionary catalog the dashboard uses to render label
     dropdowns in place of raw wFirma IDs.
 
-    Source: hardcoded baseline in
-    ``service/app/services/wfirma_dictionary_cache.py``. A future PR can
-    extend the same module with a live wFirma refresh (``invoiceseries/find``,
-    ``languages/find``) without changing this endpoint's contract.
+    Returns merged payload: hardcoded baseline overlaid by any live entries
+    cached from a prior ``POST /dictionaries/refresh`` call in this process.
+    ``source_state`` carries per-dictionary status (live / baseline /
+    unavailable / error).
     """
     from ..services import wfirma_dictionary_cache as wdc
     return JSONResponse(wdc.get_dictionaries())
+
+
+@router.post("/dictionaries/refresh", dependencies=[_auth],
+             summary="Operator-triggered refresh of live wFirma dictionaries")
+def client_master_dictionaries_refresh() -> JSONResponse:
+    """Read-only refresh of the live wFirma dictionaries (series/find).
+
+    Hard rules:
+    - **Read-only against wFirma.** Only `series/find` is called today.
+      languages/find, currencies/find, invoiceseries/find, proformaseries/find
+      were probed and return CONTROLLER NOT FOUND — they will never be
+      called.
+    - **Never raises.** Per-dictionary failures are isolated; the call
+      returns the merged dictionary payload regardless.
+    - **No contractor rows mutated.** No wFirma write.
+    - Result is cached in-process. Survives until next process restart;
+      operator re-triggers as needed.
+    """
+    from ..services import wfirma_dictionary_cache as wdc
+    try:
+        body = wdc.refresh_from_wfirma()
+    except Exception as exc:
+        log.error("dictionaries refresh failed: %s", exc, exc_info=True)
+        # Still return whatever we have (baseline) so the UI never breaks.
+        body = wdc.get_dictionaries()
+        body["refresh_error"] = f"{type(exc).__name__}: {exc}"
+    log.info(
+        "dictionaries_refresh source_state=%s fetched_at=%s "
+        "invoice_count=%d proforma_count=%d",
+        body.get("source_state", {}),
+        body.get("fetched_at"),
+        len(body.get("invoice_series", [])),
+        len(body.get("proforma_series", [])),
+    )
+    return JSONResponse(body)
 
 
 @router.get("/{contractor_id}", dependencies=[_auth], summary="Get one customer")

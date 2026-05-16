@@ -298,3 +298,223 @@ def test_dictionary_cache_has_no_wfirma_write_calls():
                       "issue_invoice(", "create_proforma("):
         assert forbidden not in src, \
             f"forbidden wFirma write call '{forbidden}' in dictionary cache"
+
+
+# ── B0 live wFirma dictionary refresh (PR after #157) ──────────────────────
+
+
+# Sample wFirma series/find response (verified live 2026-05-17, see
+# tasks/reports/wfirma-dictionary-endpoint-probe.md for the full probe).
+_SERIES_FIXTURE_OK = """<?xml version="1.0" encoding="UTF-8"?>
+<api>
+    <series>
+        <series>
+            <id>15827082</id>
+            <name>domyślna</name>
+            <template>FV [numer]/[rok]</template>
+            <type>normal</type>
+            <visibility>visible</visibility>
+        </series>
+        <series>
+            <id>15827085</id>
+            <name>domyślna</name>
+            <template>F-M [numer]/[rok]</template>
+            <type>margin</type>
+            <visibility>visible</visibility>
+        </series>
+        <series>
+            <id>15827088</id>
+            <name>domyślna</name>
+            <template>PROF [numer]/[rok]</template>
+            <type>proforma</type>
+            <visibility>visible</visibility>
+        </series>
+        <series>
+            <id>15827091</id>
+            <name>domyślna</name>
+            <template>OF [numer]/[rok]</template>
+            <type>offer</type>
+            <visibility>visible</visibility>
+        </series>
+        <series>
+            <id>HIDDEN-1</id>
+            <name>hidden series</name>
+            <template>HID [numer]/[rok]</template>
+            <type>normal</type>
+            <visibility>hidden</visibility>
+        </series>
+    </series>
+    <status><code>OK</code></status>
+</api>"""
+
+_SERIES_FIXTURE_NOT_FOUND = """<?xml version="1.0" encoding="UTF-8"?>
+<api><status><code>CONTROLLER NOT FOUND</code></status></api>"""
+
+
+def test_fetch_series_parses_live_fixture():
+    """fetch_series() normalises the live wFirma XML into id/label/code/type
+    dicts. Only verified XML keys; no guessing."""
+    import unittest.mock as _mock
+    from service.app.services import wfirma_client as wfc
+    with _mock.patch.object(wfc, "_http_request", return_value=(200, _SERIES_FIXTURE_OK)):
+        out = wfc.fetch_series()
+    by_id = {s["id"]: s for s in out}
+    # 5 input rows; hidden one still parsed (visibility filter happens at cache layer)
+    assert len(out) == 5
+    assert by_id["15827082"]["label"] == "FV [numer]/[rok]"
+    assert by_id["15827082"]["type"]  == "normal"
+    assert by_id["15827088"]["label"] == "PROF [numer]/[rok]"
+    assert by_id["15827088"]["type"]  == "proforma"
+    # 'code' carries the wFirma <name> field
+    assert by_id["15827082"]["code"] == "domyślna"
+
+
+def test_fetch_series_returns_empty_on_controller_not_found():
+    """All other dictionary endpoints (invoiceseries/find, languages/find …)
+    returned CONTROLLER NOT FOUND. fetch_series() must NOT raise on that
+    status — the caller treats empty list as 'live source unavailable'."""
+    import unittest.mock as _mock
+    from service.app.services import wfirma_client as wfc
+    with _mock.patch.object(wfc, "_http_request", return_value=(200, _SERIES_FIXTURE_NOT_FOUND)):
+        out = wfc.fetch_series()
+    assert out == []
+
+
+def test_fetch_series_returns_empty_on_http_error():
+    import unittest.mock as _mock
+    from service.app.services import wfirma_client as wfc
+    with _mock.patch.object(wfc, "_http_request", return_value=(503, "<html>boom</html>")):
+        out = wfc.fetch_series()
+    assert out == []
+
+
+def test_fetch_series_returns_empty_on_parse_error():
+    import unittest.mock as _mock
+    from service.app.services import wfirma_client as wfc
+    with _mock.patch.object(wfc, "_http_request", return_value=(200, "garbage that is not xml")):
+        out = wfc.fetch_series()
+    assert out == []
+
+
+def test_refresh_splits_series_by_type_and_filters_visibility():
+    """After refresh, invoice_series carries normal + margin entries (visible
+    only); proforma_series carries proforma entries (visible only); offer
+    and hidden entries are excluded; baseline placeholder stays."""
+    import unittest.mock as _mock
+    from service.app.services import wfirma_dictionary_cache as wdc
+    from service.app.services import wfirma_client as wfc
+    # Reset live cache to baseline state to keep test independent.
+    wdc._LIVE_CACHE["invoice_series"]  = None
+    wdc._LIVE_CACHE["proforma_series"] = None
+    wdc._LIVE_CACHE["source_state"]["invoice_series"]  = "baseline"
+    wdc._LIVE_CACHE["source_state"]["proforma_series"] = "baseline"
+
+    with _mock.patch.object(wfc, "_http_request", return_value=(200, _SERIES_FIXTURE_OK)):
+        merged = wdc.refresh_from_wfirma()
+
+    inv_ids = [s["id"] for s in merged["invoice_series"]]
+    pro_ids = [s["id"] for s in merged["proforma_series"]]
+    # baseline placeholder ("") preserved
+    assert "" in inv_ids
+    assert "" in pro_ids
+    # live invoice series (normal + margin), no offer, no hidden
+    assert "15827082" in inv_ids
+    assert "15827085" in inv_ids
+    assert "HIDDEN-1" not in inv_ids
+    assert "15827091" not in inv_ids  # offer goes nowhere
+    # live proforma
+    assert "15827088" in pro_ids
+    # source states reflect "live"
+    assert merged["source_state"]["invoice_series"]  == "live"
+    assert merged["source_state"]["proforma_series"] == "live"
+    # languages + currencies remain baseline (no live endpoint)
+    assert merged["source_state"]["languages"]  in ("baseline", "unavailable")
+    assert merged["source_state"]["currencies"] in ("baseline", "unavailable")
+
+
+def test_refresh_marks_error_when_endpoint_unavailable():
+    """When wFirma returns CONTROLLER NOT FOUND for series/find, the refresh
+    records source_state='error' but still returns the merged baseline so
+    the UI never breaks."""
+    import unittest.mock as _mock
+    from service.app.services import wfirma_dictionary_cache as wdc
+    from service.app.services import wfirma_client as wfc
+    wdc._LIVE_CACHE["invoice_series"]  = None
+    wdc._LIVE_CACHE["proforma_series"] = None
+    with _mock.patch.object(wfc, "_http_request", return_value=(200, _SERIES_FIXTURE_NOT_FOUND)):
+        merged = wdc.refresh_from_wfirma()
+    assert merged["source_state"]["invoice_series"]  == "error"
+    assert merged["source_state"]["proforma_series"] == "error"
+    # Baseline placeholder still served — UI must never see empty array.
+    assert len(merged["invoice_series"])  >= 1
+    assert len(merged["proforma_series"]) >= 1
+
+
+def test_refresh_endpoint_is_read_only_in_dashboard_calls():
+    """The dashboard refresh button must call POST
+    /api/v1/customer-master/dictionaries/refresh (NOT a wFirma write)."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert "/api/v1/customer-master/dictionaries/refresh" in src
+    assert 'data-testid="kyc-invoices-dict-refresh"' in src
+
+
+def test_dashboard_renders_dictionary_source_state():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert 'data-testid="kyc-invoices-dict-source-state"' in src
+
+
+def test_dashboard_renders_unresolved_series_id_fallback():
+    """If the stored series id is not in the live catalog, the dropdown
+    surfaces an 'Unknown wFirma series (#id)' option so the value is not
+    silently dropped."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert 'data-testid="kyc-invoices-proforma-series-unresolved"' in src
+    assert 'data-testid="kyc-invoices-invoice-series-unresolved"' in src
+    assert "Unknown wFirma series" in src
+
+
+def test_refresh_route_endpoint_present():
+    """Backend route POST /dictionaries/refresh must be declared."""
+    route_src = (_REPO_ROOT / "service" / "app" / "api" /
+                 "routes_customer_master.py").read_text(encoding="utf-8")
+    assert '@router.post("/dictionaries/refresh"' in route_src
+    # And it must call the cache refresh (no direct wFirma write).
+    assert "wdc.refresh_from_wfirma()" in route_src
+
+
+def test_no_wfirma_write_calls_in_dictionary_cache_or_route():
+    """Hard rule: the dictionary refresh path must never invoke any wFirma
+    write primitive. Source-grep across the involved files."""
+    for path in (
+        _REPO_ROOT / "service" / "app" / "services" / "wfirma_dictionary_cache.py",
+        _REPO_ROOT / "service" / "app" / "api" / "routes_customer_master.py",
+    ):
+        src = path.read_text(encoding="utf-8")
+        for forbidden in (
+            "create_customer(", "create_contractor(",
+            "update_customer(", "update_contractor(",
+            "delete_contractor(",
+            "post_invoice(", "create_invoice(", "issue_invoice(",
+            "create_proforma(", "post_proforma(",
+        ):
+            assert forbidden not in src, \
+                f"forbidden wFirma write '{forbidden}' in {path.name}"
+
+
+def test_baseline_still_works_when_refresh_was_never_called():
+    """Cold-start contract: get_dictionaries() before any refresh must
+    return baseline dictionaries with at least the placeholder entries."""
+    from service.app.services import wfirma_dictionary_cache as wdc
+    # Reset live cache.
+    wdc._LIVE_CACHE["invoice_series"]  = None
+    wdc._LIVE_CACHE["proforma_series"] = None
+    wdc._LIVE_CACHE["source_state"]["invoice_series"]  = "baseline"
+    wdc._LIVE_CACHE["source_state"]["proforma_series"] = "baseline"
+    d = wdc.get_dictionaries()
+    assert d["source"] == "baseline"
+    assert len(d["invoice_series"])  >= 1
+    assert len(d["proforma_series"]) >= 1
+    # VAT modes / languages / currencies always present from baseline.
+    assert len(d["vat_modes"])  == 3
+    assert len(d["languages"])  >= 5
+    assert len(d["currencies"]) >= 5
