@@ -320,3 +320,35 @@ def test_no_auth_writes_inside_master_data_page():
     assert bad is None, (
         f"MasterDataPage must not write to /auth/users: {bad and bad.group(0)!r}"
     )
+
+
+# ── PENDING_TYPES KPI freshness (post B-MD3 fix) ─────────────────────────────
+
+def test_pending_types_kpi_array_is_empty():
+    """After B-MD3 fix: PENDING_TYPES = []. All Master Data entities are live
+    or are intentionally read-only (Roles explainer). No entity should appear
+    in PENDING_TYPES as a "backend pending" placeholder."""
+    md = _master_block(_src())
+    m = re.search(r"const PENDING_TYPES\s*=\s*(\[[^\]]*\])", md)
+    assert m is not None, "PENDING_TYPES constant must exist in MasterDataPage"
+    arr = m.group(1).strip()
+    assert arr == "[]", (
+        f"PENDING_TYPES must be empty after B-MD3 (designs / fx_rates live; "
+        f"roles is read-only explainer, not pending). Got: {arr}"
+    )
+
+
+def test_pending_types_kpi_hint_is_accurate():
+    """The Pending types KPI tile hint must NOT contain the stale MDC-era
+    name list 'Suppliers · Designs · HS · FX · Roles' as a literal string —
+    that text was written when all 5 were pending. After B-MD3 the hint
+    must dynamically reflect the (empty) PENDING_TYPES array or describe
+    the all-live state."""
+    md = _master_block(_src())
+    # Locate the 'Pending types' KPI tile.
+    idx = md.index("label: 'Pending types'")
+    block = md[idx: idx + 400]
+    assert "'Suppliers · Designs · HS · FX · Roles'" not in block, (
+        "Stale MDC-era pending name list must not appear in the KPI hint; "
+        "use dynamic hint derived from PENDING_TYPES instead"
+    )
