@@ -391,11 +391,93 @@
           "block_reason": null
         },
         {
-          "batch_id": "6F.2",
-          "title": "Backfill from proforma_service_charges (planned)",
+          "batch_id": "6F.2.a",
+          "title": "Backfill engine implementation (dry-run-first)",
+          "status": "pr_open",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/117",
+          "pr_number": 117,
+          "branch": "feat/phase-6f-2a-backfill-script",
+          "head_sha": "6761ede",
+          "tests": {
+            "backfill_finance_postings": "33/33",
+            "finance_postings_contracts": "7/7",
+            "finance_postings_db": "38/38",
+            "master_data_hard_rules": "69/69",
+            "master_data_suite": "147/147",
+            "pz_regression": "160/160"
+          },
+          "artifacts": [
+            "service/scripts/backfill_finance_postings.py",
+            "service/tests/test_backfill_finance_postings.py",
+            "tasks/backfill-reports/README.md",
+            "tasks/phase-6f-2-backfill-implementation-spec.md"
+          ],
+          "next_batch": "6F.2.b",
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.2.b",
+          "title": "Dry-run against production snapshot/copy",
           "status": "active",
           "pr_url": null,
-          "next_batch": null,
+          "branch": "feat/phase-6f-2a-backfill-script",
+          "executed_at": "2026-05-16T12:28:31+00:00",
+          "source_db_snapshot": "C:\\PZ\\storage\\snapshots-6F2b\\proforma_links.snapshot.db",
+          "target_db": "C:\\PZ\\storage\\snapshots-6F2b\\finance_postings.dryrun.sqlite",
+          "report": "tasks/backfill-reports/2026-05-16-dryrun-phase-6f-2b-snapshot.json",
+          "counters": {
+            "source_rows": 0,
+            "eligible_rows": 0,
+            "blocked_rows": 0,
+            "skipped_zero": 0,
+            "duplicate_skipped": 0,
+            "charges_to_create": 0,
+            "postings_to_create": 0
+          },
+          "finding": "Production proforma_service_charges table exists in proforma_links.db (217088 bytes, mtime 2026-05-15 12:21) but contains 0 rows. Backfill against current production would be a no-op.",
+          "next_batch": "6F.2.c",
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.2.c",
+          "title": "Dry-run review + operator approval package",
+          "status": "active",
+          "pr_url": null,
+          "branch": "feat/phase-6f-2a-backfill-script",
+          "artifacts": [
+            "tasks/phase-6f-2c-operator-approval-package.md",
+            "tasks/backfill-reports/2026-05-16-dryrun-phase-6f-2b-snapshot.json"
+          ],
+          "next_batch": "6F.2.d",
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.2.d",
+          "title": "Live backfill execution against production",
+          "status": "blocked",
+          "pr_url": null,
+          "block_reason": "Awaiting operator approval for live backfill execution.",
+          "depends_on": ["6F.2.a", "6F.2.b", "6F.2.c"],
+          "approval_package": "tasks/phase-6f-2c-operator-approval-package.md",
+          "live_command_documented_at": "tasks/phase-6f-2c-operator-approval-package.md#4-exact-live-command-prepared-but-not-run",
+          "next_batch": "6F.2.e"
+        },
+        {
+          "batch_id": "6F.2.e",
+          "title": "Post-backfill verification via 6F.3 breakdown endpoint",
+          "status": "planned",
+          "depends_on": ["6F.2.d"],
+          "pr_url": null,
+          "next_batch": "6F.2.f",
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.2.f",
+          "title": "Phase 6F.2 final freeze + lessons",
+          "status": "planned",
+          "depends_on": ["6F.2.e"],
+          "pr_url": null,
+          "next_batch": "6F.4",
           "block_reason": null
         },
         {
