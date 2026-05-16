@@ -5,7 +5,7 @@
 > Operational Stabilization + Observation campaign closed P0-P4 on 2026-05-16.
 > **Phase 6F PAUSED at steady-state (2026-05-16).** 14 batches, 6 deployed (5 live + 6F.5 deployed default-OFF), 4 operator-gated blocks. Resume: **`tasks/phase-6f-campaign-close.md`**.
 >
-> **MDOC-2026-05** in progress: B-MD0 / B-MD1-approval / B-MD1 / B-MD1-closure / B-MD2-approval merged. AdminUsersPage live. **B-MD2 PR_OPEN** — Designs master live (additive `designs` table in `master_data.sqlite`; 4 routes `/api/v1/designs/`; UI panel under MasterDataPage) + Roles read-only explainer panel (no schema change, no permission engine). 342 tests green. Implementation plan: approval package + Option A path. B-MD3/B-MD4 planned.
+> **MDOC-2026-05** in progress: **B-MD2 SMOKED** (PR #131, deploy `a7afbeb`, 2026-05-16T15:51Z). Designs master CRUD + Roles read-only explainer live in production. `master_data.sqlite::designs` table created (additive, zero FK). 12-check mechanical/API smoke PASS; browser smoke deferred to operator. Smoke report: `tasks/smoke-reports/2026-05-16-b-md2-designs-roles.md`. Next: **B-MD3** UI cleanup (planned). B-MD4 browser smoke completion (planned).
 >
 > See `tasks/campaign-state.json` for the canonical state of all 3 campaigns (23 batches tracked).
 > See `tasks/campaign-runner.md` for the controller doc.
