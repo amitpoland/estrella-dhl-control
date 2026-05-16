@@ -789,10 +789,18 @@ def test_wfirma_contractor_fetch_result_has_deep_enrichment_fields():
     fields so the apply path can pull them through."""
     from service.app.services.wfirma_client import ContractorFetchResult
     r = ContractorFetchResult(ok=False)
-    for field in ("email", "phone", "mobile", "account_payments",
-                  "payment_term", "default_currency",
+    # B0 deep-enrichment 2026-05-17 — field names verified against live
+    # wFirma XML (contractor 75483443). The old guess-based fields
+    # (account_payments, payment_term, default_currency, invoiceseries_id,
+    # proformaseries_id) were removed because wFirma does not expose them
+    # at the contractor-detail endpoint.
+    for field in ("email", "phone", "mobile",
+                  "account_number",        # was account_payments
+                  "payment_days",          # was payment_term
                   "translation_language_id",
-                  "invoiceseries_id", "proformaseries_id"):
+                  "regon", "skype", "fax", "url", "description",
+                  "buyer", "seller", "receiver", "tags",
+                  "discount_percent", "payment_method"):
         assert hasattr(r, field), f"ContractorFetchResult missing field: {field}"
 
 
@@ -820,18 +828,19 @@ def test_apply_deep_fetches_and_preserves_local(tmp_path, monkeypatch):
         return []
     monkeypatch.setattr(wfirma_client, "list_contractors_page", _list)
 
-    # Fake fetch_contractor_by_id → returns rich data INCLUDING currency
-    # that the operator already overrode (must NOT replace).
+    # Fake fetch_contractor_by_id → returns rich data using the VERIFIED
+    # wFirma XML field names (PR #154 after live probe of contractor
+    # 75483443). The operator's local default_currency override is preserved
+    # because wFirma does NOT expose default_currency at the contractor
+    # level — it stays operator-only.
     def _fetch(cid):
         return wfirma_client.ContractorFetchResult(
             ok=True, contractor_id=cid, name="ALPHA", nip="PL10", country="PL",
             email="deep@example.com", phone="+48 555 1111",
-            account_payments="PL90 1234 5678",
-            default_currency="EUR",  # operator set USD — must lose to operator
-            payment_term="14",
-            translation_language_id="LANG-EN",
-            invoiceseries_id="WF-INV-999",   # operator set local — must lose to operator
-            proformaseries_id="WF-PRO-999",
+            account_number="PL90 1234 5678",   # was account_payments (wrong key)
+            payment_days="14",                  # was payment_term (wrong key)
+            translation_language_id="2",        # English in baseline dict
+            street="ul. Test 1", city="Warsaw", zip="00-001",
         )
     monkeypatch.setattr(wfirma_client, "fetch_contractor_by_id", _fetch)
 
@@ -842,16 +851,181 @@ def test_apply_deep_fetches_and_preserves_local(tmp_path, monkeypatch):
     assert r.status_code == 200
 
     rec = cmdb.get_customer(db, "DEEP1")
-    # Fields the operator HAD NOT set get filled:
-    assert rec.bill_to_email                == "deep@example.com"
-    assert rec.bill_to_phone                == "+48 555 1111"
-    assert rec.bank_account                 == "PL90 1234 5678"
-    assert rec.payment_terms_days           == 14
-    assert rec.default_language_id          == "LANG-EN"
-    assert rec.preferred_proforma_series_id == "WF-PRO-999"
-    # Fields the operator HAD set — preserved:
+    # Fields the operator HAD NOT set get filled from deep-fetch:
+    assert rec.bill_to_email      == "deep@example.com"
+    assert rec.bill_to_phone      == "+48 555 1111"
+    assert rec.bank_account       == "PL90 1234 5678"
+    assert rec.payment_terms_days == 14
+    assert rec.default_language_id == "2"
+    assert rec.bill_to_street     == "ul. Test 1"
+    assert rec.bill_to_city       == "Warsaw"
+    assert rec.bill_to_postal_code == "00-001"
+    # Fields the operator HAD set — preserved (operator authority wins):
     assert rec.default_currency             == "USD"
     assert rec.preferred_invoice_series_id  == "OPERATOR-INV-100"
+
+
+# ── B0 deep-enrichment 2026-05-17 — parser keys verified against live XML ──
+
+
+def test_parser_extracts_address_fields_from_fixture():
+    """Real wFirma XML (contractor 75483443 / Railing) carries flat
+    <street>, <zip>, <city>, <country>. The parser must extract them."""
+    import xml.etree.ElementTree as ET
+    from service.app.services import wfirma_client as wfc
+    fixture = """<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <contractors>
+    <contractor>
+      <id>75483443</id>
+      <name>Railing sp z o.o.</name>
+      <nip>5342428293</nip>
+      <regon></regon>
+      <street>302, KUSHWAH CHAMBERS,MAKWANA ROAD,MAROL NAKA,</street>
+      <zip>40005</zip>
+      <city>Katowice</city>
+      <country>IN</country>
+      <different_contact_address>0</different_contact_address>
+      <email>Jyoti.b@estrellajewels.com</email>
+      <payment_days>14</payment_days>
+      <account_number>PL12 3456 7890</account_number>
+      <translation_language><id>2</id></translation_language>
+      <buyer>1</buyer>
+      <seller>0</seller>
+      <receiver>0</receiver>
+    </contractor>
+  </contractors>
+  <status><code>OK</code></status>
+</api>"""
+    # Monkey-patch the underlying HTTP call via the public function path.
+    import unittest.mock as _mock
+    with _mock.patch.object(wfc, "_http_request", return_value=(200, fixture)):
+        r = wfc.fetch_contractor_by_id("75483443")
+    assert r.ok is True
+    assert r.street    == "302, KUSHWAH CHAMBERS,MAKWANA ROAD,MAROL NAKA,"
+    assert r.zip       == "40005"
+    assert r.city      == "Katowice"
+    assert r.country   == "IN"
+    assert r.email     == "Jyoti.b@estrellajewels.com"
+    assert r.payment_days       == "14"
+    assert r.account_number     == "PL12 3456 7890"
+    # Nested <translation_language><id>2</id></translation_language>
+    assert r.translation_language_id == "2"
+    # Role flags
+    assert r.buyer    == "1"
+    assert r.seller   == "0"
+    assert r.receiver == "0"
+
+
+def test_parser_drops_translation_language_id_zero_sentinel():
+    """wFirma uses <translation_language><id>0</id></translation_language> as
+    'no preference'. The parser must surface that as empty string, not '0'."""
+    import unittest.mock as _mock
+    from service.app.services import wfirma_client as wfc
+    fixture = """<?xml version="1.0"?><api><contractors><contractor>
+      <id>1</id><name>X</name>
+      <translation_language><id>0</id></translation_language>
+    </contractor></contractors><status><code>OK</code></status></api>"""
+    with _mock.patch.object(wfc, "_http_request", return_value=(200, fixture)):
+        r = wfc.fetch_contractor_by_id("1")
+    assert r.translation_language_id == ""
+
+
+def test_parser_pulls_bank_account_from_nested_contractor_account():
+    """Some contractors carry the bank account inside
+    <contractor_account><number>X</number>; the parser must fall back to
+    that when the flat <account_number> is empty."""
+    import unittest.mock as _mock
+    from service.app.services import wfirma_client as wfc
+    fixture = """<?xml version="1.0"?><api><contractors><contractor>
+      <id>2</id><name>Y</name>
+      <account_number></account_number>
+      <contractor_account>
+        <number>PL99 NESTED 1234</number>
+      </contractor_account>
+    </contractor></contractors><status><code>OK</code></status></api>"""
+    with _mock.patch.object(wfc, "_http_request", return_value=(200, fixture)):
+        r = wfc.fetch_contractor_by_id("2")
+    assert r.account_number == "PL99 NESTED 1234"
+
+
+# ── B0 deep-enrichment 2026-05-17 — schema columns for bill-to address ─────
+
+
+def test_upsert_identity_only_writes_bill_to_address(tmp_path):
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    res = cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="ADDR1", bill_to_name="ADDR CO",
+        country="PL",
+        bill_to_street="ul. Marszalkowska 1",
+        bill_to_city="Warsaw",
+        bill_to_postal_code="00-001",
+        regon="123456789",
+    )
+    assert res["action"] == "inserted"
+    rec = cmdb.get_customer(db, "ADDR1")
+    assert rec.bill_to_street      == "ul. Marszalkowska 1"
+    assert rec.bill_to_city        == "Warsaw"
+    assert rec.bill_to_postal_code == "00-001"
+    assert rec.regon               == "123456789"
+
+
+def test_upsert_identity_only_preserves_existing_bill_to_address(tmp_path):
+    """Re-sync must NOT overwrite operator-edited address."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="ADDR2", bill_to_name="ADDR CO", country="PL",
+        bill_to_street="OPERATOR EDIT", bill_to_city="OPERATOR CITY",
+    )
+    cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="ADDR2", bill_to_name="ADDR CO", country="PL",
+        bill_to_street="WFIRMA STREET", bill_to_city="WFIRMA CITY",
+    )
+    rec = cmdb.get_customer(db, "ADDR2")
+    assert rec.bill_to_street == "OPERATOR EDIT"
+    assert rec.bill_to_city   == "OPERATOR CITY"
+
+
+def test_inheritance_helper_surfaces_bill_to_address_when_alternate_off(tmp_path):
+    """When ship_to_use_alternate=False, the effective ship-to address comes
+    from bill_to_street/city/postal_code (now stored locally after deep-fetch)."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="INH1", bill_to_name="INH CO", country="PL",
+        bill_to_street="ul. Wiejska 1", bill_to_city="Warsaw",
+        bill_to_postal_code="00-002",
+    )
+    rec = cmdb.get_customer(db, "INH1")
+    eff = cmdb.get_effective_defaults(rec)
+    assert eff["ship_to_use_alternate"] is False
+    assert eff["ship_to_street"] == "ul. Wiejska 1"
+    assert eff["ship_to_city"]   == "Warsaw"
+    assert eff["ship_to_zip"]    == "00-002"
+
+
+def test_customer_to_dict_serializes_new_fields(tmp_path):
+    """The API response shape must carry the new columns so the dashboard
+    can render them in the Company / Basic and Shipping tabs."""
+    from service.app.api.routes_customer_master import _customer_to_dict
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="SER1", bill_to_name="SER CO", country="PL",
+        bill_to_street="X", bill_to_city="Y", bill_to_postal_code="00-9",
+        regon="REG-1",
+    )
+    rec = cmdb.get_customer(db, "SER1")
+    d = _customer_to_dict(rec)
+    assert d["bill_to_street"]       == "X"
+    assert d["bill_to_city"]         == "Y"
+    assert d["bill_to_postal_code"]  == "00-9"
+    assert d["regon"]                == "REG-1"
+    # Operator-entered profile columns surface even when unset.
+    for k in ("short_code", "client_type", "industry", "eori"):
+        assert k in d
 
 
 def test_resolver_emits_only_four_canonical_verdicts():
