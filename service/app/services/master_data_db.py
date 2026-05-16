@@ -62,6 +62,25 @@ class ProductLocal:
 # B7 ─────────────────────────────────────────────────────────────────────────
 
 @dataclass
+class CarrierConfig:
+    """Carrier configuration registry — LOCAL, NON-SECRET only. Holds the
+    operator-facing description of how each carrier integrates with the
+    shipping pipeline. Credentials live in .env and are NOT stored here.
+    The PZ + DHL runtime subsystem is NOT touched by this table; it is a
+    documentation / parser-routing reference only."""
+    carrier_code:        str               # e.g. dhl, fedex, ups
+    name:                Optional[str] = None
+    parser_type:         Optional[str] = None  # e.g. dhl_emea, fedex_classic
+    inbox_email:         Optional[str] = None  # operator-facing inbox label
+    api_type:            Optional[str] = None  # api | portal | email_only
+    supported_services:  Optional[str] = None  # CSV list, free-form
+    notes:               Optional[str] = None
+    active:              bool = True
+    created_at:          Optional[str] = None
+    updated_at:          Optional[str] = None
+
+
+@dataclass
 class Incoterm:
     code:                 str               # e.g. EXW, FOB, CIF, DDP
     name:                 Optional[str] = None
@@ -236,7 +255,149 @@ def init_db(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_fx_date ON fx_rates (rate_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_fx_pair ON fx_rates (from_currency, to_currency)")
 
+        # ── B9 Carrier configuration (LOCAL, NON-SECRET only) ──────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS carriers_config (
+                carrier_code        TEXT PRIMARY KEY,
+                name                TEXT,
+                parser_type         TEXT,
+                inbox_email         TEXT,
+                api_type            TEXT,
+                supported_services  TEXT,
+                notes               TEXT,
+                active              INTEGER NOT NULL DEFAULT 1,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_carriers_active ON carriers_config (active)")
+
         conn.commit()
+
+
+# ── B9 Carrier Config (LOCAL, NON-SECRET) ────────────────────────────────────
+
+_CARRIER_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
+_VALID_API_TYPES = frozenset({"api", "portal", "email_only", "manual"})
+_EMAIL_RE        = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def validate_carrier_config(data: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    code = _clean(data.get("carrier_code"))
+    if not code:
+        errors.append("carrier_code is required")
+    elif not _CARRIER_CODE_RE.match(code):
+        errors.append(f"carrier_code must be lowercase a-z 0-9 _ (2-32 chars), got {code!r}")
+    api_type = _clean(data.get("api_type"))
+    if api_type is not None and api_type not in _VALID_API_TYPES:
+        errors.append(f"api_type must be one of {sorted(_VALID_API_TYPES)}, got {api_type!r}")
+    email = _clean(data.get("inbox_email"))
+    if email is not None and not _EMAIL_RE.match(email):
+        errors.append(f"inbox_email is malformed: {email!r}")
+    # Guard: refuse to store secret-looking fields
+    for forbidden in ("api_key", "api_secret", "password", "token", "client_secret",
+                      "credentials", "auth_secret"):
+        if forbidden in data:
+            errors.append(f"carriers_config must not store secrets (rejected field: {forbidden})")
+    return errors
+
+
+def _row_to_carrier(row: sqlite3.Row) -> CarrierConfig:
+    return CarrierConfig(
+        carrier_code=row["carrier_code"], name=row["name"],
+        parser_type=row["parser_type"], inbox_email=row["inbox_email"],
+        api_type=row["api_type"], supported_services=row["supported_services"],
+        notes=row["notes"], active=bool(int(row["active"])),
+        created_at=row["created_at"], updated_at=row["updated_at"],
+    )
+
+
+def upsert_carrier_config(db_path: Path, data: Dict[str, Any]) -> CarrierConfig:
+    errs = validate_carrier_config(data)
+    if errs:
+        raise ValueError("; ".join(errs))
+    init_db(db_path)
+    code = _clean(data.get("carrier_code")).lower()
+    p = {
+        "name":               _clean(data.get("name")),
+        "parser_type":        _clean(data.get("parser_type")),
+        "inbox_email":        _clean(data.get("inbox_email")),
+        "api_type":           _clean(data.get("api_type")),
+        "supported_services": _clean(data.get("supported_services")),
+        "notes":              _clean(data.get("notes")),
+        "active":             1 if data.get("active", True) else 0,
+    }
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        existing = conn.execute("SELECT 1 FROM carriers_config WHERE carrier_code=?",
+                                (code,)).fetchone()
+        if existing:
+            conn.execute("""UPDATE carriers_config SET name=?, parser_type=?,
+                inbox_email=?, api_type=?, supported_services=?, notes=?,
+                active=?, updated_at=? WHERE carrier_code=?""",
+                (p["name"], p["parser_type"], p["inbox_email"], p["api_type"],
+                 p["supported_services"], p["notes"], p["active"], now, code))
+        else:
+            conn.execute("""INSERT INTO carriers_config (carrier_code, name,
+                parser_type, inbox_email, api_type, supported_services, notes,
+                active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (code, p["name"], p["parser_type"], p["inbox_email"],
+                 p["api_type"], p["supported_services"], p["notes"],
+                 p["active"], now, now))
+        conn.commit()
+    return get_carrier_config(db_path, code)
+
+
+def get_carrier_config(db_path: Path, carrier_code: str) -> Optional[CarrierConfig]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("SELECT * FROM carriers_config WHERE carrier_code=?",
+                               (carrier_code.lower(),)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return _row_to_carrier(row) if row else None
+
+
+def list_carrier_configs(db_path: Path, *, active: Optional[bool] = None,
+                         limit: int = 100) -> List[CarrierConfig]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    where, params = [], []
+    if active is not None:
+        where.append("active=?")
+        params.append(1 if active else 0)
+    sql = "SELECT * FROM carriers_config"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY carrier_code ASC LIMIT ?"
+    params.append(int(limit))
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            return [_row_to_carrier(r) for r in conn.execute(sql, params).fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+
+def delete_carrier_config(db_path: Path, carrier_code: str) -> bool:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    with sqlite3.connect(str(db_path)) as conn:
+        try:
+            cur = conn.execute("DELETE FROM carriers_config WHERE carrier_code=?",
+                               (carrier_code.lower(),))
+            conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.OperationalError:
+            return False
 
 
 # ── B8 FX Rates (reference observation only — NOT a PZ override path) ───────
