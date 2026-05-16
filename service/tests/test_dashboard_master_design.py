@@ -767,3 +767,31 @@ def test_designs_pending_testid():
     block_end   = src.index('data-testid="master-design-preview"', block_start)
     block = src[block_start:block_end]
     assert "'designs'" in block, "designs must appear in pending grid"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B10 (MDC-090) — wFirma sync visibility on Clients table
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_clients_table_has_sync_column():
+    """Clients table renders a Sync column derived from match_status returned
+    by GET /api/v1/wfirma/customers. Read-only; no new endpoint."""
+    src = _src()
+    block = _master_block(src)
+    assert "'Sync'" in block, "Sync column header missing from Clients table"
+    assert 'data-testid="master-customers-sync"' in src, \
+        "master-customers-sync testid must be present"
+    # Derivation must reference match_status from the wFirma capabilities payload
+    assert "match_status" in block, \
+        "Clients sync column must derive from match_status field"
+    # No new endpoint may be invented
+    for ep in ("/api/v1/sync/customers", "/api/v1/wfirma/sync", "/api/v1/master/sync"):
+        assert ep not in src, f"Invented sync endpoint leaked: {ep}"
+
+
+def test_clients_sync_chip_states_present():
+    """The Sync chip must visibly represent matched, pending, not_found, error."""
+    src = _src()
+    block = _master_block(src)
+    for label in ("synced", "pending", "not found", "error"):
+        assert label in block.lower(), f"Sync chip must mention state {label!r}"
