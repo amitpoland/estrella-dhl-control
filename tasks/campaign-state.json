@@ -515,9 +515,12 @@
         {
           "batch_id": "6F.2.f",
           "title": "Phase 6F.2 audit/freeze + lessons (no-op audit allowed)",
-          "status": "active",
+          "status": "merged",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/124",
+          "pr_number": 124,
+          "merge_sha": "ea9ca3ac8e1b2ee2e6c2210c81d2e497237e83a7",
+          "deploy_needed": false,
           "depends_on": [],
-          "pr_url": null,
           "branch": "docs/phase-6f-2f-freeze",
           "artifacts": [
             "tasks/phase-6f-2f-freeze.md"
@@ -531,7 +534,22 @@
             "pz_regression": "160/160"
           },
           "notes": "Closes the 6F.2 sub-campaign with a final freeze. Documents the zero-row finding, three namespace conventions (BACKFILL- / LIVE- / real wFirma), operator playbook for re-running the dry-run, snapshot/rollback rules, hard-rule status, and §12 reopening conditions.",
-          "next_batch": "6F.4",
+          "next_batch": "6F-post-block-lift-inspection",
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F-post-block-lift-inspection",
+          "title": "/post service_charges_json block-lift inspection (read-only)",
+          "status": "active",
+          "depends_on": [],
+          "pr_url": null,
+          "branch": "docs/phase-6f-post-block-lift-inspection",
+          "artifacts": [
+            "tasks/phase-6f-post-block-lift-inspection.md"
+          ],
+          "notes": "Read-only scoping of what a future block-lift batch would change. Answers 11 questions. Recommendation: DEFER block-lift. Block in routes_proforma.py line 3538-3542 is correct as-is; no operator workflow currently requires it.",
+          "recommendation": "DEFER",
+          "next_batch": null,
           "block_reason": null
         },
         {
