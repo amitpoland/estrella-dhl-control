@@ -291,5 +291,24 @@ class Settings(BaseSettings):
     # this exposes it as config so an operator can override via the admin endpoint.
     dhl_selfclearance_value_threshold_usd:    int = Field(default=2500, env="DHL_SELFCLEARANCE_VALUE_THRESHOLD_USD")
 
+    # ── Phase 6F.5 — Dual-write finance postings (feature-flagged, default OFF) ─
+    # When ``finance_dual_write_enabled`` is True, the /post proforma route
+    # invokes a SEPARATE write to ``finance_postings.sqlite`` AFTER the legacy
+    # ``mark_post_succeeded`` commit returns. The dual-write is failure-isolated:
+    # any exception is swallowed and logged at WARNING — it never rolls back
+    # the legacy commit and never alters the /post response.
+    #
+    # When ``finance_dual_write_shadow`` is True (and dual-write is enabled),
+    # the hook computes the full payload + sha1 idempotency keys and logs at
+    # INFO ``finance_dual_write_shadow ...``, but does NOT call create_charge
+    # or create_posting. Use shadow mode to validate payloads in production
+    # before flipping to real persistence.
+    #
+    # Both default to False. Production deploys must verify these are unset
+    # or false in the NSSM env block before any operator-driven activation.
+    # Approval package: tasks/phase-6f-5-dual-write-approval-package.md
+    finance_dual_write_enabled:  bool = Field(default=False, env="FINANCE_DUAL_WRITE_ENABLED")
+    finance_dual_write_shadow:   bool = Field(default=False, env="FINANCE_DUAL_WRITE_SHADOW")
+
 
 settings = Settings()

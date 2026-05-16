@@ -346,6 +346,19 @@ def test_6F1_no_existing_module_imports_finance_postings():
         # 6F.2.a additions ────────────────────────────────────────────
         "backfill_finance_postings.py",
         "test_backfill_finance_postings.py",
+        # 6F.5 additions — dual-write helper + its tests ──────────────
+        # The helper imports finance_postings_db; the hook in
+        # routes_proforma.py imports the helper, not finance_postings_db
+        # directly. Default-OFF flag + source-grep contracts pin safety.
+        "finance_dual_write.py",
+        "test_finance_dual_write_default_off.py",
+        "test_finance_dual_write_idempotent_rerun.py",
+        "test_finance_dual_write_decimal_safety.py",
+        "test_finance_dual_write_legacy_isolation.py",
+        "test_finance_dual_write_error_swallow.py",
+        "test_finance_dual_write_no_collision_with_backfill.py",
+        "test_finance_dual_write_real_builder.py",
+        "test_dual_write_source_grep.py",
     }
     pattern = re.compile(r"(?:from\s+\S*finance_postings_db|import\s+finance_postings_db)")
     for p in (_APP_ROOT.rglob("*.py")):

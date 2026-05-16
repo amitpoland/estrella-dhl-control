@@ -3866,6 +3866,28 @@ def post_proforma_draft_to_wfirma(
             },
         )
 
+    # ── Phase 6F.5 dual-write hook (feature-flagged, default OFF) ─────────
+    # Fires ONLY after mark_post_succeeded returns successfully. Failure-
+    # isolated: any exception is swallowed inside the helper. Does not
+    # alter the response shape or status code. See approval package
+    # tasks/phase-6f-5-dual-write-approval-package.md.
+    if settings.finance_dual_write_enabled:
+        try:
+            from ..services.finance_dual_write import dual_write_proforma_post
+            dual_write_proforma_post(
+                db_path              = settings.storage_root / "finance_postings.sqlite",
+                batch_id             = posted.batch_id or "",
+                client_name          = posted.client_name or "",
+                currency             = posted.currency or "",
+                full_number          = full_number,
+                service_charges_json = posted.service_charges_json,
+                enabled              = settings.finance_dual_write_enabled,
+                shadow               = settings.finance_dual_write_shadow,
+            )
+        except Exception as exc:
+            log.warning("[draft %s] finance_dual_write hook failed: %s",
+                        draft_id, exc)
+
     # ── Audit trail (best-effort, post-state-commit) ──────────────────────
     try:
         from ..services.audit_persist import record_proforma_issued
