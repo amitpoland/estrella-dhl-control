@@ -176,6 +176,16 @@ _OPTIONAL_STR_FIELDS = frozenset({
     # B2 (MasterData-2.2): wFirma invoice/proforma defaults bound on Invoices tab
     "preferred_proforma_series_id", "preferred_invoice_series_id",
     "default_language_id",
+    # B0 deep-enrichment 2026-05-17 — bill-to address + contact + operator
+    # profile fields. Generic across every country / VAT regime / currency.
+    "bill_to_street", "bill_to_city", "bill_to_postal_code",
+    "bill_to_email", "bill_to_phone", "bill_to_mobile",
+    "bank_account",
+    "regon", "short_code", "client_type", "industry", "eori",
+    # default_currency was already accepted via the dataclass field but had
+    # no '' → None coercion; route it through here so an operator clearing
+    # the field saves NULL rather than the empty string.
+    "default_currency",
 })
 
 

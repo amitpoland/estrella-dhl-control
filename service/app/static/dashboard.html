@@ -2359,6 +2359,26 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
       default_currency:     cm.default_currency    || 'EUR',
       default_language_id:  cm.default_language_id || '',
       notes:                cm.notes               || '',
+      // B0 deep-enrichment 2026-05-17 (PR #154) — bill-to address fields
+      // populated by wFirma deep-fetch on review/assign. Empty string fallback
+      // is generic across every country (no PL/IN/EU assumption).
+      bill_to_street:       cm.bill_to_street      || '',
+      bill_to_city:         cm.bill_to_city        || '',
+      bill_to_postal_code:  cm.bill_to_postal_code || '',
+      bill_to_email:        cm.bill_to_email       || '',
+      bill_to_phone:        cm.bill_to_phone       || '',
+      bill_to_mobile:       cm.bill_to_mobile      || '',
+      bank_account:         cm.bank_account        || '',
+      // Operator-entered profile fields. wFirma does not carry these,
+      // but the columns are wired so the BACKEND PENDING badge can drop.
+      // REGON is Polish-specific (optional, blank for non-PL clients);
+      // EORI is an international customs identifier (optional for all);
+      // short_code / client_type / industry are generic identity fields.
+      regon:                cm.regon               || '',
+      short_code:           cm.short_code          || '',
+      client_type:          cm.client_type         || '',
+      industry:             cm.industry            || '',
+      eori:                 cm.eori                || '',
       ship_to_use_alternate: cm.ship_to_use_alternate || false,
       ship_to_name:         cm.ship_to_name        || '',
       ship_to_person:       cm.ship_to_person      || '',
@@ -2555,7 +2575,14 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                           'risk_status','credit_currency',
                           'kyc_status','kyc_approved_on','kyc_expiry',
                           'beneficial_owner','owner_id_type','owner_id_number',
-                          'aml_risk_rating','pep_check_result','compliance_notes'];
+                          'aml_risk_rating','pep_check_result','compliance_notes',
+                          // B0 deep-enrichment 2026-05-17 — bill-to address
+                          // + operator-entered profile fields. Generic for
+                          // every country / VAT regime / currency.
+                          'bill_to_street','bill_to_city','bill_to_postal_code',
+                          'bill_to_email','bill_to_phone','bill_to_mobile',
+                          'bank_account',
+                          'regon','short_code','client_type','industry','eori'];
       const payload = { ...form };
       for (const f of CM_DECIMAL) {
         if (payload[f] === '' || payload[f] == null) payload[f] = null;
@@ -2607,14 +2634,22 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px',
                       borderBottom: '1px solid var(--border)' }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+            <div data-testid="client-kyc-modal-title"
+              style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.01em' }}>
               {form.bill_to_name || (custMasterRec && custMasterRec.bill_to_name) || (rec && rec.client_name) || 'New Client'}
             </div>
-            {contractorId && (
-              <div style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace', marginTop: 2 }}>
-                Contractor ID: {contractorId}
-              </div>
-            )}
+            {/* B0 deep-enrichment 2026-05-17 — concise subtitle so the
+                operator sees the tab map without expanding the body.
+                Generic for every client; no country/currency tied to it. */}
+            <div data-testid="client-kyc-modal-subtitle"
+              style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 3, letterSpacing: '0.02em' }}>
+              Company &middot; Shipping &middot; Carriers &middot; KYC &middot; Credit &middot; Invoices
+              {contractorId && (
+                <span style={{ marginLeft: 10, fontFamily: 'monospace', opacity: 0.8 }}>
+                  · wFirma {contractorId}
+                </span>
+              )}
+            </div>
           </div>
           {!contractorId && (
             <span style={{ fontSize: 10, color: 'var(--badge-amber-text)',
@@ -2664,36 +2699,112 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                     maxLength={2} placeholder="e.g. IN" style={inputStyle} />
                 </label>
                 <label style={labelStyle}>
-                  <span style={labelTextStyle}>Short code{pendingBadge}</span>
-                  <input type="text" disabled placeholder="e.g. SUOKKO"
-                    style={{ ...inputStyle, opacity: 0.5, cursor: 'not-allowed' }} />
+                  <span style={labelTextStyle}>Short code</span>
+                  <input data-testid="kyc-basic-short-code" type="text"
+                    value={form.short_code}
+                    onChange={e => setField('short_code', e.target.value)}
+                    placeholder="Short operator code (any country)"
+                    style={inputStyle} />
                 </label>
                 <label style={labelStyle}>
-                  <span style={labelTextStyle}>Client type{pendingBadge}</span>
-                  <select disabled style={{ ...inputStyle, opacity: 0.5, cursor: 'not-allowed' }}>
-                    <option>Company</option>
+                  <span style={labelTextStyle}>Client type</span>
+                  <select data-testid="kyc-basic-client-type"
+                    value={form.client_type}
+                    onChange={e => setField('client_type', e.target.value)}
+                    style={inputStyle}>
+                    <option value="">—</option>
+                    <option value="company">Company</option>
+                    <option value="individual">Individual</option>
+                    <option value="government">Government</option>
+                    <option value="other">Other</option>
                   </select>
                 </label>
                 <label style={labelStyle}>
-                  <span style={labelTextStyle}>Industry{pendingBadge}</span>
-                  <input type="text" disabled placeholder="e.g. Jewellery"
-                    style={{ ...inputStyle, opacity: 0.5, cursor: 'not-allowed' }} />
+                  <span style={labelTextStyle}>Industry</span>
+                  <input data-testid="kyc-basic-industry" type="text"
+                    value={form.industry}
+                    onChange={e => setField('industry', e.target.value)}
+                    placeholder="Industry sector"
+                    style={inputStyle} />
                 </label>
                 <label style={labelStyle}>
                   <span style={labelTextStyle}>Default currency</span>
                   <select data-testid="kyc-basic-currency"
                     value={form.default_currency} onChange={e => setField('default_currency', e.target.value)}
                     style={inputStyle}>
-                    {['EUR','USD','GBP','PLN','CHF','SEK'].map(c => <option key={c}>{c}</option>)}
+                    {/* Generic per-client currency — no PLN default forced.
+                        The 'EUR' fallback in form state is operator-overridable. */}
+                    {['EUR','USD','GBP','PLN','CHF','SEK','JPY','CAD','AUD','INR'].map(c => <option key={c}>{c}</option>)}
                   </select>
+                </label>
+              </div>
+              {/* B0 deep-enrichment 2026-05-17 — billing address block.
+                  Generic across every country: <street>, <city>, <postal_code>
+                  are wFirma-sourced when present and operator-editable. The
+                  country code stays ISO alpha-2 (lives in the Identity block
+                  above). Phone, mobile, email are bound below in Contact.
+                  Empty fields are normal for clients wFirma did not surface. */}
+              <div style={sectionHeadStyle}>Billing address</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 10 }}>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Street</span>
+                  <input data-testid="kyc-basic-bill-to-street" type="text"
+                    value={form.bill_to_street}
+                    onChange={e => setField('bill_to_street', e.target.value)}
+                    placeholder="Street / no. / suite"
+                    style={inputStyle} />
+                </label>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Postal code</span>
+                  <input data-testid="kyc-basic-bill-to-postal" type="text"
+                    value={form.bill_to_postal_code}
+                    onChange={e => setField('bill_to_postal_code', e.target.value)}
+                    placeholder="Any country format"
+                    style={inputStyle} />
+                </label>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>City</span>
+                  <input data-testid="kyc-basic-bill-to-city" type="text"
+                    value={form.bill_to_city}
+                    onChange={e => setField('bill_to_city', e.target.value)}
+                    style={inputStyle} />
+                </label>
+              </div>
+              <div style={sectionHeadStyle}>Contact</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Email</span>
+                  <input data-testid="kyc-basic-bill-to-email" type="email"
+                    value={form.bill_to_email}
+                    onChange={e => setField('bill_to_email', e.target.value)}
+                    style={inputStyle} />
+                </label>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Phone</span>
+                  <input data-testid="kyc-basic-bill-to-phone" type="tel"
+                    value={form.bill_to_phone}
+                    onChange={e => setField('bill_to_phone', e.target.value)}
+                    style={inputStyle} />
+                </label>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Mobile</span>
+                  <input data-testid="kyc-basic-bill-to-mobile" type="tel"
+                    value={form.bill_to_mobile}
+                    onChange={e => setField('bill_to_mobile', e.target.value)}
+                    style={inputStyle} />
                 </label>
               </div>
               <div style={sectionHeadStyle}>VAT / Tax numbers</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                {/* The 'nip' column is the generic local tax / VAT identity
+                    for every client. Polish clients use Polish NIP; non-PL
+                    clients put their local equivalent here (IN GST, GB VAT,
+                    US EIN, etc.). The dashboard accepts any string. */}
                 <label style={labelStyle}>
-                  <span style={labelTextStyle}>NIP (Polish tax ID)</span>
+                  <span style={labelTextStyle}>Tax / VAT ID (local)</span>
                   <input data-testid="kyc-basic-nip" type="text"
                     value={form.nip} onChange={e => setField('nip', e.target.value)}
+                    placeholder="Local tax / VAT identifier"
                     style={inputStyle} />
                 </label>
                 <label style={labelStyle}>
@@ -2702,15 +2813,27 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                     value={form.vat_eu_number} onChange={e => setField('vat_eu_number', e.target.value)}
                     placeholder="e.g. DE123456789" style={inputStyle} />
                 </label>
+                {/* EORI is international (customs); optional for every client.
+                    No country gate — the operator decides. */}
                 <label style={labelStyle}>
-                  <span style={labelTextStyle}>EORI number{pendingBadge}</span>
-                  <input type="text" disabled placeholder="e.g. GB123456789000"
-                    style={{ ...inputStyle, opacity: 0.5, cursor: 'not-allowed' }} />
+                  <span style={labelTextStyle}>EORI number <span style={{ fontSize: 9, color: 'var(--text-3)' }}>(optional)</span></span>
+                  <input data-testid="kyc-basic-eori" type="text"
+                    value={form.eori}
+                    onChange={e => setField('eori', e.target.value)}
+                    placeholder="e.g. GB123456789000"
+                    style={inputStyle} />
                 </label>
+                {/* REGON is PL-only; the field is always offered (operator may
+                    have non-PL clients with statistical equivalents) but it
+                    is explicitly marked optional with a 'PL' hint. Non-PL
+                    clients leave it blank. */}
                 <label style={labelStyle}>
-                  <span style={labelTextStyle}>REGON{pendingBadge}</span>
-                  <input type="text" disabled placeholder="9-digit REGON"
-                    style={{ ...inputStyle, opacity: 0.5, cursor: 'not-allowed' }} />
+                  <span style={labelTextStyle}>REGON <span style={{ fontSize: 9, color: 'var(--text-3)' }}>(PL only · optional)</span></span>
+                  <input data-testid="kyc-basic-regon" type="text"
+                    value={form.regon}
+                    onChange={e => setField('regon', e.target.value)}
+                    placeholder="9-digit REGON if PL"
+                    style={inputStyle} />
                 </label>
               </div>
               <div style={sectionHeadStyle}>Notes</div>
@@ -2723,12 +2846,24 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
 
           {kycTab === 'shipping' && (
             <div data-testid="kyc-panel-shipping">
-              <div style={sectionHeadStyle}>Bill-to address (wFirma contractor)</div>
-              <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)',
-                border: '1px solid var(--border-subtle)', borderRadius: 6,
-                fontSize: 11, color: 'var(--text-2)' }}>
-                Bill-to address is managed directly in wFirma. Contractor ID:{' '}
-                <span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{contractorId || '—'}</span>
+              <div style={sectionHeadStyle}>Bill-to address (from Client Master)</div>
+              {/* B0 deep-enrichment 2026-05-17 — readable summary of the
+                  billing address stored on the Client Master row. wFirma
+                  deep-fetch fills these on review/assign; operator can also
+                  edit them on the Company / Basic tab. Generic across every
+                  country (no PL-specific format assumed). */}
+              <div data-testid="kyc-shipping-bill-to-summary"
+                style={{ padding: '12px 14px', background: 'var(--bg-subtle)',
+                  border: '1px solid var(--border-subtle)', borderRadius: 6,
+                  fontSize: 11, color: 'var(--text-2)', display: 'grid',
+                  gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                <div><strong style={{ color: 'var(--text)' }}>{form.bill_to_name || '—'}</strong></div>
+                <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>{contractorId || '—'}</div>
+                <div style={{ gridColumn: '1 / -1' }}>{form.bill_to_street || <em style={{ color: 'var(--text-3)' }}>street not set</em>}</div>
+                <div>{[form.bill_to_postal_code, form.bill_to_city].filter(Boolean).join(' ') || <em style={{ color: 'var(--text-3)' }}>postal / city not set</em>}</div>
+                <div style={{ textAlign: 'right' }}>{form.country || '—'}</div>
+                <div>{form.bill_to_email || <em style={{ color: 'var(--text-3)' }}>email not set</em>}</div>
+                <div style={{ textAlign: 'right' }}>{form.bill_to_phone || <em style={{ color: 'var(--text-3)' }}>phone not set</em>}</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, marginBottom: 10 }}>
                 <div style={{ ...sectionHeadStyle, marginTop: 0, marginBottom: 0, flex: 1 }}>
@@ -2742,12 +2877,15 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                 <button data-testid="kyc-shipping-copy-billing" type="button"
                   onClick={() => {
                     setField('ship_to_use_alternate', true);
-                    if (!form.ship_to_name)    setField('ship_to_name',    form.bill_to_name || '');
-                    if (!form.ship_to_country) setField('ship_to_country', form.country || '');
-                    if (!form.ship_to_email)   setField('ship_to_email',   form.bill_to_email || '');
-                    if (!form.ship_to_phone)   setField('ship_to_phone',   form.bill_to_phone || '');
+                    if (!form.ship_to_name)    setField('ship_to_name',    form.bill_to_name        || '');
+                    if (!form.ship_to_country) setField('ship_to_country', form.country             || '');
+                    if (!form.ship_to_street)  setField('ship_to_street',  form.bill_to_street      || '');
+                    if (!form.ship_to_city)    setField('ship_to_city',    form.bill_to_city        || '');
+                    if (!form.ship_to_zip)     setField('ship_to_zip',     form.bill_to_postal_code || '');
+                    if (!form.ship_to_email)   setField('ship_to_email',   form.bill_to_email       || '');
+                    if (!form.ship_to_phone)   setField('ship_to_phone',   form.bill_to_phone       || '');
                   }}
-                  title="Pre-fill ship-to fields from the billing identity"
+                  title="Pre-fill ship-to fields from the billing identity (works for any country)"
                   style={{ padding: '4px 10px', fontSize: 11, background: 'var(--bg-subtle)',
                     color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6,
                     cursor: 'pointer', fontFamily: 'inherit' }}>
@@ -2765,9 +2903,10 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                   style={{ padding: '8px 12px', background: 'var(--bg-subtle)',
                     border: '1px dashed var(--border)', borderRadius: 6,
                     fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
-                  Ship-to inherits the billing identity (name, country, email,
-                  phone). Toggle <em>Use alternate ship-to address</em> above
-                  to override.
+                  Ship-to inherits the billing address shown above (name,
+                  street, city, postal code, country, email, phone). Toggle
+                  <em> Use alternate ship-to address</em> on the right to
+                  override.
                 </div>
               )}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10,
