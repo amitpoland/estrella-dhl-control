@@ -935,8 +935,8 @@
         {
           "batch_id": "B-MD3",
           "title": "UI-only cleanup — disabled-state polish + testid hygiene",
-          "status": "pr_open",
-          "pr_url": null,
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/133",
           "depends_on": [],
           "next_batch": "B-MD4",
           "block_reason": null,
@@ -956,19 +956,44 @@
             "runner_v2_hard_rules": "12/12",
             "auth_admin_user_routes": "6/6",
             "pz_regression": "160/160"
-          }
+          },
+          "pr_number": 133,
+          "merge_sha": "7272dbf23822efd254183052fa60d7a402762f79",
+          "deployed_sha": "7272dbf23822efd254183052fa60d7a402762f79",
+          "deployed_at": "2026-05-16T16:12:00+00:00",
+          "smoke_report": "tasks/smoke-reports/2026-05-16-b-md3-master-data-ui-cleanup.md",
+          "smoke": {
+            "pendingpanel_removed": "yes (0 definitions; 0 JSX usages)",
+            "backend_pending_in_md_block": "0 (test-scoped; carriers comment outside MD boundary excluded)",
+            "b_md4_testids_present": "22/22",
+            "admin_anchors_present": "yes",
+            "masterdata_auth_writes": "NONE (regression seal intact)",
+            "finance_postings_unchanged": "81920 B (6F.5 still default-OFF)",
+            "finance_dual_write_log_hits": "0",
+            "local_health": "200",
+            "public_health": "200",
+            "stderr_tail": "clean",
+            "browser_smoke_status": "deferred to operator (B-MD4 checklist authored)"
+          },
+          "rollback_command": "git revert -m 1 7272dbf --no-edit"
         },
         {
           "batch_id": "B-MD4",
           "title": "Browser smoke completion across all 13 live master-data entities",
-          "status": "planned",
+          "status": "active",
           "pr_url": null,
-          "depends_on": [],
+          "depends_on": [
+            "B-MD3"
+          ],
           "next_batch": null,
-          "block_reason": null
+          "block_reason": null,
+          "artifacts": [
+            "tasks/smoke-reports/2026-05-16-b-md4-master-data-full-browser-smoke.md"
+          ],
+          "notes": "20-surface operator browser smoke checklist authored. Awaiting operator session. Safe-smoke pattern uses temp records (SMOKE_MD4_DSGN_001, SMOKE_MD4_SUP_001, SMOKE-MD4-PL); destructive admin actions on real users explicitly avoided."
         }
       ],
-      "next_batch": "B-MD3"
+      "next_batch": "B-MD4"
     }
   ]
 }
