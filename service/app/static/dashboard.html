@@ -6387,10 +6387,148 @@ function DiagnosticsPage({ onNav, onToast }) {
         )}
       </div>
 
+      {/* Finance posting breakdown panel (Phase 6F.4) — READ-ONLY.
+          Calls only GET /api/v1/finance/postings/{id}/breakdown.
+          No auto-fetch on mount; requires explicit user input + click.
+          No write affordances, no list shim, no coupling to wFirma/PZ/proforma. */}
+      <FinancePostingBreakdownPanel />
+
       {/* Design preview footer */}
       <div data-testid="diagnostics-design-preview" style={{ marginTop: 14, padding: '10px 14px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span data-testid="diagnostics-preview-pending-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10, fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
         <span>Force-unlock, Clear quarantine, Export diagnostics report, and Run-all-probes require server-side writes that don't exist. The Re-check button above is the only refresh path and is a safe GET reload of the 5 source endpoints.</span>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// Finance posting breakdown panel — Phase 6F.4
+// READ-ONLY. Calls only GET /api/v1/finance/postings/{id}/breakdown.
+// NO auto-fetch on mount. NO write affordances. NO list endpoint.
+// NO coupling to wFirma / proforma / PZ / settlement / charge create.
+// ══════════════════════════════════════════════════════════
+function FinancePostingBreakdownPanel() {
+  const [postingId, setPostingId] = React.useState('');
+  const [state, setState] = React.useState({ loading: false, error: null, data: null, status: null, queriedId: null });
+
+  const _doFetch = async () => {
+    const trimmed = (postingId || '').trim();
+    if (!trimmed) return;
+    if (!/^[0-9]+$/.test(trimmed)) {
+      setState({ loading: false, error: 'Posting id must be a positive integer.', data: null, status: 'invalid_input', queriedId: trimmed });
+      return;
+    }
+    setState({ loading: true, error: null, data: null, status: null, queriedId: trimmed });
+    try {
+      const d = await apiFetch('/api/v1/finance/postings/' + encodeURIComponent(trimmed) + '/breakdown');
+      setState({ loading: false, error: null, data: d, status: 'ok', queriedId: trimmed });
+    } catch (e) {
+      const msg = (e && e.message) || 'load failed';
+      // apiFetch surfaces HTTP status in message; treat "404" as a clean "not found"
+      const isNotFound = /\b404\b/.test(msg) || /not found/i.test(msg);
+      setState({
+        loading: false,
+        error: msg,
+        data: null,
+        status: isNotFound ? 'not_found' : 'error',
+        queriedId: trimmed,
+      });
+    }
+  };
+
+  const _onKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      _doFetch();
+    }
+  };
+
+  const d = state.data;
+  const totals = d && d.totals;
+  const posting = d && d.posting;
+  const settlement = d && d.settlement;
+
+  return (
+    <div data-testid="diagnostics-finance-posting-panel" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 18px', marginBottom: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>Finance posting breakdown</div>
+        <span data-testid="diagnostics-finance-readonly-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 10, fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Read-only</span>
+      </div>
+
+      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10, lineHeight: 1.5 }}>
+        The finance posting store (charges, postings, payments, allocations, settlements) is dormant until backfill executes or future postings are created. Today this lookup returns 404 for every id — that is the by-design empty state. Enter a posting id to inspect a breakdown when postings exist.
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+        <input
+          data-testid="diagnostics-finance-posting-id-input"
+          type="text"
+          inputMode="numeric"
+          placeholder="Posting id (integer)"
+          value={postingId}
+          onChange={(e) => setPostingId(e.target.value)}
+          onKeyDown={_onKeyDown}
+          style={{ flex: '0 0 220px', padding: '6px 10px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, color: 'var(--text)', fontFamily: 'monospace' }}
+        />
+        <button
+          data-testid="diagnostics-finance-posting-fetch"
+          type="button"
+          onClick={_doFetch}
+          disabled={state.loading || !postingId.trim()}
+          style={{ padding: '6px 14px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, color: 'var(--text)', cursor: state.loading || !postingId.trim() ? 'not-allowed' : 'pointer', opacity: state.loading || !postingId.trim() ? 0.5 : 1 }}
+        >
+          {state.loading ? 'Loading…' : 'Fetch'}
+        </button>
+      </div>
+
+      {state.status === 'invalid_input' && (
+        <div data-testid="diagnostics-finance-posting-invalid" style={{ fontSize: 11, color: 'var(--badge-red-text)', marginTop: 6 }}>{state.error}</div>
+      )}
+
+      {state.status === 'not_found' && (
+        <div data-testid="diagnostics-finance-posting-empty" style={{ marginTop: 6, padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+          <div style={{ fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>No posting with id <span style={{ fontFamily: 'monospace' }}>{state.queriedId}</span></div>
+          <div>By design: the finance posting store is dormant until backfill runs or a posting is created. This is expected when production has 0 postings. No system action is required.</div>
+        </div>
+      )}
+
+      {state.status === 'error' && (
+        <div data-testid="diagnostics-finance-posting-error" style={{ marginTop: 6, fontSize: 11, color: 'var(--badge-red-text)' }}>Load failed: {state.error}</div>
+      )}
+
+      {state.status === 'ok' && d && (
+        <div data-testid="diagnostics-finance-posting-result" style={{ marginTop: 6 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto auto', gap: '6px 16px', fontSize: 11, color: 'var(--text)' }}>
+            <div style={{ color: 'var(--text-3)' }}>posting_id</div>
+            <div data-testid="diagnostics-finance-out-posting-id" style={{ fontFamily: 'monospace' }}>{d.posting_id}</div>
+            <div style={{ color: 'var(--text-3)' }}>wfirma_invoice_id</div>
+            <div data-testid="diagnostics-finance-out-wfirma-id" style={{ fontFamily: 'monospace' }}>{(posting && posting.wfirma_invoice_id) || '—'}</div>
+            <div style={{ color: 'var(--text-3)' }}>currency</div>
+            <div data-testid="diagnostics-finance-out-currency" style={{ fontFamily: 'monospace' }}>{(posting && posting.currency) || '—'}</div>
+            <div style={{ color: 'var(--text-3)' }}>charges</div>
+            <div data-testid="diagnostics-finance-out-charges-count" style={{ fontFamily: 'monospace' }}>{(d.charges || []).length}</div>
+            <div style={{ color: 'var(--text-3)' }}>payments</div>
+            <div data-testid="diagnostics-finance-out-payments-count" style={{ fontFamily: 'monospace' }}>{(d.payments || []).length}</div>
+            <div style={{ color: 'var(--text-3)' }}>allocations</div>
+            <div data-testid="diagnostics-finance-out-allocations-count" style={{ fontFamily: 'monospace' }}>{(d.allocations || []).length}</div>
+            <div style={{ color: 'var(--text-3)' }}>charge_total_minor</div>
+            <div data-testid="diagnostics-finance-out-charge-total" style={{ fontFamily: 'monospace' }}>{totals ? totals.charge_total_minor : '—'}</div>
+            <div style={{ color: 'var(--text-3)' }}>payment_total_minor</div>
+            <div data-testid="diagnostics-finance-out-payment-total" style={{ fontFamily: 'monospace' }}>{totals ? totals.payment_total_minor : '—'}</div>
+            <div style={{ color: 'var(--text-3)' }}>balance_minor</div>
+            <div data-testid="diagnostics-finance-out-balance" style={{ fontFamily: 'monospace' }}>{totals ? totals.balance_minor : '—'}</div>
+            <div style={{ color: 'var(--text-3)' }}>is_fully_paid</div>
+            <div data-testid="diagnostics-finance-out-paid" style={{ fontFamily: 'monospace' }}>{totals ? String(totals.is_fully_paid) : '—'}</div>
+            <div style={{ color: 'var(--text-3)' }}>settlement</div>
+            <div data-testid="diagnostics-finance-out-settlement" style={{ fontFamily: 'monospace' }}>{settlement ? 'settled at ' + (settlement.settled_at || '—') : 'none'}</div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span data-testid="diagnostics-finance-schema-chip" style={{ display: 'inline-flex', alignItems: 'center', padding: '2px 6px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontFamily: 'monospace' }}>schema_version: {(d && d.schema_version) || '—'}</span>
+        <span>Endpoint: GET /api/v1/finance/postings/{'{id}'}/breakdown. No list endpoint. No write actions.</span>
       </div>
     </div>
   );
