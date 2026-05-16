@@ -1,10 +1,15 @@
 # Live Task Queue
 
 > Master Data campaign closed B11 audit on 2026-05-16.
-> Operational Integrity + Automation campaign opened P0-P5 on 2026-05-16.
-> See `tasks/campaign-state.json` for the canonical state of all campaigns.
+> Operational Integrity + Automation campaign closed P0-P5 on 2026-05-16 (PR #108 merged).
+> Operational Stabilization + Observation campaign closed P0-P4 on 2026-05-16.
+> Phase 6F implementation NOT started — gated on operator approval of `tasks/phase-6f-architecture.md` §10.1-§10.3.
+>
+> See `tasks/campaign-state.json` for the canonical state of all 3 campaigns (23 batches tracked).
 > See `tasks/campaign-runner.md` for the controller doc.
-> See `tasks/phase-6f-architecture.md` for the Phase 6F inspection report (no impl yet).
+> See `tasks/phase-6f-architecture.md` for the Phase 6F inspection proposal.
+> See `tasks/phase-6f-readiness-2026-05-16.md` for the readiness verification (safest first batch = 6F.1).
+> See `tasks/stability-review-2026-05-16.md` for production stability classification.
 
 ## CURRENT STATE — B11 CLOSURE
 

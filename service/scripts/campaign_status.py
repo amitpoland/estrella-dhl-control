@@ -189,6 +189,132 @@ def attach_smoke(state: Dict[str, Any], campaign_id: str, batch_id: str,
     return b
 
 
+# ── P3 hardening: deploy + stack metadata ────────────────────────────────────
+
+def record_deploy(state: Dict[str, Any], campaign_id: str, batch_id: str, *,
+                  deployed_sha: str, previous_main_sha: Optional[str] = None,
+                  robocopy_exit_codes: Optional[List[int]] = None,
+                  restart_seconds: Optional[int] = None,
+                  rollback_command: Optional[str] = None) -> Dict[str, Any]:
+    """Record a deploy event with full audit metadata. Sets status=deployed
+    and stamps deployed_at automatically."""
+    c = _get_campaign(state, campaign_id)
+    b = _get_batch(c, batch_id)
+    if not deployed_sha:
+        raise ValueError("deployed_sha is required")
+    b["status"] = "deployed"
+    b["deployed_sha"] = deployed_sha
+    b["deployed_at"] = _now_iso()
+    if previous_main_sha is not None:
+        b["previous_main_sha"] = previous_main_sha
+    if rollback_command is not None:
+        b["rollback_command"] = rollback_command
+    elif previous_main_sha is not None:
+        b["rollback_command"] = f"git revert -m 1 {deployed_sha[:7]} --no-edit"
+    # Deploy metadata sub-object
+    meta = b.setdefault("deploy_metadata", {})
+    if robocopy_exit_codes is not None:
+        meta["robocopy_exit_codes"] = list(robocopy_exit_codes)
+        # robocopy exit codes 0-3 are success; 4+ are errors
+        meta["robocopy_ok"] = all(0 <= c <= 3 for c in robocopy_exit_codes)
+    if restart_seconds is not None:
+        meta["restart_seconds"] = int(restart_seconds)
+    return b
+
+
+def record_branch_stack(state: Dict[str, Any], campaign_id: str, batch_id: str, *,
+                        base_branch: str,
+                        stack_depth: int = 0,
+                        stacked_on: Optional[str] = None) -> Dict[str, Any]:
+    """Record branch-stack metadata so stack-into-stack misroutes are
+    detectable from the state file alone."""
+    if stack_depth < 0:
+        raise ValueError("stack_depth must be >= 0")
+    if stack_depth > 0 and not stacked_on:
+        raise ValueError("stacked_on is required when stack_depth > 0")
+    c = _get_campaign(state, campaign_id)
+    b = _get_batch(c, batch_id)
+    stack = b.setdefault("branch_stack", {})
+    stack["base_branch"] = base_branch
+    stack["stack_depth"] = int(stack_depth)
+    if stacked_on:
+        stack["stacked_on"] = stacked_on
+    if stack_depth > 0 and base_branch == "main":
+        stack["warning"] = (
+            "stack_depth > 0 but base_branch is 'main' — verify the base "
+            "was retargeted before merge, or plan a forward-merge PR."
+        )
+    return b
+
+
+# ── P3 hardening: summary dashboard ──────────────────────────────────────────
+
+def _state_summary(state: Dict[str, Any]) -> str:
+    """Render a top-level operator dashboard: open PRs, next batch per
+    active campaign, blocked items, recent deploys."""
+    lines: List[str] = []
+    lines.append("=" * 78)
+    lines.append("CAMPAIGN STATUS — OPERATOR DASHBOARD")
+    lines.append("=" * 78)
+
+    active = [c for c in state.get("campaigns", []) if c.get("status") == "active"]
+    completed = [c for c in state.get("campaigns", []) if c.get("status") == "completed"]
+
+    lines.append(f"\nActive campaigns:    {len(active)}")
+    for c in active:
+        next_b = next((b for b in c["batches"] if b["status"] in ("planned", "active", "pr_open")), None)
+        lines.append(f"  {c['campaign_id']:<24}  next: {next_b['batch_id'] if next_b else '—'}  ({next_b['title'] if next_b else 'no next batch'})")
+
+    lines.append(f"\nCompleted campaigns: {len(completed)}")
+    for c in completed:
+        lines.append(f"  {c['campaign_id']:<24}  {len(c['batches'])} batches  closed {c.get('closed_at', '—')[:10]}")
+
+    # Open PRs
+    open_prs: List[Dict[str, Any]] = []
+    for c in state.get("campaigns", []):
+        for b in c.get("batches", []):
+            if b.get("status") == "pr_open" and b.get("pr_url"):
+                open_prs.append({"c": c["campaign_id"], "b": b["batch_id"], "url": b["pr_url"]})
+    lines.append(f"\nOpen PRs: {len(open_prs)}")
+    for p in open_prs:
+        lines.append(f"  {p['c']}/{p['b']}: {p['url']}")
+
+    # Blocked items
+    blocked: List[Dict[str, Any]] = []
+    for c in state.get("campaigns", []):
+        for b in c.get("batches", []):
+            if b.get("status") == "blocked":
+                blocked.append({"c": c["campaign_id"], "b": b["batch_id"],
+                                "title": b.get("title", ""),
+                                "reason": (b.get("block_reason") or "")[:80]})
+    lines.append(f"\nBlocked items: {len(blocked)}")
+    for x in blocked:
+        lines.append(f"  {x['c']}/{x['b']}: {x['title']}")
+        lines.append(f"      reason: {x['reason']}...")
+
+    # Recent deploys (last 5 by deployed_at across all campaigns)
+    deploys: List[Dict[str, Any]] = []
+    for c in state.get("campaigns", []):
+        for b in c.get("batches", []):
+            if b.get("deployed_at"):
+                deploys.append({"c": c["campaign_id"], "b": b["batch_id"],
+                                "at": b["deployed_at"],
+                                "sha": (b.get("deployed_sha") or "")[:8],
+                                "robocopy_ok": (b.get("deploy_metadata") or {}).get("robocopy_ok")})
+    deploys.sort(key=lambda d: d["at"], reverse=True)
+    lines.append(f"\nRecent deploys (most recent first):")
+    for d in deploys[:5]:
+        ok_marker = ""
+        if d["robocopy_ok"] is True:
+            ok_marker = " [robocopy ok]"
+        elif d["robocopy_ok"] is False:
+            ok_marker = " [ROBOCOPY ERRORS]"
+        lines.append(f"  {d['at'][:19]}  {d['sha']}  {d['c']}/{d['b']}{ok_marker}")
+
+    lines.append("\n" + "=" * 78)
+    return "\n".join(lines) + "\n"
+
+
 # ── Export ───────────────────────────────────────────────────────────────────
 
 def export_markdown(state: Dict[str, Any], campaign_id: str) -> str:
@@ -277,6 +403,37 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_summary(args: argparse.Namespace) -> int:
+    state = load_state()
+    print(_state_summary(state))
+    return 0
+
+
+def _cmd_deploy(args: argparse.Namespace) -> int:
+    state = load_state()
+    codes = None
+    if args.robocopy_exit_codes:
+        codes = [int(c) for c in args.robocopy_exit_codes.split(",")]
+    record_deploy(state, args.campaign_id, args.batch,
+                  deployed_sha=args.sha,
+                  previous_main_sha=args.previous_main_sha,
+                  robocopy_exit_codes=codes,
+                  restart_seconds=args.restart_seconds,
+                  rollback_command=args.rollback_command)
+    save_state(state)
+    return 0
+
+
+def _cmd_stack(args: argparse.Namespace) -> int:
+    state = load_state()
+    record_branch_stack(state, args.campaign_id, args.batch,
+                        base_branch=args.base_branch,
+                        stack_depth=args.stack_depth,
+                        stacked_on=args.stacked_on)
+    save_state(state)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="campaign_status",
                                 description="File-based campaign tracker CLI.")
@@ -324,6 +481,33 @@ def main(argv: Optional[List[str]] = None) -> int:
     sp = sub.add_parser("export", help="Export a campaign as markdown")
     sp.add_argument("campaign_id")
     sp.set_defaults(func=_cmd_export)
+
+    sp = sub.add_parser("summary",
+                        help="Top-level dashboard: open PRs / next batch / blocked / recent deploys")
+    sp.set_defaults(func=_cmd_summary)
+
+    sp = sub.add_parser("deploy",
+                        help="Record a deploy event with full audit metadata")
+    sp.add_argument("campaign_id")
+    sp.add_argument("batch")
+    sp.add_argument("--sha", required=True, help="Deployed SHA (= main HEAD post-merge)")
+    sp.add_argument("--previous-main-sha", dest="previous_main_sha",
+                    help="Main SHA before this deploy (for rollback)")
+    sp.add_argument("--robocopy-exit-codes", dest="robocopy_exit_codes",
+                    help="Comma-separated list, e.g. '1,1,1,0'")
+    sp.add_argument("--restart-seconds", dest="restart_seconds", type=int)
+    sp.add_argument("--rollback-command", dest="rollback_command",
+                    help="Override default rollback (git revert -m 1 <sha>)")
+    sp.set_defaults(func=_cmd_deploy)
+
+    sp = sub.add_parser("stack",
+                        help="Record branch-stack metadata (base_branch, stack_depth, stacked_on)")
+    sp.add_argument("campaign_id")
+    sp.add_argument("batch")
+    sp.add_argument("--base-branch", dest="base_branch", required=True)
+    sp.add_argument("--stack-depth", dest="stack_depth", type=int, default=0)
+    sp.add_argument("--stacked-on", dest="stacked_on")
+    sp.set_defaults(func=_cmd_stack)
 
     args = p.parse_args(argv)
     return args.func(args)

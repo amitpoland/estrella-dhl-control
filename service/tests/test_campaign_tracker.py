@@ -265,6 +265,177 @@ def test_update_with_none_does_not_clear_merge_sha(tmp_path):
     assert b["merge_sha"] == "abc", "merge_sha must survive subsequent updates"
 
 
+# ── P3 hardening: deploy + stack metadata ───────────────────────────────────
+
+def test_record_deploy_sets_status_and_metadata(tmp_path):
+    state = cs.load_state(tmp_path / "s.json")
+    cs.create_campaign(state, "C", "C")
+    cs.add_batch(state, "C", "B1", "x")
+    cs.record_deploy(state, "C", "B1",
+                     deployed_sha="abc123def456",
+                     previous_main_sha="000111222333",
+                     robocopy_exit_codes=[1, 1, 1, 0],
+                     restart_seconds=10)
+    b = cs._get_batch(cs._get_campaign(state, "C"), "B1")
+    assert b["status"] == "deployed"
+    assert b["deployed_sha"] == "abc123def456"
+    assert b["previous_main_sha"] == "000111222333"
+    assert b["deployed_at"]  # auto-stamped
+    assert b["rollback_command"].startswith("git revert -m 1 abc123d")
+    assert b["deploy_metadata"]["robocopy_ok"] is True
+    assert b["deploy_metadata"]["restart_seconds"] == 10
+
+
+def test_record_deploy_flags_robocopy_errors(tmp_path):
+    state = cs.load_state(tmp_path / "s.json")
+    cs.create_campaign(state, "C", "C")
+    cs.add_batch(state, "C", "B1", "x")
+    cs.record_deploy(state, "C", "B1",
+                     deployed_sha="abc",
+                     robocopy_exit_codes=[1, 4, 1])  # 4 = error
+    b = cs._get_batch(cs._get_campaign(state, "C"), "B1")
+    assert b["deploy_metadata"]["robocopy_ok"] is False
+
+
+def test_record_deploy_requires_sha(tmp_path):
+    state = cs.load_state(tmp_path / "s.json")
+    cs.create_campaign(state, "C", "C")
+    cs.add_batch(state, "C", "B1", "x")
+    with pytest.raises(ValueError, match="deployed_sha"):
+        cs.record_deploy(state, "C", "B1", deployed_sha="")
+
+
+def test_record_branch_stack_root(tmp_path):
+    state = cs.load_state(tmp_path / "s.json")
+    cs.create_campaign(state, "C", "C")
+    cs.add_batch(state, "C", "B1", "x")
+    cs.record_branch_stack(state, "C", "B1", base_branch="main", stack_depth=0)
+    b = cs._get_batch(cs._get_campaign(state, "C"), "B1")
+    assert b["branch_stack"]["base_branch"] == "main"
+    assert b["branch_stack"]["stack_depth"] == 0
+    assert "warning" not in b["branch_stack"]
+
+
+def test_record_branch_stack_stacked(tmp_path):
+    state = cs.load_state(tmp_path / "s.json")
+    cs.create_campaign(state, "C", "C")
+    cs.add_batch(state, "C", "B2", "x")
+    cs.record_branch_stack(state, "C", "B2",
+                           base_branch="feat/b1",
+                           stack_depth=1,
+                           stacked_on="B1")
+    b = cs._get_batch(cs._get_campaign(state, "C"), "B2")
+    assert b["branch_stack"]["stack_depth"] == 1
+    assert b["branch_stack"]["stacked_on"] == "B1"
+
+
+def test_record_branch_stack_warns_on_misroute(tmp_path):
+    """stack_depth > 0 with base_branch == 'main' is suspicious — flag it."""
+    state = cs.load_state(tmp_path / "s.json")
+    cs.create_campaign(state, "C", "C")
+    cs.add_batch(state, "C", "B2", "x")
+    cs.record_branch_stack(state, "C", "B2",
+                           base_branch="main",  # misroute: should be feat/*
+                           stack_depth=1,
+                           stacked_on="B1")
+    b = cs._get_batch(cs._get_campaign(state, "C"), "B2")
+    assert "warning" in b["branch_stack"]
+    assert "forward-merge" in b["branch_stack"]["warning"]
+
+
+def test_record_branch_stack_requires_stacked_on(tmp_path):
+    state = cs.load_state(tmp_path / "s.json")
+    cs.create_campaign(state, "C", "C")
+    cs.add_batch(state, "C", "B1", "x")
+    with pytest.raises(ValueError, match="stacked_on"):
+        cs.record_branch_stack(state, "C", "B1",
+                               base_branch="feat/x", stack_depth=2)
+
+
+def test_record_branch_stack_rejects_negative_depth(tmp_path):
+    state = cs.load_state(tmp_path / "s.json")
+    cs.create_campaign(state, "C", "C")
+    cs.add_batch(state, "C", "B1", "x")
+    with pytest.raises(ValueError, match="stack_depth"):
+        cs.record_branch_stack(state, "C", "B1",
+                               base_branch="main", stack_depth=-1)
+
+
+# ── P3: summary dashboard ────────────────────────────────────────────────────
+
+def test_summary_renders_open_prs_blocked_deploys(tmp_path):
+    state = cs.load_state(tmp_path / "s.json")
+    cs.create_campaign(state, "A", "Active campaign")
+    cs.add_batch(state, "A", "B1", "first")
+    cs.update_batch(state, "A", "B1", status="pr_open",
+                    pr_url="https://example.com/pr/1", pr_number=1)
+    cs.add_batch(state, "A", "B2", "blocked one")
+    cs.block_batch(state, "A", "B2", "needs operator approval")
+    cs.add_batch(state, "A", "B3", "deployed one")
+    cs.record_deploy(state, "A", "B3", deployed_sha="abcdef12345",
+                     robocopy_exit_codes=[1, 1])
+
+    out = cs._state_summary(state)
+    assert "OPERATOR DASHBOARD" in out
+    assert "Active campaign" in out
+    assert "Open PRs: 1" in out
+    assert "https://example.com/pr/1" in out
+    assert "Blocked items: 1" in out
+    assert "needs operator approval" in out
+    assert "abcdef12" in out
+    assert "[robocopy ok]" in out
+
+
+def test_cli_summary_command(tmp_path, monkeypatch, capsys):
+    sf = tmp_path / "s.json"
+    monkeypatch.setattr(cs, "_state_path", lambda root=None: sf)
+    state = cs.load_state(sf)
+    cs.create_campaign(state, "TEST", "Test")
+    cs.save_state(state, sf)
+    rc = cs.main(["summary"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "OPERATOR DASHBOARD" in out
+
+
+def test_cli_deploy_command(tmp_path, monkeypatch):
+    sf = tmp_path / "s.json"
+    monkeypatch.setattr(cs, "_state_path", lambda root=None: sf)
+    state = cs.load_state(sf)
+    cs.create_campaign(state, "C", "x")
+    cs.add_batch(state, "C", "B1", "x")
+    cs.save_state(state, sf)
+    rc = cs.main(["deploy", "C", "B1", "--sha", "deadbeef",
+                  "--previous-main-sha", "cafebabe",
+                  "--robocopy-exit-codes", "1,0,1",
+                  "--restart-seconds", "10"])
+    assert rc == 0
+    s2 = cs.load_state(sf)
+    b = cs._get_batch(cs._get_campaign(s2, "C"), "B1")
+    assert b["status"] == "deployed"
+    assert b["deployed_sha"] == "deadbeef"
+    assert b["deploy_metadata"]["restart_seconds"] == 10
+    assert b["deploy_metadata"]["robocopy_ok"] is True
+
+
+def test_cli_stack_command(tmp_path, monkeypatch):
+    sf = tmp_path / "s.json"
+    monkeypatch.setattr(cs, "_state_path", lambda root=None: sf)
+    state = cs.load_state(sf)
+    cs.create_campaign(state, "C", "x")
+    cs.add_batch(state, "C", "B2", "x")
+    cs.save_state(state, sf)
+    rc = cs.main(["stack", "C", "B2",
+                  "--base-branch", "feat/b1",
+                  "--stack-depth", "1",
+                  "--stacked-on", "B1"])
+    assert rc == 0
+    s2 = cs.load_state(sf)
+    b = cs._get_batch(cs._get_campaign(s2, "C"), "B2")
+    assert b["branch_stack"]["base_branch"] == "feat/b1"
+    assert b["branch_stack"]["stacked_on"] == "B1"
+
+
 # ── Real state file sanity (read-only — does not mutate) ─────────────────────
 # Confirms the production tasks/campaign-state.json is valid JSON and matches
 # the expected schema.
