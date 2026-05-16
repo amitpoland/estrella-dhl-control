@@ -25,12 +25,15 @@ from ..core.config import settings
 from ..core.security import require_api_key
 from ..core.logging import get_logger
 from ..services.master_data_db import (
-    HsCode, Unit, ProductLocal,
+    HsCode, Unit, ProductLocal, Incoterm, VatConfig,
     init_db,
     validate_hs_code, upsert_hs_code, get_hs_code, list_hs_codes, delete_hs_code,
     validate_unit, upsert_unit, get_unit, list_units, delete_unit,
     validate_product_local, upsert_product_local, get_product_local,
     list_product_local, delete_product_local,
+    validate_incoterm, upsert_incoterm, get_incoterm, list_incoterms, delete_incoterm,
+    validate_vat_config, create_vat_config, get_vat_config, list_vat_config,
+    update_vat_config, delete_vat_config,
 )
 
 log    = get_logger(__name__)
@@ -254,4 +257,169 @@ def delete_pl_endpoint(product_code: str) -> Response:
     init_db(_DB_PATH)
     if not delete_product_local(_DB_PATH, product_code):
         raise HTTPException(status_code=404, detail=f"product-local not found: {product_code}")
+    return Response(status_code=204)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B7 — Incoterms
+# ══════════════════════════════════════════════════════════════════════════════
+
+incoterms_router = APIRouter(prefix="/api/v1/incoterms", tags=["master-data"])
+
+
+def _incoterm_dict(i: Incoterm) -> dict:
+    return {
+        "code": i.code, "name": i.name,
+        "risk_transfer_point": i.risk_transfer_point,
+        "freight_included": i.freight_included,
+        "insurance_included": i.insurance_included,
+        "customs_included": i.customs_included,
+        "notes": i.notes, "active": i.active,
+        "created_at": i.created_at, "updated_at": i.updated_at,
+    }
+
+
+@incoterms_router.get("/", dependencies=[_auth], summary="List incoterms")
+def list_incoterms_endpoint(active: Optional[str] = Query(None),
+                            limit: int = Query(100, ge=1, le=1000)) -> JSONResponse:
+    try:
+        init_db(_DB_PATH)
+        recs = list_incoterms(_DB_PATH, active=_parse_active(active), limit=limit)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error("list_incoterms failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    return JSONResponse({"count": len(recs), "incoterms": [_incoterm_dict(i) for i in recs]})
+
+
+@incoterms_router.get("/{code}", dependencies=[_auth], summary="Get incoterm")
+def get_incoterm_endpoint(code: str) -> JSONResponse:
+    init_db(_DB_PATH)
+    rec = get_incoterm(_DB_PATH, code)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Incoterm not found: {code}")
+    return JSONResponse(_incoterm_dict(rec))
+
+
+@incoterms_router.put("/{code}", dependencies=[_auth], summary="Upsert incoterm")
+async def upsert_incoterm_endpoint(code: str, request: Request) -> JSONResponse:
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    body = dict(body); body["code"] = code
+    errs = validate_incoterm(body)
+    if errs:
+        raise HTTPException(status_code=422, detail={"validation_errors": errs})
+    try:
+        rec = upsert_incoterm(_DB_PATH, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        log.error("upsert_incoterm failed code=%s: %s", code, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    return JSONResponse(_incoterm_dict(rec))
+
+
+@incoterms_router.delete("/{code}", dependencies=[_auth], summary="Delete incoterm",
+                         status_code=204)
+def delete_incoterm_endpoint(code: str) -> Response:
+    init_db(_DB_PATH)
+    if not delete_incoterm(_DB_PATH, code):
+        raise HTTPException(status_code=404, detail=f"Incoterm not found: {code}")
+    return Response(status_code=204)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B7 — VAT Config  (READ-ONLY w.r.t. wFirma invoice path)
+# ══════════════════════════════════════════════════════════════════════════════
+
+vat_router = APIRouter(prefix="/api/v1/vat-config", tags=["master-data"])
+
+
+def _vat_dict(v: VatConfig) -> dict:
+    return {
+        "id": v.id, "country": v.country, "product_type": v.product_type,
+        "rate_pct": v.rate_pct, "rate_code": v.rate_code,
+        "effective_from": v.effective_from, "effective_to": v.effective_to,
+        "active": v.active, "notes": v.notes,
+        "created_at": v.created_at, "updated_at": v.updated_at,
+    }
+
+
+@vat_router.get("/", dependencies=[_auth], summary="List VAT config entries")
+def list_vat_endpoint(country: Optional[str] = Query(None),
+                     active: Optional[str] = Query(None),
+                     limit: int = Query(500, ge=1, le=2000)) -> JSONResponse:
+    try:
+        init_db(_DB_PATH)
+        recs = list_vat_config(_DB_PATH, country=country,
+                              active=_parse_active(active), limit=limit)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error("list_vat_config failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    return JSONResponse({"count": len(recs), "vat_config": [_vat_dict(v) for v in recs]})
+
+
+@vat_router.get("/{vat_id}", dependencies=[_auth], summary="Get VAT entry")
+def get_vat_endpoint(vat_id: int) -> JSONResponse:
+    init_db(_DB_PATH)
+    rec = get_vat_config(_DB_PATH, vat_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"VAT config not found: {vat_id}")
+    return JSONResponse(_vat_dict(rec))
+
+
+@vat_router.post("/", dependencies=[_auth], summary="Create VAT entry", status_code=201)
+async def create_vat_endpoint(request: Request) -> JSONResponse:
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    errs = validate_vat_config(body)
+    if errs:
+        raise HTTPException(status_code=422, detail={"validation_errors": errs})
+    try:
+        rec = create_vat_config(_DB_PATH, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        log.error("create_vat_config failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    return JSONResponse(status_code=201, content=_vat_dict(rec))
+
+
+@vat_router.put("/{vat_id}", dependencies=[_auth], summary="Update VAT entry")
+async def update_vat_endpoint(vat_id: int, request: Request) -> JSONResponse:
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    try:
+        rec = update_vat_config(_DB_PATH, vat_id, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        log.error("update_vat_config failed id=%s: %s", vat_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"VAT config not found: {vat_id}")
+    return JSONResponse(_vat_dict(rec))
+
+
+@vat_router.delete("/{vat_id}", dependencies=[_auth], summary="Delete VAT entry",
+                  status_code=204)
+def delete_vat_endpoint(vat_id: int) -> Response:
+    init_db(_DB_PATH)
+    if not delete_vat_config(_DB_PATH, vat_id):
+        raise HTTPException(status_code=404, detail=f"VAT config not found: {vat_id}")
     return Response(status_code=204)

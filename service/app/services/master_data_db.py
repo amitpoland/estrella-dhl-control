@@ -59,6 +59,39 @@ class ProductLocal:
     updated_at:       Optional[str] = None
 
 
+# B7 ─────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Incoterm:
+    code:                 str               # e.g. EXW, FOB, CIF, DDP
+    name:                 Optional[str] = None
+    risk_transfer_point:  Optional[str] = None
+    freight_included:     bool = False
+    insurance_included:   bool = False
+    customs_included:     bool = False
+    notes:                Optional[str] = None
+    active:               bool = True
+    created_at:           Optional[str] = None
+    updated_at:           Optional[str] = None
+
+
+@dataclass
+class VatConfig:
+    """Local VAT rate reference. READ-ONLY w.r.t. wFirma invoice path —
+    this table does NOT override VAT codes used by wFirma invoice generation."""
+    country:        str                 # ISO alpha-2
+    product_type:   Optional[str] = None
+    rate_pct:       Optional[str] = None   # Decimal-as-string
+    rate_code:      Optional[str] = None
+    effective_from: Optional[str] = None
+    effective_to:   Optional[str] = None
+    active:         bool = True
+    notes:          Optional[str] = None
+    id:             Optional[int] = None
+    created_at:     Optional[str] = None
+    updated_at:     Optional[str] = None
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _HS_CODE_RE = re.compile(r"^[0-9]{4,12}$")
@@ -130,7 +163,296 @@ def init_db(db_path: Path) -> None:
                 updated_at        TEXT NOT NULL
             )
         """)
+
+        # ── B7 ─────────────────────────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS incoterms (
+                code                 TEXT PRIMARY KEY,
+                name                 TEXT,
+                risk_transfer_point  TEXT,
+                freight_included     INTEGER NOT NULL DEFAULT 0,
+                insurance_included   INTEGER NOT NULL DEFAULT 0,
+                customs_included     INTEGER NOT NULL DEFAULT 0,
+                notes                TEXT,
+                active               INTEGER NOT NULL DEFAULT 1,
+                created_at           TEXT NOT NULL,
+                updated_at           TEXT NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS vat_config (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                country         TEXT NOT NULL,
+                product_type    TEXT,
+                rate_pct        TEXT,
+                rate_code       TEXT,
+                effective_from  TEXT,
+                effective_to    TEXT,
+                active          INTEGER NOT NULL DEFAULT 1,
+                notes           TEXT,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_vat_country ON vat_config (country)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_vat_active  ON vat_config (active)")
+
         conn.commit()
+
+
+# ── B7 Incoterms ─────────────────────────────────────────────────────────────
+
+_INCOTERM_RE = re.compile(r"^[A-Z]{3}$")
+
+
+def validate_incoterm(data: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    code = _clean(data.get("code"))
+    if not code:
+        errors.append("code is required")
+    elif not _INCOTERM_RE.match(code.upper()):
+        errors.append(f"code must be 3 uppercase letters, got {code!r}")
+    return errors
+
+
+def _row_to_incoterm(row: sqlite3.Row) -> Incoterm:
+    return Incoterm(
+        code=row["code"], name=row["name"],
+        risk_transfer_point=row["risk_transfer_point"],
+        freight_included=bool(int(row["freight_included"])),
+        insurance_included=bool(int(row["insurance_included"])),
+        customs_included=bool(int(row["customs_included"])),
+        notes=row["notes"], active=bool(int(row["active"])),
+        created_at=row["created_at"], updated_at=row["updated_at"],
+    )
+
+
+def upsert_incoterm(db_path: Path, data: Dict[str, Any]) -> Incoterm:
+    errs = validate_incoterm(data)
+    if errs:
+        raise ValueError("; ".join(errs))
+    init_db(db_path)
+    code = _clean(data.get("code")).upper()
+    p = {
+        "name":                _clean(data.get("name")),
+        "risk_transfer_point": _clean(data.get("risk_transfer_point")),
+        "freight_included":    1 if data.get("freight_included") else 0,
+        "insurance_included":  1 if data.get("insurance_included") else 0,
+        "customs_included":    1 if data.get("customs_included") else 0,
+        "notes":               _clean(data.get("notes")),
+        "active":              1 if data.get("active", True) else 0,
+    }
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        exists = conn.execute("SELECT 1 FROM incoterms WHERE code=?", (code,)).fetchone()
+        if exists:
+            conn.execute("""UPDATE incoterms SET name=?, risk_transfer_point=?,
+                freight_included=?, insurance_included=?, customs_included=?,
+                notes=?, active=?, updated_at=? WHERE code=?""",
+                (p["name"], p["risk_transfer_point"], p["freight_included"],
+                 p["insurance_included"], p["customs_included"],
+                 p["notes"], p["active"], now, code))
+        else:
+            conn.execute("""INSERT INTO incoterms (code, name, risk_transfer_point,
+                freight_included, insurance_included, customs_included,
+                notes, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (code, p["name"], p["risk_transfer_point"], p["freight_included"],
+                 p["insurance_included"], p["customs_included"],
+                 p["notes"], p["active"], now, now))
+        conn.commit()
+    return get_incoterm(db_path, code)
+
+
+def get_incoterm(db_path: Path, code: str) -> Optional[Incoterm]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("SELECT * FROM incoterms WHERE code=?", (code.upper(),)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return _row_to_incoterm(row) if row else None
+
+
+def list_incoterms(db_path: Path, *, active: Optional[bool] = None,
+                   limit: int = 100) -> List[Incoterm]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    where, params = [], []
+    if active is not None:
+        where.append("active=?")
+        params.append(1 if active else 0)
+    sql = "SELECT * FROM incoterms"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY code ASC LIMIT ?"
+    params.append(int(limit))
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            return [_row_to_incoterm(r) for r in conn.execute(sql, params).fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+
+def delete_incoterm(db_path: Path, code: str) -> bool:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    with sqlite3.connect(str(db_path)) as conn:
+        try:
+            cur = conn.execute("DELETE FROM incoterms WHERE code=?", (code.upper(),))
+            conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.OperationalError:
+            return False
+
+
+# ── B7 VAT Config (READ-ONLY w.r.t. wFirma invoicing) ────────────────────────
+
+_ISO2_RE = re.compile(r"^[A-Z]{2}$")
+
+
+def validate_vat_config(data: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    country = _clean(data.get("country"))
+    if not country:
+        errors.append("country is required")
+    elif not _ISO2_RE.match(country.upper()):
+        errors.append(f"country must be ISO alpha-2, got {country!r}")
+    rate = data.get("rate_pct")
+    if rate is not None and rate != "":
+        try:
+            _to_decimal_str(rate)
+        except ValueError as e:
+            errors.append(f"rate_pct: {e}")
+    return errors
+
+
+def _row_to_vat(row: sqlite3.Row) -> VatConfig:
+    return VatConfig(
+        id=row["id"], country=row["country"], product_type=row["product_type"],
+        rate_pct=row["rate_pct"], rate_code=row["rate_code"],
+        effective_from=row["effective_from"], effective_to=row["effective_to"],
+        active=bool(int(row["active"])), notes=row["notes"],
+        created_at=row["created_at"], updated_at=row["updated_at"],
+    )
+
+
+def create_vat_config(db_path: Path, data: Dict[str, Any]) -> VatConfig:
+    errs = validate_vat_config(data)
+    if errs:
+        raise ValueError("; ".join(errs))
+    init_db(db_path)
+    p = {
+        "country":        _clean(data.get("country")).upper(),
+        "product_type":   _clean(data.get("product_type")),
+        "rate_pct":       _to_decimal_str(data.get("rate_pct")),
+        "rate_code":      _clean(data.get("rate_code")),
+        "effective_from": _clean(data.get("effective_from")),
+        "effective_to":   _clean(data.get("effective_to")),
+        "active":         1 if data.get("active", True) else 0,
+        "notes":          _clean(data.get("notes")),
+    }
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute("""INSERT INTO vat_config (country, product_type, rate_pct,
+            rate_code, effective_from, effective_to, active, notes,
+            created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (p["country"], p["product_type"], p["rate_pct"], p["rate_code"],
+             p["effective_from"], p["effective_to"], p["active"], p["notes"],
+             now, now))
+        conn.commit()
+        return get_vat_config(db_path, int(cur.lastrowid))
+
+
+def get_vat_config(db_path: Path, vat_id: int) -> Optional[VatConfig]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("SELECT * FROM vat_config WHERE id=?", (vat_id,)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return _row_to_vat(row) if row else None
+
+
+def list_vat_config(db_path: Path, *, country: Optional[str] = None,
+                    active: Optional[bool] = None, limit: int = 500) -> List[VatConfig]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    where, params = [], []
+    if country:
+        where.append("country=?")
+        params.append(country.upper())
+    if active is not None:
+        where.append("active=?")
+        params.append(1 if active else 0)
+    sql = "SELECT * FROM vat_config"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY country ASC, updated_at DESC LIMIT ?"
+    params.append(int(limit))
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            return [_row_to_vat(r) for r in conn.execute(sql, params).fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+
+def update_vat_config(db_path: Path, vat_id: int, data: Dict[str, Any]) -> Optional[VatConfig]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    existing = get_vat_config(db_path, vat_id)
+    if existing is None:
+        return None
+    merged = {
+        "country":        data.get("country", existing.country),
+        "product_type":   data.get("product_type", existing.product_type),
+        "rate_pct":       data.get("rate_pct", existing.rate_pct),
+        "rate_code":      data.get("rate_code", existing.rate_code),
+        "effective_from": data.get("effective_from", existing.effective_from),
+        "effective_to":   data.get("effective_to", existing.effective_to),
+        "active":         data.get("active", existing.active),
+        "notes":          data.get("notes", existing.notes),
+    }
+    errs = validate_vat_config(merged)
+    if errs:
+        raise ValueError("; ".join(errs))
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("""UPDATE vat_config SET country=?, product_type=?, rate_pct=?,
+            rate_code=?, effective_from=?, effective_to=?, active=?, notes=?,
+            updated_at=? WHERE id=?""",
+            (_clean(merged["country"]).upper(), _clean(merged["product_type"]),
+             _to_decimal_str(merged["rate_pct"]), _clean(merged["rate_code"]),
+             _clean(merged["effective_from"]), _clean(merged["effective_to"]),
+             1 if merged["active"] else 0, _clean(merged["notes"]), now, vat_id))
+        conn.commit()
+    return get_vat_config(db_path, vat_id)
+
+
+def delete_vat_config(db_path: Path, vat_id: int) -> bool:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    with sqlite3.connect(str(db_path)) as conn:
+        try:
+            cur = conn.execute("DELETE FROM vat_config WHERE id=?", (vat_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.OperationalError:
+            return False
 
 
 # ── HS Codes ──────────────────────────────────────────────────────────────────

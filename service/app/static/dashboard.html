@@ -3464,6 +3464,61 @@ function MasterDataPage({ onNav, onToast }) {
     }
   };
 
+  // ── B7: Incoterms + VAT (MDC-060/061) ──────────────────────────────────
+  const [incoterms, setIncoterms] = React.useState({ loading: false, error: null, items: [], ts: null });
+  const [vatCfg,    setVatCfg]    = React.useState({ loading: false, error: null, items: [], ts: null });
+  const [incForm,   setIncForm]   = React.useState(null);
+  const [vatForm,   setVatForm]   = React.useState(null);
+
+  const loadIncoterms = React.useCallback(async () => {
+    setIncoterms(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/api/v1/incoterms/');
+      setIncoterms({ loading: false, error: null,
+        items: Array.isArray(d) ? d : (d.incoterms || d.items || []),
+        ts: new Date().toISOString() });
+    } catch (e) {
+      setIncoterms({ loading: false, error: e.message || 'load failed', items: [],
+        ts: new Date().toISOString() });
+    }
+  }, []);
+
+  const loadVatCfg = React.useCallback(async () => {
+    setVatCfg(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/api/v1/vat-config/');
+      setVatCfg({ loading: false, error: null,
+        items: Array.isArray(d) ? d : (d.vat_config || d.items || []),
+        ts: new Date().toISOString() });
+    } catch (e) {
+      setVatCfg({ loading: false, error: e.message || 'load failed', items: [],
+        ts: new Date().toISOString() });
+    }
+  }, []);
+
+  const saveVatCfg = async () => {
+    if (!vatForm) return;
+    setB5Saving(true); setB5Error(null);
+    try {
+      const payload = { ...vatForm };
+      for (const k of Object.keys(payload)) { if (payload[k] === '') payload[k] = null; }
+      if (vatForm.id) {
+        await apiFetch('/api/v1/vat-config/' + vatForm.id,
+                       { method: 'PUT', body: JSON.stringify(payload) });
+      } else {
+        await apiFetch('/api/v1/vat-config/',
+                       { method: 'POST', body: JSON.stringify(payload) });
+      }
+      setVatForm(null);
+      await loadVatCfg();
+      if (onToast) onToast('VAT entry saved.', 'success');
+    } catch (e) {
+      setB5Error(e.message || 'Save failed');
+    } finally {
+      setB5Saving(false);
+    }
+  };
+
   // ── Suppliers (B4 MDC-030) ──────────────────────────────────────────────
   const [suppliers, setSuppliers] = React.useState({ loading: false, error: null, items: [], ts: null });
   const [supForm,   setSupForm]   = React.useState(null);  // null=hidden, {}=new, {id,...}=edit
@@ -3535,6 +3590,8 @@ function MasterDataPage({ onNav, onToast }) {
     if (activeEntity === 'hs_codes' && !hsCodes.ts && !hsCodes.loading) loadHsCodes();
     if (activeEntity === 'units' && !units.ts && !units.loading)        loadUnits();
     if (activeEntity === 'product_local' && !pl.ts && !pl.loading)      loadProductLocal();
+    if (activeEntity === 'incoterms' && !incoterms.ts && !incoterms.loading)  loadIncoterms();
+    if (activeEntity === 'vat_config' && !vatCfg.ts && !vatCfg.loading)       loadVatCfg();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity]);
 
@@ -3604,7 +3661,7 @@ function MasterDataPage({ onNav, onToast }) {
   const filteredCustMaster = (custMaster.items || []).filter(r => _match(r, query));
 
   // ── KPI strip (preserved data-testids) ────────────────────────────────
-  // B4: suppliers; B5: hs_codes + units + product_local moved to live
+  // B4: suppliers; B5: hs_codes + units + product_local; B7: incoterms + vat_config → live
   const PENDING_TYPES = ['designs','fx_rates','roles'];
   const kpis = [
     { id: 'users',     label: 'Users',
@@ -3650,8 +3707,10 @@ function MasterDataPage({ onNav, onToast }) {
     { id: 'product_local',  label: 'Product local',   icon: '◇',
       count: pl.error ? null : (pl.items || []).length, live: true },
     { id: 'carriers_config',label: 'Carriers Config', icon: '◎', live: false },
-    { id: 'incoterms',      label: 'Incoterms',       icon: '◇', live: false },
-    { id: 'vat_config',     label: 'VAT Config',      icon: '◆', live: false },
+    { id: 'incoterms',      label: 'Incoterms',       icon: '◇',
+      count: incoterms.error ? null : (incoterms.items || []).length, live: true },
+    { id: 'vat_config',     label: 'VAT Config',      icon: '◆',
+      count: vatCfg.error ? null : (vatCfg.items || []).length, live: true },
     { id: 'roles',          label: 'Roles',           icon: '◎', live: false },
   ];
 
@@ -5046,20 +5105,293 @@ function MasterDataPage({ onNav, onToast }) {
                        'api_type','supported_services','active','notes']} />
           )}
 
-          {/* ── INCOTERMS ──────────────────────────────────────────────── */}
+          {/* ── INCOTERMS (B7 MDC-060) — LIVE ──────────────────────────── */}
           {activeEntity === 'incoterms' && (
-            <PendingPanel entityId="incoterms" title="Incoterms"
-              description="Trade term definitions used during proforma / invoice generation and landed cost allocation rules."
-              fields={['code','name','risk_transfer_point','freight_included',
-                       'insurance_included','customs_included','notes']} />
+            <div data-testid="master-incoterms-panel">
+              <PanelHeader title="Incoterms"
+                subtitle="Trade term definitions — local registry; read-only reference for landed-cost notes"
+                actions={
+                  <button data-testid="master-incoterms-btn-new"
+                    onClick={() => { setIncForm({ code: '', name: '', risk_transfer_point: '',
+                      freight_included: false, insurance_included: false,
+                      customs_included: false, active: true, notes: '' }); setB5Error(null); }}
+                    disabled={!!incForm}
+                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                      background: 'var(--accent)', color: '#fff', border: 'none',
+                      borderRadius: 6, cursor: incForm ? 'not-allowed' : 'pointer',
+                      opacity: incForm ? 0.5 : 1, fontFamily: 'inherit' }}>+ New Incoterm</button>
+                }
+              />
+              {incoterms.loading && <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>}
+              {incoterms.error && <div data-testid="master-incoterms-error"
+                style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}>
+                Load failed: {incoterms.error}</div>}
+              {!incoterms.loading && !incoterms.error && (
+                <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                              borderRadius: 10, overflow: 'hidden' }}>
+                  {(incoterms.items || []).filter(r => _match(r, query)).length === 0
+                    ? <div data-testid="master-incoterms-empty"
+                           style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+                        No incoterms registered yet.</div>
+                    : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                          {['Code','Name','Risk transfer','Frt','Ins','Cust','Active',''].map(h => (
+                            <th key={h} style={thStyle}>{h}</th>))}
+                        </tr></thead>
+                        <tbody>
+                          {(incoterms.items || []).filter(r => _match(r, query)).map(i => (
+                            <tr key={i.code} data-testid="master-incoterms-row" style={trStyle}>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{i.code}</td>
+                              <td style={{ padding: '8px 12px' }}>{i.name || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{i.risk_transfer_point || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{i.freight_included ? '✓' : '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{i.insurance_included ? '✓' : '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{i.customs_included ? '✓' : '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>
+                                {i.active ? <span style={{ color: 'var(--badge-green-text)', fontWeight: 600 }}>● active</span>
+                                          : <span style={{ color: 'var(--text-3)' }}>○ inactive</span>}</td>
+                              <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                                <button data-testid={'master-incoterms-btn-edit-' + i.code}
+                                  onClick={() => { setIncForm({ ...i }); setB5Error(null); }}
+                                  style={{ padding: '3px 10px', fontSize: 11,
+                                    border: '1px solid var(--accent)', borderRadius: 4,
+                                    background: 'var(--accent-subtle)', cursor: 'pointer',
+                                    color: 'var(--text)', fontWeight: 600,
+                                    fontFamily: 'inherit', marginRight: 6 }}>Edit</button>
+                                <button data-testid={'master-incoterms-btn-delete-' + i.code}
+                                  onClick={() => b5Delete('/api/v1/incoterms', i.code, loadIncoterms)}
+                                  style={{ padding: '3px 8px', fontSize: 11,
+                                    border: '1px solid var(--border)', borderRadius: 4,
+                                    background: 'var(--card)', cursor: 'pointer',
+                                    color: 'var(--text-3)', fontFamily: 'inherit' }}>×</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  }
+                </div>
+              )}
+              {incForm !== null && (
+                <div data-testid="master-incoterms-form"
+                     style={{ marginTop: 14, padding: '14px 18px', background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Code (3 letters) *</span>
+                      <input data-testid="master-incoterms-input-code" type="text"
+                        value={incForm.code || ''} maxLength={3}
+                        onChange={e => setIncForm(f => ({ ...f, code: e.target.value.toUpperCase() }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Name</span>
+                      <input type="text" value={incForm.name || ''}
+                        onChange={e => setIncForm(f => ({ ...f, name: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Risk transfer point</span>
+                      <input type="text" value={incForm.risk_transfer_point || ''}
+                        onChange={e => setIncForm(f => ({ ...f, risk_transfer_point: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                      <input type="checkbox" checked={!!incForm.freight_included}
+                        onChange={e => setIncForm(f => ({ ...f, freight_included: e.target.checked }))}/>
+                      Freight included
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                      <input type="checkbox" checked={!!incForm.insurance_included}
+                        onChange={e => setIncForm(f => ({ ...f, insurance_included: e.target.checked }))}/>
+                      Insurance included
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                      <input type="checkbox" checked={!!incForm.customs_included}
+                        onChange={e => setIncForm(f => ({ ...f, customs_included: e.target.checked }))}/>
+                      Customs included
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                      <input type="checkbox" checked={incForm.active !== false}
+                        onChange={e => setIncForm(f => ({ ...f, active: e.target.checked }))}/>
+                      Active
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button data-testid="master-incoterms-btn-save"
+                      onClick={() => b5Save('/api/v1/incoterms', 'code', incForm, loadIncoterms,
+                                            () => setIncForm(null))}
+                      disabled={b5Saving}
+                      style={{ padding: '6px 18px', fontSize: 12, fontWeight: 700,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        borderRadius: 4, cursor: b5Saving ? 'not-allowed' : 'pointer',
+                        opacity: b5Saving ? 0.6 : 1, fontFamily: 'inherit' }}>
+                      {b5Saving ? 'Saving…' : 'Save'}</button>
+                    <button data-testid="master-incoterms-btn-cancel"
+                      onClick={() => { setIncForm(null); setB5Error(null); }}
+                      style={{ padding: '6px 12px', fontSize: 12,
+                        background: 'var(--card)', color: 'var(--text-2)',
+                        border: '1px solid var(--border)', borderRadius: 4,
+                        cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
-          {/* ── VAT CONFIG ─────────────────────────────────────────────── */}
+          {/* ── VAT CONFIG (B7 MDC-061) — LIVE; READ-ONLY w.r.t. wFirma invoicing ── */}
           {activeEntity === 'vat_config' && (
-            <PendingPanel entityId="vat_config" title="VAT Config"
-              description="VAT rate configuration per product type and country. Used by wFirma invoice generation."
-              fields={['country','product_type','rate_pct','rate_code',
-                       'effective_from','effective_to','active']} />
+            <div data-testid="master-vat-config-panel">
+              <PanelHeader title="VAT Config"
+                subtitle="Local VAT rate reference — does NOT override wFirma invoice VAT codes"
+                actions={
+                  <button data-testid="master-vat-btn-new"
+                    onClick={() => { setVatForm({ country: '', product_type: '', rate_pct: '',
+                      rate_code: '', effective_from: '', effective_to: '',
+                      active: true, notes: '' }); setB5Error(null); }}
+                    disabled={!!vatForm}
+                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                      background: 'var(--accent)', color: '#fff', border: 'none',
+                      borderRadius: 6, cursor: vatForm ? 'not-allowed' : 'pointer',
+                      opacity: vatForm ? 0.5 : 1, fontFamily: 'inherit' }}>+ New VAT entry</button>
+                }
+              />
+              {vatCfg.loading && <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>}
+              {vatCfg.error && <div data-testid="master-vat-error"
+                style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}>
+                Load failed: {vatCfg.error}</div>}
+              <div style={{ padding: '8px 10px', background: 'var(--bg-subtle)',
+                            border: '1px dashed var(--border)', borderRadius: 4,
+                            fontSize: 10, color: 'var(--text-3)', marginBottom: 8 }}>
+                Reference table only — wFirma invoice VAT codes are not overridden by this list.
+              </div>
+              {!vatCfg.loading && !vatCfg.error && (
+                <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                              borderRadius: 10, overflow: 'hidden' }}>
+                  {(vatCfg.items || []).filter(r => _match(r, query)).length === 0
+                    ? <div data-testid="master-vat-empty"
+                           style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+                        No VAT rate entries yet.</div>
+                    : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                          {['Country','Type','Rate %','Code','From','To','Active',''].map(h => (
+                            <th key={h} style={thStyle}>{h}</th>))}
+                        </tr></thead>
+                        <tbody>
+                          {(vatCfg.items || []).filter(r => _match(r, query)).map(v => (
+                            <tr key={v.id} data-testid="master-vat-row" style={trStyle}>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{v.country}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{v.product_type || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>{v.rate_pct || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-2)' }}>{v.rate_code || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{v.effective_from || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{v.effective_to || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>
+                                {v.active ? <span style={{ color: 'var(--badge-green-text)', fontWeight: 600 }}>● active</span>
+                                          : <span style={{ color: 'var(--text-3)' }}>○ inactive</span>}</td>
+                              <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                                <button data-testid={'master-vat-btn-edit-' + v.id}
+                                  onClick={() => { setVatForm({ ...v }); setB5Error(null); }}
+                                  style={{ padding: '3px 10px', fontSize: 11,
+                                    border: '1px solid var(--accent)', borderRadius: 4,
+                                    background: 'var(--accent-subtle)', cursor: 'pointer',
+                                    color: 'var(--text)', fontWeight: 600,
+                                    fontFamily: 'inherit', marginRight: 6 }}>Edit</button>
+                                <button data-testid={'master-vat-btn-delete-' + v.id}
+                                  onClick={() => b5Delete('/api/v1/vat-config', v.id, loadVatCfg)}
+                                  style={{ padding: '3px 8px', fontSize: 11,
+                                    border: '1px solid var(--border)', borderRadius: 4,
+                                    background: 'var(--card)', cursor: 'pointer',
+                                    color: 'var(--text-3)', fontFamily: 'inherit' }}>×</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  }
+                </div>
+              )}
+              {vatForm !== null && (
+                <div data-testid="master-vat-form"
+                     style={{ marginTop: 14, padding: '14px 18px', background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Country (ISO α-2) *</span>
+                      <input data-testid="master-vat-input-country" type="text"
+                        value={vatForm.country || ''} maxLength={2}
+                        onChange={e => setVatForm(f => ({ ...f, country: e.target.value.toUpperCase() }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Rate %</span>
+                      <input type="text" value={vatForm.rate_pct || ''}
+                        onChange={e => setVatForm(f => ({ ...f, rate_pct: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Rate code</span>
+                      <input type="text" value={vatForm.rate_code || ''}
+                        onChange={e => setVatForm(f => ({ ...f, rate_code: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Product type</span>
+                      <input type="text" value={vatForm.product_type || ''}
+                        onChange={e => setVatForm(f => ({ ...f, product_type: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Effective from</span>
+                      <input type="date" value={vatForm.effective_from || ''}
+                        onChange={e => setVatForm(f => ({ ...f, effective_from: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Effective to</span>
+                      <input type="date" value={vatForm.effective_to || ''}
+                        onChange={e => setVatForm(f => ({ ...f, effective_to: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                      <input type="checkbox" checked={vatForm.active !== false}
+                        onChange={e => setVatForm(f => ({ ...f, active: e.target.checked }))}/>
+                      Active
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button data-testid="master-vat-btn-save"
+                      onClick={saveVatCfg} disabled={b5Saving}
+                      style={{ padding: '6px 18px', fontSize: 12, fontWeight: 700,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        borderRadius: 4, cursor: b5Saving ? 'not-allowed' : 'pointer',
+                        opacity: b5Saving ? 0.6 : 1, fontFamily: 'inherit' }}>
+                      {b5Saving ? 'Saving…' : 'Save'}</button>
+                    <button data-testid="master-vat-btn-cancel"
+                      onClick={() => { setVatForm(null); setB5Error(null); }}
+                      style={{ padding: '6px 12px', fontSize: 12,
+                        background: 'var(--card)', color: 'var(--text-2)',
+                        border: '1px solid var(--border)', borderRadius: 4,
+                        cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {/* ── (Units PendingPanel removed in B5 — live panel rendered earlier) ── */}
@@ -5097,8 +5429,8 @@ function MasterDataPage({ onNav, onToast }) {
                 background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10,
                 fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)',
                 letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
-        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers · HS Codes · Units · Product local are live.
-          Designs / FX / Carriers Config / Incoterms / VAT / Roles
+        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers · HS Codes · Units · Product local · Incoterms · VAT Config are live.
+          Designs / FX / Carriers Config / Roles
           are structure-preview — backend pending.</span>
       </div>
 
