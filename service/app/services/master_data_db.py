@@ -76,6 +76,25 @@ class Incoterm:
 
 
 @dataclass
+class FxRate:
+    """Local FX rate observation table. PURE REFERENCE — does NOT override
+    NBP rates used by the PZ landed-cost / customs calculation engine.
+    The PZ engine consumes NBP rates live; this table records observed /
+    audited rate values for operator review only."""
+    rate_date:      str               # YYYY-MM-DD
+    from_currency:  str               # ISO 4217 (3-letter)
+    to_currency:    str               # ISO 4217 (3-letter)
+    rate:           str               # Decimal-as-string
+    source:         Optional[str] = None
+    table_number:   Optional[str] = None
+    notes:          Optional[str] = None
+    active:         bool = True
+    id:             Optional[int] = None
+    created_at:     Optional[str] = None
+    updated_at:     Optional[str] = None
+
+
+@dataclass
 class VatConfig:
     """Local VAT rate reference. READ-ONLY w.r.t. wFirma invoice path —
     this table does NOT override VAT codes used by wFirma invoice generation."""
@@ -198,7 +217,179 @@ def init_db(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_vat_country ON vat_config (country)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_vat_active  ON vat_config (active)")
 
+        # ── B8 FX rates (reference observation only) ───────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS fx_rates (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                rate_date     TEXT NOT NULL,
+                from_currency TEXT NOT NULL,
+                to_currency   TEXT NOT NULL,
+                rate          TEXT NOT NULL,
+                source        TEXT,
+                table_number  TEXT,
+                notes         TEXT,
+                active        INTEGER NOT NULL DEFAULT 1,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fx_date ON fx_rates (rate_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fx_pair ON fx_rates (from_currency, to_currency)")
+
         conn.commit()
+
+
+# ── B8 FX Rates (reference observation only — NOT a PZ override path) ───────
+
+_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+_DATE_RE     = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def validate_fx_rate(data: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    rd = _clean(data.get("rate_date"))
+    if not rd:
+        errors.append("rate_date is required")
+    elif not _DATE_RE.match(rd):
+        errors.append(f"rate_date must be YYYY-MM-DD, got {rd!r}")
+    for f in ("from_currency", "to_currency"):
+        v = _clean(data.get(f))
+        if not v:
+            errors.append(f"{f} is required")
+        elif not _CURRENCY_RE.match(v.upper()):
+            errors.append(f"{f} must be 3-letter ISO 4217, got {v!r}")
+    rate = data.get("rate")
+    if rate is None or rate == "":
+        errors.append("rate is required")
+    else:
+        try:
+            _to_decimal_str(rate)
+        except ValueError as e:
+            errors.append(f"rate: {e}")
+    return errors
+
+
+def _row_to_fx(row: sqlite3.Row) -> FxRate:
+    return FxRate(
+        id=row["id"], rate_date=row["rate_date"],
+        from_currency=row["from_currency"], to_currency=row["to_currency"],
+        rate=row["rate"], source=row["source"], table_number=row["table_number"],
+        notes=row["notes"], active=bool(int(row["active"])),
+        created_at=row["created_at"], updated_at=row["updated_at"],
+    )
+
+
+def create_fx_rate(db_path: Path, data: Dict[str, Any]) -> FxRate:
+    errs = validate_fx_rate(data)
+    if errs:
+        raise ValueError("; ".join(errs))
+    init_db(db_path)
+    p = {
+        "rate_date":     _clean(data.get("rate_date")),
+        "from_currency": _clean(data.get("from_currency")).upper(),
+        "to_currency":   _clean(data.get("to_currency")).upper(),
+        "rate":          _to_decimal_str(data.get("rate")),
+        "source":        _clean(data.get("source")),
+        "table_number":  _clean(data.get("table_number")),
+        "notes":         _clean(data.get("notes")),
+        "active":        1 if data.get("active", True) else 0,
+    }
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute("""INSERT INTO fx_rates (rate_date, from_currency,
+            to_currency, rate, source, table_number, notes, active,
+            created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (p["rate_date"], p["from_currency"], p["to_currency"], p["rate"],
+             p["source"], p["table_number"], p["notes"], p["active"], now, now))
+        conn.commit()
+        return get_fx_rate(db_path, int(cur.lastrowid))
+
+
+def get_fx_rate(db_path: Path, fx_id: int) -> Optional[FxRate]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("SELECT * FROM fx_rates WHERE id=?", (fx_id,)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return _row_to_fx(row) if row else None
+
+
+def list_fx_rates(db_path: Path, *, from_currency: Optional[str] = None,
+                  to_currency: Optional[str] = None, rate_date: Optional[str] = None,
+                  active: Optional[bool] = None, limit: int = 500) -> List[FxRate]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    where, params = [], []
+    if from_currency:
+        where.append("from_currency=?"); params.append(from_currency.upper())
+    if to_currency:
+        where.append("to_currency=?"); params.append(to_currency.upper())
+    if rate_date:
+        where.append("rate_date=?"); params.append(rate_date)
+    if active is not None:
+        where.append("active=?"); params.append(1 if active else 0)
+    sql = "SELECT * FROM fx_rates"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY rate_date DESC, id DESC LIMIT ?"
+    params.append(int(limit))
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            return [_row_to_fx(r) for r in conn.execute(sql, params).fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+
+def update_fx_rate(db_path: Path, fx_id: int, data: Dict[str, Any]) -> Optional[FxRate]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    existing = get_fx_rate(db_path, fx_id)
+    if existing is None:
+        return None
+    merged = {
+        "rate_date":     data.get("rate_date",     existing.rate_date),
+        "from_currency": data.get("from_currency", existing.from_currency),
+        "to_currency":   data.get("to_currency",   existing.to_currency),
+        "rate":          data.get("rate",          existing.rate),
+        "source":        data.get("source",        existing.source),
+        "table_number":  data.get("table_number",  existing.table_number),
+        "notes":         data.get("notes",         existing.notes),
+        "active":        data.get("active",        existing.active),
+    }
+    errs = validate_fx_rate(merged)
+    if errs:
+        raise ValueError("; ".join(errs))
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("""UPDATE fx_rates SET rate_date=?, from_currency=?, to_currency=?,
+            rate=?, source=?, table_number=?, notes=?, active=?, updated_at=?
+            WHERE id=?""",
+            (_clean(merged["rate_date"]), _clean(merged["from_currency"]).upper(),
+             _clean(merged["to_currency"]).upper(), _to_decimal_str(merged["rate"]),
+             _clean(merged["source"]), _clean(merged["table_number"]),
+             _clean(merged["notes"]), 1 if merged["active"] else 0, now, fx_id))
+        conn.commit()
+    return get_fx_rate(db_path, fx_id)
+
+
+def delete_fx_rate(db_path: Path, fx_id: int) -> bool:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    with sqlite3.connect(str(db_path)) as conn:
+        try:
+            cur = conn.execute("DELETE FROM fx_rates WHERE id=?", (fx_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.OperationalError:
+            return False
 
 
 # ── B7 Incoterms ─────────────────────────────────────────────────────────────

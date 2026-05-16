@@ -3464,6 +3464,47 @@ function MasterDataPage({ onNav, onToast }) {
     }
   };
 
+  // ── B8: FX rates reference (MDC-070) ───────────────────────────────────
+  // REFERENCE-ONLY. The PZ engine consumes NBP live; this table is observation.
+  const [fxRates,  setFxRates]  = React.useState({ loading: false, error: null, items: [], ts: null });
+  const [fxForm,   setFxForm]   = React.useState(null);
+
+  const loadFxRates = React.useCallback(async () => {
+    setFxRates(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/api/v1/fx-rates/');
+      setFxRates({ loading: false, error: null,
+        items: Array.isArray(d) ? d : (d.fx_rates || d.items || []),
+        ts: new Date().toISOString() });
+    } catch (e) {
+      setFxRates({ loading: false, error: e.message || 'load failed', items: [],
+        ts: new Date().toISOString() });
+    }
+  }, []);
+
+  const saveFxRate = async () => {
+    if (!fxForm) return;
+    setB5Saving(true); setB5Error(null);
+    try {
+      const payload = { ...fxForm };
+      for (const k of Object.keys(payload)) { if (payload[k] === '') payload[k] = null; }
+      if (fxForm.id) {
+        await apiFetch('/api/v1/fx-rates/' + fxForm.id,
+                       { method: 'PUT', body: JSON.stringify(payload) });
+      } else {
+        await apiFetch('/api/v1/fx-rates/',
+                       { method: 'POST', body: JSON.stringify(payload) });
+      }
+      setFxForm(null);
+      await loadFxRates();
+      if (onToast) onToast('FX rate saved.', 'success');
+    } catch (e) {
+      setB5Error(e.message || 'Save failed');
+    } finally {
+      setB5Saving(false);
+    }
+  };
+
   // ── B7: Incoterms + VAT (MDC-060/061) ──────────────────────────────────
   const [incoterms, setIncoterms] = React.useState({ loading: false, error: null, items: [], ts: null });
   const [vatCfg,    setVatCfg]    = React.useState({ loading: false, error: null, items: [], ts: null });
@@ -3592,6 +3633,7 @@ function MasterDataPage({ onNav, onToast }) {
     if (activeEntity === 'product_local' && !pl.ts && !pl.loading)      loadProductLocal();
     if (activeEntity === 'incoterms' && !incoterms.ts && !incoterms.loading)  loadIncoterms();
     if (activeEntity === 'vat_config' && !vatCfg.ts && !vatCfg.loading)       loadVatCfg();
+    if (activeEntity === 'fx_rates' && !fxRates.ts && !fxRates.loading)       loadFxRates();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity]);
 
@@ -3697,7 +3739,8 @@ function MasterDataPage({ onNav, onToast }) {
       count: custMaster.items.length > 0 ? custMaster.items.length : null, live: true },
     null,
     { id: 'designs',        label: 'Designs',         icon: '◇', live: false },
-    { id: 'fx_rates',       label: 'FX Rates',        icon: '◆', live: false },
+    { id: 'fx_rates',       label: 'FX Rates',        icon: '◆',
+      count: fxRates.error ? null : (fxRates.items || []).length, live: true },
     { id: 'suppliers',      label: 'Suppliers',       icon: '◉',
       count: suppliers.error ? null : (suppliers.items || []).length, live: true },
     { id: 'hs_codes',       label: 'HS Codes',        icon: '◈',
@@ -4443,12 +4486,154 @@ function MasterDataPage({ onNav, onToast }) {
                        'hs_code','unit','active']} />
           )}
 
-          {/* ── FX RATES ───────────────────────────────────────────────── */}
+          {/* ── FX RATES (B8 MDC-070) — LIVE; REFERENCE-ONLY ───────────── */}
           {activeEntity === 'fx_rates' && (
-            <PendingPanel entityId="fx_rates" title="FX Rates"
-              description="NBP exchange rate history. Rates are currently sourced live from the NBP API during PZ processing. This panel will allow manual overrides and rate history review."
-              fields={['rate_date','from_currency','to_currency','rate','source',
-                       'table_number','effective_from','effective_to','override','notes']} />
+            <div data-testid="master-fx-rates-panel">
+              <PanelHeader title="FX Rates"
+                subtitle="Reference observation log — PZ engine uses NBP live, NOT this table"
+                actions={
+                  <button data-testid="master-fx-btn-new"
+                    onClick={() => { setFxForm({ rate_date: '', from_currency: 'EUR',
+                      to_currency: 'PLN', rate: '', source: '', table_number: '',
+                      notes: '', active: true }); setB5Error(null); }}
+                    disabled={!!fxForm}
+                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                      background: 'var(--accent)', color: '#fff', border: 'none',
+                      borderRadius: 6, cursor: fxForm ? 'not-allowed' : 'pointer',
+                      opacity: fxForm ? 0.5 : 1, fontFamily: 'inherit' }}>+ Record FX rate</button>
+                }
+              />
+              <div style={{ padding: '8px 10px', background: 'var(--bg-subtle)',
+                            border: '1px dashed var(--border)', borderRadius: 4,
+                            fontSize: 10, color: 'var(--text-3)', marginBottom: 8 }}>
+                Reference table only — PZ landed-cost calculations consume NBP rates live; this table is NEVER read by the calculation engine.
+              </div>
+              {fxRates.loading && <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>}
+              {fxRates.error && <div data-testid="master-fx-error"
+                style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}>
+                Load failed: {fxRates.error}</div>}
+              {!fxRates.loading && !fxRates.error && (
+                <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                              borderRadius: 10, overflow: 'hidden' }}>
+                  {(fxRates.items || []).filter(r => _match(r, query)).length === 0
+                    ? <div data-testid="master-fx-empty"
+                           style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+                        No FX rate observations yet.</div>
+                    : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                          {['Date','From','To','Rate','Source','Table',''].map(h => (
+                            <th key={h} style={thStyle}>{h}</th>))}
+                        </tr></thead>
+                        <tbody>
+                          {(fxRates.items || []).filter(r => _match(r, query)).map(f => (
+                            <tr key={f.id} data-testid="master-fx-row" style={trStyle}>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{f.rate_date}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{f.from_currency}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11 }}>{f.to_currency}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, fontWeight: 600 }}>{f.rate}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-2)' }}>{f.source || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-2)' }}>{f.table_number || '—'}</td>
+                              <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                                <button data-testid={'master-fx-btn-edit-' + f.id}
+                                  onClick={() => { setFxForm({ ...f }); setB5Error(null); }}
+                                  style={{ padding: '3px 10px', fontSize: 11,
+                                    border: '1px solid var(--accent)', borderRadius: 4,
+                                    background: 'var(--accent-subtle)', cursor: 'pointer',
+                                    color: 'var(--text)', fontWeight: 600,
+                                    fontFamily: 'inherit', marginRight: 6 }}>Edit</button>
+                                <button data-testid={'master-fx-btn-delete-' + f.id}
+                                  onClick={() => b5Delete('/api/v1/fx-rates', f.id, loadFxRates)}
+                                  style={{ padding: '3px 8px', fontSize: 11,
+                                    border: '1px solid var(--border)', borderRadius: 4,
+                                    background: 'var(--card)', cursor: 'pointer',
+                                    color: 'var(--text-3)', fontFamily: 'inherit' }}>×</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  }
+                </div>
+              )}
+              {fxForm !== null && (
+                <div data-testid="master-fx-form"
+                     style={{ marginTop: 14, padding: '14px 18px', background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Date *</span>
+                      <input data-testid="master-fx-input-date" type="date"
+                        value={fxForm.rate_date || ''}
+                        onChange={e => setFxForm(f => ({ ...f, rate_date: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>From *</span>
+                      <input type="text" value={fxForm.from_currency || ''} maxLength={3}
+                        onChange={e => setFxForm(f => ({ ...f, from_currency: e.target.value.toUpperCase() }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>To *</span>
+                      <input type="text" value={fxForm.to_currency || ''} maxLength={3}
+                        onChange={e => setFxForm(f => ({ ...f, to_currency: e.target.value.toUpperCase() }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Rate *</span>
+                      <input type="text" value={fxForm.rate || ''}
+                        onChange={e => setFxForm(f => ({ ...f, rate: e.target.value }))}
+                        placeholder="e.g. 4.2580"
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Source</span>
+                      <input type="text" value={fxForm.source || ''}
+                        onChange={e => setFxForm(f => ({ ...f, source: e.target.value }))}
+                        placeholder="e.g. NBP table A"
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Table no.</span>
+                      <input type="text" value={fxForm.table_number || ''}
+                        onChange={e => setFxForm(f => ({ ...f, table_number: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                      <input type="checkbox" checked={fxForm.active !== false}
+                        onChange={e => setFxForm(f => ({ ...f, active: e.target.checked }))}/>
+                      Active
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button data-testid="master-fx-btn-save"
+                      onClick={saveFxRate} disabled={b5Saving}
+                      style={{ padding: '6px 18px', fontSize: 12, fontWeight: 700,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        borderRadius: 4, cursor: b5Saving ? 'not-allowed' : 'pointer',
+                        opacity: b5Saving ? 0.6 : 1, fontFamily: 'inherit' }}>
+                      {b5Saving ? 'Saving…' : 'Save'}</button>
+                    <button data-testid="master-fx-btn-cancel"
+                      onClick={() => { setFxForm(null); setB5Error(null); }}
+                      style={{ padding: '6px 12px', fontSize: 12,
+                        background: 'var(--card)', color: 'var(--text-2)',
+                        border: '1px solid var(--border)', borderRadius: 4,
+                        cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {/* ── SUPPLIERS (B4 MDC-030) — LIVE ──────────────────────────── */}
@@ -5408,11 +5593,11 @@ function MasterDataPage({ onNav, onToast }) {
       </div>{/* end 2-col layout */}
 
       {/* ── Preserved data-testid anchors (hidden, for test compatibility) ── */}
-      {/* B5: hs_codes removed (now live). Remaining pending: designs, fx_rates, roles */}
+      {/* B8: fx_rates removed (now live, reference-only). Remaining pending: designs, roles */}
       <div data-testid="master-pending-panel" style={{ display: 'none' }}>
         <span data-testid="master-pending-badge" />
         <div data-testid="master-pending-grid">
-          {['designs','fx_rates','roles'].map(id => (
+          {['designs','roles'].map(id => (
             <div key={id} data-testid={'master-pending-' + id} data-pending="true" />
           ))}
         </div>
@@ -5429,8 +5614,8 @@ function MasterDataPage({ onNav, onToast }) {
                 background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10,
                 fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)',
                 letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
-        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers · HS Codes · Units · Product local · Incoterms · VAT Config are live.
-          Designs / FX / Carriers Config / Roles
+        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers · HS Codes · Units · Product local · Incoterms · VAT Config · FX Rates (reference) are live.
+          Designs / Carriers Config / Roles
           are structure-preview — backend pending.</span>
       </div>
 
