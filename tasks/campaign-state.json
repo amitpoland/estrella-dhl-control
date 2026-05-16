@@ -353,6 +353,84 @@
           }
         }
       ]
+    },
+    {
+      "campaign_id": "P6F-2026-05",
+      "title": "Phase 6F — Explicit Payment-Charge Posting (Implementation)",
+      "status": "active",
+      "started_at": "2026-05-16T10:49:30+00:00",
+      "closed_at": null,
+      "batches": [
+        {
+          "batch_id": "6F.1",
+          "title": "New SQLite schema + DB module (finance_postings_db)",
+          "status": "active",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null,
+          "tests": {
+            "finance_postings_db": "38/38",
+            "hard_rule_contracts": "7/7 new",
+            "pz_regression": "160/160"
+          }
+        },
+        {
+          "batch_id": "6F.1.5",
+          "title": "Contract tests pinning additive nature (planned)",
+          "status": "planned",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.3",
+          "title": "Read-only /breakdown endpoint (planned)",
+          "status": "planned",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.2",
+          "title": "Backfill from proforma_service_charges (planned)",
+          "status": "planned",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.4",
+          "title": "UI panel: charge breakdown on proforma pipeline (planned)",
+          "status": "planned",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.5",
+          "title": "/post dual-write to charges (feature flag OFF default; planned)",
+          "status": "planned",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.6",
+          "title": "Settlement-close event + FX delta capture (planned)",
+          "status": "planned",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F.7",
+          "title": "Cleanup: deprecate legacy proforma_service_charges (planned)",
+          "status": "planned",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null
+        }
+      ]
     }
   ]
 }
