@@ -192,6 +192,114 @@ def delete_supplier_endpoint(supplier_id: int) -> Response:
 
 
 # ── B0 (MDOC-cache) — sync from wFirma ────────────────────────────────────────
+@router.get("/sync-from-wfirma/preview", dependencies=[_auth],
+            summary="Per-row review proposals for wFirma → local suppliers (no write)")
+def suppliers_sync_preview_endpoint() -> JSONResponse:
+    """Read wFirma contractors and classify per-row proposals.
+
+    No write. Status enum:
+      - matched_existing      → safe update on apply
+      - new_candidate         → insert on apply
+      - needs_operator_review → vat+name match, wfirma_id backfill on confirm
+      - skipped_invalid       → cannot be applied
+
+    Each proposal carries the local match (if any) so the dashboard can
+    render a review table with View / Edit / Assign / Skip actions.
+    """
+    try:
+        init_db(_DB_PATH)
+        from ..services.suppliers_db import compute_proposals
+        proposals = compute_proposals(_DB_PATH)
+    except Exception as exc:
+        log.error("suppliers preview failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "fetch_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+    return JSONResponse({
+        "ok":        True,
+        "mode":      "preview",
+        "fetched":   len(proposals),
+        "proposals": proposals,
+    })
+
+
+@router.post("/sync-from-wfirma/apply", dependencies=[_auth],
+             summary="Apply only the wFirma rows the operator selected")
+async def suppliers_sync_apply_endpoint(request: Request) -> JSONResponse:
+    """Per-row apply. Body: ``{"wfirma_ids": ["123", "456"]}``.
+
+    Each requested id is reclassified against the live wFirma fetch and
+    the local DB, then only that row is written. Flag-gated by
+    ``WFIRMA_SYNC_SUPPLIERS_ALLOWED``.
+
+    Skipped-invalid proposals are never applied — the response surfaces
+    them in ``proposals`` so the operator sees why.
+
+    Returns the same counts shape as the bulk sync endpoint plus a
+    filtered proposals list scoped to the requested ids.
+    """
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object")
+    wfirma_ids = body.get("wfirma_ids")
+    if not isinstance(wfirma_ids, list) or not wfirma_ids:
+        raise HTTPException(status_code=422,
+                            detail="wfirma_ids must be a non-empty list of strings")
+    if not all(isinstance(x, str) for x in wfirma_ids):
+        raise HTTPException(status_code=422, detail="wfirma_ids must be a list of strings")
+
+    if not settings.wfirma_sync_suppliers_allowed:
+        return JSONResponse({
+            "ok":               False,
+            "mode":             "blocked",
+            "dry_run":          True,
+            "applied_count":    0,
+            "blocking_reasons": [
+                "wfirma_sync_suppliers_allowed is false — operator must "
+                "enable WFIRMA_SYNC_SUPPLIERS_ALLOWED to apply"
+            ],
+        })
+
+    try:
+        init_db(_DB_PATH)
+        result = sync_from_wfirma(_DB_PATH, dry_run=False, wfirma_ids=wfirma_ids)
+    except Exception as exc:
+        log.error("suppliers apply failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "apply_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    # Trim proposals to just the requested ids so the response is bounded.
+    requested = set(wfirma_ids)
+    filtered = [p for p in result.get("proposals", []) if p["wfirma_id"] in requested]
+    body_out = {
+        "ok":            True,
+        "mode":          "write",
+        "fetched":       result["fetched"],
+        "inserted":      result["inserted"],
+        "updated_match": result["updated_match"],
+        "backfilled":    result["backfilled"],
+        "skipped":       result["skipped"],
+        "conflicts":     result["conflicts"],
+        "dry_run":       result["dry_run"],
+        "applied_count": result["inserted"] + result["updated_match"] + result["backfilled"],
+        "proposals":     filtered,
+    }
+    log.info(
+        "suppliers_sync_apply mode=write requested=%d inserted=%d updated=%d backfilled=%d skipped=%d",
+        len(requested), body_out["inserted"], body_out["updated_match"],
+        body_out["backfilled"], body_out["skipped"],
+    )
+    return JSONResponse(body_out)
+
+
 @router.post("/sync-from-wfirma", dependencies=[_auth],
              summary="Pull wFirma contractors into local suppliers (read wFirma only)")
 def suppliers_sync_from_wfirma_endpoint(
@@ -246,6 +354,7 @@ def suppliers_sync_from_wfirma_endpoint(
         "conflicts":        result["conflicts"],
         "dry_run":          result["dry_run"],
         "examples":         result.get("examples", []),
+        "proposals":        result.get("proposals", []),  # B0 review layer
     }
     if blocking_reasons:
         body["ok"] = False

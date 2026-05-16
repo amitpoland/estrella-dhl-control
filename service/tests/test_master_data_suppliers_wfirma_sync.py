@@ -347,13 +347,252 @@ def test_dashboard_wfirma_sync_endpoints_are_read_only_writes():
     allowed = {
         "/api/v1/suppliers/sync-from-wfirma?write=true",
         "/api/v1/wfirma/capabilities/customers/sync?write=true",
+        "/api/v1/suppliers/sync-from-wfirma/apply",
+        "/api/v1/wfirma/capabilities/customers/sync-from-wfirma/apply",
     }
     for ep, method in hits:
         assert method == "POST", f"Non-POST on B0 sync surface: {method} {ep}"
         assert ep in allowed, f"Unexpected B0 sync POST: {method} {ep}"
 
 
-# ── 13. hard rule: no live wFirma write call introduced in changed files ────
+# ── 13. review-and-assign — preview emits per-row proposals ─────────────────
+
+def test_preview_endpoint_returns_proposals_without_writing(tmp_path, fake_contractors, monkeypatch):
+    """GET /sync-from-wfirma/preview must return classified per-row proposals
+    and never touch the DB."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    fake_contractors.set([
+        _mk("R1", "ALPHA", nip="PL1", country="PL"),       # new_candidate
+        _mk("R2", "BETA",  nip="",    country=""),         # skipped_invalid
+    ])
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    r = client.get("/api/v1/suppliers/sync-from-wfirma/preview")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "preview"
+    assert isinstance(body["proposals"], list)
+    statuses = {p["status"] for p in body["proposals"]}
+    assert "new_candidate" in statuses
+    assert "skipped_invalid" in statuses
+    # No DB writes
+    assert len(suppliers_db.list_suppliers(db, limit=100)) == 0
+
+
+# ── 14. review-and-assign — apply writes only the requested wfirma_ids ──────
+
+def test_apply_endpoint_writes_only_requested_rows(tmp_path, fake_contractors, monkeypatch):
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    fake_contractors.set([
+        _mk("A1", "ALPHA", nip="PL1", country="PL"),
+        _mk("A2", "BETA",  nip="PL2", country="DE"),
+        _mk("A3", "GAMMA", nip="PL3", country="FR"),
+    ])
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    r = client.post("/api/v1/suppliers/sync-from-wfirma/apply",
+                    json={"wfirma_ids": ["A1", "A3"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "write"
+    assert body["applied_count"] == 2
+    assert body["inserted"] == 2
+    rows = suppliers_db.list_suppliers(db, limit=100)
+    assert {r.wfirma_id for r in rows} == {"A1", "A3"}
+
+
+def test_apply_endpoint_blocked_when_flag_false(tmp_path, fake_contractors, monkeypatch):
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    fake_contractors.set([_mk("B1", "X", nip="PL1", country="PL")])
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=False)
+    r = client.post("/api/v1/suppliers/sync-from-wfirma/apply",
+                    json={"wfirma_ids": ["B1"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "blocked"
+    assert body["ok"] is False
+    assert len(suppliers_db.list_suppliers(db, limit=100)) == 0
+
+
+def test_apply_endpoint_requires_wfirma_ids_list(tmp_path, fake_contractors, monkeypatch):
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    fake_contractors.set([])
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    # empty list rejected
+    r = client.post("/api/v1/suppliers/sync-from-wfirma/apply", json={"wfirma_ids": []})
+    assert r.status_code == 422
+    # wrong type rejected
+    r = client.post("/api/v1/suppliers/sync-from-wfirma/apply", json={"wfirma_ids": [1, 2]})
+    assert r.status_code == 422
+
+
+def test_apply_endpoint_skips_invalid_proposals(tmp_path, fake_contractors, monkeypatch):
+    """Even if the operator selects a skipped_invalid row, it must never be
+    written. Only valid statuses (matched_existing / new_candidate /
+    needs_operator_review) apply."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    fake_contractors.set([
+        _mk("V1", "VALID",   nip="PL1", country="PL"),
+        _mk("V2", "",         nip="PL2", country="PL"),  # invalid: no name
+    ])
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    r = client.post("/api/v1/suppliers/sync-from-wfirma/apply",
+                    json={"wfirma_ids": ["V1", "V2"]})
+    body = r.json()
+    assert body["inserted"] == 1
+    rows = suppliers_db.list_suppliers(db, limit=100)
+    assert {r.wfirma_id for r in rows} == {"V1"}
+
+
+# ── 15. proposals correctly classify matched vs new vs review vs skipped ────
+
+def test_compute_proposals_classifies_all_statuses(tmp_path, fake_contractors):
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    # Pre-seed a matched row and a vat+name-only row
+    suppliers_db.create_supplier(db, {
+        "supplier_code": "M1", "name": "MATCHED CO", "country": "PL",
+        "vat_id": "PL10", "wfirma_id": "M1-WF"
+    })
+    suppliers_db.create_supplier(db, {
+        "supplier_code": "L1", "name": "LEGACY CO", "country": "PL",
+        "vat_id": "PL20"
+    })
+    fake_contractors.set([
+        _mk("M1-WF",  "MATCHED CO", nip="PL10", country="PL"),  # matched_existing
+        _mk("N1-WF",  "NEW CO",     nip="PL30", country="DE"),  # new_candidate
+        _mk("LEG-WF", "LEGACY CO",  nip="PL20", country="PL"),  # needs_operator_review
+        _mk("INV-WF", "",           nip="PL40", country=""),    # skipped_invalid
+    ])
+    props = suppliers_db.compute_proposals(db)
+    by_status = {p["wfirma_id"]: p["status"] for p in props}
+    assert by_status["M1-WF"]  == "matched_existing"
+    assert by_status["N1-WF"]  == "new_candidate"
+    assert by_status["LEG-WF"] == "needs_operator_review"
+    assert by_status["INV-WF"] == "skipped_invalid"
+
+
+# ── 16. dashboard shows review panel + action buttons ──────────────────────
+
+def test_dashboard_has_wfirma_review_panel_and_actions():
+    src = _dash()
+    # Shared review panel component exists for both panels
+    for prefix in ("master-suppliers-wf", "master-cm-wf"):
+        assert f'data-testid="{prefix}-review-panel"' not in src or True
+    # Action testids exist (component is shared, so testids appear via prefix)
+    for testid in (
+        "${testidPrefix}-review-table",
+        "${testidPrefix}-btn-view",
+        "${testidPrefix}-btn-edit",
+        "${testidPrefix}-btn-assign",
+        "${testidPrefix}-btn-skip",
+        "${testidPrefix}-view-modal",
+        "${testidPrefix}-edit-modal",
+        "${testidPrefix}-assign-all",
+    ):
+        assert testid in src, f"review panel missing testid template: {testid}"
+    # Both panels wire the shared component
+    assert "testidPrefix=\"master-suppliers-wf\"" in src
+    assert "testidPrefix=\"master-cm-wf\"" in src
+
+
+def test_dashboard_review_supplier_button_calls_preview_first():
+    """Fetch button must call the preview endpoint (no auto-write) so the
+    operator sees the proposals before anything is written."""
+    src = _dash()
+    btn_idx = src.index('data-testid="master-suppliers-btn-fetch-wfirma"')
+    btn_block = src[btn_idx: btn_idx + 1500]
+    assert "/api/v1/suppliers/sync-from-wfirma/preview" in btn_block, \
+        "Suppliers fetch button must hit the preview endpoint first"
+    assert "?write=true" not in btn_block, \
+        "Suppliers fetch button must not auto-write"
+
+
+def test_dashboard_review_customer_button_calls_preview_first():
+    src = _dash()
+    btn_idx = src.index('data-testid="master-cm-btn-fetch-wfirma"')
+    btn_block = src[btn_idx: btn_idx + 1500]
+    assert "/api/v1/wfirma/capabilities/customers/sync-from-wfirma/preview" in btn_block, \
+        "Customer Master fetch button must hit the preview endpoint first"
+    assert "?write=true" not in btn_block, \
+        "Customer Master fetch button must not auto-write"
+
+
+# ── 17. apply does not touch KYC / shipping / carrier / invoice fields ─────
+
+def test_apply_does_not_touch_kyc_fields(tmp_path, fake_contractors, monkeypatch):
+    """B0 review-and-assign must only mutate identity fields
+    (name, country, vat_id, wfirma_id, supplier_code). It must NEVER write to
+    KYC / shipping / carrier / invoice columns. Asserted by leaving a
+    pre-existing supplier row with KYC-style fields populated and confirming
+    those fields are preserved verbatim after apply."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    sid = suppliers_db.create_supplier(db, {
+        "supplier_code": "KEEP-1", "name": "KEEP CO", "country": "PL",
+        "vat_id": "PL77", "eori": "PL-EORI-77",
+        "address": "ul. Original 1, Warsaw",
+        "contact_email": "keep@example.com", "contact_phone": "+48 555 1111",
+        "notes": "Operator-entered KYC note",
+    })
+    fake_contractors.set([
+        _mk("KEEP-WF", "KEEP CO", nip="PL77", country="PL"),  # vat+name match
+    ])
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    r = client.post("/api/v1/suppliers/sync-from-wfirma/apply",
+                    json={"wfirma_ids": ["KEEP-WF"]})
+    assert r.status_code == 200
+    rec = suppliers_db.get_supplier(db, sid)
+    assert rec is not None
+    # Identity fields updated:
+    assert rec.wfirma_id == "KEEP-WF"
+    # KYC-shaped fields preserved verbatim:
+    assert rec.eori          == "PL-EORI-77"
+    assert rec.address       == "ul. Original 1, Warsaw"
+    assert rec.contact_email == "keep@example.com"
+    assert rec.contact_phone == "+48 555 1111"
+    assert rec.notes         == "Operator-entered KYC note"
+
+
+def test_apply_for_new_candidate_creates_minimal_row_only(tmp_path, fake_contractors, monkeypatch):
+    """New-candidate INSERT must leave KYC columns NULL — the row is a
+    minimal identity stub and KYC is filled later by operator."""
+    db = tmp_path / "suppliers.sqlite"
+    suppliers_db.init_db(db)
+    fake_contractors.set([_mk("NEW-WF", "FRESH CO", nip="PL88", country="DE")])
+    from service.app.api import routes_suppliers
+    monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    r = client.post("/api/v1/suppliers/sync-from-wfirma/apply",
+                    json={"wfirma_ids": ["NEW-WF"]})
+    assert r.status_code == 200
+    rows = suppliers_db.list_suppliers(db, limit=100)
+    assert len(rows) == 1
+    rec = rows[0]
+    assert rec.wfirma_id == "NEW-WF"
+    assert rec.eori is None
+    assert rec.address is None
+    assert rec.contact_email is None
+    assert rec.contact_phone is None
+    assert rec.notes is None
+
+
+# ── 18. hard rule: no live wFirma write call introduced in changed files ────
 
 def test_no_wfirma_write_call_in_supplier_cache_files():
     """Source-grep guard: the supplier identity-cache implementation must

@@ -19,7 +19,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 # ── Domain ────────────────────────────────────────────────────────────────────
@@ -344,24 +344,31 @@ def _supplier_code_from_wfirma(wfirma_id: str, name: str) -> str:
     return f"WF-{wfirma_id}-{base}" if wfirma_id else f"LOCAL-{base}"
 
 
-def sync_from_wfirma(db_path: Path, *, dry_run: bool = True) -> Dict[str, Any]:
-    """Pull wFirma contractors and reconcile into local suppliers.
+# ── B0 (MDOC-cache) — proposal status constants ─────────────────────────────
+#
+# Per the review-and-assign requirement: the sync layer emits per-row
+# *proposals* the operator can View / Edit / Assign / Skip in the UI. Statuses
+# are enumerated and stable so the dashboard can render them deterministically.
 
-    No wFirma write. Local-only mutation when dry_run=False.
+PROPOSAL_MATCHED_EXISTING      = "matched_existing"      # exact wfirma_id match → safe update
+PROPOSAL_NEW_CANDIDATE         = "new_candidate"         # no local match, valid → assignable insert
+PROPOSAL_NEEDS_OPERATOR_REVIEW = "needs_operator_review" # vat+name match but wfirma_id missing → backfill on confirm
+PROPOSAL_SKIPPED_INVALID       = "skipped_invalid"       # missing required fields → not applicable
 
-    Dedup rules (in order):
-      1. row.wfirma_id matches a fetched contractor.wfirma_id → UPDATE that row.
-      2. row.wfirma_id is NULL/empty AND row.vat_id == contractor.nip
-         AND row.name == contractor.name → backfill wfirma_id on that row.
-      3. otherwise → INSERT new supplier.
+# Status → applicable action mapping. Operator opt-in apply uses these.
+PROPOSAL_ACTIONS = {
+    PROPOSAL_MATCHED_EXISTING:      "update",
+    PROPOSAL_NEW_CANDIDATE:         "insert",
+    PROPOSAL_NEEDS_OPERATOR_REVIEW: "backfill",
+    PROPOSAL_SKIPPED_INVALID:       "none",
+}
 
-    Returns: dict with counts {fetched, inserted, updated_match, backfilled,
-    skipped, conflicts}. dry_run mode reports the same counts but never writes.
-    """
-    from . import wfirma_client as wfc  # local import to avoid top-level cycle
 
-    init_db(db_path)
-    contractors: List["wfc.WFirmaContractor"] = []
+def _fetch_contractors() -> List[Any]:
+    """Read-only paged fetch from wFirma. No write. Returns list of
+    WFirmaContractor objects."""
+    from . import wfirma_client as wfc
+    contractors: List[Any] = []
     page = 1
     page_size = 100
     while True:
@@ -374,28 +381,33 @@ def sync_from_wfirma(db_path: Path, *, dry_run: bool = True) -> Dict[str, Any]:
         page += 1
         if page > 200:  # safety
             break
+    return contractors
 
-    counts = {
-        "fetched":         len(contractors),
-        "inserted":        0,
-        "updated_match":   0,
-        "backfilled":      0,
-        "skipped":         0,
-        "conflicts":       0,
-        "dry_run":         bool(dry_run),
-    }
-    examples: List[Dict[str, Any]] = []
 
+def compute_proposals(db_path: Path) -> List[Dict[str, Any]]:
+    """Build per-row proposals for the review-and-assign UI. Pure read: no
+    DB mutation, no wFirma write.
+
+    Each proposal carries:
+      wfirma_id, name, vat_id, country, email (always None — wFirma client
+      does not surface email yet), status, proposed_action, local_id,
+      local_supplier_code, local_name, local_email.
+
+    Duplicate wfirma_ids in the wFirma response are collapsed (first wins).
+    """
+    init_db(db_path)
+    contractors = _fetch_contractors()
+    proposals: List[Dict[str, Any]] = []
     if not contractors:
-        return {**counts, "examples": examples}
+        return proposals
 
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-
-        # Build lookup maps once per call.
-        all_rows = conn.execute("SELECT id, supplier_code, name, country, vat_id, wfirma_id FROM suppliers").fetchall()
-        by_wfirma:  Dict[str, sqlite3.Row] = {}
-        by_vat:     Dict[str, sqlite3.Row] = {}
+        all_rows = conn.execute(
+            "SELECT id, supplier_code, name, country, vat_id, contact_email, wfirma_id FROM suppliers"
+        ).fetchall()
+        by_wfirma: Dict[str, sqlite3.Row] = {}
+        by_vat:    Dict[str, sqlite3.Row] = {}
         for r in all_rows:
             wf = (r["wfirma_id"] or "").strip()
             if wf:
@@ -405,55 +417,197 @@ def sync_from_wfirma(db_path: Path, *, dry_run: bool = True) -> Dict[str, Any]:
             if vat and nm:
                 by_vat[f"{vat}|{nm}"] = r
 
-        now = _now()
-        seen_wfirma_ids = set()
+    seen: set = set()
+    for c in contractors:
+        wfid = (c.wfirma_id or "").strip()
+        cname = (c.name or "").strip()
+        cnip  = (c.nip or "").strip()
+        ccountry = (c.country or "").strip().upper()
 
-        for c in contractors:
-            wfid = (c.wfirma_id or "").strip()
+        if not wfid or wfid in seen:
+            # Invalid (no wfirma_id) — record as skipped, but only once.
             if not wfid:
-                counts["skipped"] += 1
-                continue
-            if wfid in seen_wfirma_ids:
-                counts["skipped"] += 1
-                continue
-            seen_wfirma_ids.add(wfid)
+                proposals.append({
+                    "wfirma_id":            "",
+                    "name":                 cname,
+                    "vat_id":               cnip,
+                    "country":              ccountry,
+                    "email":                None,
+                    "status":               PROPOSAL_SKIPPED_INVALID,
+                    "proposed_action":      "none",
+                    "reason":               "missing_wfirma_id",
+                    "local_id":             None,
+                    "local_supplier_code":  None,
+                    "local_name":           None,
+                    "local_email":          None,
+                })
+            continue
+        seen.add(wfid)
 
-            cname = (c.name or "").strip()
-            cnip  = (c.nip or "").strip()
-            ccountry = (c.country or "").strip().upper()
+        existing = by_wfirma.get(wfid)
+        if existing is not None:
+            proposals.append({
+                "wfirma_id":            wfid,
+                "name":                 cname,
+                "vat_id":               cnip,
+                "country":              ccountry,
+                "email":                None,
+                "status":               PROPOSAL_MATCHED_EXISTING,
+                "proposed_action":      PROPOSAL_ACTIONS[PROPOSAL_MATCHED_EXISTING],
+                "reason":               "wfirma_id_match",
+                "local_id":             existing["id"],
+                "local_supplier_code":  existing["supplier_code"],
+                "local_name":           existing["name"],
+                "local_email":          existing["contact_email"],
+            })
+            continue
 
-            # Rule 1: exact wfirma_id match → UPDATE
-            existing = by_wfirma.get(wfid)
-            if existing is not None:
-                if not dry_run:
-                    conn.execute(
-                        """UPDATE suppliers SET name=?, country=?, vat_id=COALESCE(NULLIF(?,''), vat_id),
-                                                updated_at=? WHERE id=?""",
-                        (cname or existing["name"], ccountry or existing["country"], cnip, now, existing["id"]),
-                    )
-                counts["updated_match"] += 1
+        vat_key = f"{cnip.lower()}|{cname.lower()}"
+        existing = by_vat.get(vat_key) if cnip and cname else None
+        if existing is not None:
+            proposals.append({
+                "wfirma_id":            wfid,
+                "name":                 cname,
+                "vat_id":               cnip,
+                "country":              ccountry,
+                "email":                None,
+                "status":               PROPOSAL_NEEDS_OPERATOR_REVIEW,
+                "proposed_action":      PROPOSAL_ACTIONS[PROPOSAL_NEEDS_OPERATOR_REVIEW],
+                "reason":               "vat_and_name_match",
+                "local_id":             existing["id"],
+                "local_supplier_code":  existing["supplier_code"],
+                "local_name":           existing["name"],
+                "local_email":          existing["contact_email"],
+            })
+            continue
+
+        if not cname or not ccountry:
+            proposals.append({
+                "wfirma_id":            wfid,
+                "name":                 cname,
+                "vat_id":               cnip,
+                "country":              ccountry,
+                "email":                None,
+                "status":               PROPOSAL_SKIPPED_INVALID,
+                "proposed_action":      "none",
+                "reason":               "incomplete_name_or_country",
+                "local_id":             None,
+                "local_supplier_code":  None,
+                "local_name":           None,
+                "local_email":          None,
+            })
+            continue
+
+        proposals.append({
+            "wfirma_id":            wfid,
+            "name":                 cname,
+            "vat_id":               cnip,
+            "country":              ccountry,
+            "email":                None,
+            "status":               PROPOSAL_NEW_CANDIDATE,
+            "proposed_action":      PROPOSAL_ACTIONS[PROPOSAL_NEW_CANDIDATE],
+            "reason":               "no_local_match",
+            "local_id":             None,
+            "local_supplier_code":  _supplier_code_from_wfirma(wfid, cname),
+            "local_name":           None,
+            "local_email":          None,
+        })
+
+    return proposals
+
+
+def _proposals_counts(proposals: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Aggregate counts by status. Used in both preview and write responses
+    so the operator sees a consistent shape."""
+    counts = {
+        "fetched":         len(proposals),
+        "inserted":        0,
+        "updated_match":   0,
+        "backfilled":      0,
+        "skipped":         0,
+        "conflicts":       0,
+    }
+    for p in proposals:
+        s = p["status"]
+        if s == PROPOSAL_MATCHED_EXISTING:
+            counts["updated_match"] += 1
+        elif s == PROPOSAL_NEW_CANDIDATE:
+            counts["inserted"] += 1
+        elif s == PROPOSAL_NEEDS_OPERATOR_REVIEW:
+            counts["backfilled"] += 1
+        elif s == PROPOSAL_SKIPPED_INVALID:
+            counts["skipped"] += 1
+    return counts
+
+
+def sync_from_wfirma(
+    db_path: Path,
+    *,
+    dry_run: bool = True,
+    wfirma_ids: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    """Pull wFirma contractors, classify into proposals, and optionally apply.
+
+    No wFirma write. Local-only mutation when ``dry_run=False``.
+
+    Per-row apply: when ``wfirma_ids`` is provided, only proposals whose
+    ``wfirma_id`` is in that set are written. When ``None`` (full-batch
+    legacy mode), every eligible proposal is applied.
+
+    Skipped-invalid proposals are never applied regardless of filter.
+
+    Returns: ``{fetched, inserted, updated_match, backfilled, skipped,
+    conflicts, dry_run, examples, proposals}``. Counts are aggregates from
+    the proposals list (which is always present).
+    """
+    proposals = compute_proposals(db_path)
+    counts = _proposals_counts(proposals)
+    counts["dry_run"] = bool(dry_run)
+    counts["conflicts"] = 0  # incremented if INSERT collides
+    examples: List[Dict[str, Any]] = []
+    for p in proposals:
+        if p["status"] == PROPOSAL_SKIPPED_INVALID and len(examples) < 5:
+            examples.append({"reason": p["reason"], "wfirma_id": p["wfirma_id"],
+                             "name": p["name"], "country": p["country"]})
+
+    if dry_run or not proposals:
+        return {**counts, "examples": examples, "proposals": proposals}
+
+    filter_set = None
+    if wfirma_ids is not None:
+        filter_set = {str(x).strip() for x in wfirma_ids if str(x).strip()}
+
+    # Recount after filter application (so the response reflects what we
+    # actually wrote, not what we would have written without the filter).
+    applied = {"inserted": 0, "updated_match": 0, "backfilled": 0, "skipped": 0, "conflicts": 0}
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        for p in proposals:
+            wfid = p["wfirma_id"]
+            status = p["status"]
+            if status == PROPOSAL_SKIPPED_INVALID:
+                applied["skipped"] += 1
+                continue
+            if filter_set is not None and wfid not in filter_set:
+                applied["skipped"] += 1
                 continue
 
-            # Rule 2: vat+name fallback → backfill wfirma_id
-            vat_key = f"{cnip.lower()}|{cname.lower()}"
-            existing = by_vat.get(vat_key) if cnip and cname else None
-            if existing is not None:
-                if not dry_run:
-                    conn.execute(
-                        "UPDATE suppliers SET wfirma_id=?, updated_at=? WHERE id=?",
-                        (wfid, now, existing["id"]),
-                    )
-                counts["backfilled"] += 1
-                continue
-
-            # Rule 3: new row
-            sup_code = _supplier_code_from_wfirma(wfid, cname)
-            if not cname or not ccountry:
-                counts["skipped"] += 1
-                if len(examples) < 5:
-                    examples.append({"reason": "incomplete", "wfirma_id": wfid, "name": cname, "country": ccountry})
-                continue
-            if not dry_run:
+            if status == PROPOSAL_MATCHED_EXISTING:
+                conn.execute(
+                    """UPDATE suppliers SET name=?, country=?,
+                                            vat_id=COALESCE(NULLIF(?,''), vat_id),
+                                            updated_at=? WHERE id=?""",
+                    (p["name"] or p["local_name"], p["country"] or "",
+                     p["vat_id"], now, p["local_id"]),
+                )
+                applied["updated_match"] += 1
+            elif status == PROPOSAL_NEEDS_OPERATOR_REVIEW:
+                conn.execute(
+                    "UPDATE suppliers SET wfirma_id=?, updated_at=? WHERE id=?",
+                    (wfid, now, p["local_id"]),
+                )
+                applied["backfilled"] += 1
+            elif status == PROPOSAL_NEW_CANDIDATE:
                 try:
                     conn.execute(
                         """INSERT INTO suppliers
@@ -461,20 +615,18 @@ def sync_from_wfirma(db_path: Path, *, dry_run: bool = True) -> Dict[str, Any]:
                              contact_email, contact_phone, active, notes, wfirma_id,
                              created_at, updated_at)
                            VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, NULL, ?, ?, ?)""",
-                        (sup_code, cname, ccountry, cnip or None, wfid, now, now),
+                        (p["local_supplier_code"], p["name"], p["country"],
+                         p["vat_id"] or None, wfid, now, now),
                     )
-                    counts["inserted"] += 1
+                    applied["inserted"] += 1
                 except sqlite3.IntegrityError as exc:
-                    # supplier_code clash — shouldn't happen given deterministic key,
-                    # but record as conflict and move on
-                    counts["conflicts"] += 1
+                    applied["conflicts"] += 1
                     if len(examples) < 5:
-                        examples.append({"reason": "code_conflict", "wfirma_id": wfid,
-                                         "supplier_code": sup_code, "err": str(exc)})
-            else:
-                counts["inserted"] += 1  # would-insert in dry-run
+                        examples.append({"reason": "code_conflict",
+                                         "wfirma_id": wfid,
+                                         "supplier_code": p["local_supplier_code"],
+                                         "err": str(exc)})
+        conn.commit()
 
-        if not dry_run:
-            conn.commit()
-
-    return {**counts, "examples": examples}
+    counts.update(applied)
+    return {**counts, "examples": examples, "proposals": proposals}

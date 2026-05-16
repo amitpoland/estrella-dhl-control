@@ -3602,6 +3602,10 @@ function MasterDataPage({ onNav, onToast }) {
   const [supForm,   setSupForm]   = React.useState(null);  // null=hidden, {}=new, {id,...}=edit
   const [supSaving, setSupSaving] = React.useState(false);
   const [supError,  setSupError]  = React.useState(null);
+  // B0 (MDOC-cache) — wFirma review-and-assign panel state
+  const [supWfReview, setSupWfReview] = React.useState(null);
+  // shape: { loading, error, proposals: [{wfirma_id,name,vat_id,country,email,status,proposed_action,reason,local_id,local_supplier_code,local_name,local_email, _ui_skipped, _ui_edited}] }
+  const [cmWfReview,  setCmWfReview]  = React.useState(null);  // same shape for Customer Master
 
   const loadSuppliers = React.useCallback(async () => {
     setSuppliers(s => ({ ...s, loading: true, error: null }));
@@ -3844,6 +3848,245 @@ function MasterDataPage({ onNav, onToast }) {
   const thStyle = { textAlign: 'left', padding: '8px 12px', fontSize: 10, fontWeight: 700,
     color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase',
     borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
+
+  // ── B0 (MDOC-cache) — wFirma review-and-assign panel ───────────────────
+  // Shared component used by both the Suppliers and Customer Master panels.
+  // Renders the per-row review table (wFirma ID, name, VAT, country, email,
+  // local match, status) with View / Edit / Save-Assign / Skip actions.
+  // Pure UI: it never writes directly. The parent passes ``onApply(ids)`` and
+  // is responsible for hitting the correct apply endpoint.
+  const WfReviewPanel = ({ testidPrefix, title, state, onChange, onClose, onApply }) => {
+    const [busy, setBusy] = React.useState(false);
+    const [viewRow, setViewRow] = React.useState(null);
+    const [editRow, setEditRow] = React.useState(null);
+    if (!state) return null;
+    const proposals = state.proposals || [];
+
+    const statusStyles = {
+      matched_existing:      { bg: 'var(--badge-green-bg, #1e3a23)', fg: 'var(--badge-green-text, #6ee7b7)', label: 'matched' },
+      new_candidate:         { bg: 'var(--badge-blue-bg,  #1e2a3a)', fg: 'var(--badge-blue-text,  #93c5fd)', label: 'new' },
+      needs_operator_review: { bg: 'var(--badge-amber-bg, #3a2e1e)', fg: 'var(--badge-amber-text, #fcd34d)', label: 'review' },
+      skipped_invalid:       { bg: 'var(--badge-red-bg,   #3a1e1e)', fg: 'var(--badge-red-text,   #fca5a5)', label: 'skipped' },
+    };
+
+    const updateProposal = (idx, patch) => {
+      const next = proposals.map((p, i) => i === idx ? { ...p, ...patch } : p);
+      onChange({ ...state, proposals: next });
+    };
+
+    const assignSelected = async (ids) => {
+      if (!ids || !ids.length) { window.alert('Nothing to assign.'); return; }
+      setBusy(true);
+      const ok = await onApply(ids);
+      setBusy(false);
+      if (ok) {
+        // Mark applied rows as skipped (hide from further action)
+        const idSet = new Set(ids);
+        const next = proposals.map(p => idSet.has(p.wfirma_id) ? { ...p, _ui_skipped: true } : p);
+        onChange({ ...state, proposals: next });
+      }
+    };
+
+    const eligibleIds = proposals
+      .filter(p => !p._ui_skipped && p.status !== 'skipped_invalid')
+      .map(p => p.wfirma_id);
+
+    return (
+      <div data-testid={`${testidPrefix}-review-panel`}
+        style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                 borderRadius: 10, padding: 14, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{title}</div>
+          <div style={{ flex: 1, fontSize: 11, color: 'var(--text-3)' }}>
+            {state.loading ? 'Loading proposals…' : `${proposals.length} proposed rows — review and assign one or all`}
+          </div>
+          <button data-testid={`${testidPrefix}-assign-all`}
+            disabled={busy || state.loading || eligibleIds.length === 0}
+            onClick={() => assignSelected(eligibleIds)}
+            style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600,
+              background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6,
+              cursor: (busy || eligibleIds.length === 0) ? 'not-allowed' : 'pointer',
+              opacity: (busy || eligibleIds.length === 0) ? 0.5 : 1 }}>
+            Assign all ({eligibleIds.length})
+          </button>
+          <button data-testid={`${testidPrefix}-close`}
+            onClick={onClose}
+            style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600,
+              background: 'var(--bg-subtle)', color: 'var(--text)',
+              border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
+            Close
+          </button>
+        </div>
+        {state.error && (
+          <div data-testid={`${testidPrefix}-error`} style={{ padding: 10, fontSize: 11,
+            color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)',
+            border: '1px solid var(--badge-red-border)', borderRadius: 6, marginBottom: 10 }}>
+            Fetch failed: {state.error}
+          </div>
+        )}
+        {!state.loading && !state.error && proposals.length === 0 && (
+          <div data-testid={`${testidPrefix}-empty`}
+            style={{ padding: 14, fontSize: 12, color: 'var(--text-3)' }}>
+            No proposals returned. Nothing to review.
+          </div>
+        )}
+        {proposals.length > 0 && (
+          <div style={{ overflowX: 'auto' }}>
+            <table data-testid={`${testidPrefix}-review-table`}
+              style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)' }}>
+                  {['wFirma ID','Name','VAT / NIP','Country','Email','Local match','Status','Actions'].map(h => (
+                    <th key={h} style={thStyle}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {proposals.map((p, idx) => {
+                  const st = statusStyles[p.status] || { bg: 'var(--bg-subtle)', fg: 'var(--text-3)', label: p.status };
+                  const skipped = p._ui_skipped;
+                  const isInvalid = p.status === 'skipped_invalid';
+                  const edits = p._ui_edited || {};
+                  return (
+                    <tr key={(p.wfirma_id || 'inv') + ':' + idx}
+                        data-testid={`${testidPrefix}-row`}
+                        data-wfirma-id={p.wfirma_id}
+                        style={{ borderBottom: '1px solid var(--border)',
+                          opacity: skipped ? 0.45 : 1 }}>
+                      <td style={{ padding: '6px 10px', color: 'var(--text-2)', fontFamily: 'monospace' }}>{p.wfirma_id || '—'}</td>
+                      <td style={{ padding: '6px 10px', color: 'var(--text)' }}>
+                        {edits.name || p.name || '—'}
+                      </td>
+                      <td style={{ padding: '6px 10px', color: 'var(--text-2)' }}>{p.vat_id || '—'}</td>
+                      <td style={{ padding: '6px 10px', color: 'var(--text-2)' }}>{p.country || '—'}</td>
+                      <td style={{ padding: '6px 10px', color: 'var(--text-3)' }}>{p.email || p.local_email || '—'}</td>
+                      <td style={{ padding: '6px 10px', color: 'var(--text-3)' }}>
+                        {p.local_name ? <span>{p.local_name}<br/><span style={{ fontSize: 10 }}>{p.local_supplier_code || ''}</span></span> : '—'}
+                      </td>
+                      <td style={{ padding: '6px 10px' }}>
+                        <span style={{ background: st.bg, color: st.fg, padding: '2px 8px',
+                          borderRadius: 10, fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+                          textTransform: 'uppercase' }}>{st.label}</span>
+                        {p.reason && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{p.reason}</div>}
+                      </td>
+                      <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
+                        <button data-testid={`${testidPrefix}-btn-view`}
+                          onClick={() => setViewRow(p)}
+                          style={{ marginRight: 4, padding: '3px 8px', fontSize: 10,
+                            background: 'var(--bg-subtle)', color: 'var(--text)',
+                            border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer' }}>
+                          View
+                        </button>
+                        <button data-testid={`${testidPrefix}-btn-edit`}
+                          disabled={skipped || isInvalid}
+                          onClick={() => setEditRow({ ...p, _idx: idx })}
+                          style={{ marginRight: 4, padding: '3px 8px', fontSize: 10,
+                            background: 'var(--bg-subtle)', color: 'var(--text)',
+                            border: '1px solid var(--border)', borderRadius: 4,
+                            cursor: (skipped || isInvalid) ? 'not-allowed' : 'pointer',
+                            opacity: (skipped || isInvalid) ? 0.4 : 1 }}>
+                          Edit
+                        </button>
+                        <button data-testid={`${testidPrefix}-btn-assign`}
+                          disabled={busy || skipped || isInvalid || !p.wfirma_id}
+                          onClick={() => assignSelected([p.wfirma_id])}
+                          style={{ marginRight: 4, padding: '3px 8px', fontSize: 10,
+                            background: 'var(--accent)', color: '#fff',
+                            border: 'none', borderRadius: 4,
+                            cursor: (busy || skipped || isInvalid || !p.wfirma_id) ? 'not-allowed' : 'pointer',
+                            opacity: (busy || skipped || isInvalid || !p.wfirma_id) ? 0.4 : 1,
+                            fontWeight: 600 }}>
+                          Save / Assign
+                        </button>
+                        <button data-testid={`${testidPrefix}-btn-skip`}
+                          disabled={skipped}
+                          onClick={() => updateProposal(idx, { _ui_skipped: true })}
+                          style={{ padding: '3px 8px', fontSize: 10,
+                            background: 'var(--bg-subtle)', color: 'var(--text-3)',
+                            border: '1px solid var(--border)', borderRadius: 4,
+                            cursor: skipped ? 'not-allowed' : 'pointer',
+                            opacity: skipped ? 0.4 : 1 }}>
+                          Skip
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {viewRow && (
+          <div data-testid={`${testidPrefix}-view-modal`}
+            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 999,
+              background: 'rgba(0,0,0,0.4)', display: 'flex',
+              alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+              borderRadius: 10, padding: 20, minWidth: 360, maxWidth: 600 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 10 }}>
+                wFirma identity — read-only view
+              </div>
+              <pre style={{ fontSize: 11, color: 'var(--text-2)', whiteSpace: 'pre-wrap',
+                background: 'var(--bg-subtle)', padding: 12, borderRadius: 6 }}>
+{JSON.stringify(viewRow, null, 2)}
+              </pre>
+              <div style={{ textAlign: 'right', marginTop: 10 }}>
+                <button onClick={() => setViewRow(null)}
+                  style={{ padding: '4px 12px', fontSize: 11, background: 'var(--accent)',
+                    color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {editRow && (
+          <div data-testid={`${testidPrefix}-edit-modal`}
+            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 999,
+              background: 'rgba(0,0,0,0.4)', display: 'flex',
+              alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+              borderRadius: 10, padding: 20, minWidth: 360, maxWidth: 500 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 10 }}>
+                Edit local identity fields before assign
+              </div>
+              {['name','vat_id','country'].map(f => (
+                <div key={f} style={{ marginBottom: 8 }}>
+                  <label style={{ display: 'block', fontSize: 10, color: 'var(--text-3)',
+                    textTransform: 'uppercase', marginBottom: 2 }}>{f}</label>
+                  <input type="text" value={editRow[f] || ''}
+                    onChange={e => setEditRow({ ...editRow, [f]: e.target.value })}
+                    style={{ width: '100%', padding: '6px 8px', fontSize: 12,
+                      background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+                      borderRadius: 4, color: 'var(--text)' }} />
+                </div>
+              ))}
+              <div style={{ textAlign: 'right', marginTop: 10 }}>
+                <button onClick={() => setEditRow(null)}
+                  style={{ marginRight: 8, padding: '4px 12px', fontSize: 11,
+                    background: 'var(--bg-subtle)', color: 'var(--text)',
+                    border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}>
+                  Cancel
+                </button>
+                <button data-testid={`${testidPrefix}-edit-save`}
+                  onClick={() => {
+                    updateProposal(editRow._idx, {
+                      name: editRow.name, vat_id: editRow.vat_id, country: editRow.country,
+                      _ui_edited: { name: editRow.name, vat_id: editRow.vat_id, country: editRow.country }
+                    });
+                    setEditRow(null);
+                  }}
+                  style={{ padding: '4px 12px', fontSize: 11, background: 'var(--accent)',
+                    color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                  Save edits
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
   const trStyle = { borderBottom: '1px solid var(--border-subtle)' };
 
   // ══════════════════════════════════════════════════════════
@@ -4202,23 +4445,16 @@ function MasterDataPage({ onNav, onToast }) {
                 actions={
                   <button data-testid="master-cm-btn-fetch-wfirma"
                     onClick={async () => {
-                      if (!window.confirm('Fetch and store local copies of wFirma contractors as customers? No wFirma write occurs.')) return;
+                      setCmWfReview({ loading: true, error: null, proposals: [] });
                       try {
-                        const r = await apiFetch('/api/v1/wfirma/capabilities/customers/sync?write=true',
-                          { method: 'POST' });
-                        if (r && r.ok === false && r.blocked) {
-                          window.alert('Blocked: ' + (r.reason || 'wFirma sync gate is off'));
-                        } else if (r && r.summary) {
-                          const s = r.summary;
-                          window.alert('Customers sync: fetched=' + (s.fetched|0)
-                            + ' created=' + (s.created|0)
-                            + ' updated=' + (s.updated|0)
-                            + ' skipped=' + (s.skipped|0));
-                        } else {
-                          window.alert('Sync completed');
-                        }
-                        await loadCustomerMaster();
-                      } catch (e) { window.alert('Fetch failed: ' + (e.message || e)); }
+                        const r = await apiFetch('/api/v1/wfirma/capabilities/customers/sync-from-wfirma/preview');
+                        setCmWfReview({
+                          loading: false, error: null,
+                          proposals: (r.proposals || []).map(p => ({ ...p, _ui_skipped: false, _ui_edited: null }))
+                        });
+                      } catch (e) {
+                        setCmWfReview({ loading: false, error: e.message || 'fetch failed', proposals: [] });
+                      }
                     }}
                     style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
                       background: 'var(--bg-subtle)', color: 'var(--text)',
@@ -4234,6 +4470,30 @@ function MasterDataPage({ onNav, onToast }) {
               {!custMaster.loading && custMaster.error && (
                 <div style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}
                      data-testid="master-cm-error">Load failed: {custMaster.error}</div>
+              )}
+              {cmWfReview && (
+                <WfReviewPanel
+                  testidPrefix="master-cm-wf"
+                  title="wFirma → Customer Master review"
+                  state={cmWfReview}
+                  onChange={setCmWfReview}
+                  onClose={() => setCmWfReview(null)}
+                  onApply={async (ids) => {
+                    try {
+                      const r = await apiFetch('/api/v1/wfirma/capabilities/customers/sync-from-wfirma/apply',
+                        { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
+                      if (r && r.ok === false && r.mode === 'blocked') {
+                        window.alert('Blocked: ' + (r.blocking_reasons || []).join('; '));
+                        return false;
+                      }
+                      window.alert('Applied=' + (r.applied_count|0) + ' rows.');
+                      await loadCustomerMaster();
+                      return true;
+                    } catch (e) {
+                      window.alert('Apply failed: ' + (e.message || e));
+                      return false;
+                    }
+                  }} />
               )}
               {!custMaster.loading && !custMaster.error && (
                 <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
@@ -4868,21 +5128,16 @@ function MasterDataPage({ onNav, onToast }) {
                   <React.Fragment>
                     <button data-testid="master-suppliers-btn-fetch-wfirma"
                       onClick={async () => {
-                        if (!window.confirm('Fetch and store local copies of wFirma contractors as suppliers? No wFirma write occurs.')) return;
+                        setSupWfReview({ loading: true, error: null, proposals: [] });
                         try {
-                          const r = await apiFetch('/api/v1/suppliers/sync-from-wfirma?write=true',
-                            { method: 'POST' });
-                          if (r && r.ok === false && r.mode === 'blocked') {
-                            window.alert('Blocked: ' + (r.blocking_reasons || []).join('; '));
-                          } else {
-                            window.alert('Suppliers sync: fetched=' + (r.fetched|0)
-                              + ' inserted=' + (r.inserted|0)
-                              + ' updated=' + (r.updated_match|0)
-                              + ' backfilled=' + (r.backfilled|0)
-                              + ' skipped=' + (r.skipped|0));
-                          }
-                          await loadSuppliers();
-                        } catch (e) { window.alert('Fetch failed: ' + (e.message || e)); }
+                          const r = await apiFetch('/api/v1/suppliers/sync-from-wfirma/preview');
+                          setSupWfReview({
+                            loading: false, error: null,
+                            proposals: (r.proposals || []).map(p => ({ ...p, _ui_skipped: false, _ui_edited: null }))
+                          });
+                        } catch (e) {
+                          setSupWfReview({ loading: false, error: e.message || 'fetch failed', proposals: [] });
+                        }
                       }}
                       style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
                         background: 'var(--bg-subtle)', color: 'var(--text)',
@@ -4922,6 +5177,33 @@ function MasterDataPage({ onNav, onToast }) {
                        fontSize: 11, color: 'var(--badge-red-text)', marginBottom: 8 }}>
                   {supError}
                 </div>
+              )}
+              {supWfReview && (
+                <WfReviewPanel
+                  testidPrefix="master-suppliers-wf"
+                  title="wFirma → Suppliers review"
+                  state={supWfReview}
+                  onChange={setSupWfReview}
+                  onClose={() => setSupWfReview(null)}
+                  onApply={async (ids) => {
+                    try {
+                      const r = await apiFetch('/api/v1/suppliers/sync-from-wfirma/apply',
+                        { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
+                      if (r && r.ok === false && r.mode === 'blocked') {
+                        window.alert('Blocked: ' + (r.blocking_reasons || []).join('; '));
+                        return false;
+                      }
+                      window.alert('Applied=' + (r.applied_count|0)
+                        + ' (inserted=' + (r.inserted|0)
+                        + ', updated=' + (r.updated_match|0)
+                        + ', backfilled=' + (r.backfilled|0) + ')');
+                      await loadSuppliers();
+                      return true;
+                    } catch (e) {
+                      window.alert('Apply failed: ' + (e.message || e));
+                      return false;
+                    }
+                  }} />
               )}
               {!suppliers.loading && !suppliers.error && (
                 <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
