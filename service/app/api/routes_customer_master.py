@@ -124,6 +124,13 @@ def _customer_to_dict(c: CustomerMaster) -> Dict[str, Any]:
         "notes":                         c.notes,
         "created_at":                    c.created_at,
         "updated_at":                    c.updated_at,
+        # B0 enrichment fields
+        "bill_to_email":                 c.bill_to_email,
+        "bill_to_phone":                 c.bill_to_phone,
+        "bill_to_mobile":                c.bill_to_mobile,
+        "bank_account":                  c.bank_account,
+        "last_wfirma_sync_at":           c.last_wfirma_sync_at,
+        "wfirma_sync_source":            c.wfirma_sync_source,
     }
 
 
@@ -329,13 +336,22 @@ def _cm_wfirma_proposals() -> List[Dict[str, Any]]:
         name = (c.name or "").strip()
         nip  = (c.nip or "").strip()
         cty  = (c.country or "").strip().upper()
+        # B0 enrichment — opportunistic from wFirma XML
+        email  = (getattr(c, "email", "") or "").strip()
+        phone  = (getattr(c, "phone", "") or "").strip()
+        mobile = (getattr(c, "mobile", "") or "").strip()
+        bank   = (getattr(c, "account_payments", "") or "").strip()
+        pterm  = (getattr(c, "payment_term", "") or "").strip()
+
         if not wfid:
             out.append({
                 "wfirma_id": "", "name": name, "vat_id": nip, "country": cty,
-                "email": None,
+                "email": email or None, "phone": phone or None,
+                "mobile": mobile or None, "bank_account": bank or None,
+                "payment_term": pterm or None,
                 "status": "skipped_invalid", "reason": "missing_wfirma_id",
                 "suggested_target": "skip",
-                "local_match": None,
+                "local_match": None, "mismatches": [],
             })
             continue
         if wfid in seen:
@@ -351,23 +367,53 @@ def _cm_wfirma_proposals() -> List[Dict[str, Any]]:
         else:
             reason_target = _cm_suggest_target(name, nip, cty)
 
+        # Mismatch detection — for matched_existing rows where wFirma value
+        # differs from a non-empty local value, surface a per-field flag so
+        # the operator can decide. Apply still NEVER overwrites a non-empty
+        # local value via upsert_identity_only's COALESCE semantics.
+        mismatches: List[Dict[str, str]] = []
+        if match is not None:
+            checks = [
+                ("name",          name,  match.bill_to_name),
+                ("country",       cty,   match.country),
+                ("vat_id",        nip,   (match.nip or "")),
+                ("email",         email, (match.bill_to_email or "")),
+                ("phone",         phone, (match.bill_to_phone or "")),
+            ]
+            for field, remote_val, local_val in checks:
+                remote_s = (remote_val or "").strip()
+                local_s  = (local_val  or "").strip()
+                if remote_s and local_s and remote_s.lower() != local_s.lower():
+                    mismatches.append({"field": field,
+                                       "remote": remote_s, "local": local_s})
+
         out.append({
             "wfirma_id":         wfid,
             "name":              name,
             "vat_id":            nip,
             "country":           cty,
-            "email":             None,
+            "email":             email or None,
+            "phone":             phone or None,
+            "mobile":            mobile or None,
+            "bank_account":      bank or None,
+            "payment_term":      pterm or None,
             "status":            status,
             "reason":            reason_target["reason"],
             "suggested_target":  reason_target["suggested_target"],
+            "mismatches":        mismatches,
             "local_match": None if match is None else {
                 "id":                       match.id,
                 "bill_to_contractor_id":    match.bill_to_contractor_id,
                 "bill_to_name":             match.bill_to_name,
                 "country":                  match.country,
+                "bill_to_email":            match.bill_to_email,
+                "bill_to_phone":            match.bill_to_phone,
+                "default_currency":         match.default_currency,
+                "payment_terms_days":       match.payment_terms_days,
                 "freight_service_id":       match.freight_service_id,
                 "insurance_service_id":     match.insurance_service_id,
                 "kyc_status":               match.kyc_status,
+                "last_wfirma_sync_at":      match.last_wfirma_sync_at,
             },
         })
     return out
@@ -416,17 +462,13 @@ async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
     if not all(isinstance(x, str) for x in wfirma_ids):
         raise HTTPException(status_code=422, detail="wfirma_ids must be a list of strings")
 
-    if not settings.wfirma_sync_customers_allowed:
-        return JSONResponse({
-            "ok":               False,
-            "mode":             "blocked",
-            "dry_run":          True,
-            "applied_count":    0,
-            "blocking_reasons": [
-                "wfirma_sync_customers_allowed is false - operator must "
-                "enable WFIRMA_SYNC_CUSTOMERS_ALLOWED to apply"
-            ],
-        })
+    # B0 semantic fix (2026-05-16): Save/Assign writes to the LOCAL
+    # customer_master master only. No wFirma write occurs here. The legacy
+    # WFIRMA_SYNC_CUSTOMERS_ALLOWED flag protected an outbound wFirma
+    # contractor sync that this endpoint does NOT perform, so its gate is
+    # not relevant — the operator's authenticated click + this route's
+    # X-API-Key are sufficient. The flag remains in place for the original
+    # /api/v1/wfirma/customers/sync (wfirma_customers mapping) endpoint.
 
     try:
         proposals = _cm_wfirma_proposals()
@@ -458,6 +500,13 @@ async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
                 bill_to_name=p["name"],
                 country=p["country"],
                 nip=p["vat_id"] or None,
+                bill_to_email=p.get("email"),
+                bill_to_phone=p.get("phone"),
+                bill_to_mobile=p.get("mobile"),
+                bank_account=p.get("bank_account"),
+                # default_currency / payment_terms_days left None for now —
+                # wFirma list response rarely carries these. Operator can
+                # set them via the Customer Master inline form.
             )
             if res["action"] == "inserted":
                 inserted += 1

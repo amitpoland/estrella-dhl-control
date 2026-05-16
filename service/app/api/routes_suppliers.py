@@ -253,17 +253,13 @@ async def suppliers_sync_apply_endpoint(request: Request) -> JSONResponse:
     if not all(isinstance(x, str) for x in wfirma_ids):
         raise HTTPException(status_code=422, detail="wfirma_ids must be a list of strings")
 
-    if not settings.wfirma_sync_suppliers_allowed:
-        return JSONResponse({
-            "ok":               False,
-            "mode":             "blocked",
-            "dry_run":          True,
-            "applied_count":    0,
-            "blocking_reasons": [
-                "wfirma_sync_suppliers_allowed is false — operator must "
-                "enable WFIRMA_SYNC_SUPPLIERS_ALLOWED to apply"
-            ],
-        })
+    # B0 semantic fix (2026-05-16): Save/Assign writes to the LOCAL
+    # suppliers master only. No wFirma write occurs here. The legacy
+    # WFIRMA_SYNC_SUPPLIERS_ALLOWED flag protected an outbound wFirma
+    # write path that this endpoint does NOT perform, so its gate is not
+    # relevant — operator's authenticated click + X-API-Key are sufficient.
+    # The flag remains in place for the bulk /api/v1/suppliers/sync-from-wfirma
+    # endpoint (which is reserved for a future full-batch operator action).
 
     try:
         init_db(_DB_PATH)

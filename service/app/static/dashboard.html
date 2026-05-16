@@ -3210,42 +3210,53 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
 
           {kycTab === 'invoices' && (
             <div data-testid="kyc-panel-invoices">
-              <div style={sectionHeadStyle}>wFirma document defaults</div>
+              <div style={sectionHeadStyle}>Document defaults</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <label style={labelStyle}>
-                  <span style={labelTextStyle}>Preferred proforma series ID</span>
-                  <input data-testid="kyc-invoices-proforma-series" type="text"
-                    value={form.preferred_proforma_series_id || ''}
-                    onChange={e => setField('preferred_proforma_series_id', e.target.value)}
-                    placeholder="wFirma series id" style={inputStyle} />
-                </label>
-                <label style={labelStyle}>
-                  <span style={labelTextStyle}>Preferred invoice series ID</span>
-                  <input data-testid="kyc-invoices-invoice-series" type="text"
-                    value={form.preferred_invoice_series_id || ''}
-                    onChange={e => setField('preferred_invoice_series_id', e.target.value)}
-                    placeholder="wFirma series id" style={inputStyle} />
-                </label>
-                <label style={labelStyle}>
-                  <span style={labelTextStyle}>VAT mode (wFirma)</span>
+                  <span style={labelTextStyle}>VAT mode</span>
                   <select data-testid="kyc-invoices-vat-mode"
                     value={form.vat_mode != null ? String(form.vat_mode) : ''}
                     onChange={e => setField('vat_mode', e.target.value)}
                     style={inputStyle}>
                     <option value="">—</option>
-                    <option value="222">222 — standard</option>
-                    <option value="228">228 — reverse charge</option>
-                    <option value="229">229 — export 0%</option>
+                    <option value="222">Standard (222)</option>
+                    <option value="228">Reverse charge (228)</option>
+                    <option value="229">Export 0% (229)</option>
                   </select>
                 </label>
-                <label style={labelStyle}>
-                  <span style={labelTextStyle}>Default language ID</span>
-                  <input data-testid="kyc-invoices-language-id" type="text"
-                    value={form.default_language_id || ''}
-                    onChange={e => setField('default_language_id', e.target.value)}
-                    placeholder="wFirma language id" style={inputStyle} />
-                </label>
               </div>
+              {/* B0 (MDOC-cache) 2026-05-16 — technical wFirma IDs hidden by
+                  default. Operator-managed; visible only when "Show
+                  technical IDs" is toggled. Raw IDs stay editable here for
+                  ops/debug. */}
+              <details data-testid="kyc-invoices-advanced" style={{ marginTop: 8 }}>
+                <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--text-3)' }}>
+                  Advanced · Show technical wFirma IDs
+                </summary>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 8 }}>
+                  <label style={labelStyle}>
+                    <span style={labelTextStyle}>Preferred proforma series ID</span>
+                    <input data-testid="kyc-invoices-proforma-series" type="text"
+                      value={form.preferred_proforma_series_id || ''}
+                      onChange={e => setField('preferred_proforma_series_id', e.target.value)}
+                      placeholder="wFirma series id" style={inputStyle} />
+                  </label>
+                  <label style={labelStyle}>
+                    <span style={labelTextStyle}>Preferred invoice series ID</span>
+                    <input data-testid="kyc-invoices-invoice-series" type="text"
+                      value={form.preferred_invoice_series_id || ''}
+                      onChange={e => setField('preferred_invoice_series_id', e.target.value)}
+                      placeholder="wFirma series id" style={inputStyle} />
+                  </label>
+                  <label style={labelStyle}>
+                    <span style={labelTextStyle}>Default language ID</span>
+                    <input data-testid="kyc-invoices-language-id" type="text"
+                      value={form.default_language_id || ''}
+                      onChange={e => setField('default_language_id', e.target.value)}
+                      placeholder="wFirma language id" style={inputStyle} />
+                  </label>
+                </div>
+              </details>
               <div style={sectionHeadStyle}>Payment defaults</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <label style={labelStyle}>
@@ -3958,7 +3969,7 @@ function MasterDataPage({ onNav, onToast }) {
               style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
               <thead>
                 <tr style={{ background: 'var(--bg-subtle)' }}>
-                  {['wFirma ID','Name','VAT / NIP','Country','Email','Local match','Status','Assign to','Actions'].map(h => (
+                  {['wFirma ID','Name','VAT / NIP','Country','Email','Phone','Pay term','Local match','Status','Assign to','Actions'].map(h => (
                     <th key={h} style={thStyle}>{h}</th>
                   ))}
                 </tr>
@@ -3981,9 +3992,26 @@ function MasterDataPage({ onNav, onToast }) {
                       </td>
                       <td style={{ padding: '6px 10px', color: 'var(--text-2)' }}>{p.vat_id || '—'}</td>
                       <td style={{ padding: '6px 10px', color: 'var(--text-2)' }}>{p.country || '—'}</td>
-                      <td style={{ padding: '6px 10px', color: 'var(--text-3)' }}>{p.email || p.local_email || '—'}</td>
+                      <td style={{ padding: '6px 10px', color: 'var(--text-3)' }}>{p.email || (p.local_match && p.local_match.bill_to_email) || '—'}</td>
+                      <td style={{ padding: '6px 10px', color: 'var(--text-3)' }}>{p.phone || (p.local_match && p.local_match.bill_to_phone) || '—'}</td>
+                      <td style={{ padding: '6px 10px', color: 'var(--text-3)' }}>{p.payment_term || (p.local_match && p.local_match.payment_terms_days) || '—'}</td>
                       <td style={{ padding: '6px 10px', color: 'var(--text-3)' }}>
-                        {p.local_name ? <span>{p.local_name}<br/><span style={{ fontSize: 10 }}>{p.local_supplier_code || ''}</span></span> : '—'}
+                        {p.local_match
+                          ? <span>{p.local_match.bill_to_name || p.local_name}<br/>
+                              <span style={{ fontSize: 10 }}>{p.local_match.bill_to_contractor_id || p.local_supplier_code || ''}</span>
+                              {p.mismatches && p.mismatches.length > 0 && (
+                                <span data-testid={`${testidPrefix}-mismatch-badge`}
+                                  style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px',
+                                    background: 'var(--badge-amber-bg, #3a2e1e)',
+                                    color: 'var(--badge-amber-text, #fcd34d)',
+                                    borderRadius: 8, fontWeight: 600 }}>
+                                  {p.mismatches.length} mismatch{p.mismatches.length === 1 ? '' : 'es'}
+                                </span>
+                              )}
+                            </span>
+                          : (p.local_name
+                              ? <span>{p.local_name}<br/><span style={{ fontSize: 10 }}>{p.local_supplier_code || ''}</span></span>
+                              : '—')}
                       </td>
                       <td style={{ padding: '6px 10px' }}>
                         <span style={{ background: st.bg, color: st.fg, padding: '2px 8px',
@@ -4671,10 +4699,15 @@ function MasterDataPage({ onNav, onToast }) {
                                           <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
                                             textTransform: 'uppercase', letterSpacing: '0.08em',
                                             marginBottom: 8 }}>Freight</div>
-                                          <div style={{ display: 'grid',
-                                            gridTemplateColumns: 'repeat(3, 1fr)',
-                                            gap: 10, marginBottom: 12 }}>
-                                            <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                          {/* B0 2026-05-16: technical wFirma service ID moved into a
+                                              collapsed Advanced disclosure. Default operator view shows
+                                              only amount/label fields. Raw ID remains available + editable
+                                              for ops/debug. */}
+                                          <details style={{ marginBottom: 8 }}>
+                                            <summary style={{ fontSize: 10, color: 'var(--text-3)', cursor: 'pointer' }}>
+                                              Advanced · wFirma service ID
+                                            </summary>
+                                            <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, marginTop: 6 }}>
                                               <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Service ID (wFirma)</span>
                                               <input data-testid="cm-edit-freight-service-id" type="text"
                                                 value={cmEditForm.freight_service_id || ''}
@@ -4683,6 +4716,10 @@ function MasterDataPage({ onNav, onToast }) {
                                                   border: '1px solid var(--border)', borderRadius: 4,
                                                   fontFamily: 'monospace' }} />
                                             </label>
+                                          </details>
+                                          <div style={{ display: 'grid',
+                                            gridTemplateColumns: 'repeat(2, 1fr)',
+                                            gap: 10, marginBottom: 12 }}>
                                             <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
                                               <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Fixed amount EUR</span>
                                               <input data-testid="cm-edit-freight-eur" type="text"
@@ -4724,10 +4761,11 @@ function MasterDataPage({ onNav, onToast }) {
                                           <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
                                             textTransform: 'uppercase', letterSpacing: '0.08em',
                                             marginBottom: 8 }}>Insurance</div>
-                                          <div style={{ display: 'grid',
-                                            gridTemplateColumns: 'repeat(3, 1fr)',
-                                            gap: 10, marginBottom: 12 }}>
-                                            <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                                          <details style={{ marginBottom: 8 }}>
+                                            <summary style={{ fontSize: 10, color: 'var(--text-3)', cursor: 'pointer' }}>
+                                              Advanced · wFirma service ID
+                                            </summary>
+                                            <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, marginTop: 6 }}>
                                               <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Service ID (wFirma)</span>
                                               <input data-testid="cm-edit-insurance-service-id" type="text"
                                                 value={cmEditForm.insurance_service_id || ''}
@@ -4736,6 +4774,10 @@ function MasterDataPage({ onNav, onToast }) {
                                                   border: '1px solid var(--border)', borderRadius: 4,
                                                   fontFamily: 'monospace' }} />
                                             </label>
+                                          </details>
+                                          <div style={{ display: 'grid',
+                                            gridTemplateColumns: 'repeat(2, 1fr)',
+                                            gap: 10, marginBottom: 12 }}>
                                             <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
                                               <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Rate (decimal, e.g. 0.0035 = 0.35%)</span>
                                               <input data-testid="cm-edit-insurance-rate" type="text"

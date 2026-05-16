@@ -404,10 +404,14 @@ def test_apply_endpoint_writes_only_requested_rows(tmp_path, fake_contractors, m
     assert {r.wfirma_id for r in rows} == {"A1", "A3"}
 
 
-def test_apply_endpoint_blocked_when_flag_false(tmp_path, fake_contractors, monkeypatch):
+def test_apply_endpoint_writes_locally_when_legacy_flag_false(tmp_path, fake_contractors, monkeypatch):
+    """B0 semantic fix (2026-05-16): per-row Save/Assign writes to LOCAL
+    suppliers master and does NOT depend on WFIRMA_SYNC_SUPPLIERS_ALLOWED
+    (which protected an outbound wFirma write path that this endpoint
+    does not perform)."""
     db = tmp_path / "suppliers.sqlite"
     suppliers_db.init_db(db)
-    fake_contractors.set([_mk("B1", "X", nip="PL1", country="PL")])
+    fake_contractors.set([_mk("B1", "Free Local", nip="PL1", country="PL")])
     from service.app.api import routes_suppliers
     monkeypatch.setattr(routes_suppliers, "_DB_PATH", db)
     client = _make_app(monkeypatch, flag=False)
@@ -415,9 +419,11 @@ def test_apply_endpoint_blocked_when_flag_false(tmp_path, fake_contractors, monk
                     json={"wfirma_ids": ["B1"]})
     assert r.status_code == 200
     body = r.json()
-    assert body["mode"] == "blocked"
-    assert body["ok"] is False
-    assert len(suppliers_db.list_suppliers(db, limit=100)) == 0
+    assert body["mode"] == "write"
+    assert body["ok"] is True
+    assert body["inserted"] == 1
+    rows = suppliers_db.list_suppliers(db, limit=100)
+    assert any(s.wfirma_id == "B1" for s in rows)
 
 
 def test_apply_endpoint_requires_wfirma_ids_list(tmp_path, fake_contractors, monkeypatch):
@@ -569,8 +575,9 @@ def test_apply_does_not_touch_kyc_fields(tmp_path, fake_contractors, monkeypatch
 
 
 def test_apply_for_new_candidate_creates_minimal_row_only(tmp_path, fake_contractors, monkeypatch):
-    """New-candidate INSERT must leave KYC columns NULL — the row is a
-    minimal identity stub and KYC is filled later by operator."""
+    """New-candidate INSERT writes identity + opportunistic wFirma enrichment
+    (email / phone / address) only. Operator-only fields (eori, notes) must
+    remain NULL."""
     db = tmp_path / "suppliers.sqlite"
     suppliers_db.init_db(db)
     fake_contractors.set([_mk("NEW-WF", "FRESH CO", nip="PL88", country="DE")])
@@ -584,11 +591,16 @@ def test_apply_for_new_candidate_creates_minimal_row_only(tmp_path, fake_contrac
     assert len(rows) == 1
     rec = rows[0]
     assert rec.wfirma_id == "NEW-WF"
-    assert rec.eori is None
-    assert rec.address is None
+    # Operator-only fields stay NULL on first sync
+    assert rec.eori  is None
+    assert rec.notes is None
+    # Email / phone are NULL when wFirma did not surface them
     assert rec.contact_email is None
     assert rec.contact_phone is None
-    assert rec.notes is None
+    # address is opportunistically filled from country/street/zip/city —
+    # acceptable to be either None or a country-only string when only
+    # country was present in the wFirma response.
+    assert rec.address in (None, "", "DE")
 
 
 # ── 18. hard rule: no live wFirma write call introduced in changed files ────

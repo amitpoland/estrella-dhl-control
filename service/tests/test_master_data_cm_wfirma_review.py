@@ -202,12 +202,21 @@ def test_cm_preview_returns_proposals_with_suggested_target(tmp_path, fake_contr
     assert by_id["P4"]["status"]           == "needs_operator_review"
 
 
-# ── 4. apply blocked when flag is False ─────────────────────────────────────
+# ── 4. local apply is NOT gated by WFIRMA_SYNC_CUSTOMERS_ALLOWED ────────────
+#
+# B0 semantic fix (2026-05-16): the /sync-from-wfirma/apply endpoint writes
+# to LOCAL customer_master only — it is not a wFirma write. Operator's
+# authenticated click + X-API-Key are the protection. The legacy
+# WFIRMA_SYNC_CUSTOMERS_ALLOWED flag is now reserved for the original
+# /api/v1/wfirma/customers/sync (wfirma_customers mapping) endpoint.
 
-def test_cm_apply_blocked_when_flag_false(tmp_path, fake_contractors, monkeypatch):
+def test_cm_apply_works_when_legacy_wfirma_flag_is_false(tmp_path, fake_contractors, monkeypatch):
+    """Save/Assign on Customer Master must succeed even with the legacy
+    WFIRMA_SYNC_CUSTOMERS_ALLOWED flag OFF — this is a LOCAL master write,
+    not a wFirma write."""
     db = tmp_path / "cm.sqlite"
     cmdb.init_db(db)
-    fake_contractors.set([_mk("B1", "ACME", nip="PL10", country="PL")])
+    fake_contractors.set([_mk("B1", "ACME LTD", nip="PL10", country="PL")])
     from service.app.api import routes_customer_master
     monkeypatch.setattr(routes_customer_master, "_DB_PATH", db)
     client = _make_app(monkeypatch, flag=False)
@@ -215,9 +224,12 @@ def test_cm_apply_blocked_when_flag_false(tmp_path, fake_contractors, monkeypatc
                     json={"wfirma_ids": ["B1"]})
     assert r.status_code == 200
     body = r.json()
-    assert body["mode"] == "blocked"
-    assert body["ok"] is False
-    assert cmdb.list_customers(db, limit=10) == []
+    assert body["mode"] == "write"
+    assert body["ok"] is True
+    assert body["inserted"] == 1
+    rec = cmdb.get_customer(db, "B1")
+    assert rec is not None
+    assert rec.bill_to_name == "ACME LTD"
 
 
 # ── 5. apply with valid row writes via identity-only path ──────────────────
@@ -381,6 +393,137 @@ def test_no_wfirma_write_method_in_cm_route():
 
 
 # ── 11. suggested_target deterministic ──────────────────────────────────────
+
+def _mk_full(wfid, name, **kw):
+    """Build a WFirmaContractor with optional enrichment fields."""
+    base = dict(wfid=wfid, name=name, nip=kw.pop("nip", ""),
+                country=kw.pop("country", "PL"))
+    c = wfirma_client.WFirmaContractor(
+        wfirma_id=base["wfid"], name=base["name"], nip=base["nip"],
+        country=base["country"], zip=kw.pop("zip_", ""), city=kw.pop("city", ""),
+    )
+    # mutate optional attributes after init (dataclass is not frozen here)
+    for k, v in kw.items():
+        setattr(c, k, v)
+    return c
+
+
+# ── 12. enrichment: customer apply fills empty bill_to_email + bank ─────────
+
+def test_cm_apply_fills_empty_email_and_bank_account(tmp_path, monkeypatch):
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    state = {"contractors": [
+        _mk_full("E1", "FRESH LTD", nip="PL10", country="PL",
+                 email="ops@fresh.example", account_payments="PL77 1234 5678 0001")
+    ]}
+    def _list(page, limit):
+        return state["contractors"] if page == 1 else []
+    monkeypatch.setattr(wfirma_client, "list_contractors_page", _list)
+
+    from service.app.api import routes_customer_master
+    monkeypatch.setattr(routes_customer_master, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=False)
+    r = client.post("/api/v1/customer-master/sync-from-wfirma/apply",
+                    json={"wfirma_ids": ["E1"]})
+    assert r.status_code == 200
+    rec = cmdb.get_customer(db, "E1")
+    assert rec.bill_to_email == "ops@fresh.example"
+    assert rec.bank_account  == "PL77 1234 5678 0001"
+    assert rec.wfirma_sync_source == "review_assign"
+    assert rec.last_wfirma_sync_at is not None
+
+
+def test_cm_apply_does_not_overwrite_existing_email(tmp_path, monkeypatch):
+    """COALESCE-NULLIF: existing non-empty local value beats wFirma."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    cmdb.upsert_identity_only(db, bill_to_contractor_id="E2",
+                              bill_to_name="OLD NAME", country="PL",
+                              bill_to_email="kept@local.example")
+    state = {"contractors": [
+        _mk_full("E2", "NEW NAME", nip="PL11", country="PL",
+                 email="wfirma@remote.example")
+    ]}
+    def _list(page, limit):
+        return state["contractors"] if page == 1 else []
+    monkeypatch.setattr(wfirma_client, "list_contractors_page", _list)
+
+    from service.app.api import routes_customer_master
+    monkeypatch.setattr(routes_customer_master, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=False)
+    r = client.post("/api/v1/customer-master/sync-from-wfirma/apply",
+                    json={"wfirma_ids": ["E2"]})
+    assert r.status_code == 200
+    rec = cmdb.get_customer(db, "E2")
+    # name refreshed
+    assert rec.bill_to_name == "NEW NAME"
+    # but operator-entered email NOT overwritten
+    assert rec.bill_to_email == "kept@local.example"
+
+
+def test_cm_preview_surfaces_mismatches(tmp_path, monkeypatch):
+    """For a matched_existing row, when wFirma carries a value that differs
+    from a non-empty local value, the preview must surface a mismatch entry
+    (informational only — apply will NOT overwrite)."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    cmdb.upsert_identity_only(db, bill_to_contractor_id="M1",
+                              bill_to_name="LOCAL NAME", country="PL",
+                              bill_to_email="local@example.com")
+    state = {"contractors": [
+        _mk_full("M1", "WFIRMA NAME", nip="PL10", country="PL",
+                 email="remote@example.com")
+    ]}
+    def _list(page, limit):
+        return state["contractors"] if page == 1 else []
+    monkeypatch.setattr(wfirma_client, "list_contractors_page", _list)
+
+    from service.app.api import routes_customer_master
+    monkeypatch.setattr(routes_customer_master, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=False)
+    r = client.get("/api/v1/customer-master/sync-from-wfirma/preview")
+    body = r.json()
+    p = next(p for p in body["proposals"] if p["wfirma_id"] == "M1")
+    assert p["status"] == "matched_existing"
+    fields = {m["field"] for m in p["mismatches"]}
+    assert "name" in fields
+    assert "email" in fields
+
+
+def test_dashboard_review_table_has_extended_columns():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    for col in ("'Phone'", "'Pay term'"):
+        assert col in src, f"review table missing column header {col}"
+
+
+def test_dashboard_invoices_advanced_section_present():
+    """Technical wFirma IDs (proforma/invoice series, language) must live
+    under an Advanced disclosure so normal-operator view is uncluttered."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert 'data-testid="kyc-invoices-advanced"' in src
+    assert "Show technical wFirma IDs" in src
+
+
+def test_dashboard_freight_insurance_service_id_in_advanced_disclosure():
+    """Inline freight/insurance edit form must keep the technical service
+    ID inputs available for ops/debug (legacy testid contract) BUT collapse
+    them behind an Advanced <details> disclosure so the normal-operator
+    default view does not show them."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    # Locate the freight service ID input.
+    fid_idx = src.index('data-testid="cm-edit-freight-service-id"')
+    # Walk back to find the enclosing <details> — must exist between the
+    # nearest "Edit freight" heading and the input.
+    region = src[src.rindex("Edit freight", 0, fid_idx): fid_idx]
+    assert "<details" in region, \
+        "freight service ID must be inside a <details> disclosure"
+    # Same for insurance.
+    iid_idx = src.index('data-testid="cm-edit-insurance-service-id"')
+    region2 = src[src.rindex("Insurance", 0, iid_idx): iid_idx]
+    assert "<details" in region2, \
+        "insurance service ID must be inside a <details> disclosure"
+
 
 def test_suggested_target_deterministic_examples():
     from service.app.api.routes_customer_master import _cm_suggest_target
