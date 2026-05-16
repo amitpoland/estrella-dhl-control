@@ -156,6 +156,9 @@ _OPTIONAL_STR_FIELDS = frozenset({
     "beneficial_owner", "owner_id_type", "owner_id_number",
     "aml_risk_rating", "pep_check_result", "compliance_notes",
     "notes",
+    # B2 (MasterData-2.2): wFirma invoice/proforma defaults bound on Invoices tab
+    "preferred_proforma_series_id", "preferred_invoice_series_id",
+    "default_language_id",
 })
 
 

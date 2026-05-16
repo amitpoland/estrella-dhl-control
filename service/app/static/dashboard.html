@@ -2343,9 +2343,9 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
     { id: 'basic',    label: 'Company / Basic' },
     { id: 'shipping', label: 'Shipping' },
     { id: 'carriers', label: 'Carriers' },
-    { id: 'kyc',      label: 'KYC / Compliance', pending: true },
+    { id: 'kyc',      label: 'KYC / Compliance' },
     { id: 'kuke',     label: 'KUKE & Credit' },
-    { id: 'invoices', label: 'Invoices',          pending: true },
+    { id: 'invoices', label: 'Invoices' },
   ];
   const [kycTab, setKycTab] = React.useState('basic');
   const [form, setForm] = React.useState(() => {
@@ -3209,12 +3209,65 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
 
           {kycTab === 'invoices' && (
             <div data-testid="kyc-panel-invoices">
-              <div style={{ padding: '32px 20px', textAlign: 'center' }}>
-                {pendingBadge}
-                <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text-2)' }}>
-                  Invoice history per client is backend pending.
-                  Will display wFirma proforma + invoice records filtered by contractor ID.
-                </div>
+              <div style={sectionHeadStyle}>wFirma document defaults</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Preferred proforma series ID</span>
+                  <input data-testid="kyc-invoices-proforma-series" type="text"
+                    value={form.preferred_proforma_series_id || ''}
+                    onChange={e => setField('preferred_proforma_series_id', e.target.value)}
+                    placeholder="wFirma series id" style={inputStyle} />
+                </label>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Preferred invoice series ID</span>
+                  <input data-testid="kyc-invoices-invoice-series" type="text"
+                    value={form.preferred_invoice_series_id || ''}
+                    onChange={e => setField('preferred_invoice_series_id', e.target.value)}
+                    placeholder="wFirma series id" style={inputStyle} />
+                </label>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>VAT mode (wFirma)</span>
+                  <select data-testid="kyc-invoices-vat-mode"
+                    value={form.vat_mode != null ? String(form.vat_mode) : ''}
+                    onChange={e => setField('vat_mode', e.target.value)}
+                    style={inputStyle}>
+                    <option value="">—</option>
+                    <option value="222">222 — standard</option>
+                    <option value="228">228 — reverse charge</option>
+                    <option value="229">229 — export 0%</option>
+                  </select>
+                </label>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Default language ID</span>
+                  <input data-testid="kyc-invoices-language-id" type="text"
+                    value={form.default_language_id || ''}
+                    onChange={e => setField('default_language_id', e.target.value)}
+                    placeholder="wFirma language id" style={inputStyle} />
+                </label>
+              </div>
+              <div style={sectionHeadStyle}>Payment defaults</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Payment terms (days)</span>
+                  <input data-testid="kyc-invoices-payment-terms" type="number"
+                    value={form.payment_terms_days || ''}
+                    onChange={e => setField('payment_terms_days', e.target.value)}
+                    placeholder="e.g. 30" style={inputStyle} />
+                </label>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Default currency</span>
+                  <select data-testid="kyc-invoices-currency"
+                    value={form.default_currency || 'EUR'}
+                    onChange={e => setField('default_currency', e.target.value)}
+                    style={inputStyle}>
+                    {['EUR','USD','GBP','PLN','CHF','SEK'].map(c => <option key={c}>{c}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div style={{ marginTop: 14, padding: '8px 10px', background: 'var(--bg-subtle)',
+                            border: '1px solid var(--border-subtle)', borderRadius: 4,
+                            fontSize: 10, color: 'var(--text-3)' }}>
+                Invoice & proforma history per client is sourced from wFirma — read-only on this page.
               </div>
             </div>
           )}
@@ -3232,27 +3285,20 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                    fontSize: 11, color: 'var(--badge-red-text)' }}>{saveError}</div>
           )}
           <div style={{ flex: 1 }} />
-          {kycTab === 'invoices' && (
-            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
-              Save disabled for this tab — backend pending
-            </span>
-          )}
           <button onClick={onClose}
             style={{ padding: '7px 16px', fontSize: 12, background: 'var(--card)',
               color: 'var(--text-2)', border: '1px solid var(--border)',
               borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
-          {kycTab !== 'invoices' && (
-            <button data-testid="kyc-btn-save" onClick={handleSave}
-              disabled={saving || !canSave}
-              style={{ padding: '7px 20px', fontSize: 12, fontWeight: 700,
-                background: canSave ? 'var(--accent)' : 'var(--bg-subtle)',
-                color: canSave ? '#fff' : 'var(--text-3)',
-                border: canSave ? 'none' : '1px solid var(--border)',
-                borderRadius: 6, cursor: (saving || !canSave) ? 'not-allowed' : 'pointer',
-                fontFamily: 'inherit', opacity: saving ? 0.6 : 1 }}>
-              {saving ? 'Saving…' : canSave ? 'Save' : 'No contractor ID'}
-            </button>
-          )}
+          <button data-testid="kyc-btn-save" onClick={handleSave}
+            disabled={saving || !canSave}
+            style={{ padding: '7px 20px', fontSize: 12, fontWeight: 700,
+              background: canSave ? 'var(--accent)' : 'var(--bg-subtle)',
+              color: canSave ? '#fff' : 'var(--text-3)',
+              border: canSave ? 'none' : '1px solid var(--border)',
+              borderRadius: 6, cursor: (saving || !canSave) ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit', opacity: saving ? 0.6 : 1 }}>
+            {saving ? 'Saving…' : canSave ? 'Save' : 'No contractor ID'}
+          </button>
         </div>
       </div>
     </div>
@@ -3944,7 +3990,7 @@ function MasterDataPage({ onNav, onToast }) {
                                         ? <span style={{ color: 'var(--badge-red-text)' }}>✗ off</span>
                                         : <span style={{ color: 'var(--badge-green-text)' }}>● on</span>}
                                     </td>
-                                    <td style={{ padding: '8px 12px' }}>
+                                    <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
                                       {isEditing
                                         ? <button data-testid="master-cm-btn-close"
                                             onClick={closeCmEdit}
@@ -3952,13 +3998,31 @@ function MasterDataPage({ onNav, onToast }) {
                                               border: '1px solid var(--border)', borderRadius: 4,
                                               background: 'var(--card)', cursor: 'pointer',
                                               color: 'var(--text-2)', fontFamily: 'inherit' }}>✕ Cancel</button>
-                                        : <button data-testid="master-cm-btn-edit"
-                                            onClick={() => openCmEdit(c)}
-                                            style={{ padding: '3px 10px', fontSize: 11,
-                                              border: '1px solid var(--accent)', borderRadius: 4,
-                                              background: 'var(--accent-subtle)', cursor: 'pointer',
-                                              color: 'var(--text)', fontWeight: 600,
-                                              fontFamily: 'inherit' }}>Edit</button>
+                                        : <React.Fragment>
+                                            <button data-testid="master-cm-btn-edit"
+                                              onClick={() => openCmEdit(c)}
+                                              style={{ padding: '3px 10px', fontSize: 11,
+                                                border: '1px solid var(--accent)', borderRadius: 4,
+                                                background: 'var(--accent-subtle)', cursor: 'pointer',
+                                                color: 'var(--text)', fontWeight: 600,
+                                                fontFamily: 'inherit', marginRight: 6 }}>Edit</button>
+                                            <button data-testid="master-cm-btn-open-profile"
+                                              onClick={() => {
+                                                const client = (customers.items || []).find(
+                                                  cl => String(cl.wfirma_customer_id) === String(c.bill_to_contractor_id)
+                                                ) || { client_name: c.bill_to_name,
+                                                       wfirma_customer_id: c.bill_to_contractor_id,
+                                                       country: c.country, vat_id: c.nip };
+                                                setKycModal({ rec: client, custMasterRec: c });
+                                              }}
+                                              title="Open full client profile (KYC modal)"
+                                              style={{ padding: '3px 10px', fontSize: 11,
+                                                border: '1px solid var(--border)', borderRadius: 4,
+                                                background: 'var(--card)', cursor: 'pointer',
+                                                color: 'var(--text-2)', fontFamily: 'inherit' }}>
+                                              Open full profile
+                                            </button>
+                                          </React.Fragment>
                                       }
                                     </td>
                                   </tr>
