@@ -96,17 +96,28 @@ class ContractorFetchResult:
     contact_city:    str = ""
     contact_zip:     str = ""
     contact_country: str = ""
-    # B0 deep-enrichment — opportunistic commercial defaults
+    # B0 deep-enrichment — actual wFirma contractor-detail fields. Names
+    # below match the XML keys observed live for contractor 75483443
+    # (Railing sp z o.o., 2026-05-17). Fields wFirma does NOT expose at the
+    # contractor level (default_currency, invoiceseries_id, proformaseries_id)
+    # have been removed — they are operator-managed dictionaries.
     email:           str = ""
     phone:           str = ""
     mobile:          str = ""
-    account_payments: str = ""
+    skype:           str = ""
+    fax:             str = ""
+    url:             str = ""
+    description:     str = ""
+    regon:           str = ""
+    payment_days:    str = ""   # integer days as string ("0" if not set)
     payment_method:  str = ""
-    payment_term:    str = ""   # days as string
-    default_currency: str = ""  # e.g. PLN | EUR | USD
-    translation_language_id: str = ""
-    invoiceseries_id: str = ""
-    proformaseries_id: str = ""
+    discount_percent: str = ""  # "0.00" if not set
+    account_number:   str = ""  # bank account (flat <account_number> when set)
+    translation_language_id: str = ""   # extracted from <translation_language><id>X</id>
+    buyer:    str = ""    # "1"/"0" — wFirma role flag
+    seller:   str = ""
+    receiver: str = ""
+    tags:     str = ""
     error: Optional[str] = None
     raw_response: Optional[str] = None
 
@@ -725,17 +736,34 @@ def fetch_contractor_by_id(contractor_id: str) -> "ContractorFetchResult":
         contact_city              = _find_text(node, "contact_city"),
         contact_zip               = _find_text(node, "contact_zip"),
         contact_country           = _find_text(node, "contact_country"),
-        # B0 deep-enrichment — opportunistic commercial defaults
+        # B0 deep-enrichment — XML keys verified against live contractor
+        # 75483443 (2026-05-17). Bank account and language id are nested
+        # under their own elements; flat parsers would miss them.
         email                     = _find_text(node, "email") or "",
         phone                     = _find_text(node, "phone") or _find_text(node, "tel") or "",
         mobile                    = _find_text(node, "mobile") or "",
-        account_payments          = _find_text(node, "account_payments") or "",
+        skype                     = _find_text(node, "skype") or "",
+        fax                       = _find_text(node, "fax") or "",
+        url                       = _find_text(node, "url") or "",
+        description               = _find_text(node, "description") or "",
+        regon                     = _find_text(node, "regon") or "",
+        payment_days              = _find_text(node, "payment_days") or "",
         payment_method            = _find_text(node, "payment_method") or "",
-        payment_term              = _find_text(node, "payment_term") or "",
-        default_currency          = _find_text(node, "default_currency") or "",
-        translation_language_id   = _find_text(node, "translation_language_id") or "",
-        invoiceseries_id          = _find_text(node, "invoiceseries_id") or "",
-        proformaseries_id         = _find_text(node, "proformaseries_id") or "",
+        discount_percent          = _find_text(node, "discount_percent") or "",
+        # Bank account is exposed two ways: flat <account_number> (legacy)
+        # and nested <contractor_account><number>...</number>. Both checked.
+        account_number            = (_find_text(node, "account_number") or
+                                     (node.findtext(".//contractor_account/number") or "")).strip(),
+        # Language id is nested: <translation_language><id>X</id></translation_language>.
+        # We pick "0" out (the documented "no preference" sentinel) and surface
+        # only real ids.
+        translation_language_id   = (lambda tid: tid if (tid and tid != "0") else "")(
+            (node.findtext("translation_language/id") or "").strip()
+        ),
+        buyer                     = _find_text(node, "buyer") or "",
+        seller                    = _find_text(node, "seller") or "",
+        receiver                  = _find_text(node, "receiver") or "",
+        tags                      = _find_text(node, "tags") or "",
         raw_response              = response_text,
     )
 

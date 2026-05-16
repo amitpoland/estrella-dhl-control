@@ -147,6 +147,19 @@ class CustomerMaster:
     last_wfirma_sync_at:     Optional[str] = None    # ISO timestamp of last apply
     wfirma_sync_source:      Optional[str] = None    # "review_assign" | "manual" | "auto"
 
+    # B0 deep-enrichment 2026-05-17 — wFirma billing address (verified in
+    # live <contractor> response for id 75483443). Filled-when-empty.
+    bill_to_street:          Optional[str] = None
+    bill_to_city:            Optional[str] = None
+    bill_to_postal_code:     Optional[str] = None
+    regon:                   Optional[str] = None    # Polish REGON; often empty in wFirma
+    # Operator-entered profile fields. wFirma does NOT carry these — the
+    # columns are wired so the dashboard can drop the BACKEND PENDING badge.
+    short_code:              Optional[str] = None
+    client_type:             Optional[str] = None    # e.g. "client" | "supplier" | "both"
+    industry:                Optional[str] = None
+    eori:                    Optional[str] = None
+
 
 def validate(c: CustomerMaster) -> List[str]:
     """Return a list of blockers (empty list = OK). Does not raise."""
@@ -363,6 +376,16 @@ def init_db(db_path: Path) -> None:
             ("bank_account",              "TEXT"),
             ("last_wfirma_sync_at",       "TEXT"),
             ("wfirma_sync_source",        "TEXT"),
+            # B0 deep-enrichment 2026-05-17 — wFirma billing address +
+            # operator-entered profile fields
+            ("bill_to_street",            "TEXT"),
+            ("bill_to_city",              "TEXT"),
+            ("bill_to_postal_code",       "TEXT"),
+            ("regon",                     "TEXT"),
+            ("short_code",                "TEXT"),
+            ("client_type",               "TEXT"),
+            ("industry",                  "TEXT"),
+            ("eori",                      "TEXT"),
         ])
 
 
@@ -484,6 +507,15 @@ def _row_to_customer(row: sqlite3.Row) -> CustomerMaster:
         bank_account                  = _row_get(row, "bank_account"),
         last_wfirma_sync_at           = _row_get(row, "last_wfirma_sync_at"),
         wfirma_sync_source            = _row_get(row, "wfirma_sync_source"),
+        # B0 deep-enrichment 2026-05-17
+        bill_to_street                = _row_get(row, "bill_to_street"),
+        bill_to_city                  = _row_get(row, "bill_to_city"),
+        bill_to_postal_code           = _row_get(row, "bill_to_postal_code"),
+        regon                         = _row_get(row, "regon"),
+        short_code                    = _row_get(row, "short_code"),
+        client_type                   = _row_get(row, "client_type"),
+        industry                      = _row_get(row, "industry"),
+        eori                          = _row_get(row, "eori"),
     )
 
 
@@ -607,6 +639,11 @@ def upsert_identity_only(
     default_language_id:           Optional[str] = None,
     preferred_proforma_series_id:  Optional[str] = None,
     preferred_invoice_series_id:   Optional[str] = None,
+    # B0 deep-enrichment 2026-05-17 — wFirma billing address (fill-when-empty)
+    bill_to_street:                Optional[str] = None,
+    bill_to_city:                  Optional[str] = None,
+    bill_to_postal_code:           Optional[str] = None,
+    regon:                         Optional[str] = None,
     sync_source:           str           = "review_assign",
 ) -> Dict[str, Any]:
     """B0 (MDOC-cache): wFirma identity-only upsert with enrichment.
@@ -653,6 +690,10 @@ def upsert_identity_only(
     lang = (default_language_id or "").strip()
     pro_series = (preferred_proforma_series_id or "").strip()
     inv_series = (preferred_invoice_series_id or "").strip()
+    bstreet = (bill_to_street or "").strip()
+    bcity   = (bill_to_city or "").strip()
+    bzip    = (bill_to_postal_code or "").strip()
+    breg    = (regon or "").strip()
     src = (sync_source or "review_assign").strip() or "review_assign"
 
     init_db(db_path)
@@ -674,13 +715,17 @@ def upsert_identity_only(
                         default_language_id,
                         preferred_proforma_series_id,
                         preferred_invoice_series_id,
+                        bill_to_street, bill_to_city, bill_to_postal_code,
+                        regon,
                         last_wfirma_sync_at, wfirma_sync_source,
                         insurance_enabled, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                 (bid, bnm, cty, (nip or None),
                  email or None, phone or None, mobile or None,
                  bank or None, curr or None, pterm,
                  lang or None, pro_series or None, inv_series or None,
+                 bstreet or None, bcity or None, bzip or None,
+                 breg or None,
                  now, src,
                  now, now),
             )
@@ -715,6 +760,10 @@ def upsert_identity_only(
                            default_language_id          = COALESCE(NULLIF(default_language_id, ''),           NULLIF(?, '')),
                            preferred_proforma_series_id = COALESCE(NULLIF(preferred_proforma_series_id, ''), NULLIF(?, '')),
                            preferred_invoice_series_id  = COALESCE(NULLIF(preferred_invoice_series_id, ''),  NULLIF(?, '')),
+                           bill_to_street               = COALESCE(NULLIF(bill_to_street, ''),                NULLIF(?, '')),
+                           bill_to_city                 = COALESCE(NULLIF(bill_to_city, ''),                  NULLIF(?, '')),
+                           bill_to_postal_code          = COALESCE(NULLIF(bill_to_postal_code, ''),           NULLIF(?, '')),
+                           regon                        = COALESCE(NULLIF(regon, ''),                         NULLIF(?, '')),
                            last_wfirma_sync_at = ?,
                            wfirma_sync_source  = ?,
                            updated_at          = ?
@@ -722,6 +771,7 @@ def upsert_identity_only(
                 (bnm, cty, (nip or ""),
                  email, phone, mobile, bank, curr, pterm,
                  lang, pro_series, inv_series,
+                 bstreet, bcity, bzip, breg,
                  now, src, now, row_id),
             )
             action = "updated"
@@ -829,9 +879,13 @@ def get_effective_defaults(customer: "CustomerMaster") -> Dict[str, Any]:
         "bill_to_name":                  c.bill_to_name,
         "country":                       c.country,
         "nip":                           c.nip,
+        "regon":                         c.regon,
         "bill_to_email":                 c.bill_to_email,
         "bill_to_phone":                 c.bill_to_phone,
         "bill_to_mobile":                c.bill_to_mobile,
+        "bill_to_street":                c.bill_to_street,
+        "bill_to_city":                  c.bill_to_city,
+        "bill_to_postal_code":           c.bill_to_postal_code,
         "bank_account":                  c.bank_account,
         "default_currency":              c.default_currency,
         "payment_terms_days":            c.payment_terms_days,
@@ -839,6 +893,10 @@ def get_effective_defaults(customer: "CustomerMaster") -> Dict[str, Any]:
         "preferred_proforma_series_id":  c.preferred_proforma_series_id,
         "preferred_invoice_series_id":   c.preferred_invoice_series_id,
         "vat_mode":                      c.vat_mode,
+        "short_code":                    c.short_code,
+        "client_type":                   c.client_type,
+        "industry":                      c.industry,
+        "eori":                          c.eori,
     }
 
     # Ship-to inheritance. When the operator has NOT enabled the alternate
@@ -855,14 +913,17 @@ def get_effective_defaults(customer: "CustomerMaster") -> Dict[str, Any]:
         out["ship_to_person"]  = c.ship_to_person
         out["ship_to_contractor_id"] = c.ship_to_contractor_id
     else:
+        # B0 deep-enrichment 2026-05-17 — bill-to address NOW lives in
+        # customer_master (bill_to_street / bill_to_city / bill_to_postal_code),
+        # so the inherited ship-to surfaces the real address.
         out["ship_to_use_alternate"] = False
         out["ship_to_name"]    = c.bill_to_name
         out["ship_to_country"] = c.country
         out["ship_to_email"]   = c.bill_to_email
         out["ship_to_phone"]   = c.bill_to_phone
-        out["ship_to_street"]  = None  # bill-to street lives in wFirma, not local
-        out["ship_to_city"]    = None
-        out["ship_to_zip"]     = None
+        out["ship_to_street"]  = c.bill_to_street
+        out["ship_to_city"]    = c.bill_to_city
+        out["ship_to_zip"]     = c.bill_to_postal_code
         out["ship_to_person"]  = None
         out["ship_to_contractor_id"] = None
 

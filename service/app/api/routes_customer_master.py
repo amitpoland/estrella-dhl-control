@@ -131,6 +131,15 @@ def _customer_to_dict(c: CustomerMaster) -> Dict[str, Any]:
         "bank_account":                  c.bank_account,
         "last_wfirma_sync_at":           c.last_wfirma_sync_at,
         "wfirma_sync_source":            c.wfirma_sync_source,
+        # B0 deep-enrichment 2026-05-17
+        "bill_to_street":                c.bill_to_street,
+        "bill_to_city":                  c.bill_to_city,
+        "bill_to_postal_code":           c.bill_to_postal_code,
+        "regon":                         c.regon,
+        "short_code":                    c.short_code,
+        "client_type":                   c.client_type,
+        "industry":                      c.industry,
+        "eori":                          c.eori,
     }
 
 
@@ -503,27 +512,34 @@ async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
         deep_phone   = p.get("phone")
         deep_mobile  = p.get("mobile")
         deep_bank    = p.get("bank_account")
-        deep_curr    = None
+        deep_curr    = None       # not in wFirma contractor detail; baseline only
         deep_pterm   = None
         deep_lang    = None
-        deep_pro_id  = None
-        deep_inv_id  = None
+        deep_pro_id  = None       # wFirma contractor detail does not expose
+        deep_inv_id  = None       # series IDs at the contractor level
+        deep_street  = None
+        deep_city    = None
+        deep_zip     = None
+        deep_regon   = None
         try:
             from ..services import wfirma_client as wfc
             cd = wfc.fetch_contractor_by_id(p["wfirma_id"])
             if cd.ok:
+                # XML keys verified live (contractor 75483443 / 2026-05-17).
                 deep_email  = deep_email  or (cd.email  or None)
                 deep_phone  = deep_phone  or (cd.phone  or None)
                 deep_mobile = deep_mobile or (cd.mobile or None)
-                deep_bank   = deep_bank   or (cd.account_payments or None)
-                deep_curr   = (cd.default_currency or "").upper() or None
-                # payment_term sometimes empty string; coerce to int days if digit
-                pt = (cd.payment_term or "").strip()
-                if pt.isdigit():
-                    deep_pterm = int(pt)
+                deep_bank   = deep_bank   or (cd.account_number or None)
+                # payment_days is the real wFirma key (not payment_term).
+                # "0" sentinel means "no preference"; treat as None.
+                pd = (cd.payment_days or "").strip()
+                if pd.isdigit() and int(pd) > 0:
+                    deep_pterm = int(pd)
                 deep_lang   = (cd.translation_language_id or "").strip() or None
-                deep_pro_id = (cd.proformaseries_id or "").strip() or None
-                deep_inv_id = (cd.invoiceseries_id or "").strip() or None
+                deep_street = (cd.street or "").strip() or None
+                deep_city   = (cd.city or "").strip() or None
+                deep_zip    = (cd.zip or "").strip() or None
+                deep_regon  = (cd.regon or "").strip() or None
         except Exception as exc:
             # Deep-fetch failure is non-fatal — we still write identity.
             log.warning("deep-fetch failed for wfid=%s: %s", p["wfirma_id"], exc)
@@ -544,6 +560,10 @@ async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
                 default_language_id=deep_lang,
                 preferred_proforma_series_id=deep_pro_id,
                 preferred_invoice_series_id=deep_inv_id,
+                bill_to_street=deep_street,
+                bill_to_city=deep_city,
+                bill_to_postal_code=deep_zip,
+                regon=deep_regon,
             )
             if res["action"] == "inserted":
                 inserted += 1
