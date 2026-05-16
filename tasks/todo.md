@@ -124,3 +124,22 @@
   2. **Symmetric supplier deep-fetch** — mirror the Client Master deep-fetch plumbing on `suppliers_db.sync_from_wfirma` so supplier addresses populate too.
   3. **Operator hand-entry pass** for the 10 wFirma-ceiling rows (language / email / postal) — these can only be filled by the operator since wFirma has no source data.
 - **Permanent hard stops still in force:** no wFirma write, no packing-list resolver, no proforma/PZ/DHL/customs/finance change, no .env change.
+
+## 2026-05-17 — B0.X Packing-list contractor resolver — design
+
+- **Design doc:** `tasks/packing-list-contractor-resolver-design.md`
+- **Status:** design complete; awaiting operator green-light for R1
+- **Three implementation sub-batches sketched (each independently deployable):**
+  - **R1 — Resolver core (backend-only):** `packing_contractor_resolver.py`, deterministic 6-tier matching (wfirma_id → tax_id → name+country → alias → fuzzy → unresolved), reads `customer_master.sqlite` + `suppliers.sqlite`, no DB writes, no UI. ~12 unit tests.
+  - **R2 — Persistence table:** new `packing_contractor_resolution` table (additive only) + `POST/GET /api/v1/packing/{batch_id}/contractor-resolution`. ~4 integration tests.
+  - **R3 — Operator UX (frontend):** new "Contractor resolution" panel inserted between Parsed Lines and Confirm Sales Draft. Use-this-match / Override / Create-new affordances. Source-grep tests + browser smoke.
+- **Hard rules (carried from B0 family):**
+  - no wFirma write
+  - no auto-create client/supplier from packing data
+  - no PZ / proforma / DHL / customs / finance change inside the resolver
+  - no master-record overwrite from packing list
+  - no live wFirma call during packing upload by default (operator-triggered only)
+- **Operator decision required before R1 starts:**
+  1. Confirm the 6-tier model and the 0.85 fuzzy threshold
+  2. Confirm "Create new from parsed data" stays disabled-by-default with explicit confirm modal
+  3. Confirm default supplier behaviour (active exporter pre-selected; no auto-detection from packing list — operator picks)

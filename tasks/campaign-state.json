@@ -1039,6 +1039,23 @@
           "production_sha": "ad82ab6758773254f0fcf43140939d1153918f95",
           "notes": "Bulk re-sync of 21 client_master rows completed (PR #156). Second-pass verification 2026-05-17: 14 candidates remain — all at wFirma ceiling (10 real rows where wFirma carries no language/email/postal for the contractor; 4 synthetic test rows that NOT FOUND in wFirma). No additional fills possible without operator hand-entry. Deferred: live wFirma dictionary refresh (invoiceseries/find, proformaseries/find, languages/find) — separate batch.",
           "second_pass_date": "2026-05-17"
+        },
+        {
+          "batch_id": "B0.X-PACKING-RESOLVER-DESIGN",
+          "title": "Packing-list contractor resolver — design only",
+          "status": "design_complete",
+          "pr_url": null,
+          "depends_on": [
+            "B0-WFIRMA-IDENTITY-CACHE"
+          ],
+          "next_batch": null,
+          "block_reason": "awaiting operator green-light to start R1 (resolver core)",
+          "artifacts": [
+            "tasks/packing-list-contractor-resolver-design.md"
+          ],
+          "deploy_needed": false,
+          "design_date": "2026-05-17",
+          "notes": "Three implementation sub-batches sketched: R1 resolver core (backend), R2 persistence table, R3 operator UX. Each independently deployable. Resolver tiers 1-6 defined with explicit confidence scores. Hard rules: no wFirma write, no auto-create client/supplier, no PZ/proforma/DHL/customs/finance change, no master-record overwrite, no live wFirma during upload by default."
         }
       ],
       "next_batch": null,
