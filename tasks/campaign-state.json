@@ -646,12 +646,25 @@
         {
           "batch_id": "6F.5-shadow-activation-approval",
           "title": "6F.5 shadow-activation approval package (NO activation)",
-          "status": "active",
-          "pr_url": null,
+          "status": "merged",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/122",
+          "pr_number": 122,
+          "merge_sha": "3029fbe5e5ace450e58dc882770442c33694ec09",
+          "deploy_needed": false,
+          "deploy_reason": "Docs-only PR. Only tasks/ files; no service/ runtime files.",
           "depends_on": ["6F.5"],
           "artifacts": [
-            "tasks/phase-6f-5-shadow-activation-approval.md"
+            "tasks/phase-6f-5-shadow-activation-approval.md",
+            "tasks/smoke-reports/2026-05-16-phase-6f-5-dual-write-deploy.md"
           ],
+          "tests": {
+            "finance_dual_write_suites": "46/46",
+            "finance_postings_contracts": "38/38",
+            "finance_panel_contracts": "12/12",
+            "master_data_hard_rules": "28/28",
+            "runner_v2_hard_rules": "12/12",
+            "pz_regression": "160/160"
+          },
           "next_batch": "6F.5-shadow-activation",
           "block_reason": null,
           "notes": "Operator-facing runbook + sign-off package. No env change. No activation. Defines exact steps, observation window, evidence requirements, rollback, log patterns, immediate-disable, and progression-to-live criteria."
@@ -662,8 +675,9 @@
           "status": "blocked",
           "pr_url": null,
           "depends_on": ["6F.5-shadow-activation-approval"],
+          "decision_memo": "tasks/phase-6f-5-shadow-decision-memo.md",
           "next_batch": "6F.5-live-activation",
-          "block_reason": "Awaiting operator sign-off on tasks/phase-6f-5-shadow-activation-approval.md. Setting env vars on production is gated."
+          "block_reason": "Awaiting operator approval to set FINANCE_DUAL_WRITE_ENABLED=true and FINANCE_DUAL_WRITE_SHADOW=true. Sign-off package: tasks/phase-6f-5-shadow-activation-approval.md §11."
         },
         {
           "batch_id": "6F.5-live-activation",
