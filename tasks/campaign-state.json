@@ -586,13 +586,49 @@
         {
           "batch_id": "6F.5",
           "title": "/post dual-write to charges (feature flag OFF default)",
-          "status": "blocked",
+          "status": "pr_open",
           "pr_url": null,
+          "branch": "feat/phase-6f-5-dual-write",
           "depends_on": ["6F.5-approval-package"],
           "decision_memo": "tasks/phase-6f-5-decision-memo.md",
-          "memo_verdict": "10/10 GREEN — recommend APPROVE with binding conditions (Lesson A real-builder pairing + post-deploy env-var verification)",
+          "memo_verdict": "10/10 GREEN — implementation approved with binding conditions",
+          "feature_flags": {
+            "FINANCE_DUAL_WRITE_ENABLED": "default false",
+            "FINANCE_DUAL_WRITE_SHADOW":  "default false"
+          },
+          "activation_status": "NOT_ACTIVATED",
+          "activation_block_reason": "Operator approved implementation only. Activation (flag flip) requires a separate operator decision. Production deploy must verify both flags are unset or false in NSSM env before any subsequent activation step.",
+          "artifacts": [
+            "service/app/core/config.py",
+            "service/app/services/finance_dual_write.py",
+            "service/app/api/routes_proforma.py",
+            "service/tests/test_finance_dual_write_default_off.py",
+            "service/tests/test_finance_dual_write_idempotent_rerun.py",
+            "service/tests/test_finance_dual_write_decimal_safety.py",
+            "service/tests/test_finance_dual_write_legacy_isolation.py",
+            "service/tests/test_finance_dual_write_error_swallow.py",
+            "service/tests/test_finance_dual_write_no_collision_with_backfill.py",
+            "service/tests/test_finance_dual_write_real_builder.py",
+            "service/tests/test_dual_write_source_grep.py"
+          ],
+          "tests": {
+            "finance_dual_write_default_off": "3/3",
+            "finance_dual_write_idempotent_rerun": "4/4",
+            "finance_dual_write_decimal_safety": "13/13",
+            "finance_dual_write_legacy_isolation": "2/2",
+            "finance_dual_write_error_swallow": "4/4",
+            "finance_dual_write_no_collision_with_backfill": "4/4",
+            "finance_dual_write_real_builder": "4/4",
+            "dual_write_source_grep": "12/12",
+            "finance_postings_contracts": "38/38",
+            "finance_postings_db": "38/38",
+            "finance_panel_contracts": "12/12",
+            "master_data_hard_rules": "28/28",
+            "runner_v2_hard_rules": "12/12",
+            "pz_regression": "160/160"
+          },
           "next_batch": "6F.6",
-          "block_reason": "Write-bearing batch. Operator decision memo at tasks/phase-6f-5-decision-memo.md awaits §8 sign-off (APPROVE / DEFER / REJECT)."
+          "block_reason": null
         },
         {
           "batch_id": "6F.6",

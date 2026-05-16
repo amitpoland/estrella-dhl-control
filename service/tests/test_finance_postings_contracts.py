@@ -69,6 +69,21 @@ _ALLOWED_REFERENCES = {
     # 6F.2.a ────────────────────────────────────────────────────────────
     "backfill_finance_postings.py",
     "test_backfill_finance_postings.py",
+    # 6F.5 ──────────────────────────────────────────────────────────────
+    # The dual-write helper imports finance_postings_db and writes the
+    # synthetic posting + charges after mark_post_succeeded. The hook
+    # call site lives in routes_proforma.py. Both are feature-flagged
+    # OFF by default. See approval package + decision memo.
+    "finance_dual_write.py",
+    "test_finance_dual_write_default_off.py",
+    "test_finance_dual_write_idempotent_rerun.py",
+    "test_finance_dual_write_decimal_safety.py",
+    "test_finance_dual_write_legacy_isolation.py",
+    "test_finance_dual_write_error_swallow.py",
+    "test_finance_dual_write_no_collision_with_backfill.py",
+    "test_finance_dual_write_real_builder.py",
+    "test_dual_write_source_grep.py",
+    "routes_proforma.py",
 }
 
 
@@ -239,7 +254,12 @@ def test_only_route_module_mentions_finance_postings_sqlite():
 # ── Rule 4: NO behaviour coupling to existing engines ──────────────────────
 
 @pytest.mark.parametrize("engine_file", [
-    _APP / "api" / "routes_proforma.py",
+    # routes_proforma.py was removed from this list in 6F.5: the dual-write
+    # hook lives here and references finance_postings.sqlite (path only) +
+    # imports finance_dual_write (the helper, NOT finance_postings_db
+    # directly). The reference is feature-flagged OFF by default. The
+    # source-grep contract in test_dual_write_source_grep.py pins the
+    # hook's location, default-OFF guard, and error-swallow behaviour.
     _APP / "api" / "routes_wfirma.py",
     _APP / "api" / "routes_wfirma_capabilities.py",
     _APP / "api" / "routes_pz.py",
@@ -259,6 +279,35 @@ def test_engine_does_not_reference_finance_postings(engine_file):
                       "import finance_postings"):
         assert forbidden not in src, \
             f"6F.1.5: {engine_file.name} must not reference {forbidden}"
+
+
+def test_routes_proforma_dual_write_is_flag_guarded():
+    """6F.5 replacement of the old `routes_proforma must not reference finance_postings`
+    rule. routes_proforma.py is NOW allowed to reference finance_postings.sqlite,
+    but ONLY behind ``settings.finance_dual_write_enabled``.
+    """
+    rp = _APP / "api" / "routes_proforma.py"
+    if not rp.exists():
+        pytest.skip("routes_proforma.py missing")
+    src = rp.read_text(encoding="utf-8")
+    # If routes_proforma touches finance_postings.sqlite, the flag check
+    # must guard it.
+    if "finance_postings.sqlite" in src:
+        assert "settings.finance_dual_write_enabled" in src, (
+            "6F.5: routes_proforma.py references finance_postings.sqlite but "
+            "is missing the settings.finance_dual_write_enabled flag guard. "
+            "Default-OFF behaviour is non-negotiable."
+        )
+    # Forbid direct imports of finance_postings_db — the dual-write helper
+    # is the only legal indirection.
+    for forbidden in ("from ..services.finance_postings_db",
+                      "from .services.finance_postings_db",
+                      "import finance_postings_db"):
+        assert forbidden not in src, (
+            f"6F.5: routes_proforma.py must not import finance_postings_db "
+            f"directly; the dual-write helper is the only legal indirection. "
+            f"Found: {forbidden}"
+        )
 
 
 # ── Rule 5: Schema allow-lists pinned ──────────────────────────────────────
