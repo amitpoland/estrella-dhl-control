@@ -334,7 +334,9 @@ def test_sidebar_navigation_present():
 
 def test_four_live_entities_in_sidebar():
     src = _src()
-    for eid in ("'clients'", "'users'", "'products'", "'customer_master'"):
+    # B0 consolidation Batch 2 (2026-05-16): the legacy 'clients' sidebar
+    # entry was folded into Client Master → Identity view-mode.
+    for eid in ("'users'", "'products'", "'customer_master'"):
         assert f"id: {eid}" in src, f"Missing live entity id: {eid}"
     assert "live: true" in src, "live: true must be set on live entities"
 
