@@ -938,7 +938,7 @@ def test_customer_master_panel_testid():
 def test_customer_master_panel_shows_freight_and_insurance():
     src = _src()
     # The CM panel subtitle mentions freight / insurance / credit
-    assert "Freight / insurance / credit config per contractor" in src
+    assert "Freight / insurance / credit config per client" in src
 
 
 def test_customer_master_legacy_edit_testids_preserved():
