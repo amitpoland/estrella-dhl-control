@@ -1013,24 +1013,28 @@
         {
           "batch_id": "B0-WFIRMA-IDENTITY-CACHE",
           "title": "wFirma identity cache for Customer Master and Suppliers",
-          "status": "tests_green",
-          "pr_url": null,
-          "pr_number": null,
-          "merge_sha": null,
+          "status": "deployed_smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/141",
+          "pr_number": 141,
+          "merge_sha": "08529b3cea6e406e817359a8f8cf377cdce6ab23",
           "branch": "feat/b0-wfirma-identity-cache",
           "depends_on": [
             "B-MD4"
           ],
           "next_batch": null,
-          "block_reason": null,
+          "block_reason": "operator must validate browser review panels and explicitly enable WFIRMA_SYNC_*_ALLOWED before any real write",
           "deploy_needed": true,
           "artifacts": [
             "service/app/services/suppliers_db.py",
             "service/app/api/routes_suppliers.py",
             "service/app/core/config.py",
             "service/app/static/dashboard.html",
-            "service/tests/test_master_data_suppliers_wfirma_sync.py"
-          ]
+            "service/tests/test_master_data_suppliers_wfirma_sync.py",
+            "tasks/smoke-reports/b0-wfirma-identity-cache-review-assign.md"
+          ],
+          "hotfix_pr": 142,
+          "hotfix_merge_sha": "ad82ab6758773254f0fcf43140939d1153918f95",
+          "production_sha": "ad82ab6758773254f0fcf43140939d1153918f95"
         }
       ],
       "next_batch": null,

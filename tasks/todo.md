@@ -101,3 +101,15 @@
 2. Then operator decision on **B3 (Users + Roles writes)** — requires security review of auth-write allow-list relaxation.
 3. Then operator decision on **B6 (Designs Master)** — requires schema sign-off + read-only-consumer guarantee on `product_identity_engine`.
 4. MDC-071 FX override stays FORBIDDEN.
+
+## 2026-05-16 — B0 wFirma identity cache (deployed, awaiting operator validation)
+
+- **Status:** PRs #141 + #142 merged. Production SHA `ad82ab6`. Flags default-OFF. Smoke 10/10 PASS.
+- **Operator follow-up (browser):**
+  - Master Data → Suppliers → click "Fetch suppliers from wFirma" → confirm review table loads with 221 proposals (211 new / 10 skipped).
+  - Master Data → Customer Master → click "Fetch customers from wFirma" → confirm review table loads with 218 proposals (214 new / 4 review).
+  - Skip / Save-Assign / View / Edit row actions behave as expected.
+  - Save-Assign with flag OFF → blocked alert appears.
+- **Next batch (gated):** Operator flips `WFIRMA_SYNC_SUPPLIERS_ALLOWED=true`, applies a small selected subset via the review panel, confirms only chosen rows wrote. Mirror for customers flag.
+- **Deferred:** packing-list contractor resolver — do not start until both flag-on validations pass.
+- **Open lesson:** L-040 (router file name ≠ mount prefix) added — consider follow-up patch adding a "URLs resolve" contract test.
