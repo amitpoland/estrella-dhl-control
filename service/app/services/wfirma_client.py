@@ -2380,3 +2380,64 @@ def _esc(value: Any) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+# ── B0 dictionary refresh 2026-05-17 — verified live endpoint ────────────────
+#
+# wFirma exposes exactly one dictionary endpoint relevant to the Client Master
+# Invoices tab: `series/find`. It returns every series (invoice + proforma +
+# offer + spec + margin) in one response, discriminated by <type>. The
+# other dictionaries we initially considered — invoiceseries, proformaseries,
+# languages, currencies — all return CONTROLLER NOT FOUND (probe captured in
+# tasks/reports/wfirma-dictionary-endpoint-probe.md). Read-only. Never raises.
+
+def fetch_series() -> List[Dict[str, str]]:
+    """Read-only fetch of all wFirma series (invoice / proforma / offer / etc.).
+
+    Returns a list of normalised dicts:
+        {"id":    "<wfirma series id>",
+         "label": "<template, e.g. 'FV [numer]/[rok]'>",
+         "code":  "<short name, often 'domyślna'>",
+         "type":  "<normal|margin|proforma|offer|spec|...>"}
+
+    On any failure path (HTTP error, CONTROLLER NOT FOUND, malformed XML)
+    returns []. The caller treats that as "live source unavailable" and
+    falls back to the baseline dictionary.
+
+    Hard rule: read-only. Never POST/PUT/DELETE.
+    """
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<api><series><parameters><page>1</page><limit>200</limit></parameters></series></api>'
+    )
+    try:
+        http_status, response_text = _http_request("GET", "series", "find", body)
+    except Exception:
+        return []
+    if http_status >= 400 or not response_text:
+        return []
+    try:
+        root = ET.fromstring(response_text)
+    except Exception:
+        return []
+    code, _desc = _parse_status(response_text)
+    if code != "OK":
+        # CONTROLLER NOT FOUND, NOT FOUND, etc. — caller falls back to baseline.
+        return []
+    out: List[Dict[str, str]] = []
+    container = root.find("series")
+    if container is None:
+        return out
+    for node in container.findall("series"):
+        sid = (_find_text(node, "id") or "").strip()
+        if not sid or sid == "0":
+            continue
+        tpl = (_find_text(node, "template") or "").strip()
+        name = (_find_text(node, "name") or "").strip()
+        typ = (_find_text(node, "type") or "").strip().lower()
+        vis = (_find_text(node, "visibility") or "").strip().lower()
+        # Label: prefer the template (operator recognises FV/PROF/OF), then name, then id.
+        label = tpl or name or f"Series #{sid}"
+        out.append({"id": sid, "label": label, "code": name, "type": typ,
+                    "visibility": vis})
+    return out

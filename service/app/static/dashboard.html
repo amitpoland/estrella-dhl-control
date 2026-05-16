@@ -2443,7 +2443,9 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
   const [dicts, setDicts] = React.useState({
     vat_modes: [], currencies: [], languages: [],
     invoice_series: [], proforma_series: [],
+    source_state: {}, fetched_at: null,
   });
+  const [dictRefreshing, setDictRefreshing] = React.useState(false);
   React.useEffect(() => {
     apiFetch('/api/v1/customer-master/dictionaries')
       .then(d => setDicts({
@@ -2452,6 +2454,8 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
         languages:       d.languages       || [],
         invoice_series:  d.invoice_series  || [],
         proforma_series: d.proforma_series || [],
+        source_state:    d.source_state    || {},
+        fetched_at:      d.fetched_at      || null,
       }))
       .catch(() => { /* keep empty defaults — operator can still hand-edit IDs */ });
   }, []);
@@ -3437,6 +3441,53 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                   default. Operator-managed; visible only when "Show
                   technical IDs" is toggled. Raw IDs stay editable here for
                   ops/debug. */}
+              {/* B0 dictionary refresh 2026-05-17 — operator-triggered live
+                  wFirma series fetch. Only the read-only series/find
+                  endpoint is called. Languages and currencies have no live
+                  wFirma endpoint (probe verified) and stay on baseline. */}
+              <div data-testid="kyc-invoices-dict-refresh-row"
+                style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
+                <button data-testid="kyc-invoices-dict-refresh" type="button"
+                  disabled={dictRefreshing}
+                  onClick={async () => {
+                    setDictRefreshing(true);
+                    try {
+                      const r = await apiFetch('/api/v1/customer-master/dictionaries/refresh',
+                        { method: 'POST' });
+                      setDicts({
+                        vat_modes:       r.vat_modes       || [],
+                        currencies:      r.currencies      || [],
+                        languages:       r.languages       || [],
+                        invoice_series:  r.invoice_series  || [],
+                        proforma_series: r.proforma_series || [],
+                        source_state:    r.source_state    || {},
+                        fetched_at:      r.fetched_at      || null,
+                      });
+                      if (onToast) onToast(
+                        `wFirma series refreshed — invoice=${(r.source_state||{}).invoice_series} ` +
+                        `proforma=${(r.source_state||{}).proforma_series}`, 'success');
+                    } catch (e) {
+                      if (onToast) onToast('Dictionary refresh failed: ' + (e.message || e), 'error');
+                    } finally {
+                      setDictRefreshing(false);
+                    }
+                  }}
+                  style={{ padding: '5px 12px', fontSize: 11, fontWeight: 600,
+                    background: 'var(--bg-subtle)', color: 'var(--text)',
+                    border: '1px solid var(--border)', borderRadius: 6,
+                    cursor: dictRefreshing ? 'not-allowed' : 'pointer',
+                    opacity: dictRefreshing ? 0.5 : 1, fontFamily: 'inherit' }}>
+                  {dictRefreshing ? 'Refreshing…' : 'Refresh wFirma dictionaries'}
+                </button>
+                {dicts.source_state && (
+                  <span data-testid="kyc-invoices-dict-source-state"
+                    style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                    invoice: <strong style={{ color: 'var(--text-2)' }}>{dicts.source_state.invoice_series || 'baseline'}</strong>
+                    {' · '}proforma: <strong style={{ color: 'var(--text-2)' }}>{dicts.source_state.proforma_series || 'baseline'}</strong>
+                    {dicts.fetched_at && <span> · fetched {dicts.fetched_at}</span>}
+                  </span>
+                )}
+              </div>
               <details data-testid="kyc-invoices-advanced" style={{ marginTop: 8 }}>
                 <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--text-3)' }}>
                   Advanced · wFirma series IDs
@@ -3452,6 +3503,17 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                         {dicts.proforma_series.map(s => (
                           <option key={s.id || '_blank'} value={s.id}>{s.label}</option>
                         ))}
+                        {/* Unresolved-id fallback: stored id is not in the live
+                            dictionary (e.g. the catalog has not been refreshed
+                            yet in this process). Render it so the operator
+                            keeps the saved value instead of losing it. */}
+                        {form.preferred_proforma_series_id &&
+                         !dicts.proforma_series.some(s => s.id === form.preferred_proforma_series_id) && (
+                          <option data-testid="kyc-invoices-proforma-series-unresolved"
+                            value={form.preferred_proforma_series_id}>
+                            Unknown wFirma series (#{form.preferred_proforma_series_id})
+                          </option>
+                        )}
                       </select>
                     ) : (
                       <input data-testid="kyc-invoices-proforma-series" type="text"
@@ -3472,6 +3534,13 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                         {dicts.invoice_series.map(s => (
                           <option key={s.id || '_blank'} value={s.id}>{s.label}</option>
                         ))}
+                        {form.preferred_invoice_series_id &&
+                         !dicts.invoice_series.some(s => s.id === form.preferred_invoice_series_id) && (
+                          <option data-testid="kyc-invoices-invoice-series-unresolved"
+                            value={form.preferred_invoice_series_id}>
+                            Unknown wFirma series (#{form.preferred_invoice_series_id})
+                          </option>
+                        )}
                       </select>
                     ) : (
                       <input data-testid="kyc-invoices-invoice-series" type="text"
