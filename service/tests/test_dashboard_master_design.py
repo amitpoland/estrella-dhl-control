@@ -580,16 +580,30 @@ def test_design_preview_footer_present():
 
 
 def test_footer_accurately_lists_live_and_pending():
+    """B-MD3 (MDOC-2026-05): footer narrative updated. All Master Data entities
+    are now either live (including Designs) or surfaced as a read-only explainer
+    (Roles). The legacy "backend pending" footer phrase was removed in B-MD3 —
+    if the dashboard still claimed "backend pending" for an entity that is in
+    fact live, the operator would be misled.
+    """
     src = _src()
-    # B9 adds Carriers Config to the live list
+    # B-MD3: footer must list the full live set including Designs.
     assert "Clients" in src and "Users" in src
-    assert "Carriers Config are live" in src, "Footer must list Carriers Config as live (B9)"
+    assert "Designs are live" in src, (
+        "Footer must list Designs as live (B-MD2 made Designs live; B-MD3 "
+        "updates the footer narrative)"
+    )
     assert "FX Rates (reference)" in src
     assert "Incoterms" in src
     assert "HS Codes" in src
     assert "Suppliers" in src
     assert "VAT Config" in src
-    assert "backend pending" in src.lower()
+    assert "Carriers Config" in src
+    # B-MD3: footer must explicitly position Roles as a read-only explainer
+    # (NOT as "backend pending" any more).
+    assert "Roles is a read-only explainer" in src, (
+        "Footer must position Roles as a read-only explainer panel"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
