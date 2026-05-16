@@ -55,11 +55,17 @@ _FP_IMPORT_RE = re.compile(
 #: Files allowed to reference finance_postings_db. Adding to this list
 #: requires also adding the matching production wiring in a future batch
 #: AND removing the dormancy test that follows.
+#:
+#: 6F.3 added: routes_finance_postings.py (the single READ-ONLY route file)
+#:             test_finance_postings_breakdown_route.py (its tests)
 _ALLOWED_REFERENCES = {
     "finance_postings_db.py",
     "test_finance_postings_db.py",
     "test_finance_postings_contracts.py",
     "test_master_data_hard_rules.py",
+    # 6F.3 ──────────────────────────────────────────────────────────────
+    "routes_finance_postings.py",
+    "test_finance_postings_breakdown_route.py",
 }
 
 
@@ -109,78 +115,102 @@ def test_no_finance_postings_reference_in_static_assets():
                 f"6F.1.5: static asset references {forbidden}: {p}"
 
 
-def test_no_finance_postings_reference_in_main_or_routes_init():
-    """main.py and any route-aggregator file must not even mention the module
-    by name. Adding it requires a deliberate batch."""
+def test_main_references_only_read_only_router_for_finance_postings():
+    """6F.3: main.py is allowed to import the READ-ONLY finance_postings_router
+    and call include_router on it. Any other reference (write helpers, DB
+    init in lifespan, settlement engine) is still forbidden."""
     mp = _APP / "main.py"
     if not mp.exists():
         pytest.skip("main.py missing")
     src = mp.read_text(encoding="utf-8")
-    for forbidden in ("finance_postings_db", "finance_postings_router",
-                      "fp_router", "finance-postings"):
-        assert forbidden not in src, \
-            f"6F.1.5: main.py must NOT reference {forbidden}"
-
-
-# ── Rule 2: NO route registration ──────────────────────────────────────────
-
-def test_no_routes_finance_postings_file_exists():
-    f = _APP / "api" / "routes_finance_postings.py"
-    assert not f.exists(), \
-        "6F.1.5: routes_finance_postings.py must NOT exist until 6F.3 lands"
-
-
-def test_no_route_path_contains_finance_postings_or_postings():
-    """Scan all route files; no path literal may contain finance-postings
-    or /postings/. (Plain 'postings' could appear in comments — be strict
-    about path literals that look like URLs.)"""
-    api_dir = _APP / "api"
-    if not api_dir.exists():
-        pytest.skip("no api dir")
-    url_pattern = re.compile(r"['\"](?:/api/v1/finance|/api/v1/postings|"
-                              r"finance-postings)['\"]")
-    for p in api_dir.glob("routes_*.py"):
-        src = p.read_text(encoding="utf-8")
-        m = url_pattern.search(src)
-        assert m is None, \
-            f"6F.1.5: route module {p.name} declares forbidden path: {m.group(0)}"
-
-
-def test_no_router_prefix_for_finance_postings():
-    """If any APIRouter declares a prefix containing finance-postings, fail."""
-    api_dir = _APP / "api"
-    if not api_dir.exists():
-        pytest.skip("no api dir")
-    pattern = re.compile(r"APIRouter\([^)]*prefix\s*=\s*['\"][^'\"]*finance[^'\"]*['\"]")
-    for p in api_dir.glob("routes_*.py"):
-        src = p.read_text(encoding="utf-8")
-        m = pattern.search(src)
-        assert m is None, \
-            f"6F.1.5: {p.name} has forbidden APIRouter prefix: {m.group(0)}"
-
-
-# ── Rule 3: NO production code path creates the SQLite file ────────────────
-
-def test_init_db_not_called_from_main_lifespan():
-    """The PZService lifespan in main.py initialises several DBs at startup.
-    finance_postings_db.init_db MUST NOT be among them in 6F.1.5."""
-    mp = _APP / "main.py"
-    if not mp.exists():
-        pytest.skip("main.py missing")
-    src = mp.read_text(encoding="utf-8")
-    # main.py imports init_db (different module) — be specific about the FP one
+    # Allowed references (6F.3)
+    assert "finance_postings_router" in src, \
+        "6F.3: main.py must import finance_postings_router"
+    assert "include_router(finance_postings_router)" in src, \
+        "6F.3: main.py must include_router(finance_postings_router)"
+    # Forbidden references (still locked)
     for forbidden in ("finance_postings_db.init_db",
                       "from .services.finance_postings_db import init_db",
-                      "from ..services.finance_postings_db import init_db"):
+                      "from ..services.finance_postings_db import init_db",
+                      "create_charge", "create_posting", "create_payment",
+                      "create_allocation", "record_settlement"):
         assert forbidden not in src, \
-            f"6F.1.5: main.py must NOT initialise finance_postings: {forbidden}"
+            f"6F.3: main.py must NOT reference {forbidden}"
 
 
-def test_no_production_path_creates_finance_postings_sqlite():
-    """Scan all production code for the literal string 'finance_postings.sqlite'.
-    Only the module itself + tests + docs are allowed to mention it."""
+# ── Rule 2: route registration is now positive (single read-only route) ────
+
+def test_routes_finance_postings_file_exists():
+    """6F.3 adds the single read-only route file."""
+    f = _APP / "api" / "routes_finance_postings.py"
+    assert f.exists(), \
+        "6F.3: routes_finance_postings.py must exist"
+
+
+def test_route_path_is_exactly_breakdown():
+    """6F.3 allows exactly one path literal under finance-postings:
+       /{posting_id}/breakdown
+    Any other path on this prefix (e.g. /, /list) is forbidden until a
+    later batch deliberately adds it."""
+    f = _APP / "api" / "routes_finance_postings.py"
+    if not f.exists():
+        pytest.skip("6F.3 not landed")
+    src = f.read_text(encoding="utf-8")
+    # The only allowed path inside @router.get(...) is /{posting_id}/breakdown
+    decorator_pattern = re.compile(
+        r"@router\.get\(\s*['\"]([^'\"]+)['\"]"
+    )
+    found_paths = decorator_pattern.findall(src)
+    assert len(found_paths) >= 1, "6F.3 must declare at least one GET route"
+    for path in found_paths:
+        assert path == "/{posting_id}/breakdown", \
+            f"6F.3 allows only /{{posting_id}}/breakdown; found {path!r}"
+
+
+def test_router_prefix_is_finance_postings_exact():
+    """The only APIRouter prefix containing 'finance' must be exactly
+    '/api/v1/finance/postings' (no other 'finance' prefixes)."""
+    api_dir = _APP / "api"
+    if not api_dir.exists():
+        pytest.skip("no api dir")
+    pattern = re.compile(r"APIRouter\([^)]*prefix\s*=\s*['\"]([^'\"]*finance[^'\"]*)['\"]")
+    for p in api_dir.glob("routes_*.py"):
+        src = p.read_text(encoding="utf-8")
+        for prefix in pattern.findall(src):
+            assert prefix == "/api/v1/finance/postings", \
+                f"6F.3 allows only /api/v1/finance/postings prefix; "\
+                f"found {prefix!r} in {p.name}"
+
+
+# ── Rule 3: production code allowed to touch finance_postings.sqlite only
+#    via the read-only route handler ──────────────────────────────────────
+
+def test_init_db_called_only_from_route_handler():
+    """6F.3 explicitly chose handler-level init_db. main.py lifespan MUST NOT
+    initialise the DB; the only production caller is routes_finance_postings."""
+    # 1) main.py does NOT call finance_postings_db.init_db
+    mp = _APP / "main.py"
+    if mp.exists():
+        src = mp.read_text(encoding="utf-8")
+        for forbidden in ("finance_postings_db.init_db",
+                          "from .services.finance_postings_db import init_db",
+                          "from ..services.finance_postings_db import init_db",
+                          "init_finance_postings_db"):
+            assert forbidden not in src, \
+                f"6F.3: main.py must NOT initialise finance_postings: {forbidden}"
+    # 2) The route module IS allowed to import init_db (read-only path)
+    rf = _APP / "api" / "routes_finance_postings.py"
+    if not rf.exists():
+        pytest.skip("6F.3 not landed")
+    rsrc = rf.read_text(encoding="utf-8")
+    assert "init_db" in rsrc, \
+        "6F.3: route handler must call init_db (lazy initialisation)"
+
+
+def test_only_route_module_mentions_finance_postings_sqlite():
+    """Scan all production code for the literal 'finance_postings.sqlite'.
+    Only the DB module itself and the read-only route module are allowed."""
     pattern = re.compile(r"finance_postings\.sqlite")
-    # App services + api
     for root in (_APP / "api", _APP / "services"):
         if not root.exists():
             continue
@@ -189,7 +219,7 @@ def test_no_production_path_creates_finance_postings_sqlite():
                 continue
             src = p.read_text(encoding="utf-8", errors="ignore")
             assert not pattern.search(src), \
-                f"6F.1.5: production file mentions finance_postings.sqlite: {p}"
+                f"6F.3: production file mentions finance_postings.sqlite: {p}"
 
 
 # ── Rule 4: NO behaviour coupling to existing engines ──────────────────────
@@ -459,20 +489,51 @@ def test_readiness_doc_references_6F1_5_before_backfill():
 
 # ── Dormancy meta-assertion: this whole file must keep passing ─────────────
 
-def test_finance_postings_module_remains_dormant_summary():
-    """Single roll-up assertion to make the dormancy guarantee very visible.
+def test_finance_postings_module_is_read_only_only():
+    """6F.3 roll-up assertion. Replaces the 6F.1.5 dormancy-summary test.
 
-    If THIS test fails, finance_postings_db has become coupled to runtime
-    code WITHOUT the corresponding contract test being updated. Stop and
-    investigate before merging anything else.
+    The single intentional consumer is the READ-ONLY route module. If any
+    OTHER production file imports finance_postings_db, fail loudly.
+
+    Additionally: the route module itself must declare only GET; no write
+    helpers may be imported.
+
+    If this test fails, finance_postings_db has acquired a write-path
+    consumer WITHOUT the corresponding 6F.5/6F.6/6F.7 batch having
+    explicitly updated the contracts. Stop and investigate.
     """
-    leaks = (
-        _scan_for_finance_postings_imports(_APP / "api")
-        + _scan_for_finance_postings_imports(_APP / "services")
-    )
+    # Step 1: imports outside the single allowed route module
+    api_leaks      = _scan_for_finance_postings_imports(_APP / "api")
+    services_leaks = _scan_for_finance_postings_imports(_APP / "services")
+    leaks = api_leaks + services_leaks
+    assert not leaks, \
+        f"6F.3 read-only-only: import leak found in: {leaks}"
+
+    # Step 2: route module exists
     routes_file = _APP / "api" / "routes_finance_postings.py"
+    assert routes_file.exists(), \
+        "6F.3 read-only-only: routes_finance_postings.py must exist"
+
+    # Step 3: route module declares only GET
+    rsrc = routes_file.read_text(encoding="utf-8")
+    for forbidden_decorator in ("@router.post", "@router.put",
+                                 "@router.patch", "@router.delete"):
+        assert forbidden_decorator not in rsrc, \
+            f"6F.3 read-only-only: route module declares {forbidden_decorator}"
+
+    # Step 4: route module does NOT import write helpers
+    for forbidden_helper in ("create_charge", "create_posting",
+                              "create_payment", "create_allocation",
+                              "record_settlement", "link_charge_to_posting"):
+        assert forbidden_helper not in rsrc, \
+            f"6F.3 read-only-only: route imports write helper {forbidden_helper}"
+
+    # Step 5: main.py imports the router but no write helper
     main_src = (_APP / "main.py").read_text(encoding="utf-8") if (_APP / "main.py").exists() else ""
-    assert not leaks, f"dormancy broken — imports found in: {leaks}"
-    assert not routes_file.exists(), "dormancy broken — routes_finance_postings.py exists"
-    assert "finance_postings" not in main_src, \
-        "dormancy broken — main.py references finance_postings"
+    assert "finance_postings_router" in main_src, \
+        "6F.3: main.py must import finance_postings_router"
+    for forbidden in ("create_charge", "create_posting", "create_payment",
+                       "create_allocation", "record_settlement",
+                       "finance_postings_db.init_db"):
+        assert forbidden not in main_src, \
+            f"6F.3 read-only-only: main.py must NOT reference {forbidden}"

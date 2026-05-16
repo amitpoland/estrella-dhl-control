@@ -385,7 +385,7 @@
         {
           "batch_id": "6F.3",
           "title": "Read-only /breakdown endpoint (planned)",
-          "status": "planned",
+          "status": "active",
           "pr_url": null,
           "next_batch": null,
           "block_reason": null

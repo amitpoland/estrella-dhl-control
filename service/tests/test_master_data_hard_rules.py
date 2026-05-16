@@ -332,13 +332,18 @@ def test_6F1_module_uses_minor_units_only():
 
 
 def test_6F1_no_existing_module_imports_finance_postings():
-    """6F.1 must remain unused by any other module (no coupling yet).
-    Allow-list updated in 6F.1.5 to include the new contracts test file."""
+    """6F.1 enforced full dormancy. 6F.1.5 added the contract-test file to
+    the allow-list. 6F.3 added the single read-only route module + its
+    tests. Any other import path is still forbidden."""
     import re
-    # The module itself + its tests are allowed to import it
-    allowed = {"finance_postings_db.py", "test_finance_postings_db.py",
-               "test_master_data_hard_rules.py",
-               "test_finance_postings_contracts.py"}
+    allowed = {
+        "finance_postings_db.py", "test_finance_postings_db.py",
+        "test_master_data_hard_rules.py",
+        "test_finance_postings_contracts.py",
+        # 6F.3 additions ──────────────────────────────────────────────
+        "routes_finance_postings.py",
+        "test_finance_postings_breakdown_route.py",
+    }
     pattern = re.compile(r"(?:from\s+\S*finance_postings_db|import\s+finance_postings_db)")
     for p in (_APP_ROOT.rglob("*.py")):
         if p.name in allowed:
@@ -362,21 +367,28 @@ def test_6F1_no_existing_module_imports_finance_postings():
             pytest.fail(f"6F.1 must remain unused; found import in {p}")
 
 
-def test_6F1_main_does_not_register_router_yet():
-    """No routes_finance_postings.py exists yet, and main.py must not import
-    or include any such router."""
+def test_6F3_main_registers_finance_postings_router_get_only():
+    """6F.3 wires the single READ-ONLY router. main.py MUST import + register
+    it, and the route module MUST declare only GET (no write decorators)."""
     mp = _APP_ROOT / "main.py"
     if not mp.exists():
         pytest.skip("main.py not present")
     src = mp.read_text(encoding="utf-8")
-    for forbidden in ("routes_finance_postings", "finance_postings_router",
-                      "fp_router"):
-        assert forbidden not in src, \
-            f"6F.1 must NOT wire a router yet; found: {forbidden}"
-    # The routes file itself must not exist for 6F.1
+    # Positive: router must be imported + included
+    assert "finance_postings_router" in src, \
+        "6F.3: main.py must import finance_postings_router"
+    assert "include_router(finance_postings_router)" in src, \
+        "6F.3: main.py must include_router(finance_postings_router)"
+    # Positive: the route file must exist
     routes_file = _APP_ROOT / "api" / "routes_finance_postings.py"
-    assert not routes_file.exists(), \
-        "6F.1 schema-only batch must not create routes_finance_postings.py"
+    assert routes_file.exists(), \
+        "6F.3: routes_finance_postings.py must exist"
+    # Negative: route module must declare only GET — no write decorators
+    rsrc = routes_file.read_text(encoding="utf-8")
+    for forbidden in ("@router.post", "@router.put",
+                      "@router.patch", "@router.delete"):
+        assert forbidden not in rsrc, \
+            f"6F.3: route module must be GET-only; found {forbidden}"
 
 
 def test_6F1_pz_engine_does_not_read_finance_postings():
