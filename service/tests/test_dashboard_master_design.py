@@ -217,6 +217,8 @@ def test_only_allowed_writes_in_master():
         '/api/v1/hs-codes',
         '/api/v1/units',
         '/api/v1/product-local',
+        '/api/v1/incoterms',
+        '/api/v1/vat-config',
     )
     # b5Save / b5Delete are generic helpers that accept a basePath parameter;
     # their call sites (b5Save('/api/v1/hs-codes', ...) etc.) carry the literal
@@ -333,14 +335,14 @@ def test_four_live_entities_in_sidebar():
     assert "live: true" in src, "live: true must be set on live entities"
 
 
-def test_five_pending_entities_in_sidebar():
-    """B5 (MDC-040..042) moved hs_codes + units + product_local to live; B4
-    moved suppliers. Five entities remain pending: designs, fx_rates,
-    carriers_config, incoterms, vat_config, roles."""
+def test_three_pending_entities_in_sidebar():
+    """B7 (MDC-060/061) moved incoterms + vat_config to live. Three entities
+    remain pending: designs, fx_rates, carriers_config, roles. (Note: roles
+    is also a 4th if counted; carriers_config stays pending.)"""
     src = _src()
     for eid in (
         "'designs'", "'fx_rates'",
-        "'carriers_config'", "'incoterms'", "'vat_config'", "'roles'",
+        "'carriers_config'", "'roles'",
     ):
         assert f"id: {eid}" in src, f"Missing pending entity id: {eid}"
     assert "live: false" in src, "live: false must be set on pending entities"
@@ -376,6 +378,35 @@ def test_b5_panel_testids_present():
                 'master-hs-btn-new', 'master-units-btn-new', 'master-pl-btn-new',
                 'master-hs-btn-save', 'master-units-btn-save', 'master-pl-btn-save'):
         assert f'data-testid="{tid}"' in src, f"B5 missing testid: {tid}"
+
+
+def test_b7_entities_are_live():
+    src = _src()
+    for eid, state_var in (("'incoterms'", "incoterms"),
+                            ("'vat_config'", "vatCfg")):
+        idx = src.index("id: " + eid)
+        snippet = src[idx:idx + 260]
+        assert "live: true" in snippet, f"{eid} must be live: true (B7)"
+        assert (state_var + ".items") in snippet or (state_var + ".error") in snippet, \
+            f"{eid} sidebar entry must derive from state ({state_var})"
+
+
+def test_b7_panel_testids_present():
+    src = _src()
+    for tid in ('master-incoterms-panel', 'master-vat-config-panel',
+                'master-incoterms-btn-new', 'master-vat-btn-new',
+                'master-incoterms-btn-save', 'master-vat-btn-save'):
+        assert f'data-testid="{tid}"' in src, f"B7 missing testid: {tid}"
+
+
+def test_b7_vat_read_only_disclaimer_present():
+    """VAT Config panel must explicitly state it does NOT override wFirma
+    invoice VAT codes. Guards against future drift toward write integration."""
+    src = _src()
+    block = _master_block(src)
+    assert "wFirma invoice VAT codes are not overridden" in block or \
+           "does NOT override wFirma" in block, \
+        "VAT Config panel must carry a read-only disclaimer"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -476,11 +507,12 @@ def test_design_preview_footer_present():
 
 def test_footer_accurately_lists_live_and_pending():
     src = _src()
-    # B5 adds HS Codes · Units · Product local to the live list
+    # B7 adds Incoterms · VAT Config to the live list
     assert "Clients" in src and "Users" in src
-    assert "Product local are live" in src, "Footer must list Product local as live (B5)"
-    assert "Suppliers" in src
+    assert "VAT Config are live" in src, "Footer must list VAT Config as live (B7)"
+    assert "Incoterms" in src
     assert "HS Codes" in src
+    assert "Suppliers" in src
     assert "backend pending" in src.lower()
 
 
