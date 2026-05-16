@@ -131,7 +131,9 @@ def test_no_backend_pending_strings_in_master_block():
 # ── Live entity count consistency ───────────────────────────────────────────
 
 LIVE_ENTITIES = (
-    "'clients'", "'users'", "'products'", "'customer_master'",
+    # B0 consolidation Batch 2 (2026-05-16): 'clients' sidebar entry
+    # folded into Client Master → Identity view-mode.
+    "'users'", "'products'", "'customer_master'",
     "'designs'", "'fx_rates'", "'suppliers'", "'hs_codes'",
     "'units'", "'product_local'", "'carriers_config'", "'incoterms'",
     "'vat_config'",

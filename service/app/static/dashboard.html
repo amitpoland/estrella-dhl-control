@@ -3333,7 +3333,8 @@ function MasterDataPage({ onNav, onToast }) {
   const [products,   setProducts]   = React.useState({ loading: true,  error: null, items: [], ts: null });
   const [custMaster, setCustMaster] = React.useState({ loading: false, error: null, items: [], ts: null });
 
-  const [activeEntity, setActiveEntity] = React.useState('clients');
+  // B0 consolidation Batch 2 — default Master Data tab is now Client Master.
+  const [activeEntity, setActiveEntity] = React.useState('customer_master');
   const [query,        setQuery]        = React.useState('');
   const [kycModal,     setKycModal]     = React.useState(null);  // { rec, custMasterRec }
 
@@ -3617,6 +3618,9 @@ function MasterDataPage({ onNav, onToast }) {
   const [supWfReview, setSupWfReview] = React.useState(null);
   // shape: { loading, error, proposals: [{wfirma_id,name,vat_id,country,email,status,proposed_action,reason,local_id,local_supplier_code,local_name,local_email, _ui_skipped, _ui_edited}] }
   const [cmWfReview,  setCmWfReview]  = React.useState(null);  // wFirma -> Client Master review
+  // B0 consolidation (Batch 1) — three view modes inside the unified
+  // Client Master panel. Default 'master' preserves prior behaviour.
+  const [cmViewMode,  setCmViewMode]  = React.useState('master'); // 'master' | 'identity' | 'review'
 
   const loadSuppliers = React.useCallback(async () => {
     setSuppliers(s => ({ ...s, loading: true, error: null }));
@@ -3790,13 +3794,16 @@ function MasterDataPage({ onNav, onToast }) {
 
   // ── Entity sidebar config ──────────────────────────────────────────────
   const ENTITIES = [
-    { id: 'clients',        label: 'Clients',         icon: '◉',
-      count: customers.error ? null : (customers.items || []).length, live: true },
+    // B0 consolidation Batch 2 — the legacy 'clients' sidebar entry is
+    // gone. The wFirma identity projection it rendered is now reachable
+    // inside Client Master via the Identity view-mode chip. The
+    // activeEntity === 'clients' rendering branch remains compiled for
+    // direct-URL reachability but is no longer offered in the sidebar.
     { id: 'users',          label: 'Users',           icon: '◎',
       count: users.error ? null : (users.items || []).length, live: true },
     { id: 'products',       label: 'Products',        icon: '◈',
       count: products.error ? null : (products.items || []).length, live: true },
-    { id: 'customer_master',label: 'Client Master', icon: '⊞',
+    { id: 'customer_master',label: 'Client Master',   icon: '⊞',
       count: custMaster.items.length > 0 ? custMaster.items.length : null, live: true },
     null,
     { id: 'designs',        label: 'Designs',         icon: '◇',
@@ -4264,7 +4271,10 @@ function MasterDataPage({ onNav, onToast }) {
         <div style={{ flex: 1, minWidth: 0 }}>
 
           {/* ── CLIENTS ──────────────────────────────────────────────── */}
-          {activeEntity === 'clients' && (
+          {/* Clients/Identity panel — reachable from sidebar 'clients' (legacy)
+              AND from Client Master → Identity view-mode (consolidated UI). */}
+          {(activeEntity === 'clients'
+            || (activeEntity === 'customer_master' && cmViewMode === 'identity')) && (
             <div data-testid="master-clients-panel">
               <PanelHeader title="Clients"
                 subtitle="wFirma contractors · click Edit to open full client profile"
@@ -4539,6 +4549,35 @@ function MasterDataPage({ onNav, onToast }) {
                     Fetch clients from wFirma
                   </button>
                 } />
+              {/* B0 consolidation Batch 1 — three view modes inside Client
+                  Master. Default 'master' renders the existing CM table.
+                  'identity' renders the legacy Clients/wFirma identity
+                  projection (previously a separate sidebar tab). 'review'
+                  surfaces the wFirma contractor review panel. */}
+              <div data-testid="cm-view-mode-chips"
+                style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+                {[
+                  { id: 'master',   label: 'Master',   subtitle: 'Freight / insurance / KYC defaults' },
+                  { id: 'identity', label: 'Identity', subtitle: 'wFirma contractor projection' },
+                  { id: 'review',   label: 'Review',   subtitle: 'wFirma fetch & per-row assign' },
+                ].map(m => {
+                  const sel = cmViewMode === m.id;
+                  return (
+                    <button key={m.id}
+                      data-testid={`cm-view-mode-${m.id}`}
+                      onClick={() => setCmViewMode(m.id)}
+                      title={m.subtitle}
+                      style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                        background: sel ? 'var(--accent)' : 'var(--bg-subtle)',
+                        color: sel ? '#fff' : 'var(--text)',
+                        border: '1px solid ' + (sel ? 'var(--accent)' : 'var(--border)'),
+                        borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {cmViewMode === 'master' && (<React.Fragment>
               {custMaster.loading && (
                 <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}
                      data-testid="master-cm-loading">Loading client master…</div>
@@ -4877,6 +4916,26 @@ function MasterDataPage({ onNav, onToast }) {
                       </React.Fragment>
                     )
                   }
+                </div>
+              )}
+              </React.Fragment>)}
+              {cmViewMode === 'review' && (
+                <div data-testid="cm-view-mode-review-pane"
+                  style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                    borderRadius: 10, padding: 16 }}>
+                  {!cmWfReview && (
+                    <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+                      Click <strong>Fetch clients from wFirma</strong> above to load
+                      proposals into the review table.
+                    </div>
+                  )}
+                  {cmWfReview && (
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                      The review table is shown above. Use the Assign-to dropdown
+                      per row, then Save / Assign to write into Client Master or
+                      Supplier Master.
+                    </div>
+                  )}
                 </div>
               )}
             </div>

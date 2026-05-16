@@ -635,6 +635,97 @@ def test_suggested_target_deterministic_examples():
     assert _cm_suggest_target("UNKNOWN CO", "", "")["suggested_target"]          == "needs_operator_review"
 
 
+# ── B0 consolidation contract (Client Master single surface) ──────────────
+
+
+def test_sidebar_has_no_separate_clients_entry():
+    """Batch 2: the legacy 'Clients' sidebar entry is gone. Only the unified
+    Client Master entry is offered."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    # The ENTITIES array must not declare a sidebar entry with id 'clients'.
+    import re as _re
+    hits = _re.findall(r"\{\s*id:\s*'clients'\s*,\s*label:", src)
+    assert hits == [], "Legacy 'clients' sidebar entry must be removed from ENTITIES"
+    # The unified Client Master entry stays.
+    assert "id: 'customer_master',label: 'Client Master'" in src \
+        or "id: 'customer_master', label: 'Client Master'" in src \
+        or "id: 'customer_master',label: 'Client Master',   icon:" in src, \
+        "Unified Client Master sidebar entry must be present"
+
+
+def test_default_master_data_tab_is_customer_master():
+    """Default activeEntity = customer_master so the consolidated tab opens
+    on first load."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert "React.useState('customer_master')" in src, \
+        "Default activeEntity must be 'customer_master' so Client Master opens by default"
+
+
+def test_view_mode_chips_present():
+    """Batch 1: three view-mode chips inside the Client Master panel."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    for tid in ("cm-view-mode-chips", "cm-view-mode-master",
+                "cm-view-mode-identity", "cm-view-mode-review"):
+        assert f'data-testid="{tid}"' in src or f"data-testid={{`{tid}`}}" in src or \
+               f'data-testid={{`cm-view-mode-${{m.id}}`}}' in src, \
+            f"view-mode chip testid missing: {tid}"
+
+
+def test_default_view_mode_is_master():
+    """Default cmViewMode = 'master' so the existing CM table renders first."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert "React.useState('master')" in src and "cmViewMode" in src, \
+        "Default view-mode must be 'master'"
+
+
+def test_identity_view_mode_renders_legacy_clients_panel():
+    """The Clients/Identity panel renders BOTH when sidebar activeEntity is
+    'clients' (legacy direct reach) AND when the operator switches to
+    Identity view inside Client Master. The existing testids
+    (master-clients-panel, master-customers-row, master-clients-btn-kyc,
+    master-customers-sync) remain reachable through the view-mode switch."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    # The render-gate must include the Client-Master+Identity combination.
+    assert "cmViewMode === 'identity'" in src
+    # All legacy testids stay.
+    for tid in ("master-clients-panel", "master-customers-row",
+                "master-clients-btn-kyc", "master-customers-sync"):
+        assert f'data-testid="{tid}"' in src, \
+            f"legacy clients testid must remain reachable: {tid}"
+
+
+def test_review_view_mode_pane_present():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert 'data-testid="cm-view-mode-review-pane"' in src, \
+        "Review view-mode must render a dedicated pane container"
+    # Fetch button + review panel testids unchanged.
+    assert 'data-testid="master-cm-btn-fetch-wfirma"' in src
+    assert "${testidPrefix}-review-table" in src
+
+
+def test_master_view_mode_wraps_existing_cm_content():
+    """Master view-mode must still render the existing CM table and inline
+    edit testids."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert "cmViewMode === 'master'" in src
+    for tid in ("master-customer-master-panel", "master-cm-btn-edit",
+                "master-cm-btn-open-profile"):
+        assert f'data-testid="{tid}"' in src, \
+            f"legacy CM testid must remain reachable: {tid}"
+
+
+def test_no_backend_routes_renamed_in_dashboard():
+    """Backend route paths are unchanged. The dashboard still calls the
+    legacy /api/v1/customer-master/* endpoints."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert "/api/v1/customer-master/" in src
+    assert "/api/v1/customer-master/sync-from-wfirma/preview" in src
+    assert "/api/v1/customer-master/sync-from-wfirma/apply" in src
+    # No accidental rename to /api/v1/client-master/.
+    assert "/api/v1/client-master/" not in src, \
+        "Backend route path must remain /api/v1/customer-master/* (no rename in this batch)"
+
+
 def test_resolver_emits_only_four_canonical_verdicts():
     """The resolver model is closed: every proposal's suggested_target must
     be one of {client_master, supplier_master, ignore, needs_operator_review}.
