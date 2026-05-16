@@ -3735,7 +3735,7 @@ function MasterDataPage({ onNav, onToast }) {
                      { method: 'PUT', body: JSON.stringify(payload) });
       await loadCustomerMaster();
       closeCmEdit();
-      if (onToast) onToast('Customer master saved.', 'success');
+      if (onToast) onToast('Client Master saved.', 'success');
     } catch (e) {
       setCmSaveError(e.message || 'Save failed');
     } finally {
@@ -4513,7 +4513,7 @@ function MasterDataPage({ onNav, onToast }) {
             </div>
           )}
 
-          {/* ── CUSTOMER MASTER ────────────────────────────────────────── */}
+          {/* ── CLIENT MASTER ────────────────────────────────────────── */}
           {activeEntity === 'customer_master' && (
             <div data-testid="master-customer-master-panel">
               <PanelHeader title="Client Master"
@@ -4541,7 +4541,7 @@ function MasterDataPage({ onNav, onToast }) {
                 } />
               {custMaster.loading && (
                 <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}
-                     data-testid="master-cm-loading">Loading customer master…</div>
+                     data-testid="master-cm-loading">Loading client master…</div>
               )}
               {!custMaster.loading && custMaster.error && (
                 <div style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}
@@ -4597,7 +4597,7 @@ function MasterDataPage({ onNav, onToast }) {
                     ? <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}
                            data-testid="master-cm-empty">
                         {(custMaster.items || []).length === 0
-                          ? <span>No customer master records.{' '}
+                          ? <span>No client master records.{' '}
                               <button onClick={loadCustomerMaster}
                                 style={{ background: 'none', border: 'none',
                                   color: 'var(--accent)', cursor: 'pointer',
