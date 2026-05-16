@@ -1,6 +1,10 @@
-# Master Data Campaign — Live Task Queue (Final)
+# Live Task Queue
 
-> Closed by B11 audit on 2026-05-16. See `tasks/master-data-campaign.md` for the full controller doc.
+> Master Data campaign closed B11 audit on 2026-05-16.
+> Operational Integrity + Automation campaign opened P0-P5 on 2026-05-16.
+> See `tasks/campaign-state.json` for the canonical state of all campaigns.
+> See `tasks/campaign-runner.md` for the controller doc.
+> See `tasks/phase-6f-architecture.md` for the Phase 6F inspection report (no impl yet).
 
 ## CURRENT STATE — B11 CLOSURE
 

@@ -1,0 +1,246 @@
+{
+  "schema_version": 1,
+  "campaigns": [
+    {
+      "campaign_id": "MDC-2026-05",
+      "title": "Master Data Completion",
+      "status": "completed",
+      "started_at": "2026-05-16T00:00:00Z",
+      "closed_at":  "2026-05-16T09:00:00Z",
+      "batches": [
+        {
+          "batch_id": "B0",
+          "title": "Customer Master 422 save fix",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/98",
+          "pr_number": 98,
+          "merge_sha": "b03038275f4bc1027fa6d10bfa27ef4bdc0d3025",
+          "deployed_sha": "b03038275f4bc1027fa6d10bfa27ef4bdc0d3025",
+          "previous_main_sha": "008f7b3...",
+          "deployed_at": "2026-05-16T00:30:00Z",
+          "tests": {"customer_master": "82/82", "pz_regression": "160/160"},
+          "smoke_report": "tasks/smoke-reports/2026-05-16-b0-cm-422-fix.md",
+          "block_reason": null,
+          "next_batch": "B1",
+          "rollback_command": "git revert -m 1 b030382 --no-edit"
+        },
+        {
+          "batch_id": "B1",
+          "title": "Campaign controller setup (docs)",
+          "status": "merged",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/99",
+          "pr_number": 99,
+          "merge_sha": "0b98cd3217b6b09a4119ec68fa5f6e12866fa615",
+          "deployed_sha": "0b98cd3217b6b09a4119ec68fa5f6e12866fa615",
+          "tests": {"master_suite": "209/209", "pz_regression": "160/160"},
+          "smoke_report": null,
+          "block_reason": null,
+          "next_batch": "B2"
+        },
+        {
+          "batch_id": "B2",
+          "title": "KycModal completion (KYC + Invoices tabs)",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/99",
+          "pr_number": 99,
+          "merge_sha": "0b98cd3217b6b09a4119ec68fa5f6e12866fa615",
+          "deployed_sha": "e1411cbacabf47594e979ee505e3e1422f8030dd",
+          "deployed_at": "2026-05-16T03:08:00Z",
+          "tests": {"master_suite": "209/209", "pz_regression": "160/160"},
+          "smoke_report": "tasks/smoke-reports/2026-05-16-master-data-stack.md",
+          "block_reason": null,
+          "next_batch": "B10"
+        },
+        {
+          "batch_id": "B10",
+          "title": "wFirma sync visibility chip",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/100",
+          "pr_number": 100,
+          "merge_sha": "3312ad91d5f2e2b593ea8d1cb6b85ffdf1f34a95",
+          "deployed_sha": "e1411cbacabf47594e979ee505e3e1422f8030dd",
+          "deployed_at": "2026-05-16T03:08:00Z",
+          "tests": {"master_suite": "158/158", "pz_regression": "160/160"},
+          "smoke_report": "tasks/smoke-reports/2026-05-16-master-data-stack.md",
+          "block_reason": null,
+          "next_batch": "B4"
+        },
+        {
+          "batch_id": "B4",
+          "title": "Suppliers registry (full CRUD)",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/101",
+          "pr_number": 101,
+          "merge_sha": "e1411cbacabf47594e979ee505e3e1422f8030dd",
+          "deployed_sha": "e1411cbacabf47594e979ee505e3e1422f8030dd",
+          "deployed_at": "2026-05-16T03:08:00Z",
+          "tests": {"suppliers": "30/30", "master_suite": "236/236", "pz_regression": "160/160"},
+          "smoke_report": "tasks/smoke-reports/2026-05-16-master-data-stack.md",
+          "block_reason": null,
+          "next_batch": "B5"
+        },
+        {
+          "batch_id": "B5",
+          "title": "HS Codes + Units + Product-local",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/102",
+          "pr_number": 102,
+          "merge_sha": "61a497d71f3df83963cc290639fac5b63919fda4",
+          "deployed_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
+          "deployed_at": "2026-05-16T06:00:00Z",
+          "tests": {"b5": "26/26", "master_suite": "270/270", "pz_regression": "160/160"},
+          "smoke_report": "tasks/smoke-reports/2026-05-16-stack-b5-b7-b8.md",
+          "block_reason": null,
+          "next_batch": "B7"
+        },
+        {
+          "batch_id": "B7",
+          "title": "Incoterms + VAT config (VAT read-only on invoicing)",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/103",
+          "pr_number": 103,
+          "merge_sha": "ff29791b00b1e8a1f905c0149488e7926ff63327",
+          "deployed_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
+          "deployed_at": "2026-05-16T06:00:00Z",
+          "tests": {"b7": "18/18", "master_suite": "242/242", "pz_regression": "160/160"},
+          "smoke_report": "tasks/smoke-reports/2026-05-16-stack-b5-b7-b8.md",
+          "block_reason": null,
+          "next_batch": "B8",
+          "notes": "Merged into stale base; forward-merged to main via #105"
+        },
+        {
+          "batch_id": "B8",
+          "title": "FX Rates reference table (REFERENCE-ONLY; MDC-071 FORBIDDEN)",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/104",
+          "pr_number": 104,
+          "merge_sha": "4b6494b599bb94b304750138dc15c90b96dabcfa",
+          "deployed_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
+          "deployed_at": "2026-05-16T06:00:00Z",
+          "tests": {"b8": "14/14", "master_suite": "258/258", "pz_regression": "160/160"},
+          "smoke_report": "tasks/smoke-reports/2026-05-16-stack-b5-b7-b8.md",
+          "block_reason": null,
+          "next_batch": "B9",
+          "notes": "Merged into stale base; forward-merged to main via #105"
+        },
+        {
+          "batch_id": "B5-B7-B8-forward-merge",
+          "title": "Forward-merge B7+B8 onto main (stack-into-stack repair)",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/105",
+          "pr_number": 105,
+          "merge_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
+          "deployed_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
+          "previous_main_sha": "61a497d71f3df83963cc290639fac5b63919fda4",
+          "deployed_at": "2026-05-16T06:00:00Z",
+          "tests": {"master_suite": "307/307", "pz_regression": "160/160"},
+          "smoke_report": "tasks/smoke-reports/2026-05-16-stack-b5-b7-b8.md",
+          "block_reason": null,
+          "next_batch": "B9",
+          "rollback_command": "git revert -m 1 d6ae3f7 --no-edit"
+        },
+        {
+          "batch_id": "B9",
+          "title": "Carrier Configuration (LOCAL, NON-SECRET only)",
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/106",
+          "pr_number": 106,
+          "merge_sha": "e166c0e860d560f89938cc429c5eb4aa88e76cae",
+          "deployed_sha": "8b3f6f7dda4446c0f8a174eced87284cbcd367c0",
+          "previous_main_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
+          "deployed_at": "2026-05-16T09:00:00Z",
+          "tests": {"b9": "16/16", "master_suite": "278/278", "pz_regression": "160/160"},
+          "smoke_report": "tasks/smoke-reports/2026-05-16-carriers-config.md",
+          "block_reason": null,
+          "next_batch": "B11",
+          "rollback_command": "git revert -m 1 e166c0e --no-edit"
+        },
+        {
+          "batch_id": "B11",
+          "title": "Final Master Data audit (docs only)",
+          "status": "deployed",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/107",
+          "pr_number": 107,
+          "merge_sha": "8b3f6f7dda4446c0f8a174eced87284cbcd367c0",
+          "deployed_sha": "8b3f6f7dda4446c0f8a174eced87284cbcd367c0",
+          "previous_main_sha": "e166c0e860d560f89938cc429c5eb4aa88e76cae",
+          "deployed_at": "2026-05-16T09:00:00Z",
+          "tests": {"note": "docs only, no tests run"},
+          "smoke_report": null,
+          "block_reason": null,
+          "next_batch": null,
+          "rollback_command": "git revert -m 1 8b3f6f7 --no-edit"
+        },
+        {
+          "batch_id": "B3",
+          "title": "Users + Roles writes",
+          "status": "blocked",
+          "pr_url": null,
+          "block_reason": "Security contract relaxation needed: test_only_allowed_writes_in_master forbids POST to /auth/users/{id}/* from MasterDataPage. Operator must approve relaxation before B3 begins.",
+          "next_batch": "B4"
+        },
+        {
+          "batch_id": "B6",
+          "title": "Designs Master",
+          "status": "blocked",
+          "pr_url": null,
+          "block_reason": "Schema sign-off + read-only-consumer guarantee on product_identity_engine needed before greenfield Designs CRUD.",
+          "next_batch": "B7"
+        },
+        {
+          "batch_id": "MDC-071",
+          "title": "FX override into PZ landed-cost",
+          "status": "blocked",
+          "pr_url": null,
+          "block_reason": "HARD RULE — FORBIDDEN_NOW. Mutates PZ landed-cost calculation path. Will NOT be implemented in this campaign. Belongs in a separate operator-scoped landed-cost campaign with its own gates.",
+          "next_batch": null
+        }
+      ]
+    },
+    {
+      "campaign_id": "OIA-2026-05",
+      "title": "Operational Integrity + Automation",
+      "status": "active",
+      "started_at": "2026-05-16T09:30:00Z",
+      "closed_at":  null,
+      "batches": [
+        {
+          "batch_id": "P0",
+          "title": "Close Master Data campaign (#106 + #107 merge + deploy + smoke)",
+          "status": "smoked",
+          "merge_sha": "8b3f6f7dda4446c0f8a174eced87284cbcd367c0",
+          "deployed_sha": "8b3f6f7dda4446c0f8a174eced87284cbcd367c0",
+          "deployed_at": "2026-05-16T09:30:00Z",
+          "tests": {"master_suite": "278/278", "pz_regression": "160/160"},
+          "smoke_report": "tasks/smoke-reports/2026-05-16-carriers-config.md",
+          "next_batch": "P1"
+        },
+        {
+          "batch_id": "P1-P2",
+          "title": "Automation controller + state tracker (file-based)",
+          "status": "active",
+          "next_batch": "P3"
+        },
+        {
+          "batch_id": "P3",
+          "title": "Browser smoke framework + runbooks",
+          "status": "planned",
+          "next_batch": "P4"
+        },
+        {
+          "batch_id": "P4",
+          "title": "Source-grep contract suite for hard rules",
+          "status": "planned",
+          "next_batch": "P5"
+        },
+        {
+          "batch_id": "P5",
+          "title": "Phase 6F accounting-charge architecture (INSPECTION ONLY)",
+          "status": "planned",
+          "next_batch": null,
+          "notes": "Architecture report only. NO implementation. Stops at operator approval gate."
+        }
+      ]
+    }
+  ]
+}
