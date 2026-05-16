@@ -235,8 +235,8 @@ def test_cm_preview_returns_proposals_with_suggested_target(tmp_path, fake_contr
     assert r.status_code == 200
     body = r.json()
     by_id = {p["wfirma_id"]: p for p in body["proposals"]}
-    assert by_id["P1"]["suggested_target"] == "customer_master"
-    assert by_id["P2"]["suggested_target"] == "skip"
+    assert by_id["P1"]["suggested_target"] == "client_master"
+    assert by_id["P2"]["suggested_target"] == "ignore"
     assert by_id["P3"]["suggested_target"] == "supplier_master"
     assert by_id["P4"]["status"]           == "needs_operator_review"
 
@@ -371,7 +371,7 @@ def test_dashboard_has_target_selector():
     src = _dash()
     assert "${testidPrefix}-target-select" in src, \
         "WfReviewPanel must expose a per-row target selector"
-    for opt in ('value="customer_master"', 'value="supplier_master"', 'value="skip"'):
+    for opt in ('value="client_master"', 'value="supplier_master"', 'value="ignore"'):
         assert opt in src, f"target selector missing option {opt}"
 
 
@@ -391,32 +391,30 @@ def test_dashboard_cm_button_calls_new_preview_url():
 
 def test_dashboard_review_panel_routes_to_correct_apply_endpoint():
     """The review panel must dispatch per-row by target:
-    customer_master → /api/v1/customer-master/sync-from-wfirma/apply
+    client_master   → /api/v1/customer-master/sync-from-wfirma/apply (legacy route name preserved)
     supplier_master → /api/v1/suppliers/sync-from-wfirma/apply
     """
     src = _dash()
     # Both endpoints referenced somewhere in the panel wiring
     assert "/api/v1/customer-master/sync-from-wfirma/apply" in src
     assert "/api/v1/suppliers/sync-from-wfirma/apply" in src
-    # Per-row dispatch: rowTarget() drives the split
-    assert "rowTarget(p) === 'customer_master'" in src
+    # Per-row dispatch: rowTarget() drives the split on the canonical
+    # resolver verdicts client_master / supplier_master.
+    assert "rowTarget(p) === 'client_master'" in src
     assert "rowTarget(p) === 'supplier_master'" in src
 
 
-def test_dashboard_assign_all_excludes_skip_and_review_rows():
-    """Assign-all must skip rows whose target is skip OR needs_operator_review.
-    Verified by the source filter expression."""
+def test_dashboard_assign_all_excludes_ignore_and_review_rows():
+    """Assign-all must exclude rows whose target is ignore OR needs_operator_review."""
     src = _dash()
-    # The eligibleRows filter expression in the WfReviewPanel must include
-    # explicit guards for both 'skip' and 'needs_operator_review' status.
     assert "p.status !== 'needs_operator_review'" in src
-    assert "rowTarget(p) === 'customer_master' || rowTarget(p) === 'supplier_master'" in src
+    assert "rowTarget(p) === 'client_master' || rowTarget(p) === 'supplier_master'" in src
 
 
-def test_dashboard_per_row_assign_button_disabled_for_skip_target():
-    """Save/Assign button must disable when row target is Skip or Needs review."""
+def test_dashboard_per_row_assign_button_disabled_for_ignore_target():
+    """Save/Assign button must disable when row target is Ignore or Needs review."""
     src = _dash()
-    assert "rowTarget(p) === 'skip'" in src
+    assert "rowTarget(p) === 'ignore'" in src
     assert "rowTarget(p) === 'needs_operator_review'" in src
 
 
@@ -536,45 +534,55 @@ def test_dashboard_review_table_has_extended_columns():
         assert col in src, f"review table missing column header {col}"
 
 
-# ── Clients terminology contract (B0 follow-up 2026-05-16) ─────────────────
+# ── Two-master architecture contract (B0 follow-up 2026-05-16) ─────────────
 #
-# The operator-facing label for the master is "Clients / Customer Master".
-# The Fetch button and the Assign-to dropdown must use "Clients" / "Client"
-# language. Backend route paths stay under /api/v1/customer-master/* — these
-# tests pin only the UI surface.
+# There are ONLY TWO operational masters: Client Master and Supplier Master.
+# wFirma contractors are an enrichment source, not a third entity. The UI
+# must never show "Customer Master" or any hybrid wording. The resolver
+# must surface only the four canonical verdicts:
+#   client_master | supplier_master | ignore | needs_operator_review
 
 
-def test_dashboard_uses_clients_terminology_for_panel():
+def test_dashboard_panel_label_is_client_master_only():
+    """No visible 'Customer Master' anywhere. The label is 'Client Master'."""
     src = _DASH.read_text(encoding="utf-8", errors="replace")
-    assert "Clients / Customer Master" in src, \
-        "Master Data nav and panel header must use 'Clients / Customer Master'"
+    assert "label: 'Client Master'" in src, \
+        "Master Data nav label must be 'Client Master'"
+    assert "Customer Master" not in src, \
+        "No operator-facing 'Customer Master' string is allowed anywhere"
+    assert "Clients / Customer Master" not in src, \
+        "Hybrid 'Clients / Customer Master' wording must be removed"
 
 
 def test_dashboard_fetch_button_says_clients():
     src = _DASH.read_text(encoding="utf-8", errors="replace")
     assert "Fetch clients from wFirma" in src, \
-        "Customer Master Fetch button label must be 'Fetch clients from wFirma'"
+        "Fetch button label must be 'Fetch clients from wFirma'"
     assert "Fetch customers from wFirma" not in src, \
         "Legacy 'Fetch customers from wFirma' label must be retired"
 
 
-def test_dashboard_target_selector_uses_client_master_label():
+def test_dashboard_target_selector_uses_canonical_two_master_options():
     src = _DASH.read_text(encoding="utf-8", errors="replace")
-    # The selector option value stays customer_master (backend contract),
-    # but the visible label must read "Client Master".
-    assert '<option value="customer_master">Client Master</option>' in src, \
-        "Target selector must show 'Client Master' (not 'Customer Master')"
-    assert '<option value="supplier_master">Supplier Master</option>' in src, \
-        "Target selector must show 'Supplier Master'"
+    # Canonical option values are the four resolver verdicts. Their visible
+    # labels are Client Master / Supplier Master / Ignore / Needs review.
+    assert '<option value="client_master">Client Master</option>' in src
+    assert '<option value="supplier_master">Supplier Master</option>' in src
+    assert '<option value="ignore">Ignore</option>' in src
+    assert '<option value="needs_operator_review">Needs review</option>' in src
+    # The retired hybrid value must be gone.
+    assert '<option value="customer_master"' not in src, \
+        "Legacy customer_master target value must be removed"
+    assert '<option value="skip"' not in src, \
+        "Legacy skip target value must be removed (renamed to ignore)"
 
 
-def test_dashboard_review_title_uses_clients_language():
+def test_dashboard_review_title_is_canonical():
     src = _DASH.read_text(encoding="utf-8", errors="replace")
-    assert "wFirma → Clients / Suppliers review" in src
-    assert "wFirma → Suppliers / Clients review" in src
-    # Old confusing titles must be gone.
+    assert 'title="wFirma contractor review"' in src
+    assert "wFirma → Clients / Suppliers review" not in src
+    assert "wFirma → Suppliers / Clients review" not in src
     assert "wFirma → Customer Master / Suppliers review" not in src
-    assert "wFirma → Suppliers / Customer Master review" not in src
 
 
 def test_dashboard_alerts_use_client_apply_phrasing():
@@ -617,7 +625,29 @@ def test_dashboard_freight_insurance_service_id_in_advanced_disclosure():
 
 def test_suggested_target_deterministic_examples():
     from service.app.api.routes_customer_master import _cm_suggest_target
-    assert _cm_suggest_target("ACME LTD", "PL10", "PL")["suggested_target"] == "customer_master"
-    assert _cm_suggest_target("DHL Express", "", "DE")["suggested_target"] == "skip"
+    assert _cm_suggest_target("ACME LTD", "PL10", "PL")["suggested_target"]      == "client_master"
+    assert _cm_suggest_target("DHL Express", "", "DE")["suggested_target"]       == "ignore"
     assert _cm_suggest_target("Estrella Jewels LLP", "IN1", "IN")["suggested_target"] == "supplier_master"
-    assert _cm_suggest_target("UNKNOWN CO", "", "")["suggested_target"] == "needs_operator_review"
+    assert _cm_suggest_target("UNKNOWN CO", "", "")["suggested_target"]          == "needs_operator_review"
+
+
+def test_resolver_emits_only_four_canonical_verdicts():
+    """The resolver model is closed: every proposal's suggested_target must
+    be one of {client_master, supplier_master, ignore, needs_operator_review}.
+    No 'customer_master', no 'skip', no other hybrid values."""
+    from service.app.api.routes_customer_master import _cm_suggest_target
+    from service.app.services.suppliers_db import _suggest_target as _sup_suggest
+    allowed = {"client_master", "supplier_master", "ignore", "needs_operator_review"}
+    cases = [
+        ("ACME LTD",            "PL10", "PL"),
+        ("DHL Express",         "",     "DE"),
+        ("Estrella Jewels LLP", "IN1",  "IN"),
+        ("UNKNOWN CO",          "",     ""),
+        ("Some Hotel",          "",     "FR"),
+        ("Bank of Poland",      "PL5",  "PL"),
+    ]
+    for nm, vat, cty in cases:
+        v_cm  = _cm_suggest_target(nm, vat, cty)["suggested_target"]
+        v_sup = _sup_suggest(nm, vat, cty)["suggested_target"]
+        assert v_cm  in allowed, f"resolver (CM)  emitted non-canonical verdict: {v_cm} for {nm}"
+        assert v_sup in allowed, f"resolver (sup) emitted non-canonical verdict: {v_sup} for {nm}"

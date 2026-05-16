@@ -296,13 +296,13 @@ def _cm_suggest_target(name: str, vat_id: str, country: str) -> Dict[str, str]:
     if not nm:
         return {"suggested_target": "needs_operator_review", "reason": "missing_name"}
     if any(h in nm for h in _CM_EXPENSE_HINTS):
-        return {"suggested_target": "skip", "reason": "expense_or_carrier_keyword"}
+        return {"suggested_target": "ignore", "reason": "expense_or_carrier_keyword"}
     if any(h in nm for h in _CM_EXPORTER_HINTS):
         return {"suggested_target": "supplier_master", "reason": "exporter_keyword"}
     if vat and cty and cty in _CM_EU_COUNTRIES:
-        return {"suggested_target": "customer_master", "reason": "eu_vat_and_country_present"}
+        return {"suggested_target": "client_master", "reason": "eu_vat_and_country_present"}
     if vat and cty:
-        return {"suggested_target": "customer_master", "reason": "vat_and_country_present"}
+        return {"suggested_target": "client_master", "reason": "vat_and_country_present"}
     return {"suggested_target": "needs_operator_review",
             "reason": ("missing_country" if not cty else "missing_vat")}
 
@@ -350,7 +350,7 @@ def _cm_wfirma_proposals() -> List[Dict[str, Any]]:
                 "mobile": mobile or None, "bank_account": bank or None,
                 "payment_term": pterm or None,
                 "status": "skipped_invalid", "reason": "missing_wfirma_id",
-                "suggested_target": "skip",
+                "suggested_target": "ignore",
                 "local_match": None, "mismatches": [],
             })
             continue
@@ -533,7 +533,7 @@ async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
         "rejected":       rejected,
         "applied":        applied,
     }
-    log.info("cm_wf_apply requested=%d inserted=%d updated=%d rejected=%d",
+    log.info("client_master_wf_apply requested=%d inserted=%d updated=%d rejected=%d",
              len(requested), inserted, updated, len(rejected))
     return JSONResponse(body_out)
 
