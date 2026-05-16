@@ -867,8 +867,8 @@
         {
           "batch_id": "B-MD2-approval",
           "title": "Designs master + Roles table — approval package (docs-only)",
-          "status": "pr_open",
-          "pr_url": null,
+          "status": "merged",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/130",
           "depends_on": [],
           "next_batch": "B-MD2",
           "block_reason": null,
@@ -876,18 +876,41 @@
           "branch": "docs/b-md2-designs-roles-approval-package",
           "artifacts": [
             "tasks/master-data-designs-roles-approval-package.md"
-          ]
+          ],
+          "pr_number": 130,
+          "merge_sha": "77c6a606cfd57ae98897f08be30f91499cd8e89e"
         },
         {
           "batch_id": "B-MD2",
           "title": "Designs master + Roles table implementation",
-          "status": "blocked",
+          "status": "pr_open",
           "pr_url": null,
           "depends_on": [
             "B-MD2-approval"
           ],
           "next_batch": "B-MD3",
-          "block_reason": "Awaiting operator sign-off on tasks/master-data-designs-roles-approval-package.md §16. Implementation will follow approved two-PR split: B-MD2a backend (designs_db + routes_designs), B-MD2b UI (dashboard.html designs panel), B-MD2c Roles read-only explainer panel."
+          "block_reason": null,
+          "branch": "feat/b-md2-designs-roles",
+          "artifacts": [
+            "service/app/services/master_data_db.py",
+            "service/app/api/routes_master_data.py",
+            "service/app/main.py",
+            "service/app/static/dashboard.html",
+            "service/tests/test_master_data_designs.py",
+            "service/tests/test_dashboard_designs_and_roles.py",
+            "service/tests/test_master_data_hard_rules.py",
+            "service/tests/test_dashboard_master_design.py"
+          ],
+          "tests": {
+            "master_data_designs": "17/17",
+            "dashboard_designs_and_roles": "11/11",
+            "dashboard_master_design": "94/94 (extended for designs live)",
+            "master_data_hard_rules": "32/32 (added 4 B-MD2 isolation contracts)",
+            "runner_v2_hard_rules": "12/12",
+            "dashboard_admin_users_design": "14/14",
+            "auth_admin_user_routes": "6/6",
+            "pz_regression": "160/160"
+          }
         },
         {
           "batch_id": "B-MD3",

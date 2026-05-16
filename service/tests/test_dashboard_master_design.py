@@ -140,7 +140,7 @@ def test_no_invented_master_endpoints():
         # NOTE removed in B4: /api/v1/suppliers
         # NOTE removed in B5: /api/v1/hs-codes
         # NOTE removed in B8: /api/v1/fx-rates (reference-only, NOT a PZ override)
-        "/api/v1/designs",
+        # NOTE removed in B-MD2 (MDOC): /api/v1/designs (Designs master now live)
         "/api/v1/roles",
     ):
         assert ep not in src, f"Invented master-data endpoint leaked: {ep}"
@@ -221,6 +221,7 @@ def test_only_allowed_writes_in_master():
         '/api/v1/vat-config',
         '/api/v1/fx-rates',
         '/api/v1/carriers-config',
+        '/api/v1/designs',   # B-MD2 (MDOC-2026-05): Designs master live
     )
     # b5Save / b5Delete are generic helpers that accept a basePath parameter;
     # their call sites (b5Save('/api/v1/hs-codes', ...) etc.) carry the literal
@@ -337,15 +338,20 @@ def test_four_live_entities_in_sidebar():
     assert "live: true" in src, "live: true must be set on live entities"
 
 
-def test_two_pending_entities_in_sidebar():
-    """After B9 only two entity ids remain in pending state:
-    designs (B6 schema sign-off needed) and roles (B3 contract relaxation needed)."""
+def test_remaining_entity_ids_present():
+    """B-MD2 (MDOC-2026-05): designs is now live (B-MD2a/b); roles is now a
+    read-only explainer panel (B-MD2c). Both ids must still appear in the
+    sidebar entries.
+    """
     src = _src()
-    for eid in (
-        "'designs'", "'roles'",
-    ):
-        assert f"id: {eid}" in src, f"Missing pending entity id: {eid}"
-    assert "live: false" in src, "live: false must be set on pending entities"
+    for eid in ("'designs'", "'roles'"):
+        assert f"id: {eid}" in src, f"Missing entity id: {eid}"
+    # Roles remains live: false (it has no list/count; it's a read-only explainer).
+    idx = src.index("id: 'roles'")
+    snippet = src[idx:idx + 120]
+    assert "live: false" in snippet, (
+        "Roles entity remains live: false (read-only explainer panel only)"
+    )
 
 
 def test_suppliers_entity_is_live():
@@ -534,24 +540,33 @@ def test_products_table_uses_real_fields():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_pending_entity_panel_present():
-    """Pending grid now contains designs + roles only after B8."""
+    """Pending-grid container anchors must still exist for test compatibility,
+    even when (B-MD2 MDOC) all previously-pending entities have been
+    converted to live (designs) or read-only explainer (roles).
+    """
     src = _src()
     assert 'data-testid="master-pending-panel"' in src
     assert 'data-testid="master-pending-badge"' in src
     assert 'data-testid="master-pending-grid"' in src
-    assert "data-testid={'master-pending-' + id}" in src
-    for tid in ("'designs'", "'roles'"):
-        assert f"id: {tid}" in src, f"Missing pending placeholder id: {tid}"
 
 
 def test_pending_tiles_have_data_pending_flag():
-    """Each pending tile carries data-pending='true' — no fake counts rendered."""
+    """B-MD2 (MDOC-2026-05): the pending grid is empty by design — all
+    previously-pending entities have been converted to live (designs) or
+    read-only explainer (roles). Either zero pending tiles OR each tile
+    carries data-pending='true'.
+    """
     src = _src()
     block_start = src.index('data-testid="master-pending-panel"')
     block_end   = src.index('data-testid="master-design-preview"', block_start)
     block = src[block_start:block_end]
-    assert 'data-pending="true"' in block, \
-        "Pending tiles must carry data-pending='true'"
+    # If any pending tile is rendered, it must carry data-pending="true".
+    if "master-pending-" in block.replace("master-pending-panel", "").replace(
+        "master-pending-grid", "").replace("master-pending-badge", ""):
+        assert 'data-pending="true"' in block, (
+            "If pending tiles exist they must carry data-pending='true'"
+        )
+    # Otherwise (zero pending tiles) the test passes — that's the B-MD2 state.
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -960,20 +975,37 @@ def test_designs_entity_in_sidebar():
     assert "id: 'designs'" in _src()
 
 
-def test_designs_entity_is_pending():
+def test_designs_entity_is_live():
+    """B-MD2 (MDOC-2026-05): Designs moved from pending to live.
+    Marker: `live: true` near the `id: 'designs'` entry.
+    """
     src = _src()
     idx = src.index("id: 'designs'")
-    snippet = src[idx:idx + 120]
-    assert "live: false" in snippet, \
-        "Designs entity must have live: false"
+    snippet = src[idx:idx + 220]
+    assert "live: true" in snippet, (
+        "Designs entity must have live: true after B-MD2"
+    )
 
 
-def test_designs_pending_testid():
+def test_designs_panel_exists():
+    """B-MD2: master-designs-panel testid renders when activeEntity === 'designs'."""
     src = _src()
-    block_start = src.index('data-testid="master-pending-panel"')
-    block_end   = src.index('data-testid="master-design-preview"', block_start)
-    block = src[block_start:block_end]
-    assert "'designs'" in block, "designs must appear in pending grid"
+    assert 'data-testid="master-designs-panel"' in src
+    assert "activeEntity === 'designs'" in src
+    assert 'data-testid="master-designs-btn-new"' in src
+    assert 'data-testid="master-designs-btn-save"' in src
+    assert 'data-testid="master-designs-btn-cancel"' in src
+
+
+def test_designs_uses_b5_helpers():
+    """B-MD2: Designs writes flow through b5Save / b5Delete (no inline POST/PUT)."""
+    src = _src()
+    assert "b5Save('/api/v1/designs', 'design_code'" in src, (
+        "Designs Save must use b5Save helper with basePath /api/v1/designs"
+    )
+    assert "b5Delete('/api/v1/designs'," in src, (
+        "Designs Delete must use b5Delete helper with basePath /api/v1/designs"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

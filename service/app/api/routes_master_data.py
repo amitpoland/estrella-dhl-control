@@ -25,7 +25,7 @@ from ..core.config import settings
 from ..core.security import require_api_key
 from ..core.logging import get_logger
 from ..services.master_data_db import (
-    HsCode, Unit, ProductLocal, Incoterm, VatConfig, FxRate, CarrierConfig,
+    HsCode, Unit, ProductLocal, Incoterm, VatConfig, FxRate, CarrierConfig, Design,
     init_db,
     validate_hs_code, upsert_hs_code, get_hs_code, list_hs_codes, delete_hs_code,
     validate_unit, upsert_unit, get_unit, list_units, delete_unit,
@@ -38,6 +38,7 @@ from ..services.master_data_db import (
     update_fx_rate, delete_fx_rate,
     validate_carrier_config, upsert_carrier_config, get_carrier_config,
     list_carrier_configs, delete_carrier_config,
+    validate_design, upsert_design, get_design, list_designs, delete_design,
 )
 
 log    = get_logger(__name__)
@@ -607,4 +608,90 @@ def delete_carrier_endpoint(carrier_code: str) -> Response:
     init_db(_DB_PATH)
     if not delete_carrier_config(_DB_PATH, carrier_code):
         raise HTTPException(status_code=404, detail=f"Carrier config not found: {carrier_code}")
+    return Response(status_code=204)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Designs — B-MD2 (MDOC-2026-05)
+#
+# Additive local master in master_data.sqlite. Soft references only — no SQL FK.
+# product_identity_engine MUST NOT read this table. Pinned by a source-grep
+# contract in test_master_data_hard_rules.py.
+# ══════════════════════════════════════════════════════════════════════════════
+
+designs_router = APIRouter(prefix="/api/v1/designs", tags=["master-data"])
+
+
+def _design_dict(d: Design) -> dict:
+    return {
+        "design_code":   d.design_code,
+        "display_name":  d.display_name,
+        "product_ref":   d.product_ref,
+        "design_family": d.design_family,
+        "collection":    d.collection,
+        "metal":         d.metal,
+        "stone_summary": d.stone_summary,
+        "hs_code":       d.hs_code,
+        "unit":          d.unit,
+        "active":        d.active,
+        "notes":         d.notes,
+        "created_at":    d.created_at,
+        "updated_at":    d.updated_at,
+    }
+
+
+@designs_router.get("/", dependencies=[_auth], summary="List designs")
+def list_designs_endpoint(active: Optional[str] = Query(None),
+                          design_family: Optional[str] = Query(None),
+                          collection: Optional[str] = Query(None),
+                          limit: int = Query(500, ge=1, le=2000)) -> JSONResponse:
+    init_db(_DB_PATH)
+    try:
+        recs = list_designs(_DB_PATH, active=_parse_active(active),
+                            design_family=design_family, collection=collection,
+                            limit=limit)
+    except Exception as exc:
+        log.error("list_designs failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    return JSONResponse({"ok": True, "count": len(recs),
+                         "designs": [_design_dict(d) for d in recs]})
+
+
+@designs_router.get("/{design_code}", dependencies=[_auth], summary="Get design")
+def get_design_endpoint(design_code: str) -> JSONResponse:
+    init_db(_DB_PATH)
+    rec = get_design(_DB_PATH, design_code)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Design not found: {design_code}")
+    return JSONResponse(_design_dict(rec))
+
+
+@designs_router.put("/{design_code}", dependencies=[_auth], summary="Upsert design")
+async def upsert_design_endpoint(design_code: str, request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+    body["design_code"] = design_code
+    errs = validate_design(body)
+    if errs:
+        raise HTTPException(status_code=422, detail={"validation_errors": errs})
+    try:
+        rec = upsert_design(_DB_PATH, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        log.error("upsert_design failed code=%s: %s", design_code, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    return JSONResponse(_design_dict(rec))
+
+
+@designs_router.delete("/{design_code}", dependencies=[_auth],
+                        summary="Delete design", status_code=204)
+def delete_design_endpoint(design_code: str) -> Response:
+    init_db(_DB_PATH)
+    if not delete_design(_DB_PATH, design_code):
+        raise HTTPException(status_code=404, detail=f"Design not found: {design_code}")
     return Response(status_code=204)

@@ -3471,6 +3471,23 @@ function MasterDataPage({ onNav, onToast }) {
   const [carriersCfg, setCarriersCfg] = React.useState({ loading: false, error: null, items: [], ts: null });
   const [carCfgForm,  setCarCfgForm]  = React.useState(null);
 
+  // ── B-MD2: Designs master (MDOC-2026-05) — local additive CRUD ─────────
+  const [designs,    setDesigns]    = React.useState({ loading: false, error: null, items: [], ts: null });
+  const [designForm, setDesignForm] = React.useState(null);
+
+  const loadDesigns = React.useCallback(async () => {
+    setDesigns(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/api/v1/designs/');
+      setDesigns({ loading: false, error: null,
+        items: Array.isArray(d) ? d : (d.designs || d.items || []),
+        ts: new Date().toISOString() });
+    } catch (e) {
+      setDesigns({ loading: false, error: e.message || 'load failed', items: [],
+        ts: new Date().toISOString() });
+    }
+  }, []);
+
   const loadCarriersCfg = React.useCallback(async () => {
     setCarriersCfg(s => ({ ...s, loading: true, error: null }));
     try {
@@ -3655,6 +3672,7 @@ function MasterDataPage({ onNav, onToast }) {
     if (activeEntity === 'vat_config' && !vatCfg.ts && !vatCfg.loading)       loadVatCfg();
     if (activeEntity === 'fx_rates' && !fxRates.ts && !fxRates.loading)       loadFxRates();
     if (activeEntity === 'carriers_config' && !carriersCfg.ts && !carriersCfg.loading) loadCarriersCfg();
+    if (activeEntity === 'designs' && !designs.ts && !designs.loading)                  loadDesigns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity]);
 
@@ -3759,7 +3777,8 @@ function MasterDataPage({ onNav, onToast }) {
     { id: 'customer_master',label: 'Customer Master', icon: '⊞',
       count: custMaster.items.length > 0 ? custMaster.items.length : null, live: true },
     null,
-    { id: 'designs',        label: 'Designs',         icon: '◇', live: false },
+    { id: 'designs',        label: 'Designs',         icon: '◇',
+      count: designs.error ? null : (designs.items || []).length, live: true },
     { id: 'fx_rates',       label: 'FX Rates',        icon: '◆',
       count: fxRates.error ? null : (fxRates.items || []).length, live: true },
     { id: 'suppliers',      label: 'Suppliers',       icon: '◉',
@@ -4500,12 +4519,199 @@ function MasterDataPage({ onNav, onToast }) {
           )}
 
           {/* ── DESIGNS ────────────────────────────────────────────────── */}
+          {/* ── DESIGNS (B-MD2 MDOC-2026-05) — LIVE ─────────────────────── */}
           {activeEntity === 'designs' && (
-            <PendingPanel entityId="designs" title="Designs"
-              description="Internal SKU / design catalog. Tracks product codes, design family, karat, material, stone details, and bilingual descriptions. Powers the product identity engine during PZ processing."
-              fields={['design_code','design_family','item_type','karat','material',
-                       'stone_type','stone_weight_ct','color','name_pl','name_en',
-                       'hs_code','unit','active']} />
+            <div data-testid="master-designs-panel">
+              <PanelHeader title="Designs"
+                subtitle="Local design master — code, display name, family/collection, soft refs only. product_identity_engine is read-only against this table."
+                actions={
+                  <button data-testid="master-designs-btn-new"
+                    onClick={() => { setDesignForm({ design_code: '', display_name: '',
+                      product_ref: '', design_family: '', collection: '', metal: '',
+                      stone_summary: '', hs_code: '', unit: '', notes: '', active: true }); setB5Error(null); }}
+                    disabled={!!designForm}
+                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                      background: 'var(--accent)', color: '#fff', border: 'none',
+                      borderRadius: 6, cursor: designForm ? 'not-allowed' : 'pointer',
+                      opacity: designForm ? 0.5 : 1, fontFamily: 'inherit' }}>+ New Design</button>
+                }
+              />
+              {designs.loading && <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}
+                                       data-testid="master-designs-loading">Loading…</div>}
+              {designs.error && <div data-testid="master-designs-error"
+                style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}>
+                Load failed: {designs.error}</div>}
+              {!designs.loading && !designs.error && (
+                <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                              borderRadius: 10, overflow: 'hidden' }}>
+                  {(designs.items || []).filter(r => _match(r, query)).length === 0
+                    ? <div data-testid="master-designs-empty"
+                           style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+                        No designs yet.</div>
+                    : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                          {['Code','Display name','Product ref','Family','Collection','Metal','HS','Unit','Active',''].map(h => (
+                            <th key={h} style={thStyle}>{h}</th>))}
+                        </tr></thead>
+                        <tbody>
+                          {(designs.items || []).filter(r => _match(r, query)).map(d => (
+                            <tr key={d.design_code} data-testid="master-designs-row" style={trStyle}>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{d.design_code}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text)' }}>{d.display_name || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text-2)' }}>{d.product_ref || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{d.design_family || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{d.collection || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{d.metal || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11 }}>{d.hs_code || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{d.unit || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>
+                                {d.active ? <span style={{ color: 'var(--badge-green-text)', fontWeight: 600 }}>● yes</span>
+                                          : <span style={{ color: 'var(--text-3)' }}>○ no</span>}
+                              </td>
+                              <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                                <button data-testid={'master-designs-btn-edit-' + d.design_code}
+                                  onClick={() => { setDesignForm({ ...d }); setB5Error(null); }}
+                                  style={{ padding: '3px 10px', fontSize: 11,
+                                    border: '1px solid var(--accent)', borderRadius: 4,
+                                    background: 'var(--accent-subtle)', cursor: 'pointer',
+                                    color: 'var(--text)', fontWeight: 600,
+                                    fontFamily: 'inherit', marginRight: 6 }}>Edit</button>
+                                <button data-testid={'master-designs-btn-delete-' + d.design_code}
+                                  onClick={() => b5Delete('/api/v1/designs', d.design_code, loadDesigns)}
+                                  style={{ padding: '3px 8px', fontSize: 11,
+                                    border: '1px solid var(--border)', borderRadius: 4,
+                                    background: 'var(--card)', cursor: 'pointer',
+                                    color: 'var(--text-3)', fontFamily: 'inherit' }}>×</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  }
+                </div>
+              )}
+              {designForm !== null && (
+                <div data-testid="master-designs-form"
+                     style={{ marginTop: 14, padding: '14px 18px', background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Design code *</span>
+                      <input data-testid="master-designs-input-code" type="text"
+                        value={designForm.design_code || ''}
+                        onChange={e => setDesignForm(f => ({ ...f, design_code: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Display name</span>
+                      <input type="text"
+                        value={designForm.display_name || ''}
+                        onChange={e => setDesignForm(f => ({ ...f, display_name: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Product ref (soft)</span>
+                      <input type="text"
+                        value={designForm.product_ref || ''}
+                        onChange={e => setDesignForm(f => ({ ...f, product_ref: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Family</span>
+                      <input type="text"
+                        value={designForm.design_family || ''}
+                        onChange={e => setDesignForm(f => ({ ...f, design_family: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Collection</span>
+                      <input type="text"
+                        value={designForm.collection || ''}
+                        onChange={e => setDesignForm(f => ({ ...f, collection: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Metal</span>
+                      <input type="text"
+                        value={designForm.metal || ''}
+                        onChange={e => setDesignForm(f => ({ ...f, metal: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Stone summary</span>
+                      <input type="text"
+                        value={designForm.stone_summary || ''}
+                        onChange={e => setDesignForm(f => ({ ...f, stone_summary: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>HS code (soft ref)</span>
+                      <input type="text"
+                        value={designForm.hs_code || ''}
+                        onChange={e => setDesignForm(f => ({ ...f, hs_code: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Unit (soft ref)</span>
+                      <input type="text"
+                        value={designForm.unit || ''}
+                        onChange={e => setDesignForm(f => ({ ...f, unit: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                      <input data-testid="master-designs-input-active" type="checkbox"
+                        checked={designForm.active !== false}
+                        onChange={e => setDesignForm(f => ({ ...f, active: e.target.checked }))} />
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Active</span>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Notes</span>
+                      <textarea
+                        value={designForm.notes || ''}
+                        onChange={e => setDesignForm(f => ({ ...f, notes: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11, fontFamily: 'inherit',
+                          border: '1px solid var(--border)', borderRadius: 4,
+                          minHeight: 50, resize: 'vertical' }} />
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button data-testid="master-designs-btn-save"
+                      onClick={() => b5Save('/api/v1/designs', 'design_code', designForm, loadDesigns,
+                                            () => setDesignForm(null))}
+                      disabled={b5Saving}
+                      style={{ padding: '6px 18px', fontSize: 12, fontWeight: 700,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        borderRadius: 4, cursor: b5Saving ? 'not-allowed' : 'pointer',
+                        opacity: b5Saving ? 0.6 : 1, fontFamily: 'inherit' }}>
+                      {b5Saving ? 'Saving…' : 'Save'}</button>
+                    <button data-testid="master-designs-btn-cancel"
+                      onClick={() => { setDesignForm(null); setB5Error(null); }}
+                      style={{ padding: '6px 12px', fontSize: 12,
+                        background: 'var(--card)', color: 'var(--text-2)',
+                        border: '1px solid var(--border)', borderRadius: 4,
+                        cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
+                  </div>
+                  {b5Error && <div data-testid="master-designs-error-form"
+                    style={{ marginTop: 8, padding: '6px 10px', fontSize: 11,
+                      color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)',
+                      border: '1px solid var(--badge-red-border)', borderRadius: 4 }}>{b5Error}</div>}
+                </div>
+              )}
+            </div>
           )}
 
           {/* ── FX RATES (B8 MDC-070) — LIVE; REFERENCE-ONLY ───────────── */}
@@ -5767,24 +5973,94 @@ function MasterDataPage({ onNav, onToast }) {
           {/* ── (Units PendingPanel removed in B5 — live panel rendered earlier) ── */}
 
           {/* ── ROLES ──────────────────────────────────────────────────── */}
+          {/* ── ROLES (B-MD2 MDOC-2026-05) — READ-ONLY EXPLAINER ────────── */}
           {activeEntity === 'roles' && (
-            <PendingPanel entityId="roles" title="Roles"
-              description="Authorization roles and permission sets. This panel provides a structural preview of the role model."
-              fields={['role_id','role_name','permissions','can_approve',
-                       'can_post_wfirma','can_manage_master','active']} />
+            <div data-testid="master-roles-panel">
+              <PanelHeader title="Roles"
+                subtitle="Read-only explainer of the auth role allow-list and current enforcement." />
+              <div data-testid="master-roles-explainer"
+                style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                         borderRadius: 10, padding: '18px 22px', marginBottom: 14 }}>
+                <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.6 }}>
+                  <p style={{ marginTop: 0 }}>
+                    Roles are currently <strong>free-text string values</strong> on the user record.
+                    The allow-list is fixed in the backend at <code>service/app/auth/service.py::ROLES</code>:
+                  </p>
+                  <ul style={{ marginLeft: 18, marginBottom: 12 }}>
+                    <li><code>admin</code></li>
+                    <li><code>accounts</code></li>
+                    <li><code>logistics</code></li>
+                    <li><code>auditor</code></li>
+                    <li><code>viewer</code></li>
+                  </ul>
+                  <p>
+                    <strong>Enforcement today:</strong> only the <code>admin</code> role is differentially enforced
+                    (via <code>require_admin</code> on admin endpoints). The other 4 roles
+                    (<code>accounts</code>, <code>logistics</code>, <code>auditor</code>, <code>viewer</code>) currently
+                    grant identical API privileges to all authenticated users — they exist as
+                    labels, not as enforcement points.
+                  </p>
+                  <p>
+                    <strong>Role assignment</strong> happens in the <em>Admin · Users</em> page.
+                    Per-row "Set role" selector writes via <code>POST /auth/users/&#123;id&#125;/role</code>.
+                  </p>
+                  <p style={{ marginBottom: 0 }}>
+                    A <strong>full permission engine</strong> (roles table + permission matrix +
+                    enforcement on every write route) is <strong>deferred</strong> to a separate
+                    operator-approved batch — symbolic permission tables without enforcement code
+                    would create a false sense of security (see lesson L-045).
+                  </p>
+                </div>
+              </div>
+
+              <div data-testid="master-roles-enforcement-matrix"
+                style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                         borderRadius: 10, overflow: 'hidden', marginBottom: 14 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                    {['Role','Login','Admin writes','Master Data writes','Master Data reads'].map(h => (
+                      <th key={h} style={thStyle}>{h}</th>))}
+                  </tr></thead>
+                  <tbody>
+                    {[
+                      ['admin',     'yes', 'yes (require_admin)', 'yes (API auth)', 'yes'],
+                      ['accounts',  'yes', 'no',                  'yes (API auth)', 'yes'],
+                      ['logistics', 'yes', 'no',                  'yes (API auth)', 'yes'],
+                      ['auditor',   'yes', 'no',                  'yes (API auth)', 'yes'],
+                      ['viewer',    'yes', 'no',                  'yes (API auth)', 'yes'],
+                    ].map(row => (
+                      <tr key={row[0]} data-testid={'master-roles-row-' + row[0]} style={trStyle}>
+                        <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                          fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{row[0]}</td>
+                        {row.slice(1).map((cell, i) => (
+                          <td key={i} style={{ padding: '8px 12px', fontSize: 11,
+                            color: cell === 'no' ? 'var(--text-3)' : 'var(--text)' }}>{cell}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <button data-testid="master-roles-btn-open-admin-users"
+                onClick={() => onNav('admin_users')}
+                style={{ padding: '6px 18px', fontSize: 12, fontWeight: 700,
+                  background: 'var(--accent)', color: '#fff', border: 'none',
+                  borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>
+                Open Admin · Users →
+              </button>
+            </div>
           )}
 
         </div>{/* end right panel */}
       </div>{/* end 2-col layout */}
 
       {/* ── Preserved data-testid anchors (hidden, for test compatibility) ── */}
-      {/* B9: carriers_config moved to live. Remaining pending: designs, roles */}
+      {/* B-MD2 (MDOC): designs moved to live; roles converted to read-only explainer. */}
       <div data-testid="master-pending-panel" style={{ display: 'none' }}>
         <span data-testid="master-pending-badge" />
         <div data-testid="master-pending-grid">
-          {['designs','roles'].map(id => (
-            <div key={id} data-testid={'master-pending-' + id} data-pending="true" />
-          ))}
+          {/* All previously-pending entities are now either live or read-only. */}
         </div>
       </div>
 
