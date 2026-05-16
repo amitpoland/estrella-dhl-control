@@ -1,0 +1,71 @@
+{
+  "title": "Production sweep — all 11 live Master Data entities",
+  "batches": ["B0", "B2", "B4", "B5", "B7", "B8", "B9", "B10"],
+  "environment": "production",
+  "base_url": "http://127.0.0.1:47213",
+  "headers": {},
+  "slug": "production-sweep-all-entities",
+  "steps": [
+    { "name": "health-local",        "method": "GET",    "path": "/api/v1/health", "expected_status": 200 },
+
+    { "name": "wfirma-customers-list","method": "GET",    "path": "/api/v1/wfirma/customers", "expected_status": 200 },
+    { "name": "wfirma-products-list", "method": "GET",    "path": "/api/v1/wfirma/products",  "expected_status": 200 },
+
+    { "name": "cm-list",              "method": "GET",    "path": "/api/v1/customer-master/", "expected_status": 200 },
+    { "name": "cm-put-smoke",         "method": "PUT",    "path": "/api/v1/customer-master/OSO-SMOKE-CM",
+      "body": {"bill_to_name": "OSO Smoke CM", "country": "PL"}, "expected_status": 200 },
+    { "name": "cm-get-smoke",         "method": "GET",    "path": "/api/v1/customer-master/OSO-SMOKE-CM", "expected_status": 200 },
+
+    { "name": "shipping-list-smoke",  "method": "GET",
+      "path": "/api/v1/customer-master/OSO-SMOKE-CM/shipping-addresses/", "expected_status": 200 },
+    { "name": "shipping-post-smoke",  "method": "POST",
+      "path": "/api/v1/customer-master/OSO-SMOKE-CM/shipping-addresses/",
+      "body": {"label": "OSO smoke", "country": "DE", "city": "Berlin", "street": "Smoketest 1"},
+      "expected_status": 201 },
+
+    { "name": "carrier-acct-list",    "method": "GET",
+      "path": "/api/v1/customer-master/OSO-SMOKE-CM/carrier-accounts/", "expected_status": 200 },
+
+    { "name": "suppliers-list",       "method": "GET",    "path": "/api/v1/suppliers/", "expected_status": 200 },
+    { "name": "suppliers-create",     "method": "POST",   "path": "/api/v1/suppliers/",
+      "body": {"supplier_code": "OSO-SMOKE-SUP", "name": "OSO Smoke Supplier", "country": "IN"},
+      "expected_status": 201 },
+
+    { "name": "hs-list",              "method": "GET",    "path": "/api/v1/hs-codes/", "expected_status": 200 },
+    { "name": "hs-put",               "method": "PUT",    "path": "/api/v1/hs-codes/71131900",
+      "body": {"description_pl": "OSO smoke jewellery", "duty_rate_pct": "2.5"}, "expected_status": 200 },
+    { "name": "hs-delete",            "method": "DELETE", "path": "/api/v1/hs-codes/71131900", "expected_status": 204 },
+
+    { "name": "units-list",           "method": "GET",    "path": "/api/v1/units/", "expected_status": 200 },
+    { "name": "units-put",            "method": "PUT",    "path": "/api/v1/units/oso_pc",
+      "body": {"name_pl": "szt.", "name_en": "piece", "unit_type": "count"}, "expected_status": 200 },
+    { "name": "units-delete",         "method": "DELETE", "path": "/api/v1/units/oso_pc", "expected_status": 204 },
+
+    { "name": "pl-list",              "method": "GET",    "path": "/api/v1/product-local/", "expected_status": 200 },
+    { "name": "pl-put",               "method": "PUT",    "path": "/api/v1/product-local/OSO-SMOKE-SKU",
+      "body": {"hs_code_override": "71131900", "unit_override": "pc"}, "expected_status": 200 },
+    { "name": "pl-delete",            "method": "DELETE", "path": "/api/v1/product-local/OSO-SMOKE-SKU", "expected_status": 204 },
+
+    { "name": "incoterms-list",       "method": "GET",    "path": "/api/v1/incoterms/", "expected_status": 200 },
+    { "name": "incoterms-put",        "method": "PUT",    "path": "/api/v1/incoterms/EXW",
+      "body": {"name": "Ex Works"}, "expected_status": 200 },
+    { "name": "incoterms-delete",     "method": "DELETE", "path": "/api/v1/incoterms/EXW", "expected_status": 204 },
+
+    { "name": "vat-list",             "method": "GET",    "path": "/api/v1/vat-config/", "expected_status": 200 },
+    { "name": "vat-post",             "method": "POST",   "path": "/api/v1/vat-config/",
+      "body": {"country": "DE", "rate_pct": "19", "rate_code": "OSO-SMOKE"}, "expected_status": 201 },
+
+    { "name": "fx-list",              "method": "GET",    "path": "/api/v1/fx-rates/", "expected_status": 200 },
+    { "name": "fx-post",              "method": "POST",   "path": "/api/v1/fx-rates/",
+      "body": {"rate_date": "2026-05-16", "from_currency": "EUR", "to_currency": "PLN",
+               "rate": "4.2580", "source": "OSO-SMOKE"}, "expected_status": 201 },
+
+    { "name": "carriers-cfg-list",    "method": "GET",    "path": "/api/v1/carriers-config/", "expected_status": 200 },
+    { "name": "carriers-cfg-put",     "method": "PUT",    "path": "/api/v1/carriers-config/oso_smoke",
+      "body": {"name": "OSO Smoke Carrier", "api_type": "manual"}, "expected_status": 200 },
+    { "name": "carriers-cfg-delete",  "method": "DELETE", "path": "/api/v1/carriers-config/oso_smoke", "expected_status": 204 },
+
+    { "name": "secret-shape-rejected", "method": "PUT",   "path": "/api/v1/carriers-config/oso_secret_test",
+      "body": {"name": "x", "api_key": "should-not-store"}, "expected_status": 422 }
+  ]
+}

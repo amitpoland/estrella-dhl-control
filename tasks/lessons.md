@@ -130,3 +130,31 @@ Append-only. Each entry: date, batch, lesson, evidence.
 ### L-030 — Closing a campaign needs more than green tests
 - **Evidence:** Closing MDC-2026-05 took: (a) 12 PRs merged, (b) one production deploy across 5 runtime files, (c) 6-entity API smoke against production, (d) updated controller doc + todo + lessons + 4 smoke reports under `tasks/smoke-reports/`, (e) a forward-merge to recover the stack misroute. Just "tests are green" wouldn't have caught the misroute or left a trail for future operators.
 - **Rule:** A campaign isn't closed until the state file says so AND the deploy SHA is recorded AND a smoke report exists AND the lessons log is appended. Anything less leaves drift.
+
+---
+
+## 2026-05-16 — Operational Stabilization + Observation campaign (OSO-2026-05)
+
+### L-031 — Tooling-only PRs don't need a redeploy
+- **Evidence:** PR #108 touched only `tasks/`, `service/scripts/`, and `service/tests/`. `git diff --name-only 8b3f6f7..e1a32bd | grep -vE "^tasks/|^service/(scripts|tests)/"` returned empty, so no production runtime files changed. Skipping the redeploy saved a service restart cycle and let the campaign progress directly to the production sweep.
+- **Rule:** Before any deploy, run the diff-vs-prev-deploy-sha check. If only non-runtime paths changed, skip the deploy. The campaign-state file is updated to reflect "tooling merged but no redeploy" so future audits don't think we forgot.
+
+### L-032 — Spec-driven smoke catches drift faster than test suites
+- **Evidence:** The Phase 1 production sweep (31 steps across 11 entities) ran in under 5 seconds, caught the secret-shape guard hard-rule still in force, verified all CRUD endpoints round-trip, and produced a markdown report in one step. A pytest suite of equivalent coverage would have required 11+ test files and would not have exercised the live production endpoints.
+- **Rule:** Use the smoke driver for cross-cutting integration verification. Use pytest for per-entity unit + contract coverage. Don't conflate the two layers.
+
+### L-033 — API latency is a stability signal, not a performance one
+- **Evidence:** The Phase 2 latency probe (5 calls per endpoint, 12 endpoints) returned tight ~12 ms medians. Variance was negligible (max-min < 3 ms except for the warm-up call). Latency is not a problem here — but the test is still valuable because it would catch a regression where, e.g., a new batch added a synchronous wFirma call to a list endpoint.
+- **Rule:** Latency probes belong in stability reviews even when latency isn't the issue. They detect coupling regressions.
+
+### L-034 — Deploy metadata in the state file is rollback insurance
+- **Evidence:** The Phase 3 hardening added `previous_main_sha`, `robocopy_exit_codes`, `restart_seconds`, and `rollback_command` to every deploy event. The `record_deploy()` function defaults the rollback command from the deployed SHA. A future operator who needs to roll back has the exact command in the state file — no detective work.
+- **Rule:** Audit metadata is a deploy hardening, not a nice-to-have. The cost (10 lines of code, one CLI subcommand) is dwarfed by the cost of a rollback that can't find the previous SHA.
+
+### L-035 — Branch-stack metadata catches misroutes mechanically
+- **Evidence:** The B7+B8 stack-into-stack misroute (PRs #103 and #104 merging into stale base branches instead of main) had to be detected by eye and repaired with PR #105 forward-merge. The Phase 3 hardening adds `record_branch_stack()` which emits an explicit `warning` field when `stack_depth > 0 AND base_branch == 'main'`. A future audit run will surface the misroute immediately.
+- **Rule:** Process lessons should land as mechanical checks in the state file, not just as prose in the lessons log. Prose drifts; checks don't.
+
+### L-036 — Architecture readiness is more than re-reading the doc
+- **Evidence:** Phase 4 of OSO-2026-05 produced `tasks/phase-6f-readiness-2026-05-16.md` which re-verified coupling probes, re-ran the hard-rule suite, refined the migration order with an inserted "contract-test pinning" batch (6F.1.5), and produced an irreversibility list. Just re-reading the architecture doc would have missed the new 6F.1.5 batch.
+- **Rule:** When an architecture doc has been sitting for a campaign or two, a "readiness verification" pass is mandatory before implementation begins. It catches drift between the doc and the now-current code, and almost always identifies one or more migration-order refinements.

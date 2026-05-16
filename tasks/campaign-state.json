@@ -6,7 +6,7 @@
       "title": "Master Data Completion",
       "status": "completed",
       "started_at": "2026-05-16T00:00:00Z",
-      "closed_at":  "2026-05-16T09:00:00Z",
+      "closed_at": "2026-05-16T09:00:00Z",
       "batches": [
         {
           "batch_id": "B0",
@@ -18,7 +18,10 @@
           "deployed_sha": "b03038275f4bc1027fa6d10bfa27ef4bdc0d3025",
           "previous_main_sha": "008f7b3...",
           "deployed_at": "2026-05-16T00:30:00Z",
-          "tests": {"customer_master": "82/82", "pz_regression": "160/160"},
+          "tests": {
+            "customer_master": "82/82",
+            "pz_regression": "160/160"
+          },
           "smoke_report": "tasks/smoke-reports/2026-05-16-b0-cm-422-fix.md",
           "block_reason": null,
           "next_batch": "B1",
@@ -32,7 +35,10 @@
           "pr_number": 99,
           "merge_sha": "0b98cd3217b6b09a4119ec68fa5f6e12866fa615",
           "deployed_sha": "0b98cd3217b6b09a4119ec68fa5f6e12866fa615",
-          "tests": {"master_suite": "209/209", "pz_regression": "160/160"},
+          "tests": {
+            "master_suite": "209/209",
+            "pz_regression": "160/160"
+          },
           "smoke_report": null,
           "block_reason": null,
           "next_batch": "B2"
@@ -46,7 +52,10 @@
           "merge_sha": "0b98cd3217b6b09a4119ec68fa5f6e12866fa615",
           "deployed_sha": "e1411cbacabf47594e979ee505e3e1422f8030dd",
           "deployed_at": "2026-05-16T03:08:00Z",
-          "tests": {"master_suite": "209/209", "pz_regression": "160/160"},
+          "tests": {
+            "master_suite": "209/209",
+            "pz_regression": "160/160"
+          },
           "smoke_report": "tasks/smoke-reports/2026-05-16-master-data-stack.md",
           "block_reason": null,
           "next_batch": "B10"
@@ -60,7 +69,10 @@
           "merge_sha": "3312ad91d5f2e2b593ea8d1cb6b85ffdf1f34a95",
           "deployed_sha": "e1411cbacabf47594e979ee505e3e1422f8030dd",
           "deployed_at": "2026-05-16T03:08:00Z",
-          "tests": {"master_suite": "158/158", "pz_regression": "160/160"},
+          "tests": {
+            "master_suite": "158/158",
+            "pz_regression": "160/160"
+          },
           "smoke_report": "tasks/smoke-reports/2026-05-16-master-data-stack.md",
           "block_reason": null,
           "next_batch": "B4"
@@ -74,7 +86,11 @@
           "merge_sha": "e1411cbacabf47594e979ee505e3e1422f8030dd",
           "deployed_sha": "e1411cbacabf47594e979ee505e3e1422f8030dd",
           "deployed_at": "2026-05-16T03:08:00Z",
-          "tests": {"suppliers": "30/30", "master_suite": "236/236", "pz_regression": "160/160"},
+          "tests": {
+            "suppliers": "30/30",
+            "master_suite": "236/236",
+            "pz_regression": "160/160"
+          },
           "smoke_report": "tasks/smoke-reports/2026-05-16-master-data-stack.md",
           "block_reason": null,
           "next_batch": "B5"
@@ -88,7 +104,11 @@
           "merge_sha": "61a497d71f3df83963cc290639fac5b63919fda4",
           "deployed_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
           "deployed_at": "2026-05-16T06:00:00Z",
-          "tests": {"b5": "26/26", "master_suite": "270/270", "pz_regression": "160/160"},
+          "tests": {
+            "b5": "26/26",
+            "master_suite": "270/270",
+            "pz_regression": "160/160"
+          },
           "smoke_report": "tasks/smoke-reports/2026-05-16-stack-b5-b7-b8.md",
           "block_reason": null,
           "next_batch": "B7"
@@ -102,7 +122,11 @@
           "merge_sha": "ff29791b00b1e8a1f905c0149488e7926ff63327",
           "deployed_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
           "deployed_at": "2026-05-16T06:00:00Z",
-          "tests": {"b7": "18/18", "master_suite": "242/242", "pz_regression": "160/160"},
+          "tests": {
+            "b7": "18/18",
+            "master_suite": "242/242",
+            "pz_regression": "160/160"
+          },
           "smoke_report": "tasks/smoke-reports/2026-05-16-stack-b5-b7-b8.md",
           "block_reason": null,
           "next_batch": "B8",
@@ -117,7 +141,11 @@
           "merge_sha": "4b6494b599bb94b304750138dc15c90b96dabcfa",
           "deployed_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
           "deployed_at": "2026-05-16T06:00:00Z",
-          "tests": {"b8": "14/14", "master_suite": "258/258", "pz_regression": "160/160"},
+          "tests": {
+            "b8": "14/14",
+            "master_suite": "258/258",
+            "pz_regression": "160/160"
+          },
           "smoke_report": "tasks/smoke-reports/2026-05-16-stack-b5-b7-b8.md",
           "block_reason": null,
           "next_batch": "B9",
@@ -133,7 +161,10 @@
           "deployed_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
           "previous_main_sha": "61a497d71f3df83963cc290639fac5b63919fda4",
           "deployed_at": "2026-05-16T06:00:00Z",
-          "tests": {"master_suite": "307/307", "pz_regression": "160/160"},
+          "tests": {
+            "master_suite": "307/307",
+            "pz_regression": "160/160"
+          },
           "smoke_report": "tasks/smoke-reports/2026-05-16-stack-b5-b7-b8.md",
           "block_reason": null,
           "next_batch": "B9",
@@ -149,7 +180,11 @@
           "deployed_sha": "8b3f6f7dda4446c0f8a174eced87284cbcd367c0",
           "previous_main_sha": "d6ae3f7bcc7d04f8bb270fb66d25a061631adb6f",
           "deployed_at": "2026-05-16T09:00:00Z",
-          "tests": {"b9": "16/16", "master_suite": "278/278", "pz_regression": "160/160"},
+          "tests": {
+            "b9": "16/16",
+            "master_suite": "278/278",
+            "pz_regression": "160/160"
+          },
           "smoke_report": "tasks/smoke-reports/2026-05-16-carriers-config.md",
           "block_reason": null,
           "next_batch": "B11",
@@ -165,7 +200,9 @@
           "deployed_sha": "8b3f6f7dda4446c0f8a174eced87284cbcd367c0",
           "previous_main_sha": "e166c0e860d560f89938cc429c5eb4aa88e76cae",
           "deployed_at": "2026-05-16T09:00:00Z",
-          "tests": {"note": "docs only, no tests run"},
+          "tests": {
+            "note": "docs only, no tests run"
+          },
           "smoke_report": null,
           "block_reason": null,
           "next_batch": null,
@@ -202,7 +239,7 @@
       "title": "Operational Integrity + Automation",
       "status": "active",
       "started_at": "2026-05-16T09:30:00Z",
-      "closed_at":  null,
+      "closed_at": null,
       "batches": [
         {
           "batch_id": "P0",
@@ -211,34 +248,109 @@
           "merge_sha": "8b3f6f7dda4446c0f8a174eced87284cbcd367c0",
           "deployed_sha": "8b3f6f7dda4446c0f8a174eced87284cbcd367c0",
           "deployed_at": "2026-05-16T09:30:00Z",
-          "tests": {"master_suite": "278/278", "pz_regression": "160/160"},
+          "tests": {
+            "master_suite": "278/278",
+            "pz_regression": "160/160"
+          },
           "smoke_report": "tasks/smoke-reports/2026-05-16-carriers-config.md",
           "next_batch": "P1"
         },
         {
           "batch_id": "P1-P2",
           "title": "Automation controller + state tracker (file-based)",
-          "status": "active",
-          "next_batch": "P3"
+          "status": "smoked",
+          "next_batch": "P3",
+          "pr_number": 108,
+          "merge_sha": "e1a32bd",
+          "smoke_report": "tasks/smoke-reports/2026-05-16-production-sweep-all-entities.md"
         },
         {
           "batch_id": "P3",
           "title": "Browser smoke framework + runbooks",
-          "status": "planned",
+          "status": "active",
           "next_batch": "P4"
         },
         {
           "batch_id": "P4",
           "title": "Source-grep contract suite for hard rules",
-          "status": "planned",
+          "status": "active",
           "next_batch": "P5"
         },
         {
           "batch_id": "P5",
           "title": "Phase 6F accounting-charge architecture (INSPECTION ONLY)",
-          "status": "planned",
+          "status": "active",
           "next_batch": null,
           "notes": "Architecture report only. NO implementation. Stops at operator approval gate."
+        }
+      ]
+    },
+    {
+      "campaign_id": "OSO-2026-05",
+      "title": "Operational Stabilization + Observation",
+      "status": "completed",
+      "started_at": "2026-05-16T10:19:43+00:00",
+      "closed_at": "2026-05-16T11:00:00Z",
+      "batches": [
+        {
+          "batch_id": "P0",
+          "title": "Close PR #108 (tooling/docs only; no redeploy needed)",
+          "status": "merged",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/108",
+          "next_batch": null,
+          "block_reason": null,
+          "pr_number": 108,
+          "merge_sha": "e1a32bd6434ce6163b27370ba373190ebd3b5d42",
+          "tests": {
+            "master_tooling_suite": "331/331",
+            "pz_regression": "160/160"
+          }
+        },
+        {
+          "batch_id": "P1",
+          "title": "Production observation sweep — all 11 live Master Data entities",
+          "status": "smoked",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null,
+          "tests": {
+            "sweep": "31/31",
+            "pz_regression": "160/160"
+          },
+          "smoke_report": "tasks/smoke-reports/2026-05-16-production-sweep-all-entities.md"
+        },
+        {
+          "batch_id": "P2",
+          "title": "Stability review (classification only, no fixes)",
+          "status": "merged",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null,
+          "tests": {
+            "note": "inspection only — see tasks/stability-review-2026-05-16.md"
+          }
+        },
+        {
+          "batch_id": "P3",
+          "title": "Low-risk automation maturity (summary + deploy + stack metadata)",
+          "status": "active",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null,
+          "tests": {
+            "tracker": "36/36"
+          }
+        },
+        {
+          "batch_id": "P4",
+          "title": "Phase 6F readiness verification (inspection only)",
+          "status": "merged",
+          "pr_url": null,
+          "next_batch": null,
+          "block_reason": null,
+          "tests": {
+            "note": "inspection only — see tasks/phase-6f-readiness-2026-05-16.md"
+          }
         }
       ]
     }
