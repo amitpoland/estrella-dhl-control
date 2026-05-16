@@ -65,6 +65,9 @@ from .api.routes_master_data import (
     hs_router as md_hs_router,
     units_router as md_units_router,
     pl_router as md_pl_router,
+    incoterms_router as md_incoterms_router,
+    vat_router as md_vat_router,
+    fx_router as md_fx_router,
 )
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
@@ -274,6 +277,9 @@ app.include_router(suppliers_router)                # MasterData-B4: suppliers r
 app.include_router(md_hs_router)                    # MasterData-B5: HS codes (local CRUD; X-API-Key)
 app.include_router(md_units_router)                 # MasterData-B5: Units (local CRUD; X-API-Key)
 app.include_router(md_pl_router)                    # MasterData-B5: Product local augmentation (local CRUD; X-API-Key)
+app.include_router(md_incoterms_router)             # MasterData-B7: Incoterms registry (local CRUD; X-API-Key)
+app.include_router(md_vat_router)                   # MasterData-B7: VAT config (local; READ-ONLY w.r.t. wFirma invoicing)
+app.include_router(md_fx_router)                    # MasterData-B8: FX rates (REFERENCE-ONLY; NOT a PZ override path)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────

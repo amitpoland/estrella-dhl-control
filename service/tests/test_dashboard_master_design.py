@@ -139,8 +139,8 @@ def test_no_invented_master_endpoints():
         "/api/v1/master/roles",
         # NOTE removed in B4: /api/v1/suppliers
         # NOTE removed in B5: /api/v1/hs-codes
+        # NOTE removed in B8: /api/v1/fx-rates (reference-only, NOT a PZ override)
         "/api/v1/designs",
-        "/api/v1/fx-rates",
         "/api/v1/roles",
     ):
         assert ep not in src, f"Invented master-data endpoint leaked: {ep}"
@@ -217,6 +217,9 @@ def test_only_allowed_writes_in_master():
         '/api/v1/hs-codes',
         '/api/v1/units',
         '/api/v1/product-local',
+        '/api/v1/incoterms',
+        '/api/v1/vat-config',
+        '/api/v1/fx-rates',
     )
     # b5Save / b5Delete are generic helpers that accept a basePath parameter;
     # their call sites (b5Save('/api/v1/hs-codes', ...) etc.) carry the literal
@@ -333,14 +336,13 @@ def test_four_live_entities_in_sidebar():
     assert "live: true" in src, "live: true must be set on live entities"
 
 
-def test_five_pending_entities_in_sidebar():
-    """B5 (MDC-040..042) moved hs_codes + units + product_local to live; B4
-    moved suppliers. Five entities remain pending: designs, fx_rates,
-    carriers_config, incoterms, vat_config, roles."""
+def test_three_pending_entities_in_sidebar():
+    """After B8 only three entity ids remain in pending state:
+    designs, carriers_config, roles. (fx_rates moved to live as reference table
+    in B8 MDC-070; override MDC-071 stays FORBIDDEN.)"""
     src = _src()
     for eid in (
-        "'designs'", "'fx_rates'",
-        "'carriers_config'", "'incoterms'", "'vat_config'", "'roles'",
+        "'designs'", "'carriers_config'", "'roles'",
     ):
         assert f"id: {eid}" in src, f"Missing pending entity id: {eid}"
     assert "live: false" in src, "live: false must be set on pending entities"
@@ -376,6 +378,57 @@ def test_b5_panel_testids_present():
                 'master-hs-btn-new', 'master-units-btn-new', 'master-pl-btn-new',
                 'master-hs-btn-save', 'master-units-btn-save', 'master-pl-btn-save'):
         assert f'data-testid="{tid}"' in src, f"B5 missing testid: {tid}"
+
+
+def test_b7_entities_are_live():
+    src = _src()
+    for eid, state_var in (("'incoterms'", "incoterms"),
+                            ("'vat_config'", "vatCfg")):
+        idx = src.index("id: " + eid)
+        snippet = src[idx:idx + 260]
+        assert "live: true" in snippet, f"{eid} must be live: true (B7)"
+        assert (state_var + ".items") in snippet or (state_var + ".error") in snippet, \
+            f"{eid} sidebar entry must derive from state ({state_var})"
+
+
+def test_b7_panel_testids_present():
+    src = _src()
+    for tid in ('master-incoterms-panel', 'master-vat-config-panel',
+                'master-incoterms-btn-new', 'master-vat-btn-new',
+                'master-incoterms-btn-save', 'master-vat-btn-save'):
+        assert f'data-testid="{tid}"' in src, f"B7 missing testid: {tid}"
+
+
+def test_b7_vat_read_only_disclaimer_present():
+    """VAT Config panel must explicitly state it does NOT override wFirma
+    invoice VAT codes. Guards against future drift toward write integration."""
+    src = _src()
+    block = _master_block(src)
+    assert "wFirma invoice VAT codes are not overridden" in block or \
+           "does NOT override wFirma" in block, \
+        "VAT Config panel must carry a read-only disclaimer"
+
+
+def test_b8_fx_is_live_and_reference_only():
+    """B8: FX rates entity is live: true but the panel must carry the
+    reference-only disclaimer."""
+    src = _src()
+    idx = src.index("id: 'fx_rates'")
+    snippet = src[idx:idx + 260]
+    assert "live: true" in snippet, "fx_rates must be live: true (B8)"
+    assert "fxRates.items" in snippet or "fxRates.error" in snippet
+    # Disclaimer in the panel body
+    block = _master_block(src)
+    assert ("NEVER read by the calculation engine" in block or
+            "PZ engine uses NBP live, NOT this table" in block), \
+        "FX panel must carry the reference-only disclaimer"
+
+
+def test_b8_fx_panel_testids_present():
+    src = _src()
+    for tid in ('master-fx-rates-panel', 'master-fx-btn-new',
+                'master-fx-btn-save', 'master-fx-btn-cancel'):
+        assert f'data-testid="{tid}"' in src, f"B8 missing testid: {tid}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -443,14 +496,13 @@ def test_products_table_uses_real_fields():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_pending_entity_panel_present():
-    """Pending panel uses concat testid syntax. After B5 the pending grid
-    contains designs, fx_rates, roles (B4 removed suppliers; B5 removed hs_codes)."""
+    """Pending grid now contains designs + roles only after B8."""
     src = _src()
     assert 'data-testid="master-pending-panel"' in src
     assert 'data-testid="master-pending-badge"' in src
     assert 'data-testid="master-pending-grid"' in src
     assert "data-testid={'master-pending-' + id}" in src
-    for tid in ("'designs'", "'fx_rates'", "'roles'"):
+    for tid in ("'designs'", "'roles'"):
         assert f"id: {tid}" in src, f"Missing pending placeholder id: {tid}"
 
 
@@ -476,11 +528,13 @@ def test_design_preview_footer_present():
 
 def test_footer_accurately_lists_live_and_pending():
     src = _src()
-    # B5 adds HS Codes · Units · Product local to the live list
+    # B8 adds FX Rates (reference) to the live list
     assert "Clients" in src and "Users" in src
-    assert "Product local are live" in src, "Footer must list Product local as live (B5)"
-    assert "Suppliers" in src
+    assert "FX Rates (reference) are live" in src, "Footer must list FX Rates as live (B8)"
+    assert "Incoterms" in src
     assert "HS Codes" in src
+    assert "Suppliers" in src
+    assert "VAT Config" in src
     assert "backend pending" in src.lower()
 
 
@@ -842,23 +896,21 @@ def test_fx_rates_entity_in_sidebar():
     assert "id: 'fx_rates'" in _src()
 
 
-def test_fx_rates_entity_is_pending():
+def test_fx_rates_entity_is_live_b8():
+    """B8 promoted fx_rates from pending to live (reference-only mode)."""
     src = _src()
-    # fx_rates ENTITIES entry has live: false
     idx = src.index("id: 'fx_rates'")
-    snippet = src[idx:idx + 120]
-    assert "live: false" in snippet, \
-        "FX Rates entity must have live: false"
+    snippet = src[idx:idx + 220]
+    assert "live: true" in snippet, "fx_rates is live (B8 reference-only)"
 
 
-def test_fx_rates_pending_testid():
+def test_fx_rates_no_longer_in_pending_grid():
+    """B8: fx_rates moved out of the pending grid."""
     src = _src()
-    assert "data-testid={'master-pending-' + id}" in src
-    # fx_rates is in the pending-grid list
     block_start = src.index('data-testid="master-pending-panel"')
     block_end   = src.index('data-testid="master-design-preview"', block_start)
     block = src[block_start:block_end]
-    assert "'fx_rates'" in block, "fx_rates must appear in pending grid"
+    assert "'fx_rates'" not in block, "fx_rates should NOT appear in pending grid (B8)"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
