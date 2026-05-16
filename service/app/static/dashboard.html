@@ -3384,6 +3384,61 @@ function MasterDataPage({ onNav, onToast }) {
     }
   }, []);
 
+  // ── Suppliers (B4 MDC-030) ──────────────────────────────────────────────
+  const [suppliers, setSuppliers] = React.useState({ loading: false, error: null, items: [], ts: null });
+  const [supForm,   setSupForm]   = React.useState(null);  // null=hidden, {}=new, {id,...}=edit
+  const [supSaving, setSupSaving] = React.useState(false);
+  const [supError,  setSupError]  = React.useState(null);
+
+  const loadSuppliers = React.useCallback(async () => {
+    setSuppliers(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/api/v1/suppliers/');
+      setSuppliers({ loading: false, error: null,
+        items: Array.isArray(d) ? d : (d.suppliers || d.items || []),
+        ts: new Date().toISOString() });
+    } catch (e) {
+      setSuppliers({ loading: false, error: e.message || 'load failed', items: [],
+        ts: new Date().toISOString() });
+    }
+  }, []);
+
+  const saveSupplier = async () => {
+    if (!supForm) return;
+    setSupSaving(true); setSupError(null);
+    try {
+      const payload = { ...supForm };
+      // Empty optional strings → null
+      for (const f of ['vat_id','eori','address','contact_email','contact_phone','notes']) {
+        if (payload[f] === '') payload[f] = null;
+      }
+      if (supForm.id) {
+        await apiFetch('/api/v1/suppliers/' + supForm.id,
+                       { method: 'PUT', body: JSON.stringify(payload) });
+      } else {
+        await apiFetch('/api/v1/suppliers/',
+                       { method: 'POST', body: JSON.stringify(payload) });
+      }
+      setSupForm(null);
+      await loadSuppliers();
+      if (onToast) onToast('Supplier saved.', 'success');
+    } catch (e) {
+      setSupError(e.message || 'Save failed');
+    } finally {
+      setSupSaving(false);
+    }
+  };
+
+  const deleteSupplier = async (sid) => {
+    try {
+      await apiFetch('/api/v1/suppliers/' + sid, { method: 'DELETE' });
+      await loadSuppliers();
+      if (onToast) onToast('Supplier deleted.', 'success');
+    } catch (e) {
+      setSupError(e.message || 'Delete failed');
+    }
+  };
+
   React.useEffect(() => {
     loadUsers(); loadCustomers(); loadProducts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3394,11 +3449,15 @@ function MasterDataPage({ onNav, onToast }) {
         && !custMaster.ts && !custMaster.loading) {
       loadCustomerMaster();
     }
+    if (activeEntity === 'suppliers' && !suppliers.ts && !suppliers.loading) {
+      loadSuppliers();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity]);
 
   const reloadAll = () => {
     loadUsers(); loadCustomers(); loadProducts(); loadCustomerMaster();
+    if (activeEntity === 'suppliers') loadSuppliers();
   };
 
   // ── Legacy CM inline-edit helpers (data-testid compatibility) ──────────
@@ -3462,7 +3521,8 @@ function MasterDataPage({ onNav, onToast }) {
   const filteredCustMaster = (custMaster.items || []).filter(r => _match(r, query));
 
   // ── KPI strip (preserved data-testids) ────────────────────────────────
-  const PENDING_TYPES = ['suppliers','designs','hs_codes','fx_rates','roles'];
+  // B4: suppliers moved out of PENDING_TYPES (real backend now wired)
+  const PENDING_TYPES = ['designs','hs_codes','fx_rates','roles'];
   const kpis = [
     { id: 'users',     label: 'Users',
       value: users.loading     ? '…' : users.error     ? '—' : (users.items     || []).length,
@@ -3498,7 +3558,8 @@ function MasterDataPage({ onNav, onToast }) {
     null,
     { id: 'designs',        label: 'Designs',         icon: '◇', live: false },
     { id: 'fx_rates',       label: 'FX Rates',        icon: '◆', live: false },
-    { id: 'suppliers',      label: 'Suppliers',       icon: '◉', live: false },
+    { id: 'suppliers',      label: 'Suppliers',       icon: '◉',
+      count: suppliers.error ? null : (suppliers.items || []).length, live: true },
     { id: 'hs_codes',       label: 'HS Codes',        icon: '◈', live: false },
     { id: 'carriers_config',label: 'Carriers Config', icon: '◎', live: false },
     { id: 'incoterms',      label: 'Incoterms',       icon: '◇', live: false },
@@ -4244,12 +4305,223 @@ function MasterDataPage({ onNav, onToast }) {
                        'table_number','effective_from','effective_to','override','notes']} />
           )}
 
-          {/* ── SUPPLIERS ──────────────────────────────────────────────── */}
+          {/* ── SUPPLIERS (B4 MDC-030) — LIVE ──────────────────────────── */}
           {activeEntity === 'suppliers' && (
-            <PendingPanel entityId="suppliers" title="Suppliers"
-              description="Goods exporters and consignment senders. Maps supplier names on invoices to canonical records used during SAD/ZC429 verification."
-              fields={['supplier_code','name','country','vat_id','eori',
-                       'address','contact_email','contact_phone','active','notes']} />
+            <div data-testid="master-suppliers-panel">
+              <PanelHeader title="Suppliers"
+                subtitle="Goods exporters / consignment senders — local registry, no wFirma write"
+                actions={
+                  <button data-testid="master-suppliers-btn-new"
+                    onClick={() => { setSupForm({ supplier_code: '', name: '', country: '',
+                      vat_id: '', eori: '', address: '', contact_email: '', contact_phone: '',
+                      active: true, notes: '' }); setSupError(null); }}
+                    disabled={!!supForm}
+                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                      background: 'var(--accent)', color: '#fff',
+                      border: 'none', borderRadius: 6,
+                      cursor: supForm ? 'not-allowed' : 'pointer',
+                      opacity: supForm ? 0.5 : 1, fontFamily: 'inherit' }}>
+                    + New Supplier
+                  </button>
+                }
+              />
+              {suppliers.loading && (
+                <div data-testid="master-suppliers-loading"
+                     style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading suppliers…</div>
+              )}
+              {!suppliers.loading && suppliers.error && (
+                <div data-testid="master-suppliers-error"
+                     style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}>
+                  Load failed: {suppliers.error}
+                </div>
+              )}
+              {supError && (
+                <div data-testid="master-suppliers-save-error"
+                     style={{ padding: '6px 10px', background: 'var(--badge-red-bg)',
+                       border: '1px solid var(--badge-red-border)', borderRadius: 6,
+                       fontSize: 11, color: 'var(--badge-red-text)', marginBottom: 8 }}>
+                  {supError}
+                </div>
+              )}
+              {!suppliers.loading && !suppliers.error && (
+                <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                              borderRadius: 10, overflow: 'hidden' }}>
+                  {(suppliers.items || []).filter(r => _match(r, query)).length === 0
+                    ? <div data-testid="master-suppliers-empty"
+                           style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+                        {(suppliers.items || []).length === 0
+                          ? 'No suppliers registered yet.'
+                          : 'No suppliers match the filter.'}
+                      </div>
+                    : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ background: 'var(--bg-subtle)' }}>
+                            {['Code','Name','Country','VAT ID','EORI','Active',''].map(h => (
+                              <th key={h} style={thStyle}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(suppliers.items || []).filter(r => _match(r, query)).map(s => (
+                            <tr key={s.id} data-testid="master-suppliers-row" style={trStyle}>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>
+                                {s.supplier_code}
+                              </td>
+                              <td style={{ padding: '8px 12px', color: 'var(--text)' }}>{s.name}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{s.country}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text-2)' }}>{s.vat_id || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text-2)' }}>{s.eori || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>
+                                {s.active
+                                  ? <span style={{ color: 'var(--badge-green-text)', fontWeight: 600 }}>● active</span>
+                                  : <span style={{ color: 'var(--text-3)' }}>○ inactive</span>}
+                              </td>
+                              <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                                <button data-testid={'master-suppliers-btn-edit-' + s.id}
+                                  onClick={() => { setSupForm({ ...s }); setSupError(null); }}
+                                  style={{ padding: '3px 10px', fontSize: 11,
+                                    border: '1px solid var(--accent)', borderRadius: 4,
+                                    background: 'var(--accent-subtle)', cursor: 'pointer',
+                                    color: 'var(--text)', fontWeight: 600,
+                                    fontFamily: 'inherit', marginRight: 6 }}>
+                                  Edit
+                                </button>
+                                <button data-testid={'master-suppliers-btn-delete-' + s.id}
+                                  onClick={() => deleteSupplier(s.id)}
+                                  style={{ padding: '3px 8px', fontSize: 11,
+                                    border: '1px solid var(--border)', borderRadius: 4,
+                                    background: 'var(--card)', cursor: 'pointer',
+                                    color: 'var(--text-3)', fontFamily: 'inherit' }}>
+                                  ×
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  }
+                </div>
+              )}
+              {supForm !== null && (
+                <div data-testid="master-suppliers-form"
+                     style={{ marginTop: 14, padding: '14px 18px', background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)',
+                    marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    {supForm.id ? 'Edit supplier' : 'New supplier'}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Code *</span>
+                      <input data-testid="master-suppliers-input-code" type="text"
+                        value={supForm.supplier_code || ''}
+                        onChange={e => setSupForm(f => ({ ...f, supplier_code: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4,
+                          fontFamily: 'monospace' }} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Name *</span>
+                      <input data-testid="master-suppliers-input-name" type="text"
+                        value={supForm.name || ''}
+                        onChange={e => setSupForm(f => ({ ...f, name: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Country (ISO α-2) *</span>
+                      <input data-testid="master-suppliers-input-country" type="text"
+                        value={supForm.country || ''}
+                        onChange={e => setSupForm(f => ({ ...f, country: e.target.value.toUpperCase() }))}
+                        maxLength={2}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>VAT ID</span>
+                      <input data-testid="master-suppliers-input-vat" type="text"
+                        value={supForm.vat_id || ''}
+                        onChange={e => setSupForm(f => ({ ...f, vat_id: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>EORI</span>
+                      <input data-testid="master-suppliers-input-eori" type="text"
+                        value={supForm.eori || ''}
+                        onChange={e => setSupForm(f => ({ ...f, eori: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Contact email</span>
+                      <input data-testid="master-suppliers-input-email" type="email"
+                        value={supForm.contact_email || ''}
+                        onChange={e => setSupForm(f => ({ ...f, contact_email: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Contact phone</span>
+                      <input type="text"
+                        value={supForm.contact_phone || ''}
+                        onChange={e => setSupForm(f => ({ ...f, contact_phone: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }} />
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+                      <input data-testid="master-suppliers-input-active" type="checkbox"
+                        checked={supForm.active !== false}
+                        onChange={e => setSupForm(f => ({ ...f, active: e.target.checked }))} />
+                      Active
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11,
+                      gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Address</span>
+                      <input type="text"
+                        value={supForm.address || ''}
+                        onChange={e => setSupForm(f => ({ ...f, address: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11,
+                      gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Notes</span>
+                      <textarea
+                        value={supForm.notes || ''}
+                        onChange={e => setSupForm(f => ({ ...f, notes: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11, fontFamily: 'inherit',
+                          border: '1px solid var(--border)', borderRadius: 4,
+                          minHeight: 50, resize: 'vertical' }} />
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                    <button data-testid="master-suppliers-btn-save"
+                      onClick={saveSupplier} disabled={supSaving}
+                      style={{ padding: '6px 18px', fontSize: 12,
+                        fontWeight: 700, background: 'var(--accent)',
+                        color: '#fff', border: 'none', borderRadius: 4,
+                        cursor: supSaving ? 'not-allowed' : 'pointer',
+                        opacity: supSaving ? 0.6 : 1, fontFamily: 'inherit' }}>
+                      {supSaving ? 'Saving…' : 'Save'}
+                    </button>
+                    <button data-testid="master-suppliers-btn-cancel"
+                      onClick={() => { setSupForm(null); setSupError(null); }}
+                      style={{ padding: '6px 12px', fontSize: 12,
+                        background: 'var(--card)', color: 'var(--text-2)',
+                        border: '1px solid var(--border)', borderRadius: 4,
+                        cursor: 'pointer', fontFamily: 'inherit' }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {/* ── HS CODES ───────────────────────────────────────────────── */}
@@ -4303,10 +4575,11 @@ function MasterDataPage({ onNav, onToast }) {
       </div>{/* end 2-col layout */}
 
       {/* ── Preserved data-testid anchors (hidden, for test compatibility) ── */}
+      {/* B4: suppliers removed from pending grid (live backend now wired) */}
       <div data-testid="master-pending-panel" style={{ display: 'none' }}>
         <span data-testid="master-pending-badge" />
         <div data-testid="master-pending-grid">
-          {['suppliers','designs','hs_codes','fx_rates','roles'].map(id => (
+          {['designs','hs_codes','fx_rates','roles'].map(id => (
             <div key={id} data-testid={'master-pending-' + id} data-pending="true" />
           ))}
         </div>
@@ -4323,8 +4596,8 @@ function MasterDataPage({ onNav, onToast }) {
                 background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10,
                 fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)',
                 letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
-        <span>Full master data module. Clients · Users · Products · Customer Master are live.
-          Designs / FX / Suppliers / HS / Carriers Config / Incoterms / VAT / Units / Roles
+        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers are live.
+          Designs / FX / HS / Carriers Config / Incoterms / VAT / Units / Roles
           are structure-preview — backend pending.</span>
       </div>
 

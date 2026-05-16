@@ -1,0 +1,189 @@
+"""
+routes_suppliers.py — Suppliers Master Data REST API.
+
+  GET    /api/v1/suppliers/
+         List suppliers. Optional QS: country, active, limit (default 200).
+
+  GET    /api/v1/suppliers/{supplier_id}
+         Read one supplier by id. 404 if absent.
+
+  POST   /api/v1/suppliers/
+         Create a new supplier. 201 with stored record. Body is a JSON object.
+
+  PUT    /api/v1/suppliers/{supplier_id}
+         Update a supplier. Partial updates merge over existing record.
+
+  DELETE /api/v1/suppliers/{supplier_id}
+         Hard delete. 204 on success, 404 if missing.
+
+All endpoints are X-API-Key authenticated. This module is local-only — it
+does NOT call wFirma and is NOT part of any PZ/customs calculation path.
+
+DB path: settings.storage_root / "suppliers.sqlite"
+"""
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
+
+from ..core.config import settings
+from ..core.security import require_api_key
+from ..core.logging import get_logger
+from ..services.suppliers_db import (
+    Supplier,
+    init_db,
+    validate_supplier,
+    create_supplier,
+    get_supplier,
+    list_suppliers,
+    update_supplier,
+    delete_supplier,
+)
+
+log    = get_logger(__name__)
+router = APIRouter(prefix="/api/v1/suppliers", tags=["suppliers"])
+_auth  = Depends(require_api_key)
+
+_DB_PATH = settings.storage_root / "suppliers.sqlite"
+
+
+def _supplier_dict(s: Supplier) -> dict:
+    return {
+        "id":            s.id,
+        "supplier_code": s.supplier_code,
+        "name":          s.name,
+        "country":       s.country,
+        "vat_id":        s.vat_id,
+        "eori":          s.eori,
+        "address":       s.address,
+        "contact_email": s.contact_email,
+        "contact_phone": s.contact_phone,
+        "active":        s.active,
+        "notes":         s.notes,
+        "created_at":    s.created_at,
+        "updated_at":    s.updated_at,
+    }
+
+
+def _parse_active_query(v: Optional[str]) -> Optional[bool]:
+    if v is None or v == "":
+        return None
+    s = str(v).strip().lower()
+    if s in ("true", "1", "yes"):
+        return True
+    if s in ("false", "0", "no"):
+        return False
+    raise HTTPException(status_code=422, detail=f"active must be true/false, got {v!r}")
+
+
+@router.get("/", dependencies=[_auth], summary="List suppliers")
+def list_suppliers_endpoint(
+    country: Optional[str] = Query(None, description="ISO alpha-2 filter"),
+    active:  Optional[str] = Query(None, description="true|false"),
+    limit:   int           = Query(200, ge=1, le=1000),
+) -> JSONResponse:
+    """List suppliers, most-recently-updated first."""
+    try:
+        init_db(_DB_PATH)
+        records = list_suppliers(_DB_PATH,
+                                 active=_parse_active_query(active),
+                                 country=country, limit=limit)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error("list_suppliers failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    return JSONResponse({"count": len(records),
+                         "suppliers": [_supplier_dict(s) for s in records]})
+
+
+@router.get("/{supplier_id}", dependencies=[_auth], summary="Get one supplier")
+def get_supplier_endpoint(supplier_id: int) -> JSONResponse:
+    """Read a supplier by id. 404 if not found."""
+    try:
+        init_db(_DB_PATH)
+        rec = get_supplier(_DB_PATH, supplier_id)
+    except Exception as exc:
+        log.error("get_supplier failed id=%s: %s", supplier_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Supplier not found: id={supplier_id}")
+    return JSONResponse(_supplier_dict(rec))
+
+
+@router.post("/", dependencies=[_auth], summary="Create supplier", status_code=201)
+async def create_supplier_endpoint(request: Request) -> JSONResponse:
+    """Create a new supplier. Body must be a JSON object with at least
+    supplier_code, name, and country."""
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+
+    errs = validate_supplier(body)
+    if errs:
+        raise HTTPException(status_code=422, detail={"validation_errors": errs})
+
+    try:
+        init_db(_DB_PATH)
+        new_id = create_supplier(_DB_PATH, body)
+    except ValueError as exc:
+        msg = str(exc)
+        status = 409 if msg.startswith("DUPLICATE_CODE") else 422
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as exc:
+        log.error("create_supplier failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+
+    rec = get_supplier(_DB_PATH, new_id)
+    if rec is None:
+        raise HTTPException(status_code=500,
+                            detail="create succeeded but record not found on re-read")
+    log.info("supplier_create id=%d code=%s", new_id, rec.supplier_code)
+    return JSONResponse(status_code=201, content=_supplier_dict(rec))
+
+
+@router.put("/{supplier_id}", dependencies=[_auth], summary="Update supplier")
+async def update_supplier_endpoint(supplier_id: int, request: Request) -> JSONResponse:
+    """Update a supplier. Partial payloads merge over existing fields."""
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+
+    try:
+        init_db(_DB_PATH)
+        updated = update_supplier(_DB_PATH, supplier_id, body)
+    except ValueError as exc:
+        msg = str(exc)
+        status = 409 if msg.startswith("DUPLICATE_CODE") else 422
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as exc:
+        log.error("update_supplier failed id=%s: %s", supplier_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Supplier not found: id={supplier_id}")
+    log.info("supplier_update id=%d code=%s", supplier_id, updated.supplier_code)
+    return JSONResponse(_supplier_dict(updated))
+
+
+@router.delete("/{supplier_id}", dependencies=[_auth], summary="Delete supplier",
+               status_code=204)
+def delete_supplier_endpoint(supplier_id: int) -> Response:
+    """Hard delete. 204 on success, 404 if missing."""
+    try:
+        init_db(_DB_PATH)
+        removed = delete_supplier(_DB_PATH, supplier_id)
+    except Exception as exc:
+        log.error("delete_supplier failed id=%s: %s", supplier_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Supplier not found: id={supplier_id}")
+    log.info("supplier_delete id=%d", supplier_id)
+    return Response(status_code=204)
