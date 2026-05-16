@@ -290,3 +290,123 @@ def test_campaign_state_records_fx_override_forbidden():
     assert fx_block["status"] == "blocked"
     assert "FORBIDDEN" in (fx_block.get("block_reason") or ""), \
         "MDC-071 must declare FORBIDDEN in its block_reason"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 6F.1 — finance_postings hard rules
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_6F1_module_exists_and_is_isolated():
+    """The new finance_postings_db module must exist and not import any
+    posting / wFirma / PZ engine / accounting code."""
+    p = _APP_ROOT / "services" / "finance_postings_db.py"
+    if not p.exists():
+        pytest.skip("Phase 6F.1 not yet landed")
+    src = p.read_text(encoding="utf-8")
+    for forbidden in (
+        "from ..api.routes_wfirma",
+        "from ..api.routes_proforma",
+        "from ..api.routes_pz",
+        "from ..services.wfirma_client",
+        "from ..services.proforma_pz",
+        "from ..services.ledger_aggregator",
+        "from ..services.proforma_service_charges_db",
+        "from ..services.export_service",
+        "import pz_import_processor",
+    ):
+        assert forbidden not in src, \
+            f"finance_postings_db must not import {forbidden}"
+
+
+def test_6F1_module_uses_minor_units_only():
+    """Architecture §5.2 — minor units (cents) only, NEVER float."""
+    p = _APP_ROOT / "services" / "finance_postings_db.py"
+    if not p.exists():
+        pytest.skip("Phase 6F.1 not yet landed")
+    src = p.read_text(encoding="utf-8")
+    # No float() conversions on amounts
+    for forbidden in ("float(data['amount", "float(data['applied",
+                      "float(data.get('amount", "float(data.get('applied"):
+        assert forbidden not in src, \
+            f"finance_postings_db must not use float on amount fields: {forbidden}"
+
+
+def test_6F1_no_existing_module_imports_finance_postings():
+    """6F.1 must remain unused by any other module (no coupling yet)."""
+    import re
+    # The module itself + its tests are allowed to import it
+    allowed = {"finance_postings_db.py", "test_finance_postings_db.py",
+               "test_master_data_hard_rules.py"}
+    pattern = re.compile(r"(?:from\s+\S*finance_postings_db|import\s+finance_postings_db)")
+    for p in (_APP_ROOT.rglob("*.py")):
+        if p.name in allowed:
+            continue
+        try:
+            src = p.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if pattern.search(src):
+            pytest.fail(f"6F.1 must remain unused; found import in {p}")
+    # tests directory check
+    tests_dir = _SVC_ROOT / "tests"
+    for p in tests_dir.rglob("*.py"):
+        if p.name in allowed:
+            continue
+        try:
+            src = p.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if pattern.search(src):
+            pytest.fail(f"6F.1 must remain unused; found import in {p}")
+
+
+def test_6F1_main_does_not_register_router_yet():
+    """No routes_finance_postings.py exists yet, and main.py must not import
+    or include any such router."""
+    mp = _APP_ROOT / "main.py"
+    if not mp.exists():
+        pytest.skip("main.py not present")
+    src = mp.read_text(encoding="utf-8")
+    for forbidden in ("routes_finance_postings", "finance_postings_router",
+                      "fp_router"):
+        assert forbidden not in src, \
+            f"6F.1 must NOT wire a router yet; found: {forbidden}"
+    # The routes file itself must not exist for 6F.1
+    routes_file = _APP_ROOT / "api" / "routes_finance_postings.py"
+    assert not routes_file.exists(), \
+        "6F.1 schema-only batch must not create routes_finance_postings.py"
+
+
+def test_6F1_pz_engine_does_not_read_finance_postings():
+    """The PZ engine must never read from finance_postings.sqlite."""
+    suspect = [
+        _REPO_ROOT / "pz_import_processor.py",
+        _APP_ROOT / "services" / "export_service.py",
+    ]
+    for f in suspect:
+        if not f.exists():
+            continue
+        src = f.read_text(encoding="utf-8")
+        for forbidden in ("finance_postings.sqlite", "finance_postings_db",
+                          "from ..services.finance_postings"):
+            assert forbidden not in src, \
+                f"PZ engine must not reference finance_postings: {f} ↩ {forbidden}"
+
+
+def test_6F1_module_has_schema_version_locked_to_1():
+    p = _APP_ROOT / "services" / "finance_postings_db.py"
+    if not p.exists():
+        pytest.skip("Phase 6F.1 not yet landed")
+    src = p.read_text(encoding="utf-8")
+    assert "SCHEMA_VERSION = 1" in src, "6F.1 must lock SCHEMA_VERSION = 1"
+
+
+def test_6F1_charge_types_allow_list_in_source():
+    """The 8 approved charge types must be literally present in source."""
+    p = _APP_ROOT / "services" / "finance_postings_db.py"
+    if not p.exists():
+        pytest.skip("Phase 6F.1 not yet landed")
+    src = p.read_text(encoding="utf-8")
+    for t in ("net_goods", "freight", "insurance", "customs_duty",
+              "vat_eu", "vat_pl", "rounding_adjustment", "fx_delta_at_settlement"):
+        assert f'"{t}"' in src, f"6F.1 must enumerate charge type literal: {t}"
