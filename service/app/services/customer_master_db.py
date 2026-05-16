@@ -781,7 +781,99 @@ __all__ = [
     "validate",
     "init_db",
     "upsert_customer",
+    "upsert_identity_only",
     "get_customer",
     "list_customers",
     "delete_customer",
+    "get_effective_defaults",
 ]
+
+
+# ── B0 deep-enrichment 2026-05-16 — deterministic inheritance helper ─────────
+#
+# Formalises the precedence order documented in
+# tasks/wfirma-enrichment-ownership-model.md. This helper is consumed by the
+# operator-facing dashboard (e.g. "what currency will my draft use?") and is
+# safe for any future consumer to read. It is NOT yet used by the proforma
+# posting path — that is intentional and matches the "no proforma flow change"
+# hard rule. When a future PR wants to switch proforma to read from this
+# helper, the inheritance order is already locked in code + tested.
+
+
+def get_effective_defaults(customer: "CustomerMaster") -> Dict[str, Any]:
+    """Return the deterministic effective defaults for a Client Master record.
+
+    Precedence (highest first):
+      1. Local operator override (non-empty value on the CustomerMaster row).
+      2. wFirma-sourced default (filled into the same column by
+         ``upsert_identity_only``).
+      3. System fallback (None / sentinel — caller decides).
+
+    Levels 1 and 2 share the same DB column because ``upsert_identity_only``
+    uses fill-when-empty semantics. The effective value is therefore simply
+    the column value — but this helper exists to:
+      (a) document the rule in code,
+      (b) handle the ship-to inheritance (if ``ship_to_use_alternate`` is
+          False, ship-to fields inherit bill-to verbatim),
+      (c) give every downstream consumer one shared call site.
+
+    Returns a flat dict; missing fields are None.
+    """
+    if customer is None:
+        return {}
+    c = customer
+
+    # Bill-to identity + commercial defaults are direct column reads.
+    out: Dict[str, Any] = {
+        "bill_to_contractor_id":         c.bill_to_contractor_id,
+        "bill_to_name":                  c.bill_to_name,
+        "country":                       c.country,
+        "nip":                           c.nip,
+        "bill_to_email":                 c.bill_to_email,
+        "bill_to_phone":                 c.bill_to_phone,
+        "bill_to_mobile":                c.bill_to_mobile,
+        "bank_account":                  c.bank_account,
+        "default_currency":              c.default_currency,
+        "payment_terms_days":            c.payment_terms_days,
+        "default_language_id":           c.default_language_id,
+        "preferred_proforma_series_id":  c.preferred_proforma_series_id,
+        "preferred_invoice_series_id":   c.preferred_invoice_series_id,
+        "vat_mode":                      c.vat_mode,
+    }
+
+    # Ship-to inheritance. When the operator has NOT enabled the alternate
+    # ship-to override, the effective ship-to is the bill-to identity.
+    if c.ship_to_use_alternate:
+        out["ship_to_use_alternate"] = True
+        out["ship_to_name"]    = c.ship_to_name    or c.bill_to_name
+        out["ship_to_country"] = c.ship_to_country or c.country
+        out["ship_to_email"]   = c.ship_to_email   or c.bill_to_email
+        out["ship_to_phone"]   = c.ship_to_phone   or c.bill_to_phone
+        out["ship_to_street"]  = c.ship_to_street
+        out["ship_to_city"]    = c.ship_to_city
+        out["ship_to_zip"]     = c.ship_to_zip
+        out["ship_to_person"]  = c.ship_to_person
+        out["ship_to_contractor_id"] = c.ship_to_contractor_id
+    else:
+        out["ship_to_use_alternate"] = False
+        out["ship_to_name"]    = c.bill_to_name
+        out["ship_to_country"] = c.country
+        out["ship_to_email"]   = c.bill_to_email
+        out["ship_to_phone"]   = c.bill_to_phone
+        out["ship_to_street"]  = None  # bill-to street lives in wFirma, not local
+        out["ship_to_city"]    = None
+        out["ship_to_zip"]     = None
+        out["ship_to_person"]  = None
+        out["ship_to_contractor_id"] = None
+
+    # Freight + insurance defaults — local-only territory; expose verbatim.
+    out["freight_service_id"]        = c.freight_service_id
+    out["freight_fixed_amount_eur"]  = c.freight_fixed_amount_eur
+    out["freight_fixed_amount_usd"]  = c.freight_fixed_amount_usd
+    out["freight_currency"]          = c.freight_currency
+    out["freight_mode"]              = c.freight_mode
+    out["insurance_service_id"]      = c.insurance_service_id
+    out["insurance_rate"]            = c.insurance_rate
+    out["insurance_enabled"]         = c.insurance_enabled
+
+    return out

@@ -604,7 +604,11 @@ def test_dashboard_invoices_advanced_section_present():
     under an Advanced disclosure so normal-operator view is uncluttered."""
     src = _DASH.read_text(encoding="utf-8", errors="replace")
     assert 'data-testid="kyc-invoices-advanced"' in src
-    assert "Show technical wFirma IDs" in src
+    # B0 deep-enrichment 2026-05-16: Advanced disclosure now scopes to
+    # the raw wFirma series IDs (language moved to default view as a
+    # labelled dropdown).
+    assert ("wFirma series IDs" in src) or ("Show technical wFirma IDs" in src), \
+        "Advanced disclosure must have a summary label"
 
 
 def test_dashboard_freight_insurance_service_id_in_advanced_disclosure():

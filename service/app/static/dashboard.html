@@ -2417,6 +2417,25 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
   const [carrierForm, setCarrierForm]       = React.useState(null);
   const [carrierSaving, setCarrierSaving]   = React.useState(false);
 
+  // B0 deep-enrichment 2026-05-16 — load operator dictionaries once on mount.
+  // Baseline ships labels for VAT modes, currencies, languages, and series so
+  // the KYC modal can render dropdowns instead of raw-ID text inputs.
+  const [dicts, setDicts] = React.useState({
+    vat_modes: [], currencies: [], languages: [],
+    invoice_series: [], proforma_series: [],
+  });
+  React.useEffect(() => {
+    apiFetch('/api/v1/customer-master/dictionaries')
+      .then(d => setDicts({
+        vat_modes:       d.vat_modes       || [],
+        currencies:      d.currencies      || [],
+        languages:       d.languages       || [],
+        invoice_series:  d.invoice_series  || [],
+        proforma_series: d.proforma_series || [],
+      }))
+      .catch(() => { /* keep empty defaults — operator can still hand-edit IDs */ });
+  }, []);
+
   const contractorId = (custMasterRec && custMasterRec.bill_to_contractor_id)
                        || (rec && rec.wfirma_customer_id);
   const canSave = !!contractorId;
@@ -2741,6 +2760,16 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                   Use alternate ship-to address
                 </label>
               </div>
+              {!form.ship_to_use_alternate && (
+                <div data-testid="kyc-shipping-inheritance-hint"
+                  style={{ padding: '8px 12px', background: 'var(--bg-subtle)',
+                    border: '1px dashed var(--border)', borderRadius: 6,
+                    fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+                  Ship-to inherits the billing identity (name, country, email,
+                  phone). Toggle <em>Use alternate ship-to address</em> above
+                  to override.
+                </div>
+              )}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10,
                             opacity: form.ship_to_use_alternate ? 1 : 0.5 }}>
                 <label style={labelStyle}>
@@ -3238,9 +3267,30 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                     onChange={e => setField('vat_mode', e.target.value)}
                     style={inputStyle}>
                     <option value="">—</option>
-                    <option value="222">Standard (222)</option>
-                    <option value="228">Reverse charge (228)</option>
-                    <option value="229">Export 0% (229)</option>
+                    {(dicts.vat_modes.length > 0
+                       ? dicts.vat_modes
+                       : [{id: 222, label: 'Standard (222)'},
+                          {id: 228, label: 'Reverse charge (228)'},
+                          {id: 229, label: 'Export 0% (229)'}]
+                    ).map(m => (
+                      <option key={m.id} value={String(m.id)}>{m.label}</option>
+                    ))}
+                  </select>
+                </label>
+                {/* B0 deep-enrichment 2026-05-16 — language dropdown promoted
+                    to the default view (was hidden in Advanced). Human labels
+                    via /api/v1/customer-master/dictionaries. */}
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Default language</span>
+                  <select data-testid="kyc-invoices-language"
+                    value={form.default_language_id || ''}
+                    onChange={e => setField('default_language_id', e.target.value)}
+                    style={inputStyle}>
+                    {dicts.languages.length > 0
+                      ? dicts.languages.map(L => (
+                          <option key={L.id || '_blank'} value={L.id}>{L.label}</option>
+                        ))
+                      : <option value="">— Default</option>}
                   </select>
                 </label>
               </div>
@@ -3250,29 +3300,48 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                   ops/debug. */}
               <details data-testid="kyc-invoices-advanced" style={{ marginTop: 8 }}>
                 <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--text-3)' }}>
-                  Advanced · Show technical wFirma IDs
+                  Advanced · wFirma series IDs
                 </summary>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 8 }}>
                   <label style={labelStyle}>
-                    <span style={labelTextStyle}>Preferred proforma series ID</span>
-                    <input data-testid="kyc-invoices-proforma-series" type="text"
-                      value={form.preferred_proforma_series_id || ''}
-                      onChange={e => setField('preferred_proforma_series_id', e.target.value)}
-                      placeholder="wFirma series id" style={inputStyle} />
+                    <span style={labelTextStyle}>Preferred proforma series</span>
+                    {dicts.proforma_series && dicts.proforma_series.length > 1 ? (
+                      <select data-testid="kyc-invoices-proforma-series"
+                        value={form.preferred_proforma_series_id || ''}
+                        onChange={e => setField('preferred_proforma_series_id', e.target.value)}
+                        style={inputStyle}>
+                        {dicts.proforma_series.map(s => (
+                          <option key={s.id || '_blank'} value={s.id}>{s.label}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input data-testid="kyc-invoices-proforma-series" type="text"
+                        value={form.preferred_proforma_series_id || ''}
+                        onChange={e => setField('preferred_proforma_series_id', e.target.value)}
+                        placeholder="wFirma series id (raw)"
+                        title="Dictionary catalog not yet refreshed — enter raw wFirma id"
+                        style={inputStyle} />
+                    )}
                   </label>
                   <label style={labelStyle}>
-                    <span style={labelTextStyle}>Preferred invoice series ID</span>
-                    <input data-testid="kyc-invoices-invoice-series" type="text"
-                      value={form.preferred_invoice_series_id || ''}
-                      onChange={e => setField('preferred_invoice_series_id', e.target.value)}
-                      placeholder="wFirma series id" style={inputStyle} />
-                  </label>
-                  <label style={labelStyle}>
-                    <span style={labelTextStyle}>Default language ID</span>
-                    <input data-testid="kyc-invoices-language-id" type="text"
-                      value={form.default_language_id || ''}
-                      onChange={e => setField('default_language_id', e.target.value)}
-                      placeholder="wFirma language id" style={inputStyle} />
+                    <span style={labelTextStyle}>Preferred invoice series</span>
+                    {dicts.invoice_series && dicts.invoice_series.length > 1 ? (
+                      <select data-testid="kyc-invoices-invoice-series"
+                        value={form.preferred_invoice_series_id || ''}
+                        onChange={e => setField('preferred_invoice_series_id', e.target.value)}
+                        style={inputStyle}>
+                        {dicts.invoice_series.map(s => (
+                          <option key={s.id || '_blank'} value={s.id}>{s.label}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input data-testid="kyc-invoices-invoice-series" type="text"
+                        value={form.preferred_invoice_series_id || ''}
+                        onChange={e => setField('preferred_invoice_series_id', e.target.value)}
+                        placeholder="wFirma series id (raw)"
+                        title="Dictionary catalog not yet refreshed — enter raw wFirma id"
+                        style={inputStyle} />
+                    )}
                   </label>
                 </div>
               </details>

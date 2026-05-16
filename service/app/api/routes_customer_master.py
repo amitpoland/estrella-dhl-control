@@ -575,6 +575,25 @@ async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
     return JSONResponse(body_out)
 
 
+# ── B0 deep-enrichment 2026-05-16 — dictionaries for the operator UI ─────────
+# (Declared BEFORE /{contractor_id} so FastAPI does not route 'dictionaries'
+# as a contractor id.)
+
+@router.get("/dictionaries", dependencies=[_auth],
+            summary="Operator-facing dictionaries (VAT modes, currencies, languages, series)")
+def client_master_dictionaries() -> JSONResponse:
+    """Read-only dictionary catalog the dashboard uses to render label
+    dropdowns in place of raw wFirma IDs.
+
+    Source: hardcoded baseline in
+    ``service/app/services/wfirma_dictionary_cache.py``. A future PR can
+    extend the same module with a live wFirma refresh (``invoiceseries/find``,
+    ``languages/find``) without changing this endpoint's contract.
+    """
+    from ..services import wfirma_dictionary_cache as wdc
+    return JSONResponse(wdc.get_dictionaries())
+
+
 @router.get("/{contractor_id}", dependencies=[_auth], summary="Get one customer")
 def get_customer_endpoint(contractor_id: str) -> JSONResponse:
     """Read a customer by wFirma contractor id.  404 if not found."""
