@@ -222,7 +222,7 @@ def test_only_allowed_writes_in_master():
         '/api/v1/fx-rates',
         '/api/v1/carriers-config',
         '/api/v1/designs',   # B-MD2 (MDOC-2026-05): Designs master live
-        '/api/v1/wfirma/capabilities/customers/sync',  # B0 (MDOC-cache): Customer Master sync surface (bulk + per-row apply); local cache write only
+        '/api/v1/wfirma/customers/sync',  # B0 (MDOC-cache): Customer Master sync surface (bulk + per-row apply); local cache write only
     )
     # b5Save / b5Delete are generic helpers that accept a basePath parameter;
     # their call sites (b5Save('/api/v1/hs-codes', ...) etc.) carry the literal
