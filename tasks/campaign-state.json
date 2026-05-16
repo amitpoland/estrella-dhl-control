@@ -867,12 +867,16 @@
         {
           "batch_id": "B-MD2-approval",
           "title": "Designs master + Roles table — approval package (docs-only)",
-          "status": "active",
+          "status": "pr_open",
           "pr_url": null,
           "depends_on": [],
           "next_batch": "B-MD2",
           "block_reason": null,
-          "notes": "To be authored when B-MD1 ships or operator chooses to defer B-MD1 in favour of B-MD2."
+          "notes": "Approval package authored. 17 sections covering Designs schema/API/UI/tests, Roles Option A vs Option B, two-PR split, rollback, 11 hard stops, operator decision block.",
+          "branch": "docs/b-md2-designs-roles-approval-package",
+          "artifacts": [
+            "tasks/master-data-designs-roles-approval-package.md"
+          ]
         },
         {
           "batch_id": "B-MD2",
@@ -883,7 +887,7 @@
             "B-MD2-approval"
           ],
           "next_batch": "B-MD3",
-          "block_reason": "Operator approval required. Sign B-MD2 approval package before implementation. Includes new SQLite tables (designs, roles), product_identity_engine read-only-consumer guarantee, and updated dormancy contracts."
+          "block_reason": "Awaiting operator sign-off on tasks/master-data-designs-roles-approval-package.md §16. Implementation will follow approved two-PR split: B-MD2a backend (designs_db + routes_designs), B-MD2b UI (dashboard.html designs panel), B-MD2c Roles read-only explainer panel."
         },
         {
           "batch_id": "B-MD3",
