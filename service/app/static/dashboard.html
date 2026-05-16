@@ -3796,7 +3796,7 @@ function MasterDataPage({ onNav, onToast }) {
       count: users.error ? null : (users.items || []).length, live: true },
     { id: 'products',       label: 'Products',        icon: '◈',
       count: products.error ? null : (products.items || []).length, live: true },
-    { id: 'customer_master',label: 'Customer Master', icon: '⊞',
+    { id: 'customer_master',label: 'Clients / Customer Master', icon: '⊞',
       count: custMaster.items.length > 0 ? custMaster.items.length : null, live: true },
     null,
     { id: 'designs',        label: 'Designs',         icon: '◇',
@@ -4028,7 +4028,7 @@ function MasterDataPage({ onNav, onToast }) {
                             background: 'var(--bg-subtle)', color: 'var(--text)',
                             border: '1px solid var(--border)', borderRadius: 4,
                             fontFamily: 'inherit' }}>
-                          <option value="customer_master">Customer Master</option>
+                          <option value="customer_master">Client Master</option>
                           <option value="supplier_master">Supplier Master</option>
                           <option value="skip">Skip</option>
                           <option value="needs_operator_review">Needs review</option>
@@ -4513,8 +4513,8 @@ function MasterDataPage({ onNav, onToast }) {
           {/* ── CUSTOMER MASTER ────────────────────────────────────────── */}
           {activeEntity === 'customer_master' && (
             <div data-testid="master-customer-master-panel">
-              <PanelHeader title="Customer Master"
-                subtitle="Freight / insurance / credit config per contractor"
+              <PanelHeader title="Clients / Customer Master"
+                subtitle="Freight / insurance / credit config per client"
                 actions={
                   <button data-testid="master-cm-btn-fetch-wfirma"
                     onClick={async () => {
@@ -4533,7 +4533,7 @@ function MasterDataPage({ onNav, onToast }) {
                       background: 'var(--bg-subtle)', color: 'var(--text)',
                       border: '1px solid var(--border)', borderRadius: 6,
                       cursor: 'pointer', fontFamily: 'inherit' }}>
-                    Fetch customers from wFirma
+                    Fetch clients from wFirma
                   </button>
                 } />
               {custMaster.loading && (
@@ -4547,7 +4547,7 @@ function MasterDataPage({ onNav, onToast }) {
               {cmWfReview && (
                 <WfReviewPanel
                   testidPrefix="master-cm-wf"
-                  title="wFirma → Customer Master / Suppliers review"
+                  title="wFirma → Clients / Suppliers review"
                   state={cmWfReview}
                   onChange={setCmWfReview}
                   onClose={() => setCmWfReview(null)}
@@ -4556,18 +4556,18 @@ function MasterDataPage({ onNav, onToast }) {
                       const r = await apiFetch('/api/v1/customer-master/sync-from-wfirma/apply',
                         { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
                       if (r && r.ok === false && r.mode === 'blocked') {
-                        window.alert('Customer apply blocked: ' + (r.blocking_reasons || []).join('; '));
+                        window.alert('Client apply blocked: ' + (r.blocking_reasons || []).join('; '));
                         return false;
                       }
                       const rejMsg = (r.rejected && r.rejected.length)
                         ? '\nRejected: ' + r.rejected.map(x => x.wfirma_id + ' (' + x.reason + ')').join(', ')
                         : '';
-                      window.alert('Customer applied=' + (r.applied_count|0)
+                      window.alert('Client applied=' + (r.applied_count|0)
                         + ' (inserted=' + (r.inserted|0) + ', updated=' + (r.updated|0) + ')' + rejMsg);
                       await loadCustomerMaster();
                       return true;
                     } catch (e) {
-                      window.alert('Customer apply failed: ' + (e.message || e));
+                      window.alert('Client apply failed: ' + (e.message || e));
                       return false;
                     }
                   }}
@@ -5287,7 +5287,7 @@ function MasterDataPage({ onNav, onToast }) {
               {supWfReview && (
                 <WfReviewPanel
                   testidPrefix="master-suppliers-wf"
-                  title="wFirma → Suppliers / Customer Master review"
+                  title="wFirma → Suppliers / Clients review"
                   state={supWfReview}
                   onChange={setSupWfReview}
                   onClose={() => setSupWfReview(null)}
@@ -5296,18 +5296,18 @@ function MasterDataPage({ onNav, onToast }) {
                       const r = await apiFetch('/api/v1/customer-master/sync-from-wfirma/apply',
                         { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
                       if (r && r.ok === false && r.mode === 'blocked') {
-                        window.alert('Customer apply blocked: ' + (r.blocking_reasons || []).join('; '));
+                        window.alert('Client apply blocked: ' + (r.blocking_reasons || []).join('; '));
                         return false;
                       }
                       const rejMsg = (r.rejected && r.rejected.length)
                         ? '\nRejected: ' + r.rejected.map(x => x.wfirma_id + ' (' + x.reason + ')').join(', ')
                         : '';
-                      window.alert('Customer applied=' + (r.applied_count|0)
+                      window.alert('Client applied=' + (r.applied_count|0)
                         + ' (inserted=' + (r.inserted|0) + ', updated=' + (r.updated|0) + ')' + rejMsg);
                       await loadCustomerMaster();
                       return true;
                     } catch (e) {
-                      window.alert('Customer apply failed: ' + (e.message || e));
+                      window.alert('Client apply failed: ' + (e.message || e));
                       return false;
                     }
                   }}

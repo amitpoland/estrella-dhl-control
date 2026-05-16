@@ -103,23 +103,25 @@ def test_upsert_identity_only_inserts_minimum_row(tmp_path):
 
 
 # ── 2. identity-only preserves existing freight/insurance/KYC ───────────────
+#
+# The rule is generic: for ANY client whose customer_master row carries
+# non-empty commercial / settings fields, ``upsert_identity_only`` must
+# never overwrite them. We prove this by parametrising across multiple
+# distinct client shapes so the test cannot regress to one anchor example.
 
-def test_upsert_identity_only_preserves_freight_and_insurance_and_kyc(tmp_path):
-    """The whole point of upsert_identity_only: re-running it on an existing
-    row MUST NOT wipe freight_*/insurance_*/kuke_*/kyc_*/shipping_to_* values.
-    Snapshot before → apply → snapshot after. Identity columns may change;
-    everything else must be byte-identical."""
-    db = tmp_path / "cm.sqlite"
-    cmdb.init_db(db)
-    # Seed a real-world-shaped record with freight + insurance + KYC populated.
-    seed = cmdb.CustomerMaster(
-        bill_to_contractor_id="X42",
-        bill_to_name="SUOKKO ORIGINAL",
-        country="FI",
-        nip="FI11112222",
+
+def _existing_client_with_commercial_defaults(label, **overrides):
+    """Build a CustomerMaster seed with the commercial / settings fields
+    populated. Each test case uses a different ``bill_to_contractor_id``
+    and a different *combination* of populated columns so a pass proves
+    the preservation rule, not one specific client."""
+    base = dict(
+        bill_to_contractor_id=f"CID-{label}",
+        bill_to_name=f"CLIENT {label} ORIGINAL",
+        country=overrides.pop("country", "PL"),
+        nip=overrides.pop("nip", "PL11112222"),
         freight_service_id="FREIGHT-WF-13002743",
         freight_fixed_amount_eur=Decimal("180.00"),
-        freight_label_pl="Koszt wysyłki",
         freight_currency="EUR",
         freight_mode="fixed",
         insurance_service_id="INS-WF-13102217",
@@ -130,40 +132,77 @@ def test_upsert_identity_only_preserves_freight_and_insurance_and_kyc(tmp_path):
         kuke_currency="EUR",
         kyc_status="approved",
         beneficial_owner="J. Doe",
-        compliance_notes="Anchor customer — never blank these.",
+        compliance_notes="Anchor client commercial defaults — must not be wiped.",
         ship_to_use_alternate=True,
-        ship_to_street="Kuusamo 1",
+        ship_to_street="Some street 1",
         default_currency="EUR",
         preferred_proforma_series_id="PRO-2026",
+        preferred_invoice_series_id="INV-2026",
         vat_mode=229,
         payment_terms_days=30,
     )
-    cmdb.upsert_customer(db, seed)
-    before = cmdb.get_customer(db, "X42")
+    base.update(overrides)
+    return cmdb.CustomerMaster(**base)
 
-    # Now apply identity-only update (rename + same country).
+
+_PRESERVATION_CASES = [
+    # Three shapes, three different field combinations populated, three
+    # different countries — the test passes only if the rule is generic.
+    ("ALPHA", {}),
+    ("BETA",  {"freight_fixed_amount_usd": Decimal("210"),
+               "freight_currency": "USD",
+               "country": "DE", "nip": "DE556677",
+               "default_currency": "USD",
+               "preferred_invoice_series_id": "INV-DE-2026"}),
+    ("GAMMA", {"freight_fixed_amount_eur": None,
+               "freight_mode": None,
+               "kuke_approved": False, "kuke_limit": Decimal("50000"),
+               "compliance_notes": "Watch list — manual review only.",
+               "country": "IT", "nip": "IT99887766"}),
+]
+
+_PRESERVATION_FIELDS = (
+    "freight_service_id", "freight_fixed_amount_eur", "freight_fixed_amount_usd",
+    "freight_currency", "freight_mode",
+    "insurance_service_id", "insurance_rate", "insurance_enabled",
+    "kuke_approved", "kuke_limit", "kuke_currency",
+    "kyc_status", "beneficial_owner", "compliance_notes",
+    "ship_to_use_alternate", "ship_to_street",
+    "default_currency",
+    "preferred_proforma_series_id", "preferred_invoice_series_id",
+    "vat_mode", "payment_terms_days",
+)
+
+
+@pytest.mark.parametrize("label,overrides", _PRESERVATION_CASES)
+def test_identity_sync_preserves_commercial_fields_for_any_client(label, overrides, tmp_path):
+    """Generic preservation rule: across multiple distinct client shapes,
+    a rename-via-identity-sync MUST keep every commercial/settings field
+    byte-identical. This test stands in for the rule for all clients —
+    not one named example."""
+    db = tmp_path / f"cm-{label}.sqlite"
+    cmdb.init_db(db)
+    seed = _existing_client_with_commercial_defaults(label, **overrides)
+    cmdb.upsert_customer(db, seed)
+    before = cmdb.get_customer(db, seed.bill_to_contractor_id)
+
+    # Apply identity-only update (rename, same country, same nip).
     res = cmdb.upsert_identity_only(
-        db, bill_to_contractor_id="X42", bill_to_name="SUOKKO RENAMED",
-        country="FI", nip="FI11112222",
+        db,
+        bill_to_contractor_id=seed.bill_to_contractor_id,
+        bill_to_name=f"CLIENT {label} RENAMED",
+        country=seed.country,
+        nip=seed.nip,
     )
     assert res["action"] == "updated"
-    after = cmdb.get_customer(db, "X42")
+    after = cmdb.get_customer(db, seed.bill_to_contractor_id)
 
-    # Identity changed.
-    assert after.bill_to_name == "SUOKKO RENAMED"
-    # Everything else preserved.
-    for field in (
-        "freight_service_id", "freight_fixed_amount_eur", "freight_label_pl",
-        "freight_currency", "freight_mode",
-        "insurance_service_id", "insurance_rate", "insurance_enabled",
-        "kuke_approved", "kuke_limit", "kuke_currency",
-        "kyc_status", "beneficial_owner", "compliance_notes",
-        "ship_to_use_alternate", "ship_to_street",
-        "default_currency", "preferred_proforma_series_id",
-        "vat_mode", "payment_terms_days",
-    ):
+    # Identity may change.
+    assert after.bill_to_name == f"CLIENT {label} RENAMED"
+    # Commercial / settings fields must NOT be touched.
+    for field in _PRESERVATION_FIELDS:
         assert getattr(after, field) == getattr(before, field), \
-            f"identity-only upsert wiped {field}"
+            f"identity-only sync wiped {field!r} for client {label!r}"
 
 
 def test_upsert_identity_only_does_not_blank_existing_nip(tmp_path):
@@ -495,6 +534,57 @@ def test_dashboard_review_table_has_extended_columns():
     src = _DASH.read_text(encoding="utf-8", errors="replace")
     for col in ("'Phone'", "'Pay term'"):
         assert col in src, f"review table missing column header {col}"
+
+
+# ── Clients terminology contract (B0 follow-up 2026-05-16) ─────────────────
+#
+# The operator-facing label for the master is "Clients / Customer Master".
+# The Fetch button and the Assign-to dropdown must use "Clients" / "Client"
+# language. Backend route paths stay under /api/v1/customer-master/* — these
+# tests pin only the UI surface.
+
+
+def test_dashboard_uses_clients_terminology_for_panel():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert "Clients / Customer Master" in src, \
+        "Master Data nav and panel header must use 'Clients / Customer Master'"
+
+
+def test_dashboard_fetch_button_says_clients():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert "Fetch clients from wFirma" in src, \
+        "Customer Master Fetch button label must be 'Fetch clients from wFirma'"
+    assert "Fetch customers from wFirma" not in src, \
+        "Legacy 'Fetch customers from wFirma' label must be retired"
+
+
+def test_dashboard_target_selector_uses_client_master_label():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    # The selector option value stays customer_master (backend contract),
+    # but the visible label must read "Client Master".
+    assert '<option value="customer_master">Client Master</option>' in src, \
+        "Target selector must show 'Client Master' (not 'Customer Master')"
+    assert '<option value="supplier_master">Supplier Master</option>' in src, \
+        "Target selector must show 'Supplier Master'"
+
+
+def test_dashboard_review_title_uses_clients_language():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert "wFirma → Clients / Suppliers review" in src
+    assert "wFirma → Suppliers / Clients review" in src
+    # Old confusing titles must be gone.
+    assert "wFirma → Customer Master / Suppliers review" not in src
+    assert "wFirma → Suppliers / Customer Master review" not in src
+
+
+def test_dashboard_alerts_use_client_apply_phrasing():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert "'Client applied=" in src
+    assert "'Client apply blocked:" in src
+    assert "'Client apply failed:" in src
+    # Old phrasing retired
+    assert "'Customer applied=" not in src
+    assert "'Customer apply blocked:" not in src
 
 
 def test_dashboard_invoices_advanced_section_present():
