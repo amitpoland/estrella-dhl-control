@@ -22,7 +22,7 @@ Endpoints
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Any, List, Optional
@@ -982,3 +982,145 @@ def sync_customers(write: bool = False) -> JSONResponse:
     response["applied_count"] = apply_result["applied_count"]
     response["rejected_blank"] = apply_result["rejected_blank"]
     return JSONResponse(response)
+
+
+# ── B0 (MDOC-cache) — review-and-assign layer for customers ───────────────────
+#
+# Mirrors the suppliers/sync-from-wfirma/{preview,apply} pair so the dashboard
+# can render a per-row review table for Customer Master too. The underlying
+# data model (wfirma_customers) is unchanged; only KYC-free identity fields
+# (client_name, wfirma_customer_id, vat_id, country) are touched. No shipping,
+# carrier, or invoice data is mutated.
+
+_CM_STATUS_MATCHED_EXISTING      = "matched_existing"
+_CM_STATUS_NEW_CANDIDATE         = "new_candidate"
+_CM_STATUS_NEEDS_OPERATOR_REVIEW = "needs_operator_review"
+_CM_STATUS_SKIPPED_INVALID       = "skipped_invalid"
+
+
+def _plan_to_customer_proposals(plan: dict) -> List[dict]:
+    """Flatten plan_sync() output into a stable proposal list for the UI.
+
+    Returned items always contain:
+      wfirma_id, name, vat_id, country, email, status, proposed_action,
+      reason, local_name, local_wfirma_id.
+
+    No DB writes; no wFirma call. Pure projection."""
+    out: List[dict] = []
+    def _row(entry, status, action, reason):
+        return {
+            "wfirma_id":       (entry.get("wfirma_customer_id") or "").strip(),
+            "name":            entry.get("client_name") or "",
+            "vat_id":          entry.get("vat_id") or "",
+            "country":         entry.get("country") or "",
+            "email":           None,  # wFirma client does not surface email yet
+            "status":          status,
+            "proposed_action": action,
+            "reason":          reason,
+            "local_name":      entry.get("local_client_name"),
+            "local_wfirma_id": entry.get("local_wfirma_id"),
+        }
+    for e in plan.get("update_match", []) or []:
+        out.append(_row(e, _CM_STATUS_MATCHED_EXISTING, "update", "wfirma_id_match"))
+    for e in plan.get("update_fill", []) or []:
+        out.append(_row(e, _CM_STATUS_NEEDS_OPERATOR_REVIEW, "backfill", "name_match_missing_wfirma_id"))
+    for e in plan.get("conflict", []) or []:
+        out.append(_row(e, _CM_STATUS_NEEDS_OPERATOR_REVIEW, "manual", e.get("reason") or "conflict"))
+    for e in plan.get("insert", []) or []:
+        out.append(_row(e, _CM_STATUS_NEW_CANDIDATE, "insert", "no_local_match"))
+    # plan.get('skip_count') / plan.get('skipped_invalid') are counts, not rows
+    return out
+
+
+@router.get("/customers/sync-from-wfirma/preview", dependencies=[_auth],
+            summary="Per-row review proposals for wFirma → Customer Master (no write)")
+def customer_master_sync_preview() -> JSONResponse:
+    """Read wFirma contractors and surface per-row proposals for the
+    Customer Master review table. No write. Same status enum as suppliers."""
+    try:
+        plan = wfsync.plan_sync()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "fetch_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+    proposals = _plan_to_customer_proposals(plan)
+    return JSONResponse({
+        "ok":         True,
+        "mode":       "preview",
+        "fetched":    plan["total_remote"],
+        "proposals":  proposals,
+    })
+
+
+@router.post("/customers/sync-from-wfirma/apply", dependencies=[_auth],
+             summary="Apply only the wFirma customer rows the operator selected")
+async def customer_master_sync_apply(request: Request) -> JSONResponse:
+    """Per-row apply for Customer Master. Body: ``{"wfirma_ids": [...]}``.
+
+    Only the requested ids are written. Flag-gated by
+    ``WFIRMA_SYNC_CUSTOMERS_ALLOWED``. Writes only identity fields
+    (client_name, wfirma_customer_id, vat_id, country, match_status); KYC,
+    shipping addresses, carrier accounts, and invoice settings are NEVER
+    touched here."""
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object")
+    wfirma_ids = body.get("wfirma_ids")
+    if not isinstance(wfirma_ids, list) or not wfirma_ids:
+        raise HTTPException(status_code=422,
+                            detail="wfirma_ids must be a non-empty list of strings")
+    if not all(isinstance(x, str) for x in wfirma_ids):
+        raise HTTPException(status_code=422, detail="wfirma_ids must be a list of strings")
+
+    if not settings.wfirma_sync_customers_allowed:
+        return JSONResponse({
+            "ok":               False,
+            "mode":             "blocked",
+            "dry_run":          True,
+            "applied_count":    0,
+            "blocking_reasons": [
+                "wfirma_sync_customers_allowed is false — operator must "
+                "enable WFIRMA_SYNC_CUSTOMERS_ALLOWED to apply"
+            ],
+        })
+
+    try:
+        plan = wfsync.plan_sync()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "fetch_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    requested = set(wfirma_ids)
+
+    def _filter(entries):
+        return [e for e in (entries or [])
+                if (e.get("wfirma_customer_id") or "").strip() in requested]
+
+    filtered_plan = {
+        "insert":       _filter(plan.get("insert")),
+        "update_fill":  _filter(plan.get("update_fill")),
+        "update_match": _filter(plan.get("update_match")),
+        "conflict":     [],  # conflicts are never auto-applied
+    }
+    apply_result = wfsync.apply_plan(filtered_plan)
+
+    # Proposals returned to caller are the filtered subset for transparency.
+    all_proposals = _plan_to_customer_proposals(plan)
+    filtered_proposals = [p for p in all_proposals if p["wfirma_id"] in requested]
+
+    return JSONResponse({
+        "ok":             True,
+        "mode":           "write",
+        "fetched":        plan["total_remote"],
+        "applied_count":  apply_result["applied_count"],
+        "rejected_blank": apply_result["rejected_blank"],
+        "proposals":      filtered_proposals,
+    })

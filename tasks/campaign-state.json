@@ -1009,6 +1009,28 @@
             "operator_only_surfaces_deferred": "§2 Customer Master walk, §3 Shipping Addresses, §4 Carrier Accounts, §5 KYC, §6 KUKE/Credit, §7 Invoice Settings, §18 AdminUsersPage UI walk — require admin browser session; per L-044 deferred legitimately",
             "mechanically_verified_surfaces": "14/20 surfaces (§1, §8-§17, §19, §20)"
           }
+        },
+        {
+          "batch_id": "B0-WFIRMA-IDENTITY-CACHE",
+          "title": "wFirma identity cache for Customer Master and Suppliers",
+          "status": "tests_green",
+          "pr_url": null,
+          "pr_number": null,
+          "merge_sha": null,
+          "branch": "feat/b0-wfirma-identity-cache",
+          "depends_on": [
+            "B-MD4"
+          ],
+          "next_batch": null,
+          "block_reason": null,
+          "deploy_needed": true,
+          "artifacts": [
+            "service/app/services/suppliers_db.py",
+            "service/app/api/routes_suppliers.py",
+            "service/app/core/config.py",
+            "service/app/static/dashboard.html",
+            "service/tests/test_master_data_suppliers_wfirma_sync.py"
+          ]
         }
       ],
       "next_batch": null,
