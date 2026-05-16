@@ -315,6 +315,499 @@ def _state_summary(state: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# v2 RUNNER — Queue + Gates + Failure Recovery
+#
+# Pure-function additions. No background process, no auto-merge, no auto-deploy.
+# Every function is a read or a labelled mutation; the operator is the executor.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Status semantics for queue/gate logic ────────────────────────────────────
+
+#: Statuses where the batch is "open" (operator still has work to do)
+OPEN_STATUSES = ("planned", "active", "pr_open", "merged", "deployed")
+
+#: Statuses where the batch is "done" (no further action needed by current rules)
+DONE_STATUSES = ("smoked",)
+
+#: Statuses that block forward progress on dependents
+BLOCKING_STATUSES = ("blocked",)
+
+
+# ── Phase 1: Queue model + dependency graph ─────────────────────────────────
+
+def batch_dependencies(batch: Dict[str, Any]) -> List[str]:
+    """Return the list of batch ids this batch depends on.
+
+    Two sources:
+      1. Explicit: ``batch["depends_on"]`` (list)
+      2. Implicit: any preceding batch in the same campaign whose
+         ``next_batch`` points at this batch.
+    """
+    deps = list(batch.get("depends_on", []) or [])
+    return deps
+
+
+def compute_dependency_graph(campaign: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Build an adjacency map: batch_id → list of batch_ids that depend on it.
+
+    Forward edges. Useful for "what unblocks when B5 lands?" queries."""
+    forward: Dict[str, List[str]] = {b["batch_id"]: [] for b in campaign.get("batches", [])}
+    by_id = {b["batch_id"]: b for b in campaign.get("batches", [])}
+
+    # Explicit depends_on
+    for b in campaign.get("batches", []):
+        for dep in batch_dependencies(b):
+            if dep in forward:
+                forward[dep].append(b["batch_id"])
+
+    # Implicit: next_batch chains
+    for b in campaign.get("batches", []):
+        nb = b.get("next_batch")
+        if nb and nb in by_id:
+            if b["batch_id"] not in forward.get(b["batch_id"], []):
+                # Mark "next_batch" as soft dependency (only if not already there)
+                if b["batch_id"] not in forward[nb]:
+                    forward.setdefault(nb, [])
+                # Direction: nb depends on b (b must finish before nb can start)
+                if b["batch_id"] not in [dep for dep in forward.get(b["batch_id"], [])]:
+                    pass
+    return forward
+
+
+def batch_is_ready(state: Dict[str, Any], campaign_id: str, batch: Dict[str, Any]) -> bool:
+    """A batch is ready to start when:
+       - its own status is in OPEN_STATUSES (not blocked, not smoked)
+       - all explicit `depends_on` batches are in DONE_STATUSES
+       - the immediate `next_batch` predecessor (if any) is in DONE_STATUSES
+    """
+    if batch.get("status") not in OPEN_STATUSES:
+        return False
+    c = _get_campaign(state, campaign_id)
+    by_id = {b["batch_id"]: b for b in c.get("batches", [])}
+    # Explicit deps
+    for dep in batch_dependencies(batch):
+        d = by_id.get(dep)
+        if d is None:
+            return False  # unknown dep — cannot verify
+        if d.get("status") not in DONE_STATUSES:
+            return False
+    # Implicit predecessor via next_batch
+    for b in c.get("batches", []):
+        if b.get("next_batch") == batch["batch_id"]:
+            if b.get("status") not in DONE_STATUSES + ("merged", "deployed"):
+                return False
+    return True
+
+
+def next_recommended_batch(state: Dict[str, Any], campaign_id: str) -> Optional[Dict[str, Any]]:
+    """Return the first batch (in declaration order) that is `batch_is_ready`."""
+    c = _get_campaign(state, campaign_id)
+    for b in c.get("batches", []):
+        if batch_is_ready(state, campaign_id, b) and b.get("status") in ("planned", "active"):
+            return b
+    return None
+
+
+def list_blockers(state: Dict[str, Any], campaign_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List all blocked batches and stuck items (open with all-done deps)
+    so the operator sees what's parked vs what's ready."""
+    out: List[Dict[str, Any]] = []
+    campaigns = state.get("campaigns", [])
+    if campaign_id:
+        campaigns = [_get_campaign(state, campaign_id)]
+    for c in campaigns:
+        for b in c.get("batches", []):
+            if b.get("status") == "blocked":
+                out.append({"campaign_id": c["campaign_id"],
+                            "batch_id":    b["batch_id"],
+                            "title":       b.get("title", ""),
+                            "reason":      b.get("block_reason") or ""})
+    return out
+
+
+# ── Phase 2: Stuck-batch detection ───────────────────────────────────────────
+
+def detect_stuck_batches(state: Dict[str, Any], *,
+                          pr_open_seconds: int = 86400 * 3,
+                          merged_no_deploy_seconds: int = 86400 * 1,
+                          deployed_no_smoke_seconds: int = 86400 * 1
+                          ) -> List[Dict[str, Any]]:
+    """Find batches that have lingered in a transitional status too long.
+
+    Defaults:
+      - pr_open: more than 3 days open without merge.
+      - merged but no deploy: 1 day without deploy.
+      - deployed but no smoke: 1 day without smoke report attached.
+    """
+    out: List[Dict[str, Any]] = []
+    now = datetime.now(timezone.utc)
+
+    def _age_seconds(iso_str: Optional[str]) -> Optional[int]:
+        if not iso_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        except Exception:
+            return None
+        return int((now - dt).total_seconds())
+
+    for c in state.get("campaigns", []):
+        for b in c.get("batches", []):
+            st = b.get("status")
+            if st == "pr_open":
+                age = _age_seconds(b.get("opened_at"))
+                if age is not None and age > pr_open_seconds:
+                    out.append({"campaign_id": c["campaign_id"],
+                                "batch_id":    b["batch_id"],
+                                "reason":      f"pr_open for {age}s",
+                                "threshold":   pr_open_seconds})
+            elif st == "merged":
+                age = _age_seconds(b.get("merged_at") or b.get("deployed_at"))
+                if age is not None and age > merged_no_deploy_seconds:
+                    out.append({"campaign_id": c["campaign_id"],
+                                "batch_id":    b["batch_id"],
+                                "reason":      f"merged but not deployed for {age}s",
+                                "threshold":   merged_no_deploy_seconds})
+            elif st == "deployed":
+                age = _age_seconds(b.get("deployed_at"))
+                if (age is not None and age > deployed_no_smoke_seconds
+                        and not b.get("smoke_report")):
+                    out.append({"campaign_id": c["campaign_id"],
+                                "batch_id":    b["batch_id"],
+                                "reason":      f"deployed but no smoke for {age}s",
+                                "threshold":   deployed_no_smoke_seconds})
+    return out
+
+
+# ── Phase 3: Gate engine ────────────────────────────────────────────────────
+
+def verification_gates(batch: Dict[str, Any]) -> Dict[str, bool]:
+    """Return a map of gate-name → satisfied for this batch.
+
+    Gates (all must pass before a batch transitions to `smoked`):
+      tests_recorded:     batch has at least one `tests` entry
+      pz_regression_ok:   `tests.pz_regression == "160/160"` (the canonical gate)
+      pr_present:         `pr_url` is set
+      merge_recorded:     `merge_sha` is set
+      deploy_recorded:    `deployed_sha` is set
+      smoke_report_set:   `smoke_report` is non-null
+      no_block:           batch is not in BLOCKING_STATUSES
+      stack_safe:         branch_stack metadata absent OR has no warning
+    """
+    tests = batch.get("tests") or {}
+    stack = batch.get("branch_stack") or {}
+    return {
+        "tests_recorded":     bool(tests),
+        "pz_regression_ok":   tests.get("pz_regression") == "160/160",
+        "pr_present":         bool(batch.get("pr_url")),
+        "merge_recorded":     bool(batch.get("merge_sha")),
+        "deploy_recorded":    bool(batch.get("deployed_sha")),
+        "smoke_report_set":   bool(batch.get("smoke_report")),
+        "no_block":           batch.get("status") not in BLOCKING_STATUSES,
+        "stack_safe":         not stack.get("warning"),
+    }
+
+
+def verify_batch(state: Dict[str, Any], campaign_id: str, batch_id: str,
+                 *, required: Optional[List[str]] = None
+                 ) -> Dict[str, Any]:
+    """Return a verification report. `required` defaults to a sensible subset
+    depending on the batch's current status — operator can override.
+
+    The report is a dict: {ok: bool, gates: {name: bool}, missing: [name]}.
+    """
+    c = _get_campaign(state, campaign_id)
+    b = _get_batch(c, batch_id)
+    gates = verification_gates(b)
+    if required is None:
+        st = b.get("status")
+        if st in ("smoked",):
+            required = list(gates.keys())
+        elif st in ("deployed",):
+            required = ["tests_recorded", "pz_regression_ok", "pr_present",
+                        "merge_recorded", "deploy_recorded", "no_block", "stack_safe"]
+        elif st in ("merged",):
+            required = ["tests_recorded", "pz_regression_ok", "pr_present",
+                        "merge_recorded", "no_block", "stack_safe"]
+        else:
+            required = ["no_block", "stack_safe"]
+    missing = [g for g in required if not gates.get(g)]
+    return {"campaign_id": campaign_id, "batch_id": batch_id,
+            "status": b.get("status"), "gates": gates,
+            "required": required, "missing": missing, "ok": not missing}
+
+
+def detect_branch_stack_misroutes(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Find batches where `branch_stack.warning` is set (stack-into-stack)."""
+    out: List[Dict[str, Any]] = []
+    for c in state.get("campaigns", []):
+        for b in c.get("batches", []):
+            stack = b.get("branch_stack") or {}
+            if stack.get("warning"):
+                out.append({"campaign_id": c["campaign_id"],
+                            "batch_id":    b["batch_id"],
+                            "warning":     stack["warning"],
+                            "base_branch": stack.get("base_branch"),
+                            "stack_depth": stack.get("stack_depth")})
+    return out
+
+
+# ── Phase 5: Failure recovery + rollback ────────────────────────────────────
+
+def rollback_plan(batch: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate a mechanical rollback plan for a deployed batch."""
+    if not batch.get("deployed_sha"):
+        return {"ok": False, "reason": "no deployed_sha recorded"}
+    if not batch.get("previous_main_sha"):
+        return {
+            "ok": False,
+            "reason": "no previous_main_sha recorded; rollback requires manual SHA lookup",
+            "fallback_command": batch.get("rollback_command")
+                                or f"git revert -m 1 {batch['deployed_sha'][:7]} --no-edit",
+        }
+    return {
+        "ok": True,
+        "previous_sha": batch["previous_main_sha"],
+        "command": batch.get("rollback_command")
+                   or f"git revert -m 1 {batch['deployed_sha'][:7]} --no-edit",
+        "deployed_sha": batch["deployed_sha"],
+        "notes": "After revert, re-run robocopy of changed runtime files and restart PZService.",
+    }
+
+
+def detect_interrupted_campaigns(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A campaign is 'interrupted' if it has status='active' but every batch
+    is either smoked, blocked, or has no open work."""
+    out: List[Dict[str, Any]] = []
+    for c in state.get("campaigns", []):
+        if c.get("status") != "active":
+            continue
+        has_open = any(b.get("status") in OPEN_STATUSES + ("blocked",)
+                       and b.get("status") not in DONE_STATUSES
+                       for b in c.get("batches", []))
+        ready = next_recommended_batch(state, c["campaign_id"])
+        if not has_open or (ready is None and all(
+                b.get("status") in DONE_STATUSES + BLOCKING_STATUSES
+                for b in c.get("batches", []))):
+            out.append({"campaign_id": c["campaign_id"],
+                        "title": c.get("title"),
+                        "reason": "no open work; all batches are smoked or blocked",
+                        "next_recommended": None})
+    return out
+
+
+# ── Phase 7: Operator dashboard markdown ────────────────────────────────────
+
+def render_dashboard(state: Dict[str, Any]) -> str:
+    """Full operator-facing dashboard. Self-contained; suitable for paste
+    into a PR description or saved as a status file."""
+    lines: List[str] = []
+    lines.append("# Campaign Runner — Operator Dashboard")
+    lines.append("")
+    lines.append(f"Generated: {_now_iso()}")
+    lines.append("")
+    # Active vs completed
+    active = [c for c in state.get("campaigns", []) if c.get("status") == "active"]
+    completed = [c for c in state.get("campaigns", []) if c.get("status") == "completed"]
+    lines.append(f"**Active campaigns:** {len(active)}  ·  **Completed:** {len(completed)}")
+    lines.append("")
+    # Next-recommended
+    lines.append("## Next recommended batch per active campaign")
+    if not active:
+        lines.append("_(none active)_")
+    for c in active:
+        nb = next_recommended_batch(state, c["campaign_id"])
+        if nb:
+            lines.append(f"- **{c['campaign_id']} / {nb['batch_id']}** — {nb.get('title','')} (status: {nb['status']})")
+        else:
+            lines.append(f"- {c['campaign_id']}: no batch ready (all done or blocked)")
+    lines.append("")
+    # Blockers
+    bl = list_blockers(state)
+    lines.append(f"## Blockers ({len(bl)})")
+    for x in bl:
+        lines.append(f"- **{x['campaign_id']} / {x['batch_id']}**: {x['title']}")
+        lines.append(f"  - reason: {x['reason'][:120]}")
+    lines.append("")
+    # Stuck batches
+    stuck = detect_stuck_batches(state)
+    lines.append(f"## Stuck batches ({len(stuck)})")
+    if not stuck:
+        lines.append("_(none)_")
+    for s in stuck:
+        lines.append(f"- {s['campaign_id']} / {s['batch_id']}: {s['reason']}")
+    lines.append("")
+    # Branch stack risks
+    risks = detect_branch_stack_misroutes(state)
+    lines.append(f"## Branch-stack risks ({len(risks)})")
+    if not risks:
+        lines.append("_(none)_")
+    for r in risks:
+        lines.append(f"- {r['campaign_id']} / {r['batch_id']}: {r['warning']}")
+    lines.append("")
+    # Interrupted campaigns
+    interrupted = detect_interrupted_campaigns(state)
+    if interrupted:
+        lines.append("## Interrupted campaigns")
+        for i in interrupted:
+            lines.append(f"- {i['campaign_id']}: {i['reason']}")
+        lines.append("")
+    # Recent deploys
+    deploys: List[Dict[str, Any]] = []
+    for c in state.get("campaigns", []):
+        for b in c.get("batches", []):
+            if b.get("deployed_at"):
+                deploys.append({
+                    "campaign_id": c["campaign_id"], "batch_id": b["batch_id"],
+                    "at": b["deployed_at"], "sha": (b.get("deployed_sha") or "")[:8],
+                    "ok": (b.get("deploy_metadata") or {}).get("robocopy_ok"),
+                })
+    deploys.sort(key=lambda d: d["at"], reverse=True)
+    lines.append("## Recent deploys")
+    for d in deploys[:5]:
+        marker = ""
+        if d["ok"] is True: marker = " ✅"
+        elif d["ok"] is False: marker = " ⚠️ robocopy errors"
+        lines.append(f"- `{d['at'][:19]}`  {d['sha']}  {d['campaign_id']} / {d['batch_id']}{marker}")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+# ── Phase 4: CLI subcommand handlers ────────────────────────────────────────
+
+def _cmd_queue(args: argparse.Namespace) -> int:
+    state = load_state()
+    campaigns = state.get("campaigns", [])
+    if args.campaign_id:
+        campaigns = [_get_campaign(state, args.campaign_id)]
+    for c in campaigns:
+        print(f"\n== {c['campaign_id']} ({c.get('status', 'unknown')}) -- {c.get('title','')}")
+        for b in c.get("batches", []):
+            ready = "x" if batch_is_ready(state, c["campaign_id"], b) else " "
+            deps = ", ".join(batch_dependencies(b)) or "-"
+            print(f"  [{ready}] {b['batch_id']:<28} {b['status']:<10}  deps: {deps}")
+    return 0
+
+
+def _cmd_next(args: argparse.Namespace) -> int:
+    state = load_state()
+    nb = next_recommended_batch(state, args.campaign_id)
+    if nb is None:
+        print(f"No ready batch for {args.campaign_id}.")
+        return 1
+    print(json.dumps(nb, indent=2))
+    return 0
+
+
+def _cmd_blockers(args: argparse.Namespace) -> int:
+    state = load_state()
+    out = list_blockers(state, args.campaign_id)
+    if not out:
+        print("No blocked batches.")
+        return 0
+    for x in out:
+        print(f"{x['campaign_id']} / {x['batch_id']}: {x['title']}")
+        print(f"  reason: {x['reason']}")
+    return 0
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    state = load_state()
+    rep = verify_batch(state, args.campaign_id, args.batch,
+                       required=args.gate.split(",") if args.gate else None)
+    print(json.dumps(rep, indent=2))
+    return 0 if rep["ok"] else 1
+
+
+def _cmd_graph(args: argparse.Namespace) -> int:
+    state = load_state()
+    c = _get_campaign(state, args.campaign_id)
+    graph = compute_dependency_graph(c)
+    print(f"# Dependency graph for {c['campaign_id']}")
+    for src, dests in graph.items():
+        if dests:
+            print(f"{src} -> {', '.join(dests)}")
+    return 0
+
+
+def _cmd_resume(args: argparse.Namespace) -> int:
+    state = load_state()
+    nb = next_recommended_batch(state, args.campaign_id)
+    if nb is None:
+        print(f"No ready batch to resume in {args.campaign_id}.")
+        return 1
+    print(f"# Resume point for {args.campaign_id}")
+    print(f"Batch: {nb['batch_id']}  ({nb.get('title','')})")
+    print(f"Status: {nb['status']}")
+    print(f"Next action: {_next_action_hint(nb)}")
+    return 0
+
+
+def _next_action_hint(b: Dict[str, Any]) -> str:
+    st = b.get("status")
+    if st == "planned":   return "create branch + implement; then `update --status active`"
+    if st == "active":    return "open PR; then `update --status pr_open --pr <n>`"
+    if st == "pr_open":   return "merge PR; then `update --status merged --sha <merge>`"
+    if st == "merged":    return "deploy + restart; then `deploy --sha <sha> --previous-main-sha <prev>`"
+    if st == "deployed":  return "run smoke; then `smoke --report <path>`"
+    if st == "smoked":    return "batch is done; move to next"
+    return "unknown status"
+
+
+def _cmd_pause(args: argparse.Namespace) -> int:
+    """Soft-pause: mark a batch as blocked with an operator reason. Identical
+    to `block`, kept as a separate verb for operator clarity."""
+    return _cmd_block(args)
+
+
+def _cmd_retry(args: argparse.Namespace) -> int:
+    """Reset a batch to `planned` status, clearing block_reason but keeping
+    all other audit fields (merge_sha, pr_url, etc.) — useful when a batch
+    failed and operator wants to start over."""
+    state = load_state()
+    c = _get_campaign(state, args.campaign_id)
+    b = _get_batch(c, args.batch)
+    b["status"] = "planned"
+    b["block_reason"] = None
+    b.setdefault("retries", 0)
+    b["retries"] += 1
+    save_state(state)
+    print(f"{args.campaign_id} / {args.batch}: reset to 'planned' (retry #{b['retries']})")
+    return 0
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Health check: surface every anomaly the runner can detect."""
+    state = load_state()
+    problems = []
+    # Stuck batches
+    for s in detect_stuck_batches(state):
+        problems.append(("stuck", s))
+    # Branch-stack risks
+    for r in detect_branch_stack_misroutes(state):
+        problems.append(("stack", r))
+    # Interrupted campaigns
+    for i in detect_interrupted_campaigns(state):
+        problems.append(("interrupted", i))
+    # Schema sanity
+    if state.get("schema_version") != 1:
+        problems.append(("schema", {"version": state.get("schema_version")}))
+    if not problems:
+        print("doctor: no issues found.")
+        return 0
+    print(f"doctor: {len(problems)} issue(s) found:")
+    for kind, p in problems:
+        print(f"  [{kind}] {json.dumps(p)}")
+    return 1
+
+
+def _cmd_dashboard(args: argparse.Namespace) -> int:
+    state = load_state()
+    print(render_dashboard(state))
+    return 0
+
+
 # ── Export ───────────────────────────────────────────────────────────────────
 
 def export_markdown(state: Dict[str, Any], campaign_id: str) -> str:
@@ -508,6 +1001,61 @@ def main(argv: Optional[List[str]] = None) -> int:
     sp.add_argument("--stack-depth", dest="stack_depth", type=int, default=0)
     sp.add_argument("--stacked-on", dest="stacked_on")
     sp.set_defaults(func=_cmd_stack)
+
+    # ── v2 runner subcommands ──────────────────────────────────────────────
+
+    sp = sub.add_parser("queue",
+                        help="Render the campaign batch queue with readiness markers")
+    sp.add_argument("campaign_id", nargs="?", default=None)
+    sp.set_defaults(func=_cmd_queue)
+
+    sp = sub.add_parser("next",
+                        help="Print the next recommended batch (JSON)")
+    sp.add_argument("campaign_id")
+    sp.set_defaults(func=_cmd_next)
+
+    sp = sub.add_parser("blockers",
+                        help="List blocked batches (optionally filtered by campaign)")
+    sp.add_argument("campaign_id", nargs="?", default=None)
+    sp.set_defaults(func=_cmd_blockers)
+
+    sp = sub.add_parser("verify",
+                        help="Verify a batch against its gates")
+    sp.add_argument("campaign_id")
+    sp.add_argument("batch")
+    sp.add_argument("--gate", help="Comma-separated subset of required gates")
+    sp.set_defaults(func=_cmd_verify)
+
+    sp = sub.add_parser("graph",
+                        help="Print the dependency graph for a campaign")
+    sp.add_argument("campaign_id")
+    sp.set_defaults(func=_cmd_graph)
+
+    sp = sub.add_parser("resume",
+                        help="Print resume instructions for a campaign")
+    sp.add_argument("campaign_id")
+    sp.set_defaults(func=_cmd_resume)
+
+    sp = sub.add_parser("pause",
+                        help="Alias of `block` (mark batch with operator reason)")
+    sp.add_argument("campaign_id")
+    sp.add_argument("batch")
+    sp.add_argument("--reason", required=True)
+    sp.set_defaults(func=_cmd_pause)
+
+    sp = sub.add_parser("retry",
+                        help="Reset a batch to 'planned' (preserves audit fields)")
+    sp.add_argument("campaign_id")
+    sp.add_argument("batch")
+    sp.set_defaults(func=_cmd_retry)
+
+    sp = sub.add_parser("doctor",
+                        help="Health check: detect stuck batches, stack risks, interrupted campaigns")
+    sp.set_defaults(func=_cmd_doctor)
+
+    sp = sub.add_parser("dashboard",
+                        help="Render full operator dashboard as markdown")
+    sp.set_defaults(func=_cmd_dashboard)
 
     args = p.parse_args(argv)
     return args.func(args)
