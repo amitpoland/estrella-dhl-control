@@ -343,6 +343,9 @@ def test_6F1_no_existing_module_imports_finance_postings():
         # 6F.3 additions ──────────────────────────────────────────────
         "routes_finance_postings.py",
         "test_finance_postings_breakdown_route.py",
+        # 6F.2.a additions ────────────────────────────────────────────
+        "backfill_finance_postings.py",
+        "test_backfill_finance_postings.py",
     }
     pattern = re.compile(r"(?:from\s+\S*finance_postings_db|import\s+finance_postings_db)")
     for p in (_APP_ROOT.rglob("*.py")):

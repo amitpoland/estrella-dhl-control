@@ -1,0 +1,21 @@
+{
+  "started_at": "2026-05-16T12:28:31+00:00",
+  "finished_at": "2026-05-16T12:28:31+00:00",
+  "mode": "dry-run",
+  "source_db": "C:\\PZ\\storage\\snapshots-6F2b\\proforma_links.snapshot.db",
+  "target_db": "C:\\PZ\\storage\\snapshots-6F2b\\finance_postings.dryrun.sqlite",
+  "snapshot": null,
+  "chunk_size": 100,
+  "source_rows": 0,
+  "eligible_rows": 0,
+  "blocked_rows": 0,
+  "skipped_zero": 0,
+  "duplicate_skipped": 0,
+  "charges_to_create": 0,
+  "postings_to_create": 0,
+  "charges_created": 0,
+  "postings_created": 0,
+  "blocked_reasons": {},
+  "blocked_examples": [],
+  "synthetic_postings": []
+}

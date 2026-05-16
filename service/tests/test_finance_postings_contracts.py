@@ -66,6 +66,9 @@ _ALLOWED_REFERENCES = {
     # 6F.3 ──────────────────────────────────────────────────────────────
     "routes_finance_postings.py",
     "test_finance_postings_breakdown_route.py",
+    # 6F.2.a ────────────────────────────────────────────────────────────
+    "backfill_finance_postings.py",
+    "test_backfill_finance_postings.py",
 }
 
 
