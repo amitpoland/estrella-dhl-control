@@ -3,7 +3,7 @@
 > Master Data campaign closed B11 audit on 2026-05-16.
 > Operational Integrity + Automation campaign closed P0-P5 on 2026-05-16 (PR #108 merged).
 > Operational Stabilization + Observation campaign closed P0-P4 on 2026-05-16.
-> Phase 6F status (2026-05-16): 6F.1 / 6F.1.5 / 6F.3 / 6F.4 smoked. 6F.2.a merged + dry-run done (0 source rows). 6F.2.d deferred. 6F.2.f freeze merged. **6F.5 dual-write deployed default-OFF (PR #121, merge `0f67d34`); activation NOT approved, flags verified OFF at 4 sources.** `/post` block-lift inspection (this PR) recommends DEFER. See `tasks/phase-6f-2f-freeze.md`, `tasks/phase-6f-5-shadow-activation-approval.md`, `tasks/phase-6f-5-shadow-decision-memo.md`, `tasks/phase-6f-post-block-lift-inspection.md`.
+> **Phase 6F PAUSED at steady-state (2026-05-16).** 14 batches, 6 deployed (5 live + 6F.5 deployed default-OFF), 4 operator-gated blocks, 0 regressions, 0 production-behaviour changes. Single point of entry for resume: **`tasks/phase-6f-campaign-close.md`** — contains verbatim resume commands for shadow activation, block-lift implementation, and 6F.2 dry-run rerun.
 >
 > See `tasks/campaign-state.json` for the canonical state of all 3 campaigns (23 batches tracked).
 > See `tasks/campaign-runner.md` for the controller doc.
