@@ -561,15 +561,27 @@
         },
         {
           "batch_id": "6F.5-approval-package",
-          "title": "6F.5 dual-write approval package (NO implementation)",
-          "status": "active",
-          "pr_url": null,
+          "title": "6F.5 dual-write approval package + decision memo",
+          "status": "merged",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/119",
+          "pr_number": 119,
+          "merge_sha": "0b485a0456b5424133ca14f67e18037f42afab27",
+          "deploy_needed": false,
+          "deploy_reason": "Docs-only PR. Only tasks/ files; no service/ runtime files. No PZService restart required.",
+          "tests": {
+            "finance_panel_contracts": "12/12",
+            "finance_postings_contracts": "37/37",
+            "master_data_hard_rules": "27/27",
+            "runner_v2_hard_rules": "12/12",
+            "pz_regression": "160/160"
+          },
           "artifacts": [
-            "tasks/phase-6f-5-dual-write-approval-package.md"
+            "tasks/phase-6f-5-dual-write-approval-package.md",
+            "tasks/phase-6f-5-decision-memo.md"
           ],
           "next_batch": "6F.5",
           "block_reason": null,
-          "notes": "Operator-facing design document. No code change. Must be approved before 6F.5 implementation begins."
+          "notes": "Approval package + operator decision memo. Decision memo scores all 10 operator checks GREEN and recommends APPROVE with two binding conditions (Lesson A real-builder pairing + post-deploy env-var verification). No code change."
         },
         {
           "batch_id": "6F.5",
@@ -577,8 +589,10 @@
           "status": "blocked",
           "pr_url": null,
           "depends_on": ["6F.5-approval-package"],
+          "decision_memo": "tasks/phase-6f-5-decision-memo.md",
+          "memo_verdict": "10/10 GREEN — recommend APPROVE with binding conditions (Lesson A real-builder pairing + post-deploy env-var verification)",
           "next_batch": "6F.6",
-          "block_reason": "Write-bearing batch. Requires operator approval of 6F.5 dual-write approval package before implementation."
+          "block_reason": "Write-bearing batch. Operator decision memo at tasks/phase-6f-5-decision-memo.md awaits §8 sign-off (APPROVE / DEFER / REJECT)."
         },
         {
           "batch_id": "6F.6",
