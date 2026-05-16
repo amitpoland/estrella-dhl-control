@@ -3720,7 +3720,7 @@ function MasterDataPage({ onNav, onToast }) {
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                         <thead>
                           <tr style={{ background: 'var(--bg-subtle)' }}>
-                            {['Client name','wFirma ID','VAT ID','Country','Master','Risk',''].map(h => (
+                            {['Client name','wFirma ID','VAT ID','Country','Master','Risk','Sync',''].map(h => (
                               <th key={h} style={thStyle}>{h}</th>
                             ))}
                           </tr>
@@ -3728,6 +3728,18 @@ function MasterDataPage({ onNav, onToast }) {
                         <tbody>
                           {filteredCustomers.map((c, i) => {
                             const cm = getCm(c);
+                            // MDC-090 wFirma sync visibility — read-only derivation from
+                            // match_status returned by GET /api/v1/wfirma/customers.
+                            const syncRaw = c.match_status || c.sync_status
+                                            || (c.wfirma_customer_id ? 'matched' : 'pending');
+                            const syncSpec = (() => {
+                              const v = String(syncRaw).toLowerCase();
+                              if (v === 'matched')   return { label: '● synced',    color: 'var(--badge-green-text)' };
+                              if (v === 'pending')   return { label: '◐ pending',   color: 'var(--badge-amber-text)' };
+                              if (v === 'not_found') return { label: '✗ not found', color: 'var(--badge-red-text)' };
+                              if (v === 'error')     return { label: '! error',     color: 'var(--badge-red-text)' };
+                              return { label: syncRaw, color: 'var(--text-3)' };
+                            })();
                             return (
                               <tr key={c.client_name || c.id || i}
                                   data-testid="master-customers-row" style={trStyle}>
@@ -3757,6 +3769,12 @@ function MasterDataPage({ onNav, onToast }) {
                                         {cm.risk_status}
                                       </span>
                                     : <span style={{ color: 'var(--text-3)' }}>—</span>}
+                                </td>
+                                <td data-testid="master-customers-sync"
+                                    style={{ padding: '8px 12px', fontSize: 11, whiteSpace: 'nowrap' }}>
+                                  <span style={{ color: syncSpec.color, fontWeight: 600 }}>
+                                    {syncSpec.label}
+                                  </span>
                                 </td>
                                 <td style={{ padding: '8px 12px' }}>
                                   <button data-testid="master-clients-btn-kyc"
