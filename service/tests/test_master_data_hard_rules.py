@@ -332,11 +332,13 @@ def test_6F1_module_uses_minor_units_only():
 
 
 def test_6F1_no_existing_module_imports_finance_postings():
-    """6F.1 must remain unused by any other module (no coupling yet)."""
+    """6F.1 must remain unused by any other module (no coupling yet).
+    Allow-list updated in 6F.1.5 to include the new contracts test file."""
     import re
     # The module itself + its tests are allowed to import it
     allowed = {"finance_postings_db.py", "test_finance_postings_db.py",
-               "test_master_data_hard_rules.py"}
+               "test_master_data_hard_rules.py",
+               "test_finance_postings_contracts.py"}
     pattern = re.compile(r"(?:from\s+\S*finance_postings_db|import\s+finance_postings_db)")
     for p in (_APP_ROOT.rglob("*.py")):
         if p.name in allowed:
