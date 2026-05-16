@@ -3805,53 +3805,13 @@ function MasterDataPage({ onNav, onToast }) {
     return custMaster.items.find(cm => cm.bill_to_contractor_id === String(cid)) || null;
   };
 
-  // ── Pending entity panel (reusable) ───────────────────────────────────
-  const PendingPanel = ({ entityId, title, description, fields }) => (
-    <div data-testid={'master-entity-' + entityId}
-         style={{ background: 'var(--card)', border: '1px dashed var(--border)',
-                  borderRadius: 10, padding: '24px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{title}</span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', padding: '2px 8px',
-          background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
-          borderRadius: 10, fontSize: 9, fontWeight: 700, color: 'var(--badge-amber-text)',
-          letterSpacing: '0.07em', textTransform: 'uppercase' }}>Backend pending</span>
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 16 }}>{description}</div>
-      {fields && (
-        <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)',
-                      borderRadius: 6, padding: '12px 16px' }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
-            textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
-            Field structure (design preview)
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-            {fields.map(f => (
-              <div key={f} style={{ padding: '5px 8px', background: 'var(--card)',
-                border: '1px dashed var(--border)', borderRadius: 4,
-                fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace' }}>{f}</div>
-            ))}
-          </div>
-        </div>
-      )}
-      <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
-        <button disabled title="Backend pending"
-          style={{ padding: '6px 16px', fontSize: 11, background: 'var(--bg-subtle)',
-            color: 'var(--text-3)', border: '1px dashed var(--border)',
-            borderRadius: 6, cursor: 'not-allowed', fontFamily: 'inherit' }}>
-          + New {title}
-        </button>
-        <button disabled title="Backend pending"
-          style={{ padding: '6px 16px', fontSize: 11, background: 'var(--bg-subtle)',
-            color: 'var(--text-3)', border: '1px dashed var(--border)',
-            borderRadius: 6, cursor: 'not-allowed', fontFamily: 'inherit' }}>
-          Import CSV
-        </button>
-      </div>
-    </div>
-  );
-
   // ── Panel header with search + refresh ────────────────────────────────
+  // B-MD3 (MDOC-2026-05): the legacy PendingPanel reusable component was
+  // removed in this batch. All Master Data entities are now either live
+  // (Designs / HS / Units / Suppliers / FX / Carriers / Incoterms / VAT /
+  // Product-local / Clients / Customer Master / Users / Products) or
+  // surfaced as a read-only explainer (Roles). No entity in MasterDataPage
+  // requires a placeholder panel any more.
   const PanelHeader = ({ title, subtitle, actions }) => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
       <div style={{ flex: 1 }}>
@@ -6074,10 +6034,10 @@ function MasterDataPage({ onNav, onToast }) {
               style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px',
                 background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10,
                 fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)',
-                letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
-        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers · HS Codes · Units · Product local · Incoterms · VAT Config · FX Rates (reference) · Carriers Config are live.
-          Designs / Roles
-          are structure-preview — backend pending.</span>
+                letterSpacing: '0.08em', textTransform: 'uppercase' }}>Live · MDOC</span>
+        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers · HS Codes · Units · Product local · Incoterms · VAT Config · FX Rates (reference) · Carriers Config · Designs are live.
+          Roles is a read-only explainer panel (no permission enforcement engine; admin role assignment is in Admin · Users).
+        </span>
       </div>
 
       {/* ── ClientKycModal overlay ──────────────────────────────────────── */}

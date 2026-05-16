@@ -935,11 +935,28 @@
         {
           "batch_id": "B-MD3",
           "title": "UI-only cleanup — disabled-state polish + testid hygiene",
-          "status": "planned",
+          "status": "pr_open",
           "pr_url": null,
           "depends_on": [],
           "next_batch": "B-MD4",
-          "block_reason": null
+          "block_reason": null,
+          "branch": "feat/b-md3-master-data-ui-cleanup",
+          "artifacts": [
+            "service/app/static/dashboard.html",
+            "service/tests/test_dashboard_master_cleanup.py",
+            "service/tests/test_dashboard_master_design.py"
+          ],
+          "tests": {
+            "dashboard_master_cleanup": "13/13",
+            "dashboard_master_design": "95/95 (footer test updated)",
+            "dashboard_designs_and_roles": "11/11",
+            "dashboard_admin_users_design": "14/14",
+            "master_data_designs": "17/17",
+            "master_data_hard_rules": "32/32",
+            "runner_v2_hard_rules": "12/12",
+            "auth_admin_user_routes": "6/6",
+            "pz_regression": "160/160"
+          }
         },
         {
           "batch_id": "B-MD4",
