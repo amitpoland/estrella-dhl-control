@@ -137,6 +137,16 @@ class CustomerMaster:
     created_at:              Optional[str] = None
     updated_at:              Optional[str] = None
 
+    # B0 (MDOC-cache) 2026-05-16 — wFirma enrichment fields. Operator-facing
+    # billing contact info (distinct from ship_to_*). Filled-when-empty by
+    # the identity-only upsert; never overwrites operator-entered values.
+    bill_to_email:           Optional[str] = None
+    bill_to_phone:           Optional[str] = None
+    bill_to_mobile:          Optional[str] = None
+    bank_account:            Optional[str] = None    # IBAN / account_payments
+    last_wfirma_sync_at:     Optional[str] = None    # ISO timestamp of last apply
+    wfirma_sync_source:      Optional[str] = None    # "review_assign" | "manual" | "auto"
+
 
 def validate(c: CustomerMaster) -> List[str]:
     """Return a list of blockers (empty list = OK). Does not raise."""
@@ -346,6 +356,13 @@ def init_db(db_path: Path) -> None:
             ("aml_risk_rating",           "TEXT"),
             ("pep_check_result",          "TEXT"),
             ("compliance_notes",          "TEXT"),
+            # B0 (MDOC-cache) 2026-05-16 — wFirma enrichment fields
+            ("bill_to_email",             "TEXT"),
+            ("bill_to_phone",             "TEXT"),
+            ("bill_to_mobile",            "TEXT"),
+            ("bank_account",              "TEXT"),
+            ("last_wfirma_sync_at",       "TEXT"),
+            ("wfirma_sync_source",        "TEXT"),
         ])
 
 
@@ -460,6 +477,13 @@ def _row_to_customer(row: sqlite3.Row) -> CustomerMaster:
         notes                         = row["notes"],
         created_at                    = row["created_at"],
         updated_at                    = row["updated_at"],
+        # B0 enrichment fields
+        bill_to_email                 = _row_get(row, "bill_to_email"),
+        bill_to_phone                 = _row_get(row, "bill_to_phone"),
+        bill_to_mobile                = _row_get(row, "bill_to_mobile"),
+        bank_account                  = _row_get(row, "bank_account"),
+        last_wfirma_sync_at           = _row_get(row, "last_wfirma_sync_at"),
+        wfirma_sync_source            = _row_get(row, "wfirma_sync_source"),
     )
 
 
@@ -570,21 +594,36 @@ def upsert_identity_only(
     bill_to_name:          str,
     country:               str,
     nip:                   Optional[str] = None,
+    # B0 enrichment — opportunistic fill-when-empty. Every extra field is
+    # written via COALESCE(NULLIF(?, ''), col), so operator-entered values
+    # are preserved verbatim and only empty local columns are populated.
+    bill_to_email:         Optional[str] = None,
+    bill_to_phone:         Optional[str] = None,
+    bill_to_mobile:        Optional[str] = None,
+    bank_account:          Optional[str] = None,
+    default_currency:      Optional[str] = None,
+    payment_terms_days:    Optional[int] = None,
+    sync_source:           str           = "review_assign",
 ) -> Dict[str, Any]:
-    """B0 (MDOC-cache): wFirma identity-only upsert.
+    """B0 (MDOC-cache): wFirma identity-only upsert with enrichment.
 
     INSERTS a new customer_master row with the minimum required fields, or
-    UPDATES the matching row by ``bill_to_contractor_id`` touching ONLY the
-    three identity columns (``bill_to_name``, ``country``, ``nip``) plus
-    ``updated_at``. All freight / insurance / KYC / KUKE / shipping /
-    invoice settings are preserved verbatim.
+    UPDATES the matching row by ``bill_to_contractor_id``.
 
-    Required-field validation runs FIRST so a missing ``country`` is rejected
-    cleanly before any DB write (no 422-as-TypeError leak from the dataclass
-    constructor).
+    ON UPDATE: every column is written via ``COALESCE(NULLIF(?, ''), col)``
+    so a non-empty incoming value fills an empty local column, and an empty
+    incoming value never blanks an existing value. This guarantees:
+      - operator-entered freight / insurance / KYC / KUKE / shipping /
+        invoice fields are preserved verbatim (never written here);
+      - operator-entered bill_to_email / phone / bank_account are
+        preserved if already set;
+      - first-time fill from wFirma populates empty fields.
 
-    Returns ``{"id": <row_id>, "action": "inserted"|"updated", "row": <CustomerMaster>}``.
-    Raises ``ValueError`` if any required field is empty / malformed.
+    Required-field validation (``bill_to_contractor_id``, ``bill_to_name``,
+    ``country``) runs FIRST so a missing field is rejected cleanly before
+    any DB write — no TypeError leak from the dataclass constructor.
+
+    Returns ``{"id", "action", "row"}`` where ``action`` ∈ {"inserted", "updated"}.
     """
     bid = (bill_to_contractor_id or "").strip()
     bnm = (bill_to_name or "").strip()
@@ -600,6 +639,15 @@ def upsert_identity_only(
     if blockers:
         raise ValueError("customer_master identity validation failed: " + "; ".join(blockers))
 
+    # Normalise enrichment values.
+    email = (bill_to_email or "").strip()
+    phone = (bill_to_phone or "").strip()
+    mobile = (bill_to_mobile or "").strip()
+    bank = (bank_account or "").strip()
+    curr = (default_currency or "").strip().upper()
+    pterm = payment_terms_days if (payment_terms_days is not None) else None
+    src = (sync_source or "review_assign").strip() or "review_assign"
+
     init_db(db_path)
     now = _now_iso()
     with sqlite3.connect(str(db_path)) as conn:
@@ -609,28 +657,57 @@ def upsert_identity_only(
             (bid,),
         ).fetchone()
         if existing is None:
-            # INSERT minimum stub. All other columns left at SQL NULL or table default.
+            # INSERT minimum stub + opportunistic enrichment. All other
+            # columns left at SQL NULL or table default.
             cur = conn.execute(
                 """INSERT INTO customer_master
                        (bill_to_contractor_id, bill_to_name, country, nip,
+                        bill_to_email, bill_to_phone, bill_to_mobile,
+                        bank_account, default_currency, payment_terms_days,
+                        last_wfirma_sync_at, wfirma_sync_source,
                         insurance_enabled, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 1, ?, ?)""",
-                (bid, bnm, cty, (nip or None), now, now),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                (bid, bnm, cty, (nip or None),
+                 email or None, phone or None, mobile or None,
+                 bank or None, curr or None, pterm,
+                 now, src,
+                 now, now),
             )
             row_id = int(cur.lastrowid or 0)
             action = "inserted"
         else:
             row_id = int(existing["id"])
-            # UPDATE only identity columns. nip is COALESCE'd so an empty
-            # incoming nip never blanks an existing one.
+            # UPDATE — COALESCE-NULLIF for every column so empty incoming
+            # values never blank an existing value. bill_to_name and
+            # country are required and always rewritten (operator may want
+            # to refresh the official name from wFirma).
+            # FILL-WHEN-EMPTY semantics: local non-empty value beats incoming.
+            # Order of args inside COALESCE is (local_col, incoming_value):
+            # if local is non-NULL it wins; only NULL local cells are
+            # backfilled from wFirma. NULLIF strips empty strings so an
+            # accidental "" never replaces NULL with empty string.
+            #
+            # bill_to_name and country are required and ALWAYS rewritten so
+            # the operator can refresh the canonical wFirma name. nip uses
+            # fill-when-empty so an existing local nip is never overwritten.
             conn.execute(
                 """UPDATE customer_master
-                       SET bill_to_name = ?,
-                           country      = ?,
-                           nip          = COALESCE(NULLIF(?, ''), nip),
-                           updated_at   = ?
+                       SET bill_to_name        = ?,
+                           country             = ?,
+                           nip                 = COALESCE(NULLIF(nip, ''),           NULLIF(?, '')),
+                           bill_to_email       = COALESCE(NULLIF(bill_to_email, ''),  NULLIF(?, '')),
+                           bill_to_phone       = COALESCE(NULLIF(bill_to_phone, ''),  NULLIF(?, '')),
+                           bill_to_mobile      = COALESCE(NULLIF(bill_to_mobile, ''), NULLIF(?, '')),
+                           bank_account        = COALESCE(NULLIF(bank_account, ''),   NULLIF(?, '')),
+                           default_currency    = COALESCE(NULLIF(default_currency, ''), NULLIF(?, '')),
+                           payment_terms_days  = COALESCE(payment_terms_days, ?),
+                           last_wfirma_sync_at = ?,
+                           wfirma_sync_source  = ?,
+                           updated_at          = ?
                        WHERE id = ?""",
-                (bnm, cty, (nip or ""), now, row_id),
+                (bnm, cty, (nip or ""),
+                 email, phone, mobile, bank, curr, pterm,
+                 now, src, now, row_id),
             )
             action = "updated"
         conn.commit()

@@ -44,13 +44,27 @@ _WAREHOUSE_MODULES = frozenset({
 
 @dataclass
 class WFirmaContractor:
-    """Contractor (customer) record from wFirma."""
+    """Contractor (customer) record from wFirma.
+
+    B0 (MDOC-cache) 2026-05-16: extended with optional contact fields
+    parsed opportunistically from contractors/find. wFirma's response
+    shape varies — every extended field defaults to "" so missing
+    fields never break the dataclass.
+    """
     wfirma_id: str
     name: str
     nip: str = ""
     country: str = ""
     zip: str = ""
     city: str = ""
+    # B0 enrichment — opportunistically parsed from wFirma XML if present.
+    email:           str = ""
+    phone:           str = ""
+    mobile:          str = ""
+    street:          str = ""
+    account_payments: str = ""  # bank account / SWIFT used for payments
+    payment_method:  str = ""
+    payment_term:    str = ""   # e.g. "14" days (string for safety)
 
 
 @dataclass
@@ -756,12 +770,21 @@ def list_contractors_page(page: int, limit: int) -> List[WFirmaContractor]:
         if not name:
             continue
         out.append(WFirmaContractor(
-            wfirma_id = wid,
-            name      = name,
-            nip       = _find_text(node, "nip") or "",
-            country   = _find_text(node, "country") or "",
-            zip       = _find_text(node, "zip") or "",
-            city      = _find_text(node, "city") or "",
+            wfirma_id        = wid,
+            name             = name,
+            nip              = _find_text(node, "nip") or "",
+            country          = _find_text(node, "country") or "",
+            zip              = _find_text(node, "zip") or "",
+            city             = _find_text(node, "city") or "",
+            # B0 enrichment — wFirma sometimes returns these in the list
+            # response; never raises if the element is missing.
+            email            = _find_text(node, "email") or "",
+            phone            = _find_text(node, "phone") or _find_text(node, "tel") or "",
+            mobile           = _find_text(node, "mobile") or "",
+            street           = _find_text(node, "street") or "",
+            account_payments = _find_text(node, "account_payments") or "",
+            payment_method   = _find_text(node, "payment_method") or "",
+            payment_term     = _find_text(node, "payment_term") or "",
         ))
     return out
 

@@ -451,6 +451,15 @@ def compute_proposals(db_path: Path) -> List[Dict[str, Any]]:
         cname = (c.name or "").strip()
         cnip  = (c.nip or "").strip()
         ccountry = (c.country or "").strip().upper()
+        # B0 enrichment — opportunistic from wFirma XML.
+        cemail  = (getattr(c, "email", "") or "").strip()
+        cphone  = (getattr(c, "phone", "") or "").strip()
+        cstreet = (getattr(c, "street", "") or "").strip()
+        czip    = (getattr(c, "zip", "") or "").strip()
+        ccity   = (getattr(c, "city", "") or "").strip()
+        # Compose a single-line address (street, zip city, country)
+        addr_parts = [p for p in (cstreet, " ".join([czip, ccity]).strip(), ccountry) if p]
+        caddr = ", ".join(addr_parts) if addr_parts else ""
 
         if not wfid or wfid in seen:
             # Invalid (no wfirma_id) — record as skipped, but only once.
@@ -531,7 +540,9 @@ def compute_proposals(db_path: Path) -> List[Dict[str, Any]]:
             "name":                 cname,
             "vat_id":               cnip,
             "country":              ccountry,
-            "email":                None,
+            "email":                cemail or None,
+            "phone":                cphone or None,
+            "address":              caddr or None,
             "status":               PROPOSAL_NEW_CANDIDATE,
             "proposed_action":      PROPOSAL_ACTIONS[PROPOSAL_NEW_CANDIDATE],
             "reason":               "no_local_match",
@@ -654,9 +665,13 @@ def sync_from_wfirma(
                             (supplier_code, name, country, vat_id, eori, address,
                              contact_email, contact_phone, active, notes, wfirma_id,
                              created_at, updated_at)
-                           VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, NULL, ?, ?, ?)""",
+                           VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, NULL, ?, ?, ?)""",
                         (p["local_supplier_code"], p["name"], p["country"],
-                         p["vat_id"] or None, wfid, now, now),
+                         p["vat_id"] or None,
+                         (p.get("address") or None),
+                         (p.get("email")   or None),
+                         (p.get("phone")   or None),
+                         wfid, now, now),
                     )
                     applied["inserted"] += 1
                 except sqlite3.IntegrityError as exc:
