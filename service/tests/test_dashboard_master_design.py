@@ -854,11 +854,13 @@ def test_kyc_invoices_tab_live():
     Save uses the existing PUT /customer-master/ — no new endpoint invented."""
     src = _src()
     assert 'data-testid="kyc-panel-invoices"' in src
+    # B0 deep-enrichment 2026-05-16: raw language ID input replaced by a
+    # labelled dropdown (testid `kyc-invoices-language`).
     for tid in (
         'kyc-invoices-proforma-series',
         'kyc-invoices-invoice-series',
         'kyc-invoices-vat-mode',
-        'kyc-invoices-language-id',
+        'kyc-invoices-language',
         'kyc-invoices-payment-terms',
         'kyc-invoices-currency',
     ):
