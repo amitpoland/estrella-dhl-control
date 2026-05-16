@@ -1028,6 +1028,271 @@ def test_customer_to_dict_serializes_new_fields(tmp_path):
         assert k in d
 
 
+# ── B0 Client Profile UI polish — generic field binding (PR after #154) ───
+#
+# Rule: every Company / Basic field that has backend storage must be wired
+# in the dashboard form, must have a real (non-disabled) input, and must NOT
+# carry a BACKEND PENDING badge. The wiring is generic for every country —
+# no Polish-only logic, no Railing/SUOKKO-specific code paths.
+
+
+_BACKEND_WIRED_BASIC_FIELDS = (
+    "kyc-basic-short-code",
+    "kyc-basic-client-type",
+    "kyc-basic-industry",
+    "kyc-basic-bill-to-street",
+    "kyc-basic-bill-to-postal",
+    "kyc-basic-bill-to-city",
+    "kyc-basic-bill-to-email",
+    "kyc-basic-bill-to-phone",
+    "kyc-basic-bill-to-mobile",
+    "kyc-basic-eori",
+    "kyc-basic-regon",
+)
+
+
+def test_company_basic_tab_binds_wired_fields():
+    """Every wired Company / Basic field must render a real input with
+    its testid present in the dashboard."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    for tid in _BACKEND_WIRED_BASIC_FIELDS:
+        assert f'data-testid="{tid}"' in src, f"missing wired Basic field: {tid}"
+
+
+def test_no_backend_pending_badge_for_wired_fields():
+    """The Company / Basic tab must not show 'BACKEND PENDING' for any
+    field that now has backend storage. We allow the badge to appear
+    elsewhere in the dashboard (other genuinely-pending modules)."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    # Grab the Company / Basic panel block specifically.
+    start = src.index('data-testid="kyc-panel-basic"')
+    end = src.index('kycTab === \'shipping\'')
+    block = src[start: end]
+    # Each newly-wired field name must NOT carry the pendingBadge.
+    for fname in ("short_code", "client_type", "industry", "EORI", "REGON",
+                  "Short code", "Industry"):
+        # Look for "<fname>{pendingBadge}" patterns specifically.
+        bad = f"{fname}{{pendingBadge}}"
+        assert bad not in block, \
+            f"BACKEND PENDING badge still attached to wired field text {fname!r}"
+
+
+def test_kyc_basic_form_state_binds_new_fields():
+    """The ClientKycModal form-state initializer must read the new columns
+    from custMasterRec so the inputs render their saved values."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    for field in ("bill_to_street", "bill_to_city", "bill_to_postal_code",
+                  "bill_to_email", "bill_to_phone", "bill_to_mobile",
+                  "regon", "short_code", "client_type", "industry", "eori",
+                  "bank_account"):
+        assert f"{field}:" in src and f"cm.{field}" in src, \
+            f"form state must initialise from cm.{field}"
+
+
+def test_put_payload_allow_list_includes_new_fields():
+    """The dashboard PUT payload must coerce '' → null for every newly
+    wired optional string field."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    start = src.index("CM_OPT_STR = [")
+    end = src.index("];", start)
+    block = src[start: end]
+    for f in ("bill_to_street", "bill_to_city", "bill_to_postal_code",
+              "bill_to_email", "bill_to_phone", "bill_to_mobile",
+              "bank_account",
+              "regon", "short_code", "client_type", "industry", "eori"):
+        assert f"'{f}'" in block, f"CM_OPT_STR missing {f!r}"
+
+
+def test_backend_put_allow_list_includes_new_fields():
+    """routes_customer_master must accept the new fields and coerce '' →
+    None for them (so blank inputs do not save as the empty string)."""
+    route_src = (_REPO_ROOT / "service" / "app" / "api" /
+                 "routes_customer_master.py").read_text(encoding="utf-8")
+    start = route_src.index("_OPTIONAL_STR_FIELDS")
+    end = route_src.index("})", start)
+    block = route_src[start: end]
+    for f in ("bill_to_street", "bill_to_city", "bill_to_postal_code",
+              "bill_to_email", "bill_to_phone", "bill_to_mobile",
+              "bank_account",
+              "regon", "short_code", "client_type", "industry", "eori",
+              "default_currency"):
+        assert f'"{f}"' in block, f"backend _OPTIONAL_STR_FIELDS missing {f!r}"
+
+
+def test_shipping_tab_renders_bill_to_summary():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert 'data-testid="kyc-shipping-bill-to-summary"' in src, \
+        "Shipping tab must render a bill-to address summary block"
+    # The summary references the bill-to address fields generically.
+    # Take the next ~1500 chars (covers the whole summary grid).
+    start = src.index('data-testid="kyc-shipping-bill-to-summary"')
+    block = src[start: start + 1500]
+    assert "form.bill_to_street" in block
+    assert "form.bill_to_postal_code" in block
+    assert "form.bill_to_city" in block
+
+
+def test_copy_billing_address_copies_full_address():
+    """Copy billing address must populate street / city / zip / country /
+    email / phone — not just name."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    start = src.index('data-testid="kyc-shipping-copy-billing"')
+    end = src.index("title=", start)
+    block = src[start: end]
+    for fn in ("ship_to_street", "ship_to_city", "ship_to_zip",
+               "ship_to_country", "ship_to_email", "ship_to_phone",
+               "ship_to_name"):
+        assert fn in block, f"Copy billing address must set {fn}"
+
+
+def test_inheritance_hint_mentions_address_fields():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    start = src.index('data-testid="kyc-shipping-inheritance-hint"')
+    end = src.index("</div>", start)
+    block = src[start: end]
+    # Hint must list the inherited fields generically (street / city / postal).
+    assert "street" in block.lower()
+    assert "postal" in block.lower() or "code" in block.lower()
+
+
+def test_modal_subtitle_present():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert 'data-testid="client-kyc-modal-subtitle"' in src, \
+        "Modal must show a tab-map subtitle under the title"
+
+
+# ── Generic-across-countries contract ─────────────────────────────────────
+#
+# Every newly-wired Client Profile field must work for any country. These
+# tests verify the code paths do not bake in a specific country.
+
+
+def test_pl_client_round_trip_preserves_regon_and_nip(tmp_path):
+    """PL client uses both NIP and REGON — both must round-trip."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="PL-1", bill_to_name="POL CO", country="PL",
+        nip="PL1234567890", regon="987654321",
+        bill_to_street="ul. Marszalkowska 1", bill_to_city="Warsaw",
+        bill_to_postal_code="00-001",
+    )
+    rec = cmdb.get_customer(db, "PL-1")
+    assert rec.country  == "PL"
+    assert rec.nip      == "PL1234567890"
+    assert rec.regon    == "987654321"
+    assert rec.bill_to_street == "ul. Marszalkowska 1"
+
+
+def test_eu_non_pl_client_uses_vat_eu_and_blank_regon(tmp_path):
+    """EU non-PL client (e.g. DE) uses VAT EU number; REGON is blank."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="DE-1", bill_to_name="GERMAN GMBH",
+        country="DE", nip="DE111222333",
+        bill_to_street="Hauptstrasse 1", bill_to_city="Berlin",
+        bill_to_postal_code="10115",
+    )
+    rec = cmdb.get_customer(db, "DE-1")
+    assert rec.country  == "DE"
+    assert rec.nip      == "DE111222333"
+    assert rec.regon    is None
+    assert rec.bill_to_city == "Berlin"
+    # Inheritance helper must surface the non-PL address verbatim.
+    eff = cmdb.get_effective_defaults(rec)
+    assert eff["country"]      == "DE"
+    assert eff["bill_to_city"] == "Berlin"
+    assert eff["regon"]        is None
+
+
+def test_non_eu_client_supports_any_address_format(tmp_path):
+    """Non-EU client (e.g. IN) — address has no PL-specific format; the
+    schema accepts any string for street/city/postal."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="IN-1", bill_to_name="INDIAN PVT LTD",
+        country="IN", nip="GSTIN29ABCDE1234F1Z5",
+        bill_to_street="Plot 12, MIDC Industrial Area", bill_to_city="Mumbai",
+        bill_to_postal_code="400093",
+    )
+    rec = cmdb.get_customer(db, "IN-1")
+    assert rec.country  == "IN"
+    assert rec.nip      == "GSTIN29ABCDE1234F1Z5"
+    assert rec.regon    is None
+    assert rec.bill_to_postal_code == "400093"
+
+
+def test_shipping_inheritance_works_across_countries(tmp_path):
+    """ship_to_use_alternate=False inheritance must work for PL, DE, IN
+    clients identically — no country-gating."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    for cid, country, city, postal, street in (
+        ("PL-A", "PL", "Warsaw", "00-001", "ul. Test 1"),
+        ("DE-A", "DE", "Berlin", "10115",  "Hauptstr 1"),
+        ("IN-A", "IN", "Mumbai", "400001", "Marine Drive 1"),
+    ):
+        cmdb.upsert_identity_only(
+            db, bill_to_contractor_id=cid, bill_to_name=f"{cid} CO",
+            country=country, bill_to_street=street,
+            bill_to_city=city, bill_to_postal_code=postal,
+        )
+        rec = cmdb.get_customer(db, cid)
+        eff = cmdb.get_effective_defaults(rec)
+        assert eff["ship_to_use_alternate"] is False
+        assert eff["ship_to_street"]  == street, f"{cid}: street inheritance"
+        assert eff["ship_to_city"]    == city,   f"{cid}: city inheritance"
+        assert eff["ship_to_zip"]     == postal, f"{cid}: postal inheritance"
+        assert eff["ship_to_country"] == country, f"{cid}: country inheritance"
+
+
+def test_invoice_defaults_per_client_no_pln_force(tmp_path):
+    """Each client carries its own default_currency; PL is not forced.
+    Three clients, three currencies, all round-trip."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    for cid, country, curr in (
+        ("PL-CUR", "PL", "PLN"),
+        ("DE-CUR", "DE", "EUR"),
+        ("IN-CUR", "IN", "USD"),
+    ):
+        cmdb.upsert_identity_only(
+            db, bill_to_contractor_id=cid, bill_to_name=f"{cid} CO",
+            country=country, default_currency=curr,
+        )
+        rec = cmdb.get_customer(db, cid)
+        assert rec.default_currency == curr, f"{cid}: currency round-trip"
+
+
+def test_no_pl_specific_business_logic_in_dashboard_modal():
+    """The dashboard must not gate any field by country='PL' or hardcode
+    Railing/SUOKKO as business rules inside the modal block."""
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    start = src.index("function ClientKycModal(")
+    # Take a sufficiently large block (modal definition is large).
+    end = src.index("// MasterData-1: shipping addresses + carrier accounts sub-resources", start) + 200
+    block = src[start: end]
+    # No country gating
+    forbidden_patterns = [
+        "country === 'PL'", 'country === "PL"',
+        "country == 'PL'",  'country == "PL"',
+        "SUOKKO",          # business logic, not a placeholder
+        "75483443",        # Railing wfirma id hardcoded
+    ]
+    for pat in forbidden_patterns:
+        # Allow these patterns inside comments only (which start with //).
+        # Crude check: ensure pat is not on a line that is purely code.
+        if pat in block:
+            # Locate the offending line and check it is a comment-only line.
+            lines = [ln for ln in block.split("\n") if pat in ln]
+            for ln in lines:
+                stripped = ln.strip()
+                assert stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"), \
+                    f"forbidden business-logic pattern {pat!r} on non-comment line: {ln.strip()[:120]}"
+
+
 def test_resolver_emits_only_four_canonical_verdicts():
     """The resolver model is closed: every proposal's suggested_target must
     be one of {client_master, supplier_master, ignore, needs_operator_review}.
