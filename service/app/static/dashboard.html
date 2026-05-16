@@ -3743,7 +3743,12 @@ function MasterDataPage({ onNav, onToast }) {
 
   // ── KPI strip (preserved data-testids) ────────────────────────────────
   // B4: suppliers; B5: hs_codes + units + product_local; B7: incoterms + vat_config → live
-  const PENDING_TYPES = ['designs','fx_rates','roles'];
+  // B-MD3 fix: PENDING_TYPES now empty — all Master Data entities are live.
+  // Designs went live in B-MD2 (PR #131). FX Rates has been live since MDC-B8.
+  // Roles is intentionally a read-only explainer panel (no permission
+  // enforcement engine), NOT a backend-pending entity. Keeping the KPI tile
+  // for layout stability + test compatibility; value is 0 with accurate hint.
+  const PENDING_TYPES = [];
   const kpis = [
     { id: 'users',     label: 'Users',
       value: users.loading     ? '…' : users.error     ? '—' : (users.items     || []).length,
@@ -3756,7 +3761,9 @@ function MasterDataPage({ onNav, onToast }) {
       accent: 'var(--badge-green-text)',  hint: products.error  || '/api/v1/wfirma/products' },
     { id: 'pending',   label: 'Pending types',
       value: PENDING_TYPES.length,
-      accent: 'var(--text-3)', hint: 'Suppliers · Designs · HS · FX · Roles' },
+      accent: 'var(--text-3)', hint: PENDING_TYPES.length === 0
+        ? 'All entity types live (Roles is read-only explainer)'
+        : PENDING_TYPES.join(' · ') },
   ];
 
   const errorRows = [
