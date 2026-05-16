@@ -384,6 +384,34 @@ def _fetch_contractors() -> List[Any]:
     return contractors
 
 
+_SUP_EXPENSE_HINTS = (
+    "dhl", "fedex", " ups ", "tnt", "courier", "kurier", "hotel",
+    "airline", "ryanair", "lufthansa", "lot polish", "uber",
+    "tax office", "urzad skarbowy", "izba", "skarbowy",
+    "bank ", "orlen ", "lotos ", "shell", "paypal", "stripe",
+)
+_SUP_EXPORTER_HINTS = (
+    "estrella", " llp", " llp.", "pvt ltd", "pvt. ltd", "exporter",
+    "exports", "manufacturing", " factory", "industries", "jewels pvt",
+    "gems & jewel",
+)
+
+
+def _suggest_target(name: str, vat_id: str, country: str) -> Dict[str, str]:
+    """Deterministic per-row target hint for the dashboard selector.
+    Returns ``{"suggested_target": str, "reason": str}``."""
+    nm = (name or "").lower().strip()
+    if not nm:
+        return {"suggested_target": "needs_operator_review", "reason": "missing_name"}
+    if any(h in nm for h in _SUP_EXPENSE_HINTS):
+        return {"suggested_target": "skip", "reason": "expense_or_carrier_keyword"}
+    if any(h in nm for h in _SUP_EXPORTER_HINTS):
+        return {"suggested_target": "supplier_master", "reason": "exporter_keyword"}
+    if vat_id and country:
+        return {"suggested_target": "customer_master", "reason": "vat_and_country_present"}
+    return {"suggested_target": "needs_operator_review", "reason": "ambiguous"}
+
+
 def compute_proposals(db_path: Path) -> List[Dict[str, Any]]:
     """Build per-row proposals for the review-and-assign UI. Pure read: no
     DB mutation, no wFirma write.
@@ -513,6 +541,18 @@ def compute_proposals(db_path: Path) -> List[Dict[str, Any]]:
             "local_email":          None,
         })
 
+    # Annotate every proposal with a deterministic target suggestion. The
+    # dashboard renders this as the default selection in the "Assign to"
+    # dropdown; the operator can override per row.
+    for p in proposals:
+        hint = _suggest_target(p["name"], p["vat_id"], p["country"])
+        # Force skipped_invalid rows to suggested_target="skip" so they cannot
+        # be applied accidentally even if operator changes target.
+        if p["status"] == PROPOSAL_SKIPPED_INVALID:
+            p["suggested_target"] = "skip"
+        else:
+            p["suggested_target"] = hint["suggested_target"]
+        p["target_reason"] = hint["reason"]
     return proposals
 
 

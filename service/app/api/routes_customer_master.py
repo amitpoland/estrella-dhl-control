@@ -31,6 +31,7 @@ from ..services.customer_master_db import (
     validate,
     init_db,
     upsert_customer,
+    upsert_identity_only,
     get_customer,
     list_customers,
 )
@@ -252,6 +253,240 @@ def list_customers_endpoint(
         "count": len(records),
         "customers": [_customer_to_dict(c) for c in records],
     })
+
+
+# ── B0 (MDOC-cache) — wFirma identity review-and-assign for Customer Master ──
+#
+# Reads wFirma contractors and proposes per-row actions the operator drives.
+# Writes only when per-row target = customer_master AND flag
+# WFIRMA_SYNC_CUSTOMERS_ALLOWED is on. Identity-only: name + country + nip;
+# existing freight / insurance / KYC / shipping / invoice columns are NEVER
+# overwritten (see upsert_identity_only in customer_master_db).
+
+_CM_EXPENSE_HINTS = (
+    "dhl", "fedex", " ups ", "tnt", "courier", "kurier", "hotel",
+    "airline", "ryanair", "lufthansa", "lot polish", "uber",
+    "tax office", "urzad skarbowy", "izba", "skarbowy",
+    "bank ", "orlen ", "lotos ", "shell", "paypal", "stripe",
+    "google ", "microsoft ", "amazon web", "facebook", "linkedin",
+)
+_CM_EXPORTER_HINTS = (
+    "estrella", " llp", " llp.", "pvt ltd", "pvt. ltd", "exporter",
+    "exports", "manufacturing", " factory", "industries", "jewels pvt",
+    "gems & jewel",
+)
+_CM_EU_COUNTRIES = frozenset({
+    "AT","BE","BG","CY","CZ","DE","DK","EE","ES","FI","FR","GR","HR","HU",
+    "IE","IT","LT","LU","LV","MT","NL","PL","PT","RO","SE","SI","SK",
+})
+
+
+def _cm_suggest_target(name: str, vat_id: str, country: str) -> Dict[str, str]:
+    """Pure deterministic suggestion. No AI. Operator can override."""
+    nm = (name or "").lower().strip()
+    cty = (country or "").upper().strip()
+    vat = (vat_id or "").strip()
+    if not nm:
+        return {"suggested_target": "needs_operator_review", "reason": "missing_name"}
+    if any(h in nm for h in _CM_EXPENSE_HINTS):
+        return {"suggested_target": "skip", "reason": "expense_or_carrier_keyword"}
+    if any(h in nm for h in _CM_EXPORTER_HINTS):
+        return {"suggested_target": "supplier_master", "reason": "exporter_keyword"}
+    if vat and cty and cty in _CM_EU_COUNTRIES:
+        return {"suggested_target": "customer_master", "reason": "eu_vat_and_country_present"}
+    if vat and cty:
+        return {"suggested_target": "customer_master", "reason": "vat_and_country_present"}
+    return {"suggested_target": "needs_operator_review",
+            "reason": ("missing_country" if not cty else "missing_vat")}
+
+
+def _cm_wfirma_proposals() -> List[Dict[str, Any]]:
+    """Per-row proposals comparing wFirma contractors against customer_master."""
+    from ..services import wfirma_client as wfc
+    contractors: List[Any] = []
+    page = 1
+    while True:
+        batch = wfc.list_contractors_page(page=page, limit=100)
+        if not batch:
+            break
+        contractors.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+        if page > 200:
+            break
+
+    init_db(_DB_PATH)
+    existing = list_customers(_DB_PATH, limit=10000)
+    by_contractor: Dict[str, CustomerMaster] = {
+        c.bill_to_contractor_id: c for c in existing if c.bill_to_contractor_id
+    }
+
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for c in contractors:
+        wfid = (c.wfirma_id or "").strip()
+        name = (c.name or "").strip()
+        nip  = (c.nip or "").strip()
+        cty  = (c.country or "").strip().upper()
+        if not wfid:
+            out.append({
+                "wfirma_id": "", "name": name, "vat_id": nip, "country": cty,
+                "email": None,
+                "status": "skipped_invalid", "reason": "missing_wfirma_id",
+                "suggested_target": "skip",
+                "local_match": None,
+            })
+            continue
+        if wfid in seen:
+            continue
+        seen.add(wfid)
+
+        match = by_contractor.get(wfid)
+        status = "matched_existing" if match is not None else "new_candidate"
+        if not name or not cty:
+            status = "needs_operator_review"
+            reason_target = {"suggested_target": "needs_operator_review",
+                             "reason": ("missing_name" if not name else "missing_country")}
+        else:
+            reason_target = _cm_suggest_target(name, nip, cty)
+
+        out.append({
+            "wfirma_id":         wfid,
+            "name":              name,
+            "vat_id":            nip,
+            "country":           cty,
+            "email":             None,
+            "status":            status,
+            "reason":            reason_target["reason"],
+            "suggested_target":  reason_target["suggested_target"],
+            "local_match": None if match is None else {
+                "id":                       match.id,
+                "bill_to_contractor_id":    match.bill_to_contractor_id,
+                "bill_to_name":             match.bill_to_name,
+                "country":                  match.country,
+                "freight_service_id":       match.freight_service_id,
+                "insurance_service_id":     match.insurance_service_id,
+                "kyc_status":               match.kyc_status,
+            },
+        })
+    return out
+
+
+@router.get("/sync-from-wfirma/preview", dependencies=[_auth],
+            summary="Per-row review proposals for wFirma -> Customer Master (no write)")
+def cm_wfirma_sync_preview() -> JSONResponse:
+    try:
+        proposals = _cm_wfirma_proposals()
+    except Exception as exc:
+        log.error("cm wf preview failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "fetch_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+    return JSONResponse({
+        "ok":        True,
+        "mode":      "preview",
+        "fetched":   len(proposals),
+        "proposals": proposals,
+    })
+
+
+@router.post("/sync-from-wfirma/apply", dependencies=[_auth],
+             summary="Apply only the wFirma rows the operator targeted at Customer Master")
+async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
+    """Body: {"wfirma_ids": ["123", ...]}.
+
+    Identity-only write via upsert_identity_only(). Preserves all existing
+    freight / insurance / KYC / shipping / invoice fields. Rows missing
+    required fields are returned in the ``rejected`` list (no DB write).
+    Flag-gated by WFIRMA_SYNC_CUSTOMERS_ALLOWED.
+    """
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object")
+    wfirma_ids = body.get("wfirma_ids")
+    if not isinstance(wfirma_ids, list) or not wfirma_ids:
+        raise HTTPException(status_code=422,
+                            detail="wfirma_ids must be a non-empty list of strings")
+    if not all(isinstance(x, str) for x in wfirma_ids):
+        raise HTTPException(status_code=422, detail="wfirma_ids must be a list of strings")
+
+    if not settings.wfirma_sync_customers_allowed:
+        return JSONResponse({
+            "ok":               False,
+            "mode":             "blocked",
+            "dry_run":          True,
+            "applied_count":    0,
+            "blocking_reasons": [
+                "wfirma_sync_customers_allowed is false - operator must "
+                "enable WFIRMA_SYNC_CUSTOMERS_ALLOWED to apply"
+            ],
+        })
+
+    try:
+        proposals = _cm_wfirma_proposals()
+    except Exception as exc:
+        log.error("cm wf apply preview failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "fetch_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    requested = set(wfirma_ids)
+    inserted = 0
+    updated  = 0
+    rejected: List[Dict[str, Any]] = []
+    applied:  List[Dict[str, Any]] = []
+
+    for p in proposals:
+        if p["wfirma_id"] not in requested:
+            continue
+        if p["status"] in ("skipped_invalid", "needs_operator_review"):
+            rejected.append({"wfirma_id": p["wfirma_id"], "reason": p["reason"],
+                             "status": p["status"]})
+            continue
+        try:
+            res = upsert_identity_only(
+                _DB_PATH,
+                bill_to_contractor_id=p["wfirma_id"],
+                bill_to_name=p["name"],
+                country=p["country"],
+                nip=p["vat_id"] or None,
+            )
+            if res["action"] == "inserted":
+                inserted += 1
+            else:
+                updated += 1
+            applied.append({"wfirma_id": p["wfirma_id"], "action": res["action"]})
+        except ValueError as ve:
+            rejected.append({"wfirma_id": p["wfirma_id"], "reason": str(ve),
+                             "status": "validation_failed"})
+        except Exception as exc:
+            log.error("cm wf apply row failed wfid=%s: %s", p["wfirma_id"], exc, exc_info=True)
+            rejected.append({"wfirma_id": p["wfirma_id"],
+                             "reason": f"{type(exc).__name__}: {exc}",
+                             "status": "internal_error"})
+
+    body_out = {
+        "ok":             True,
+        "mode":           "write",
+        "fetched":        len(proposals),
+        "requested":      len(requested),
+        "inserted":       inserted,
+        "updated":        updated,
+        "applied_count":  inserted + updated,
+        "rejected":       rejected,
+        "applied":        applied,
+    }
+    log.info("cm_wf_apply requested=%d inserted=%d updated=%d rejected=%d",
+             len(requested), inserted, updated, len(rejected))
+    return JSONResponse(body_out)
 
 
 @router.get("/{contractor_id}", dependencies=[_auth], summary="Get one customer")
