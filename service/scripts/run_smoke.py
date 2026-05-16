@@ -72,6 +72,12 @@ class SmokeRun:
     steps:        List[StepResult] = field(default_factory=list)
     started_at:   str = ""
     finished_at:  str = ""
+    # P6 metadata extensions (read from spec; round-tripped to report)
+    required_entities: List[str]      = field(default_factory=list)
+    expected_console:  str            = "clean"
+    expected_api:      str            = "all 2xx unless otherwise stated"
+    required_cleanup:  List[str]      = field(default_factory=list)
+    artifacts:         List[str]      = field(default_factory=list)
 
     @property
     def all_pass(self) -> bool:
@@ -82,6 +88,25 @@ class SmokeRun:
         if not self.steps:
             return "PARTIAL"
         return "PASS" if self.all_pass else "FAIL"
+
+
+def _validate_spec_metadata(spec: Dict[str, Any]) -> List[str]:
+    """P6: validate the smoke-spec's metadata extension. Returns list of warnings
+    (not errors) so old specs without the new fields still run.
+
+    Recommended additional fields in a P6 smoke spec:
+      - required_entities:  list of entity names this smoke covers
+      - expected_console:   string description (default "clean")
+      - expected_api:       string description (default "all 2xx ...")
+      - required_cleanup:   list of resources the smoke MUST clean up
+      - slug:               short kebab-case identifier
+    """
+    warnings: List[str] = []
+    if not spec.get("required_entities"):
+        warnings.append("missing recommended field: required_entities")
+    if not spec.get("slug"):
+        warnings.append("missing recommended field: slug (used for report filename)")
+    return warnings
 
 
 # ── Spec / runner ────────────────────────────────────────────────────────────
@@ -118,6 +143,11 @@ def run_smoke(spec: Dict[str, Any]) -> SmokeRun:
         base_url=spec.get("base_url", "http://127.0.0.1:47213"),
         headers=spec.get("headers", {}),
         started_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        # P6 metadata
+        required_entities=list(spec.get("required_entities", []) or []),
+        expected_console=spec.get("expected_console", "clean"),
+        expected_api=spec.get("expected_api", "all 2xx unless otherwise stated"),
+        required_cleanup=list(spec.get("required_cleanup", []) or []),
     )
     for step_spec in spec.get("steps", []):
         sr = StepResult(
@@ -148,12 +178,22 @@ def render_markdown(run: SmokeRun) -> str:
         f"**Batches:** {', '.join(run.batches) or '—'}",
         f"**Environment:** {run.environment}",
         f"**Tester:** run_smoke.py driver",
+    ]
+    # P6: emit metadata sections when present
+    if run.required_entities:
+        lines.append("")
+        lines.append(f"**Required entities:** {', '.join(run.required_entities)}")
+    lines.append(f"**Expected console:** {run.expected_console}")
+    lines.append(f"**Expected API:** {run.expected_api}")
+    if run.required_cleanup:
+        lines.append(f"**Required cleanup:** {', '.join(run.required_cleanup)}")
+    lines.extend([
         "",
         "## Coverage",
         "",
         "| Step | Method | Path | Expected | Actual | Verdict |",
         "|---|---|---|---|---|---|",
-    ]
+    ])
     for s in run.steps:
         actual = str(s.actual_status) if s.actual_status is not None else f"ERR:{s.error or '?'}"
         lines.append(
