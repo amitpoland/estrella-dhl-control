@@ -563,6 +563,81 @@ def upsert_customer(db_path: Path, c: CustomerMaster) -> int:
         return int(existing["id"])
 
 
+def upsert_identity_only(
+    db_path: Path,
+    *,
+    bill_to_contractor_id: str,
+    bill_to_name:          str,
+    country:               str,
+    nip:                   Optional[str] = None,
+) -> Dict[str, Any]:
+    """B0 (MDOC-cache): wFirma identity-only upsert.
+
+    INSERTS a new customer_master row with the minimum required fields, or
+    UPDATES the matching row by ``bill_to_contractor_id`` touching ONLY the
+    three identity columns (``bill_to_name``, ``country``, ``nip``) plus
+    ``updated_at``. All freight / insurance / KYC / KUKE / shipping /
+    invoice settings are preserved verbatim.
+
+    Required-field validation runs FIRST so a missing ``country`` is rejected
+    cleanly before any DB write (no 422-as-TypeError leak from the dataclass
+    constructor).
+
+    Returns ``{"id": <row_id>, "action": "inserted"|"updated", "row": <CustomerMaster>}``.
+    Raises ``ValueError`` if any required field is empty / malformed.
+    """
+    bid = (bill_to_contractor_id or "").strip()
+    bnm = (bill_to_name or "").strip()
+    cty = (country or "").strip().upper()
+
+    blockers: List[str] = []
+    if not bid:
+        blockers.append("bill_to_contractor_id is required")
+    if not bnm:
+        blockers.append("bill_to_name is required")
+    if not cty or len(cty) != 2:
+        blockers.append("country must be ISO-3166 alpha-2 (2 letters)")
+    if blockers:
+        raise ValueError("customer_master identity validation failed: " + "; ".join(blockers))
+
+    init_db(db_path)
+    now = _now_iso()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute(
+            "SELECT id FROM customer_master WHERE bill_to_contractor_id = ?",
+            (bid,),
+        ).fetchone()
+        if existing is None:
+            # INSERT minimum stub. All other columns left at SQL NULL or table default.
+            cur = conn.execute(
+                """INSERT INTO customer_master
+                       (bill_to_contractor_id, bill_to_name, country, nip,
+                        insurance_enabled, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 1, ?, ?)""",
+                (bid, bnm, cty, (nip or None), now, now),
+            )
+            row_id = int(cur.lastrowid or 0)
+            action = "inserted"
+        else:
+            row_id = int(existing["id"])
+            # UPDATE only identity columns. nip is COALESCE'd so an empty
+            # incoming nip never blanks an existing one.
+            conn.execute(
+                """UPDATE customer_master
+                       SET bill_to_name = ?,
+                           country      = ?,
+                           nip          = COALESCE(NULLIF(?, ''), nip),
+                           updated_at   = ?
+                       WHERE id = ?""",
+                (bnm, cty, (nip or ""), now, row_id),
+            )
+            action = "updated"
+        conn.commit()
+    rec = get_customer(db_path, bid)
+    return {"id": row_id, "action": action, "row": rec}
+
+
 def get_customer(db_path: Path, bill_to_contractor_id: str) -> Optional[CustomerMaster]:
     """Read by wFirma contractor id. Returns None if absent."""
     if not Path(db_path).is_file():

@@ -3855,7 +3855,8 @@ function MasterDataPage({ onNav, onToast }) {
   // local match, status) with View / Edit / Save-Assign / Skip actions.
   // Pure UI: it never writes directly. The parent passes ``onApply(ids)`` and
   // is responsible for hitting the correct apply endpoint.
-  const WfReviewPanel = ({ testidPrefix, title, state, onChange, onClose, onApply }) => {
+  const WfReviewPanel = ({ testidPrefix, title, state, onChange, onClose,
+                            onApplyCustomer, onApplySupplier }) => {
     const [busy, setBusy] = React.useState(false);
     const [viewRow, setViewRow] = React.useState(null);
     const [editRow, setEditRow] = React.useState(null);
@@ -3874,22 +3875,43 @@ function MasterDataPage({ onNav, onToast }) {
       onChange({ ...state, proposals: next });
     };
 
-    const assignSelected = async (ids) => {
-      if (!ids || !ids.length) { window.alert('Nothing to assign.'); return; }
+    // Per-row target — defaults to the backend's suggested_target, operator overrides.
+    const rowTarget = (p) => p._ui_target || p.suggested_target || 'needs_operator_review';
+
+    const assignRows = async (rows) => {
+      // rows = array of proposals (already filtered)
+      const customerIds = rows.filter(p => rowTarget(p) === 'customer_master').map(p => p.wfirma_id);
+      const supplierIds = rows.filter(p => rowTarget(p) === 'supplier_master').map(p => p.wfirma_id);
+      if (!customerIds.length && !supplierIds.length) {
+        window.alert('Nothing to assign — every selected row is set to Skip or Needs review.');
+        return;
+      }
       setBusy(true);
-      const ok = await onApply(ids);
+      let okIds = [];
+      if (customerIds.length) {
+        const ok = await onApplyCustomer(customerIds);
+        if (ok) okIds = okIds.concat(customerIds);
+      }
+      if (supplierIds.length) {
+        const ok = await onApplySupplier(supplierIds);
+        if (ok) okIds = okIds.concat(supplierIds);
+      }
       setBusy(false);
-      if (ok) {
-        // Mark applied rows as skipped (hide from further action)
-        const idSet = new Set(ids);
+      if (okIds.length) {
+        const idSet = new Set(okIds);
         const next = proposals.map(p => idSet.has(p.wfirma_id) ? { ...p, _ui_skipped: true } : p);
         onChange({ ...state, proposals: next });
       }
     };
 
-    const eligibleIds = proposals
-      .filter(p => !p._ui_skipped && p.status !== 'skipped_invalid')
-      .map(p => p.wfirma_id);
+    // Rows eligible for Assign-all: not skipped, not invalid, not needs-review,
+    // and target is customer_master OR supplier_master (NOT skip / review).
+    const eligibleRows = proposals.filter(p =>
+      !p._ui_skipped &&
+      p.status !== 'skipped_invalid' &&
+      p.status !== 'needs_operator_review' &&
+      (rowTarget(p) === 'customer_master' || rowTarget(p) === 'supplier_master')
+    );
 
     return (
       <div data-testid={`${testidPrefix}-review-panel`}
@@ -3901,13 +3923,13 @@ function MasterDataPage({ onNav, onToast }) {
             {state.loading ? 'Loading proposals…' : `${proposals.length} proposed rows — review and assign one or all`}
           </div>
           <button data-testid={`${testidPrefix}-assign-all`}
-            disabled={busy || state.loading || eligibleIds.length === 0}
-            onClick={() => assignSelected(eligibleIds)}
+            disabled={busy || state.loading || eligibleRows.length === 0}
+            onClick={() => assignRows(eligibleRows)}
             style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600,
               background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6,
-              cursor: (busy || eligibleIds.length === 0) ? 'not-allowed' : 'pointer',
-              opacity: (busy || eligibleIds.length === 0) ? 0.5 : 1 }}>
-            Assign all ({eligibleIds.length})
+              cursor: (busy || eligibleRows.length === 0) ? 'not-allowed' : 'pointer',
+              opacity: (busy || eligibleRows.length === 0) ? 0.5 : 1 }}>
+            Assign all ({eligibleRows.length})
           </button>
           <button data-testid={`${testidPrefix}-close`}
             onClick={onClose}
@@ -3936,7 +3958,7 @@ function MasterDataPage({ onNav, onToast }) {
               style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
               <thead>
                 <tr style={{ background: 'var(--bg-subtle)' }}>
-                  {['wFirma ID','Name','VAT / NIP','Country','Email','Local match','Status','Actions'].map(h => (
+                  {['wFirma ID','Name','VAT / NIP','Country','Email','Local match','Status','Assign to','Actions'].map(h => (
                     <th key={h} style={thStyle}>{h}</th>
                   ))}
                 </tr>
@@ -3969,6 +3991,21 @@ function MasterDataPage({ onNav, onToast }) {
                           textTransform: 'uppercase' }}>{st.label}</span>
                         {p.reason && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{p.reason}</div>}
                       </td>
+                      <td style={{ padding: '6px 10px' }}>
+                        <select data-testid={`${testidPrefix}-target-select`}
+                          value={rowTarget(p)}
+                          disabled={skipped || isInvalid}
+                          onChange={e => updateProposal(idx, { _ui_target: e.target.value })}
+                          style={{ fontSize: 10, padding: '3px 6px',
+                            background: 'var(--bg-subtle)', color: 'var(--text)',
+                            border: '1px solid var(--border)', borderRadius: 4,
+                            fontFamily: 'inherit' }}>
+                          <option value="customer_master">Customer Master</option>
+                          <option value="supplier_master">Supplier Master</option>
+                          <option value="skip">Skip</option>
+                          <option value="needs_operator_review">Needs review</option>
+                        </select>
+                      </td>
                       <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
                         <button data-testid={`${testidPrefix}-btn-view`}
                           onClick={() => setViewRow(p)}
@@ -3988,13 +4025,21 @@ function MasterDataPage({ onNav, onToast }) {
                           Edit
                         </button>
                         <button data-testid={`${testidPrefix}-btn-assign`}
-                          disabled={busy || skipped || isInvalid || !p.wfirma_id}
-                          onClick={() => assignSelected([p.wfirma_id])}
+                          disabled={busy || skipped || isInvalid || !p.wfirma_id ||
+                                    rowTarget(p) === 'skip' || rowTarget(p) === 'needs_operator_review'}
+                          onClick={() => assignRows([p])}
+                          title={
+                            rowTarget(p) === 'skip' ? 'Row target is Skip — change Assign to first' :
+                            rowTarget(p) === 'needs_operator_review' ? 'Row needs operator review — change Assign to first' :
+                            ''
+                          }
                           style={{ marginRight: 4, padding: '3px 8px', fontSize: 10,
                             background: 'var(--accent)', color: '#fff',
                             border: 'none', borderRadius: 4,
-                            cursor: (busy || skipped || isInvalid || !p.wfirma_id) ? 'not-allowed' : 'pointer',
-                            opacity: (busy || skipped || isInvalid || !p.wfirma_id) ? 0.4 : 1,
+                            cursor: (busy || skipped || isInvalid || !p.wfirma_id ||
+                                     rowTarget(p) === 'skip' || rowTarget(p) === 'needs_operator_review') ? 'not-allowed' : 'pointer',
+                            opacity: (busy || skipped || isInvalid || !p.wfirma_id ||
+                                     rowTarget(p) === 'skip' || rowTarget(p) === 'needs_operator_review') ? 0.4 : 1,
                             fontWeight: 600 }}>
                           Save / Assign
                         </button>
@@ -4447,10 +4492,10 @@ function MasterDataPage({ onNav, onToast }) {
                     onClick={async () => {
                       setCmWfReview({ loading: true, error: null, proposals: [] });
                       try {
-                        const r = await apiFetch('/api/v1/wfirma/customers/sync-from-wfirma/preview');
+                        const r = await apiFetch('/api/v1/customer-master/sync-from-wfirma/preview');
                         setCmWfReview({
                           loading: false, error: null,
-                          proposals: (r.proposals || []).map(p => ({ ...p, _ui_skipped: false, _ui_edited: null }))
+                          proposals: (r.proposals || []).map(p => ({ ...p, _ui_skipped: false, _ui_edited: null, _ui_target: null }))
                         });
                       } catch (e) {
                         setCmWfReview({ loading: false, error: e.message || 'fetch failed', proposals: [] });
@@ -4474,23 +4519,42 @@ function MasterDataPage({ onNav, onToast }) {
               {cmWfReview && (
                 <WfReviewPanel
                   testidPrefix="master-cm-wf"
-                  title="wFirma → Customer Master review"
+                  title="wFirma → Customer Master / Suppliers review"
                   state={cmWfReview}
                   onChange={setCmWfReview}
                   onClose={() => setCmWfReview(null)}
-                  onApply={async (ids) => {
+                  onApplyCustomer={async (ids) => {
                     try {
-                      const r = await apiFetch('/api/v1/wfirma/customers/sync-from-wfirma/apply',
+                      const r = await apiFetch('/api/v1/customer-master/sync-from-wfirma/apply',
                         { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
                       if (r && r.ok === false && r.mode === 'blocked') {
-                        window.alert('Blocked: ' + (r.blocking_reasons || []).join('; '));
+                        window.alert('Customer apply blocked: ' + (r.blocking_reasons || []).join('; '));
                         return false;
                       }
-                      window.alert('Applied=' + (r.applied_count|0) + ' rows.');
+                      const rejMsg = (r.rejected && r.rejected.length)
+                        ? '\nRejected: ' + r.rejected.map(x => x.wfirma_id + ' (' + x.reason + ')').join(', ')
+                        : '';
+                      window.alert('Customer applied=' + (r.applied_count|0)
+                        + ' (inserted=' + (r.inserted|0) + ', updated=' + (r.updated|0) + ')' + rejMsg);
                       await loadCustomerMaster();
                       return true;
                     } catch (e) {
-                      window.alert('Apply failed: ' + (e.message || e));
+                      window.alert('Customer apply failed: ' + (e.message || e));
+                      return false;
+                    }
+                  }}
+                  onApplySupplier={async (ids) => {
+                    try {
+                      const r = await apiFetch('/api/v1/suppliers/sync-from-wfirma/apply',
+                        { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
+                      if (r && r.ok === false && r.mode === 'blocked') {
+                        window.alert('Supplier apply blocked: ' + (r.blocking_reasons || []).join('; '));
+                        return false;
+                      }
+                      window.alert('Supplier applied=' + (r.applied_count|0));
+                      return true;
+                    } catch (e) {
+                      window.alert('Supplier apply failed: ' + (e.message || e));
                       return false;
                     }
                   }} />
@@ -5133,7 +5197,7 @@ function MasterDataPage({ onNav, onToast }) {
                           const r = await apiFetch('/api/v1/suppliers/sync-from-wfirma/preview');
                           setSupWfReview({
                             loading: false, error: null,
-                            proposals: (r.proposals || []).map(p => ({ ...p, _ui_skipped: false, _ui_edited: null }))
+                            proposals: (r.proposals || []).map(p => ({ ...p, _ui_skipped: false, _ui_edited: null, _ui_target: null }))
                           });
                         } catch (e) {
                           setSupWfReview({ loading: false, error: e.message || 'fetch failed', proposals: [] });
@@ -5181,26 +5245,46 @@ function MasterDataPage({ onNav, onToast }) {
               {supWfReview && (
                 <WfReviewPanel
                   testidPrefix="master-suppliers-wf"
-                  title="wFirma → Suppliers review"
+                  title="wFirma → Suppliers / Customer Master review"
                   state={supWfReview}
                   onChange={setSupWfReview}
                   onClose={() => setSupWfReview(null)}
-                  onApply={async (ids) => {
+                  onApplyCustomer={async (ids) => {
+                    try {
+                      const r = await apiFetch('/api/v1/customer-master/sync-from-wfirma/apply',
+                        { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
+                      if (r && r.ok === false && r.mode === 'blocked') {
+                        window.alert('Customer apply blocked: ' + (r.blocking_reasons || []).join('; '));
+                        return false;
+                      }
+                      const rejMsg = (r.rejected && r.rejected.length)
+                        ? '\nRejected: ' + r.rejected.map(x => x.wfirma_id + ' (' + x.reason + ')').join(', ')
+                        : '';
+                      window.alert('Customer applied=' + (r.applied_count|0)
+                        + ' (inserted=' + (r.inserted|0) + ', updated=' + (r.updated|0) + ')' + rejMsg);
+                      await loadCustomerMaster();
+                      return true;
+                    } catch (e) {
+                      window.alert('Customer apply failed: ' + (e.message || e));
+                      return false;
+                    }
+                  }}
+                  onApplySupplier={async (ids) => {
                     try {
                       const r = await apiFetch('/api/v1/suppliers/sync-from-wfirma/apply',
                         { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
                       if (r && r.ok === false && r.mode === 'blocked') {
-                        window.alert('Blocked: ' + (r.blocking_reasons || []).join('; '));
+                        window.alert('Supplier apply blocked: ' + (r.blocking_reasons || []).join('; '));
                         return false;
                       }
-                      window.alert('Applied=' + (r.applied_count|0)
+                      window.alert('Supplier applied=' + (r.applied_count|0)
                         + ' (inserted=' + (r.inserted|0)
                         + ', updated=' + (r.updated_match|0)
                         + ', backfilled=' + (r.backfilled|0) + ')');
                       await loadSuppliers();
                       return true;
                     } catch (e) {
-                      window.alert('Apply failed: ' + (e.message || e));
+                      window.alert('Supplier apply failed: ' + (e.message || e));
                       return false;
                     }
                   }} />

@@ -258,8 +258,7 @@ def test_master_data_page_only_uses_allow_listed_write_endpoints():
         "/api/v1/vat-config",
         "/api/v1/fx-rates",
         "/api/v1/carriers-config",
-        "/api/v1/wfirma/customers/sync",                # B0 (MDOC-cache): bulk Customer Master sync; local cache write only
-        "/api/v1/wfirma/customers/sync-from-wfirma",    # B0 (MDOC-cache): per-row apply for Customer Master review-and-assign
+        "/api/v1/customer-master/sync-from-wfirma",    # B0 (MDOC-cache): customer master review-and-assign apply (identity-only)
     )
 
     for path in write_paths:
