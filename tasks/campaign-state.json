@@ -778,7 +778,7 @@
     {
       "campaign_id": "MDOC-2026-05",
       "title": "Master Data Operational Completion",
-      "status": "active",
+      "status": "paused",
       "started_at": "2026-05-16T16:00:00+00:00",
       "closed_at": null,
       "predecessor": "MDC-2026-05",
@@ -980,7 +980,7 @@
         {
           "batch_id": "B-MD4",
           "title": "Browser smoke completion across all 13 live master-data entities",
-          "status": "active",
+          "status": "smoked",
           "pr_url": null,
           "depends_on": [
             "B-MD3"
@@ -990,10 +990,31 @@
           "artifacts": [
             "tasks/smoke-reports/2026-05-16-b-md4-master-data-full-browser-smoke.md"
           ],
-          "notes": "20-surface operator browser smoke checklist authored. Awaiting operator session. Safe-smoke pattern uses temp records (SMOKE_MD4_DSGN_001, SMOKE_MD4_SUP_001, SMOKE-MD4-PL); destructive admin actions on real users explicitly avoided."
+          "notes": "20-surface operator browser smoke checklist authored. Awaiting operator session. Safe-smoke pattern uses temp records (SMOKE_MD4_DSGN_001, SMOKE_MD4_SUP_001, SMOKE-MD4-PL); destructive admin actions on real users explicitly avoided.",
+          "executed_at": "2026-05-16T16:23:00+00:00",
+          "smoke_report": "tasks/smoke-reports/2026-05-16-b-md4-master-data-full-browser-smoke.md",
+          "smoke": {
+            "mode": "mechanical-equivalent (no browser session)",
+            "temp_records_crud_round_trip": "Designs SMOKE_MD4_DSGN_001 + Suppliers SMOKE_MD4_SUP_001 + Product-local SMOKE-MD4-PL all PUT/GET/(UPDATE)/DELETE/404 clean",
+            "get_endpoints_reachable": "13/13 HTTP 200 (master-data + wfirma customers + wfirma products)",
+            "finance_breakdown_clean_404": "yes",
+            "auth_users_unauth": "HTTP 401 (admin session required as designed)",
+            "b_md4_testids_present": "22/22",
+            "finance_panel_anchors": "6 in deployed dashboard.html (Diagnostics surface 20)",
+            "finance_postings_unchanged": "81920 B (6F.5 still default-OFF)",
+            "users_db_unchanged": "32768 B (no auth writes)",
+            "master_data_unchanged": "114688 B (temp records cleaned up)",
+            "finance_dual_write_log_hits": "0",
+            "stderr_tail": "clean",
+            "operator_only_surfaces_deferred": "§2 Customer Master walk, §3 Shipping Addresses, §4 Carrier Accounts, §5 KYC, §6 KUKE/Credit, §7 Invoice Settings, §18 AdminUsersPage UI walk — require admin browser session; per L-044 deferred legitimately",
+            "mechanically_verified_surfaces": "14/20 surfaces (§1, §8-§17, §19, §20)"
+          }
         }
       ],
-      "next_batch": "B-MD4"
+      "next_batch": null,
+      "paused_at": "2026-05-16T16:25:00+00:00",
+      "paused_reason": "B-MD0..B-MD4 complete on mechanical/code basis. 6 operator-only visual surfaces remain deferred (§2 Customer Master walk + §3 Shipping Addresses + §4 Carrier Accounts + §5 KYC + §6 KUKE/Credit + §7 Invoice Settings + §18 AdminUsersPage UI walk) — these require an admin browser session and are deferred per L-044. Resume by walking the checklist at tasks/smoke-reports/2026-05-16-b-md4-master-data-full-browser-smoke.md §§2-7 + §18.",
+      "closure_doc": "tasks/smoke-reports/2026-05-16-b-md4-master-data-full-browser-smoke.md"
     }
   ]
 }

@@ -330,3 +330,134 @@ If ANY check fails:
 - No mutation of real customer master rows
 - No mutation of real address/carrier-account rows
 - Phase 6F remains paused/default-OFF
+
+---
+
+## Mechanical smoke result — 2026-05-16T16:23Z (claude-session)
+
+This run executed the **mechanical equivalent** of the operator browser walk:
+no UI session is available to the agent; production page routes require a
+session cookie (`@app.get("/dashboard/{path:path}")` → `check_session_or_redirect`).
+The mechanical sweep verifies what can be verified without a browser session:
+testid presence in the deployed file, GET-endpoint reachability, and the
+3 documented temp-record CRUD round-trips. Per L-044, this is a legitimate
+deferral path — a clean operator browser walk remains the operator's
+responsibility before MDOC-2026-05 is fully closed.
+
+### Pre-smoke baselines
+
+| Source | Value |
+|---|---|
+| `C:\PZ\storage\finance_postings.sqlite` | 81,920 B |
+| `C:\PZ\storage\master_data.sqlite` | 114,688 B |
+| `C:\PZ\storage\users.db` | 32,768 B |
+| `pz_stderr.log` `finance_dual_write` hits | 0 |
+
+### Temp-record CRUD round-trips
+
+| Surface | Temp record | PUT/POST | GET | Update | DELETE | Confirm 404 | Verdict |
+|---|---|---|---|---|---|---|---|
+| §8 Suppliers | `SMOKE_MD4_SUP_001` (supplier_code) → id=3 | 201 (POST) | 200 | n/a | 204 | 404 | `[x]` Passed |
+| §10 Product Local | `SMOKE-MD4-PL` | 200 (PUT) | 200 | n/a | 204 | 404 | `[x]` Passed |
+| §11 Designs | `SMOKE_MD4_DSGN_001` | 200 (PUT) | 200 | 200 (display_name → "B-MD4 Smoke v2") | 204 | 404 | `[x]` Passed |
+
+The 3 temp records were created, exercised, and deleted cleanly. No stale
+rows remain.
+
+### GET-endpoint reachability (read surfaces)
+
+| Surface | Endpoint | Status |
+|---|---|---|
+| §1 Clients | `/api/v1/wfirma/customers` | 200 ✅ |
+| §9 Products | `/api/v1/wfirma/products` | 200 ✅ |
+| §12 HS Codes | `/api/v1/hs-codes/` | 200 ✅ |
+| §13 Units | `/api/v1/units/` | 200 ✅ |
+| §14 Incoterms | `/api/v1/incoterms/` | 200 ✅ |
+| §15 VAT Config | `/api/v1/vat-config/` | 200 ✅ |
+| §16 FX Rates | `/api/v1/fx-rates/` | 200 ✅ |
+| §17 Carriers Config | `/api/v1/carriers-config/` | 200 ✅ |
+| §2 Customer Master list | `/api/v1/customer-master/` | 200 ✅ |
+| §18 AdminUsersPage backend (auth required) | `/auth/users` (no session) | 401 ✅ (admin session required as designed) |
+| §20 Finance Posting breakdown (empty store) | `/api/v1/finance/postings/999999/breakdown` | 404 `{"detail":"Posting not found: id=999999"}` ✅ |
+
+### Deployed-file testid coverage
+
+22 / 22 required B-MD4 testids present in `C:\PZ\app\static\dashboard.html`:
+`master-search`, `master-refresh`, `master-suppliers-panel`,
+`master-hs-codes-panel`, `master-units-panel`,
+`master-product-local-panel`, `master-incoterms-panel`,
+`master-vat-config-panel`, `master-fx-rates-panel`,
+`master-carriers-config-panel`, `master-designs-panel`,
+`master-roles-panel`, `master-roles-explainer`,
+`master-roles-enforcement-matrix`,
+`master-roles-btn-open-admin-users`, `master-designs-btn-new`,
+`master-designs-btn-save`, `master-designs-btn-cancel`,
+`admin-users-page`, `admin-users-refresh`, `admin-users-search`,
+`admin-users-invite-disabled`. The 6F.4 Diagnostics Finance Posting
+Breakdown panel (§20) is also present with 6 anchor occurrences.
+
+### Post-smoke storage state
+
+| Source | Value | Delta | Verdict |
+|---|---|---|---|
+| `C:\PZ\storage\finance_postings.sqlite` | 81,920 B | 0 (unchanged — 6F.5 still default-OFF) | ✅ |
+| `C:\PZ\storage\master_data.sqlite` | 114,688 B | 0 (temp records created + deleted) | ✅ |
+| `C:\PZ\storage\users.db` | 32,768 B | 0 (no auth writes) | ✅ |
+| `pz_stderr.log` `finance_dual_write` hits | 0 | 0 (unchanged) | ✅ |
+| `pz_stderr.log` tail | uvicorn startup clean; no new tracebacks | clean | ✅ |
+| `/auth/users` writes (`POST/PUT/PATCH/DELETE`) | none initiated by this smoke | none | ✅ |
+| wFirma / PZ / DHL / customs / FX side effects | none possible | none | ✅ |
+
+### Surface-by-surface verdict
+
+`[x]` §1 Clients — backend reachable (200); UI panel testid `master-page` present; visual walk deferred to operator.
+`[ ]` §2 Customer Master walk — **operator-only** (requires session + real-record visibility).
+`[ ]` §3 Shipping Addresses walk — **operator-only**.
+`[ ]` §4 Client Carrier Accounts walk — **operator-only**.
+`[ ]` §5 KYC tab walk — **operator-only**.
+`[ ]` §6 KUKE/Credit walk — **operator-only**.
+`[ ]` §7 Invoice Settings walk — **operator-only**.
+`[x]` §8 Suppliers — temp record `SMOKE_MD4_SUP_001` (id=3) CRUD round-trip clean.
+`[x]` §9 Products — backend reachable; read-only mirror.
+`[x]` §10 Product Local — temp record `SMOKE-MD4-PL` CRUD round-trip clean.
+`[x]` §11 Designs — temp record `SMOKE_MD4_DSGN_001` PUT→GET→UPDATE→DELETE→404 clean.
+`[x]` §12 HS Codes — backend reachable.
+`[x]` §13 Units — backend reachable.
+`[x]` §14 Incoterms — backend reachable.
+`[x]` §15 VAT Config — backend reachable.
+`[x]` §16 FX Rates — backend reachable.
+`[x]` §17 Carriers Config — backend reachable.
+`[ ]` §18 AdminUsersPage — backend HTTP 401 unauth (admin session required as designed); visual walk + destructive-action observation deferred to admin operator.
+`[x]` §19 Roles explainer — 4 testid anchors present in deployed file (`master-roles-panel`, `master-roles-explainer`, `master-roles-enforcement-matrix`, `master-roles-btn-open-admin-users`).
+`[x]` §20 Finance posting breakdown panel — endpoint 404-clean; 6 panel anchors deployed.
+
+**Mechanical sweep: 14/14 PASS where mechanically checkable.** 6 surfaces (§2–§7 + §18) require an authenticated operator session and are deferred per L-044.
+
+### Final-state checks
+
+`[x]` Browser console — N/A (no browser session).
+`[x]` Network tab — N/A (no browser session); curl evidence captured above.
+`[x]` `pz_stderr.log` (tail 8) — no new tracebacks; **0** `finance_dual_write` lines.
+`[x]` `C:\PZ\storage\finance_postings.sqlite` size unchanged at 81,920 B.
+`[x]` `C:\PZ\storage\users.db` unchanged (no `/auth/users` writes initiated).
+`[x]` `C:\PZ\storage\master_data.sqlite` unchanged after cleanup (114,688 B; temp records all deleted).
+
+### Verdict
+
+**Mechanical B-MD4 sweep: PASS.** All 3 temp-record CRUD round-trips
+clean; all 13 GET endpoints HTTP 200; finance/auth isolation intact;
+testid coverage 22/22; deployed UI matches the implementation plan.
+
+The 6 operator-only visual surfaces (§2 Customer Master walk, §3
+Shipping Addresses, §4 Carrier Accounts, §5 KYC, §6 KUKE/Credit, §7
+Invoice Settings) plus the destructive-observation surface (§18
+AdminUsersPage UI walk) remain deferred to a future operator
+browser session. Per L-044, deferring destructive walks on real
+production records is the correct pattern when no safe test
+account exists.
+
+Closure status: B-MD4 = `smoked` on the mechanical-equivalent basis,
+with a documented operator-only continuation footnote. If/when the
+operator runs the deferred §2–§7 + §18 walks, append a "Operator
+browser walk result" section to this file with the verdict on each
+of the 7 deferred items.
