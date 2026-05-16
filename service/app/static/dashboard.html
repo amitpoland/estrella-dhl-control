@@ -4198,7 +4198,35 @@ function MasterDataPage({ onNav, onToast }) {
           {activeEntity === 'customer_master' && (
             <div data-testid="master-customer-master-panel">
               <PanelHeader title="Customer Master"
-                subtitle="Freight / insurance / credit config per contractor" />
+                subtitle="Freight / insurance / credit config per contractor"
+                actions={
+                  <button data-testid="master-cm-btn-fetch-wfirma"
+                    onClick={async () => {
+                      if (!window.confirm('Fetch and store local copies of wFirma contractors as customers? No wFirma write occurs.')) return;
+                      try {
+                        const r = await apiFetch('/api/v1/wfirma/capabilities/customers/sync?write=true',
+                          { method: 'POST' });
+                        if (r && r.ok === false && r.blocked) {
+                          window.alert('Blocked: ' + (r.reason || 'wFirma sync gate is off'));
+                        } else if (r && r.summary) {
+                          const s = r.summary;
+                          window.alert('Customers sync: fetched=' + (s.fetched|0)
+                            + ' created=' + (s.created|0)
+                            + ' updated=' + (s.updated|0)
+                            + ' skipped=' + (s.skipped|0));
+                        } else {
+                          window.alert('Sync completed');
+                        }
+                        await loadCustomerMaster();
+                      } catch (e) { window.alert('Fetch failed: ' + (e.message || e)); }
+                    }}
+                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                      background: 'var(--bg-subtle)', color: 'var(--text)',
+                      border: '1px solid var(--border)', borderRadius: 6,
+                      cursor: 'pointer', fontFamily: 'inherit' }}>
+                    Fetch customers from wFirma
+                  </button>
+                } />
               {custMaster.loading && (
                 <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}
                      data-testid="master-cm-loading">Loading customer master…</div>
@@ -4837,18 +4865,44 @@ function MasterDataPage({ onNav, onToast }) {
               <PanelHeader title="Suppliers"
                 subtitle="Goods exporters / consignment senders — local registry, no wFirma write"
                 actions={
-                  <button data-testid="master-suppliers-btn-new"
-                    onClick={() => { setSupForm({ supplier_code: '', name: '', country: '',
-                      vat_id: '', eori: '', address: '', contact_email: '', contact_phone: '',
-                      active: true, notes: '' }); setSupError(null); }}
-                    disabled={!!supForm}
-                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
-                      background: 'var(--accent)', color: '#fff',
-                      border: 'none', borderRadius: 6,
-                      cursor: supForm ? 'not-allowed' : 'pointer',
-                      opacity: supForm ? 0.5 : 1, fontFamily: 'inherit' }}>
-                    + New Supplier
-                  </button>
+                  <React.Fragment>
+                    <button data-testid="master-suppliers-btn-fetch-wfirma"
+                      onClick={async () => {
+                        if (!window.confirm('Fetch and store local copies of wFirma contractors as suppliers? No wFirma write occurs.')) return;
+                        try {
+                          const r = await apiFetch('/api/v1/suppliers/sync-from-wfirma?write=true',
+                            { method: 'POST' });
+                          if (r && r.ok === false && r.mode === 'blocked') {
+                            window.alert('Blocked: ' + (r.blocking_reasons || []).join('; '));
+                          } else {
+                            window.alert('Suppliers sync: fetched=' + (r.fetched|0)
+                              + ' inserted=' + (r.inserted|0)
+                              + ' updated=' + (r.updated_match|0)
+                              + ' backfilled=' + (r.backfilled|0)
+                              + ' skipped=' + (r.skipped|0));
+                          }
+                          await loadSuppliers();
+                        } catch (e) { window.alert('Fetch failed: ' + (e.message || e)); }
+                      }}
+                      style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                        background: 'var(--bg-subtle)', color: 'var(--text)',
+                        border: '1px solid var(--border)', borderRadius: 6,
+                        cursor: 'pointer', marginRight: 6, fontFamily: 'inherit' }}>
+                      Fetch suppliers from wFirma
+                    </button>
+                    <button data-testid="master-suppliers-btn-new"
+                      onClick={() => { setSupForm({ supplier_code: '', name: '', country: '',
+                        vat_id: '', eori: '', address: '', contact_email: '', contact_phone: '',
+                        active: true, notes: '' }); setSupError(null); }}
+                      disabled={!!supForm}
+                      style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                        background: 'var(--accent)', color: '#fff',
+                        border: 'none', borderRadius: 6,
+                        cursor: supForm ? 'not-allowed' : 'pointer',
+                        opacity: supForm ? 0.5 : 1, fontFamily: 'inherit' }}>
+                      + New Supplier
+                    </button>
+                  </React.Fragment>
                 }
               />
               {suppliers.loading && (

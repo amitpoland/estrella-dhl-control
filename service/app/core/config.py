@@ -211,6 +211,11 @@ class Settings(BaseSettings):
     wfirma_edit_product_allowed:    bool = Field(default=False, env="WFIRMA_EDIT_PRODUCT_ALLOWED")
     wfirma_edit_invoice_allowed:    bool = Field(default=False, env="WFIRMA_EDIT_INVOICE_ALLOWED")
     wfirma_sync_customers_allowed:  bool = Field(default=False, env="WFIRMA_SYNC_CUSTOMERS_ALLOWED")
+    # B0 (MDOC-cache): controls local-only persistence of wFirma contractors
+    # into the suppliers table via POST /api/v1/suppliers/sync-from-wfirma.
+    # Reads wFirma; never writes to wFirma. When False, the route returns a
+    # dry-run plan (preview) and refuses to mutate suppliers.sqlite.
+    wfirma_sync_suppliers_allowed:  bool = Field(default=False, env="WFIRMA_SYNC_SUPPLIERS_ALLOWED")
     wfirma_delete_invoice_allowed:  bool = Field(default=False, env="WFIRMA_DELETE_INVOICE_ALLOWED")
     wfirma_create_pz_allowed:       bool = Field(default=False, env="WFIRMA_CREATE_PZ_ALLOWED")
     # Manual Proforma → final invoice conversion gate. Off by default;

@@ -258,6 +258,7 @@ def test_master_data_page_only_uses_allow_listed_write_endpoints():
         "/api/v1/vat-config",
         "/api/v1/fx-rates",
         "/api/v1/carriers-config",
+        "/api/v1/wfirma/capabilities/customers/sync",  # B0 (MDOC-cache): Customer Master Fetch-from-wFirma; local cache write only, no wFirma write
     )
 
     for path in write_paths:

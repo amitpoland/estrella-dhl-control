@@ -40,6 +40,7 @@ from ..services.suppliers_db import (
     list_suppliers,
     update_supplier,
     delete_supplier,
+    sync_from_wfirma,
 )
 
 log    = get_logger(__name__)
@@ -62,6 +63,7 @@ def _supplier_dict(s: Supplier) -> dict:
         "contact_phone": s.contact_phone,
         "active":        s.active,
         "notes":         s.notes,
+        "wfirma_id":     s.wfirma_id,
         "created_at":    s.created_at,
         "updated_at":    s.updated_at,
     }
@@ -187,3 +189,71 @@ def delete_supplier_endpoint(supplier_id: int) -> Response:
         raise HTTPException(status_code=404, detail=f"Supplier not found: id={supplier_id}")
     log.info("supplier_delete id=%d", supplier_id)
     return Response(status_code=204)
+
+
+# ── B0 (MDOC-cache) — sync from wFirma ────────────────────────────────────────
+@router.post("/sync-from-wfirma", dependencies=[_auth],
+             summary="Pull wFirma contractors into local suppliers (read wFirma only)")
+def suppliers_sync_from_wfirma_endpoint(
+    write: bool = Query(False, description="true → apply; false → dry-run preview"),
+) -> JSONResponse:
+    """Read-only against wFirma. Pulls contractors via wfirma_client and
+    upserts them into the local suppliers table. No wFirma write.
+
+    - Dedup rules: by wfirma_id (primary); by (vat_id+name) fallback for
+      legacy rows; new rows inserted with deterministic supplier_code.
+    - Default (write=false): dry-run preview, no local mutation.
+    - write=true requires settings.wfirma_sync_suppliers_allowed.
+    - Returns {fetched, inserted, updated_match, backfilled, skipped,
+      conflicts, dry_run, blocked?, examples}.
+    """
+    try:
+        init_db(_DB_PATH)
+    except Exception as exc:
+        log.error("suppliers init_db failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB init error: {exc}")
+
+    # Force dry-run unless explicitly enabled by settings.
+    effective_dry_run = True
+    blocking_reasons = []
+    if write:
+        if settings.wfirma_sync_suppliers_allowed:
+            effective_dry_run = False
+        else:
+            blocking_reasons.append(
+                "wfirma_sync_suppliers_allowed is false — operator must "
+                "enable WFIRMA_SYNC_SUPPLIERS_ALLOWED to apply"
+            )
+
+    try:
+        result = sync_from_wfirma(_DB_PATH, dry_run=effective_dry_run)
+    except Exception as exc:
+        log.error("sync_from_wfirma failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "fetch_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    body = {
+        "ok":               True,
+        "mode":             "write" if (write and not blocking_reasons) else "preview",
+        "fetched":          result["fetched"],
+        "inserted":         result["inserted"],
+        "updated_match":    result["updated_match"],
+        "backfilled":       result["backfilled"],
+        "skipped":          result["skipped"],
+        "conflicts":        result["conflicts"],
+        "dry_run":          result["dry_run"],
+        "examples":         result.get("examples", []),
+    }
+    if blocking_reasons:
+        body["ok"] = False
+        body["mode"] = "blocked"
+        body["blocking_reasons"] = blocking_reasons
+    log.info(
+        "suppliers_sync_from_wfirma mode=%s fetched=%d inserted=%d updated=%d backfilled=%d skipped=%d",
+        body["mode"], body["fetched"], body["inserted"], body["updated_match"],
+        body["backfilled"], body["skipped"],
+    )
+    return JSONResponse(body)

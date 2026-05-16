@@ -40,6 +40,7 @@ class Supplier:
     contact_phone: Optional[str] = None
     active:        bool          = True
     notes:         Optional[str] = None
+    wfirma_id:     Optional[str] = None      # B0 (MDOC-cache): soft ref into wFirma contractors
     id:            Optional[int] = None
     created_at:    Optional[str] = None
     updated_at:    Optional[str] = None
@@ -52,6 +53,12 @@ def _now() -> str:
 
 
 def _row_to_supplier(row: sqlite3.Row) -> Supplier:
+    # Use dict access via row.keys() to tolerate legacy schemas pre-B0
+    # that may lack the wfirma_id column on already-open connections.
+    try:
+        wfid = row["wfirma_id"]
+    except (IndexError, KeyError):
+        wfid = None
     return Supplier(
         id            = row["id"],
         supplier_code = row["supplier_code"],
@@ -64,6 +71,7 @@ def _row_to_supplier(row: sqlite3.Row) -> Supplier:
         contact_phone = row["contact_phone"],
         active        = bool(int(row["active"])),
         notes         = row["notes"],
+        wfirma_id     = wfid,
         created_at    = row["created_at"],
         updated_at    = row["updated_at"],
     )
@@ -109,7 +117,12 @@ def validate_supplier(data: Dict[str, Any]) -> List[str]:
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 def init_db(db_path: Path) -> None:
-    """Create suppliers table if it does not exist. Idempotent."""
+    """Create suppliers table if it does not exist. Idempotent.
+
+    B0 (MDOC-cache): adds nullable ``wfirma_id`` column to enable dedup
+    against the wFirma contractor master cache. Soft reference only; no
+    SQL FK constraint (consistent with the rest of master-data style).
+    """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(str(db_path)) as conn:
@@ -126,12 +139,18 @@ def init_db(db_path: Path) -> None:
                 contact_phone   TEXT,
                 active          INTEGER NOT NULL DEFAULT 1,
                 notes           TEXT,
+                wfirma_id       TEXT,
                 created_at      TEXT NOT NULL,
                 updated_at      TEXT NOT NULL
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_suppliers_country ON suppliers (country)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_suppliers_active  ON suppliers (active)")
+        # ── B0 additive migration: backfill wfirma_id column on legacy DBs ────
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(suppliers)").fetchall()}
+        if "wfirma_id" not in cols:
+            conn.execute("ALTER TABLE suppliers ADD COLUMN wfirma_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_suppliers_wfirma_id ON suppliers (wfirma_id)")
         conn.commit()
 
 
@@ -155,19 +174,21 @@ def create_supplier(db_path: Path, data: Dict[str, Any]) -> int:
         "contact_phone": _clean(data.get("contact_phone")),
         "active":        1 if data.get("active", True) else 0,
         "notes":         _clean(data.get("notes")),
+        "wfirma_id":     _clean(data.get("wfirma_id")),
     }
     with sqlite3.connect(str(db_path)) as conn:
         try:
             cur = conn.execute("""
                 INSERT INTO suppliers
                     (supplier_code, name, country, vat_id, eori, address,
-                     contact_email, contact_phone, active, notes,
+                     contact_email, contact_phone, active, notes, wfirma_id,
                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (payload["supplier_code"], payload["name"], payload["country"],
                   payload["vat_id"], payload["eori"], payload["address"],
                   payload["contact_email"], payload["contact_phone"],
-                  payload["active"], payload["notes"], now, now))
+                  payload["active"], payload["notes"], payload["wfirma_id"],
+                  now, now))
             conn.commit()
             return int(cur.lastrowid)
         except sqlite3.IntegrityError as exc:
@@ -305,3 +326,155 @@ def delete_supplier(db_path: Path, supplier_id: int) -> bool:
             return cur.rowcount > 0
         except sqlite3.OperationalError:
             return False
+
+
+# ── B0 (MDOC-cache) — wFirma identity sync ────────────────────────────────────
+#
+# Read-only against wFirma. Pulls contractors via wfirma_client and upserts
+# them into the local suppliers table. No wFirma write. No proforma / PZ /
+# finance side effects. Dedup by wfirma_id (primary) AND by (vat_id+name)
+# fallback for legacy rows entered before the wFirma cache existed.
+
+def _supplier_code_from_wfirma(wfirma_id: str, name: str) -> str:
+    """Deterministic supplier_code from wFirma identity. Stable across re-syncs."""
+    base = (name or "").strip().upper()
+    base = "".join(ch if ch.isalnum() else "_" for ch in base)[:48].strip("_")
+    if not base:
+        base = "WFIRMA"
+    return f"WF-{wfirma_id}-{base}" if wfirma_id else f"LOCAL-{base}"
+
+
+def sync_from_wfirma(db_path: Path, *, dry_run: bool = True) -> Dict[str, Any]:
+    """Pull wFirma contractors and reconcile into local suppliers.
+
+    No wFirma write. Local-only mutation when dry_run=False.
+
+    Dedup rules (in order):
+      1. row.wfirma_id matches a fetched contractor.wfirma_id → UPDATE that row.
+      2. row.wfirma_id is NULL/empty AND row.vat_id == contractor.nip
+         AND row.name == contractor.name → backfill wfirma_id on that row.
+      3. otherwise → INSERT new supplier.
+
+    Returns: dict with counts {fetched, inserted, updated_match, backfilled,
+    skipped, conflicts}. dry_run mode reports the same counts but never writes.
+    """
+    from . import wfirma_client as wfc  # local import to avoid top-level cycle
+
+    init_db(db_path)
+    contractors: List["wfc.WFirmaContractor"] = []
+    page = 1
+    page_size = 100
+    while True:
+        batch = wfc.list_contractors_page(page=page, limit=page_size)
+        if not batch:
+            break
+        contractors.extend(batch)
+        if len(batch) < page_size:
+            break
+        page += 1
+        if page > 200:  # safety
+            break
+
+    counts = {
+        "fetched":         len(contractors),
+        "inserted":        0,
+        "updated_match":   0,
+        "backfilled":      0,
+        "skipped":         0,
+        "conflicts":       0,
+        "dry_run":         bool(dry_run),
+    }
+    examples: List[Dict[str, Any]] = []
+
+    if not contractors:
+        return {**counts, "examples": examples}
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+
+        # Build lookup maps once per call.
+        all_rows = conn.execute("SELECT id, supplier_code, name, country, vat_id, wfirma_id FROM suppliers").fetchall()
+        by_wfirma:  Dict[str, sqlite3.Row] = {}
+        by_vat:     Dict[str, sqlite3.Row] = {}
+        for r in all_rows:
+            wf = (r["wfirma_id"] or "").strip()
+            if wf:
+                by_wfirma[wf] = r
+            vat = (r["vat_id"] or "").strip().lower()
+            nm  = (r["name"] or "").strip().lower()
+            if vat and nm:
+                by_vat[f"{vat}|{nm}"] = r
+
+        now = _now()
+        seen_wfirma_ids = set()
+
+        for c in contractors:
+            wfid = (c.wfirma_id or "").strip()
+            if not wfid:
+                counts["skipped"] += 1
+                continue
+            if wfid in seen_wfirma_ids:
+                counts["skipped"] += 1
+                continue
+            seen_wfirma_ids.add(wfid)
+
+            cname = (c.name or "").strip()
+            cnip  = (c.nip or "").strip()
+            ccountry = (c.country or "").strip().upper()
+
+            # Rule 1: exact wfirma_id match → UPDATE
+            existing = by_wfirma.get(wfid)
+            if existing is not None:
+                if not dry_run:
+                    conn.execute(
+                        """UPDATE suppliers SET name=?, country=?, vat_id=COALESCE(NULLIF(?,''), vat_id),
+                                                updated_at=? WHERE id=?""",
+                        (cname or existing["name"], ccountry or existing["country"], cnip, now, existing["id"]),
+                    )
+                counts["updated_match"] += 1
+                continue
+
+            # Rule 2: vat+name fallback → backfill wfirma_id
+            vat_key = f"{cnip.lower()}|{cname.lower()}"
+            existing = by_vat.get(vat_key) if cnip and cname else None
+            if existing is not None:
+                if not dry_run:
+                    conn.execute(
+                        "UPDATE suppliers SET wfirma_id=?, updated_at=? WHERE id=?",
+                        (wfid, now, existing["id"]),
+                    )
+                counts["backfilled"] += 1
+                continue
+
+            # Rule 3: new row
+            sup_code = _supplier_code_from_wfirma(wfid, cname)
+            if not cname or not ccountry:
+                counts["skipped"] += 1
+                if len(examples) < 5:
+                    examples.append({"reason": "incomplete", "wfirma_id": wfid, "name": cname, "country": ccountry})
+                continue
+            if not dry_run:
+                try:
+                    conn.execute(
+                        """INSERT INTO suppliers
+                            (supplier_code, name, country, vat_id, eori, address,
+                             contact_email, contact_phone, active, notes, wfirma_id,
+                             created_at, updated_at)
+                           VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, NULL, ?, ?, ?)""",
+                        (sup_code, cname, ccountry, cnip or None, wfid, now, now),
+                    )
+                    counts["inserted"] += 1
+                except sqlite3.IntegrityError as exc:
+                    # supplier_code clash — shouldn't happen given deterministic key,
+                    # but record as conflict and move on
+                    counts["conflicts"] += 1
+                    if len(examples) < 5:
+                        examples.append({"reason": "code_conflict", "wfirma_id": wfid,
+                                         "supplier_code": sup_code, "err": str(exc)})
+            else:
+                counts["inserted"] += 1  # would-insert in dry-run
+
+        if not dry_run:
+            conn.commit()
+
+    return {**counts, "examples": examples}
