@@ -393,7 +393,7 @@
         {
           "batch_id": "6F.2",
           "title": "Backfill from proforma_service_charges (planned)",
-          "status": "planned",
+          "status": "active",
           "pr_url": null,
           "next_batch": null,
           "block_reason": null
