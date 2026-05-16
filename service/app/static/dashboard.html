@@ -2525,8 +2525,22 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
       const CM_DECIMAL = ['freight_fixed_amount_eur','freight_fixed_amount_usd',
                           'insurance_rate','insurance_min_eur','insurance_min_usd',
                           'kuke_limit','credit_limit','kuke_self_retention_pct'];
+      // Optional string fields: empty string → null so the backend does not
+      // receive "" for fields that should be absent (null) in the DB.
+      const CM_OPT_STR = ['freight_service_id','insurance_service_id',
+                          'freight_mode','freight_currency',
+                          'freight_label_pl','freight_label_en',
+                          'insurance_mode','insurance_label_pl','insurance_label_en',
+                          'kuke_policy_number','kuke_currency','kuke_expiry_date',
+                          'risk_status','credit_currency',
+                          'kyc_status','kyc_approved_on','kyc_expiry',
+                          'beneficial_owner','owner_id_type','owner_id_number',
+                          'aml_risk_rating','pep_check_result','compliance_notes'];
       const payload = { ...form };
       for (const f of CM_DECIMAL) {
+        if (payload[f] === '' || payload[f] == null) payload[f] = null;
+      }
+      for (const f of CM_OPT_STR) {
         if (payload[f] === '' || payload[f] == null) payload[f] = null;
       }
       await apiFetch('/api/v1/customer-master/' + contractorId,
@@ -3344,6 +3358,7 @@ function MasterDataPage({ onNav, onToast }) {
   // ── Legacy CM inline-edit helpers (data-testid compatibility) ──────────
   const CM_DECIMAL_FIELDS = ['freight_fixed_amount_eur','freight_fixed_amount_usd',
                               'insurance_rate','insurance_min_eur','insurance_min_usd'];
+  const CM_OPT_STR_FIELDS = ['freight_service_id','insurance_service_id'];
   const openCmEdit = (rec) => {
     setCmEditForm({
       freight_service_id:       rec.freight_service_id       || '',
@@ -3370,6 +3385,9 @@ function MasterDataPage({ onNav, onToast }) {
     try {
       const payload = { ...cmEditForm };
       for (const f of CM_DECIMAL_FIELDS) {
+        if (payload[f] === '' || payload[f] == null) payload[f] = null;
+      }
+      for (const f of CM_OPT_STR_FIELDS) {
         if (payload[f] === '' || payload[f] == null) payload[f] = null;
       }
       await apiFetch('/api/v1/customer-master/' + cmEditId,

@@ -144,6 +144,20 @@ _BOOL_FIELDS = frozenset({
 
 _INT_FIELDS = frozenset({"vat_mode", "payment_terms_days"})
 
+# Optional string fields where an empty string from the UI must become None.
+# These fields are nullable in the DB; "" is never a valid stored value.
+_OPTIONAL_STR_FIELDS = frozenset({
+    "freight_service_id", "insurance_service_id",
+    "freight_mode", "freight_currency", "freight_label_pl", "freight_label_en",
+    "insurance_mode", "insurance_label_pl", "insurance_label_en",
+    "credit_currency",
+    "kuke_currency", "kuke_expiry_date", "kuke_policy_number", "risk_status",
+    "kyc_status", "kyc_approved_on", "kyc_expiry",
+    "beneficial_owner", "owner_id_type", "owner_id_number",
+    "aml_risk_rating", "pep_check_result", "compliance_notes",
+    "notes",
+})
+
 
 def _parse_body(contractor_id: str, body: Dict[str, Any]) -> CustomerMaster:
     """Coerce raw JSON body → CustomerMaster dataclass.
@@ -156,9 +170,12 @@ def _parse_body(contractor_id: str, body: Dict[str, Any]) -> CustomerMaster:
     body = dict(body)
     body["bill_to_contractor_id"] = contractor_id
 
-    # Decimal coercions
+    # Decimal coercions — empty string is treated as None (not set) before parsing.
     for fname in _DECIMAL_FIELDS:
         if fname in body and body[fname] is not None:
+            if body[fname] == "":
+                body[fname] = None
+                continue
             try:
                 body[fname] = Decimal(str(body[fname]))
             except InvalidOperation:
@@ -167,10 +184,15 @@ def _parse_body(contractor_id: str, body: Dict[str, Any]) -> CustomerMaster:
                     detail=f"{fname}: cannot parse {body[fname]!r} as Decimal",
                 )
 
-    # Bool coercions
+    # Bool coercions — explicit check against string "false"/"0" avoids
+    # bool("false") == True trap when the UI serialises booleans as strings.
     for fname in _BOOL_FIELDS:
         if fname in body and body[fname] is not None:
-            body[fname] = bool(body[fname])
+            v = body[fname]
+            if isinstance(v, str):
+                body[fname] = v.strip().lower() not in ("false", "0", "")
+            else:
+                body[fname] = bool(v)
 
     # Int coercions — empty string becomes None first
     for fname in _INT_FIELDS:
@@ -185,6 +207,13 @@ def _parse_body(contractor_id: str, body: Dict[str, Any]) -> CustomerMaster:
                     status_code=422,
                     detail=f"{fname}: cannot parse {body[fname]!r} as int",
                 )
+
+    # Blank-string → None normalisation for optional string fields.
+    # The UI sends "" for every unset text input; "" must not reach validate()
+    # as a whitespace-only invalid value, and must not be stored in the DB.
+    for fname in _OPTIONAL_STR_FIELDS:
+        if fname in body and body[fname] == "":
+            body[fname] = None
 
     # Default insurance_enabled to True
     body.setdefault("insurance_enabled", True)

@@ -164,7 +164,7 @@ def validate(c: CustomerMaster) -> List[str]:
     ):
         if value is not None and Decimal(value) < 0:
             blockers.append(f"{label} must be >= 0, got {value}")
-    if c.kuke_approved and not c.kuke_limit:
+    if c.kuke_approved is True and c.kuke_limit is None:
         blockers.append("kuke_approved=True requires kuke_limit to be set")
     # KUKE extras
     if c.kuke_self_retention_pct is not None:
