@@ -61,6 +61,11 @@ from .api.routes_customer_master import router as customer_master_router
 from .api.routes_client_addresses import router as client_addresses_router
 from .api.routes_client_carrier_accounts import router as client_carrier_accounts_router
 from .api.routes_suppliers import router as suppliers_router
+from .api.routes_master_data import (
+    hs_router as md_hs_router,
+    units_router as md_units_router,
+    pl_router as md_pl_router,
+)
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -266,6 +271,9 @@ app.include_router(customer_master_router)      # PR 2C.3a: customer master CRUD
 app.include_router(client_addresses_router)         # MasterData-1: per-client shipping addresses
 app.include_router(client_carrier_accounts_router)  # MasterData-1: per-client carrier accounts
 app.include_router(suppliers_router)                # MasterData-B4: suppliers registry (local CRUD; X-API-Key)
+app.include_router(md_hs_router)                    # MasterData-B5: HS codes (local CRUD; X-API-Key)
+app.include_router(md_units_router)                 # MasterData-B5: Units (local CRUD; X-API-Key)
+app.include_router(md_pl_router)                    # MasterData-B5: Product local augmentation (local CRUD; X-API-Key)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────

@@ -125,7 +125,7 @@ def test_four_loaders_present():
 def test_no_invented_master_endpoints():
     """Forbidden endpoints — these are NOT real backend routes; UI must not
     reference them. Any entity moved to live status must also have its forbidden
-    line removed from this list (see B4 suppliers)."""
+    line removed from this list (B4 suppliers, B5 hs-codes/units/product-local)."""
     src = _src()
     for ep in (
         "/api/v1/master",
@@ -137,9 +137,9 @@ def test_no_invented_master_endpoints():
         "/api/v1/master/hs-codes",
         "/api/v1/master/fx-rates",
         "/api/v1/master/roles",
-        # NOTE: "/api/v1/suppliers" removed — B4 wired the real backend
+        # NOTE removed in B4: /api/v1/suppliers
+        # NOTE removed in B5: /api/v1/hs-codes
         "/api/v1/designs",
-        "/api/v1/hs-codes",
         "/api/v1/fx-rates",
         "/api/v1/roles",
     ):
@@ -197,26 +197,42 @@ def test_no_mock_supplier_or_design_or_hs_or_fx():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_only_allowed_writes_in_master():
-    """PATCH is never allowed. POST/DELETE are only allowed for explicitly
-    wired master-data entities. After B4 the allow-list is:
-    - customer-master      PUT  (legacy inline edit)
-    - /api/v1/suppliers/   POST/PUT/DELETE (B4 MDC-031)
+    """PATCH is never allowed. POST/DELETE/PUT are only allowed for explicitly
+    wired master-data entities. After B5 the allow-list is:
+    - customer-master         PUT
+    - /api/v1/suppliers/      POST/PUT/DELETE  (B4)
+    - /api/v1/hs-codes/       PUT/DELETE       (B5; upsert via PUT)
+    - /api/v1/units/          PUT/DELETE       (B5)
+    - /api/v1/product-local/  PUT/DELETE       (B5)
     """
     src = _src()
     block = _master_block(src)
-    # PATCH is never allowed in MasterDataPage
     assert "method: 'PATCH'" not in block, \
         "MasterDataPage body must NOT contain method: 'PATCH'"
-    # Any POST/DELETE must target an entity from the allow-list
     import re
-    posts = re.findall(r"apiFetch\('([^']+)',\s*\{\s*method:\s*'POST'", block)
-    dels  = re.findall(r"apiFetch\('([^']+)',\s*\{\s*method:\s*'DELETE'", block)
-    puts  = re.findall(r"apiFetch\('([^']+)'", block)  # broader; only used informationally
-    allowed_post_delete = ('/api/v1/suppliers',)
+    posts = re.findall(r"apiFetch\(([^,]+),\s*\{\s*method:\s*'POST'", block)
+    dels  = re.findall(r"apiFetch\(([^,]+),\s*\{\s*method:\s*'DELETE'", block)
+    allowed_writes = (
+        '/api/v1/suppliers',
+        '/api/v1/hs-codes',
+        '/api/v1/units',
+        '/api/v1/product-local',
+    )
+    # b5Save / b5Delete are generic helpers that accept a basePath parameter;
+    # their call sites (b5Save('/api/v1/hs-codes', ...) etc.) carry the literal
+    # allowed-paths string. So allow `basePath` as a helper-parameter passthrough.
+    HELPER_PASSTHROUGH = ('basePath',)
     for ep in posts + dels:
-        # ep may include concatenated parts (e.g. '/api/v1/suppliers/' + supForm.id)
-        assert any(a in ep for a in allowed_post_delete), \
+        if any(p in ep for p in HELPER_PASSTHROUGH):
+            continue
+        assert any(a in ep for a in allowed_writes), \
             f"POST/DELETE to non-allow-listed endpoint in MasterDataPage: {ep}"
+    # Cross-check: every helper invocation must reference one of the allowed paths
+    import re as _re
+    helper_calls = _re.findall(r"b5(?:Save|Delete)\('([^']+)'", block)
+    for call_path in helper_calls:
+        assert any(a in call_path for a in allowed_writes), \
+            f"b5 helper invoked with non-allow-listed path: {call_path}"
     # The legacy CM inline edit PUT must remain
     assert "method: 'PUT'" in block, "Customer Master inline edit PUT must be present"
     assert "customer-master" in block, "PUT must target /api/v1/customer-master/"
@@ -317,14 +333,14 @@ def test_four_live_entities_in_sidebar():
     assert "live: true" in src, "live: true must be set on live entities"
 
 
-def test_eight_pending_entities_in_sidebar():
-    """B4 (MDC-030) moved suppliers from pending to live.
-    Eight entities remain pending: designs, fx_rates, hs_codes, carriers_config,
-    incoterms, vat_config, units, roles."""
+def test_five_pending_entities_in_sidebar():
+    """B5 (MDC-040..042) moved hs_codes + units + product_local to live; B4
+    moved suppliers. Five entities remain pending: designs, fx_rates,
+    carriers_config, incoterms, vat_config, roles."""
     src = _src()
     for eid in (
-        "'designs'", "'fx_rates'", "'hs_codes'",
-        "'carriers_config'", "'incoterms'", "'vat_config'", "'units'", "'roles'",
+        "'designs'", "'fx_rates'",
+        "'carriers_config'", "'incoterms'", "'vat_config'", "'roles'",
     ):
         assert f"id: {eid}" in src, f"Missing pending entity id: {eid}"
     assert "live: false" in src, "live: false must be set on pending entities"
@@ -335,9 +351,31 @@ def test_suppliers_entity_is_live():
     src = _src()
     idx = src.index("id: 'suppliers'")
     snippet = src[idx:idx + 220]
-    assert "live: true" in snippet, "Suppliers must be live: true (B4)"
-    assert "suppliers.items" in snippet or "suppliers.error" in snippet, \
-        "Suppliers sidebar entry must derive count from real state"
+    assert "live: true" in snippet
+    assert "suppliers.items" in snippet or "suppliers.error" in snippet
+
+
+def test_b5_entities_are_live():
+    """B5 entities — hs_codes, units, product_local — must be live: true with
+    a real count source."""
+    src = _src()
+    for eid, state_var in (("'hs_codes'", "hsCodes"),
+                            ("'units'", "units"),
+                            ("'product_local'", "pl")):
+        idx = src.index("id: " + eid)
+        snippet = src[idx:idx + 260]
+        assert "live: true" in snippet, f"{eid} must be live: true (B5)"
+        assert (state_var + ".items") in snippet or (state_var + ".error") in snippet, \
+            f"{eid} sidebar entry must derive from state ({state_var})"
+
+
+def test_b5_panel_testids_present():
+    src = _src()
+    for tid in ('master-hs-codes-panel', 'master-units-panel',
+                'master-product-local-panel',
+                'master-hs-btn-new', 'master-units-btn-new', 'master-pl-btn-new',
+                'master-hs-btn-save', 'master-units-btn-save', 'master-pl-btn-save'):
+        assert f'data-testid="{tid}"' in src, f"B5 missing testid: {tid}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -405,14 +443,14 @@ def test_products_table_uses_real_fields():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_pending_entity_panel_present():
-    """Pending panel uses concat testid syntax. After B4 the pending grid
-    no longer includes suppliers."""
+    """Pending panel uses concat testid syntax. After B5 the pending grid
+    contains designs, fx_rates, roles (B4 removed suppliers; B5 removed hs_codes)."""
     src = _src()
     assert 'data-testid="master-pending-panel"' in src
     assert 'data-testid="master-pending-badge"' in src
     assert 'data-testid="master-pending-grid"' in src
     assert "data-testid={'master-pending-' + id}" in src
-    for tid in ("'designs'", "'hs_codes'", "'fx_rates'", "'roles'"):
+    for tid in ("'designs'", "'fx_rates'", "'roles'"):
         assert f"id: {tid}" in src, f"Missing pending placeholder id: {tid}"
 
 
@@ -438,9 +476,11 @@ def test_design_preview_footer_present():
 
 def test_footer_accurately_lists_live_and_pending():
     src = _src()
-    # B4 added Suppliers to the live list. Footer ends "... · Suppliers are live."
+    # B5 adds HS Codes · Units · Product local to the live list
     assert "Clients" in src and "Users" in src
-    assert "Suppliers are live" in src, "Footer must list Suppliers as live (B4)"
+    assert "Product local are live" in src, "Footer must list Product local as live (B5)"
+    assert "Suppliers" in src
+    assert "HS Codes" in src
     assert "backend pending" in src.lower()
 
 

@@ -3384,6 +3384,86 @@ function MasterDataPage({ onNav, onToast }) {
     }
   }, []);
 
+  // ── B5: HS Codes, Units, Product-Local (MDC-040..042) ─────────────────
+  const [hsCodes, setHsCodes] = React.useState({ loading: false, error: null, items: [], ts: null });
+  const [units,   setUnits]   = React.useState({ loading: false, error: null, items: [], ts: null });
+  const [pl,      setPl]      = React.useState({ loading: false, error: null, items: [], ts: null });
+  const [hsForm,  setHsForm]  = React.useState(null);
+  const [unitForm, setUnitForm] = React.useState(null);
+  const [plForm,  setPlForm]  = React.useState(null);
+  const [b5Saving, setB5Saving] = React.useState(false);
+  const [b5Error,  setB5Error]  = React.useState(null);
+
+  const loadHsCodes = React.useCallback(async () => {
+    setHsCodes(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/api/v1/hs-codes/');
+      setHsCodes({ loading: false, error: null,
+        items: Array.isArray(d) ? d : (d.hs_codes || d.items || []),
+        ts: new Date().toISOString() });
+    } catch (e) {
+      setHsCodes({ loading: false, error: e.message || 'load failed', items: [],
+        ts: new Date().toISOString() });
+    }
+  }, []);
+
+  const loadUnits = React.useCallback(async () => {
+    setUnits(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/api/v1/units/');
+      setUnits({ loading: false, error: null,
+        items: Array.isArray(d) ? d : (d.units || d.items || []),
+        ts: new Date().toISOString() });
+    } catch (e) {
+      setUnits({ loading: false, error: e.message || 'load failed', items: [],
+        ts: new Date().toISOString() });
+    }
+  }, []);
+
+  const loadProductLocal = React.useCallback(async () => {
+    setPl(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/api/v1/product-local/');
+      setPl({ loading: false, error: null,
+        items: Array.isArray(d) ? d : (d.items || []),
+        ts: new Date().toISOString() });
+    } catch (e) {
+      setPl({ loading: false, error: e.message || 'load failed', items: [],
+        ts: new Date().toISOString() });
+    }
+  }, []);
+
+  const b5Save = async (basePath, key, form, reload, closeForm) => {
+    if (!form || !form[key]) { setB5Error(key + ' is required'); return; }
+    setB5Saving(true); setB5Error(null);
+    try {
+      const payload = { ...form }; delete payload[key];
+      // Empty optional strings → null so backend stores NULL not ''
+      for (const k of Object.keys(payload)) {
+        if (payload[k] === '') payload[k] = null;
+      }
+      await apiFetch(basePath + '/' + encodeURIComponent(form[key]),
+                     { method: 'PUT', body: JSON.stringify(payload) });
+      closeForm();
+      await reload();
+      if (onToast) onToast('Saved.', 'success');
+    } catch (e) {
+      setB5Error(e.message || 'Save failed');
+    } finally {
+      setB5Saving(false);
+    }
+  };
+
+  const b5Delete = async (basePath, keyValue, reload) => {
+    try {
+      await apiFetch(basePath + '/' + encodeURIComponent(keyValue), { method: 'DELETE' });
+      await reload();
+      if (onToast) onToast('Deleted.', 'success');
+    } catch (e) {
+      setB5Error(e.message || 'Delete failed');
+    }
+  };
+
   // ── Suppliers (B4 MDC-030) ──────────────────────────────────────────────
   const [suppliers, setSuppliers] = React.useState({ loading: false, error: null, items: [], ts: null });
   const [supForm,   setSupForm]   = React.useState(null);  // null=hidden, {}=new, {id,...}=edit
@@ -3452,6 +3532,9 @@ function MasterDataPage({ onNav, onToast }) {
     if (activeEntity === 'suppliers' && !suppliers.ts && !suppliers.loading) {
       loadSuppliers();
     }
+    if (activeEntity === 'hs_codes' && !hsCodes.ts && !hsCodes.loading) loadHsCodes();
+    if (activeEntity === 'units' && !units.ts && !units.loading)        loadUnits();
+    if (activeEntity === 'product_local' && !pl.ts && !pl.loading)      loadProductLocal();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity]);
 
@@ -3521,8 +3604,8 @@ function MasterDataPage({ onNav, onToast }) {
   const filteredCustMaster = (custMaster.items || []).filter(r => _match(r, query));
 
   // ── KPI strip (preserved data-testids) ────────────────────────────────
-  // B4: suppliers moved out of PENDING_TYPES (real backend now wired)
-  const PENDING_TYPES = ['designs','hs_codes','fx_rates','roles'];
+  // B4: suppliers; B5: hs_codes + units + product_local moved to live
+  const PENDING_TYPES = ['designs','fx_rates','roles'];
   const kpis = [
     { id: 'users',     label: 'Users',
       value: users.loading     ? '…' : users.error     ? '—' : (users.items     || []).length,
@@ -3560,11 +3643,15 @@ function MasterDataPage({ onNav, onToast }) {
     { id: 'fx_rates',       label: 'FX Rates',        icon: '◆', live: false },
     { id: 'suppliers',      label: 'Suppliers',       icon: '◉',
       count: suppliers.error ? null : (suppliers.items || []).length, live: true },
-    { id: 'hs_codes',       label: 'HS Codes',        icon: '◈', live: false },
+    { id: 'hs_codes',       label: 'HS Codes',        icon: '◈',
+      count: hsCodes.error ? null : (hsCodes.items || []).length, live: true },
+    { id: 'units',          label: 'Units',           icon: '◉',
+      count: units.error ? null : (units.items || []).length, live: true },
+    { id: 'product_local',  label: 'Product local',   icon: '◇',
+      count: pl.error ? null : (pl.items || []).length, live: true },
     { id: 'carriers_config',label: 'Carriers Config', icon: '◎', live: false },
     { id: 'incoterms',      label: 'Incoterms',       icon: '◇', live: false },
     { id: 'vat_config',     label: 'VAT Config',      icon: '◆', live: false },
-    { id: 'units',          label: 'Units',           icon: '◉', live: false },
     { id: 'roles',          label: 'Roles',           icon: '◎', live: false },
   ];
 
@@ -4524,12 +4611,431 @@ function MasterDataPage({ onNav, onToast }) {
             </div>
           )}
 
-          {/* ── HS CODES ───────────────────────────────────────────────── */}
+          {/* ── HS CODES (B5 MDC-040) — LIVE ───────────────────────────── */}
           {activeEntity === 'hs_codes' && (
-            <PendingPanel entityId="hs_codes" title="HS Codes"
-              description="Customs tariff numbers used during PZ line mapping and SAD verification. Includes duty rates and restrictions."
-              fields={['hs_code','description_pl','description_en',
-                       'duty_rate_pct','vat_rate_pct','active','notes']} />
+            <div data-testid="master-hs-codes-panel">
+              <PanelHeader title="HS Codes"
+                subtitle="Customs tariff numbers — local registry; read-only for PZ calculations"
+                actions={
+                  <button data-testid="master-hs-btn-new"
+                    onClick={() => { setHsForm({ hs_code: '', description_pl: '',
+                      description_en: '', duty_rate_pct: '', vat_rate_pct: '',
+                      active: true, notes: '' }); setB5Error(null); }}
+                    disabled={!!hsForm}
+                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                      background: 'var(--accent)', color: '#fff', border: 'none',
+                      borderRadius: 6, cursor: hsForm ? 'not-allowed' : 'pointer',
+                      opacity: hsForm ? 0.5 : 1, fontFamily: 'inherit' }}>+ New HS Code</button>
+                }
+              />
+              {hsCodes.loading && <div data-testid="master-hs-loading"
+                style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>}
+              {hsCodes.error && <div data-testid="master-hs-error"
+                style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}>
+                Load failed: {hsCodes.error}</div>}
+              {b5Error && <div data-testid="master-b5-save-error"
+                style={{ padding: '6px 10px', background: 'var(--badge-red-bg)',
+                  border: '1px solid var(--badge-red-border)', borderRadius: 6,
+                  fontSize: 11, color: 'var(--badge-red-text)', marginBottom: 8 }}>
+                {b5Error}</div>}
+              {!hsCodes.loading && !hsCodes.error && (
+                <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                              borderRadius: 10, overflow: 'hidden' }}>
+                  {(hsCodes.items || []).filter(r => _match(r, query)).length === 0
+                    ? <div data-testid="master-hs-empty"
+                           style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+                        No HS codes registered yet.</div>
+                    : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                          {['HS Code','Description PL','Description EN','Duty %','VAT %','Active',''].map(h => (
+                            <th key={h} style={thStyle}>{h}</th>))}
+                        </tr></thead>
+                        <tbody>
+                          {(hsCodes.items || []).filter(r => _match(r, query)).map(h => (
+                            <tr key={h.hs_code} data-testid="master-hs-row" style={trStyle}>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{h.hs_code}</td>
+                              <td style={{ padding: '8px 12px' }}>{h.description_pl || '—'}</td>
+                              <td style={{ padding: '8px 12px' }}>{h.description_en || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>{h.duty_rate_pct || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>{h.vat_rate_pct || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>
+                                {h.active ? <span style={{ color: 'var(--badge-green-text)', fontWeight: 600 }}>● active</span>
+                                          : <span style={{ color: 'var(--text-3)' }}>○ inactive</span>}</td>
+                              <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                                <button data-testid={'master-hs-btn-edit-' + h.hs_code}
+                                  onClick={() => { setHsForm({ ...h }); setB5Error(null); }}
+                                  style={{ padding: '3px 10px', fontSize: 11,
+                                    border: '1px solid var(--accent)', borderRadius: 4,
+                                    background: 'var(--accent-subtle)', cursor: 'pointer',
+                                    color: 'var(--text)', fontWeight: 600,
+                                    fontFamily: 'inherit', marginRight: 6 }}>Edit</button>
+                                <button data-testid={'master-hs-btn-delete-' + h.hs_code}
+                                  onClick={() => b5Delete('/api/v1/hs-codes', h.hs_code, loadHsCodes)}
+                                  style={{ padding: '3px 8px', fontSize: 11,
+                                    border: '1px solid var(--border)', borderRadius: 4,
+                                    background: 'var(--card)', cursor: 'pointer',
+                                    color: 'var(--text-3)', fontFamily: 'inherit' }}>×</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  }
+                </div>
+              )}
+              {hsForm !== null && (
+                <div data-testid="master-hs-form"
+                     style={{ marginTop: 14, padding: '14px 18px', background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)',
+                    marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    {hsForm._existing ? 'Edit HS code' : 'New HS code'}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>HS Code (4-12 digits) *</span>
+                      <input data-testid="master-hs-input-code" type="text"
+                        value={hsForm.hs_code || ''}
+                        onChange={e => setHsForm(f => ({ ...f, hs_code: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Duty rate %</span>
+                      <input data-testid="master-hs-input-duty" type="text"
+                        value={hsForm.duty_rate_pct || ''}
+                        onChange={e => setHsForm(f => ({ ...f, duty_rate_pct: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>VAT rate %</span>
+                      <input type="text"
+                        value={hsForm.vat_rate_pct || ''}
+                        onChange={e => setHsForm(f => ({ ...f, vat_rate_pct: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Description PL</span>
+                      <input type="text"
+                        value={hsForm.description_pl || ''}
+                        onChange={e => setHsForm(f => ({ ...f, description_pl: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Description EN</span>
+                      <input type="text"
+                        value={hsForm.description_en || ''}
+                        onChange={e => setHsForm(f => ({ ...f, description_en: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+                      <input type="checkbox" checked={hsForm.active !== false}
+                        onChange={e => setHsForm(f => ({ ...f, active: e.target.checked }))} />
+                      Active
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button data-testid="master-hs-btn-save"
+                      onClick={() => b5Save('/api/v1/hs-codes', 'hs_code', hsForm, loadHsCodes,
+                                            () => setHsForm(null))}
+                      disabled={b5Saving}
+                      style={{ padding: '6px 18px', fontSize: 12, fontWeight: 700,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        borderRadius: 4, cursor: b5Saving ? 'not-allowed' : 'pointer',
+                        opacity: b5Saving ? 0.6 : 1, fontFamily: 'inherit' }}>
+                      {b5Saving ? 'Saving…' : 'Save'}</button>
+                    <button data-testid="master-hs-btn-cancel"
+                      onClick={() => { setHsForm(null); setB5Error(null); }}
+                      style={{ padding: '6px 12px', fontSize: 12,
+                        background: 'var(--card)', color: 'var(--text-2)',
+                        border: '1px solid var(--border)', borderRadius: 4,
+                        cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── UNITS (B5 MDC-041) — LIVE ──────────────────────────────── */}
+          {activeEntity === 'units' && (
+            <div data-testid="master-units-panel">
+              <PanelHeader title="Units"
+                subtitle="Unit of measure registry — local; consumed by Products + Designs"
+                actions={
+                  <button data-testid="master-units-btn-new"
+                    onClick={() => { setUnitForm({ code: '', name_pl: '', name_en: '',
+                      unit_type: '', active: true }); setB5Error(null); }}
+                    disabled={!!unitForm}
+                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                      background: 'var(--accent)', color: '#fff', border: 'none',
+                      borderRadius: 6, cursor: unitForm ? 'not-allowed' : 'pointer',
+                      opacity: unitForm ? 0.5 : 1, fontFamily: 'inherit' }}>+ New Unit</button>
+                }
+              />
+              {units.loading && <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>}
+              {units.error && <div data-testid="master-units-error"
+                style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}>
+                Load failed: {units.error}</div>}
+              {!units.loading && !units.error && (
+                <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                              borderRadius: 10, overflow: 'hidden' }}>
+                  {(units.items || []).filter(r => _match(r, query)).length === 0
+                    ? <div data-testid="master-units-empty"
+                           style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+                        No units registered yet.</div>
+                    : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                          {['Code','Name PL','Name EN','Type','Active',''].map(h => (
+                            <th key={h} style={thStyle}>{h}</th>))}
+                        </tr></thead>
+                        <tbody>
+                          {(units.items || []).filter(r => _match(r, query)).map(u => (
+                            <tr key={u.code} data-testid="master-units-row" style={trStyle}>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{u.code}</td>
+                              <td style={{ padding: '8px 12px' }}>{u.name_pl || '—'}</td>
+                              <td style={{ padding: '8px 12px' }}>{u.name_en || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-2)' }}>{u.unit_type || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>
+                                {u.active ? <span style={{ color: 'var(--badge-green-text)', fontWeight: 600 }}>● active</span>
+                                          : <span style={{ color: 'var(--text-3)' }}>○ inactive</span>}</td>
+                              <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                                <button data-testid={'master-units-btn-edit-' + u.code}
+                                  onClick={() => { setUnitForm({ ...u }); setB5Error(null); }}
+                                  style={{ padding: '3px 10px', fontSize: 11,
+                                    border: '1px solid var(--accent)', borderRadius: 4,
+                                    background: 'var(--accent-subtle)', cursor: 'pointer',
+                                    color: 'var(--text)', fontWeight: 600,
+                                    fontFamily: 'inherit', marginRight: 6 }}>Edit</button>
+                                <button data-testid={'master-units-btn-delete-' + u.code}
+                                  onClick={() => b5Delete('/api/v1/units', u.code, loadUnits)}
+                                  style={{ padding: '3px 8px', fontSize: 11,
+                                    border: '1px solid var(--border)', borderRadius: 4,
+                                    background: 'var(--card)', cursor: 'pointer',
+                                    color: 'var(--text-3)', fontFamily: 'inherit' }}>×</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  }
+                </div>
+              )}
+              {unitForm !== null && (
+                <div data-testid="master-units-form"
+                     style={{ marginTop: 14, padding: '14px 18px', background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Code *</span>
+                      <input data-testid="master-units-input-code" type="text"
+                        value={unitForm.code || ''}
+                        onChange={e => setUnitForm(f => ({ ...f, code: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Type</span>
+                      <select value={unitForm.unit_type || ''}
+                        onChange={e => setUnitForm(f => ({ ...f, unit_type: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}>
+                        <option value="">—</option>
+                        <option value="count">count</option>
+                        <option value="weight">weight</option>
+                        <option value="volume">volume</option>
+                        <option value="length">length</option>
+                      </select>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Name PL</span>
+                      <input type="text"
+                        value={unitForm.name_pl || ''}
+                        onChange={e => setUnitForm(f => ({ ...f, name_pl: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Name EN</span>
+                      <input type="text"
+                        value={unitForm.name_en || ''}
+                        onChange={e => setUnitForm(f => ({ ...f, name_en: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+                      <input type="checkbox" checked={unitForm.active !== false}
+                        onChange={e => setUnitForm(f => ({ ...f, active: e.target.checked }))} />
+                      Active
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button data-testid="master-units-btn-save"
+                      onClick={() => b5Save('/api/v1/units', 'code', unitForm, loadUnits,
+                                            () => setUnitForm(null))}
+                      disabled={b5Saving}
+                      style={{ padding: '6px 18px', fontSize: 12, fontWeight: 700,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        borderRadius: 4, cursor: b5Saving ? 'not-allowed' : 'pointer',
+                        opacity: b5Saving ? 0.6 : 1, fontFamily: 'inherit' }}>
+                      {b5Saving ? 'Saving…' : 'Save'}</button>
+                    <button data-testid="master-units-btn-cancel"
+                      onClick={() => { setUnitForm(null); setB5Error(null); }}
+                      style={{ padding: '6px 12px', fontSize: 12,
+                        background: 'var(--card)', color: 'var(--text-2)',
+                        border: '1px solid var(--border)', borderRadius: 4,
+                        cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── PRODUCT LOCAL (B5 MDC-042) — LIVE ──────────────────────── */}
+          {activeEntity === 'product_local' && (
+            <div data-testid="master-product-local-panel">
+              <PanelHeader title="Product local augmentation"
+                subtitle="Local overrides for wFirma products — HS code, unit, design link, notes"
+                actions={
+                  <button data-testid="master-pl-btn-new"
+                    onClick={() => { setPlForm({ product_code: '', hs_code_override: '',
+                      unit_override: '', design_code_link: '', notes: '' }); setB5Error(null); }}
+                    disabled={!!plForm}
+                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                      background: 'var(--accent)', color: '#fff', border: 'none',
+                      borderRadius: 6, cursor: plForm ? 'not-allowed' : 'pointer',
+                      opacity: plForm ? 0.5 : 1, fontFamily: 'inherit' }}>+ New augmentation</button>
+                }
+              />
+              {pl.loading && <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>}
+              {pl.error && <div data-testid="master-pl-error"
+                style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}>
+                Load failed: {pl.error}</div>}
+              {!pl.loading && !pl.error && (
+                <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                              borderRadius: 10, overflow: 'hidden' }}>
+                  {(pl.items || []).filter(r => _match(r, query)).length === 0
+                    ? <div data-testid="master-pl-empty"
+                           style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+                        No product augmentations yet.</div>
+                    : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                          {['Product Code','HS override','Unit override','Design link','Notes',''].map(h => (
+                            <th key={h} style={thStyle}>{h}</th>))}
+                        </tr></thead>
+                        <tbody>
+                          {(pl.items || []).filter(r => _match(r, query)).map(p => (
+                            <tr key={p.product_code} data-testid="master-pl-row" style={trStyle}>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{p.product_code}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11 }}>{p.hs_code_override || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{p.unit_override || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text-2)' }}>{p.design_code_link || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11,
+                                color: 'var(--text-3)', maxWidth: 200, overflow: 'hidden',
+                                textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.notes || '—'}</td>
+                              <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                                <button data-testid={'master-pl-btn-edit-' + p.product_code}
+                                  onClick={() => { setPlForm({ ...p }); setB5Error(null); }}
+                                  style={{ padding: '3px 10px', fontSize: 11,
+                                    border: '1px solid var(--accent)', borderRadius: 4,
+                                    background: 'var(--accent-subtle)', cursor: 'pointer',
+                                    color: 'var(--text)', fontWeight: 600,
+                                    fontFamily: 'inherit', marginRight: 6 }}>Edit</button>
+                                <button data-testid={'master-pl-btn-delete-' + p.product_code}
+                                  onClick={() => b5Delete('/api/v1/product-local', p.product_code, loadProductLocal)}
+                                  style={{ padding: '3px 8px', fontSize: 11,
+                                    border: '1px solid var(--border)', borderRadius: 4,
+                                    background: 'var(--card)', cursor: 'pointer',
+                                    color: 'var(--text-3)', fontFamily: 'inherit' }}>×</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  }
+                </div>
+              )}
+              {plForm !== null && (
+                <div data-testid="master-pl-form"
+                     style={{ marginTop: 14, padding: '14px 18px', background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Product code *</span>
+                      <input data-testid="master-pl-input-code" type="text"
+                        value={plForm.product_code || ''}
+                        onChange={e => setPlForm(f => ({ ...f, product_code: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>HS code override</span>
+                      <input type="text"
+                        value={plForm.hs_code_override || ''}
+                        onChange={e => setPlForm(f => ({ ...f, hs_code_override: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Unit override</span>
+                      <input type="text"
+                        value={plForm.unit_override || ''}
+                        onChange={e => setPlForm(f => ({ ...f, unit_override: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Design link</span>
+                      <input type="text"
+                        value={plForm.design_code_link || ''}
+                        onChange={e => setPlForm(f => ({ ...f, design_code_link: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Notes</span>
+                      <textarea
+                        value={plForm.notes || ''}
+                        onChange={e => setPlForm(f => ({ ...f, notes: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11, fontFamily: 'inherit',
+                          border: '1px solid var(--border)', borderRadius: 4,
+                          minHeight: 50, resize: 'vertical' }} />
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button data-testid="master-pl-btn-save"
+                      onClick={() => b5Save('/api/v1/product-local', 'product_code', plForm, loadProductLocal,
+                                            () => setPlForm(null))}
+                      disabled={b5Saving}
+                      style={{ padding: '6px 18px', fontSize: 12, fontWeight: 700,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        borderRadius: 4, cursor: b5Saving ? 'not-allowed' : 'pointer',
+                        opacity: b5Saving ? 0.6 : 1, fontFamily: 'inherit' }}>
+                      {b5Saving ? 'Saving…' : 'Save'}</button>
+                    <button data-testid="master-pl-btn-cancel"
+                      onClick={() => { setPlForm(null); setB5Error(null); }}
+                      style={{ padding: '6px 12px', fontSize: 12,
+                        background: 'var(--card)', color: 'var(--text-2)',
+                        border: '1px solid var(--border)', borderRadius: 4,
+                        cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {/* ── CARRIERS CONFIG ────────────────────────────────────────── */}
@@ -4556,12 +5062,7 @@ function MasterDataPage({ onNav, onToast }) {
                        'effective_from','effective_to','active']} />
           )}
 
-          {/* ── UNITS ──────────────────────────────────────────────────── */}
-          {activeEntity === 'units' && (
-            <PendingPanel entityId="units" title="Units"
-              description="Unit of measure definitions used in product catalog and invoice lines."
-              fields={['code','name_pl','name_en','unit_type','active']} />
-          )}
+          {/* ── (Units PendingPanel removed in B5 — live panel rendered earlier) ── */}
 
           {/* ── ROLES ──────────────────────────────────────────────────── */}
           {activeEntity === 'roles' && (
@@ -4575,11 +5076,11 @@ function MasterDataPage({ onNav, onToast }) {
       </div>{/* end 2-col layout */}
 
       {/* ── Preserved data-testid anchors (hidden, for test compatibility) ── */}
-      {/* B4: suppliers removed from pending grid (live backend now wired) */}
+      {/* B5: hs_codes removed (now live). Remaining pending: designs, fx_rates, roles */}
       <div data-testid="master-pending-panel" style={{ display: 'none' }}>
         <span data-testid="master-pending-badge" />
         <div data-testid="master-pending-grid">
-          {['designs','hs_codes','fx_rates','roles'].map(id => (
+          {['designs','fx_rates','roles'].map(id => (
             <div key={id} data-testid={'master-pending-' + id} data-pending="true" />
           ))}
         </div>
@@ -4596,8 +5097,8 @@ function MasterDataPage({ onNav, onToast }) {
                 background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10,
                 fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)',
                 letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
-        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers are live.
-          Designs / FX / HS / Carriers Config / Incoterms / VAT / Units / Roles
+        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers · HS Codes · Units · Product local are live.
+          Designs / FX / Carriers Config / Incoterms / VAT / Roles
           are structure-preview — backend pending.</span>
       </div>
 
