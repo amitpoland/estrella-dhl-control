@@ -123,6 +123,9 @@ def test_four_loaders_present():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_no_invented_master_endpoints():
+    """Forbidden endpoints — these are NOT real backend routes; UI must not
+    reference them. Any entity moved to live status must also have its forbidden
+    line removed from this list (see B4 suppliers)."""
     src = _src()
     for ep in (
         "/api/v1/master",
@@ -134,7 +137,7 @@ def test_no_invented_master_endpoints():
         "/api/v1/master/hs-codes",
         "/api/v1/master/fx-rates",
         "/api/v1/master/roles",
-        "/api/v1/suppliers",
+        # NOTE: "/api/v1/suppliers" removed — B4 wired the real backend
         "/api/v1/designs",
         "/api/v1/hs-codes",
         "/api/v1/fx-rates",
@@ -193,26 +196,42 @@ def test_no_mock_supplier_or_design_or_hs_or_fx():
 # Write safety — MasterDataPage block
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_only_allowed_write_in_master():
-    """PUT to /api/v1/customer-master/ is the only write in MasterDataPage body.
-    DELETE, PATCH, POST must never appear."""
+def test_only_allowed_writes_in_master():
+    """PATCH is never allowed. POST/DELETE are only allowed for explicitly
+    wired master-data entities. After B4 the allow-list is:
+    - customer-master      PUT  (legacy inline edit)
+    - /api/v1/suppliers/   POST/PUT/DELETE (B4 MDC-031)
+    """
     src = _src()
     block = _master_block(src)
-    for forbidden in ("method: 'DELETE'", "method: 'PATCH'", "method: 'POST'"):
-        assert forbidden not in block, \
-            f"MasterDataPage body must NOT contain {forbidden!r}"
-    # The legacy CM inline edit is the intentional PUT in this block
+    # PATCH is never allowed in MasterDataPage
+    assert "method: 'PATCH'" not in block, \
+        "MasterDataPage body must NOT contain method: 'PATCH'"
+    # Any POST/DELETE must target an entity from the allow-list
+    import re
+    posts = re.findall(r"apiFetch\('([^']+)',\s*\{\s*method:\s*'POST'", block)
+    dels  = re.findall(r"apiFetch\('([^']+)',\s*\{\s*method:\s*'DELETE'", block)
+    puts  = re.findall(r"apiFetch\('([^']+)'", block)  # broader; only used informationally
+    allowed_post_delete = ('/api/v1/suppliers',)
+    for ep in posts + dels:
+        # ep may include concatenated parts (e.g. '/api/v1/suppliers/' + supForm.id)
+        assert any(a in ep for a in allowed_post_delete), \
+            f"POST/DELETE to non-allow-listed endpoint in MasterDataPage: {ep}"
+    # The legacy CM inline edit PUT must remain
     assert "method: 'PUT'" in block, "Customer Master inline edit PUT must be present"
     assert "customer-master" in block, "PUT must target /api/v1/customer-master/"
 
 
 def test_no_dangerous_destructive_buttons_in_master():
-    """Destructive actions (Delete, Approve, Reject, Deactivate) must never
-    appear in MasterDataPage. Edit is intentional — it opens the KYC modal."""
+    """Destructive identity actions (Approve user, Reject user, Deactivate user)
+    must never appear in MasterDataPage. Per-row Delete on suppliers is allowed
+    via the × icon and 'master-suppliers-btn-delete-*' testid, not via a
+    spelled-out >Delete< label."""
     src = _src()
     block = _master_block(src)
-    for forbidden in (">Delete<", ">Approve<", ">Reject<", ">Deactivate<", ">Suspend<"):
-        assert forbidden not in block, f"Destructive button leaked: {forbidden}"
+    for forbidden in (">Approve<", ">Reject<", ">Deactivate<", ">Suspend<",
+                      ">Delete user<", ">Delete client<"):
+        assert forbidden not in block, f"Destructive identity action leaked: {forbidden}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -298,14 +317,27 @@ def test_four_live_entities_in_sidebar():
     assert "live: true" in src, "live: true must be set on live entities"
 
 
-def test_nine_pending_entities_in_sidebar():
+def test_eight_pending_entities_in_sidebar():
+    """B4 (MDC-030) moved suppliers from pending to live.
+    Eight entities remain pending: designs, fx_rates, hs_codes, carriers_config,
+    incoterms, vat_config, units, roles."""
     src = _src()
     for eid in (
-        "'designs'", "'fx_rates'", "'suppliers'", "'hs_codes'",
+        "'designs'", "'fx_rates'", "'hs_codes'",
         "'carriers_config'", "'incoterms'", "'vat_config'", "'units'", "'roles'",
     ):
         assert f"id: {eid}" in src, f"Missing pending entity id: {eid}"
     assert "live: false" in src, "live: false must be set on pending entities"
+
+
+def test_suppliers_entity_is_live():
+    """Suppliers is now live (B4): id present with live: true and a count field."""
+    src = _src()
+    idx = src.index("id: 'suppliers'")
+    snippet = src[idx:idx + 220]
+    assert "live: true" in snippet, "Suppliers must be live: true (B4)"
+    assert "suppliers.items" in snippet or "suppliers.error" in snippet, \
+        "Suppliers sidebar entry must derive count from real state"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -373,13 +405,14 @@ def test_products_table_uses_real_fields():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_pending_entity_panel_present():
-    """Pending panel uses concat testid syntax."""
+    """Pending panel uses concat testid syntax. After B4 the pending grid
+    no longer includes suppliers."""
     src = _src()
     assert 'data-testid="master-pending-panel"' in src
     assert 'data-testid="master-pending-badge"' in src
     assert 'data-testid="master-pending-grid"' in src
     assert "data-testid={'master-pending-' + id}" in src
-    for tid in ("'suppliers'", "'designs'", "'hs_codes'", "'fx_rates'", "'roles'"):
+    for tid in ("'designs'", "'hs_codes'", "'fx_rates'", "'roles'"):
         assert f"id: {tid}" in src, f"Missing pending placeholder id: {tid}"
 
 
@@ -405,7 +438,9 @@ def test_design_preview_footer_present():
 
 def test_footer_accurately_lists_live_and_pending():
     src = _src()
-    assert "Clients" in src and "Users" in src and "Customer Master are live" in src
+    # B4 added Suppliers to the live list. Footer ends "... · Suppliers are live."
+    assert "Clients" in src and "Users" in src
+    assert "Suppliers are live" in src, "Footer must list Suppliers as live (B4)"
     assert "backend pending" in src.lower()
 
 

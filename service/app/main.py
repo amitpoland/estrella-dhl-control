@@ -60,6 +60,7 @@ from .api.routes_admin_dhl_clearance import router as admin_dhl_clearance_router
 from .api.routes_customer_master import router as customer_master_router
 from .api.routes_client_addresses import router as client_addresses_router
 from .api.routes_client_carrier_accounts import router as client_carrier_accounts_router
+from .api.routes_suppliers import router as suppliers_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -264,6 +265,7 @@ app.include_router(admin_dhl_clearance_router)  # W-5 / P2 ignition (Model C): a
 app.include_router(customer_master_router)      # PR 2C.3a: customer master CRUD (X-API-Key)
 app.include_router(client_addresses_router)         # MasterData-1: per-client shipping addresses
 app.include_router(client_carrier_accounts_router)  # MasterData-1: per-client carrier accounts
+app.include_router(suppliers_router)                # MasterData-B4: suppliers registry (local CRUD; X-API-Key)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
