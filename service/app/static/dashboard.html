@@ -3616,7 +3616,7 @@ function MasterDataPage({ onNav, onToast }) {
   // B0 (MDOC-cache) — wFirma review-and-assign panel state
   const [supWfReview, setSupWfReview] = React.useState(null);
   // shape: { loading, error, proposals: [{wfirma_id,name,vat_id,country,email,status,proposed_action,reason,local_id,local_supplier_code,local_name,local_email, _ui_skipped, _ui_edited}] }
-  const [cmWfReview,  setCmWfReview]  = React.useState(null);  // same shape for Customer Master
+  const [cmWfReview,  setCmWfReview]  = React.useState(null);  // wFirma -> Client Master review
 
   const loadSuppliers = React.useCallback(async () => {
     setSuppliers(s => ({ ...s, loading: true, error: null }));
@@ -3785,7 +3785,7 @@ function MasterDataPage({ onNav, onToast }) {
     users.error      ? { src: 'users',          name: 'Users',           source: '/auth/users',              msg: users.error }      : null,
     customers.error  ? { src: 'customers',       name: 'Customers',       source: '/api/v1/wfirma/customers', msg: customers.error }  : null,
     products.error   ? { src: 'products',        name: 'Products',        source: '/api/v1/wfirma/products',  msg: products.error }   : null,
-    custMaster.error ? { src: 'customer_master', name: 'Customer master', source: '/api/v1/customer-master/', msg: custMaster.error } : null,
+    custMaster.error ? { src: 'customer_master', name: 'Client Master', source: '/api/v1/customer-master/', msg: custMaster.error } : null,
   ].filter(Boolean);
 
   // ── Entity sidebar config ──────────────────────────────────────────────
@@ -3796,7 +3796,7 @@ function MasterDataPage({ onNav, onToast }) {
       count: users.error ? null : (users.items || []).length, live: true },
     { id: 'products',       label: 'Products',        icon: '◈',
       count: products.error ? null : (products.items || []).length, live: true },
-    { id: 'customer_master',label: 'Clients / Customer Master', icon: '⊞',
+    { id: 'customer_master',label: 'Client Master', icon: '⊞',
       count: custMaster.items.length > 0 ? custMaster.items.length : null, live: true },
     null,
     { id: 'designs',        label: 'Designs',         icon: '◇',
@@ -3831,7 +3831,7 @@ function MasterDataPage({ onNav, onToast }) {
   // B-MD3 (MDOC-2026-05): the legacy PendingPanel reusable component was
   // removed in this batch. All Master Data entities are now either live
   // (Designs / HS / Units / Suppliers / FX / Carriers / Incoterms / VAT /
-  // Product-local / Clients / Customer Master / Users / Products) or
+  // Product-local / Client Master / Users / Products) or
   // surfaced as a read-only explainer (Roles). No entity in MasterDataPage
   // requires a placeholder panel any more.
   const PanelHeader = ({ title, subtitle, actions }) => (
@@ -3861,13 +3861,13 @@ function MasterDataPage({ onNav, onToast }) {
     borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
 
   // ── B0 (MDOC-cache) — wFirma review-and-assign panel ───────────────────
-  // Shared component used by both the Suppliers and Customer Master panels.
+  // Shared component used by both the Suppliers and Client Master panels.
   // Renders the per-row review table (wFirma ID, name, VAT, country, email,
   // local match, status) with View / Edit / Save-Assign / Skip actions.
   // Pure UI: it never writes directly. The parent passes ``onApply(ids)`` and
   // is responsible for hitting the correct apply endpoint.
   const WfReviewPanel = ({ testidPrefix, title, state, onChange, onClose,
-                            onApplyCustomer, onApplySupplier }) => {
+                            onApplyClient, onApplySupplier }) => {
     const [busy, setBusy] = React.useState(false);
     const [viewRow, setViewRow] = React.useState(null);
     const [editRow, setEditRow] = React.useState(null);
@@ -3890,18 +3890,20 @@ function MasterDataPage({ onNav, onToast }) {
     const rowTarget = (p) => p._ui_target || p.suggested_target || 'needs_operator_review';
 
     const assignRows = async (rows) => {
-      // rows = array of proposals (already filtered)
-      const customerIds = rows.filter(p => rowTarget(p) === 'customer_master').map(p => p.wfirma_id);
+      // rows = array of proposals (already filtered).
+      // Resolver verdicts route to exactly TWO masters: client_master,
+      // supplier_master. ignore / needs_operator_review never reach apply.
+      const clientIds   = rows.filter(p => rowTarget(p) === 'client_master').map(p => p.wfirma_id);
       const supplierIds = rows.filter(p => rowTarget(p) === 'supplier_master').map(p => p.wfirma_id);
-      if (!customerIds.length && !supplierIds.length) {
-        window.alert('Nothing to assign — every selected row is set to Skip or Needs review.');
+      if (!clientIds.length && !supplierIds.length) {
+        window.alert('Nothing to assign — every selected row is set to Ignore or Needs review.');
         return;
       }
       setBusy(true);
       let okIds = [];
-      if (customerIds.length) {
-        const ok = await onApplyCustomer(customerIds);
-        if (ok) okIds = okIds.concat(customerIds);
+      if (clientIds.length) {
+        const ok = await onApplyClient(clientIds);
+        if (ok) okIds = okIds.concat(clientIds);
       }
       if (supplierIds.length) {
         const ok = await onApplySupplier(supplierIds);
@@ -3916,12 +3918,13 @@ function MasterDataPage({ onNav, onToast }) {
     };
 
     // Rows eligible for Assign-all: not skipped, not invalid, not needs-review,
-    // and target is customer_master OR supplier_master (NOT skip / review).
+    // and target is one of the TWO operational masters (client_master or
+    // supplier_master). Ignore / needs_operator_review are excluded.
     const eligibleRows = proposals.filter(p =>
       !p._ui_skipped &&
       p.status !== 'skipped_invalid' &&
       p.status !== 'needs_operator_review' &&
-      (rowTarget(p) === 'customer_master' || rowTarget(p) === 'supplier_master')
+      (rowTarget(p) === 'client_master' || rowTarget(p) === 'supplier_master')
     );
 
     return (
@@ -4028,9 +4031,9 @@ function MasterDataPage({ onNav, onToast }) {
                             background: 'var(--bg-subtle)', color: 'var(--text)',
                             border: '1px solid var(--border)', borderRadius: 4,
                             fontFamily: 'inherit' }}>
-                          <option value="customer_master">Client Master</option>
+                          <option value="client_master">Client Master</option>
                           <option value="supplier_master">Supplier Master</option>
-                          <option value="skip">Skip</option>
+                          <option value="ignore">Ignore</option>
                           <option value="needs_operator_review">Needs review</option>
                         </select>
                       </td>
@@ -4054,10 +4057,10 @@ function MasterDataPage({ onNav, onToast }) {
                         </button>
                         <button data-testid={`${testidPrefix}-btn-assign`}
                           disabled={busy || skipped || isInvalid || !p.wfirma_id ||
-                                    rowTarget(p) === 'skip' || rowTarget(p) === 'needs_operator_review'}
+                                    rowTarget(p) === 'ignore' || rowTarget(p) === 'needs_operator_review'}
                           onClick={() => assignRows([p])}
                           title={
-                            rowTarget(p) === 'skip' ? 'Row target is Skip — change Assign to first' :
+                            rowTarget(p) === 'ignore' ? 'Row target is Ignore — change Assign to first' :
                             rowTarget(p) === 'needs_operator_review' ? 'Row needs operator review — change Assign to first' :
                             ''
                           }
@@ -4065,9 +4068,9 @@ function MasterDataPage({ onNav, onToast }) {
                             background: 'var(--accent)', color: '#fff',
                             border: 'none', borderRadius: 4,
                             cursor: (busy || skipped || isInvalid || !p.wfirma_id ||
-                                     rowTarget(p) === 'skip' || rowTarget(p) === 'needs_operator_review') ? 'not-allowed' : 'pointer',
+                                     rowTarget(p) === 'ignore' || rowTarget(p) === 'needs_operator_review') ? 'not-allowed' : 'pointer',
                             opacity: (busy || skipped || isInvalid || !p.wfirma_id ||
-                                     rowTarget(p) === 'skip' || rowTarget(p) === 'needs_operator_review') ? 0.4 : 1,
+                                     rowTarget(p) === 'ignore' || rowTarget(p) === 'needs_operator_review') ? 0.4 : 1,
                             fontWeight: 600 }}>
                           Save / Assign
                         </button>
@@ -4513,7 +4516,7 @@ function MasterDataPage({ onNav, onToast }) {
           {/* ── CUSTOMER MASTER ────────────────────────────────────────── */}
           {activeEntity === 'customer_master' && (
             <div data-testid="master-customer-master-panel">
-              <PanelHeader title="Clients / Customer Master"
+              <PanelHeader title="Client Master"
                 subtitle="Freight / insurance / credit config per client"
                 actions={
                   <button data-testid="master-cm-btn-fetch-wfirma"
@@ -4547,11 +4550,11 @@ function MasterDataPage({ onNav, onToast }) {
               {cmWfReview && (
                 <WfReviewPanel
                   testidPrefix="master-cm-wf"
-                  title="wFirma → Clients / Suppliers review"
+                  title="wFirma contractor review"
                   state={cmWfReview}
                   onChange={setCmWfReview}
                   onClose={() => setCmWfReview(null)}
-                  onApplyCustomer={async (ids) => {
+                  onApplyClient={async (ids) => {
                     try {
                       const r = await apiFetch('/api/v1/customer-master/sync-from-wfirma/apply',
                         { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
@@ -5287,11 +5290,11 @@ function MasterDataPage({ onNav, onToast }) {
               {supWfReview && (
                 <WfReviewPanel
                   testidPrefix="master-suppliers-wf"
-                  title="wFirma → Suppliers / Clients review"
+                  title="wFirma contractor review"
                   state={supWfReview}
                   onChange={setSupWfReview}
                   onClose={() => setSupWfReview(null)}
-                  onApplyCustomer={async (ids) => {
+                  onApplyClient={async (ids) => {
                     try {
                       const r = await apiFetch('/api/v1/customer-master/sync-from-wfirma/apply',
                         { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
@@ -6504,7 +6507,7 @@ function MasterDataPage({ onNav, onToast }) {
                 background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10,
                 fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)',
                 letterSpacing: '0.08em', textTransform: 'uppercase' }}>Live · MDOC</span>
-        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers · HS Codes · Units · Product local · Incoterms · VAT Config · FX Rates (reference) · Carriers Config · Designs are live.
+        <span>Full master data module. Clients · Users · Products · Suppliers · HS Codes · Units · Product local · Incoterms · VAT Config · FX Rates (reference) · Carriers Config · Designs are live.
           Roles is a read-only explainer panel (no permission enforcement engine; admin role assignment is in Admin · Users).
         </span>
       </div>
