@@ -98,6 +98,7 @@ const NAV_TREE = [
   { id: 'reports',    label: 'Reports',    icon: '≡' },
   { id: 'g_setup', label: 'Setup', icon: '⚙', defaultId: 'admin', children: [
     { id: 'admin',             label: 'Settings' },
+    { id: 'admin_users',       label: 'Admin · Users' },
     { id: 'master',            label: 'Master Data' },
     { id: 'carriers',          label: 'Carriers' },
     { id: 'wfirma_setup',      label: 'wFirma' },
@@ -17614,6 +17615,331 @@ function ReportsPage() {
 // ADMIN PAGE
 // ══════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════════
+// AdminUsersPage — B-MD1 (MDOC-2026-05)
+//
+// Read + write admin surface for user identity actions:
+//   GET  /auth/users
+//   POST /auth/users/{id}/approve
+//   POST /auth/users/{id}/reject
+//   POST /auth/users/{id}/role     (body: { role: <ROLES allow-list> })
+//   POST /auth/users/{id}/activate
+//   POST /auth/users/{id}/deactivate
+//
+// Admin-gated render. Self-lockout guard on reject/role/deactivate. Confirm
+// dialog before every write. NO create-user. NO delete-user. NO bulk writes.
+//
+// Source-grep contracts: service/tests/test_dashboard_admin_users_design.py
+// Approval package:      tasks/master-data-users-roles-approval-package.md
+// Implementation plan:   tasks/master-data-users-roles-implementation-plan.md
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Role allow-list — must match service/app/auth/service.py::ROLES exactly.
+const ADMIN_USERS_ROLES = ['admin', 'accounts', 'logistics', 'auditor', 'viewer'];
+
+function AdminUsersPage({ user, onNav, onToast }) {
+  const [usersState, setUsersState] = React.useState({ loading: true, error: null, items: [], ts: null });
+  const [query, setQuery] = React.useState('');
+  const [busyRowId, setBusyRowId] = React.useState(null);
+
+  const isAdmin = user && user.role === 'admin';
+  const currentUserId = user ? user.id : null;
+
+  const loadUsers = React.useCallback(async () => {
+    setUsersState(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/auth/users');
+      setUsersState({ loading: false, error: null,
+        items: Array.isArray(d) ? d : (d.users || d.items || []),
+        ts: new Date().toISOString() });
+    } catch (e) {
+      setUsersState({ loading: false, error: e.message || 'load failed',
+        items: [], ts: new Date().toISOString() });
+    }
+  }, []);
+
+  React.useEffect(() => { if (isAdmin) loadUsers(); }, [isAdmin, loadUsers]);
+
+  // ── Action helper. All 5 writes flow through here. Each must specify a
+  //    confirm message + an endpoint suffix. No defaults.
+  const _runAction = async (row, opts) => {
+    if (!opts || !opts.endpoint || !opts.confirm) return;
+    if (!window.confirm(opts.confirm)) return;
+    setBusyRowId(row.id);
+    try {
+      const init = { method: 'POST' };
+      if (opts.body) {
+        init.body = JSON.stringify(opts.body);
+        init.headers = { 'Content-Type': 'application/json' };
+      }
+      await apiFetch('/auth/users/' + encodeURIComponent(row.id) + opts.endpoint, init);
+      onToast && onToast(opts.successToast || 'Action completed', 'ok');
+      await loadUsers();
+    } catch (e) {
+      onToast && onToast('Action failed: ' + (e.message || 'unknown'), 'error');
+    } finally {
+      setBusyRowId(null);
+    }
+  };
+
+  const doApprove = (row) => _runAction(row, {
+    endpoint: '/approve',
+    confirm: `Approve user ${row.email}?\n\nAn approval email will be queued.`,
+    successToast: `Approved ${row.email}`,
+  });
+  const doReject = (row) => _runAction(row, {
+    endpoint: '/reject',
+    confirm: `Reject user ${row.email}?\n\nA rejection email will be queued. This cannot be undone via UI.`,
+    successToast: `Rejected ${row.email}`,
+  });
+  const doActivate = (row) => _runAction(row, {
+    endpoint: '/activate',
+    confirm: `Activate user ${row.email}?\n\nThe user will be able to log in again.`,
+    successToast: `Activated ${row.email}`,
+  });
+  const doDeactivate = (row) => _runAction(row, {
+    endpoint: '/deactivate',
+    confirm: `Deactivate user ${row.email}?\n\nThe user will be unable to log in until reactivated.`,
+    successToast: `Deactivated ${row.email}`,
+  });
+  const doSetRole = (row, newRole) => {
+    if (!ADMIN_USERS_ROLES.includes(newRole)) return;
+    if (newRole === row.role) return;
+    return _runAction(row, {
+      endpoint: '/role',
+      body: { role: newRole },
+      confirm: `Set role for ${row.email}\n\nFrom: ${row.role || 'user'}\nTo:   ${newRole}\n\nProceed?`,
+      successToast: `Role updated for ${row.email} → ${newRole}`,
+    });
+  };
+
+  // ── Client-side filter (search) ─────────────────────────────────────────
+  const _match = (u, q) => {
+    if (!q) return true;
+    const needle = q.toLowerCase().trim();
+    return (u.email || '').toLowerCase().includes(needle)
+        || (u.full_name || '').toLowerCase().includes(needle)
+        || (u.role || '').toLowerCase().includes(needle);
+  };
+  const filtered = (usersState.items || []).filter(u => _match(u, query));
+
+  // ── Counters ────────────────────────────────────────────────────────────
+  const counters = {
+    total:    (usersState.items || []).length,
+    pending:  (usersState.items || []).filter(u => (u.approval_status || (u.is_approved ? 'approved' : 'pending')) === 'pending').length,
+    approved: (usersState.items || []).filter(u => u.is_approved).length,
+    inactive: (usersState.items || []).filter(u => u.is_active === false).length,
+  };
+
+  // ── Non-admin gate ──────────────────────────────────────────────────────
+  if (!isAdmin) {
+    return (
+      <div data-testid="admin-users-page" style={{ padding: '32px 24px' }}>
+        <div data-testid="admin-users-access-denied"
+             style={{ background: 'var(--card)', border: '1px solid var(--badge-red-border)',
+                      borderRadius: 10, padding: '20px 24px', maxWidth: 640, color: 'var(--text)' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 8 }}>
+            Access denied
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
+            The Admin · Users page is available to administrators only.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Styles (kept in component scope so they can't leak) ─────────────────
+  const thStyle = { padding: '8px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700,
+    color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em',
+    borderBottom: '1px solid var(--border)' };
+  const trStyle = { borderBottom: '1px solid var(--border)' };
+  const btnStyle = { padding: '4px 10px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+    border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)',
+    cursor: 'pointer', marginRight: 6 };
+  const dangerBtnStyle = { ...btnStyle, color: 'var(--badge-red-text)',
+    border: '1px solid var(--badge-red-border)' };
+
+  return (
+    <div data-testid="admin-users-page" style={{ padding: '24px' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>Admin · Users</div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+            /auth/users — application user registry · admin actions (B-MD1)
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            data-testid="admin-users-search"
+            type="text"
+            placeholder="Filter by name / email / role"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            style={{ padding: '6px 10px', background: 'var(--bg)', border: '1px solid var(--border)',
+                     borderRadius: 6, fontSize: 12, color: 'var(--text)', width: 260 }}
+          />
+          <button
+            data-testid="admin-users-refresh"
+            type="button"
+            onClick={loadUsers}
+            style={btnStyle}>↻ Refresh</button>
+          <span data-testid="admin-users-invite-disabled"
+                title="Invite/Create user is not exposed via the admin UI. Self-signup uses /auth/signup; admin then approves here."
+                style={{ padding: '4px 10px', fontSize: 10, fontWeight: 700,
+                         color: 'var(--text-3)', background: 'var(--bg-subtle)',
+                         border: '1px dashed var(--border)', borderRadius: 6,
+                         textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Invite user · Backend pending / out of scope
+          </span>
+        </div>
+      </div>
+
+      {/* Counters */}
+      <div data-testid="admin-users-counters" style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        {[
+          ['total',    'Total',    counters.total],
+          ['pending',  'Pending',  counters.pending],
+          ['approved', 'Approved', counters.approved],
+          ['inactive', 'Inactive', counters.inactive],
+        ].map(([id, label, val]) => (
+          <div key={id} data-testid={'admin-users-counter-' + id}
+               style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                        borderRadius: 8, padding: '10px 16px', minWidth: 100 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase',
+                          letterSpacing: '0.06em', fontWeight: 700 }}>{label}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{val}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Table */}
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                    borderRadius: 10, overflow: 'hidden' }}>
+        {usersState.loading && (
+          <div data-testid="admin-users-loading" style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+            Loading users…
+          </div>
+        )}
+        {!usersState.loading && usersState.error && (
+          <div data-testid="admin-users-error" style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}>
+            Load failed: {usersState.error}
+          </div>
+        )}
+        {!usersState.loading && !usersState.error && filtered.length === 0 && (
+          <div data-testid="admin-users-empty" style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+            {(usersState.items || []).length === 0 ? 'No users registered.' : 'No users match the filter.'}
+          </div>
+        )}
+        {!usersState.loading && !usersState.error && filtered.length > 0 && (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-subtle)' }}>
+                {['Full name','Email','Role','Status','Created','Last login','Actions'].map(h => (
+                  <th key={h} style={thStyle}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(u => {
+                const approval = u.approval_status || (u.is_approved ? 'approved' : 'pending');
+                const isSelf = (u.id === currentUserId);
+                const busy = (busyRowId === u.id);
+                return (
+                  <tr key={u.id} data-testid="admin-users-row" data-user-id={u.id} style={trStyle}>
+                    <td style={{ padding: '8px 12px', color: 'var(--text)', fontWeight: 600 }}>
+                      {u.full_name || <span style={{ color: 'var(--text-3)' }}>—</span>}
+                      {isSelf && <span data-testid="admin-users-self-marker"
+                                       style={{ marginLeft: 8, fontSize: 9, fontWeight: 700,
+                                                color: 'var(--badge-blue-text)',
+                                                background: 'var(--badge-blue-bg)',
+                                                border: '1px solid var(--badge-blue-border)',
+                                                borderRadius: 4, padding: '1px 5px',
+                                                textTransform: 'uppercase' }}>You</span>}
+                    </td>
+                    <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-2)',
+                                 fontFamily: 'monospace' }}>{u.email || '—'}</td>
+                    <td style={{ padding: '8px 12px' }}>
+                      <span data-testid="admin-users-role-badge"
+                            style={{ display: 'inline-block', padding: '1px 7px',
+                                     background: 'var(--badge-neutral-bg)',
+                                     color: 'var(--badge-neutral-text)',
+                                     border: '1px solid var(--badge-neutral-border)',
+                                     borderRadius: 4, fontSize: 10, fontWeight: 600,
+                                     textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                        {u.role || 'viewer'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '8px 12px', fontSize: 11 }}>
+                      {u.is_approved
+                        ? <span style={{ color: 'var(--badge-green-text)', fontWeight: 600 }}>● Approved</span>
+                        : <span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>◐ {approval}</span>}
+                      {u.is_active === false && (
+                        <span style={{ marginLeft: 8, color: 'var(--text-3)' }}>· inactive</span>
+                      )}
+                    </td>
+                    <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+                      {u.created_at ? String(u.created_at).slice(0, 10) : '—'}
+                    </td>
+                    <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+                      {u.last_login ? String(u.last_login).slice(0, 16).replace('T', ' ') : '—'}
+                    </td>
+                    <td data-testid="admin-users-actions-cell" style={{ padding: '8px 12px' }}>
+                      {isSelf && (
+                        <span data-testid="admin-users-self-noactions"
+                              style={{ color: 'var(--text-3)', fontSize: 10 }}>—</span>
+                      )}
+                      {!isSelf && approval === 'pending' && (
+                        <React.Fragment>
+                          <button data-testid="admin-users-btn-approve"
+                                  disabled={busy} onClick={() => doApprove(u)}
+                                  style={btnStyle}>{busy ? '…' : 'Approve'}</button>
+                          <button data-testid="admin-users-btn-reject"
+                                  disabled={busy} onClick={() => doReject(u)}
+                                  style={dangerBtnStyle}>{busy ? '…' : 'Reject'}</button>
+                        </React.Fragment>
+                      )}
+                      {!isSelf && approval === 'approved' && u.is_active !== false && (
+                        <React.Fragment>
+                          <select data-testid="admin-users-select-role"
+                                  disabled={busy}
+                                  value={u.role || 'viewer'}
+                                  onChange={e => doSetRole(u, e.target.value)}
+                                  style={{ ...btnStyle, padding: '4px 6px', cursor: 'pointer' }}>
+                            {ADMIN_USERS_ROLES.map(r => (
+                              <option key={r} value={r}>{r}</option>
+                            ))}
+                          </select>
+                          <button data-testid="admin-users-btn-deactivate"
+                                  disabled={busy} onClick={() => doDeactivate(u)}
+                                  style={dangerBtnStyle}>{busy ? '…' : 'Deactivate'}</button>
+                        </React.Fragment>
+                      )}
+                      {!isSelf && u.is_active === false && (
+                        <button data-testid="admin-users-btn-activate"
+                                disabled={busy} onClick={() => doActivate(u)}
+                                style={btnStyle}>{busy ? '…' : 'Activate'}</button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div style={{ marginTop: 12, fontSize: 10, color: 'var(--text-3)' }}>
+        Admin writes call <code>/auth/users/{`{id}`}/{`{approve|reject|role|activate|deactivate}`}</code>.
+        Every action requires explicit confirmation. Self-row actions are hidden to prevent lockout.
+      </div>
+    </div>
+  );
+}
+
+
 function AdminPage({ user }) {
   const [health, setHealth] = React.useState(null);
   const [queueStats, setQueueStats] = React.useState(null);
@@ -23241,6 +23567,7 @@ function App() {
         {page === 'intelligence_grp'&& <LearningPage onToast={notify} />}
         {page === 'automation'      && <AiBridgePage onToast={notify} />}
         {page === 'admin'           && <AdminPage user={user} />}
+        {page === 'admin_users'     && <AdminUsersPage user={user} onNav={handleNav} onToast={notify} />}
 
         {/* Inbox — real frontend composition over existing endpoints */}
         {page === 'inbox' && (

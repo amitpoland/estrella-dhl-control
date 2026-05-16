@@ -787,20 +787,23 @@
         {
           "batch_id": "B-MD0",
           "title": "Inspection + parity matrix (docs-only)",
-          "status": "active",
-          "pr_url": null,
+          "status": "merged",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/127",
           "branch": "docs/md-completion-matrix-and-users-roles-approval",
           "artifacts": [
             "tasks/master-data-operational-completion.md"
           ],
           "next_batch": "B-MD1-approval",
-          "block_reason": null
+          "block_reason": null,
+          "pr_number": 127,
+          "merge_sha": "fa02a5ec0792a96ddb99d661c784f36e93bab2de",
+          "deploy_needed": false
         },
         {
           "batch_id": "B-MD1-approval",
           "title": "Users/Roles writes — approval package (docs-only)",
-          "status": "active",
-          "pr_url": null,
+          "status": "merged",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/127",
           "branch": "docs/md-completion-matrix-and-users-roles-approval",
           "artifacts": [
             "tasks/master-data-users-roles-approval-package.md"
@@ -809,18 +812,38 @@
             "B-MD0"
           ],
           "next_batch": "B-MD1",
-          "block_reason": null
+          "block_reason": null,
+          "pr_number": 127,
+          "merge_sha": "fa02a5ec0792a96ddb99d661c784f36e93bab2de",
+          "deploy_needed": false
         },
         {
           "batch_id": "B-MD1",
           "title": "Users/Roles writes implementation (new AdminUsersPage)",
-          "status": "blocked",
+          "status": "pr_open",
           "pr_url": null,
           "depends_on": [
             "B-MD1-approval"
           ],
           "next_batch": "B-MD2-approval",
-          "block_reason": "Operator approval required. Sign tasks/master-data-users-roles-approval-package.md §9 before implementation begins. Implementation surface: new AdminUsersPage (not inside MasterDataPage). Existing MasterDataPage security contracts (test_only_allowed_writes_in_master, test_no_dangerous_destructive_buttons_in_master) stay intact."
+          "block_reason": null,
+          "branch": "feat/b-md1-admin-users-writes",
+          "artifacts": [
+            "service/app/static/dashboard.html",
+            "service/tests/test_dashboard_admin_users_design.py",
+            "service/tests/test_auth_admin_user_routes.py",
+            "tasks/master-data-users-roles-implementation-plan.md"
+          ],
+          "tests": {
+            "dashboard_admin_users_design": "13/13",
+            "auth_admin_user_routes": "7/7",
+            "dashboard_master_design": "green (unchanged)",
+            "master_data_hard_rules": "28/28",
+            "runner_v2_hard_rules": "12/12",
+            "finance_postings_contracts": "38/38",
+            "finance_panel_contracts": "12/12",
+            "pz_regression": "160/160"
+          }
         },
         {
           "batch_id": "B-MD2-approval",

@@ -5,7 +5,7 @@
 > Operational Stabilization + Observation campaign closed P0-P4 on 2026-05-16.
 > **Phase 6F PAUSED at steady-state (2026-05-16).** 14 batches, 6 deployed (5 live + 6F.5 deployed default-OFF), 4 operator-gated blocks. Resume: **`tasks/phase-6f-campaign-close.md`**.
 >
-> **MDOC-2026-05 (Master Data Operational Completion) STARTED 2026-05-16.** 7 batches planned. B-MD0 matrix + B-MD1-approval package landed in this PR. B-MD1 (Users/Roles writes implementation) BLOCKED awaiting operator sign-off on `tasks/master-data-users-roles-approval-package.md` §9. B-MD2 (Designs + Roles) approval package pending. B-MD3/B-MD4 (UI cleanup + browser smoke) planned. Matrix: **`tasks/master-data-operational-completion.md`**.
+> **MDOC-2026-05** in progress: B-MD0 + B-MD1-approval merged (PR #127). **B-MD1 PR_OPEN** (AdminUsersPage; UI-only over existing /auth admin write endpoints; 358 tests green; isolated from MasterDataPage; new top-level page; admin-gated; self-lockout guard; confirm dialogs). Implementation plan: `tasks/master-data-users-roles-implementation-plan.md`. B-MD2 (Designs+Roles) approval pending; B-MD3/B-MD4 planned.
 >
 > See `tasks/campaign-state.json` for the canonical state of all 3 campaigns (23 batches tracked).
 > See `tasks/campaign-runner.md` for the controller doc.
