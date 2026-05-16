@@ -2715,6 +2715,25 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                 <div style={{ ...sectionHeadStyle, marginTop: 0, marginBottom: 0, flex: 1 }}>
                   Ship-to address
                 </div>
+                {/* B0 deep-enrichment 2026-05-16 — operator affordance:
+                    copy billing identity into the ship-to fields. Useful when
+                    ship-to is the same legal entity but the operator wants an
+                    editable local override (e.g. attention-of person). Does
+                    NOT call wFirma; pure local form mutation. */}
+                <button data-testid="kyc-shipping-copy-billing" type="button"
+                  onClick={() => {
+                    setField('ship_to_use_alternate', true);
+                    if (!form.ship_to_name)    setField('ship_to_name',    form.bill_to_name || '');
+                    if (!form.ship_to_country) setField('ship_to_country', form.country || '');
+                    if (!form.ship_to_email)   setField('ship_to_email',   form.bill_to_email || '');
+                    if (!form.ship_to_phone)   setField('ship_to_phone',   form.bill_to_phone || '');
+                  }}
+                  title="Pre-fill ship-to fields from the billing identity"
+                  style={{ padding: '4px 10px', fontSize: 11, background: 'var(--bg-subtle)',
+                    color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6,
+                    cursor: 'pointer', fontFamily: 'inherit' }}>
+                  Copy billing address
+                </button>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
                   <input data-testid="kyc-shipping-use-alternate" type="checkbox"
                     checked={!!form.ship_to_use_alternate}

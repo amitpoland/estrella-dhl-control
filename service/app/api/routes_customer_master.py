@@ -493,6 +493,41 @@ async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
             rejected.append({"wfirma_id": p["wfirma_id"], "reason": p["reason"],
                              "status": p["status"]})
             continue
+        # B0 deep-enrichment 2026-05-16: per-row, look up the contractor's
+        # full record via fetch_contractor_by_id to surface payment_term,
+        # default_currency, language, invoice/proforma series, bank account.
+        # The list-page response we already have in `p` rarely carries
+        # these. Read-only against wFirma; never raises if the contractor
+        # is unknown — we just fall back to the list-page values.
+        deep_email   = p.get("email")
+        deep_phone   = p.get("phone")
+        deep_mobile  = p.get("mobile")
+        deep_bank    = p.get("bank_account")
+        deep_curr    = None
+        deep_pterm   = None
+        deep_lang    = None
+        deep_pro_id  = None
+        deep_inv_id  = None
+        try:
+            from ..services import wfirma_client as wfc
+            cd = wfc.fetch_contractor_by_id(p["wfirma_id"])
+            if cd.ok:
+                deep_email  = deep_email  or (cd.email  or None)
+                deep_phone  = deep_phone  or (cd.phone  or None)
+                deep_mobile = deep_mobile or (cd.mobile or None)
+                deep_bank   = deep_bank   or (cd.account_payments or None)
+                deep_curr   = (cd.default_currency or "").upper() or None
+                # payment_term sometimes empty string; coerce to int days if digit
+                pt = (cd.payment_term or "").strip()
+                if pt.isdigit():
+                    deep_pterm = int(pt)
+                deep_lang   = (cd.translation_language_id or "").strip() or None
+                deep_pro_id = (cd.proformaseries_id or "").strip() or None
+                deep_inv_id = (cd.invoiceseries_id or "").strip() or None
+        except Exception as exc:
+            # Deep-fetch failure is non-fatal — we still write identity.
+            log.warning("deep-fetch failed for wfid=%s: %s", p["wfirma_id"], exc)
+
         try:
             res = upsert_identity_only(
                 _DB_PATH,
@@ -500,13 +535,15 @@ async def cm_wfirma_sync_apply(request: Request) -> JSONResponse:
                 bill_to_name=p["name"],
                 country=p["country"],
                 nip=p["vat_id"] or None,
-                bill_to_email=p.get("email"),
-                bill_to_phone=p.get("phone"),
-                bill_to_mobile=p.get("mobile"),
-                bank_account=p.get("bank_account"),
-                # default_currency / payment_terms_days left None for now —
-                # wFirma list response rarely carries these. Operator can
-                # set them via the Customer Master inline form.
+                bill_to_email=deep_email,
+                bill_to_phone=deep_phone,
+                bill_to_mobile=deep_mobile,
+                bank_account=deep_bank,
+                default_currency=deep_curr,
+                payment_terms_days=deep_pterm,
+                default_language_id=deep_lang,
+                preferred_proforma_series_id=deep_pro_id,
+                preferred_invoice_series_id=deep_inv_id,
             )
             if res["action"] == "inserted":
                 inserted += 1

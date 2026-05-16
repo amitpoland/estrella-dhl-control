@@ -726,6 +726,130 @@ def test_no_backend_routes_renamed_in_dashboard():
         "Backend route path must remain /api/v1/customer-master/* (no rename in this batch)"
 
 
+# ── B0 deep-enrichment 2026-05-16 ──────────────────────────────────────────
+
+
+def test_upsert_identity_only_fills_empty_series_and_language(tmp_path):
+    """Deep-enrichment new fields: language + series IDs + currency +
+    payment terms all populate via the same fill-when-empty rule."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    res = cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="DE1", bill_to_name="DEEP CO",
+        country="PL",
+        bill_to_email="ops@deep.example",
+        default_currency="EUR",
+        payment_terms_days=30,
+        default_language_id="LANG-EN",
+        preferred_proforma_series_id="PRO-EUR-2026",
+        preferred_invoice_series_id="INV-EUR-2026",
+    )
+    rec = cmdb.get_customer(db, "DE1")
+    assert rec.default_currency             == "EUR"
+    assert rec.payment_terms_days           == 30
+    assert rec.default_language_id          == "LANG-EN"
+    assert rec.preferred_proforma_series_id == "PRO-EUR-2026"
+    assert rec.preferred_invoice_series_id  == "INV-EUR-2026"
+    assert rec.wfirma_sync_source           == "review_assign"
+
+
+def test_upsert_identity_only_preserves_operator_set_series(tmp_path):
+    """Operator-set series and language survive a re-sync."""
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="DE2", bill_to_name="OLD NAME", country="PL",
+        preferred_invoice_series_id="OPERATOR-INV-001",
+        default_language_id="LANG-PL",
+    )
+    # Resync with new wFirma values — must NOT overwrite operator values.
+    cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="DE2", bill_to_name="NEW NAME", country="PL",
+        preferred_invoice_series_id="WF-INV-999",
+        default_language_id="LANG-DE",
+    )
+    rec = cmdb.get_customer(db, "DE2")
+    assert rec.bill_to_name                == "NEW NAME"  # identity refreshed
+    assert rec.preferred_invoice_series_id == "OPERATOR-INV-001"
+    assert rec.default_language_id         == "LANG-PL"
+
+
+def test_dashboard_shipping_has_copy_billing_address_action():
+    src = _DASH.read_text(encoding="utf-8", errors="replace")
+    assert 'data-testid="kyc-shipping-copy-billing"' in src, \
+        "Shipping tab must expose a 'Copy billing address' affordance"
+
+
+def test_wfirma_contractor_fetch_result_has_deep_enrichment_fields():
+    """ContractorFetchResult dataclass must carry the deep-enrichment
+    fields so the apply path can pull them through."""
+    from service.app.services.wfirma_client import ContractorFetchResult
+    r = ContractorFetchResult(ok=False)
+    for field in ("email", "phone", "mobile", "account_payments",
+                  "payment_term", "default_currency",
+                  "translation_language_id",
+                  "invoiceseries_id", "proformaseries_id"):
+        assert hasattr(r, field), f"ContractorFetchResult missing field: {field}"
+
+
+def test_apply_deep_fetches_and_preserves_local(tmp_path, monkeypatch):
+    """End-to-end: apply uses fetch_contractor_by_id to pull commercial
+    defaults and writes them ONLY into empty local cells. Pre-existing
+    operator values in default_currency / payment_terms_days survive."""
+    from service.app.services import wfirma_client
+    from service.app.api import routes_customer_master
+
+    db = tmp_path / "cm.sqlite"
+    cmdb.init_db(db)
+    # Pre-seed with an operator-set default_currency and a series id
+    cmdb.upsert_identity_only(
+        db, bill_to_contractor_id="DEEP1", bill_to_name="ALPHA", country="PL",
+        default_currency="USD",
+        preferred_invoice_series_id="OPERATOR-INV-100",
+    )
+
+    # Fake list-page → returns the bare identity row
+    def _list(page, limit):
+        if page == 1:
+            return [wfirma_client.WFirmaContractor(
+                wfirma_id="DEEP1", name="ALPHA", nip="PL10", country="PL")]
+        return []
+    monkeypatch.setattr(wfirma_client, "list_contractors_page", _list)
+
+    # Fake fetch_contractor_by_id → returns rich data INCLUDING currency
+    # that the operator already overrode (must NOT replace).
+    def _fetch(cid):
+        return wfirma_client.ContractorFetchResult(
+            ok=True, contractor_id=cid, name="ALPHA", nip="PL10", country="PL",
+            email="deep@example.com", phone="+48 555 1111",
+            account_payments="PL90 1234 5678",
+            default_currency="EUR",  # operator set USD — must lose to operator
+            payment_term="14",
+            translation_language_id="LANG-EN",
+            invoiceseries_id="WF-INV-999",   # operator set local — must lose to operator
+            proformaseries_id="WF-PRO-999",
+        )
+    monkeypatch.setattr(wfirma_client, "fetch_contractor_by_id", _fetch)
+
+    monkeypatch.setattr(routes_customer_master, "_DB_PATH", db)
+    client = _make_app(monkeypatch, flag=True)
+    r = client.post("/api/v1/customer-master/sync-from-wfirma/apply",
+                    json={"wfirma_ids": ["DEEP1"]})
+    assert r.status_code == 200
+
+    rec = cmdb.get_customer(db, "DEEP1")
+    # Fields the operator HAD NOT set get filled:
+    assert rec.bill_to_email                == "deep@example.com"
+    assert rec.bill_to_phone                == "+48 555 1111"
+    assert rec.bank_account                 == "PL90 1234 5678"
+    assert rec.payment_terms_days           == 14
+    assert rec.default_language_id          == "LANG-EN"
+    assert rec.preferred_proforma_series_id == "WF-PRO-999"
+    # Fields the operator HAD set — preserved:
+    assert rec.default_currency             == "USD"
+    assert rec.preferred_invoice_series_id  == "OPERATOR-INV-100"
+
+
 def test_resolver_emits_only_four_canonical_verdicts():
     """The resolver model is closed: every proposal's suggested_target must
     be one of {client_master, supplier_master, ignore, needs_operator_review}.

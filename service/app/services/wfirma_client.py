@@ -70,7 +70,13 @@ class WFirmaContractor:
 @dataclass
 class ContractorFetchResult:
     """Output from ``fetch_contractor_by_id`` — structured read-back of a
-    single wFirma contractor record by numeric id."""
+    single wFirma contractor record by numeric id.
+
+    B0 deep-enrichment 2026-05-16: extended with optional commercial-default
+    fields parsed opportunistically from the wFirma XML. Each extra field
+    defaults to "" so a missing element never breaks the dataclass — the
+    apply path COALESCEs only when local is empty.
+    """
     ok: bool
     contractor_id: str = ""
     name: str = ""
@@ -90,6 +96,17 @@ class ContractorFetchResult:
     contact_city:    str = ""
     contact_zip:     str = ""
     contact_country: str = ""
+    # B0 deep-enrichment — opportunistic commercial defaults
+    email:           str = ""
+    phone:           str = ""
+    mobile:          str = ""
+    account_payments: str = ""
+    payment_method:  str = ""
+    payment_term:    str = ""   # days as string
+    default_currency: str = ""  # e.g. PLN | EUR | USD
+    translation_language_id: str = ""
+    invoiceseries_id: str = ""
+    proformaseries_id: str = ""
     error: Optional[str] = None
     raw_response: Optional[str] = None
 
@@ -708,6 +725,17 @@ def fetch_contractor_by_id(contractor_id: str) -> "ContractorFetchResult":
         contact_city              = _find_text(node, "contact_city"),
         contact_zip               = _find_text(node, "contact_zip"),
         contact_country           = _find_text(node, "contact_country"),
+        # B0 deep-enrichment — opportunistic commercial defaults
+        email                     = _find_text(node, "email") or "",
+        phone                     = _find_text(node, "phone") or _find_text(node, "tel") or "",
+        mobile                    = _find_text(node, "mobile") or "",
+        account_payments          = _find_text(node, "account_payments") or "",
+        payment_method            = _find_text(node, "payment_method") or "",
+        payment_term              = _find_text(node, "payment_term") or "",
+        default_currency          = _find_text(node, "default_currency") or "",
+        translation_language_id   = _find_text(node, "translation_language_id") or "",
+        invoiceseries_id          = _find_text(node, "invoiceseries_id") or "",
+        proformaseries_id         = _find_text(node, "proformaseries_id") or "",
         raw_response              = response_text,
     )
 
