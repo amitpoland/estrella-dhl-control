@@ -25,7 +25,7 @@ from ..core.config import settings
 from ..core.security import require_api_key
 from ..core.logging import get_logger
 from ..services.master_data_db import (
-    HsCode, Unit, ProductLocal, Incoterm, VatConfig, FxRate,
+    HsCode, Unit, ProductLocal, Incoterm, VatConfig, FxRate, CarrierConfig,
     init_db,
     validate_hs_code, upsert_hs_code, get_hs_code, list_hs_codes, delete_hs_code,
     validate_unit, upsert_unit, get_unit, list_units, delete_unit,
@@ -36,6 +36,8 @@ from ..services.master_data_db import (
     update_vat_config, delete_vat_config,
     validate_fx_rate, create_fx_rate, get_fx_rate, list_fx_rates,
     update_fx_rate, delete_fx_rate,
+    validate_carrier_config, upsert_carrier_config, get_carrier_config,
+    list_carrier_configs, delete_carrier_config,
 )
 
 log    = get_logger(__name__)
@@ -526,4 +528,83 @@ def delete_fx_endpoint(fx_id: int) -> Response:
     init_db(_DB_PATH)
     if not delete_fx_rate(_DB_PATH, fx_id):
         raise HTTPException(status_code=404, detail=f"FX rate not found: {fx_id}")
+    return Response(status_code=204)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B9 — Carrier Configuration (LOCAL, NON-SECRET only)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Registers operator-facing carrier descriptions: code, name, parser, inbox,
+# api_type, supported services. Does NOT store credentials — those stay in
+# .env. Does NOT mutate any DHL/FedEx/UPS live integration. Does NOT touch
+# the shipment carrier runtime. Pure local documentation table.
+
+carriers_config_router = APIRouter(prefix="/api/v1/carriers-config", tags=["master-data"])
+
+
+def _carrier_dict(c: CarrierConfig) -> dict:
+    return {
+        "carrier_code": c.carrier_code, "name": c.name,
+        "parser_type": c.parser_type, "inbox_email": c.inbox_email,
+        "api_type": c.api_type, "supported_services": c.supported_services,
+        "notes": c.notes, "active": c.active,
+        "created_at": c.created_at, "updated_at": c.updated_at,
+    }
+
+
+@carriers_config_router.get("/", dependencies=[_auth], summary="List carrier configs")
+def list_carriers_endpoint(active: Optional[str] = Query(None),
+                          limit: int = Query(100, ge=1, le=1000)) -> JSONResponse:
+    try:
+        init_db(_DB_PATH)
+        recs = list_carrier_configs(_DB_PATH, active=_parse_active(active), limit=limit)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error("list_carrier_configs failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    return JSONResponse({"count": len(recs),
+                         "carriers": [_carrier_dict(c) for c in recs]})
+
+
+@carriers_config_router.get("/{carrier_code}", dependencies=[_auth],
+                            summary="Get carrier config")
+def get_carrier_endpoint(carrier_code: str) -> JSONResponse:
+    init_db(_DB_PATH)
+    rec = get_carrier_config(_DB_PATH, carrier_code)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Carrier config not found: {carrier_code}")
+    return JSONResponse(_carrier_dict(rec))
+
+
+@carriers_config_router.put("/{carrier_code}", dependencies=[_auth],
+                            summary="Upsert carrier config")
+async def upsert_carrier_endpoint(carrier_code: str, request: Request) -> JSONResponse:
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    body = dict(body); body["carrier_code"] = carrier_code
+    errs = validate_carrier_config(body)
+    if errs:
+        raise HTTPException(status_code=422, detail={"validation_errors": errs})
+    try:
+        rec = upsert_carrier_config(_DB_PATH, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        log.error("upsert_carrier_config failed code=%s: %s", carrier_code, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    return JSONResponse(_carrier_dict(rec))
+
+
+@carriers_config_router.delete("/{carrier_code}", dependencies=[_auth],
+                               summary="Delete carrier config", status_code=204)
+def delete_carrier_endpoint(carrier_code: str) -> Response:
+    init_db(_DB_PATH)
+    if not delete_carrier_config(_DB_PATH, carrier_code):
+        raise HTTPException(status_code=404, detail=f"Carrier config not found: {carrier_code}")
     return Response(status_code=204)

@@ -3464,6 +3464,25 @@ function MasterDataPage({ onNav, onToast }) {
     }
   };
 
+  // ── B9: Carrier config (MDC-080) — LOCAL, NON-SECRET only ─────────────
+  // Stores operator-facing carrier descriptions only. Credentials live in
+  // .env and are NEVER stored here. PZ + DHL runtime is untouched.
+  const [carriersCfg, setCarriersCfg] = React.useState({ loading: false, error: null, items: [], ts: null });
+  const [carCfgForm,  setCarCfgForm]  = React.useState(null);
+
+  const loadCarriersCfg = React.useCallback(async () => {
+    setCarriersCfg(s => ({ ...s, loading: true, error: null }));
+    try {
+      const d = await apiFetch('/api/v1/carriers-config/');
+      setCarriersCfg({ loading: false, error: null,
+        items: Array.isArray(d) ? d : (d.carriers || d.items || []),
+        ts: new Date().toISOString() });
+    } catch (e) {
+      setCarriersCfg({ loading: false, error: e.message || 'load failed', items: [],
+        ts: new Date().toISOString() });
+    }
+  }, []);
+
   // ── B8: FX rates reference (MDC-070) ───────────────────────────────────
   // REFERENCE-ONLY. The PZ engine consumes NBP live; this table is observation.
   const [fxRates,  setFxRates]  = React.useState({ loading: false, error: null, items: [], ts: null });
@@ -3634,6 +3653,7 @@ function MasterDataPage({ onNav, onToast }) {
     if (activeEntity === 'incoterms' && !incoterms.ts && !incoterms.loading)  loadIncoterms();
     if (activeEntity === 'vat_config' && !vatCfg.ts && !vatCfg.loading)       loadVatCfg();
     if (activeEntity === 'fx_rates' && !fxRates.ts && !fxRates.loading)       loadFxRates();
+    if (activeEntity === 'carriers_config' && !carriersCfg.ts && !carriersCfg.loading) loadCarriersCfg();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity]);
 
@@ -3749,7 +3769,8 @@ function MasterDataPage({ onNav, onToast }) {
       count: units.error ? null : (units.items || []).length, live: true },
     { id: 'product_local',  label: 'Product local',   icon: '◇',
       count: pl.error ? null : (pl.items || []).length, live: true },
-    { id: 'carriers_config',label: 'Carriers Config', icon: '◎', live: false },
+    { id: 'carriers_config',label: 'Carriers Config', icon: '◎',
+      count: carriersCfg.error ? null : (carriersCfg.items || []).length, live: true },
     { id: 'incoterms',      label: 'Incoterms',       icon: '◇',
       count: incoterms.error ? null : (incoterms.items || []).length, live: true },
     { id: 'vat_config',     label: 'VAT Config',      icon: '◆',
@@ -5282,12 +5303,175 @@ function MasterDataPage({ onNav, onToast }) {
             </div>
           )}
 
-          {/* ── CARRIERS CONFIG ────────────────────────────────────────── */}
+          {/* ── CARRIERS CONFIG (B9 MDC-080) — LIVE, LOCAL, NON-SECRET ── */}
           {activeEntity === 'carriers_config' && (
-            <PendingPanel entityId="carriers_config" title="Carriers Config"
-              description="Carrier configuration records — name, inbox email parser, supported services, account type. Separate from the DHL live integration status page (see Carriers nav item)."
-              fields={['carrier_code','name','parser_type','inbox_email',
-                       'api_type','supported_services','active','notes']} />
+            <div data-testid="master-carriers-config-panel">
+              <PanelHeader title="Carriers Config"
+                subtitle="Operator-facing carrier registry — credentials stay in .env, NOT here"
+                actions={
+                  <button data-testid="master-carcfg-btn-new"
+                    onClick={() => { setCarCfgForm({ carrier_code: '', name: '',
+                      parser_type: '', inbox_email: '', api_type: '',
+                      supported_services: '', notes: '', active: true });
+                      setB5Error(null); }}
+                    disabled={!!carCfgForm}
+                    style={{ padding: '5px 14px', fontSize: 11, fontWeight: 600,
+                      background: 'var(--accent)', color: '#fff', border: 'none',
+                      borderRadius: 6, cursor: carCfgForm ? 'not-allowed' : 'pointer',
+                      opacity: carCfgForm ? 0.5 : 1, fontFamily: 'inherit' }}>+ New Carrier Config</button>
+                }
+              />
+              <div style={{ padding: '8px 10px', background: 'var(--bg-subtle)',
+                            border: '1px dashed var(--border)', borderRadius: 4,
+                            fontSize: 10, color: 'var(--text-3)', marginBottom: 8 }}>
+                Local registry only — DHL/FedEx/UPS credentials live in <code>.env</code> and are NEVER stored here. The Carriers nav page shows live integration status and is independent of this table.
+              </div>
+              {carriersCfg.loading && <div style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>}
+              {carriersCfg.error && <div data-testid="master-carcfg-error"
+                style={{ padding: 20, color: 'var(--badge-red-text)', fontSize: 12 }}>
+                Load failed: {carriersCfg.error}</div>}
+              {!carriersCfg.loading && !carriersCfg.error && (
+                <div style={{ background: 'var(--card)', border: '1px solid var(--border)',
+                              borderRadius: 10, overflow: 'hidden' }}>
+                  {(carriersCfg.items || []).filter(r => _match(r, query)).length === 0
+                    ? <div data-testid="master-carcfg-empty"
+                           style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>
+                        No carrier configurations yet.</div>
+                    : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead><tr style={{ background: 'var(--bg-subtle)' }}>
+                          {['Code','Name','Parser','Inbox','API type','Services','Active',''].map(h => (
+                            <th key={h} style={thStyle}>{h}</th>))}
+                        </tr></thead>
+                        <tbody>
+                          {(carriersCfg.items || []).filter(r => _match(r, query)).map(c => (
+                            <tr key={c.carrier_code} data-testid="master-carcfg-row" style={trStyle}>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace',
+                                fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{c.carrier_code}</td>
+                              <td style={{ padding: '8px 12px' }}>{c.name || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-2)' }}>{c.parser_type || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11, fontFamily: 'monospace' }}>{c.inbox_email || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>{c.api_type || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 10,
+                                color: 'var(--text-3)', maxWidth: 180, overflow: 'hidden',
+                                textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.supported_services || '—'}</td>
+                              <td style={{ padding: '8px 12px', fontSize: 11 }}>
+                                {c.active ? <span style={{ color: 'var(--badge-green-text)', fontWeight: 600 }}>● active</span>
+                                          : <span style={{ color: 'var(--text-3)' }}>○ inactive</span>}</td>
+                              <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                                <button data-testid={'master-carcfg-btn-edit-' + c.carrier_code}
+                                  onClick={() => { setCarCfgForm({ ...c }); setB5Error(null); }}
+                                  style={{ padding: '3px 10px', fontSize: 11,
+                                    border: '1px solid var(--accent)', borderRadius: 4,
+                                    background: 'var(--accent-subtle)', cursor: 'pointer',
+                                    color: 'var(--text)', fontWeight: 600,
+                                    fontFamily: 'inherit', marginRight: 6 }}>Edit</button>
+                                <button data-testid={'master-carcfg-btn-delete-' + c.carrier_code}
+                                  onClick={() => b5Delete('/api/v1/carriers-config', c.carrier_code, loadCarriersCfg)}
+                                  style={{ padding: '3px 8px', fontSize: 11,
+                                    border: '1px solid var(--border)', borderRadius: 4,
+                                    background: 'var(--card)', cursor: 'pointer',
+                                    color: 'var(--text-3)', fontFamily: 'inherit' }}>×</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  }
+                </div>
+              )}
+              {carCfgForm !== null && (
+                <div data-testid="master-carcfg-form"
+                     style={{ marginTop: 14, padding: '14px 18px', background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Carrier code (lowercase) *</span>
+                      <input data-testid="master-carcfg-input-code" type="text"
+                        value={carCfgForm.carrier_code || ''}
+                        onChange={e => setCarCfgForm(f => ({ ...f, carrier_code: e.target.value.toLowerCase() }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Display name</span>
+                      <input type="text" value={carCfgForm.name || ''}
+                        onChange={e => setCarCfgForm(f => ({ ...f, name: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Parser type</span>
+                      <input type="text" value={carCfgForm.parser_type || ''}
+                        onChange={e => setCarCfgForm(f => ({ ...f, parser_type: e.target.value }))}
+                        placeholder="e.g. dhl_emea"
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>API type</span>
+                      <select value={carCfgForm.api_type || ''}
+                        onChange={e => setCarCfgForm(f => ({ ...f, api_type: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}>
+                        <option value="">—</option>
+                        <option value="api">api</option>
+                        <option value="portal">portal</option>
+                        <option value="email_only">email_only</option>
+                        <option value="manual">manual</option>
+                      </select>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Inbox email</span>
+                      <input type="email" value={carCfgForm.inbox_email || ''}
+                        onChange={e => setCarCfgForm(f => ({ ...f, inbox_email: e.target.value }))}
+                        placeholder="e.g. inbox@carrier.example"
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace' }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Supported services (CSV)</span>
+                      <input type="text" value={carCfgForm.supported_services || ''}
+                        onChange={e => setCarCfgForm(f => ({ ...f, supported_services: e.target.value }))}
+                        placeholder="EXPRESS_WORLDWIDE, EXPRESS_12_00"
+                        style={{ padding: '4px 8px', fontSize: 11,
+                          border: '1px solid var(--border)', borderRadius: 4 }}/>
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }}>Notes</span>
+                      <textarea value={carCfgForm.notes || ''}
+                        onChange={e => setCarCfgForm(f => ({ ...f, notes: e.target.value }))}
+                        style={{ padding: '4px 8px', fontSize: 11, fontFamily: 'inherit',
+                          border: '1px solid var(--border)', borderRadius: 4,
+                          minHeight: 50, resize: 'vertical' }}/>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+                      <input type="checkbox" checked={carCfgForm.active !== false}
+                        onChange={e => setCarCfgForm(f => ({ ...f, active: e.target.checked }))}/>
+                      Active
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button data-testid="master-carcfg-btn-save"
+                      onClick={() => b5Save('/api/v1/carriers-config', 'carrier_code', carCfgForm, loadCarriersCfg,
+                                            () => setCarCfgForm(null))}
+                      disabled={b5Saving}
+                      style={{ padding: '6px 18px', fontSize: 12, fontWeight: 700,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        borderRadius: 4, cursor: b5Saving ? 'not-allowed' : 'pointer',
+                        opacity: b5Saving ? 0.6 : 1, fontFamily: 'inherit' }}>
+                      {b5Saving ? 'Saving…' : 'Save'}</button>
+                    <button data-testid="master-carcfg-btn-cancel"
+                      onClick={() => { setCarCfgForm(null); setB5Error(null); }}
+                      style={{ padding: '6px 12px', fontSize: 12,
+                        background: 'var(--card)', color: 'var(--text-2)',
+                        border: '1px solid var(--border)', borderRadius: 4,
+                        cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {/* ── INCOTERMS (B7 MDC-060) — LIVE ──────────────────────────── */}
@@ -5593,7 +5777,7 @@ function MasterDataPage({ onNav, onToast }) {
       </div>{/* end 2-col layout */}
 
       {/* ── Preserved data-testid anchors (hidden, for test compatibility) ── */}
-      {/* B8: fx_rates removed (now live, reference-only). Remaining pending: designs, roles */}
+      {/* B9: carriers_config moved to live. Remaining pending: designs, roles */}
       <div data-testid="master-pending-panel" style={{ display: 'none' }}>
         <span data-testid="master-pending-badge" />
         <div data-testid="master-pending-grid">
@@ -5614,8 +5798,8 @@ function MasterDataPage({ onNav, onToast }) {
                 background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10,
                 fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)',
                 letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
-        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers · HS Codes · Units · Product local · Incoterms · VAT Config · FX Rates (reference) are live.
-          Designs / Carriers Config / Roles
+        <span>Full master data module. Clients · Users · Products · Customer Master · Suppliers · HS Codes · Units · Product local · Incoterms · VAT Config · FX Rates (reference) · Carriers Config are live.
+          Designs / Roles
           are structure-preview — backend pending.</span>
       </div>
 

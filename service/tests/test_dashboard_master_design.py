@@ -220,6 +220,7 @@ def test_only_allowed_writes_in_master():
         '/api/v1/incoterms',
         '/api/v1/vat-config',
         '/api/v1/fx-rates',
+        '/api/v1/carriers-config',
     )
     # b5Save / b5Delete are generic helpers that accept a basePath parameter;
     # their call sites (b5Save('/api/v1/hs-codes', ...) etc.) carry the literal
@@ -336,13 +337,12 @@ def test_four_live_entities_in_sidebar():
     assert "live: true" in src, "live: true must be set on live entities"
 
 
-def test_three_pending_entities_in_sidebar():
-    """After B8 only three entity ids remain in pending state:
-    designs, carriers_config, roles. (fx_rates moved to live as reference table
-    in B8 MDC-070; override MDC-071 stays FORBIDDEN.)"""
+def test_two_pending_entities_in_sidebar():
+    """After B9 only two entity ids remain in pending state:
+    designs (B6 schema sign-off needed) and roles (B3 contract relaxation needed)."""
     src = _src()
     for eid in (
-        "'designs'", "'carriers_config'", "'roles'",
+        "'designs'", "'roles'",
     ):
         assert f"id: {eid}" in src, f"Missing pending entity id: {eid}"
     assert "live: false" in src, "live: false must be set on pending entities"
@@ -429,6 +429,44 @@ def test_b8_fx_panel_testids_present():
     for tid in ('master-fx-rates-panel', 'master-fx-btn-new',
                 'master-fx-btn-save', 'master-fx-btn-cancel'):
         assert f'data-testid="{tid}"' in src, f"B8 missing testid: {tid}"
+
+
+def test_b9_carriers_config_is_live():
+    """B9: carriers_config entity is live: true."""
+    src = _src()
+    idx = src.index("id: 'carriers_config'")
+    snippet = src[idx:idx + 260]
+    assert "live: true" in snippet, "carriers_config must be live: true (B9)"
+    assert "carriersCfg.items" in snippet or "carriersCfg.error" in snippet
+
+
+def test_b9_carriers_config_panel_testids_present():
+    src = _src()
+    for tid in ('master-carriers-config-panel', 'master-carcfg-btn-new',
+                'master-carcfg-btn-save', 'master-carcfg-btn-cancel',
+                'master-carcfg-input-code'):
+        assert f'data-testid="{tid}"' in src, f"B9 missing testid: {tid}"
+
+
+def test_b9_carriers_config_credentials_disclaimer_present():
+    """Carriers Config panel must explicitly state credentials stay in .env."""
+    src = _src()
+    block = _master_block(src)
+    assert ".env" in block, "Carriers Config panel must reference .env (credentials stay there)"
+    assert "credentials" in block.lower() or "non-secret" in block.lower(), \
+        "Carriers Config panel must carry a non-secret disclaimer"
+
+
+def test_b9_carriers_config_does_not_touch_runtime():
+    """The B9 carriers_config table must NOT be wired into the carrier runtime
+    subsystem. Guarded via source-grep of the routes module."""
+    from app.api import routes_master_data as mod
+    src = Path(mod.__file__).read_text(encoding="utf-8")
+    for forbidden in ("routes_carrier_actions", "routes_carrier_shadow",
+                      "routes_carrier_webhook", "from .routes_carrier_",
+                      "from ..api.routes_carrier_"):
+        assert forbidden not in src, \
+            f"routes_master_data must not import carrier runtime: {forbidden}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -528,9 +566,10 @@ def test_design_preview_footer_present():
 
 def test_footer_accurately_lists_live_and_pending():
     src = _src()
-    # B8 adds FX Rates (reference) to the live list
+    # B9 adds Carriers Config to the live list
     assert "Clients" in src and "Users" in src
-    assert "FX Rates (reference) are live" in src, "Footer must list FX Rates as live (B8)"
+    assert "Carriers Config are live" in src, "Footer must list Carriers Config as live (B9)"
+    assert "FX Rates (reference)" in src
     assert "Incoterms" in src
     assert "HS Codes" in src
     assert "Suppliers" in src

@@ -68,6 +68,7 @@ from .api.routes_master_data import (
     incoterms_router as md_incoterms_router,
     vat_router as md_vat_router,
     fx_router as md_fx_router,
+    carriers_config_router as md_carriers_config_router,
 )
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
@@ -280,6 +281,7 @@ app.include_router(md_pl_router)                    # MasterData-B5: Product loc
 app.include_router(md_incoterms_router)             # MasterData-B7: Incoterms registry (local CRUD; X-API-Key)
 app.include_router(md_vat_router)                   # MasterData-B7: VAT config (local; READ-ONLY w.r.t. wFirma invoicing)
 app.include_router(md_fx_router)                    # MasterData-B8: FX rates (REFERENCE-ONLY; NOT a PZ override path)
+app.include_router(md_carriers_config_router)       # MasterData-B9: Carrier config (LOCAL, NON-SECRET; runtime untouched)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
