@@ -586,10 +586,21 @@
         {
           "batch_id": "6F.5",
           "title": "/post dual-write to charges (feature flag OFF default)",
-          "status": "pr_open",
+          "status": "deployed",
           "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/121",
           "pr_number": 121,
           "branch": "feat/phase-6f-5-dual-write",
+          "merge_sha": "0f67d342e74c93145a96ef34aeb3b01fc4431606",
+          "deployed_sha": "0f67d342e74c93145a96ef34aeb3b01fc4431606",
+          "deployed_at": "2026-05-16T13:40:00+00:00",
+          "smoke_report": "tasks/smoke-reports/2026-05-16-phase-6f-5-dual-write-deploy.md",
+          "flags_verified_off": {
+            "operator_session_env": "no entries",
+            "dotenv_file":          "no entries",
+            "nssm_app_env_extra":   "empty",
+            "deployed_config_field_defaults": "both Field(default=False)",
+            "verified_at": "2026-05-16T13:42:00+00:00"
+          },
           "depends_on": ["6F.5-approval-package"],
           "decision_memo": "tasks/phase-6f-5-decision-memo.md",
           "memo_verdict": "10/10 GREEN — implementation approved with binding conditions",
@@ -598,7 +609,7 @@
             "FINANCE_DUAL_WRITE_SHADOW":  "default false"
           },
           "activation_status": "NOT_ACTIVATED",
-          "activation_block_reason": "Operator approved implementation only. Activation (flag flip) requires a separate operator decision. Production deploy must verify both flags are unset or false in NSSM env before any subsequent activation step.",
+          "activation_block_reason": "Operator approved implementation only. Activation (flag flip) requires a separate operator decision. Production flags verified OFF at three sources + deployed config defaults on 2026-05-16T13:42:00Z. Awaiting operator sign-off on tasks/phase-6f-5-shadow-activation-approval.md before any FINANCE_DUAL_WRITE_* env var is set.",
           "artifacts": [
             "service/app/core/config.py",
             "service/app/services/finance_dual_write.py",
@@ -628,8 +639,40 @@
             "runner_v2_hard_rules": "12/12",
             "pz_regression": "160/160"
           },
-          "next_batch": "6F.6",
+          "next_batch": "6F.5-shadow-activation-approval",
+          "rollback_command": "git revert -m 1 0f67d34 --no-edit",
           "block_reason": null
+        },
+        {
+          "batch_id": "6F.5-shadow-activation-approval",
+          "title": "6F.5 shadow-activation approval package (NO activation)",
+          "status": "active",
+          "pr_url": null,
+          "depends_on": ["6F.5"],
+          "artifacts": [
+            "tasks/phase-6f-5-shadow-activation-approval.md"
+          ],
+          "next_batch": "6F.5-shadow-activation",
+          "block_reason": null,
+          "notes": "Operator-facing runbook + sign-off package. No env change. No activation. Defines exact steps, observation window, evidence requirements, rollback, log patterns, immediate-disable, and progression-to-live criteria."
+        },
+        {
+          "batch_id": "6F.5-shadow-activation",
+          "title": "Activate FINANCE_DUAL_WRITE_ENABLED=true + SHADOW=true (operator-driven)",
+          "status": "blocked",
+          "pr_url": null,
+          "depends_on": ["6F.5-shadow-activation-approval"],
+          "next_batch": "6F.5-live-activation",
+          "block_reason": "Awaiting operator sign-off on tasks/phase-6f-5-shadow-activation-approval.md. Setting env vars on production is gated."
+        },
+        {
+          "batch_id": "6F.5-live-activation",
+          "title": "Activate FINANCE_DUAL_WRITE_ENABLED=true (SHADOW=false) — real writes",
+          "status": "blocked",
+          "pr_url": null,
+          "depends_on": ["6F.5-shadow-activation"],
+          "next_batch": "6F.6",
+          "block_reason": "Cannot be considered until shadow run produces ≥50 entries across ≥5 distinct draft posts with zero finance_dual_write_failed log lines."
         },
         {
           "batch_id": "6F.6",
