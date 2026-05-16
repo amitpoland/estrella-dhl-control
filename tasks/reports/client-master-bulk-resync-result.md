@@ -1,9 +1,30 @@
 # Bulk re-sync RESULT — B0 Client Master
 
-**Date:** 2026-05-17
+**Date:** 2026-05-17 (initial pass) + 2026-05-17 (second-pass verification)
 **Production SHA:** `ab5aabe` (PR #155 unchanged; this is a data-only operation)
 **Service:** PZService RUNNING; local + public health 200 / 200
 **Mode:** WRITE applied per-id; one wfirma_id per apply call
+
+## Second-pass verification (run on operator re-request)
+
+Re-scanned `customer_master` after the initial pass. 14 rows still appear
+in the candidate-detection bucket (any of `bill_to_street`, `bill_to_city`,
+`bill_to_postal_code`, `bill_to_email`, `default_language_id` empty):
+
+| Bucket | Count | Status |
+|---|---|---|
+| Real wFirma contractors with one or more fields still empty | **10** | **Cannot be filled** — wFirma itself does not surface those values for the contractor |
+| Synthetic test rows (`TEST-MD2-SMOKE`, `BATCH0-SMOKE-TEST`, `OSO-SMOKE-CM`, `B2-PROD-SMOKE`) | **4** | NOT FOUND in wFirma — `customer_master` rows left untouched |
+
+Spot-probe evidence (live `contractors/get`):
+- `64174775` BJB LTD (GB): wFirma `email=''`, `translation_language=''` → cannot fill these two locally
+- `66503189` Queenhart (GB): wFirma `email=''`, `zip=''`, `translation_language=''` → cannot fill any of the three locally
+- `58541318` MDS (FR): wFirma `translation_language=''` (email already filled in row) → cannot fill language
+
+**Conclusion: bulk re-sync is at wFirma's ceiling.** Re-running apply for
+the 10 real residual rows would be a no-op (COALESCE-NULLIF requires both
+the local and incoming value to be non-empty; if wFirma has no value, no
+write happens). No additional apply calls were issued in the second pass.
 
 ## Summary
 

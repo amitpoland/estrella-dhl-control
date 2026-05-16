@@ -1013,7 +1013,7 @@
         {
           "batch_id": "B0-WFIRMA-IDENTITY-CACHE",
           "title": "wFirma identity cache for Customer Master and Suppliers",
-          "status": "deployed_smoked",
+          "status": "bulk_resync_complete",
           "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/141",
           "pr_number": 141,
           "merge_sha": "08529b3cea6e406e817359a8f8cf377cdce6ab23",
@@ -1030,11 +1030,15 @@
             "service/app/core/config.py",
             "service/app/static/dashboard.html",
             "service/tests/test_master_data_suppliers_wfirma_sync.py",
-            "tasks/smoke-reports/b0-wfirma-identity-cache-review-assign.md"
+            "tasks/smoke-reports/b0-wfirma-identity-cache-review-assign.md",
+            "tasks/reports/client-master-bulk-resync-dryrun.md",
+            "tasks/reports/client-master-bulk-resync-result.md"
           ],
           "hotfix_pr": 142,
           "hotfix_merge_sha": "ad82ab6758773254f0fcf43140939d1153918f95",
-          "production_sha": "ad82ab6758773254f0fcf43140939d1153918f95"
+          "production_sha": "ad82ab6758773254f0fcf43140939d1153918f95",
+          "notes": "Bulk re-sync of 21 client_master rows completed (PR #156). Second-pass verification 2026-05-17: 14 candidates remain — all at wFirma ceiling (10 real rows where wFirma carries no language/email/postal for the contractor; 4 synthetic test rows that NOT FOUND in wFirma). No additional fills possible without operator hand-entry. Deferred: live wFirma dictionary refresh (invoiceseries/find, proformaseries/find, languages/find) — separate batch.",
+          "second_pass_date": "2026-05-17"
         }
       ],
       "next_batch": null,

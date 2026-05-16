@@ -113,3 +113,14 @@
 - **Next batch (gated):** Operator flips `WFIRMA_SYNC_SUPPLIERS_ALLOWED=true`, applies a small selected subset via the review panel, confirms only chosen rows wrote. Mirror for customers flag.
 - **Deferred:** packing-list contractor resolver — do not start until both flag-on validations pass.
 - **Open lesson:** L-040 (router file name ≠ mount prefix) added — consider follow-up patch adding a "URLs resolve" contract test.
+
+## 2026-05-17 — B0 Client Master bulk re-sync (closed)
+
+- **PR #156 merged** — 21 / 21 real client rows backfilled via per-id apply (no bulk Assign-all, no new client creation, 0 preservation violations on operator-owned columns).
+- **Second-pass verification (2026-05-17):** 14 rows still flagged by the candidate detector — confirmed at wFirma ceiling (10 real rows where wFirma carries no language/email/postal for the contractor; 4 synthetic test rows NOT FOUND in wFirma). No additional fills possible. Re-running apply would be a no-op.
+- **Reports:** `tasks/reports/client-master-bulk-resync-dryrun.md` + `tasks/reports/client-master-bulk-resync-result.md`.
+- **Next batch (deferred, requires operator green-light):**
+  1. **Live wFirma dictionary refresh** — probe `invoiceseries/find` / `proformaseries/find` / `languages/find` with live creds, add parsers to `wfirma_client.py`, wire `wfirma_dictionary_cache.refresh_from_wfirma()` to merge live entries on top of baseline. Adds a `POST /api/v1/customer-master/dictionaries/refresh` route.
+  2. **Symmetric supplier deep-fetch** — mirror the Client Master deep-fetch plumbing on `suppliers_db.sync_from_wfirma` so supplier addresses populate too.
+  3. **Operator hand-entry pass** for the 10 wFirma-ceiling rows (language / email / postal) — these can only be filled by the operator since wFirma has no source data.
+- **Permanent hard stops still in force:** no wFirma write, no packing-list resolver, no proforma/PZ/DHL/customs/finance change, no .env change.
