@@ -102,3 +102,31 @@ Append-only. Each entry: date, batch, lesson, evidence.
 ### L-024 — Campaign hard-rules survived 9 PRs intact
 - **Evidence:** Zero wFirma writes; zero proforma touches; zero PZ calculation changes; zero `.env` modifications; zero destructive schema operations. Every claim verified by source-grep contract tests + per-PR PZ regression run (160/160 every time).
 - **Rule:** Hard rules expressed as both prose (CLAUDE.md / campaign controller doc) AND mechanical contract tests will hold across a long campaign. Rules that exist only in prose drift.
+
+---
+
+## 2026-05-16 — Operational Integrity + Automation campaign (OIA-2026-05)
+
+### L-025 — File-based campaign state beats a DB layer for slow workflows
+- **Evidence:** A single `tasks/campaign-state.json` file (≈10 KB for the entire MDC-2026-05 + OIA-2026-05 history) plus a 250-line `campaign_status.py` CLI replaces what would otherwise be a SQLite table + service-level endpoints. 24 unit tests cover the full state lifecycle.
+- **Rule:** When a workflow's pace is hours-to-days (not requests-per-second), prefer one human-readable JSON file under version control. Reviewers see state move with the work; rollback is `git revert`.
+
+### L-026 — Smoke as API contract first, browser visual second
+- **Evidence:** The OIA campaign's smoke framework is a small `run_smoke.py` driver that hits the API endpoints a frontend would call and writes a markdown report. The browser visual checks are listed as "operator follow-up" steps in the same report. This is fast, reproducible, and captures the contract-level guarantees.
+- **Rule:** Two-tier smoke is the right pattern. Tier 1 = API-equivalent driver (machine-runnable, in CI eventually). Tier 2 = operator visual sanity (markdown checklist). Don't gate Tier 1 on browser tooling availability.
+
+### L-027 — Hard rules belong in one source-grep test file
+- **Evidence:** `test_master_data_hard_rules.py` consolidates 15 contract tests covering the 8 hard rules (FX-not-in-PZ, VAT-not-in-wFirma-posting, carrier-runtime-isolation, no-proforma-from-master-data, no-.env-writes, no-sqlite-committed, no-credential-columns, allow-list-on-writes). One file, one set of assertions, one place to audit.
+- **Rule:** Hard rules want one test file (not eight). Each rule is one or two tests. The file is the canonical machine-checked contract. Per-batch test files cover the batch's positive behaviour; the hard-rules file covers the negative behaviour the campaign must NEVER develop.
+
+### L-028 — Inspection-only deliverables are real deliverables
+- **Evidence:** Phase 5 of OIA-2026-05 produced `tasks/phase-6f-architecture.md` (an 11-section inspection report) with zero code changes, zero migrations, zero new tests. The report is the value: it surfaces 6 concrete mismatches, proposes a 5-table schema with audit-trail properties, and lists 7 implementation batches gated on operator approval.
+- **Rule:** When a campaign hits a high-risk area (accounting / settlement / FX delta), the right deliverable is an inspection report, not code. Implementation is the next campaign; this campaign's job is to make the next one safe to start.
+
+### L-029 — Stack-into-stack merges silently route work into wrong base
+- **Evidence:** PRs #103 and #104 (Master Data B7 + B8) merged into their stacked base branches rather than into main when `gh pr merge` was invoked on each in sequence. Main did not receive the work until a forward-merge PR #105 was opened explicitly against main. Without #105, the operator would have deployed only B5 and the production sync would have looked broken.
+- **Rule:** For stacked PR sequences, either retarget each stacked PR's base to `main` before merging the previous one (GitHub auto-retarget is unreliable here), or accept the stack-into-stack pattern and explicitly forward-merge to main with a closing PR. The forward-merge approach preserves the original stacked-review trail and is the recommended pattern.
+
+### L-030 — Closing a campaign needs more than green tests
+- **Evidence:** Closing MDC-2026-05 took: (a) 12 PRs merged, (b) one production deploy across 5 runtime files, (c) 6-entity API smoke against production, (d) updated controller doc + todo + lessons + 4 smoke reports under `tasks/smoke-reports/`, (e) a forward-merge to recover the stack misroute. Just "tests are green" wouldn't have caught the misroute or left a trail for future operators.
+- **Rule:** A campaign isn't closed until the state file says so AND the deploy SHA is recorded AND a smoke report exists AND the lessons log is appended. Anything less leaves drift.
