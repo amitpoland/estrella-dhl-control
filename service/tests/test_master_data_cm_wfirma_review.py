@@ -544,12 +544,16 @@ def test_dashboard_review_table_has_extended_columns():
 
 
 def test_dashboard_panel_label_is_client_master_only():
-    """No visible 'Customer Master' anywhere. The label is 'Client Master'."""
+    """No visible 'Customer Master' anywhere (any case). The label is
+    'Client Master'."""
     src = _DASH.read_text(encoding="utf-8", errors="replace")
     assert "label: 'Client Master'" in src, \
         "Master Data nav label must be 'Client Master'"
-    assert "Customer Master" not in src, \
-        "No operator-facing 'Customer Master' string is allowed anywhere"
+    # Case-insensitive scan: 'customer master' / 'CUSTOMER MASTER' / etc.
+    import re as _re
+    hits = _re.findall(r"customer\s+master", src, _re.IGNORECASE)
+    assert hits == [], \
+        f"No operator-facing 'customer master' string allowed anywhere (found {len(hits)}: {hits[:3]})"
     assert "Clients / Customer Master" not in src, \
         "Hybrid 'Clients / Customer Master' wording must be removed"
 
