@@ -883,8 +883,8 @@
         {
           "batch_id": "B-MD2",
           "title": "Designs master + Roles table implementation",
-          "status": "pr_open",
-          "pr_url": null,
+          "status": "smoked",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/131",
           "depends_on": [
             "B-MD2-approval"
           ],
@@ -910,7 +910,27 @@
             "dashboard_admin_users_design": "14/14",
             "auth_admin_user_routes": "6/6",
             "pz_regression": "160/160"
-          }
+          },
+          "pr_number": 131,
+          "merge_sha": "a7afbeb12229f7f91804decb104e20d56285138a",
+          "deployed_sha": "a7afbeb12229f7f91804decb104e20d56285138a",
+          "deployed_at": "2026-05-16T15:51:00+00:00",
+          "smoke_report": "tasks/smoke-reports/2026-05-16-b-md2-designs-roles.md",
+          "smoke": {
+            "designs_table_created": "yes (master_data.sqlite +24576 B)",
+            "designs_fk_constraints": "zero (PRAGMA verified)",
+            "smoke_design_round_trip": "SMOKE_MD2_001 PUT->GET->LIST->DELETE->404 clean",
+            "isolation_contracts": "4/4 green on deployed code",
+            "roles_panel_deployed": "3 anchors present (explainer, matrix, nav button)",
+            "designs_panel_deployed": "3 anchors present (panel, btn-new, btn-save)",
+            "finance_postings_unchanged": "81920 B (6F.5 still default-OFF)",
+            "users_db_unchanged": "no auth schema change",
+            "local_health": "200",
+            "public_health": "200",
+            "stderr_tail": "clean",
+            "browser_smoke_status": "deferred to operator (12-step checklist in smoke report §6)"
+          },
+          "rollback_command": "git revert -m 1 a7afbeb --no-edit"
         },
         {
           "batch_id": "B-MD3",
@@ -930,7 +950,8 @@
           "next_batch": null,
           "block_reason": null
         }
-      ]
+      ],
+      "next_batch": "B-MD3"
     }
   ]
 }
