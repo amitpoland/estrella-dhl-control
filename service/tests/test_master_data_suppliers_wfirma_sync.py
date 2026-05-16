@@ -326,7 +326,7 @@ def test_dashboard_has_customer_master_fetch_button():
     src = _dash()
     assert 'data-testid="master-cm-btn-fetch-wfirma"' in src, \
         "Customer Master panel must expose Fetch-from-wFirma button"
-    assert "/api/v1/wfirma/capabilities/customers/sync" in src, \
+    assert "/api/v1/wfirma/customers/sync" in src, \
         "Customer Master button must POST to wfirma customers sync endpoint"
 
 
@@ -346,9 +346,9 @@ def test_dashboard_wfirma_sync_endpoints_are_read_only_writes():
     assert hits, "Expected at least one B0 sync POST in dashboard"
     allowed = {
         "/api/v1/suppliers/sync-from-wfirma?write=true",
-        "/api/v1/wfirma/capabilities/customers/sync?write=true",
+        "/api/v1/wfirma/customers/sync?write=true",
         "/api/v1/suppliers/sync-from-wfirma/apply",
-        "/api/v1/wfirma/capabilities/customers/sync-from-wfirma/apply",
+        "/api/v1/wfirma/customers/sync-from-wfirma/apply",
     }
     for ep, method in hits:
         assert method == "POST", f"Non-POST on B0 sync surface: {method} {ep}"
@@ -525,7 +525,7 @@ def test_dashboard_review_customer_button_calls_preview_first():
     src = _dash()
     btn_idx = src.index('data-testid="master-cm-btn-fetch-wfirma"')
     btn_block = src[btn_idx: btn_idx + 1500]
-    assert "/api/v1/wfirma/capabilities/customers/sync-from-wfirma/preview" in btn_block, \
+    assert "/api/v1/wfirma/customers/sync-from-wfirma/preview" in btn_block, \
         "Customer Master fetch button must hit the preview endpoint first"
     assert "?write=true" not in btn_block, \
         "Customer Master fetch button must not auto-write"

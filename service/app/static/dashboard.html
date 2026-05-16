@@ -4447,7 +4447,7 @@ function MasterDataPage({ onNav, onToast }) {
                     onClick={async () => {
                       setCmWfReview({ loading: true, error: null, proposals: [] });
                       try {
-                        const r = await apiFetch('/api/v1/wfirma/capabilities/customers/sync-from-wfirma/preview');
+                        const r = await apiFetch('/api/v1/wfirma/customers/sync-from-wfirma/preview');
                         setCmWfReview({
                           loading: false, error: null,
                           proposals: (r.proposals || []).map(p => ({ ...p, _ui_skipped: false, _ui_edited: null }))
@@ -4480,7 +4480,7 @@ function MasterDataPage({ onNav, onToast }) {
                   onClose={() => setCmWfReview(null)}
                   onApply={async (ids) => {
                     try {
-                      const r = await apiFetch('/api/v1/wfirma/capabilities/customers/sync-from-wfirma/apply',
+                      const r = await apiFetch('/api/v1/wfirma/customers/sync-from-wfirma/apply',
                         { method: 'POST', body: JSON.stringify({ wfirma_ids: ids }) });
                       if (r && r.ok === false && r.mode === 'blocked') {
                         window.alert('Blocked: ' + (r.blocking_reasons || []).join('; '));
