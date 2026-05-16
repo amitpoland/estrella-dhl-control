@@ -5,7 +5,7 @@
 > Operational Stabilization + Observation campaign closed P0-P4 on 2026-05-16.
 > **Phase 6F PAUSED at steady-state (2026-05-16).** 14 batches, 6 deployed (5 live + 6F.5 deployed default-OFF), 4 operator-gated blocks. Resume: **`tasks/phase-6f-campaign-close.md`**.
 >
-> **MDOC-2026-05** in progress: **B-MD3 SMOKED** (PR #133, deploy `7272dbf`, 2026-05-16T16:12Z). UI cleanup live in production: orphaned PendingPanel gone, footer narrative updated, 22 testids stable. dashboard.html shrank −49,512 B. 8-check mechanical smoke PASS. **B-MD4 ACTIVE** — 20-surface operator browser smoke checklist authored at `tasks/smoke-reports/2026-05-16-b-md4-master-data-full-browser-smoke.md`; awaiting operator session.
+> **MDOC-2026-05 PAUSED** at steady state (2026-05-16T16:25Z). B-MD0..B-MD4 all merged/deployed/smoked on mechanical-equivalent basis. **14/20 B-MD4 surfaces mechanically verified PASS** (3 temp-record CRUD round-trips clean; 13 GET endpoints 200; finance breakdown 404; 22/22 testids; finance_postings.sqlite unchanged at 81,920 B; zero finance_dual_write logs). **6 operator-only visual surfaces deferred** (§2 Customer Master + §3 Shipping Addresses + §4 Carrier Accounts + §5 KYC + §6 KUKE + §7 Invoices + §18 AdminUsersPage UI walk — require admin browser session per L-044). Closure doc: `tasks/smoke-reports/2026-05-16-b-md4-master-data-full-browser-smoke.md`.
 >
 > See `tasks/campaign-state.json` for the canonical state of all 3 campaigns (23 batches tracked).
 > See `tasks/campaign-runner.md` for the controller doc.
