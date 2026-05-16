@@ -377,7 +377,7 @@
         {
           "batch_id": "6F.1.5",
           "title": "Contract tests pinning additive nature (planned)",
-          "status": "planned",
+          "status": "active",
           "pr_url": null,
           "next_batch": null,
           "block_reason": null
