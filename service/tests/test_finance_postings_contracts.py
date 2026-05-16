@@ -100,8 +100,11 @@ def test_no_runtime_module_imports_finance_postings_in_services():
 
 
 def test_no_finance_postings_reference_in_static_assets():
-    """The dashboard.html or any static asset must not reference the module
-    until 6F.4 (UI panel) batch lands."""
+    """Static assets may reference ONLY the read-only breakdown endpoint
+    (added in 6F.4). All other finance-postings symbols and any write URL
+    remain forbidden.
+    """
+    import re as _re
     static = _APP / "static"
     if not static.exists():
         pytest.skip("no static dir")
@@ -112,10 +115,18 @@ def test_no_finance_postings_reference_in_static_assets():
             src = p.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
-        for forbidden in ("finance_postings_db", "finance-postings",
-                          "/api/v1/finance/"):
+        # Hard-forbidden symbols (module name, write surfaces).
+        for forbidden in ("finance_postings_db", "finance-postings"):
             assert forbidden not in src, \
-                f"6F.1.5: static asset references {forbidden}: {p}"
+                f"6F.4: static asset references forbidden symbol {forbidden}: {p}"
+        # /api/v1/finance/ URLs are allowed ONLY if every match is the
+        # breakdown read endpoint pattern.
+        finance_urls = _re.findall(r"/api/v1/finance/[^'\"\s)`+]*", src)
+        for url in finance_urls:
+            assert url.startswith("/api/v1/finance/postings/"), (
+                f"6F.4: static asset {p} references non-breakdown finance URL {url!r}; "
+                "only /api/v1/finance/postings/{id}/breakdown is allowed."
+            )
 
 
 def test_main_references_only_read_only_router_for_finance_postings():

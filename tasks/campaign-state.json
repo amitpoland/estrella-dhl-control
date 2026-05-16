@@ -422,17 +422,21 @@
         {
           "batch_id": "6F.2.a",
           "title": "Backfill engine implementation (dry-run-first)",
-          "status": "pr_open",
+          "status": "merged",
           "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/117",
           "pr_number": 117,
           "branch": "feat/phase-6f-2a-backfill-script",
-          "head_sha": "6761ede",
+          "head_sha": "55c9dee",
+          "merge_sha": "2f67290979ba6469b521af5a06fc6472757daf55",
+          "merged_at": "2026-05-16T13:00:00+00:00",
+          "deploy_needed": false,
+          "deploy_reason": "PR scope contains no service/app/ runtime files; only service/scripts/, service/tests/, tasks/. Service restart not required.",
           "tests": {
             "backfill_finance_postings": "33/33",
-            "finance_postings_contracts": "7/7",
+            "finance_postings_contracts": "37/37",
             "finance_postings_db": "38/38",
-            "master_data_hard_rules": "69/69",
-            "master_data_suite": "147/147",
+            "master_data_hard_rules": "27/27",
+            "runner_v2_hard_rules": "12/12",
             "pz_regression": "160/160"
           },
           "artifacts": [
@@ -442,12 +446,13 @@
             "tasks/phase-6f-2-backfill-implementation-spec.md"
           ],
           "next_batch": "6F.2.b",
-          "block_reason": null
+          "block_reason": null,
+          "rollback_command": "git revert -m 1 2f67290 --no-edit"
         },
         {
           "batch_id": "6F.2.b",
           "title": "Dry-run against production snapshot/copy",
-          "status": "active",
+          "status": "merged",
           "pr_url": null,
           "branch": "feat/phase-6f-2a-backfill-script",
           "executed_at": "2026-05-16T12:28:31+00:00",
@@ -470,8 +475,10 @@
         {
           "batch_id": "6F.2.c",
           "title": "Dry-run review + operator approval package",
-          "status": "active",
-          "pr_url": null,
+          "status": "merged",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/117",
+          "pr_number": 117,
+          "merge_sha": "2f67290979ba6469b521af5a06fc6472757daf55",
           "branch": "feat/phase-6f-2a-backfill-script",
           "artifacts": [
             "tasks/phase-6f-2c-operator-approval-package.md",
@@ -485,36 +492,60 @@
           "title": "Live backfill execution against production",
           "status": "blocked",
           "pr_url": null,
-          "block_reason": "Awaiting operator approval for live backfill execution.",
+          "block_reason": "Live backfill deferred: production proforma_service_charges has 0 source rows. Re-run dry-run when rows exist or after legacy source location audit.",
           "depends_on": ["6F.2.a", "6F.2.b", "6F.2.c"],
           "approval_package": "tasks/phase-6f-2c-operator-approval-package.md",
           "live_command_documented_at": "tasks/phase-6f-2c-operator-approval-package.md#4-exact-live-command-prepared-but-not-run",
+          "dry_run_evidence": {
+            "report": "tasks/backfill-reports/2026-05-16-dryrun-phase-6f-2b-snapshot.json",
+            "source_row_count": 0,
+            "executed_at": "2026-05-16T12:28:31+00:00"
+          },
           "next_batch": "6F.2.e"
         },
         {
           "batch_id": "6F.2.e",
           "title": "Post-backfill verification via 6F.3 breakdown endpoint",
-          "status": "planned",
+          "status": "blocked",
           "depends_on": ["6F.2.d"],
           "pr_url": null,
-          "next_batch": "6F.2.f",
-          "block_reason": null
+          "block_reason": "Cannot verify breakdown for postings that do not exist. Blocked until 6F.2.d unblocks and produces at least one synthetic posting.",
+          "next_batch": "6F.2.f"
         },
         {
           "batch_id": "6F.2.f",
-          "title": "Phase 6F.2 final freeze + lessons",
+          "title": "Phase 6F.2 audit/freeze + lessons (no-op audit allowed)",
           "status": "planned",
-          "depends_on": ["6F.2.e"],
+          "depends_on": [],
           "pr_url": null,
+          "notes": "Permitted as standalone no-op audit/freeze without 6F.2.d; documents the zero-row state and the deferred live-execution gate.",
           "next_batch": "6F.4",
           "block_reason": null
         },
         {
           "batch_id": "6F.4",
-          "title": "UI panel: charge breakdown on proforma pipeline (planned)",
-          "status": "planned",
+          "title": "Read-only finance posting breakdown panel (Diagnostics)",
+          "status": "active",
           "pr_url": null,
-          "next_batch": null,
+          "branch": "feat/phase-6f-4-finance-panel",
+          "scope": "Read-only React panel inside DiagnosticsPage that calls only GET /api/v1/finance/postings/{id}/breakdown. No write affordances. No coupling to wFirma/PZ/proforma/settlement. Empty state explains dormant store; 404 renders cleanly.",
+          "artifacts": [
+            "service/app/static/dashboard.html",
+            "service/tests/test_finance_panel_contracts.py"
+          ],
+          "tests": {
+            "finance_panel_contracts": "12/12",
+            "backfill_finance_postings": "33/33",
+            "finance_postings_db": "38/38",
+            "finance_postings_contracts": "37/37",
+            "master_data_hard_rules": "27/27",
+            "runner_v2_hard_rules": "12/12",
+            "pz_regression": "160/160"
+          },
+          "smoke": {
+            "endpoint_404_check": "GET /api/v1/finance/postings/999999/breakdown -> HTTP 404 {\"detail\":\"Posting not found: id=999999\"} at 2026-05-16T13:30Z"
+          },
+          "next_batch": "6F.5",
           "block_reason": null
         },
         {
