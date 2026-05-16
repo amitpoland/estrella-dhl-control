@@ -1014,7 +1014,11 @@
       "next_batch": null,
       "paused_at": "2026-05-16T16:25:00+00:00",
       "paused_reason": "B-MD0..B-MD4 complete on mechanical/code basis. 6 operator-only visual surfaces remain deferred (§2 Customer Master walk + §3 Shipping Addresses + §4 Carrier Accounts + §5 KYC + §6 KUKE/Credit + §7 Invoice Settings + §18 AdminUsersPage UI walk) — these require an admin browser session and are deferred per L-044. Resume by walking the checklist at tasks/smoke-reports/2026-05-16-b-md4-master-data-full-browser-smoke.md §§2-7 + §18.",
-      "closure_doc": "tasks/smoke-reports/2026-05-16-b-md4-master-data-full-browser-smoke.md"
+      "closure_doc": "tasks/smoke-reports/2026-05-16-b-md4-master-data-full-browser-smoke.md",
+      "operator_acceptance": "mechanical_closure_accepted",
+      "visual_smoke_status": "deferred_by_operator",
+      "acceptance_note": "tasks/mdoc-operator-acceptance-note.md",
+      "acceptance_date": "2026-05-16T17:00:00+00:00"
     }
   ]
 }
