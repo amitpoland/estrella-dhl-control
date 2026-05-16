@@ -357,7 +357,12 @@
     {
       "campaign_id": "P6F-2026-05",
       "title": "Phase 6F — Explicit Payment-Charge Posting (Implementation)",
-      "status": "active",
+      "status": "paused",
+      "paused_at": "2026-05-16T15:00:00+00:00",
+      "paused_reason": "Steady-state paused at the threshold of two operator-gated write-bearing gates (6F.5-shadow-activation and 6F.2.d live backfill). No time-sensitive deadline forces a decision. Closure doc: tasks/phase-6f-campaign-close.md.",
+      "activation_status": "NOT_ACTIVATED",
+      "flags_verified_off": true,
+      "closure_doc": "tasks/phase-6f-campaign-close.md",
       "started_at": "2026-05-16T10:49:30+00:00",
       "closed_at": null,
       "batches": [
@@ -540,15 +545,32 @@
         {
           "batch_id": "6F-post-block-lift-inspection",
           "title": "/post service_charges_json block-lift inspection (read-only)",
-          "status": "active",
+          "status": "merged",
+          "pr_url": "https://github.com/amitpoland/estrella-dhl-control/pull/125",
+          "pr_number": 125,
+          "merge_sha": "9d7cc332434d74feca558c17243c86d04c76e3fa",
+          "deploy_needed": false,
           "depends_on": [],
-          "pr_url": null,
           "branch": "docs/phase-6f-post-block-lift-inspection",
           "artifacts": [
             "tasks/phase-6f-post-block-lift-inspection.md"
           ],
           "notes": "Read-only scoping of what a future block-lift batch would change. Answers 11 questions. Recommendation: DEFER block-lift. Block in routes_proforma.py line 3538-3542 is correct as-is; no operator workflow currently requires it.",
           "recommendation": "DEFER",
+          "next_batch": "6F-campaign-close",
+          "block_reason": null
+        },
+        {
+          "batch_id": "6F-campaign-close",
+          "title": "Phase 6F campaign closure (paused / operator-gated)",
+          "status": "active",
+          "pr_url": null,
+          "branch": "docs/phase-6f-campaign-close",
+          "artifacts": [
+            "tasks/phase-6f-campaign-close.md"
+          ],
+          "depends_on": [],
+          "notes": "Single point of entry for resuming Phase 6F. Documents live capabilities, deployed-but-OFF flags, blocked gates with reopening conditions, exact commands for the three operator decisions (shadow activation, block-lift, dry-run rerun), hard-rule status, final 10-risk register, and campaign metrics.",
           "next_batch": null,
           "block_reason": null
         },
@@ -719,7 +741,7 @@
           "pr_url": null,
           "depends_on": ["6F.5-shadow-activation"],
           "next_batch": "6F.6",
-          "block_reason": "Cannot be considered until shadow run produces ≥50 entries across ≥5 distinct draft posts with zero finance_dual_write_failed log lines."
+          "block_reason": "Cannot be considered until shadow run produces >=50 entries across >=5 distinct draft posts with zero finance_dual_write_failed log lines."
         },
         {
           "batch_id": "6F.6",
