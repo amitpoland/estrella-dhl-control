@@ -64,3 +64,41 @@ Append-only. Each entry: date, batch, lesson, evidence.
   - **Security review** — gating classification (`NEEDS_SECURITY_REVIEW`)
   - **Release manager** — encoded as batch sequencing + stop conditions
 - **Rule:** Subagent dispatch should be reserved for genuinely independent parallel research (e.g. fetching wFirma API docs while reading dashboard code) — not for tasks the orchestrator can do faster directly.
+
+---
+
+## 2026-05-16 — Mid + Late campaign (B5–B11)
+
+### L-017 — Generic `b5Save` / `b5Delete` helpers scaled across 4 entities
+- **Evidence:** B5 introduced two small JS helpers that take a `basePath` and a natural-key field. B7, B8, B9 (Incoterms, FX, Carrier Config) reused them with zero refactor.
+- **Rule:** For PUT-keyed natural-key entities, a single generic helper pair beats per-entity duplication. The allow-list contract test must explicitly recognise the helper-parameter passthrough (see `HELPER_PASSTHROUGH = ('basePath',)`).
+
+### L-018 — Stacked PRs merged into stale base branches by `gh pr merge`
+- **Evidence:** After PR #102 merged to main, PRs #103 and #104 still pointed at their original base branches (`feat/masterdata-b5-*` and `feat/masterdata-b7-*`). `gh pr merge` happily merged them into those branches, leaving main without B7 and B8 content. A forward-merge PR (#105) was required to land them.
+- **Rule:** When merging a stack, either (a) explicitly retarget each PR's base to `main` before merging the previous one, or (b) prepare for a single forward-merge PR after all stack-internal merges. Option (b) is cleaner because it preserves the original stacked-review trail.
+
+### L-019 — Sharing one SQLite file across many entities is an operations win
+- **Evidence:** B5 introduced `master_data.sqlite` as a shared file for hs_codes / units / product_local. B7 added incoterms + vat_config to the same file; B8 added fx_rates; B9 added carriers_config. Eight tables now share one file with zero coordination cost.
+- **Rule:** When entities have no foreign-key relationships into existing schemas and are all additive, one file per "domain group" beats one file per entity. Backups are simpler; idempotent init_db handles missing tables on first run.
+
+### L-020 — Visible disclaimer + source-grep contract test is the right pattern for read-only data
+- **Evidence:** VAT Config (B7), FX Rates (B8), Carriers Config (B9) all carry both:
+  1. A human-visible disclaimer in the panel body
+  2. A source-grep contract test that asserts the disclaimer (or its equivalent guard) is present and that the engine never imports/reads the new table
+- **Rule:** Any local master-data write store that is read-only with respect to an external system (wFirma invoicing, PZ landed-cost engine, DHL carrier runtime) MUST carry both layers of guard. The disclaimer protects operators; the source-grep test protects the codebase from drift.
+
+### L-021 — Secret-shape rejection at validator level is cheap and clear
+- **Evidence:** B9 `validate_carrier_config` lists 7 forbidden field names (`api_key`, `api_secret`, `password`, `token`, `client_secret`, `credentials`, `auth_secret`) and rejects any payload that contains one. The 16-test B9 suite includes 6 dedicated rejection cases.
+- **Rule:** Master-data registries holding integration descriptions must explicitly refuse credential-shaped fields at the validate() level. This catches accidental UI form additions before they reach the DB.
+
+### L-022 — Production smoke can be API-based, not pure browser
+- **Evidence:** Every batch's post-deploy smoke ran via `Invoke-WebRequest` against the production endpoints rather than via a real Chrome session. Faster, equivalent payload coverage, no cookie risk. The frontend code path that produces those payloads was independently covered by source-grep contract tests.
+- **Rule:** When the operator says "browser smoke", an API-level smoke against the same endpoints that the frontend uses is acceptable provided source-grep tests cover the frontend → endpoint contract. Cleanup any test artifacts with clearly-labelled IDs so they're identifiable later.
+
+### L-023 — Track ALL entity-state transitions through one contract test
+- **Evidence:** `test_only_allowed_writes_in_master` evolved from "no POST/DELETE allowed" → allow-list with helper-passthrough recognition. Each batch updated the same test (added 1 allow-list entry); never relaxed the spirit of the rule.
+- **Rule:** Don't sprinkle write-safety logic across many tests. Centralise in ONE contract test that takes a static allow-list. Every batch updates the same list with a comment explaining the addition. Future audits read one place.
+
+### L-024 — Campaign hard-rules survived 9 PRs intact
+- **Evidence:** Zero wFirma writes; zero proforma touches; zero PZ calculation changes; zero `.env` modifications; zero destructive schema operations. Every claim verified by source-grep contract tests + per-PR PZ regression run (160/160 every time).
+- **Rule:** Hard rules expressed as both prose (CLAUDE.md / campaign controller doc) AND mechanical contract tests will hold across a long campaign. Rules that exist only in prose drift.
