@@ -229,7 +229,7 @@
           "title": "FX override into PZ landed-cost",
           "status": "blocked",
           "pr_url": null,
-          "block_reason": "HARD RULE — FORBIDDEN_NOW. Mutates PZ landed-cost calculation path. Will NOT be implemented in this campaign. Belongs in a separate operator-scoped landed-cost campaign with its own gates.",
+          "block_reason": "HARD RULE â€” FORBIDDEN_NOW. Mutates PZ landed-cost calculation path. Will NOT be implemented in this campaign. Belongs in a separate operator-scoped landed-cost campaign with its own gates.",
           "next_batch": null
         }
       ]
@@ -308,7 +308,7 @@
         },
         {
           "batch_id": "P1",
-          "title": "Production observation sweep — all 11 live Master Data entities",
+          "title": "Production observation sweep â€” all 11 live Master Data entities",
           "status": "smoked",
           "pr_url": null,
           "next_batch": null,
@@ -327,7 +327,7 @@
           "next_batch": null,
           "block_reason": null,
           "tests": {
-            "note": "inspection only — see tasks/stability-review-2026-05-16.md"
+            "note": "inspection only â€” see tasks/stability-review-2026-05-16.md"
           }
         },
         {
@@ -349,14 +349,14 @@
           "next_batch": null,
           "block_reason": null,
           "tests": {
-            "note": "inspection only — see tasks/phase-6f-readiness-2026-05-16.md"
+            "note": "inspection only â€” see tasks/phase-6f-readiness-2026-05-16.md"
           }
         }
       ]
     },
     {
       "campaign_id": "P6F-2026-05",
-      "title": "Phase 6F — Explicit Payment-Charge Posting (Implementation)",
+      "title": "Phase 6F â€” Explicit Payment-Charge Posting (Implementation)",
       "status": "paused",
       "paused_at": "2026-05-16T15:00:00+00:00",
       "paused_reason": "Steady-state paused at the threshold of two operator-gated write-bearing gates (6F.5-shadow-activation and 6F.2.d live backfill). No time-sensitive deadline forces a decision. Closure doc: tasks/phase-6f-campaign-close.md.",
@@ -498,7 +498,11 @@
           "status": "blocked",
           "pr_url": null,
           "block_reason": "Live backfill deferred: production proforma_service_charges has 0 source rows. Re-run dry-run when rows exist or after legacy source location audit.",
-          "depends_on": ["6F.2.a", "6F.2.b", "6F.2.c"],
+          "depends_on": [
+            "6F.2.a",
+            "6F.2.b",
+            "6F.2.c"
+          ],
           "approval_package": "tasks/phase-6f-2c-operator-approval-package.md",
           "live_command_documented_at": "tasks/phase-6f-2c-operator-approval-package.md#4-exact-live-command-prepared-but-not-run",
           "dry_run_evidence": {
@@ -512,7 +516,9 @@
           "batch_id": "6F.2.e",
           "title": "Post-backfill verification via 6F.3 breakdown endpoint",
           "status": "blocked",
-          "depends_on": ["6F.2.d"],
+          "depends_on": [
+            "6F.2.d"
+          ],
           "pr_url": null,
           "block_reason": "Cannot verify breakdown for postings that do not exist. Blocked until 6F.2.d unblocks and produces at least one synthetic posting.",
           "next_batch": "6F.2.f"
@@ -538,7 +544,7 @@
             "runner_v2_hard_rules": "12/12",
             "pz_regression": "160/160"
           },
-          "notes": "Closes the 6F.2 sub-campaign with a final freeze. Documents the zero-row finding, three namespace conventions (BACKFILL- / LIVE- / real wFirma), operator playbook for re-running the dry-run, snapshot/rollback rules, hard-rule status, and §12 reopening conditions.",
+          "notes": "Closes the 6F.2 sub-campaign with a final freeze. Documents the zero-row finding, three namespace conventions (BACKFILL- / LIVE- / real wFirma), operator playbook for re-running the dry-run, snapshot/rollback rules, hard-rule status, and Â§12 reopening conditions.",
           "next_batch": "6F-post-block-lift-inspection",
           "block_reason": null
         },
@@ -648,17 +654,19 @@
           "smoke_report": "tasks/smoke-reports/2026-05-16-phase-6f-5-dual-write-deploy.md",
           "flags_verified_off": {
             "operator_session_env": "no entries",
-            "dotenv_file":          "no entries",
-            "nssm_app_env_extra":   "empty",
+            "dotenv_file": "no entries",
+            "nssm_app_env_extra": "empty",
             "deployed_config_field_defaults": "both Field(default=False)",
             "verified_at": "2026-05-16T13:42:00+00:00"
           },
-          "depends_on": ["6F.5-approval-package"],
+          "depends_on": [
+            "6F.5-approval-package"
+          ],
           "decision_memo": "tasks/phase-6f-5-decision-memo.md",
-          "memo_verdict": "10/10 GREEN — implementation approved with binding conditions",
+          "memo_verdict": "10/10 GREEN â€” implementation approved with binding conditions",
           "feature_flags": {
             "FINANCE_DUAL_WRITE_ENABLED": "default false",
-            "FINANCE_DUAL_WRITE_SHADOW":  "default false"
+            "FINANCE_DUAL_WRITE_SHADOW": "default false"
           },
           "activation_status": "NOT_ACTIVATED",
           "activation_block_reason": "Operator approved implementation only. Activation (flag flip) requires a separate operator decision. Production flags verified OFF at three sources + deployed config defaults on 2026-05-16T13:42:00Z. Awaiting operator sign-off on tasks/phase-6f-5-shadow-activation-approval.md before any FINANCE_DUAL_WRITE_* env var is set.",
@@ -704,7 +712,9 @@
           "merge_sha": "3029fbe5e5ace450e58dc882770442c33694ec09",
           "deploy_needed": false,
           "deploy_reason": "Docs-only PR. Only tasks/ files; no service/ runtime files.",
-          "depends_on": ["6F.5"],
+          "depends_on": [
+            "6F.5"
+          ],
           "artifacts": [
             "tasks/phase-6f-5-shadow-activation-approval.md",
             "tasks/smoke-reports/2026-05-16-phase-6f-5-dual-write-deploy.md"
@@ -726,7 +736,9 @@
           "title": "Activate FINANCE_DUAL_WRITE_ENABLED=true + SHADOW=true (operator-driven)",
           "status": "blocked",
           "pr_url": null,
-          "depends_on": ["6F.5-shadow-activation-approval"],
+          "depends_on": [
+            "6F.5-shadow-activation-approval"
+          ],
           "decision_memo": "tasks/phase-6f-5-shadow-decision-memo.md",
           "next_batch": "6F.5-live-activation",
           "activation_status": "NOT_ACTIVATED",
@@ -736,10 +748,12 @@
         },
         {
           "batch_id": "6F.5-live-activation",
-          "title": "Activate FINANCE_DUAL_WRITE_ENABLED=true (SHADOW=false) — real writes",
+          "title": "Activate FINANCE_DUAL_WRITE_ENABLED=true (SHADOW=false) â€” real writes",
           "status": "blocked",
           "pr_url": null,
-          "depends_on": ["6F.5-shadow-activation"],
+          "depends_on": [
+            "6F.5-shadow-activation"
+          ],
           "next_batch": "6F.6",
           "block_reason": "Cannot be considered until shadow run produces >=50 entries across >=5 distinct draft posts with zero finance_dual_write_failed log lines."
         },
@@ -756,6 +770,94 @@
           "title": "Cleanup: deprecate legacy proforma_service_charges (planned)",
           "status": "planned",
           "pr_url": null,
+          "next_batch": null,
+          "block_reason": null
+        }
+      ]
+    },
+    {
+      "campaign_id": "MDOC-2026-05",
+      "title": "Master Data Operational Completion",
+      "status": "active",
+      "started_at": "2026-05-16T16:00:00+00:00",
+      "closed_at": null,
+      "predecessor": "MDC-2026-05",
+      "goal": "Finish Master Data as an operational system. Every screen/button classified: live, intentionally disabled, merged, removed, or blocked by approval gate.",
+      "batches": [
+        {
+          "batch_id": "B-MD0",
+          "title": "Inspection + parity matrix (docs-only)",
+          "status": "active",
+          "pr_url": null,
+          "branch": "docs/md-completion-matrix-and-users-roles-approval",
+          "artifacts": [
+            "tasks/master-data-operational-completion.md"
+          ],
+          "next_batch": "B-MD1-approval",
+          "block_reason": null
+        },
+        {
+          "batch_id": "B-MD1-approval",
+          "title": "Users/Roles writes — approval package (docs-only)",
+          "status": "active",
+          "pr_url": null,
+          "branch": "docs/md-completion-matrix-and-users-roles-approval",
+          "artifacts": [
+            "tasks/master-data-users-roles-approval-package.md"
+          ],
+          "depends_on": [
+            "B-MD0"
+          ],
+          "next_batch": "B-MD1",
+          "block_reason": null
+        },
+        {
+          "batch_id": "B-MD1",
+          "title": "Users/Roles writes implementation (new AdminUsersPage)",
+          "status": "blocked",
+          "pr_url": null,
+          "depends_on": [
+            "B-MD1-approval"
+          ],
+          "next_batch": "B-MD2-approval",
+          "block_reason": "Operator approval required. Sign tasks/master-data-users-roles-approval-package.md §9 before implementation begins. Implementation surface: new AdminUsersPage (not inside MasterDataPage). Existing MasterDataPage security contracts (test_only_allowed_writes_in_master, test_no_dangerous_destructive_buttons_in_master) stay intact."
+        },
+        {
+          "batch_id": "B-MD2-approval",
+          "title": "Designs master + Roles table — approval package (docs-only)",
+          "status": "planned",
+          "pr_url": null,
+          "depends_on": [],
+          "next_batch": "B-MD2",
+          "block_reason": null,
+          "notes": "To be authored when B-MD1 ships or operator chooses to defer B-MD1 in favour of B-MD2."
+        },
+        {
+          "batch_id": "B-MD2",
+          "title": "Designs master + Roles table implementation",
+          "status": "blocked",
+          "pr_url": null,
+          "depends_on": [
+            "B-MD2-approval"
+          ],
+          "next_batch": "B-MD3",
+          "block_reason": "Operator approval required. Sign B-MD2 approval package before implementation. Includes new SQLite tables (designs, roles), product_identity_engine read-only-consumer guarantee, and updated dormancy contracts."
+        },
+        {
+          "batch_id": "B-MD3",
+          "title": "UI-only cleanup — disabled-state polish + testid hygiene",
+          "status": "planned",
+          "pr_url": null,
+          "depends_on": [],
+          "next_batch": "B-MD4",
+          "block_reason": null
+        },
+        {
+          "batch_id": "B-MD4",
+          "title": "Browser smoke completion across all 13 live master-data entities",
+          "status": "planned",
+          "pr_url": null,
+          "depends_on": [],
           "next_batch": null,
           "block_reason": null
         }
