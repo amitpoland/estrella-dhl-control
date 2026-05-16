@@ -600,9 +600,13 @@ def upsert_identity_only(
     bill_to_email:         Optional[str] = None,
     bill_to_phone:         Optional[str] = None,
     bill_to_mobile:        Optional[str] = None,
-    bank_account:          Optional[str] = None,
-    default_currency:      Optional[str] = None,
-    payment_terms_days:    Optional[int] = None,
+    bank_account:                  Optional[str] = None,
+    default_currency:              Optional[str] = None,
+    payment_terms_days:            Optional[int] = None,
+    # B0 deep-enrichment 2026-05-16 — wFirma commercial defaults (fill-when-empty)
+    default_language_id:           Optional[str] = None,
+    preferred_proforma_series_id:  Optional[str] = None,
+    preferred_invoice_series_id:   Optional[str] = None,
     sync_source:           str           = "review_assign",
 ) -> Dict[str, Any]:
     """B0 (MDOC-cache): wFirma identity-only upsert with enrichment.
@@ -646,6 +650,9 @@ def upsert_identity_only(
     bank = (bank_account or "").strip()
     curr = (default_currency or "").strip().upper()
     pterm = payment_terms_days if (payment_terms_days is not None) else None
+    lang = (default_language_id or "").strip()
+    pro_series = (preferred_proforma_series_id or "").strip()
+    inv_series = (preferred_invoice_series_id or "").strip()
     src = (sync_source or "review_assign").strip() or "review_assign"
 
     init_db(db_path)
@@ -664,12 +671,16 @@ def upsert_identity_only(
                        (bill_to_contractor_id, bill_to_name, country, nip,
                         bill_to_email, bill_to_phone, bill_to_mobile,
                         bank_account, default_currency, payment_terms_days,
+                        default_language_id,
+                        preferred_proforma_series_id,
+                        preferred_invoice_series_id,
                         last_wfirma_sync_at, wfirma_sync_source,
                         insurance_enabled, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                 (bid, bnm, cty, (nip or None),
                  email or None, phone or None, mobile or None,
                  bank or None, curr or None, pterm,
+                 lang or None, pro_series or None, inv_series or None,
                  now, src,
                  now, now),
             )
@@ -694,19 +705,23 @@ def upsert_identity_only(
                 """UPDATE customer_master
                        SET bill_to_name        = ?,
                            country             = ?,
-                           nip                 = COALESCE(NULLIF(nip, ''),           NULLIF(?, '')),
-                           bill_to_email       = COALESCE(NULLIF(bill_to_email, ''),  NULLIF(?, '')),
-                           bill_to_phone       = COALESCE(NULLIF(bill_to_phone, ''),  NULLIF(?, '')),
-                           bill_to_mobile      = COALESCE(NULLIF(bill_to_mobile, ''), NULLIF(?, '')),
-                           bank_account        = COALESCE(NULLIF(bank_account, ''),   NULLIF(?, '')),
-                           default_currency    = COALESCE(NULLIF(default_currency, ''), NULLIF(?, '')),
-                           payment_terms_days  = COALESCE(payment_terms_days, ?),
+                           nip                          = COALESCE(NULLIF(nip, ''),                          NULLIF(?, '')),
+                           bill_to_email                = COALESCE(NULLIF(bill_to_email, ''),                 NULLIF(?, '')),
+                           bill_to_phone                = COALESCE(NULLIF(bill_to_phone, ''),                 NULLIF(?, '')),
+                           bill_to_mobile               = COALESCE(NULLIF(bill_to_mobile, ''),                NULLIF(?, '')),
+                           bank_account                 = COALESCE(NULLIF(bank_account, ''),                  NULLIF(?, '')),
+                           default_currency             = COALESCE(NULLIF(default_currency, ''),              NULLIF(?, '')),
+                           payment_terms_days           = COALESCE(payment_terms_days, ?),
+                           default_language_id          = COALESCE(NULLIF(default_language_id, ''),           NULLIF(?, '')),
+                           preferred_proforma_series_id = COALESCE(NULLIF(preferred_proforma_series_id, ''), NULLIF(?, '')),
+                           preferred_invoice_series_id  = COALESCE(NULLIF(preferred_invoice_series_id, ''),  NULLIF(?, '')),
                            last_wfirma_sync_at = ?,
                            wfirma_sync_source  = ?,
                            updated_at          = ?
                        WHERE id = ?""",
                 (bnm, cty, (nip or ""),
                  email, phone, mobile, bank, curr, pterm,
+                 lang, pro_series, inv_series,
                  now, src, now, row_id),
             )
             action = "updated"
