@@ -3012,6 +3012,15 @@ def reset_proforma_draft_from_sales_packing(
         }
         for r in matched
     ]
+
+    # Route through the shared batch-scoped resolver so reset behaviour
+    # matches sync_draft_from_packing_upload. Lines whose product_code is
+    # still empty after resolution fall through to the DB layer's skip.
+    from ..services.proforma_draft_sync import resolve_sales_lines_for_batch
+    sales_lines, _resolution = resolve_sales_lines_for_batch(
+        d.batch_id, sales_lines,
+    )
+
     return _draft_edit_dispatch(draft_id, lambda: pildb.reset_draft_from_sales_packing(
         _proforma_db_path(),
         int(draft_id),

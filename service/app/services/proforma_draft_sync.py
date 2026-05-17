@@ -31,13 +31,142 @@ import sqlite3
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import document_db as ddb
+from . import packing_db as _pdb
 from . import proforma_invoice_link_db as pildb
 from ..core import timeline as tl
 
 log = logging.getLogger(__name__)
+
+
+# ── Batch-scoped design → product_code resolver ──────────────────────────────
+#
+# Operational draft sync MUST use batch-scoped evidence only. The global
+# design_product_mapping registry (design_product_bridge) is advisory and
+# would leak cross-batch design collisions if used here.  We query
+# packing_db.packing_lines directly with WHERE batch_id=? so resolution is
+# strictly scoped to the same shipment.
+
+def _resolve_product_codes_for_batch(
+    batch_id: str,
+) -> Dict[str, List[str]]:
+    """Return ``{design_no: sorted([product_code, ...])}`` for *batch_id*.
+
+    Local SELECT against ``packing_db.packing_lines``.  Batch-scoped by
+    construction — design collisions across batches cannot leak into
+    sales draft resolution.  Returns ``{}`` when packing_db is not
+    initialised or the batch has no purchase packing_lines.
+    """
+    out: Dict[str, set] = {}
+    if not (batch_id or "").strip():
+        return {}
+    db_path = getattr(_pdb, "_db_path", None)
+    if db_path is None:
+        return {}
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT DISTINCT design_no, product_code FROM packing_lines "
+                "WHERE batch_id=? "
+                "AND product_code IS NOT NULL AND product_code<>''",
+                (str(batch_id),),
+            ).fetchall()
+    except Exception as exc:
+        log.warning(
+            "[%s] batch-scoped design lookup failed (non-fatal): %s",
+            batch_id, exc,
+        )
+        return {}
+    for r in rows:
+        d = (r["design_no"] or "").strip()
+        p = (r["product_code"] or "").strip()
+        if not d or not p:
+            continue
+        out.setdefault(d, set()).add(p)
+    return {d: sorted(ps) for d, ps in out.items()}
+
+
+def resolve_sales_lines_for_batch(
+    batch_id:    str,
+    sales_lines: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Resolve missing ``product_code`` on *sales_lines* using batch-scoped
+    purchase packing_lines evidence only.
+
+    Resolution order, per row:
+      1. row already has non-empty ``product_code`` → keep unchanged.
+      2. row has ``design_no`` and the batch lookup returns exactly ONE
+         product_code → clone the row with the resolved ``product_code``
+         and ``resolution_source="batch_packing_lines"`` (observability
+         only; consumers must not depend on this field).
+      3. batch lookup returns multiple candidates → leave row unchanged
+         (empty ``product_code``); record under ``designs_ambiguous``.
+      4. batch lookup returns zero candidates → leave row unchanged;
+         record under ``designs_unresolved``.
+
+    The DB-layer invariant in proforma_invoice_link_db.py — rows with
+    empty ``product_code`` are skipped at create/reset time — is
+    preserved.  This resolver only fills in product_code earlier, from
+    same-batch local evidence.  It NEVER invents codes, NEVER uses
+    design_no as a fallback product_code, and NEVER consults the global
+    design_product_mapping registry.
+
+    Returns (resolved_lines, summary). ``summary`` shape::
+
+        {
+          "designs_resolved":   {design_no: product_code, ...},
+          "designs_ambiguous":  {design_no: [product_code, ...], ...},
+          "designs_unresolved": [design_no, ...],
+        }
+    """
+    lookup = _resolve_product_codes_for_batch(batch_id)
+    resolved: List[Dict[str, Any]] = []
+    designs_resolved:   Dict[str, str]       = {}
+    designs_ambiguous:  Dict[str, List[str]] = {}
+    designs_unresolved: set                  = set()
+
+    for ln in (sales_lines or []):
+        pc = str(ln.get("product_code") or "").strip()
+        if pc:
+            resolved.append(ln)
+            continue
+        dn = str(ln.get("design_no") or "").strip()
+        if not dn:
+            resolved.append(ln)
+            continue
+        cands = lookup.get(dn, [])
+        if len(cands) == 1:
+            clone = dict(ln)
+            clone["product_code"]      = cands[0]
+            clone["resolution_source"] = "batch_packing_lines"
+            resolved.append(clone)
+            designs_resolved[dn] = cands[0]
+        elif len(cands) > 1:
+            designs_ambiguous[dn] = list(cands)
+            resolved.append(ln)
+            log.warning(
+                "[%s] sales draft sync: design %r ambiguous in batch "
+                "packing_lines -> %s — skipping (no product_code set)",
+                batch_id, dn, cands,
+            )
+        else:
+            designs_unresolved.add(dn)
+            resolved.append(ln)
+            log.info(
+                "[%s] sales draft sync: design %r unresolvable in batch "
+                "packing_lines — skipping",
+                batch_id, dn,
+            )
+
+    summary = {
+        "designs_resolved":   designs_resolved,
+        "designs_ambiguous":  designs_ambiguous,
+        "designs_unresolved": sorted(designs_unresolved),
+    }
+    return resolved, summary
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -111,11 +240,19 @@ def sync_draft_from_packing_upload(
             "synced":            0,
             "blocked":           0,
             "no_sales_lines":    True,
+            "designs_resolved":   {},
+            "designs_ambiguous":  {},
+            "designs_unresolved": [],
         }
+
+    # ── 1.5 Resolve missing product_code via batch-scoped lookup ─────────────
+    resolved_lines, resolution_summary = resolve_sales_lines_for_batch(
+        batch_id, sales_lines,
+    )
 
     # ── 2. Group by client_name ───────────────────────────────────────────────
     by_client: Dict[str, List[Dict[str, Any]]] = {}
-    for ln in sales_lines:
+    for ln in resolved_lines:
         cn = str(ln.get("client_name") or "").strip()
         if not cn:
             continue
@@ -127,6 +264,9 @@ def sync_draft_from_packing_upload(
         "created":           0,
         "synced":            0,
         "blocked":           0,
+        "designs_resolved":   resolution_summary["designs_resolved"],
+        "designs_ambiguous":  resolution_summary["designs_ambiguous"],
+        "designs_unresolved": resolution_summary["designs_unresolved"],
     }
 
     # ── 3. Per-client sync ────────────────────────────────────────────────────

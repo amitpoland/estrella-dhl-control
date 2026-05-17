@@ -55,7 +55,8 @@ _LEGACY_STATUS_FOR_STATE = {
 }
 
 
-def _seed_draft(tmp: Path, bid: str, client_name: str, state: str) -> None:
+def _seed_draft(tmp: Path, bid: str, client_name: str, state: str,
+                *, editable_lines_json: str = '[{"product_code":"X","qty":1}]') -> None:
     from app.services import proforma_invoice_link_db as pildb
     db = tmp / "proforma_links.db"
     pildb.init_db(db)
@@ -69,7 +70,8 @@ def _seed_draft(tmp: Path, bid: str, client_name: str, state: str) -> None:
             "currency, draft_state, draft_version, source_lines_json, "
             "editable_lines_json, created_at, updated_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (bid, client_name, legacy, "USD", state, 1, "[]", "[]", now, now),
+            (bid, client_name, legacy, "USD", state, 1, "[]",
+             editable_lines_json, now, now),
         )
 
 
@@ -189,6 +191,39 @@ def test_sales_ready_false_on_post_failed(client):
     body = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
     assert body["sales"]["drafts_post_failed"] == 1
     assert body["sales"]["ready"] is False
+
+
+def test_sales_ready_false_when_drafts_have_no_lines(client):
+    """Regression guard for the false-positive 'sales ready' banner: a
+    draft created with editable_lines_json='[]' (e.g. all sales rows
+    were skipped because product_code couldn't be resolved) must NOT
+    count toward sales_ready, even though draft_state is editable."""
+    cli, tmp = client
+    bid = "B-SALES-EMPTY"
+    _make_batch(tmp, bid)
+    _seed_draft(tmp, bid, "ACME", "editing", editable_lines_json="[]")
+    _seed_draft(tmp, bid, "BETA", "draft",   editable_lines_json="[]")
+    body = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
+    s = body["sales"]
+    assert s["drafts_total"] == 2
+    assert s["drafts_with_lines"] == 0
+    assert s["ready"] is False, (
+        "sales_ready must be False when every draft has empty "
+        "editable_lines_json — drafts_total alone is not enough."
+    )
+
+
+def test_sales_ready_true_when_at_least_one_draft_has_lines(client):
+    cli, tmp = client
+    bid = "B-SALES-MIXED"
+    _make_batch(tmp, bid)
+    _seed_draft(tmp, bid, "EMPTY", "editing", editable_lines_json="[]")
+    _seed_draft(tmp, bid, "REAL",  "editing")  # default seeds 1 line
+    body = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
+    s = body["sales"]
+    assert s["drafts_total"] == 2
+    assert s["drafts_with_lines"] == 1
+    assert s["ready"] is True
 
 
 # ── Purchase counts ───────────────────────────────────────────────────────
