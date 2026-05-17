@@ -1235,6 +1235,328 @@ async def add_packing_list(
     })
 
 
+# ── Generic add-document endpoint (post-draft) ────────────────────────────────
+#
+# Single endpoint that adds ONE source document to an existing batch.
+# Reuses the same persistence + parser code paths the New Shipment intake
+# already uses (_validate_file, _safe_name, _save, ddb.register_document,
+# process_packing_upload, parse_invoice_pdf, ddb.store_invoice_lines,
+# parse_awb_pdf, ddb.store_awb_document, ddb.store_sales_document). No new
+# external integrations. Parser failure is non-fatal.
+
+# Per-doc-type config table. Each entry declares the canonical save dir,
+# the extension allow-list (reuses module-level constants), which contractor
+# side(s) inherit when the form omits an explicit id, and which parser hook
+# fires.
+_ADD_DOC_POLICY: Dict[str, Dict[str, Any]] = {
+    "purchase_invoice": {
+        "subdir": "invoices", "exts": _ALLOWED_INVOICE_EXT,
+        "supplier_side": True,  "client_side": False,  "parser": "invoice",
+    },
+    "purchase_packing_list": {
+        "subdir": "packing",  "exts": _ALLOWED_PACKING_EXT,
+        "supplier_side": True,  "client_side": False,  "parser": "packing",
+    },
+    "sales_invoice": {
+        "subdir": "sales",    "exts": _ALLOWED_INVOICE_EXT,
+        "supplier_side": False, "client_side": True,   "parser": "sales_document",
+    },
+    "sales_proforma": {
+        "subdir": "sales",    "exts": _ALLOWED_INVOICE_EXT,
+        "supplier_side": False, "client_side": True,   "parser": "sales_document",
+    },
+    "sales_packing_list": {
+        "subdir": "sales",    "exts": _ALLOWED_PACKING_EXT,
+        "supplier_side": False, "client_side": True,   "parser": "packing",
+    },
+    "awb": {
+        "subdir": "awb",      "exts": _ALLOWED_INVOICE_EXT,
+        "supplier_side": True,  "client_side": True,   "parser": "awb",
+    },
+    "service_invoice": {
+        "subdir": "service",  "exts": _ALLOWED_SERVICE_EXT,
+        "supplier_side": True,  "client_side": False,  "parser": None,
+    },
+    "carnet": {
+        "subdir": "carnet",   "exts": _ALLOWED_CARNET_EXT,
+        "supplier_side": True,  "client_side": True,   "parser": None,
+    },
+    "other_document": {
+        "subdir": "misc",     "exts": _ALLOWED_OTHER_EXT,
+        "supplier_side": True,  "client_side": True,   "parser": None,
+    },
+}
+
+
+def _inherit_contractor_ids(
+    batch_id:                str,
+    document_type:           str,
+    explicit_supplier_cid:   str,
+    explicit_client_cid:     str,
+) -> tuple[str, str]:
+    """Resolve final supplier/client contractor IDs for a per-document
+    add-document call.
+
+    Order (matches the inspection report §5):
+      1. Explicit form-supplied id wins (empty string treated as
+         "not provided" and falls through).
+      2. Inherit confirmed id from packing_contractor_resolution per
+         the document_type's policy side(s).
+      3. Empty string.
+    """
+    policy = _ADD_DOC_POLICY[document_type]
+    sup_out = (explicit_supplier_cid or "").strip()
+    cli_out = (explicit_client_cid   or "").strip()
+    if sup_out and cli_out:
+        return sup_out, cli_out
+
+    try:
+        from ..services import packing_resolution_db as prdb
+        _pr_db = settings.storage_root / "packing_resolutions.sqlite"
+        if not sup_out and policy["supplier_side"]:
+            row = prdb.get_resolution(_pr_db, batch_id=batch_id, role="supplier")
+            if row and row.get("matched_master_id"):
+                sup_out = str(row["matched_master_id"])
+        if not cli_out and policy["client_side"]:
+            row = prdb.get_resolution(_pr_db, batch_id=batch_id, role="client")
+            if row and row.get("matched_master_id"):
+                cli_out = str(row["matched_master_id"])
+    except Exception as exc:
+        log.warning("[%s] contractor-id inheritance failed (non-fatal): %s",
+                    batch_id, exc)
+    return sup_out, cli_out
+
+
+@router.post("/{batch_id}/add-document", dependencies=[_auth])
+async def add_document_to_batch(
+    batch_id:                str,
+    file:                    UploadFile,
+    document_type:           str = Form(...),
+    supplier_contractor_id:  str = Form(default=""),
+    client_contractor_id:    str = Form(default=""),
+    invoice_index:           int = Form(default=0),
+) -> JSONResponse:
+    """Attach a single source document to an existing batch.
+
+    Display-side button lands in a separate PR. This endpoint is the
+    canonical write surface for post-draft document additions.
+
+    Validation:
+      * batch_id format / existence
+      * document_type is in _ADD_DOC_POLICY (NOT 'sad' — use SAD route)
+      * file extension matches the doc-type allow-list
+
+    Returns 200 with shipment_documents id + parser_status + lines_count
+    when applicable. Parser failure is non-fatal (extraction_failed +
+    log). No DHL / wFirma / proforma / PZ / SAD trigger from this path.
+    """
+    # ── Validate batch_id ────────────────────────────────────────────────
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    # ── Validate document_type ───────────────────────────────────────────
+    if document_type == "sad":
+        raise HTTPException(
+            status_code=422,
+            detail="SAD documents must be uploaded via the SAD-specific "
+                   "route, not /add-document.",
+        )
+    if document_type not in _ADD_DOC_POLICY:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown document_type {document_type!r}. Allowed: "
+                   + ", ".join(sorted(_ADD_DOC_POLICY.keys())),
+        )
+
+    policy = _ADD_DOC_POLICY[document_type]
+
+    # ── Validate file ────────────────────────────────────────────────────
+    if not (file and file.filename):
+        raise HTTPException(status_code=400, detail="File has no name.")
+    _validate_file(file, policy["exts"])
+
+    # ── Resolve batch dir ────────────────────────────────────────────────
+    # Canonical "batch exists" marker is audit.json; the output dir alone
+    # is auto-created by get_output_dir, so checking dir.exists() is not
+    # a real existence test.
+    audit_path = settings.storage_root / "outputs" / batch_id / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail=f"Batch {batch_id} not found.")
+    output_dir = get_output_dir(batch_id)
+
+    # Pull AWB from audit for register_document (best-effort).
+    awb_canonical = ""
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        awb_canonical = str(audit.get("awb") or "")
+    except Exception:
+        pass
+
+    # ── Save file to disk ────────────────────────────────────────────────
+    dest_dir = output_dir / "source" / policy["subdir"]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    name = _safe_name(file.filename)
+    path = dest_dir / name
+    await _save(file, path)
+
+    # ── Resolve contractor IDs ───────────────────────────────────────────
+    sup_cid, cli_cid = _inherit_contractor_ids(
+        batch_id=batch_id, document_type=document_type,
+        explicit_supplier_cid=supplier_contractor_id,
+        explicit_client_cid=client_contractor_id,
+    )
+
+    # ── Register in shipment_documents ───────────────────────────────────
+    doc_id = ddb.register_document(
+        batch_id=batch_id, document_type=document_type,
+        file_name=name, file_path=str(path),
+        file_hash=ddb.sha256_file(path),
+        awb=awb_canonical, source="add_document",
+        client_contractor_id=cli_cid,
+        supplier_contractor_id=sup_cid,
+    ) or ""
+    log.info("[%s] add-document registered: type=%s file=%s doc_id=%s",
+             batch_id, document_type, name, doc_id)
+
+    # ── Optional parser hook (non-fatal) ─────────────────────────────────
+    parser_status: str = "skipped"
+    lines_count:   Optional[int] = None
+    extraction_summary: Dict[str, Any] = {}
+
+    if policy["parser"] == "invoice":
+        try:
+            parsed = parse_invoice_pdf(path, name)
+            lines = parsed.get("lines", [])
+            method = parsed.get("extraction_method", "")
+            n_stored = ddb.store_invoice_lines(doc_id, batch_id, lines) if doc_id else 0
+            lines_count = n_stored
+            parser_status = "extracted" if method and method != "filename_only" else "placeholder"
+            extraction_summary = {
+                "invoice_no": parsed.get("invoice_no", ""),
+                "lines":      n_stored,
+                "method":     method,
+            }
+            if doc_id and parsed.get("invoice_no"):
+                try:
+                    ddb.update_document_status(
+                        document_id=doc_id,
+                        related_invoice_no=parsed["invoice_no"],
+                        extraction_status=parser_status,
+                    )
+                except Exception:
+                    pass
+        except Exception as exc:
+            log.warning("[%s] invoice parse failed (non-fatal): %s — %s",
+                        batch_id, name, exc)
+            parser_status = "extraction_failed"
+            extraction_summary = {"error": str(exc)}
+
+    elif policy["parser"] == "packing":
+        try:
+            result = process_packing_upload(
+                batch_id=batch_id,
+                batch_output_dir=output_dir,
+                packing_file_path=path,
+            )
+            lines_count = int(result.get("packing_rows_count") or
+                              len(result.get("packing_rows") or []))
+            parser_status = "extracted" if lines_count > 0 else "placeholder"
+            extraction_summary = {
+                "matched":   result.get("matched_count", 0),
+                "unmatched": result.get("unmatched_count", 0),
+                "rows":      lines_count,
+            }
+        except Exception as exc:
+            log.warning("[%s] packing parse failed (non-fatal): %s — %s",
+                        batch_id, name, exc)
+            parser_status = "extraction_failed"
+            extraction_summary = {"error": str(exc)}
+
+    elif policy["parser"] == "sales_document":
+        try:
+            if doc_id:
+                ddb.store_sales_document(
+                    batch_id=batch_id, document_id=doc_id,
+                    data={
+                        "client_name":      "",
+                        "client_ref":       "",
+                        "document_type":    document_type,
+                        "source_file_path": str(path),
+                        "extraction_status": "pending",
+                    },
+                )
+            parser_status = "stored"
+        except Exception as exc:
+            log.warning("[%s] sales_document store failed (non-fatal): %s",
+                        batch_id, exc)
+            parser_status = "extraction_failed"
+            extraction_summary = {"error": str(exc)}
+
+    elif policy["parser"] == "awb":
+        try:
+            awb_fields = parse_awb_pdf(path)
+            if doc_id:
+                ddb.store_awb_document(
+                    document_id=doc_id, batch_id=batch_id,
+                    awb_data={
+                        "awb":            awb_fields.get("awb_number") or awb_canonical,
+                        "carrier":        awb_fields.get("carrier") or "",
+                        "shipper_name":   awb_fields.get("shipper_name", ""),
+                        "consignee_name": awb_fields.get("receiver_name", ""),
+                        "pieces":         awb_fields.get("piece_count") or 0,
+                        "weight_kg":      awb_fields.get("declared_weight") or 0.0,
+                        "description":    awb_fields.get("contents", ""),
+                        "raw_json":       json.dumps(awb_fields),
+                    },
+                )
+            parser_status = "stored"
+            extraction_summary = {
+                "awb_number": awb_fields.get("awb_number", ""),
+                "shipper":    awb_fields.get("shipper_name", ""),
+            }
+        except Exception as exc:
+            log.warning("[%s] awb parse failed (non-fatal): %s — %s",
+                        batch_id, name, exc)
+            parser_status = "extraction_failed"
+            extraction_summary = {"error": str(exc)}
+
+    else:
+        # Local-only types (service_invoice / carnet / other_document):
+        # file is saved + registered, no parser runs.
+        parser_status = "local_only"
+
+    # ── Append timeline event (non-fatal) ────────────────────────────────
+    try:
+        if audit_path.exists():
+            tl.log_event(
+                audit_path, "document_uploaded", "add_document", "user",
+                detail={
+                    "file":           name,
+                    "document_type":  document_type,
+                    "document_id":    doc_id,
+                    "parser_status":  parser_status,
+                    "lines_count":    lines_count,
+                },
+            )
+    except Exception as exc:
+        log.warning("[%s] timeline log failed (non-fatal): %s", batch_id, exc)
+
+    return JSONResponse({
+        "ok":             True,
+        "batch_id":       batch_id,
+        "document_id":    doc_id,
+        "document_type":  document_type,
+        "file_name":      name,
+        "parser_status":  parser_status,
+        "lines_count":    lines_count,
+        "extraction":     extraction_summary,
+        "contractor": {
+            "supplier_contractor_id": sup_cid,
+            "client_contractor_id":   cli_cid,
+        },
+    })
+
+
 
 # ── Sales-packing re-ingest ────────────────────────────────────────────────
 #
