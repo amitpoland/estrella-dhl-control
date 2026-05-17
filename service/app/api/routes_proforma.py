@@ -21,7 +21,7 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, HTMLResponse
 
 from ..core.config import settings
 from ..core.security import require_api_key
@@ -2732,6 +2732,237 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
         "ok":    True,
         "draft": full,
     })
+
+
+@router.get("/draft/{draft_id}/preview.html", dependencies=[_auth])
+def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
+    """Render a human-readable HTML preview of a proforma draft.
+
+    Read-only.  Builds a printable invoice-style HTML snapshot of the
+    current ``editable_lines`` + customer_resolution + service charges
+    + buyer/ship-to/payment terms.  Operator can browser-print this
+    surface to PDF.  Never calls wFirma; never modifies any local row.
+
+    This endpoint is the human-readable counterpart to the JSON
+    payload returned by ``POST /preview/{batch_id}/{client_name}``
+    (which stays available for debugging / programmatic audit).
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    from html import escape as _esc
+    import json as _json
+
+    def _safe(s) -> str:
+        return _esc(str(s)) if s is not None else ""
+
+    # Lines.
+    try:
+        lines = _json.loads(d.editable_lines_json or "[]") or []
+    except Exception:
+        lines = []
+    try:
+        charges = _json.loads(d.service_charges_json or "[]") or []
+    except Exception:
+        charges = []
+    try:
+        buyer = _json.loads(d.buyer_override_json or "{}") or {}
+    except Exception:
+        buyer = {}
+    try:
+        ship_to = _json.loads(d.ship_to_override_json or "{}") or {}
+    except Exception:
+        ship_to = {}
+    try:
+        terms = _json.loads(d.payment_terms_json or "{}") or {}
+    except Exception:
+        terms = {}
+
+    # Customer resolution (read-only; resolver failure → safe block).
+    try:
+        cust = _resolve_customer(d.client_name or "")
+    except Exception:
+        cust = {"wfirma_customer_id": "", "resolved_wfirma_name": "",
+                "match_strategy": "none", "found": False}
+
+    # Totals — additive only; no engine calls.
+    def _num(x):
+        try: return float(x or 0)
+        except Exception: return 0.0
+    lines_total = sum(_num(ln.get("qty")) * _num(ln.get("unit_price"))
+                      for ln in lines)
+    charges_total = sum(_num(c.get("amount")) for c in charges)
+    grand_total = lines_total + charges_total
+
+    rows_html: List[str] = []
+    for ln in lines:
+        rows_html.append(
+            "<tr>"
+            f"<td>{_safe(ln.get('product_code'))}</td>"
+            f"<td>{_safe(ln.get('item_type'))}</td>"
+            f"<td>{_safe(ln.get('name_pl'))}</td>"
+            f"<td>{_safe(ln.get('design_no'))}</td>"
+            f"<td class='num'>{_safe(ln.get('qty'))}</td>"
+            f"<td class='num'>{_safe(ln.get('unit_price'))}</td>"
+            f"<td>{_safe(ln.get('currency'))}</td>"
+            f"<td class='num'>{_num(ln.get('qty')) * _num(ln.get('unit_price')):.2f}</td>"
+            "</tr>"
+        )
+    charges_html: List[str] = []
+    for c in charges:
+        charges_html.append(
+            "<tr>"
+            f"<td>{_safe(c.get('charge_type'))}</td>"
+            f"<td>{_safe(c.get('label'))}</td>"
+            f"<td class='num'>{_safe(c.get('amount'))}</td>"
+            f"<td>{_safe(c.get('currency'))}</td>"
+            "</tr>"
+        )
+
+    def _addr_block(label: str, src: dict) -> str:
+        if not src:
+            return f"<div class='addr'><div class='addr-h'>{label}</div>" \
+                   f"<div class='addr-empty'>— default —</div></div>"
+        keys = ("name", "street", "city", "zip", "country",
+                "vat_id", "phone", "email")
+        items = "".join(
+            f"<div>{_safe(src.get(k))}</div>"
+            for k in keys if src.get(k)
+        )
+        return f"<div class='addr'><div class='addr-h'>{label}</div>{items}</div>"
+
+    terms_html = ""
+    if terms:
+        terms_html = "<dl class='terms'>" + "".join(
+            f"<dt>{_safe(k)}</dt><dd>{_safe(v)}</dd>"
+            for k, v in terms.items()
+        ) + "</dl>"
+    else:
+        terms_html = "<div class='terms-empty'>— default payment terms —</div>"
+
+    cust_badge = ("✓ Matched" if cust.get("wfirma_customer_id")
+                  else ("⚠ Ambiguous" if cust.get("ambiguous")
+                        else "✗ Unmatched"))
+
+    html = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>Proforma draft #{d.id} — {_safe(d.client_name)}</title>
+<style>
+  body {{ font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+          max-width: 940px; margin: 18px auto; padding: 12px 24px;
+          color: #1a1a1a; }}
+  h1 {{ font-size: 22px; margin: 0 0 4px; }}
+  h2 {{ font-size: 13px; text-transform: uppercase;
+        letter-spacing: 0.08em; color: #666;
+        margin: 22px 0 6px; border-bottom: 1px solid #ddd;
+        padding-bottom: 3px; }}
+  .meta {{ color: #555; font-size: 12px; margin-bottom: 6px; }}
+  .pill {{ display: inline-block; padding: 1px 6px; border-radius: 3px;
+          font-size: 11px; font-weight: 700;
+          background: #eef; color: #224; }}
+  .pill.warn {{ background: #fde; color: #831; }}
+  .pill.ok   {{ background: #dfd; color: #163; }}
+  .grid2 {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+  .grid3 {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }}
+  .addr {{ font-size: 12px; line-height: 1.4; }}
+  .addr-h {{ font-size: 11px; text-transform: uppercase;
+              letter-spacing: 0.08em; color: #888; margin-bottom: 4px; }}
+  .addr-empty {{ color: #aaa; font-style: italic; font-size: 11px; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
+  th, td {{ padding: 5px 6px; border-bottom: 1px solid #eee;
+            text-align: left; vertical-align: top; }}
+  th {{ font-size: 10px; text-transform: uppercase;
+        letter-spacing: 0.05em; color: #666; }}
+  .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  .totals {{ margin-top: 12px; width: 320px; margin-left: auto;
+              font-size: 12px; }}
+  .totals dt {{ display: inline-block; width: 60%; }}
+  .totals dd {{ display: inline-block; width: 40%; text-align: right;
+                margin: 0; font-variant-numeric: tabular-nums; }}
+  .totals .grand {{ font-weight: 700; font-size: 13px; margin-top: 4px;
+                     padding-top: 4px; border-top: 1px solid #444; }}
+  .footer {{ margin-top: 30px; font-size: 10px; color: #888;
+              border-top: 1px solid #ddd; padding-top: 8px; }}
+  .terms dt {{ display: inline-block; min-width: 80px;
+                font-weight: 700; font-size: 11px; color: #555; }}
+  .terms dd {{ display: inline; margin: 0; font-size: 12px; }}
+  .terms dd:after {{ content: ""; display: block; }}
+  .terms-empty {{ color: #aaa; font-style: italic; font-size: 11px; }}
+  @media print {{
+    body {{ margin: 0; }}
+    .noprint {{ display: none; }}
+  }}
+</style>
+</head><body>
+  <div class="noprint" style="text-align:right;font-size:11px;color:#888;
+                                margin-bottom:10px;">
+    Read-only proforma draft preview · browser-print to PDF
+  </div>
+  <h1>Proforma DRAFT — {_safe(d.client_name)}</h1>
+  <div class="meta">
+    Draft #{d.id} · v{d.draft_version} ·
+    state <span class="pill">{_safe(d.draft_state)}</span> ·
+    batch <code>{_safe(d.batch_id)}</code>
+  </div>
+
+  <h2>Customer mapping</h2>
+  <div style="font-size:12px;">
+    <strong>Sales client:</strong> {_safe(d.client_name)}<br>
+    <strong>wFirma customer:</strong>
+      {_safe(cust.get('resolved_wfirma_name') or '—')}
+      <code>{_safe(cust.get('wfirma_customer_id') or '—')}</code>
+      <span class="pill {'ok' if cust.get('wfirma_customer_id') else 'warn'}">{cust_badge}</span>
+      <span class="meta">match strategy: {_safe(cust.get('match_strategy'))}</span>
+  </div>
+
+  <h2>Buyer / Ship-to / Payment terms</h2>
+  <div class="grid3">
+    {_addr_block("Buyer override", buyer)}
+    {_addr_block("Ship-to override", ship_to)}
+    <div class="addr"><div class="addr-h">Payment terms</div>
+      {terms_html}</div>
+  </div>
+
+  <h2>Lines ({len(lines)})</h2>
+  <table>
+    <thead><tr>
+      <th>Product code</th><th>Item type</th><th>Name (PL)</th>
+      <th>Design</th><th class="num">Qty</th>
+      <th class="num">Unit price</th><th>Currency</th>
+      <th class="num">Line total</th>
+    </tr></thead>
+    <tbody>{''.join(rows_html) or '<tr><td colspan="8" style="color:#aaa;text-align:center;">(no lines)</td></tr>'}</tbody>
+  </table>
+
+  <h2>Service charges ({len(charges)})</h2>
+  <table>
+    <thead><tr><th>Type</th><th>Label</th>
+      <th class="num">Amount</th><th>Currency</th></tr></thead>
+    <tbody>{''.join(charges_html) or '<tr><td colspan="4" style="color:#aaa;text-align:center;">(no charges)</td></tr>'}</tbody>
+  </table>
+
+  {('<h2>Remarks</h2><div style="font-size:12px;white-space:pre-wrap;">' + _safe(d.remarks) + '</div>') if d.remarks else ''}
+
+  <div class="totals">
+    <dl>
+      <dt>Lines total:</dt><dd>{lines_total:.2f}</dd>
+      <dt>Service charges:</dt><dd>{charges_total:.2f}</dd>
+      <dt class="grand">Grand total:</dt><dd class="grand">{grand_total:.2f} {_safe(d.currency)}</dd>
+    </dl>
+  </div>
+
+  <div class="footer">
+    Generated locally from proforma_drafts row #{d.id} —
+    no wFirma call was made.
+    Updated {_safe(d.updated_at)}.
+  </div>
+</body></html>
+"""
+    return HTMLResponse(content=html)
 
 
 @router.get("/draft/{draft_id}/events", dependencies=[_auth])

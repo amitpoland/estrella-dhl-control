@@ -292,3 +292,151 @@ def test_customer_resolution_block_still_present_and_read_only(client):
     cr = body["customer_resolution"]
     for k in ("wfirma_customer_id", "found", "match_strategy"):
         assert k in cr, f"customer_resolution missing key {k!r}"
+
+
+# ── 10. PATCH line accepts item_type and name_pl (PR-continuation) ───────
+
+def test_patch_line_accepts_item_type_and_name_pl(client):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-IT-NP",
+                                       client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    # First PATCH: item_type alone
+    r = _patch_line(cli, draft_id, 1, d["updated_at"],
+                     {"item_type": "RING"})
+    assert r.status_code == 200, r.text
+    d2 = _get_draft(cli, draft_id)
+    assert d2["editable_lines"][0]["item_type"] == "RING"
+    # Then PATCH: name_pl
+    r2 = _patch_line(cli, draft_id, 1, d2["updated_at"],
+                      {"name_pl":
+                       "pierścionek ze złota próby 14 karatów"})
+    assert r2.status_code == 200, r2.text
+    d3 = _get_draft(cli, draft_id)
+    assert d3["editable_lines"][0]["name_pl"] == \
+        "pierścionek ze złota próby 14 karatów"
+
+
+# ── 11. editable_line_fields whitelist includes item_type, name_pl ───────
+
+def test_editable_line_fields_whitelist_includes_new_keys():
+    from app.services import proforma_invoice_link_db as pildb
+    assert "item_type" in pildb.EDITABLE_LINE_FIELDS
+    assert "name_pl"   in pildb.EDITABLE_LINE_FIELDS
+
+
+# ── 12. UI source includes inline inputs for item_type and name_pl ───────
+
+def test_ui_source_includes_editable_item_type_and_name_pl_inputs():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # data-testids on the inline inputs (template-style names with ${line_id})
+    for marker in ("draft-line-item-type-input-",
+                   "draft-line-name-pl-input-"):
+        assert marker in src, (
+            f"shipment-detail.html missing {marker!r} — "
+            f"item_type / name_pl inline inputs not unlocked"
+        )
+
+
+# ── 13. Readable HTML preview is read-only and never calls wFirma ────────
+
+def test_draft_html_preview_is_read_only(client):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-HTML",
+                                       client_name="ACME")
+
+    def _snap():
+        out = {}
+        for fname, tables in (
+            ("proforma_links.db", ["proforma_drafts"]),
+            ("wfirma.db",         ["wfirma_customers", "wfirma_products"]),
+        ):
+            p = tmp / fname
+            if not p.exists():
+                continue
+            with _s.connect(str(p)) as c:
+                for t in tables:
+                    try:
+                        out[t] = c.execute(
+                            f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                    except Exception:
+                        pass
+        return out
+
+    before = _snap()
+    r = cli.get(f"/api/v1/proforma/draft/{draft_id}/preview.html")
+    assert r.status_code == 200, r.text
+    assert "text/html" in r.headers.get("content-type", "")
+    after = _snap()
+    assert before == after, (
+        f"preview.html must be read-only; row counts changed: "
+        f"{before} → {after}"
+    )
+
+
+def test_draft_html_preview_contains_human_readable_markers(client):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-HTML-CONTENT",
+                                       client_name="Verhoeven Joaillier",
+                                       product_code="EJL/26-27/177-3",
+                                       design_no="J4502R01415-PE")
+    r = cli.get(f"/api/v1/proforma/draft/{draft_id}/preview.html")
+    assert r.status_code == 200
+    body = r.text
+    # Document is HTML, not raw JSON.
+    assert body.lstrip().lower().startswith("<!doctype html>")
+    # Carries operator-readable headings + the seeded data.
+    for marker in ("Proforma DRAFT", "Verhoeven Joaillier",
+                   "EJL/26-27/177-3", "J4502R01415-PE",
+                   "Customer mapping", "Lines", "Grand total"):
+        assert marker in body, (
+            f"preview.html missing human-readable marker {marker!r}"
+        )
+
+
+def test_draft_html_preview_does_not_invoke_wfirma_writes(client, monkeypatch):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-NW",
+                                       client_name="ACME")
+    from app.services import wfirma_client as wfc
+    write_calls = {"create_proforma": 0, "create_product": 0,
+                   "create_customer": 0, "create_invoice": 0}
+    def _spy(fn_name):
+        def _wrapped(*a, **kw):
+            write_calls[fn_name] += 1
+            raise RuntimeError(f"preview.html must not call {fn_name}")
+        return _wrapped
+    for fn in list(write_calls.keys()):
+        if hasattr(wfc, fn):
+            monkeypatch.setattr(wfc, fn, _spy(fn))
+
+    r = cli.get(f"/api/v1/proforma/draft/{draft_id}/preview.html")
+    assert r.status_code == 200, r.text
+    assert sum(write_calls.values()) == 0, (
+        f"preview.html invoked wFirma writes: {write_calls}"
+    )
+
+
+# ── 14. HTML preview body has no wFirma write surface (source-grep) ─────
+
+def test_draft_html_preview_route_source_has_no_wfirma_writes():
+    src = (Path(__file__).resolve().parents[1] / "app" / "api"
+           / "routes_proforma.py").read_text(encoding="utf-8")
+    start = src.index("def get_proforma_draft_preview_html(")
+    end   = src.index("@router.", start + 50)
+    body  = src[start:end]
+    # Strict guard: no live HTTP client invocations and no wFirma
+    # write surfaces. (Plain "POST"/"PATCH"/"DELETE" tokens are allowed
+    # in comments — only actual call surfaces matter.)
+    for forbidden in (
+        "wfirma_client.create_proforma",
+        "wfirma_client.create_product",
+        "wfirma_client.create_customer",
+        "wfirma_client.create_invoice",
+        "requests.post", "requests.patch", "requests.delete",
+        "httpx.post", "httpx.patch", "httpx.delete",
+    ):
+        assert forbidden not in body, (
+            f"preview.html handler body must not reference {forbidden!r}"
+        )
