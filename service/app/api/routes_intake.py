@@ -198,6 +198,12 @@ async def shipment_intake(
     sad:                Optional[UploadFile]   = None,    # SAD/ZC429 PDF or XML
     sales_documents:    List[UploadFile]       = [],
     sales_packing_lists: List[UploadFile]      = [],
+    # Atlas-aligned local-only document types. These are saved + registered
+    # in shipment_documents but NEVER parsed and NEVER trigger
+    # DHL/PZ/SAD/wFirma/proforma. Contractor IDs come from per-slot metadata.
+    service_invoices:   List[UploadFile]       = [],
+    carnet_docs:        List[UploadFile]       = [],
+    other_docs:         List[UploadFile]       = [],
 ) -> JSONResponse:
     """
     Full document-chain intake.
@@ -236,6 +242,43 @@ async def shipment_intake(
 
     purchase_blocks: List[Dict[str, Any]] = meta.get("purchase_blocks", [])
     sales_blocks:    List[Dict[str, Any]] = meta.get("sales_blocks",    [])
+    # Per-slot metadata for the local-only Atlas document types. Each
+    # block entry corresponds to a file in the matching UploadFile list
+    # by position. Missing/short metadata is tolerated (contractor IDs
+    # default to "").
+    service_blocks: List[Dict[str, Any]] = meta.get("service_blocks", [])
+    carnet_blocks:  List[Dict[str, Any]] = meta.get("carnet_blocks",  [])
+    other_blocks:   List[Dict[str, Any]] = meta.get("other_blocks",   [])
+    # Operator-supplied free-text note. Persisted to audit.json only;
+    # no downstream consumer reads it yet.
+    operator_note: str = str(meta.get("note") or "").strip()
+
+    # ── Resolve shipment-level contractor identity (best-effort, optional).
+    # Each purchase block may carry ``supplier_contractor_id`` and each sales
+    # block ``client_contractor_id``. The shipment-level ids are inherited
+    # by the AWB document only; per-document records use their own block id.
+    _shipment_supplier_cid = next(
+        (str(b.get("supplier_contractor_id") or "").strip()
+         for b in purchase_blocks
+         if str(b.get("supplier_contractor_id") or "").strip()),
+        "",
+    )
+    _shipment_client_cid = next(
+        (str(b.get("client_contractor_id") or "").strip()
+         for b in sales_blocks
+         if str(b.get("client_contractor_id") or "").strip()),
+        "",
+    )
+
+    def _supplier_cid_for_purchase(block_idx: int) -> str:
+        if 0 <= block_idx < len(purchase_blocks):
+            return str(purchase_blocks[block_idx].get("supplier_contractor_id") or "").strip()
+        return ""
+
+    def _client_cid_for_sales(block_idx: int) -> str:
+        if 0 <= block_idx < len(sales_blocks):
+            return str(sales_blocks[block_idx].get("client_contractor_id") or "").strip()
+        return ""
 
     # ── Validate file types ──────────────────────────────────────────────────
     for f in invoices:
@@ -246,6 +289,15 @@ async def shipment_intake(
         _validate_file(f, _ALLOWED_INVOICE_EXT)
     for f in sales_packing_lists:
         _validate_file(f, _ALLOWED_PACKING_EXT)
+    # Local-only Atlas types: same broad attachment allow-list as packing
+    # (PDF + spreadsheet). No parsing, just file save.
+    _ALLOWED_LOCAL_EXT = {".pdf", ".xlsx", ".xls", ".jpg", ".jpeg", ".png"}
+    for f in service_invoices:
+        _validate_file(f, _ALLOWED_LOCAL_EXT)
+    for f in carnet_docs:
+        _validate_file(f, _ALLOWED_LOCAL_EXT)
+    for f in other_docs:
+        _validate_file(f, _ALLOWED_LOCAL_EXT)
     if awb and awb.filename:
         _validate_file(awb, _ALLOWED_INVOICE_EXT)
     else:
@@ -265,7 +317,11 @@ async def shipment_intake(
     sad_dir   = src_base / "sad"
     pack_dir  = src_base / "packing"
     sales_dir = src_base / "sales"
-    for d in (inv_dir, awb_dir, sad_dir, pack_dir, sales_dir):
+    service_dir = src_base / "service"
+    carnet_dir  = src_base / "carnet"
+    misc_dir    = src_base / "misc"
+    for d in (inv_dir, awb_dir, sad_dir, pack_dir, sales_dir,
+              service_dir, carnet_dir, misc_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     awb_canonical = tracking_no.strip().replace(" ", "")
@@ -288,6 +344,8 @@ async def shipment_intake(
             file_name=awb_name, file_path=str(awb_path),
             file_hash=ddb.sha256_file(awb_path),
             awb=awb_canonical, source="intake",
+            client_contractor_id=_shipment_client_cid,
+            supplier_contractor_id=_shipment_supplier_cid,
         ) or ""
 
         # Parse AWB fields
@@ -359,16 +417,28 @@ async def shipment_intake(
     inv_nos: List[str] = []           # parsed invoice numbers, parallel to inv_names
     inv_summaries: List[Dict[str, Any]] = []
 
-    for f in invoices:
+    for idx, f in enumerate(invoices):
         name = _safe_name(f.filename or "invoice.pdf")
         path = inv_dir / name
         await _save(f, path)
         inv_names.append(name)
+        # Map this invoice to its purchase block (block where invoice_index
+        # falls within the block's contiguous invoice range).
+        _supplier_cid = ""
+        running = 0
+        for _b_idx, _b in enumerate(purchase_blocks):
+            # purchase_blocks metadata is built per-block; we walk it in
+            # order. invoice_index in metadata = the first invoice index
+            # of that block. Match the running counter.
+            _b_inv_start = int(_b.get("invoice_index", running) or running)
+            if idx >= _b_inv_start:
+                _supplier_cid = _supplier_cid_for_purchase(_b_idx)
         doc_id = ddb.register_document(
             batch_id=batch_id, document_type="purchase_invoice",
             file_name=name, file_path=str(path),
             file_hash=ddb.sha256_file(path),
             awb=awb_canonical, source="intake",
+            supplier_contractor_id=_supplier_cid,
         ) or ""
         inv_doc_ids.append(doc_id)
         log.info("[%s] Invoice saved: %s doc_id=%s", batch_id, name, doc_id)
@@ -413,6 +483,7 @@ async def shipment_intake(
         # Find supplier name from metadata block
         block       = next((b for b in purchase_blocks if b.get("packing_index") == idx), {})
         supplier    = block.get("supplier_name", "")
+        supplier_cid = str(block.get("supplier_contractor_id") or "").strip()
         inv_idx     = block.get("invoice_index", idx)
         inv_doc_id  = inv_doc_ids[inv_idx] if inv_idx < len(inv_doc_ids) else ""
 
@@ -433,6 +504,7 @@ async def shipment_intake(
             file_hash=ddb.sha256_file(path),
             awb=awb_canonical, source="intake",
             related_invoice_no=related_inv_no,
+            supplier_contractor_id=supplier_cid,
         ) or ""
 
         # Run packing extraction pipeline
@@ -505,6 +577,7 @@ async def shipment_intake(
         block      = next((b for b in sales_blocks if b.get("document_index") == idx), {})
         client     = block.get("client_name", "")
         client_ref = block.get("client_ref", "")
+        client_cid = str(block.get("client_contractor_id") or "").strip()
 
         name = _safe_name(f.filename or f"sales_{idx}.pdf")
         path = sales_dir / name
@@ -516,6 +589,7 @@ async def shipment_intake(
             file_name=name, file_path=str(path),
             file_hash=ddb.sha256_file(path),
             awb=awb_canonical, source="intake",
+            client_contractor_id=client_cid,
         ) or ""
         sales_doc_ids.append(doc_id)
 
@@ -542,6 +616,7 @@ async def shipment_intake(
         block      = next((b for b in sales_blocks if b.get("packing_index") == idx), {})
         client     = block.get("client_name", "")
         client_ref = block.get("client_ref", "")
+        client_cid = str(block.get("client_contractor_id") or "").strip()
         # Operator-supplied per-document currency override (optional).
         operator_currency = (block.get("currency", "") or "").strip().upper()
         sales_idx    = block.get("document_index", idx)
@@ -559,6 +634,7 @@ async def shipment_intake(
             file_name=name, file_path=str(path),
             file_hash=ddb.sha256_file(path),
             awb=awb_canonical, source="intake",
+            client_contractor_id=client_cid,
         ) or ""
 
         # If no sales_documents block was uploaded, create a sales_documents
@@ -771,6 +847,68 @@ async def shipment_intake(
         log.info("[%s] Sales packing saved: %s client=%s rows=%d",
                  batch_id, name, client or "?", n_rows)
 
+    # ── E2. Local-only Atlas document types (service / carnet / other) ──────
+    # File save + register_document only. No parser, no extractor, no
+    # external workflow trigger. Contractor IDs come from per-slot metadata
+    # (service → supplier; carnet/other → shipment-level inherit unless
+    # overridden in the block).
+    service_doc_ids: List[str] = []
+    carnet_doc_ids:  List[str] = []
+    other_doc_ids:   List[str] = []
+
+    async def _persist_local_async(
+        files: List[UploadFile],
+        dest_dir: Path,
+        document_type: str,
+        blocks: List[Dict[str, Any]],
+        *,
+        is_supplier_side: bool,
+    ) -> List[str]:
+        out_ids: List[str] = []
+        for idx, f in enumerate(files):
+            if not (f and f.filename):
+                continue
+            name = _safe_name(f.filename)
+            path = dest_dir / name
+            await _save(f, path)
+            block = blocks[idx] if 0 <= idx < len(blocks) else {}
+            sup_cid = str(block.get("supplier_contractor_id") or "").strip()
+            cli_cid = str(block.get("client_contractor_id")   or "").strip()
+            # Neutral docs (carnet / other) inherit shipment-level IDs from
+            # both sides when the per-slot block did not specify one.
+            if not sup_cid and not is_supplier_side:
+                sup_cid = _shipment_supplier_cid
+            if not cli_cid and not is_supplier_side:
+                cli_cid = _shipment_client_cid
+            if is_supplier_side and not sup_cid:
+                sup_cid = _shipment_supplier_cid
+            doc_id = ddb.register_document(
+                batch_id=batch_id, document_type=document_type,
+                file_name=name, file_path=str(path),
+                file_hash=ddb.sha256_file(path),
+                awb=awb_canonical, source="intake",
+                client_contractor_id=cli_cid,
+                supplier_contractor_id=sup_cid,
+            ) or ""
+            if doc_id:
+                out_ids.append(doc_id)
+                log.info("[%s] %s saved: %s doc_id=%s",
+                         batch_id, document_type, name, doc_id)
+        return out_ids
+
+    service_doc_ids = await _persist_local_async(
+        service_invoices, service_dir, "service_invoice", service_blocks,
+        is_supplier_side=True,
+    )
+    carnet_doc_ids = await _persist_local_async(
+        carnet_docs, carnet_dir, "carnet", carnet_blocks,
+        is_supplier_side=False,
+    )
+    other_doc_ids = await _persist_local_async(
+        other_docs, misc_dir, "other_document", other_blocks,
+        is_supplier_side=False,
+    )
+
     # ── F. Write draft audit + timeline ──────────────────────────────────────
     _write_draft_audit(output_dir, batch_id, tracking_no, carrier, inv_names, awb_name)
     audit_path = output_dir / "audit.json"
@@ -786,6 +924,32 @@ async def shipment_intake(
         tl.log_event(audit_path, tl.EV_INVOICE_UPLOADED, "intake", "user", detail={"file": n})
     if awb_name:
         tl.log_event(audit_path, tl.EV_AWB_UPLOADED, "intake", "user", detail={"file": awb_name})
+
+    # Persist operator note + local-only doc counts into audit.json so the
+    # information survives without requiring a new column on any DB table.
+    try:
+        if operator_note or service_doc_ids or carnet_doc_ids or other_doc_ids:
+            audit_obj: Dict[str, Any] = {}
+            if audit_path.exists():
+                try:
+                    audit_obj = json.loads(audit_path.read_text(encoding="utf-8"))
+                except Exception:
+                    audit_obj = {}
+            if operator_note:
+                audit_obj["operator_note"] = operator_note
+            local_summary = audit_obj.get("local_documents") or {}
+            if service_doc_ids:
+                local_summary["service_invoice"] = service_doc_ids
+            if carnet_doc_ids:
+                local_summary["carnet"] = carnet_doc_ids
+            if other_doc_ids:
+                local_summary["other_document"] = other_doc_ids
+            if local_summary:
+                audit_obj["local_documents"] = local_summary
+            write_json_atomic(audit_path, audit_obj)
+    except Exception as exc:
+        log.warning("[%s] audit metadata update failed (non-fatal): %s",
+                    batch_id, exc)
 
     # ── G. Return intake summary ──────────────────────────────────────────────
     return JSONResponse({
@@ -813,12 +977,21 @@ async def shipment_intake(
             "documents":     sales_names,
             "packing_lists": sales_pack_summaries,
         },
+        "local_documents": {
+            "service_invoice": len(service_doc_ids),
+            "carnet":          len(carnet_doc_ids),
+            "other_document":  len(other_doc_ids),
+        },
+        "operator_note": operator_note,
         "documents_registered": (
             (1 if awb_name else 0) +
             len(inv_names) +
             len(packing_lists) +
             len(sales_names) +
-            len(sales_packing_lists)
+            len(sales_packing_lists) +
+            len(service_doc_ids) +
+            len(carnet_doc_ids) +
+            len(other_doc_ids)
         ),
         "status": "draft",
         "next_step": "Upload SAD when customs clearance documents are received.",
