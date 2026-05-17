@@ -439,9 +439,12 @@ function Inp({ value, onChange, placeholder, type = 'text', style: s }) {
   );
 }
 
-function Sel({ value, onChange, children }) {
+function Sel({ value, onChange, children, ...rest }) {
+  // Forward arbitrary props (e.g., data-testid) so callers can target
+  // the rendered <select> from the browser DOM. Additive; existing
+  // callers unaffected.
   return (
-    <select value={value} onChange={onChange} style={{
+    <select value={value} onChange={onChange} {...rest} style={{
       width: '100%', padding: '8px 10px', borderRadius: 6,
       border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)',
       background: 'var(--bg-subtle)', outline: 'none',
@@ -8652,6 +8655,260 @@ function NewShipmentDocumentSlot({ doc, onUpdate, onRemove, clientList, supplier
 }
 
 // ══════════════════════════════════════════════════════════
+// Add Document modal — post-draft single-file upload via
+// POST /api/v1/shipment/{batch}/add-document (PR #173, prod).
+// Reuses _NS_DOC_TYPES policy (per-slot accept + allowedExts);
+// inherits confirmed contractor IDs from
+// /api/v1/packing/{batch}/contractor-resolution/{role}.
+// SAD is filtered out — use the dedicated SAD route.
+// Display-only / read-model refresh only on success.
+// ══════════════════════════════════════════════════════════
+
+function AddDocumentModal({ batchId, onClose, onUploaded }) {
+  const [docType, setDocType]       = React.useState('purchase_invoice');
+  const [file, setFile]             = React.useState(null);
+  const [slotError, setSlotError]   = React.useState('');
+  const [submitError, setSubmitError] = React.useState('');
+  const [submitting, setSubmitting] = React.useState(false);
+
+  // Master data + confirmed identity defaults
+  const [clientList, setClientList]       = React.useState([]);
+  const [supplierList, setSupplierList]   = React.useState([]);
+  const [defaultClientCid, setDefaultClientCid]     = React.useState('');
+  const [defaultSupplierCid, setDefaultSupplierCid] = React.useState('');
+  const [clientOverride, setClientOverride]     = React.useState('');
+  const [supplierOverride, setSupplierOverride] = React.useState('');
+
+  const docTypes = React.useMemo(
+    () => _NS_DOC_TYPES.filter(t => t.id !== 'sad'),
+    [],
+  );
+  const type = docTypes.find(t => t.id === docType) || docTypes[0];
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [cm, sup, rClient, rSupplier] = await Promise.all([
+          apiFetch('/api/v1/customer-master/?limit=500').catch(() => null),
+          apiFetch('/api/v1/suppliers/?limit=500').catch(() => null),
+          apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution/client`).catch(() => null),
+          apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution/supplier`).catch(() => null),
+        ]);
+        if (cancelled) return;
+        if (cm) {
+          const arr = Array.isArray(cm) ? cm : (cm.customers || []);
+          setClientList(arr.map(c => ({
+            contractor_id: c.bill_to_contractor_id || c.id || '',
+            name:          c.bill_to_name || c.name || '',
+            country:       c.country || '',
+          })).filter(x => x.contractor_id && x.name));
+        }
+        if (sup) {
+          setSupplierList((sup.suppliers || []).filter(x => x.contractor_id && x.name));
+        }
+        if (rClient && rClient.matched_master_id) {
+          const id = String(rClient.matched_master_id);
+          setDefaultClientCid(id);
+          setClientOverride(id);
+        }
+        if (rSupplier && rSupplier.matched_master_id) {
+          const id = String(rSupplier.matched_master_id);
+          setDefaultSupplierCid(id);
+          setSupplierOverride(id);
+        }
+      } catch (_) { /* non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+  }, [batchId]);
+
+  const fileInputRef = React.useRef(null);
+  const handleFile = (e) => {
+    const f = (e.target.files || [])[0];
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (!f) return;
+    const allowed = (type.allowedExts || ['.pdf']).map(s => s.toLowerCase());
+    const dot = f.name.lastIndexOf('.');
+    const ext = (dot >= 0 ? f.name.slice(dot) : '').toLowerCase();
+    if (allowed.indexOf(ext) < 0) {
+      setSlotError(`File type ${ext || '(none)'} not allowed for ${type.label}. Allowed: ${allowed.join(', ')}`);
+      setFile(null);
+      return;
+    }
+    setSlotError('');
+    setFile(f);
+  };
+
+  const hasMasterClients   = clientList.length > 0;
+  const hasMasterSuppliers = supplierList.length > 0;
+  const saveDisabled = !file || submitting;
+
+  const handleSave = async () => {
+    if (!file) return;
+    setSubmitting(true);
+    setSubmitError('');
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('document_type', docType);
+      if (supplierOverride) fd.append('supplier_contractor_id', supplierOverride);
+      if (clientOverride)   fd.append('client_contractor_id',   clientOverride);
+      const r = await fetch(
+        `/api/v1/shipment/${encodeURIComponent(batchId)}/add-document`,
+        { method: 'POST', body: fd, credentials: 'include' },
+      );
+      if (!r.ok) {
+        const msg = await r.text().catch(() => 'Upload failed');
+        throw new Error(msg);
+      }
+      const data = await r.json();
+      if (onUploaded) onUploaded({ document_type: docType, ...data });
+      onClose();
+    } catch (e) {
+      setSubmitError(e.message || 'Upload failed.');
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal title="Add Document" onClose={onClose}>
+      {submitError && (
+        <div data-testid="add-doc-submit-error" style={{
+          marginBottom: 14, padding: '10px 14px', borderRadius: 6,
+          background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+          fontSize: 12, color: 'var(--badge-red-text)',
+        }}>{submitError}</div>
+      )}
+
+      <FormField label="Document Type" hint={type.hint}>
+        <Sel
+          data-testid="add-doc-type-select"
+          value={docType}
+          onChange={e => { setDocType(e.target.value); setFile(null); setSlotError(''); }}
+        >
+          {docTypes.map(t => (
+            <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
+          ))}
+        </Sel>
+      </FormField>
+
+      <FormField label="File" hint={`Allowed: ${(type.allowedExts || []).join(', ')}`}>
+        <input
+          ref={fileInputRef}
+          data-testid="add-doc-file"
+          type="file"
+          accept={type.accept || '.pdf'}
+          onChange={handleFile}
+          style={{ width: '100%', fontSize: 12 }}
+        />
+        {file && (
+          <div data-testid="add-doc-file-name" style={{ fontSize: 11, marginTop: 4, color: 'var(--text-2)' }}>
+            📄 {file.name}
+          </div>
+        )}
+        {slotError && (
+          <div data-testid="add-doc-slot-error" style={{ fontSize: 11, marginTop: 4, color: 'var(--badge-red-text)' }}>{slotError}</div>
+        )}
+      </FormField>
+
+      {(type.needsClient || type.needsSupplier) && (
+        <div style={{
+          padding: '12px 14px', borderRadius: 6, background: 'var(--bg-subtle)',
+          border: '1px solid var(--border)', marginBottom: 14,
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+            Per-document contractor (override)
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: type.needsClient && type.needsSupplier ? '1fr 1fr' : '1fr', gap: 12 }}>
+            {type.needsClient && (
+              <div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>Client</div>
+                {hasMasterClients ? (
+                  <Sel
+                    data-testid="add-doc-client-override"
+                    value={clientOverride}
+                    onChange={e => setClientOverride(e.target.value)}
+                  >
+                    <option value="">— inherit shipment-level —</option>
+                    {clientList.map(c => (
+                      <option key={c.contractor_id} value={c.contractor_id}>
+                        {c.name}{c.country ? ` (${c.country})` : ''}
+                      </option>
+                    ))}
+                  </Sel>
+                ) : (
+                  <Inp
+                    data-testid="add-doc-client-fallback"
+                    value={clientOverride}
+                    onChange={e => setClientOverride(e.target.value)}
+                    placeholder="contractor id (master data empty)"
+                  />
+                )}
+              </div>
+            )}
+            {type.needsSupplier && (
+              <div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>Supplier</div>
+                {hasMasterSuppliers ? (
+                  <Sel
+                    data-testid="add-doc-supplier-override"
+                    value={supplierOverride}
+                    onChange={e => setSupplierOverride(e.target.value)}
+                  >
+                    <option value="">— inherit shipment-level —</option>
+                    {supplierList.map(s => (
+                      <option key={s.contractor_id} value={s.contractor_id}>
+                        {s.name}{s.country ? ` (${s.country})` : ''}
+                      </option>
+                    ))}
+                  </Sel>
+                ) : (
+                  <Inp
+                    data-testid="add-doc-supplier-fallback"
+                    value={supplierOverride}
+                    onChange={e => setSupplierOverride(e.target.value)}
+                    placeholder="contractor id (master data empty)"
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+        <button
+          data-testid="add-doc-cancel"
+          onClick={onClose}
+          disabled={submitting}
+          style={{
+            padding: '8px 16px', background: 'transparent',
+            border: '1px solid var(--border)', borderRadius: 6,
+            fontSize: 12, fontWeight: 600, color: 'var(--text-2)',
+            cursor: submitting ? 'not-allowed' : 'pointer',
+          }}
+        >Cancel</button>
+        <button
+          data-testid="add-doc-save"
+          onClick={handleSave}
+          disabled={saveDisabled}
+          style={{
+            padding: '8px 18px',
+            background: saveDisabled ? 'var(--bg-subtle)' : 'var(--accent)',
+            border: '1px solid ' + (saveDisabled ? 'var(--border)' : 'var(--accent)'),
+            borderRadius: 6, fontSize: 12, fontWeight: 700,
+            color: saveDisabled ? 'var(--text-3)' : '#fff',
+            cursor: saveDisabled ? 'not-allowed' : 'pointer',
+          }}
+          title={!file ? 'Select a file first' : (submitting ? 'Uploading…' : 'Upload document')}
+        >{submitting ? 'Uploading…' : 'Save'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════
 // UI-3.x SHARED OPERATIONAL PREDICATES (module scope)
 // ──────────────────────────────────────────────────────────
 // Single source of truth for bucket logic, used by:
@@ -11505,6 +11762,9 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [docRegistry, setDocRegistry] = React.useState(null);          // null | response
   const [docRegistryLoading, setDocRegistryLoading] = React.useState(false);
   const [expandedDocId, setExpandedDocId] = React.useState(null);
+  // Post-draft "+ Add Document" modal: backed by the live endpoint
+  // POST /api/v1/shipment/{batch}/add-document.
+  const [addDocOpen, setAddDocOpen] = React.useState(false);
   const [packingInfo, setPackingInfo] = React.useState(null);            // null | {documents,packing_lines,...}
   const [packingInfoLoading, setPackingInfoLoading] = React.useState(false);
   const [packingUploading, setPackingUploading] = React.useState(false);
@@ -12922,7 +13182,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           return (<>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>Uploaded Source Files</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Uploaded Source Files</div>
+                <Btn small variant="outline"
+                     data-testid="source-files-add-doc"
+                     onClick={() => setAddDocOpen(true)}>+ Add Document</Btn>
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {[
                   ...(sf.invoices || []).map(f => ({ name: f.name, type: 'Invoice PDF', url: f.url, cat: 'invoices' })),
@@ -17599,6 +17864,21 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           </Modal>
         );
       })()}
+
+      {addDocOpen && (
+        <AddDocumentModal
+          batchId={batchId}
+          onClose={() => setAddDocOpen(false)}
+          onUploaded={(info) => {
+            load();
+            loadDocRegistry();
+            if (info && (info.document_type === 'purchase_packing_list' ||
+                         info.document_type === 'sales_packing_list')) {
+              loadPackingInfo();
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
