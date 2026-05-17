@@ -999,17 +999,26 @@ async def reprocess_packing_documents(
                 # sync_draft_from_packing_upload would skip the empty
                 # client group → zero proforma drafts.
                 #
-                # Linkage caveat: reprocess uses shipment_documents.id as
-                # sales_doc_id, but intake-stored rows are scoped to the
-                # sales_documents.id created by store_sales_document
-                # (different uuid). Per-doc match is therefore unreliable.
-                # Fallback: any existing row in the batch with a non-empty
-                # client_name. In normal operator flow each shipment has
-                # one client per sales file and the values agree across
-                # rows; in the rare case of mixed clients across files
-                # the operator can reupload with corrected metadata.
+                # Resolver order (post-contamination fix):
+                #   Pass 1: existing sales_packing_lines row scoped to
+                #           the same sales_document_id.
+                #   Pass 2: same shipment-document linkage —
+                #           sales_documents.document_id == doc_id, then
+                #           sd.client_name (non-empty) OR
+                #           sales_packing_lines whose sales_document_id
+                #           is one of those sales_documents.id.
+                #   Pass 3: authoritative wfirma reverse lookup via
+                #           shipment_documents.client_contractor_id.
+                #   Pass 4: filename hint (conservative regex).
+                #
+                # Removed: unsafe batch-scope fallback that previously
+                # accepted ANY non-empty client_name from any row in
+                # the batch — this leaked cross-document contamination
+                # (e.g. stray link_as_sales rows polluting reprocessed
+                # rows from a different shipment_document).
                 preserved_client_name = ""
                 preserved_client_ref  = ""
+                existing_rows = []
                 try:
                     existing_rows = _ddb.get_sales_packing_lines(batch_id) or []
                     # Pass 1: prefer rows scoped to the same sales_doc_id.
@@ -1022,15 +1031,61 @@ async def reprocess_packing_documents(
                             preserved_client_ref = er["client_ref"]
                         if preserved_client_name and preserved_client_ref:
                             break
-                    # Pass 2: fall back to any row in the batch.
+
+                    # Pass 2: same shipment-document linkage. Scope to
+                    # sales_documents whose document_id == current
+                    # shipment_documents.id (doc_id). Try sd.client_name
+                    # first, then sales_packing_lines linked to those sd.id.
                     if not preserved_client_name:
-                        for er in existing_rows:
-                            if er.get("client_name"):
-                                preserved_client_name = er["client_name"]
+                        try:
+                            linked_sds = (
+                                _ddb.get_sales_documents_for_shipment_doc(doc_id)
+                                or []
+                            )
+                        except Exception:
+                            linked_sds = []
+                        for sd in linked_sds:
+                            cn = (sd.get("client_name") or "").strip()
+                            if cn:
+                                preserved_client_name = cn
+                                log.info(
+                                    "[%s] sales reprocess: client_name "
+                                    "recovered via sales_documents."
+                                    "document_id==%s -> %r (Pass 2a)",
+                                    batch_id, doc_id, preserved_client_name,
+                                )
                                 break
+                        if not preserved_client_name and linked_sds:
+                            linked_sd_ids = {sd["id"] for sd in linked_sds
+                                             if sd.get("id")}
+                            for er in existing_rows:
+                                if (er.get("sales_document_id") in linked_sd_ids
+                                        and er.get("client_name")):
+                                    preserved_client_name = er["client_name"]
+                                    log.info(
+                                        "[%s] sales reprocess: client_name "
+                                        "recovered via sales_packing_lines "
+                                        "linked to shipment_doc=%s -> %r "
+                                        "(Pass 2b)",
+                                        batch_id, doc_id, preserved_client_name,
+                                    )
+                                    break
+
+                    # client_ref: same scoping as client_name. Pass 1
+                    # same sales_doc_id only; Pass 2 same linkage. No
+                    # batch-wide fallback.
                     if not preserved_client_ref:
+                        try:
+                            linked_sd_ids2 = {
+                                sd["id"]
+                                for sd in (_ddb.get_sales_documents_for_shipment_doc(doc_id) or [])
+                                if sd.get("id")
+                            }
+                        except Exception:
+                            linked_sd_ids2 = set()
                         for er in existing_rows:
-                            if er.get("client_ref"):
+                            if (er.get("sales_document_id") in linked_sd_ids2
+                                    and er.get("client_ref")):
                                 preserved_client_ref = er["client_ref"]
                                 break
                 except Exception as exc:

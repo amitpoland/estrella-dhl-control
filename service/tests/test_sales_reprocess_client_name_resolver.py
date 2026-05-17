@@ -240,6 +240,95 @@ def test_no_inference_possible_leaves_empty(client, monkeypatch, caplog):
         "expected WARN log for unresolvable client_name"
 
 
+# ── Test 6b — contamination guard: unrelated batch row must NOT leak ──
+
+def test_unrelated_batch_row_does_not_contaminate(client, monkeypatch):
+    """Permanent-fix regression: a stray sales_packing_lines row from
+    an unrelated shipment_document in the same batch (e.g. left over
+    from a manual link_as_sales op) must NOT poison reprocess of a
+    different shipment_document. Authoritative wfirma lookup (Pass 3)
+    must win — the batch-scope fallback that previously lifted any
+    non-empty client_name is gone."""
+    cli, tmp = client
+    bid = "B-CONTAMINATION"
+
+    # Set up the target shipment_document (the one being reprocessed)
+    # with a valid contractor that resolves via wfirma.
+    _make_corrupted_batch(
+        tmp, bid, "500 sales.xlsx",
+        client_contractor_id="42",
+        wfirma_cust={"client_name": "ACME Corp",
+                     "wfirma_customer_id": "42",
+                     "vat_id": "PL42", "country": "PL"},
+    )
+
+    # Seed an UNRELATED row in the same batch (different sales_document_id)
+    # carrying client_name="Po" — mirrors the production link_as_sales
+    # contamination from SHIPMENT_4218922912.
+    from app.services import document_db as ddb
+    ddb.store_sales_packing_lines(
+        sales_document_id="UNRELATED-OTHER-DOC", batch_id=bid,
+        lines=[{"client_name": "Po", "client_ref": "",
+                "product_code": "STRAY", "design_no": "", "bag_id": "",
+                "quantity": 1.0, "remarks": "",
+                "unit_price": 1.0, "currency": "USD", "total_value": 1.0}],
+    )
+
+    _patch_parser(monkeypatch, [{"product_code": "Q", "quantity": 1.0,
+                                  "unit_price": 100.0, "currency": "USD"}])
+    r = cli.post(f"/api/v1/packing/{bid}/reprocess")
+    assert r.status_code == 200, r.text
+    rows = _read_sales(tmp, bid)
+
+    # Only newly-rebuilt rows for the target doc should resolve to ACME;
+    # the stray "Po" row must remain isolated to its own sales_document_id.
+    new_rows = [rec for rec in rows if rec["product_code"] == "Q"]
+    assert new_rows, "reprocess produced no new rows"
+    assert all(rec["client_name"] == "ACME Corp" for rec in new_rows), (
+        f"contamination leaked: client_names="
+        f"{[rec['client_name'] for rec in new_rows]} — expected all 'ACME Corp'"
+    )
+    # And the stray row's client_name should NEVER appear on the new rows.
+    assert not any(rec["client_name"] == "Po" for rec in new_rows), (
+        "Pass 2 batch-wide fallback regressed: 'Po' leaked into new rows"
+    )
+
+
+# ── Test 6c — Pass 2 same-shipment-document linkage wins ──────────────
+
+def test_pass2_same_shipment_document_linkage(client, monkeypatch):
+    """When sales_documents.client_name is populated for the same
+    shipment_document (document_id == doc_id), Pass 2a recovers it
+    BEFORE Pass 3/4 fire."""
+    cli, tmp = client
+    bid = "B-PASS2-LINKAGE"
+    sid = _make_corrupted_batch(
+        tmp, bid, "600 sales.xlsx",
+        client_contractor_id="42",
+        wfirma_cust={"client_name": "Distractor Inc",
+                     "wfirma_customer_id": "42",
+                     "vat_id": "PL42", "country": "PL"},
+    )
+    # Manually populate sales_documents.client_name (mimicking a
+    # prior backfill or operator edit on the same shipment_document).
+    from app.services import document_db as ddb
+    sd_rows = ddb.get_sales_documents_for_shipment_doc(sid)
+    assert sd_rows, "test setup expected one linked sales_documents row"
+    ddb.update_sales_document_client_name(sd_rows[0]["id"], "Linked Co")
+
+    _patch_parser(monkeypatch, [{"product_code": "L", "quantity": 1.0,
+                                  "unit_price": 10.0, "currency": "USD"}])
+    r = cli.post(f"/api/v1/packing/{bid}/reprocess")
+    assert r.status_code == 200
+    rows = _read_sales(tmp, bid)
+    new_rows = [rec for rec in rows if rec["product_code"] == "L"]
+    assert new_rows
+    # Pass 2a wins — NOT "Distractor Inc" from wfirma.
+    assert new_rows[0]["client_name"] == "Linked Co", (
+        f"Pass 2a linkage failed: got {new_rows[0]['client_name']!r}"
+    )
+
+
 # ── Test 7 — resolver path has no external calls ──────────────────────
 
 def test_resolver_source_has_no_external_calls():
