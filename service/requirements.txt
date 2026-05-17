@@ -10,5 +10,8 @@ PyJWT>=2.8.0
 # Engine dependencies (already required by pz_import_processor.py)
 reportlab>=4.0
 openpyxl>=3.1
+# xlrd 2.0+ removed legacy .xls support; pin to the 1.2.x line so the
+# packing parser can open .xls vendor files (purchase packing lists).
+xlrd>=1.2.0,<2.0.0
 pymupdf>=1.24          # fitz — PDF parsing
 requests>=2.31         # NBP API
