@@ -1257,6 +1257,31 @@ def get_sales_documents(batch_id: str) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def get_sales_documents_for_shipment_doc(
+    document_id: str,
+) -> List[Dict[str, Any]]:
+    """Return sales_documents rows linked to a shipment_documents.id.
+
+    Linkage: sales_documents.document_id == shipment_documents.id (the
+    back-reference column populated by store_sales_document). Used by
+    the sales reprocess resolver Pass 2 to scope client_name lookups
+    to the *same* shipment document — preventing cross-document
+    contamination (e.g. a stray link_as_sales row from another file in
+    the same batch leaking its client_name into reprocessed rows).
+
+    Local-DB read only. Returns [] when not initialised or no match.
+    """
+    if _db_path is None or not (document_id or "").strip():
+        return []
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT * FROM sales_documents WHERE document_id=? "
+            "ORDER BY created_at",
+            (str(document_id),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def update_sales_document_client_name(
     sales_document_id: str,
     client_name:       str,
