@@ -1144,6 +1144,42 @@ def store_invoice_lines(
                     ),
                 )
                 inserted += 1
+
+                # ── Product Master canonical-identity projection (PR-1) ──
+                # invoice_lines is the single canonical mint point for
+                # product_code.  Project the freshly minted (or
+                # re-confirmed) identity into product_master so every
+                # downstream consumer can later link by product_code
+                # without reaching into invoice_lines.
+                #
+                # Best-effort: failure here MUST NOT break invoice_lines
+                # insert.  Idempotent via UNIQUE(product_code).  No
+                # external API calls; reservation_db is local-DB only.
+                try:
+                    from . import reservation_db as _rdb
+                    from ..core.config import settings as _settings
+                    _rdb_path = _settings.storage_root / "reservation_queue.db"
+                    _rdb.init_reservation_db(_rdb_path)
+                    _rdb.upsert_product_master(
+                        _rdb_path,
+                        product_code       = pc,
+                        design_no          = "",        # populated later by packing-side refresh
+                        description        = str(ln.get("description", "")),
+                        item_type          = "",        # populated later by description engine
+                        hsn_code           = hsn,
+                        unit_price_ref     = rate,
+                        currency_ref       = str(ln.get("currency", "")),
+                        confidence         = "high",
+                        source_batch_id    = batch_id,
+                        source_invoice_no  = inv_no,
+                        source_document_id = document_id,
+                        last_seen_batch_id = batch_id,
+                    )
+                except Exception as _master_exc:
+                    log.warning(
+                        "product_master upsert failed for pc=%r "
+                        "(non-fatal): %s", pc, _master_exc,
+                    )
             except Exception as exc:
                 log.warning("invoice_lines insert failed: %s", exc)
     return inserted

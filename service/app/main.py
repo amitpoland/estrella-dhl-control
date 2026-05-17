@@ -124,7 +124,20 @@ async def lifespan(app: FastAPI):
     init_correction_registry(_root / "correction_registry.db")
     init_intake_lineage(_root / "intake_lineage.db")
     init_proforma_service_charges(_root / "proforma_links.db")
-    log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma)", _root)
+    # Product Master canonical-identity registry (PR-1 Foundation).
+    # Write-only at this stage — store_invoice_lines projects every
+    # minted product_code into product_master. Consumers are NOT
+    # switched in this PR; failure is non-fatal so service still
+    # boots if reservation_queue.db is unavailable.
+    try:
+        from .services.reservation_db import init_reservation_db
+        init_reservation_db(_root / "reservation_queue.db")
+    except Exception as _rdb_init_exc:
+        log.warning(
+            "reservation_queue.db init failed at startup (non-fatal): %s",
+            _rdb_init_exc,
+        )
+    log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma / reservation)", _root)
 
     # ── W-5 / P0: replay persisted DHL self-clearance runtime flags ──────
     # Restores operator-set flag values onto in-memory `settings` so that
