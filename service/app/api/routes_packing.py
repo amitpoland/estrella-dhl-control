@@ -601,58 +601,151 @@ def get_batch_packing(batch_id: str) -> Dict[str, Any]:
         except Exception:
             d["parser_diagnostic"] = {}
 
-    # ── Fallback visibility: 2026-05-17 hotfix ────────────────────────────
-    # Atlas intake writes shipment_documents rows BEFORE running the
-    # best-effort packing extractor. When extraction fails (unsupported
-    # spreadsheet schema, corrupt PDF, etc.) packing_documents stays empty
-    # and the Packing List card used to render "No packing list uploaded
-    # yet" even though the file is on disk. Surface those uploaded-but-
-    # unparsed files here so the card can show them honestly.
+    # Tag every parsed (purchase) doc with side="purchase" and the
+    # explicit document_type so the UI can render a Purchase badge
+    # alongside the Sales badge from the merge block below.  Purchase
+    # vs sales separation stays in the data, not in fragile filename
+    # heuristics.  packing_documents rows have no document_type column
+    # (the table is purchase-only); set it here for API consistency.
+    for d in documents:
+        if isinstance(d, dict):
+            d.setdefault("side", "purchase")
+            d.setdefault("document_type", "purchase_packing_list")
+
+    # ── Fallback visibility: 2026-05-17 hotfix (purchase fallback + sales) ─
+    # Two distinct concerns share this block:
+    #
+    # 1. PURCHASE fallback (gated on parsed `documents` being empty):
+    #    Atlas intake writes shipment_documents rows BEFORE running the
+    #    best-effort packing extractor. When purchase extraction fails
+    #    (unsupported spreadsheet schema, corrupt PDF, etc.) the parsed
+    #    `packing_documents` stays empty and the card used to render
+    #    "No packing list uploaded yet" even though the file is on disk.
+    #
+    # 2. SALES surfacing (ALWAYS runs):
+    #    Sales packing lives in shipment_documents + sales_packing_lines
+    #    only — there is no parsed packing_documents row for sales files.
+    #    The card MUST list sales files independently of whether purchase
+    #    extraction succeeded.  Row counts come from sales_packing_lines.
+    #
+    # Purchase vs sales separation is preserved: the `side` and
+    # `document_type` fields drive UI badges, never filename heuristics.
     fallback_docs: List[Dict[str, Any]] = []
-    if not documents:
+    try:
+        from ..services import document_db as _ddb
+
+        # Build a hash set of already-parsed purchase docs so we never
+        # duplicate a file that the parsed pass already covered.
+        parsed_purchase_hashes = {
+            d.get("source_file_hash") for d in documents
+            if isinstance(d, dict) and d.get("source_file_hash")
+        }
+
+        # ── Purchase-side fallback (only when no parsed purchase docs) ──
+        if not documents:
+            purchase_rows = _ddb.get_documents_for_batch(
+                batch_id, document_type="purchase_packing_list") or []
+            for r in purchase_rows:
+                if r.get("file_hash") and r["file_hash"] in parsed_purchase_hashes:
+                    continue
+                diag: Dict[str, Any] = {}
+                try:
+                    for pdoc in pdb.get_packing_documents_for_batch(batch_id) or []:
+                        if pdoc.get("source_file_hash") and pdoc["source_file_hash"] == r.get("file_hash"):
+                            raw = pdoc.pop("parser_diagnostic_json", None)
+                            if raw:
+                                import json as _json
+                                diag = _json.loads(raw) if isinstance(raw, str) else {}
+                            break
+                except Exception:
+                    diag = {}
+                fallback_docs.append({
+                    "id":                   r.get("id"),
+                    "batch_id":             r.get("batch_id"),
+                    "document_type":        "purchase_packing_list",
+                    "side":                 "purchase",
+                    "file_name":            r.get("file_name") or "",
+                    "source_file_path":     r.get("file_path") or "",
+                    "file_hash":            r.get("file_hash") or "",
+                    "parser_status":        r.get("parser_status") or "pending",
+                    "extraction_status":    r.get("extraction_status") or "pending",
+                    "fallback_unparsed":    True,
+                    "row_count":            0,
+                    "parser_diagnostic":    diag,
+                    "created_at":           r.get("created_at"),
+                    "updated_at":           r.get("updated_at"),
+                })
+
+        # ── Sales-side surfacing (ALWAYS runs) ──────────────────────────
+        # Build a count map sales_document_id → row count from the
+        # sales_packing_lines table so each sales file row shows its
+        # extracted line count (or 0 when extraction hasn't run yet).
+        sales_line_counts: Dict[str, int] = {}
         try:
-            from ..services import document_db as _ddb
-            existing_hashes = {d.get("file_hash") for d in documents if d.get("file_hash")}
-            for dtype in ("purchase_packing_list", "sales_packing_list"):
-                rows = _ddb.get_documents_for_batch(batch_id, document_type=dtype) or []
-                for r in rows:
-                    if r.get("file_hash") and r["file_hash"] in existing_hashes:
-                        continue   # already covered by parsed packing_documents
-                    # P1 — best-effort surface of any packing_documents
-                    # diagnostic for the same file (parsed pass produced
-                    # nothing but may have written diagnostic data).
-                    diag: Dict[str, Any] = {}
-                    try:
-                        for pdoc in pdb.get_packing_documents_for_batch(batch_id) or []:
-                            if pdoc.get("source_file_hash") and pdoc["source_file_hash"] == r.get("file_hash"):
-                                raw = pdoc.pop("parser_diagnostic_json", None)
-                                if raw:
-                                    import json as _json
-                                    diag = _json.loads(raw) if isinstance(raw, str) else {}
-                                break
-                    except Exception:
-                        diag = {}
-                    fallback_docs.append({
-                        "id":                   r.get("id"),
-                        "batch_id":             r.get("batch_id"),
-                        "document_type":        r.get("document_type"),
-                        "file_name":            r.get("file_name") or "",
-                        "source_file_path":     r.get("file_path") or "",
-                        "file_hash":            r.get("file_hash") or "",
-                        # Mark as fallback so the UI can label it
-                        # "Uploaded — extraction pending / failed" rather
-                        # than claim parsed status.
-                        "parser_status":        r.get("parser_status") or "pending",
-                        "extraction_status":    r.get("extraction_status") or "pending",
-                        "fallback_unparsed":    True,
-                        "row_count":            0,
-                        "parser_diagnostic":    diag,
-                        "created_at":           r.get("created_at"),
-                        "updated_at":           r.get("updated_at"),
-                    })
+            for ln in _ddb.get_sales_packing_lines(batch_id) or []:
+                sd_id = ln.get("sales_document_id") or ""
+                if not sd_id:
+                    continue
+                sales_line_counts[sd_id] = sales_line_counts.get(sd_id, 0) + 1
         except Exception as exc:
-            log.warning("[%s] packing fallback enumeration failed (non-fatal): %s",
+            log.warning("[%s] sales_packing_lines count failed (non-fatal): %s",
                         batch_id, exc)
+
+        # Map shipment_documents.id → sales_documents row (when present)
+        # so we can resolve row counts whether sales_document_id was
+        # stored as the shipment_documents.id (reprocess fallback path)
+        # or as a real sales_documents.id (normal sales-invoice path).
+        sd_by_doc_id: Dict[str, Dict[str, Any]] = {}
+        try:
+            for sd in _ddb.get_sales_documents(batch_id) or []:
+                key = sd.get("document_id") or ""
+                if key:
+                    sd_by_doc_id[key] = sd
+        except Exception:
+            sd_by_doc_id = {}
+
+        sales_rows = _ddb.get_documents_for_batch(
+            batch_id, document_type="sales_packing_list") or []
+        for r in sales_rows:
+            # Defensive: a sales file should never share a hash with a
+            # parsed purchase doc, but if it does, prefer the parsed row.
+            if r.get("file_hash") and r["file_hash"] in parsed_purchase_hashes:
+                continue
+            doc_id = r.get("id") or ""
+            sd_row = sd_by_doc_id.get(doc_id)
+            sd_id = (sd_row or {}).get("id") or doc_id
+            row_count = int(sales_line_counts.get(sd_id, 0))
+            # Also try shipment_doc.id directly (reprocess fallback path
+            # stores sales_document_id = shipment_documents.id).
+            if row_count == 0 and doc_id and doc_id in sales_line_counts:
+                row_count = int(sales_line_counts[doc_id])
+            parser_status = r.get("parser_status") or (
+                "extracted" if row_count > 0 else "pending"
+            )
+            fallback_docs.append({
+                "id":                   doc_id,
+                "batch_id":             r.get("batch_id"),
+                "document_type":        "sales_packing_list",
+                "side":                 "sales",
+                "file_name":            r.get("file_name") or "",
+                "source_file_path":     r.get("file_path") or "",
+                "file_hash":            r.get("file_hash") or "",
+                "parser_status":        parser_status,
+                "extraction_status":    r.get("extraction_status") or (
+                    "extracted" if row_count > 0 else "pending"
+                ),
+                # fallback_unparsed=False when sales rows are present
+                # (we have real extracted lines); True when only the
+                # shipment_documents row exists.
+                "fallback_unparsed":    row_count == 0,
+                "row_count":            row_count,
+                "parser_diagnostic":    {},
+                "created_at":           r.get("created_at"),
+                "updated_at":           r.get("updated_at"),
+            })
+    except Exception as exc:
+        log.warning("[%s] packing fallback enumeration failed (non-fatal): %s",
+                    batch_id, exc)
 
     return {
         "batch_id":      batch_id,
