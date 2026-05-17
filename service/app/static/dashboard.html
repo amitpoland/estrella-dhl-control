@@ -11136,9 +11136,50 @@ const WORKFLOW_STAGES = [
 
 function WorkflowStrip({ audit }) {
   if (!audit) return null;
-  const dhl  = audit.dhl_status || '';
-  const sad  = audit.sad_status || '';
-  const pz   = audit.pz_status  || '';
+
+  // ── Derived projections ──────────────────────────────────────────
+  // The audit writers never persist {dhl,sad,pz}_status at the top
+  // level of audit.json. Project them here from what IS in audit:
+  //   audit.customs_declaration  (SAD parser output)
+  //   audit.timeline             (event log; canonical EV_* names)
+  //   audit.wfirma_export        (PZ export evidence)
+  // Read-only — no writes, no API calls.
+  const cd       = audit.customs_declaration || {};
+  const timeline = Array.isArray(audit.timeline) ? audit.timeline : [];
+  const wfExport = audit.wfirma_export || {};
+  const has = (event) => timeline.some(e => e && e.event === event);
+
+  // SAD lifecycle: missing → uploaded → parsed → verified
+  const sadParsed   = !!(cd.mrn || cd.duty_a00_pln != null
+                       || cd.sad_customs_rate || cd.exchange_rate);
+  const sadVerified = !!cd.verification_passed;
+  const sad = audit.sad_status
+           || (sadVerified ? 'customs_verified'
+             : sadParsed   ? 'customs_parsed'
+             : has('sad_uploaded') ? 'uploaded_parsed'
+             : 'missing');
+
+  // DHL lifecycle: pre_check → email_received → reply_sent
+  // Event constants from core/timeline.py:
+  //   EV_DHL_PRECHECK_COMPLETED = "dhl_precheck_completed"
+  //   EV_DHL_EMAIL_RECEIVED     = "dhl_email_received"
+  //   EV_DSK_TRANSFER_SENT      = "dsk_transfer_sent"
+  const dhl = audit.dhl_status
+           || (has('dsk_transfer_sent')        ? 'reply_sent'
+             : has('dhl_email_received')       ? 'dhl_email_received'
+             : has('dhl_precheck_completed')   ? 'pre_check_completed'
+             : '');
+
+  // PZ lifecycle: generated → exported (wFirma)
+  //   audit.wfirma_export.wfirma_pz_doc_id non-empty → exported
+  //   timeline event "pz_generated"                  → generated
+  //   timeline event "wfirma_pz_created"             → exported
+  const pzExported  = !!((wfExport.wfirma_pz_doc_id || '').trim())
+                      || has('wfirma_pz_created');
+  const pz = audit.pz_status
+           || (pzExported          ? 'exported'
+             : has('pz_generated') ? 'generated'
+             : '');
 
   const stageState = (id) => {
     if (id === 'intake')   return 'done';
@@ -11209,6 +11250,10 @@ function SelfclearanceStatePill({ batchId }) {
 
   if (err) return null;          // honest silence on transient error
   if (!data) return null;        // loading
+  // Hide entirely when shipment is not on Path A — previously the pill
+  // rendered greyed out, but operators flagged this as visual noise on
+  // non-self-clearance shipments. Pill is Path-A-only visibility.
+  if (data.in_scope === false) return null;
 
   const state = data.state || 'n/a';
   const inScope = !!data.in_scope;
@@ -12075,6 +12120,42 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     setDhlReadinessLoading(false);
   }, [batchId]);
 
+  // ── Centralised refresh dispatcher ───────────────────────────────────
+  // Single source of truth for "what reloads after operator action X".
+  // Replaces scattered ad-hoc refresh calls that previously missed
+  // downstream consumers (DHL readiness, lane readiness, sales linkage,
+  // wFirma previews, batch readiness).
+  //
+  // Scopes:
+  //   'add_document' — Add Document modal upload completed.
+  //   'reparse'      — Reparse-all completed.
+  //   'awb'          — AWB-specific (currently same as add_document).
+  //
+  // Each loader is best-effort; one failing does not stop the others.
+  // Read-only fetches — no writes, no execution paths.
+  const refreshAll = React.useCallback((scope) => {
+    const fns = [
+      load,
+      loadDocRegistry,
+      loadPackingInfo,
+      loadLaneReadiness,
+      loadDhlReadiness,
+      loadBatchReadiness,
+      loadSalesLinkage,
+      loadReservationPreview,
+      loadPzPreview,
+      loadWarehouseAudit,
+    ];
+    for (const fn of fns) {
+      try { if (typeof fn === 'function') fn(); }
+      catch (_) { /* loader-internal failure already surfaces via state */ }
+    }
+  }, [
+    load, loadDocRegistry, loadPackingInfo, loadLaneReadiness,
+    loadDhlReadiness, loadBatchReadiness, loadSalesLinkage,
+    loadReservationPreview, loadPzPreview, loadWarehouseAudit,
+  ]);
+
   // Phase 4.2: per-batch inventory state (GET /api/v1/inventory/state/{batch_id})
   const loadInvState = React.useCallback(async () => {
     setInvStateLoading(true); setInvStateError('');
@@ -12223,7 +12304,13 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         <div data-testid="detail-subheader-importer" style={{ minWidth: 0 }}>
           <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Importer</div>
           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>
-            {(inp.importer || inp.importer_name || audit.importer || audit.importer_name) || <span style={{ color: 'var(--text-3)' }} title="No importer name in audit">—</span>}
+            {(
+              inp.importer
+              || inp.importer_name
+              || audit.importer
+              || audit.importer_name
+              || (audit.customs_declaration && audit.customs_declaration.importer_name)
+            ) || <span style={{ color: 'var(--text-3)' }} title="No importer name in audit">—</span>}
           </div>
         </div>
         <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
@@ -12367,14 +12454,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           <ActionsV2Panel batchId={batchId} />
         )}
 
-        {/* ── EMAIL EVIDENCE TIMELINE (always visible on Pipeline tab) ── */}
-        {activeTab === 'Overview' && (
-          <EmailEvidenceTimeline batchId={batchId} />
-        )}
+        {/* EmailEvidenceTimeline removed from Overview — duplicates the
+            Timeline tab (audit timeline already covers email events).
+            Kept in Timeline tab below for the canonical chronological view. */}
 
         {/* ── W-5 P2: read-only self-clearance state pill ──
             Source: GET /api/v1/dhl/selfclearance/state/{batchId}
-            Read-only per Windows Atlas memory rule — no write controls. */}
+            Read-only per Windows Atlas memory rule — no write controls.
+            Pill self-gates: returns null when data.in_scope === false. */}
         {activeTab === 'Overview' && (
           <SelfclearanceStatePill batchId={batchId} />
         )}
@@ -13252,10 +13339,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                              const data = await r.json();
                              const s = data && data.summary ? data.summary : {};
                              setReparseSummary(`Reparse complete: ${s.files ?? 0} files, ${s.rows ?? 0} rows (${s.purchase ?? 0} purchase, ${s.sales ?? 0} sales)`);
-                             load();
-                             loadDocRegistry();
-                             loadPackingInfo();
-                             loadLaneReadiness();
+                             refreshAll('reparse');
                            } catch (e) {
                              setReparseSummary('Reparse failed: ' + (e.message || 'unknown'));
                            } finally {
@@ -13851,6 +13935,116 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                   : `${timeline.length} events`}
               </span>
             </div>
+
+            {/* ── GOODS MOVEMENT TIMELINE ────────────────────────────────
+                Relocated from the Warehouse tab — chronological
+                events belong to Timeline. Source data is identical
+                (dbEvents / audit.tracking_events). */}
+            {(() => {
+              const rawEvents = dbEvents.length > 0
+                ? dbEvents.map(e => ({
+                    ...e,
+                    event_id:            e.id,
+                    raw_description:     e.description,
+                    requires_manual_review: !!e.requires_manual_review,
+                  }))
+                : (Array.isArray(audit && audit.tracking_events) ? audit.tracking_events : []);
+              const events = rawEvents;
+              const STAGE_COLOR = {
+                SHIPMENT_CREATED:            '#6b7280',
+                LABEL_CREATED:               '#6b7280',
+                PICKED_UP:                   '#2563eb',
+                DEPARTED_ORIGIN:             '#2563eb',
+                ARRIVED_ORIGIN_HUB:          '#2563eb',
+                DEPARTED_ORIGIN_HUB:         '#2563eb',
+                IN_TRANSIT:                  '#2563eb',
+                ARRIVED_DESTINATION_COUNTRY: '#0891b2',
+                CUSTOMS_PENDING:             '#d97706',
+                CUSTOMS_DOCUMENTS_REQUESTED: '#dc2626',
+                CUSTOMS_DOCUMENTS_SENT:      '#16a34a',
+                CUSTOMS_UNDER_REVIEW:        '#d97706',
+                CUSTOMS_CLEARED:             '#16a34a',
+                HANDED_TO_BROKER:            '#7c3aed',
+                OUT_FOR_DELIVERY:            '#d97706',
+                DELIVERED:                   '#16a34a',
+                EXCEPTION:                   '#dc2626',
+                CLOSED:                      '#6b7280',
+              };
+              const SOURCE_LABEL = {
+                dhl_api: 'DHL API', public_tracking: 'Public', manual: 'Manual',
+                email: 'Email', system: 'System',
+              };
+              const allEventsForDisplay = events.slice().sort((a, b) => (b.event_time || '').localeCompare(a.event_time || ''));
+              return (
+                <div style={{ padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                      Goods Movement Timeline {events.length > 0 && <span style={{ fontWeight: 400 }}>· {events.length} event{events.length !== 1 ? 's' : ''}{dbEvents.length > 0 ? ' (DB)' : ''}</span>}
+                    </div>
+                    {events.length > 0 && (
+                      <button
+                        onClick={async () => {
+                          try {
+                            await fetch(`/api/v1/tracking/events/export`, { method: 'POST', credentials: 'include' });
+                            window.open('/api/v1/tracking/events/export/download', '_blank');
+                          } catch (e) {}
+                        }}
+                        style={{ fontSize: 9, padding: '2px 7px', borderRadius: 3, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text-2)', cursor: 'pointer' }}
+                      >↓ Export XLSX</button>
+                    )}
+                  </div>
+                  {events.length === 0 ? (
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>No movement events recorded yet.</div>
+                  ) : (
+                    <div>
+                      {allEventsForDisplay.map((ev, i) => {
+                        const displayStage = ev.normalized_stage || ev.stage || 'UNKNOWN';
+                        const stageColor = STAGE_COLOR[displayStage] || '#6b7280';
+                        const needsReview = ev.requires_manual_review;
+                        const isWorkflowOnly = ev.stage && !ev.normalized_stage;
+                        return (
+                          <div key={ev.event_id || ev.id || i} style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'flex-start' }}>
+                            <span style={{ marginTop: 3, width: 7, height: 7, borderRadius: isWorkflowOnly ? '2px' : '50%', background: stageColor, flexShrink: 0, display: 'inline-block' }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap', marginBottom: 1 }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: stageColor }}>
+                                  {displayStage.replace(/_/g, ' ')}
+                                </span>
+                                {isWorkflowOnly && (
+                                  <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 3, background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe', fontWeight: 600 }}>
+                                    workflow
+                                  </span>
+                                )}
+                                {needsReview && (
+                                  <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 3, background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', fontWeight: 600 }}>
+                                    review
+                                  </span>
+                                )}
+                                <span style={{ fontSize: 9, color: 'var(--text-3)' }}>
+                                  via {SOURCE_LABEL[ev.source] || ev.source}
+                                </span>
+                              </div>
+                              {(ev.raw_description || ev.description) && (
+                                <div style={{ fontSize: 10, color: 'var(--text-2)', lineHeight: 1.3 }}>
+                                  {ev.raw_description || ev.description}
+                                </div>
+                              )}
+                              <div style={{ display: 'flex', gap: 8, fontSize: 9, color: 'var(--text-3)', marginTop: 1 }}>
+                                {ev.event_time && <span>{ev.event_time.slice(0, 16).replace('T', ' ')}</span>}
+                                {ev.location && <span>📍 {ev.location}</span>}
+                                {ev.confidence != null && ev.confidence < 0.9 && ev.confidence > 0 && (
+                                  <span style={{ opacity: 0.6 }}>conf {Math.round(ev.confidence * 100)}%</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* ── Timeline list ── */}
             <Card style={{ padding: 28 }}>
@@ -16436,135 +16630,9 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     );
                   })()}
 
-                  {/* ── GOODS MOVEMENT TIMELINE ──────────────────────────────── */}
-                  {(() => {
-                    // Prefer DB events (richer); fall back to audit.tracking_events
-                    const rawEvents = dbEvents.length > 0
-                      ? dbEvents.map(e => ({
-                          ...e,
-                          event_id:            e.id,
-                          raw_description:     e.description,
-                          requires_manual_review: !!e.requires_manual_review,
-                        }))
-                      : (Array.isArray(audit.tracking_events) ? audit.tracking_events : []);
-                    const events = rawEvents;
-                    const STAGE_COLOR = {
-                      SHIPMENT_CREATED:            '#6b7280',
-                      LABEL_CREATED:               '#6b7280',
-                      PICKED_UP:                   '#2563eb',
-                      DEPARTED_ORIGIN:             '#2563eb',
-                      ARRIVED_ORIGIN_HUB:          '#2563eb',
-                      DEPARTED_ORIGIN_HUB:         '#2563eb',
-                      IN_TRANSIT:                  '#2563eb',
-                      ARRIVED_DESTINATION_COUNTRY: '#0891b2',
-                      CUSTOMS_PENDING:             '#d97706',
-                      CUSTOMS_DOCUMENTS_REQUESTED: '#dc2626',
-                      CUSTOMS_DOCUMENTS_SENT:      '#16a34a',
-                      CUSTOMS_UNDER_REVIEW:        '#d97706',
-                      CUSTOMS_CLEARED:             '#16a34a',
-                      HANDED_TO_BROKER:            '#7c3aed',
-                      OUT_FOR_DELIVERY:            '#d97706',
-                      DELIVERED:                   '#16a34a',
-                      EXCEPTION:                   '#dc2626',
-                      CLOSED:                      '#6b7280',
-                    };
-                    const SOURCE_LABEL = {
-                      dhl_api: 'DHL API', public_tracking: 'Public', manual: 'Manual',
-                      email: 'Email', system: 'System',
-                    };
-                    const workflowEvents = events.filter(e => e.stage && !e.normalized_stage);
-                    const movementEvents = events.filter(e => e.normalized_stage);
-                    const allEventsForDisplay = events.slice().sort((a, b) => (b.event_time || '').localeCompare(a.event_time || ''));
-                    return (
-                      <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-                            Goods Movement Timeline {events.length > 0 && <span style={{ fontWeight: 400 }}>· {events.length} event{events.length !== 1 ? 's' : ''}{dbEvents.length > 0 ? ' (DB)' : ''}</span>}
-                          </div>
-                          {events.length > 0 && (
-                            <button
-                              onClick={async () => {
-                                try {
-                                  await fetch(`/api/v1/tracking/events/export`, { method: 'POST', credentials: 'include' });
-                                  window.open('/api/v1/tracking/events/export/download', '_blank');
-                                } catch (e) {}
-                              }}
-                              style={{ fontSize: 9, padding: '2px 7px', borderRadius: 3, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text-2)', cursor: 'pointer' }}
-                            >↓ Export XLSX</button>
-                          )}
-                        </div>
-                        {events.length === 0 ? (
-                          <div style={{ fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>No movement events recorded yet.</div>
-                        ) : (
-                          <div>
-                            {allEventsForDisplay.map((ev, i) => {
-                              const displayStage = ev.normalized_stage || ev.stage || 'UNKNOWN';
-                              const stageColor = STAGE_COLOR[displayStage] || '#6b7280';
-                              const needsReview = ev.requires_manual_review;
-                              const isWorkflowOnly = ev.stage && !ev.normalized_stage;
-                              return (
-                                <div key={ev.event_id || ev.id || i} style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'flex-start' }}>
-                                  <span style={{ marginTop: 3, width: 7, height: 7, borderRadius: isWorkflowOnly ? '2px' : '50%', background: stageColor, flexShrink: 0, display: 'inline-block' }} />
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap', marginBottom: 1 }}>
-                                      <span style={{ fontSize: 10, fontWeight: 700, color: stageColor }}>
-                                        {displayStage.replace(/_/g, ' ')}
-                                      </span>
-                                      {isWorkflowOnly && (
-                                        <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 3, background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe', fontWeight: 600 }}>
-                                          workflow
-                                        </span>
-                                      )}
-                                      {needsReview && (
-                                        <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 3, background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', fontWeight: 600 }}>
-                                          review
-                                        </span>
-                                      )}
-                                      <span style={{ fontSize: 9, color: 'var(--text-3)' }}>
-                                        via {SOURCE_LABEL[ev.source] || ev.source}
-                                      </span>
-                                    </div>
-                                    {(ev.raw_description || ev.description) && (
-                                      <div style={{ fontSize: 10, color: 'var(--text-2)', lineHeight: 1.3 }}>
-                                        {ev.raw_description || ev.description}
-                                      </div>
-                                    )}
-                                    <div style={{ display: 'flex', gap: 8, fontSize: 9, color: 'var(--text-3)', marginTop: 1 }}>
-                                      {ev.event_time && <span>{ev.event_time.slice(0, 16).replace('T', ' ')}</span>}
-                                      {ev.location && <span>📍 {ev.location}</span>}
-                                      {ev.confidence != null && ev.confidence < 0.9 && ev.confidence > 0 && (
-                                        <span style={{ opacity: 0.6 }}>conf {Math.round(ev.confidence * 100)}%</span>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                        {/* Workflow flags derived from events */}
-                        {(audit.customs_workflow_eligible || audit.clearance_complete || audit.shipment_delivered) && (
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8, paddingTop: 6, borderTop: '1px dashed var(--border)' }}>
-                            {audit.customs_workflow_eligible && (
-                              <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', fontWeight: 700 }}>
-                                📋 Customs workflow active
-                              </span>
-                            )}
-                            {audit.clearance_complete && (
-                              <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', fontWeight: 700 }}>
-                                ✓ Customs cleared
-                              </span>
-                            )}
-                            {audit.shipment_delivered && (
-                              <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', border: '1px solid var(--badge-green-border)', fontWeight: 700 }}>
-                                ✓ Delivered
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
+                  {/* Goods Movement Timeline relocated to the Timeline
+                      tab. Warehouse tab focuses on scan coverage and
+                      per-piece state. */}
                 </div>
                 {(() => {
                   const it     = audit.invoice_totals || {};
@@ -18067,12 +18135,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           batchId={batchId}
           onClose={() => setAddDocOpen(false)}
           onUploaded={(info) => {
-            load();
-            loadDocRegistry();
-            if (info && (info.document_type === 'purchase_packing_list' ||
-                         info.document_type === 'sales_packing_list')) {
-              loadPackingInfo();
-            }
+            // Centralised refresh — we do not know which downstream
+            // surface (DHL, lane, sales, wFirma, packing) the uploaded
+            // doc affects, so refresh all read-only loaders.
+            refreshAll('add_document');
           }}
         />
       )}
