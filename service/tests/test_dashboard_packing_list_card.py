@@ -10,9 +10,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DASHBOARD = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html"
-)
+# Repo-relative path so the suite runs on any developer machine and in CI.
+# parents[2] == repo root (this file lives at service/tests/<name>.py).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DASHBOARD = _REPO_ROOT / "service" / "app" / "static" / "dashboard.html"
 
 
 def _src() -> str:

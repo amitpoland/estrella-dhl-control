@@ -7959,82 +7959,278 @@ const IntakeRemoveBtn = ({ onClick }) => (
 );
 
 // ── Main modal ─────────────────────────────────────────────
+//
+// Atlas-aligned New Shipment modal.
+//
+// Visuals follow the Atlas reference (modals.jsx): shipment-level
+// AWB / Carrier / Client / Supplier on top, then a flat list of
+// document slots, each with its own type + optional per-document
+// party override, then optional note + footer actions.
+//
+// Backend wiring is unchanged: at submit time the slot list is
+// flattened into the existing /api/v1/shipment/intake multipart
+// payload (invoices[], packing_lists[], sales_documents[],
+// sales_packing_lists[], awb, metadata) so packing-list pipeline,
+// PZ, SAD, DHL, wFirma, proforma logic stay untouched.
+//
+// Contractor identity always comes from REAL master data
+// (/customer-master/ for clients, /suppliers/ for suppliers).
+// No hardcoded Estrella/Bonacchi party rows. Free-text fallback
+// is preserved only when master data is empty.
+
+const _NS_DOC_TYPES = [
+  { id: 'purchase_invoice', label: 'Purchase Invoice',       icon: '📄', hint: 'Commercial invoice from supplier (purchase price)',                multi: true,  needsClient: false, needsSupplier: true  },
+  { id: 'sales_proforma',   label: 'Sales Proforma Invoice', icon: '📑', hint: 'Proforma issued to client — sales price · pre-acceptance',         multi: true,  needsClient: true,  needsSupplier: false },
+  { id: 'sales_invoice',    label: 'Sales Invoice (Final)',  icon: '🧾', hint: 'Final commercial invoice issued to client',                         multi: true,  needsClient: true,  needsSupplier: false },
+  { id: 'purchase_packing', label: 'Purchase Packing List',  icon: '📋', hint: 'Items + purchase prices — flows to customs (CIF / SAD)',           multi: true,  needsClient: false, needsSupplier: true  },
+  { id: 'sales_packing',    label: 'Sales Packing List',     icon: '📋', hint: 'Same items + sales prices — flows to warehouse stock valuation',   multi: true,  needsClient: true,  needsSupplier: false },
+  { id: 'awb',              label: 'AWB / Tracking PDF',     icon: '📎', hint: 'Air-waybill / tracking document',                                   multi: false, needsClient: false, needsSupplier: false },
+  { id: 'service_invoice',  label: 'Service Invoice',        icon: '💼', hint: 'Shipping, insurance, customs-agent or handling invoice',           multi: true,  needsClient: false, needsSupplier: true  },
+  { id: 'carnet',           label: 'ATA Carnet / Temp Doc',  icon: '🛂', hint: 'Temporary import / export document',                                multi: false, needsClient: false, needsSupplier: false },
+  { id: 'other',            label: 'Other Document',         icon: '📁', hint: 'Any supporting document',                                            multi: true,  needsClient: false, needsSupplier: false },
+];
+
+// Document-types whose files the current /shipment/intake endpoint accepts.
+// All 9 Atlas DOC_TYPES are wired: purchase/sales/awb flow through their
+// existing parser pipelines; service_invoice / carnet / other are
+// persisted as local-only shipment documents (saved + registered, never
+// parsed, never trigger DHL/PZ/SAD/wFirma/proforma).
+const _NS_WIRED_TYPES = new Set([
+  'purchase_invoice', 'purchase_packing',
+  'sales_proforma', 'sales_invoice', 'sales_packing',
+  'awb',
+  'service_invoice', 'carnet', 'other',
+]);
+
 function NewShipmentModal({ onClose, onCreated }) {
-  // Step: 1=form, 2=uploading, 3=success
-  const [step, setStep] = React.useState(1);
+  // step: 1=form, 2=uploading, 3=success
+  const [step, setStep]   = React.useState(1);
   const [error, setError] = React.useState('');
 
-  // A. Shipment / AWB
+  // Shipment-level fields
   const [awbNo, setAwbNo]     = React.useState('');
   const [carrier, setCarrier] = React.useState('DHL');
-  const [awbFile, setAwbFile] = React.useState([]);    // [File]
+  const [note, setNote]       = React.useState('');
 
-  // B. Purchase blocks: [{invoiceFiles, packingFiles, supplierName}]
-  const emptyPurchase = () => ({ id: Math.random(), invoiceFiles:[], packingFiles:[], supplierName:'' });
-  const [purchaseBlocks, setPurchaseBlocks] = React.useState([emptyPurchase()]);
+  // Shipment-level party IDs (master-data backed; '' until loaded/selected)
+  const [shipmentClientCid, setShipmentClientCid]     = React.useState('');
+  const [shipmentSupplierCid, setShipmentSupplierCid] = React.useState('');
 
-  const addPurchaseBlock    = () => setPurchaseBlocks(b => [...b, emptyPurchase()]);
-  const removePurchaseBlock = (id) => setPurchaseBlocks(b => b.filter(x => x.id !== id));
-  const updatePurchase      = (id, patch) =>
-    setPurchaseBlocks(b => b.map(x => x.id === id ? { ...x, ...patch } : x));
+  // Document slots (4 defaults match Atlas)
+  const _emptySlot = (typeId) => ({
+    uid: 'd' + Math.random().toString(36).slice(2, 10),
+    typeId,
+    files: [],
+    clientOverride: '',
+    supplierOverride: '',
+  });
+  const [documents, setDocuments] = React.useState([
+    _emptySlot('purchase_invoice'),
+    _emptySlot('purchase_packing'),
+    _emptySlot('sales_packing'),
+    _emptySlot('awb'),
+  ]);
 
-  // C. Sales blocks: [{salesFiles, salesPackingFiles, clientName, clientRef}]
-  const emptySales = () => ({ id: Math.random(), salesFiles:[], salesPackingFiles:[], clientName:'', clientRef:'' });
-  const [salesBlocks, setSalesBlocks] = React.useState([]);
+  const addDocument    = (typeId) => setDocuments(prev => [...prev, _emptySlot(typeId)]);
+  const removeDocument = (uid)    => setDocuments(prev => prev.filter(d => d.uid !== uid));
+  const updateDoc      = (uid, patch) => setDocuments(prev => prev.map(d => d.uid === uid ? { ...d, ...patch } : d));
 
-  const addSalesBlock    = () => setSalesBlocks(b => [...b, emptySales()]);
-  const removeSalesBlock = (id) => setSalesBlocks(b => b.filter(x => x.id !== id));
-  const updateSales      = (id, patch) =>
-    setSalesBlocks(b => b.map(x => x.id === id ? { ...x, ...patch } : x));
+  // ── Master-data dropdown sources (real backend; no hardcodes) ─────────
+  const [clientList,   setClientList]   = React.useState([]);
+  const [supplierList, setSupplierList] = React.useState([]);
+  const [masterLoadError, setMasterLoadError] = React.useState('');
 
-  const hasInvoices = purchaseBlocks.some(b => b.invoiceFiles.length > 0);
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [cRes, sRes] = await Promise.all([
+          apiFetch('/api/v1/customer-master/?limit=500').catch(e => ({ __err: e })),
+          apiFetch('/api/v1/suppliers/?limit=500').catch(e => ({ __err: e })),
+        ]);
+        if (cancelled) return;
+        if (cRes && !cRes.__err) {
+          const arr = Array.isArray(cRes) ? cRes : (cRes.customers || []);
+          setClientList(arr.map(c => ({
+            contractor_id: c.bill_to_contractor_id || c.id || '',
+            name:          c.bill_to_name || c.name || '',
+            country:       c.country || '',
+            vat_id:        c.nip || c.vat_eu_number || '',
+          })).filter(x => x.contractor_id && x.name));
+        }
+        if (sRes && !sRes.__err) {
+          // Main's /api/v1/suppliers/ canonical shape (MasterData-B4):
+          //   { id: int, supplier_code: str, name: str, country: str,
+          //     vat_id: str, eori: str, active: bool, ... }
+          // The modal stores contractor_id as a string so it can flow
+          // through the existing supplier_contractor_id metadata field.
+          setSupplierList((sRes.suppliers || []).map(s => ({
+            contractor_id: s.id != null ? String(s.id) : (s.supplier_code || ''),
+            name:          s.name || '',
+            country:       s.country || '',
+            vat_id:        s.vat_id || '',
+          })).filter(x => x.contractor_id && x.name));
+        }
+      } catch (e) {
+        if (!cancelled) setMasterLoadError(e.message || 'master data load failed');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
+  const hasMasterClients   = clientList.length > 0;
+  const hasMasterSuppliers = supplierList.length > 0;
+
+  const totalFiles = documents.reduce((sum, d) => sum + d.files.length, 0);
+  const hasAnyInvoice = documents.some(d => d.typeId === 'purchase_invoice' && d.files.length > 0);
+  const saveDisabled = !awbNo.trim() || !hasAnyInvoice;
+
+  // ── Submit: flatten slots into existing /shipment/intake payload ──────
   const handleSubmit = async () => {
-    if (!awbNo.trim()) { setError('AWB / Tracking number is required.'); return; }
-    if (!hasInvoices)  { setError('At least one purchase invoice is required.'); return; }
+    if (!awbNo.trim())  { setError('AWB / Tracking number is required.'); return; }
+    if (!hasAnyInvoice) { setError('At least one Purchase Invoice file is required.'); return; }
     setStep(2); setError('');
 
     try {
       const fd = new FormData();
       fd.append('tracking_no', awbNo.trim());
       fd.append('carrier', carrier);
-      if (awbFile.length > 0) fd.append('awb', awbFile[0]);
 
-      // Build metadata + flatten files
+      // Collect slot groups in fixed order so packing slots can reference
+      // the purchase block they belong to. Each purchase invoice slot
+      // becomes one purchase_block; each sales invoice OR sales proforma
+      // slot becomes one sales_block.
+      const purchaseSlots      = documents.filter(d => d.typeId === 'purchase_invoice');
+      const purchasePackSlots  = documents.filter(d => d.typeId === 'purchase_packing');
+      const salesDocSlots      = documents.filter(d => d.typeId === 'sales_invoice' || d.typeId === 'sales_proforma');
+      const salesPackSlots     = documents.filter(d => d.typeId === 'sales_packing');
+      const awbSlot            = documents.find(d => d.typeId === 'awb');
+
+      // AWB: single file (Atlas + backend both single)
+      if (awbSlot && awbSlot.files.length > 0) {
+        fd.append('awb', awbSlot.files[0]);
+      }
+
+      // Build purchase_blocks metadata
       const purchaseMeta = [];
       let invIdx = 0, packIdx = 0;
-      purchaseBlocks.forEach(block => {
-        block.invoiceFiles.forEach(f => fd.append('invoices', f));
-        const blockMeta = { invoice_index: invIdx, packing_index: packIdx, supplier_name: block.supplierName };
-        if (block.packingFiles.length > 0) {
-          block.packingFiles.forEach(f => fd.append('packing_lists', f));
-          purchaseMeta.push(blockMeta);
-          packIdx += block.packingFiles.length;
-        } else {
-          purchaseMeta.push({ ...blockMeta, packing_index: -1 });
+      // Index purchase packing slots to purchase invoice slots by ordinal:
+      // packing slot i pairs with invoice slot i (Atlas's mental model of
+      // "same items, different prices" sets — operator can override the
+      // supplier per-slot.)
+      purchaseSlots.forEach((slot, sIdx) => {
+        slot.files.forEach(f => fd.append('invoices', f));
+        const pairedPack = purchasePackSlots[sIdx];
+        const supplierCid = (slot.supplierOverride || shipmentSupplierCid || '').trim();
+        const blockMeta = {
+          invoice_index:          invIdx,
+          packing_index:          pairedPack && pairedPack.files.length > 0 ? packIdx : -1,
+          supplier_name:          '',   // free-text legacy; ID is the source of truth
+          supplier_contractor_id: supplierCid,
+        };
+        if (pairedPack && pairedPack.files.length > 0) {
+          pairedPack.files.forEach(f => fd.append('packing_lists', f));
+          packIdx += pairedPack.files.length;
         }
-        invIdx += block.invoiceFiles.length;
+        invIdx += slot.files.length;
+        purchaseMeta.push(blockMeta);
       });
+      // Surface any "extra" purchase packing slots (more packing slots than
+      // invoice slots) attached to the LAST purchase block so files aren't lost.
+      for (let i = purchaseSlots.length; i < purchasePackSlots.length; i++) {
+        const extraPack = purchasePackSlots[i];
+        if (extraPack.files.length > 0) {
+          extraPack.files.forEach(f => fd.append('packing_lists', f));
+        }
+      }
 
+      // Build sales_blocks metadata
       const salesMeta = [];
       let sDocIdx = 0, sPackIdx = 0;
-      salesBlocks.forEach(block => {
-        block.salesFiles.forEach(f => fd.append('sales_documents', f));
-        block.salesPackingFiles.forEach(f => fd.append('sales_packing_lists', f));
+      salesDocSlots.forEach((slot, sIdx) => {
+        slot.files.forEach(f => fd.append('sales_documents', f));
+        const pairedPack = salesPackSlots[sIdx];
+        const clientCid = (slot.clientOverride || shipmentClientCid || '').trim();
         salesMeta.push({
-          document_index: sDocIdx,
-          packing_index:  sPackIdx,
-          client_name:    block.clientName,
-          client_ref:     block.clientRef,
+          document_index:       sDocIdx,
+          packing_index:        pairedPack && pairedPack.files.length > 0 ? sPackIdx : -1,
+          client_name:          '',
+          client_ref:           '',
+          client_contractor_id: clientCid,
         });
-        sDocIdx  += block.salesFiles.length;
-        sPackIdx += block.salesPackingFiles.length;
+        if (pairedPack && pairedPack.files.length > 0) {
+          pairedPack.files.forEach(f => fd.append('sales_packing_lists', f));
+          sPackIdx += pairedPack.files.length;
+        }
+        sDocIdx += slot.files.length;
+      });
+      // If sales packing slots exist without a paired sales doc slot,
+      // create synthetic sales_blocks so client_contractor_id still flows.
+      for (let i = salesDocSlots.length; i < salesPackSlots.length; i++) {
+        const extraPack = salesPackSlots[i];
+        if (extraPack.files.length > 0) {
+          const clientCid = (extraPack.clientOverride || shipmentClientCid || '').trim();
+          extraPack.files.forEach(f => fd.append('sales_packing_lists', f));
+          salesMeta.push({
+            document_index:       -1,
+            packing_index:        sPackIdx,
+            client_name:          '',
+            client_ref:           '',
+            client_contractor_id: clientCid,
+          });
+          sPackIdx += extraPack.files.length;
+        }
+      }
+
+      // ── Local-only Atlas document types (service_invoice / carnet / other).
+      // Files are uploaded as service_invoices[] / carnet_docs[] / other_docs[]
+      // and each carries a per-slot block. The block records which
+      // contractor IDs apply: service_invoice → supplier; carnet & other →
+      // inherit both sides from shipment-level (operator can override).
+      const serviceSlots = documents.filter(d => d.typeId === 'service_invoice');
+      const carnetSlots  = documents.filter(d => d.typeId === 'carnet');
+      const otherSlots   = documents.filter(d => d.typeId === 'other');
+
+      const serviceMeta = [];
+      serviceSlots.forEach(slot => {
+        slot.files.forEach(f => {
+          fd.append('service_invoices', f);
+          serviceMeta.push({
+            supplier_contractor_id: (slot.supplierOverride || shipmentSupplierCid || '').trim(),
+            client_contractor_id:   '',
+          });
+        });
+      });
+      const carnetMeta = [];
+      carnetSlots.forEach(slot => {
+        slot.files.forEach(f => {
+          fd.append('carnet_docs', f);
+          carnetMeta.push({
+            supplier_contractor_id: (slot.supplierOverride || shipmentSupplierCid || '').trim(),
+            client_contractor_id:   (slot.clientOverride   || shipmentClientCid   || '').trim(),
+          });
+        });
+      });
+      const otherMeta = [];
+      otherSlots.forEach(slot => {
+        slot.files.forEach(f => {
+          fd.append('other_docs', f);
+          otherMeta.push({
+            supplier_contractor_id: (slot.supplierOverride || shipmentSupplierCid || '').trim(),
+            client_contractor_id:   (slot.clientOverride   || shipmentClientCid   || '').trim(),
+          });
+        });
       });
 
-      fd.append('metadata', JSON.stringify({
+      const metadata = {
         purchase_blocks: purchaseMeta,
         sales_blocks:    salesMeta,
-      }));
+        service_blocks:  serviceMeta,
+        carnet_blocks:   carnetMeta,
+        other_blocks:    otherMeta,
+        note:            note.trim(),
+      };
+      fd.append('metadata', JSON.stringify(metadata));
 
       const r = await fetch('/api/v1/shipment/intake', {
         method: 'POST', body: fd, credentials: 'include',
@@ -8045,429 +8241,380 @@ function NewShipmentModal({ onClose, onCreated }) {
       }
       const data = await r.json();
       setStep(3);
-      setTimeout(() => onCreated({ awb: awbNo, carrier, batchId: data.batch_id }), 900);
+      setTimeout(() => onCreated({ awb: awbNo, carrier, batchId: data.batch_id }), 700);
     } catch (e) {
       setStep(1);
       setError(e.message || 'Upload failed. Check the server.');
     }
   };
 
-  // ── Section A styles ─────────────────────────────────────
-  const sectionStyle = {
-    marginBottom: 22,
-    padding: '16px 18px',
-    borderRadius: 8,
-    border: '1px solid var(--border)',
-    background: 'var(--bg-subtle)',
-  };
-
-  const blockStyle = {
-    marginBottom: 14,
-    padding: '14px 16px',
-    borderRadius: 7,
-    border: '1px solid var(--border-subtle)',
-    background: 'var(--card)',
-    position: 'relative',
-  };
-
+  // ── Render ────────────────────────────────────────────────────────────
   return (
     <Modal title="New Shipment" onClose={onClose} wide>
       {step === 1 && (
         <>
           {error && (
-            <div style={{ marginBottom:14, padding:'10px 14px', borderRadius:6,
-              background:'var(--badge-red-bg)', border:'1px solid var(--badge-red-border)',
-              fontSize:12, color:'var(--badge-red-text)' }}>{error}</div>
+            <div data-testid="new-shipment-error" style={{
+              marginBottom: 14, padding: '10px 14px', borderRadius: 6,
+              background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+              fontSize: 12, color: 'var(--badge-red-text)',
+            }}>{error}</div>
           )}
 
-          {/* ── A. Shipment / AWB ─────────────────────── */}
-          <div style={sectionStyle}>
-            <IntakeSectionHeader icon="✈" label="A. Shipment / AWB" sub="Tracking number becomes the shipment key" />
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:14 }}>
-              <FormField label="AWB / Tracking Number" hint="Required">
-                <Inp value={awbNo} onChange={e => setAwbNo(e.target.value)} placeholder="e.g. 2824221912" />
-              </FormField>
-              <FormField label="Carrier">
-                <Sel value={carrier} onChange={e => setCarrier(e.target.value)}>
-                  <option>DHL</option><option>FedEx</option><option>Other</option>
-                </Sel>
-              </FormField>
-            </div>
-            <FormField label="AWB PDF" hint="Optional — system will extract shipper, receiver, customs value">
-              <IntakeFileDropZone
-                accept=".pdf"
-                hint="Click to upload AWB / Tracking PDF"
-                files={awbFile}
-                onChange={setAwbFile}
-                compact
-              />
+          {/* Row 1: AWB + Carrier */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <FormField label="AWB / Tracking Number" hint="Required">
+              <Inp value={awbNo} onChange={e => setAwbNo(e.target.value)} placeholder="e.g. DHL-1234567890" />
+            </FormField>
+            <FormField label="Carrier">
+              <Sel value={carrier} onChange={e => setCarrier(e.target.value)}>
+                <option>DHL</option>
+                <option>FedEx</option>
+                <option>UPS</option>
+                <option>Other</option>
+              </Sel>
             </FormField>
           </div>
 
-          {/* ── B. Purchase Documents ─────────────────── */}
-          <div style={sectionStyle}>
-            <IntakeSectionHeader icon="📄" label="B. Purchase Documents"
-              sub="One block per supplier invoice. Packing list is optional at intake." />
+          {/* Row 2: Shipment-level Client + Supplier */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 8 }}>
+            <FormField label="Client (Sales)" hint={hasMasterClients ? 'Buyer / importer — used for sales documents' : 'Master data empty — free text fallback'}>
+              {hasMasterClients ? (
+                <Sel
+                  data-testid="new-shipment-client-select"
+                  value={shipmentClientCid}
+                  onChange={e => setShipmentClientCid(e.target.value)}
+                >
+                  <option value="">— select client —</option>
+                  {clientList.map(c => (
+                    <option key={c.contractor_id} value={c.contractor_id}>
+                      {c.name}{c.country ? ` (${c.country})` : ''}
+                    </option>
+                  ))}
+                </Sel>
+              ) : (
+                <Inp
+                  data-testid="new-shipment-client-fallback"
+                  value={shipmentClientCid}
+                  onChange={e => setShipmentClientCid(e.target.value)}
+                  placeholder="No master data — leave blank or enter contractor id"
+                />
+              )}
+            </FormField>
+            <FormField label="Supplier (Purchase)" hint={hasMasterSuppliers ? 'Exporter — used for purchase invoice / packing list' : 'Master data empty — free text fallback'}>
+              {hasMasterSuppliers ? (
+                <Sel
+                  data-testid="new-shipment-supplier-select"
+                  value={shipmentSupplierCid}
+                  onChange={e => setShipmentSupplierCid(e.target.value)}
+                >
+                  <option value="">— select supplier —</option>
+                  {supplierList.map(s => (
+                    <option key={s.contractor_id} value={s.contractor_id}>
+                      {s.name}{s.country ? ` (${s.country})` : ''}
+                    </option>
+                  ))}
+                </Sel>
+              ) : (
+                <Inp
+                  data-testid="new-shipment-supplier-fallback"
+                  value={shipmentSupplierCid}
+                  onChange={e => setShipmentSupplierCid(e.target.value)}
+                  placeholder="No master data — leave blank or enter contractor id"
+                />
+              )}
+            </FormField>
+          </div>
 
-            {purchaseBlocks.map((block, bIdx) => (
-              <div key={block.id} style={blockStyle}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-                  <span style={{ fontSize:12, fontWeight:700, color:'var(--text-2)' }}>
-                    Invoice Block {bIdx + 1}
-                  </span>
-                  {purchaseBlocks.length > 1 && (
-                    <IntakeRemoveBtn onClick={() => removePurchaseBlock(block.id)} />
-                  )}
-                </div>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-                  <FormField label="Purchase Invoice PDF" hint="Required">
-                    <IntakeFileDropZone
-                      accept=".pdf"
-                      multiple
-                      hint="Click to upload invoice PDF(s)"
-                      files={block.invoiceFiles}
-                      onChange={files => updatePurchase(block.id, { invoiceFiles: files })}
-                    />
-                  </FormField>
-                  <FormField label="Packing List" hint="PDF or XLS — optional">
-                    <IntakeFileDropZone
-                      accept=".pdf,.xlsx,.xls"
-                      hint="Click to upload packing list"
-                      files={block.packingFiles}
-                      onChange={files => updatePurchase(block.id, { packingFiles: files })}
-                    />
-                  </FormField>
-                </div>
-                <FormField label="Supplier Name" hint="Optional">
-                  <Inp
-                    value={block.supplierName}
-                    onChange={e => updatePurchase(block.id, { supplierName: e.target.value })}
-                    placeholder="e.g. SEEPZ Manufacturer Pvt Ltd"
-                  />
-                </FormField>
+          {masterLoadError && (
+            <div data-testid="new-shipment-master-load-warning" style={{
+              marginTop: 8, fontSize: 11, color: 'var(--text-3)',
+            }}>Master data load warning: {masterLoadError}</div>
+          )}
+
+          {/* Documents section header */}
+          <div data-testid="new-shipment-documents-section" style={{
+            marginTop: 16, marginBottom: 8, paddingTop: 16, borderTop: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Documents</div>
+              <div data-testid="new-shipment-slot-counter" style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+                {documents.length} slot{documents.length === 1 ? '' : 's'} · {totalFiles} file{totalFiles === 1 ? '' : 's'} attached
               </div>
+            </div>
+          </div>
+
+          {/* Slot list */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {documents.map(doc => (
+              <NewShipmentDocumentSlot
+                key={doc.uid}
+                doc={doc}
+                onUpdate={(patch) => updateDoc(doc.uid, patch)}
+                onRemove={() => removeDocument(doc.uid)}
+                clientList={clientList}
+                supplierList={supplierList}
+                defaultClientCid={shipmentClientCid}
+                defaultSupplierCid={shipmentSupplierCid}
+              />
             ))}
-
-            <button onClick={addPurchaseBlock}
-              style={{ display:'flex', alignItems:'center', gap:6, background:'transparent',
-                border:'1px dashed var(--accent-border)', borderRadius:6,
-                padding:'8px 14px', fontSize:12, fontWeight:600, color:'var(--accent)',
-                cursor:'pointer', fontFamily:'inherit', width:'100%', justifyContent:'center' }}>
-              <span style={{ fontSize:16, lineHeight:1 }}>+</span> Add Purchase Invoice
-            </button>
           </div>
 
-          {/* ── C. Sales / Client Documents ───────────── */}
-          <div style={sectionStyle}>
-            <IntakeSectionHeader icon="🛒" label="C. Sales / Client Documents"
-              sub="Optional — attach outgoing sales orders or dispatch documents" />
-
-            {salesBlocks.length === 0 && (
-              <div style={{ fontSize:12, color:'var(--text-3)', textAlign:'center', padding:'10px 0', marginBottom:12 }}>
-                No sales documents yet. Click below to add.
-              </div>
-            )}
-
-            {salesBlocks.map((block, bIdx) => (
-              <div key={block.id} style={blockStyle}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-                  <span style={{ fontSize:12, fontWeight:700, color:'var(--text-2)' }}>
-                    Sales Block {bIdx + 1}
-                  </span>
-                  <IntakeRemoveBtn onClick={() => removeSalesBlock(block.id)} />
-                </div>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
-                  <FormField label="Client Name">
-                    <Inp
-                      value={block.clientName}
-                      onChange={e => updateSales(block.id, { clientName: e.target.value })}
-                      placeholder="e.g. Acme Jewels GmbH"
-                    />
-                  </FormField>
-                  <FormField label="Client Reference / Order No.">
-                    <Inp
-                      value={block.clientRef}
-                      onChange={e => updateSales(block.id, { clientRef: e.target.value })}
-                      placeholder="e.g. PO-2026-001"
-                    />
-                  </FormField>
-                </div>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-                  <FormField label="Sales Invoice / Order" hint="PDF">
-                    <IntakeFileDropZone
-                      accept=".pdf"
-                      multiple
-                      hint="Click to upload sales invoice or order"
-                      files={block.salesFiles}
-                      onChange={files => updateSales(block.id, { salesFiles: files })}
-                    />
-                  </FormField>
-                  <FormField label="Sales Packing List" hint="PDF or XLS">
-                    <IntakeFileDropZone
-                      accept=".pdf,.xlsx,.xls"
-                      hint="Click to upload sales packing list"
-                      files={block.salesPackingFiles}
-                      onChange={files => updateSales(block.id, { salesPackingFiles: files })}
-                    />
-                  </FormField>
-                </div>
-              </div>
+          {/* Add-another row (chips) */}
+          <div data-testid="new-shipment-add-another" style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600 }}>+ Add another:</span>
+            {_NS_DOC_TYPES.map(t => (
+              <button
+                key={t.id}
+                data-testid={`new-shipment-add-${t.id}`}
+                onClick={() => addDocument(t.id)}
+                style={{
+                  padding: '5px 10px', background: 'var(--bg-subtle)',
+                  border: '1px solid var(--border)', borderRadius: 4,
+                  fontSize: 11, fontWeight: 600, color: 'var(--text-2)', cursor: 'pointer',
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                }}
+              >
+                <span style={{ fontSize: 13 }}>{t.icon}</span>{t.label}
+              </button>
             ))}
-
-            <button onClick={addSalesBlock}
-              style={{ display:'flex', alignItems:'center', gap:6, background:'transparent',
-                border:'1px dashed var(--badge-neutral-border)', borderRadius:6,
-                padding:'8px 14px', fontSize:12, fontWeight:600, color:'var(--text-2)',
-                cursor:'pointer', fontFamily:'inherit', width:'100%', justifyContent:'center' }}>
-              <span style={{ fontSize:16, lineHeight:1 }}>+</span> Add Sales Document
-            </button>
           </div>
 
-          {/* ── Info + Submit ─────────────────────────── */}
-          <div style={{ padding:'10px 14px', borderRadius:6, background:'var(--badge-amber-bg)',
-            border:'1px solid var(--badge-amber-border)', fontSize:11, color:'#8A5A00', marginBottom:16 }}>
-            ℹ All documents are saved as evidence. SAD / ZC429 is uploaded separately after customs clearance.
-            PZ number is assigned at the end of the workflow.
+          {/* Blue info banner */}
+          <div style={{
+            marginTop: 14, padding: '10px 12px', borderRadius: 6,
+            background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)',
+            fontSize: 11, color: 'var(--badge-blue-text)', lineHeight: 1.5,
+          }}>
+            ℹ <strong>Purchase ↔ Sales packing lists</strong> share identical line items and quantities — only prices differ. Sales prices flow to warehouse stock valuation; purchase prices flow to customs (CIF / SAD). Each document slot can override its own client / supplier if it differs from the shipment-level defaults above.
           </div>
-          <div style={{ display:'flex', justifyContent:'flex-end', gap:8, paddingTop:14, borderTop:'1px solid var(--border)' }}>
-            <Btn variant="outline" onClick={onClose}>Cancel</Btn>
-            <Btn variant="gold" onClick={handleSubmit} disabled={!awbNo.trim() || !hasInvoices}>
-              Submit Intake
-            </Btn>
+
+          {/* Optional note */}
+          <FormField label="Optional Note">
+            <textarea
+              data-testid="new-shipment-note"
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder="Any notes about this shipment…"
+              rows={2}
+              style={{
+                width: '100%', padding: '8px 10px', borderRadius: 6,
+                border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)',
+                background: 'var(--bg-subtle)', outline: 'none', resize: 'vertical',
+                boxSizing: 'border-box', fontFamily: 'inherit',
+              }}
+            />
+          </FormField>
+
+          {/* Amber late-pipeline banner */}
+          <div style={{
+            marginTop: 4, padding: '12px 14px', borderRadius: 6,
+            background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
+            fontSize: 11, color: '#8A5A00',
+          }}>
+            ℹ PZ number will be assigned at the end of the workflow. SAD is not required at this stage.
+          </div>
+
+          {/* Footer */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+            <button
+              data-testid="new-shipment-cancel"
+              onClick={onClose}
+              style={{
+                padding: '8px 16px', background: 'transparent',
+                border: '1px solid var(--border)', borderRadius: 6,
+                fontSize: 12, fontWeight: 600, color: 'var(--text-2)', cursor: 'pointer',
+              }}
+            >Cancel</button>
+            <button
+              data-testid="new-shipment-save-draft"
+              onClick={handleSubmit}
+              disabled={saveDisabled}
+              style={{
+                padding: '8px 18px',
+                background: saveDisabled ? 'var(--bg-subtle)' : 'var(--accent)',
+                border: '1px solid ' + (saveDisabled ? 'var(--border)' : 'var(--accent)'),
+                borderRadius: 6, fontSize: 12, fontWeight: 700,
+                color: saveDisabled ? 'var(--text-3)' : '#fff',
+                cursor: saveDisabled ? 'not-allowed' : 'pointer',
+              }}
+              title={saveDisabled ? 'AWB + at least one Purchase Invoice required' : 'Create the real shipment draft'}
+            >Save Draft</button>
           </div>
         </>
       )}
 
       {step === 2 && (
-        <div style={{ padding:'48px 0', textAlign:'center' }}>
-          <div style={{ fontSize:36, marginBottom:12, display:'inline-block', animation:'spin 1s linear infinite' }}>⟳</div>
-          <div style={{ fontSize:14, fontWeight:600, color:'var(--text)' }}>Creating shipment…</div>
-          <div style={{ fontSize:12, color:'var(--text-2)', marginTop:4 }}>
-            Saving files · Registering documents · Parsing AWB…
-          </div>
+        <div style={{ padding: '40px 0', textAlign: 'center' }}>
+          <div style={{ fontSize: 36, marginBottom: 12, animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Creating shipment…</div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>Uploading files to the server</div>
+          <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
         </div>
       )}
 
       {step === 3 && (
-        <div style={{ padding:'48px 0', textAlign:'center' }}>
-          <div style={{ fontSize:36, marginBottom:12 }}>✅</div>
-          <div style={{ fontSize:14, fontWeight:600, color:'var(--badge-green-text)' }}>Shipment created!</div>
-          <div style={{ fontSize:12, color:'var(--text-2)', marginTop:4 }}>Redirecting to shipment detail…</div>
+        <div style={{ padding: '40px 0', textAlign: 'center' }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>✅</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--badge-green-text)' }}>Shipment created!</div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>Redirecting to shipment detail…</div>
         </div>
       )}
     </Modal>
   );
 }
 
-// ══════════════════════════════════════════════════════════
-// UI-3.x SHARED OPERATIONAL PREDICATES (module scope)
-// ──────────────────────────────────────────────────────────
-// Single source of truth for bucket logic, used by:
-//   - DashboardPage cross-batch cards (UI-3.1b / UI-3.2a / UI-3.2b)
-//   - DashboardPage active-table filter (UI-3.3)
-//   - BatchDetailPage per-batch Pipeline Summary (UI-3.4)
-// Lifted out of DashboardPage in UI-3.4 so per-batch and cross-batch
-// surfaces consume the SAME predicate set. React state (opFilter and
-// its setter/handlers) intentionally remains inside DashboardPage.
-// ══════════════════════════════════════════════════════════
-const PZ_DONE_LABELS     = new Set(['Generated', 'Exported']);
-const PZ_PENDING_LABELS  = new Set(['Ready for PZ', 'Locked']);
-const SAD_CLEARED_KEYS   = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
-const TRACK_ATTENTION    = new Set(['exception', 'customs']);
-const DHL_FLOW_LIVE_KEYS = new Set([
-  'dhl_email_received', 'reply_queued', 'reply_sent',
-  'reply_package_prepared', 'pre_check_pending', 'pre_check_completed',
-]);
-const OP_PREDICATES = {
-  warehouse: {
-    unknown:          (r) => (r.warehouseHint || 'n/a') === 'n/a',
-    awaiting:         (r) => r.warehouseHint === 'empty',
-    partial_received: (r) => r.warehouseHint === 'partial',
-    in_warehouse:     (r) => r.warehouseHint === 'clean' && !PZ_DONE_LABELS.has(r.pzStatus || ''),
-    reserved:         (r) => r.warehouseHint === 'clean' &&  PZ_DONE_LABELS.has(r.pzStatus || ''),
-  },
-  sales_accounting: {
-    sales_ready:    (r) => (r.salesHint || 'n/a') === 'present',
-    sales_missing:  (r) => { const h = r.salesHint || 'n/a'; return h === 'none' || h === 'n/a'; },
-    wfirma_preview: (r) => (r.wfirmaHint || 'n/a') === 'preview_built',
-    wfirma_pending: (r) => { const h = r.wfirmaHint || 'n/a'; return h === 'none' || h === 'n/a'; },
-    pz_done:        (r) =>  PZ_DONE_LABELS.has(r.pzStatus || ''),
-    pz_pending:     (r) => !PZ_DONE_LABELS.has(r.pzStatus || ''),
-  },
-  dhl_customs: {
-    awaiting_customs_docs: (r) => !r.has_sad && DHL_FLOW_LIVE_KEYS.has((r._raw && r._raw.dhl_status) || ''),
-    sad_present:     (r) => !!r.has_sad,
-    sad_missing:     (r) => !r.has_sad,
-    customs_cleared: (r) => !!r.has_sad && SAD_CLEARED_KEYS.has((r._raw && r._raw.sad_status) || ''),
-    dhl_in_transit:  (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'in_transit',
-    dhl_delivered:   (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'delivered',
-  },
-};
-const WAREHOUSE_LIFECYCLE_KEYS = ['unknown', 'awaiting', 'partial_received', 'in_warehouse', 'reserved'];
-const deriveWarehouseLifecycle = (row) => {
-  for (const k of WAREHOUSE_LIFECYCLE_KEYS) {
-    if (OP_PREDICATES.warehouse[k](row)) return k;
-  }
-  return 'unknown';
-};
-const ATTENTION_PREDICATES = {
-  warehouse:        (r) =>
-    OP_PREDICATES.warehouse.awaiting(r) ||
-    OP_PREDICATES.warehouse.partial_received(r),
-  sales_accounting: (r) =>
-    OP_PREDICATES.sales_accounting.sales_missing(r) ||
-    OP_PREDICATES.sales_accounting.wfirma_pending(r) ||
-    OP_PREDICATES.sales_accounting.pz_pending(r),
-  dhl_customs:      (r) =>
-    OP_PREDICATES.dhl_customs.awaiting_customs_docs(r) ||
-    (((r._raw && r._raw.sad_status)         || '') === 'missing') ||
-    (((r._raw && r._raw.dhl_status)         || '') === 'dhl_email_received') ||
-    TRACK_ATTENTION.has((r._raw && r._raw.tracking_status_key) || ''),
-};
-// Lifecycle label/tone tables — shared so cross-batch (UI-3.1b) and
-// per-batch (UI-3.4) surfaces use identical operator-readable copy.
-const WAREHOUSE_LIFECYCLE_LABEL = {
-  unknown:          'No packing list',
-  awaiting:         'Awaiting receipt',
-  partial_received: 'Partially received',
-  in_warehouse:     'In warehouse',
-  reserved:         'Reserved (PZ created)',
-};
+// ── Single document slot row ──────────────────────────────────────────
+function NewShipmentDocumentSlot({ doc, onUpdate, onRemove, clientList, supplierList, defaultClientCid, defaultSupplierCid }) {
+  const type = _NS_DOC_TYPES.find(t => t.id === doc.typeId) || _NS_DOC_TYPES[_NS_DOC_TYPES.length - 1];
+  const wired = _NS_WIRED_TYPES.has(type.id);
+  const [showOverride, setShowOverride] = React.useState(false);
+  const fileInputRef = React.useRef(null);
 
-// ══════════════════════════════════════════════════════════
-// DASHBOARD KANBAN — workflow-first pipeline view (real batch data)
-// ══════════════════════════════════════════════════════════
+  const handleFiles = e => {
+    const incoming = Array.from(e.target.files || []);
+    onUpdate({ files: type.multi ? [...doc.files, ...incoming] : incoming.slice(0, 1) });
+    // Allow re-selecting the same filename later.
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+  const removeFile = (idx) => onUpdate({ files: doc.files.filter((_, i) => i !== idx) });
 
-const KANBAN_LANES = [
-  { id: 'new',     label: 'New / Drafting',     hint: 'no PI yet',                color: 'var(--badge-neutral-text)', bg: 'var(--badge-neutral-bg)', border: 'var(--badge-neutral-border)' },
-  { id: 'docs',    label: 'Awaiting Documents', hint: 'DHL · SAD pending',        color: 'var(--badge-amber-text)',   bg: 'var(--badge-amber-bg)',   border: 'var(--badge-amber-border)' },
-  { id: 'customs', label: 'Customs Clearance',  hint: 'SAD · ZC429 in progress',  color: 'var(--badge-red-text)',     bg: 'var(--badge-red-bg)',     border: 'var(--badge-red-border)' },
-  { id: 'ready',   label: 'Ready for PZ',       hint: 'verified · awaiting PZ',   color: 'var(--badge-purple-text)',  bg: 'var(--badge-purple-bg)',  border: 'var(--badge-purple-border)' },
-  { id: 'booked',  label: 'PZ Generated',       hint: 'awaiting wFirma export',   color: 'var(--badge-blue-text)',    bg: 'var(--badge-blue-bg)',    border: 'var(--badge-blue-border)' },
-  { id: 'done',    label: 'Exported',           hint: 'wFirma booked · closed',   color: 'var(--badge-green-text)',   bg: 'var(--badge-green-bg)',   border: 'var(--badge-green-border)' },
-];
-
-function _batchLane(b) {
-  const pz = (b.pzStatus || '').toString();
-  const sad = (b.sadStatus || '').toString();
-  const dhl = (b.dhlStatus || '').toString();
-  const overall = (b.overall || '').toString();
-  if (pz === 'Exported' || overall === 'Completed') return 'done';
-  if (pz === 'Generated' || overall === 'Ready for Booking') return 'booked';
-  if (pz === 'Ready for PZ' || overall === 'Ready for PZ' || sad === 'Customs Verified') return 'ready';
-  if (sad === 'SAD Uploaded' || sad === 'Customs Parsed' || sad === 'Verification Needed' || overall === 'Awaiting Clearance') return 'customs';
-  if (dhl === 'DHL Email Received' || dhl === 'Reply Sent' || dhl === 'Reply Queued' || dhl === 'Reply Package Prepared' || overall === 'Awaiting SAD' || overall === 'Awaiting DHL' || sad === 'SAD Pending') return 'docs';
-  return 'new';
-}
-
-const QUICK_FLOWS = [
-  { id: 'inbound',  icon: '📥', label: 'Receive shipment',  hint: 'Inbound · PZ · SAD',     color: 'var(--badge-blue-text)',   bg: 'var(--badge-blue-bg)',   border: 'var(--badge-blue-border)' },
-  { id: 'outbound', icon: '📤', label: 'New shipment',       hint: 'AWB · Invoice · Pack',    color: 'var(--accent)',            bg: 'var(--accent-subtle)',   border: 'var(--accent-border)' },
-  { id: 'email',    icon: '✉',  label: 'Scan DHL inbox',     hint: 'Parse · Match · Reply',   color: 'var(--badge-purple-text)', bg: 'var(--badge-purple-bg)', border: 'var(--badge-purple-border)' },
-  { id: 'pz',       icon: '⊞', label: 'Generate PZ',        hint: 'Verify · Generate · Send',color: 'var(--badge-green-text)',  bg: 'var(--badge-green-bg)',  border: 'var(--badge-green-border)' },
-];
-
-function CompactKpi({ label, value, hint, accent }) {
   return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px' }}>
-      <div style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: accent || 'var(--text)', marginTop: 4, fontFamily: '"DM Serif Display", serif' }}>{value}</div>
-      <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{hint}</div>
-    </div>
-  );
-}
-
-function _fmtAge(ts) {
-  if (!ts) return '';
-  const t = new Date(ts).getTime();
-  if (isNaN(t)) return '';
-  const diffMs = Date.now() - t;
-  if (diffMs < 0) return '';
-  const m = Math.floor(diffMs / 60000);
-  if (m < 60) return m + 'm';
-  const h = Math.floor(m / 60);
-  if (h < 24) return h + 'h';
-  const d = Math.floor(h / 24);
-  if (d < 30) return d + 'd';
-  const mo = Math.floor(d / 30);
-  return mo + 'mo';
-}
-
-function _shortId(s) {
-  if (!s) return '';
-  const parts = String(s).split('_');
-  if (parts.length >= 4) return parts.slice(2).join('-');
-  return String(s).slice(-12);
-}
-
-function KanbanCard({ batch, onClick }) {
-  const isUrgent = (batch.overall === 'Action Required' || batch.sadStatus === 'Verification Needed');
-  const isHigh   = (batch.overall === 'Awaiting DHL' || batch.overall === 'Awaiting SAD');
-  const age      = _fmtAge(batch.timestamp);
-  const raw      = batch._raw || {};
-  const invCount = Array.isArray(raw.invoice_refs) ? raw.invoice_refs.length : 0;
-  return (
-    <button data-testid="kanban-card" onClick={onClick} style={{
-      background: 'var(--card)', border: '1px solid var(--border)',
-      borderRadius: 5, padding: '8px 10px', cursor: 'pointer', textAlign: 'left',
-      borderLeft: isUrgent ? '3px solid var(--badge-red-text)' : isHigh ? '3px solid var(--badge-amber-text)' : '1px solid var(--border)',
-      transition: 'transform 0.12s, box-shadow 0.12s',
-      display: 'flex', flexDirection: 'column', gap: 4, width: '100%',
-      fontFamily: 'inherit',
-    }}
-      onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 3px 10px var(--shadow)'; }}
-      onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}>
-      {/* Top row: direction badge · short id · age */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{
-          fontSize: 9, padding: '0px 4px', borderRadius: 2,
-          background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)',
-          border: '1px solid var(--badge-blue-border)',
-          fontWeight: 700, letterSpacing: '0.04em',
-        }}>IN</span>
-        <span style={{ fontSize: 10.5, fontFamily: 'monospace', fontWeight: 600, color: 'var(--text)' }}>{_shortId(batch.batch_id)}</span>
-        <span style={{ flex: 1 }} />
-        {age && <span style={{ fontSize: 9.5, color: 'var(--text-3)' }}>{age}</span>}
+    <div data-testid={`new-shipment-slot-${type.id}`} style={{
+      border: '1px solid var(--border)', borderRadius: 6,
+      background: 'var(--card)', overflow: 'hidden',
+    }}>
+      {/* Slot header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+        <span style={{ fontSize: 16 }}>{type.icon}</span>
+        <Sel value={doc.typeId} onChange={e => onUpdate({ typeId: e.target.value })}>
+          {_NS_DOC_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </Sel>
+        <span style={{ fontSize: 11, color: 'var(--text-3)', flex: 1 }}>{type.hint}</span>
+        {!wired && (
+          <span data-testid="new-shipment-slot-pending" style={{
+            padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+            background: 'var(--badge-amber-bg)', color: '#8A5A00',
+            border: '1px solid var(--badge-amber-border)',
+          }} title="This slot type is shown for visual parity but its files are not uploaded by the current intake API.">PENDING WIRING</span>
+        )}
+        {(type.needsClient || type.needsSupplier) && (
+          <button
+            data-testid={`new-shipment-slot-override-toggle-${type.id}`}
+            onClick={() => setShowOverride(s => !s)}
+            style={{
+              padding: '3px 8px', background: showOverride ? 'var(--accent)' : 'transparent',
+              border: '1px solid ' + (showOverride ? 'var(--accent)' : 'var(--border)'),
+              borderRadius: 4, fontSize: 10, fontWeight: 600,
+              color: showOverride ? '#fff' : 'var(--text-3)', cursor: 'pointer',
+            }}
+          >{type.needsClient ? 'Client' : 'Supplier'} {showOverride ? '✓' : '↓'}</button>
+        )}
+        <button
+          data-testid={`new-shipment-slot-remove`}
+          onClick={onRemove}
+          style={{
+            width: 24, height: 24, borderRadius: 4, background: 'transparent',
+            border: '1px solid var(--border)', cursor: 'pointer',
+            color: 'var(--text-3)', fontSize: 14, lineHeight: 1,
+          }}
+          title="Remove this document slot"
+        >×</button>
       </div>
-      {/* Title row: doc_no or AWB */}
-      <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {batch.doc_no || batch.awb || batch.batch_id}
-      </div>
-      {/* Meta row: carrier · invoices · net value */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9.5, color: 'var(--text-3)', flexWrap: 'wrap' }}>
-        <span style={{ fontFamily: 'monospace' }}>{batch.carrier || '—'}</span>
-        {invCount > 0 && <><span>·</span><span>{invCount} inv</span></>}
-        {batch.net && batch.net !== '—' && <><span>·</span><span style={{ fontFamily: 'monospace' }}>{batch.net}</span></>}
-      </div>
-      {/* Flag row: urgent / high */}
-      {(isUrgent || isHigh) && (
+
+      {/* Per-document override */}
+      {showOverride && (type.needsClient || type.needsSupplier) && (
         <div style={{
-          display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 2,
-          fontSize: 9.5, fontWeight: 600,
-          color: isUrgent ? 'var(--badge-red-text)' : 'var(--badge-amber-text)',
+          padding: '10px 12px',
+          display: 'grid',
+          gridTemplateColumns: type.needsClient && type.needsSupplier ? '1fr 1fr' : '1fr',
+          gap: 10, background: 'var(--bg-subtle)',
+          borderBottom: '1px solid var(--border-subtle)',
         }}>
-          <span>{isUrgent ? '⚠' : '◐'}</span>
-          <span>{batch.action_reason || (isUrgent ? 'needs attention' : batch.overall)}</span>
+          {type.needsClient && (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Client for this document</div>
+              <Sel
+                data-testid={`new-shipment-slot-client-override-${type.id}`}
+                value={doc.clientOverride || defaultClientCid || ''}
+                onChange={e => onUpdate({ clientOverride: e.target.value })}
+              >
+                <option value="">— inherit shipment-level —</option>
+                {clientList.map(c => (
+                  <option key={c.contractor_id} value={c.contractor_id}>
+                    {c.name}{c.country ? ` (${c.country})` : ''}
+                  </option>
+                ))}
+              </Sel>
+            </div>
+          )}
+          {type.needsSupplier && (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Supplier for this document</div>
+              <Sel
+                data-testid={`new-shipment-slot-supplier-override-${type.id}`}
+                value={doc.supplierOverride || defaultSupplierCid || ''}
+                onChange={e => onUpdate({ supplierOverride: e.target.value })}
+              >
+                <option value="">— inherit shipment-level —</option>
+                {supplierList.map(s => (
+                  <option key={s.contractor_id} value={s.contractor_id}>
+                    {s.name}{s.country ? ` (${s.country})` : ''}
+                  </option>
+                ))}
+              </Sel>
+            </div>
+          )}
         </div>
       )}
-    </button>
-  );
-}
 
-function KanbanLane({ lane, cards, onCardClick }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 220, background: 'var(--bg-subtle)', borderRadius: 8, border: '1px solid var(--border)' }}>
-      <div style={{ padding: '10px 12px', borderBottom: `2px solid ${lane.border}`, background: lane.bg, borderRadius: '8px 8px 0 0' }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 2 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, color: lane.color, letterSpacing: '0.02em' }}>{lane.label}</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: lane.color, fontFamily: 'monospace' }}>{cards.length}</span>
+      {/* Drop area */}
+      <label style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '14px 16px', cursor: 'pointer',
+        background: doc.files.length ? 'transparent' : 'var(--bg-subtle)',
+        borderTop: doc.files.length ? '1px dashed var(--border)' : 'none',
+      }}>
+        <input
+          ref={fileInputRef}
+          data-testid={`new-shipment-slot-file-input-${type.id}`}
+          type="file"
+          accept=".pdf,.jpg,.png,.xlsx,.xls"
+          multiple={type.multi}
+          onChange={handleFiles}
+          style={{ display: 'none' }}
+        />
+        <span style={{ fontSize: 18, color: 'var(--text-3)' }}>+</span>
+        <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
+          {doc.files.length === 0
+            ? `Click to upload ${type.label.toLowerCase()}${type.multi ? ' (multiple allowed)' : ''}`
+            : (type.multi ? 'Click to add more files' : 'Click to replace file')}
+        </span>
+      </label>
+
+      {/* Files list */}
+      {doc.files.length > 0 && (
+        <div style={{ padding: '6px 12px 10px' }}>
+          {doc.files.map((f, i) => (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '6px 8px', borderRadius: 4,
+              background: 'var(--bg-subtle)', marginTop: 4,
+            }}>
+              <span style={{ fontSize: 12 }}>📄</span>
+              <span style={{ flex: 1, fontSize: 11, color: 'var(--text)', fontFamily: 'monospace' }}>{f.name || String(f)}</span>
+              <button
+                onClick={() => removeFile(i)}
+                style={{
+                  background: 'transparent', border: 'none', cursor: 'pointer',
+                  color: 'var(--text-3)', fontSize: 14,
+                }}
+              >×</button>
+            </div>
+          ))}
         </div>
-        <div style={{ fontSize: 9.5, color: lane.color, opacity: 0.75 }}>{lane.hint}</div>
-      </div>
-      <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 6, minHeight: 200, maxHeight: 480, overflowY: 'auto' }}>
-        {cards.length === 0 && <div style={{ padding: 16, textAlign: 'center', fontSize: 10.5, color: 'var(--text-3)', fontStyle: 'italic' }}>—</div>}
-        {cards.map(c => <KanbanCard key={c.batch_id || c.id} batch={c} onClick={() => onCardClick && onCardClick(c)} />)}
-      </div>
+      )}
     </div>
   );
 }

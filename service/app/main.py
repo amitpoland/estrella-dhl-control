@@ -59,9 +59,9 @@ from .api.routes_inventory_returns import router as inventory_returns_router
 from .api.routes_admin_runtime_flags import router as admin_runtime_flags_router
 from .api.routes_admin_dhl_clearance import router as admin_dhl_clearance_router
 from .api.routes_customer_master import router as customer_master_router
+from .api.routes_suppliers import router as suppliers_router
 from .api.routes_client_addresses import router as client_addresses_router
 from .api.routes_client_carrier_accounts import router as client_carrier_accounts_router
-from .api.routes_suppliers import router as suppliers_router
 from .api.routes_master_data import (
     hs_router as md_hs_router,
     units_router as md_units_router,

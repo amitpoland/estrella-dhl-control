@@ -74,6 +74,8 @@ def init_document_db(db_path: Path) -> None:
                 related_mrn          TEXT NOT NULL DEFAULT '',
                 related_pz_no        TEXT NOT NULL DEFAULT '',
                 source               TEXT NOT NULL DEFAULT 'upload',
+                client_contractor_id TEXT NOT NULL DEFAULT '',
+                supplier_contractor_id TEXT NOT NULL DEFAULT '',
                 created_at           TEXT NOT NULL,
                 updated_at           TEXT NOT NULL
             );
@@ -317,6 +319,34 @@ def init_document_db(db_path: Path) -> None:
             except sqlite3.OperationalError:
                 pass  # column already exists
 
+        # ── Contractor identity binding (New Shipment intake → real master
+        # data). Idempotent ALTERs for installs that already have older
+        # shipment_documents tables. Default '' = unbound (free-text legacy).
+        for col, ddl in (
+            ("client_contractor_id",   "TEXT NOT NULL DEFAULT ''"),
+            ("supplier_contractor_id", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            try:
+                con.execute(
+                    f"ALTER TABLE shipment_documents ADD COLUMN {col} {ddl}"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
+        # Indexes for the new contractor-id columns (created after ALTER so
+        # legacy schemas without the columns are upgraded first).
+        for idx_name, col in (
+            ("idx_sd_client_cid",   "client_contractor_id"),
+            ("idx_sd_supplier_cid", "supplier_contractor_id"),
+        ):
+            try:
+                con.execute(
+                    f"CREATE INDEX IF NOT EXISTS {idx_name} "
+                    f"ON shipment_documents ({col})"
+                )
+            except sqlite3.OperationalError:
+                pass
+
         # ── Sales-side pricing: customer Proforma must use SALES prices,
         # not import/customs cost. Schema gap before this migration: only
         # quantity was captured; unit_price / currency were dropped at
@@ -461,6 +491,8 @@ def register_document(
     related_pz_no:        str          = "",
     source:               str          = "upload",
     requires_manual_review: bool       = False,
+    client_contractor_id:   str         = "",
+    supplier_contractor_id: str         = "",
 ) -> Optional[str]:
     """
     Register a document in the unified registry.
@@ -495,15 +527,20 @@ def register_document(
                         parser_name, parser_version, parser_status, extraction_status,
                         requires_manual_review,
                         related_invoice_no, related_mrn, related_pz_no,
-                        source, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        source,
+                        client_contractor_id, supplier_contractor_id,
+                        created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     doc_id, batch_id, awb, document_type,
                     file_name, canonical_file_name, file_path, file_hash,
                     parser_name, parser_version, parser_status, extraction_status,
                     1 if requires_manual_review else 0,
                     related_invoice_no, related_mrn, related_pz_no,
-                    source, now, now,
+                    source,
+                    (client_contractor_id or "").strip(),
+                    (supplier_contractor_id or "").strip(),
+                    now, now,
                 ),
             )
             return doc_id
