@@ -13,7 +13,8 @@ from pathlib import Path
 # Repo-relative path so the suite runs on any developer machine and in CI.
 # parents[2] == repo root (this file lives at service/tests/<name>.py).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-DASHBOARD = _REPO_ROOT / "service" / "app" / "static" / "dashboard.html"
+# Phase 2 — Packing List card lives in shipment-detail.html.
+DASHBOARD = _REPO_ROOT / "service" / "app" / "static" / "shipment-detail.html"
 
 
 def _src() -> str:

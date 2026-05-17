@@ -101,9 +101,14 @@ def test_sidebar_moved_to_shared_after_phase_1b():
     assert len(hits) == 0, "Sidebar must be removed from dashboard.html in Phase 1B"
 
 
-def test_batch_detail_page_still_in_dashboard():
-    """BatchDetailPage stays in dashboard.html in Phase 1."""
-    assert "function BatchDetailPage(" in _read(DASH)
+def test_batch_detail_page_moved_to_shipment_detail():
+    """Phase 2 moved BatchDetailPage out of dashboard.html into
+    shipment-detail.html.  This test was a Phase-1 boundary; updated
+    in Phase 2 to reflect the legitimate move."""
+    assert "function BatchDetailPage(" not in _read(DASH)
+    sdet = STATIC / "shipment-detail.html"
+    assert sdet.exists()
+    assert "function BatchDetailPage(" in sdet.read_text(encoding="utf-8")
 
 
 def test_app_root_still_in_dashboard():
@@ -122,8 +127,9 @@ def test_transform_batch_still_in_dashboard():
     assert "function transformBatch(" in _read(DASH)
 
 
-def test_shipment_detail_html_not_created():
-    assert not (STATIC / "shipment-detail.html").exists()
+def test_shipment_detail_html_exists_after_phase_2():
+    """Phase 2 lifted the Phase-1 boundary — file now exists."""
+    assert (STATIC / "shipment-detail.html").exists()
 
 
 def test_all_nine_detail_tabs_present():

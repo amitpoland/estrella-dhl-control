@@ -252,8 +252,9 @@ def test_lane_readiness_source_has_no_write_keywords():
 
 
 def test_dashboard_renders_lane_readiness_testids():
+    # Phase 2 — Lane Readiness banners live in shipment-detail.html.
     dash = (Path(__file__).resolve().parents[1] / "app" / "static" /
-            "dashboard.html").read_text(encoding="utf-8")
+            "shipment-detail.html").read_text(encoding="utf-8")
     assert 'data-testid="lane-readiness-sales"' in dash
     assert 'data-testid="lane-readiness-purchase"' in dash
     assert 'data-testid="lane-readiness-sales-open-accounting"' in dash

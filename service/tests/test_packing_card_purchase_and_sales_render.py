@@ -320,7 +320,8 @@ def test_routes_packing_references_sales_packing_list():
 
 
 def test_dashboard_card_renders_purchase_and_sales_badges():
-    dash = (Path(__file__).resolve().parents[1] / "app" / "static" / "dashboard.html").read_text(encoding="utf-8")
+    # Phase 2 — Packing List card moved to shipment-detail.html.
+    dash = (Path(__file__).resolve().parents[1] / "app" / "static" / "shipment-detail.html").read_text(encoding="utf-8")
     # Distinct testids for each side make browser smoke verifiable.
     assert "packing-list-row-side-purchase" in dash
     assert "packing-list-row-side-sales" in dash

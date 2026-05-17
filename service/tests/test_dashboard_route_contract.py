@@ -22,13 +22,18 @@ def test_build_shipment_detail_url_helper_exists():
     assert "window.EstrellaRoutes" in DASH
 
 
-def test_helper_currently_returns_dashboard_html():
-    """Phase 0 lock — helper still points at dashboard.html. When
-    Phase 1 lands, this test must FAIL and be updated in the same PR."""
+def test_helper_returns_shipment_detail_html_after_phase_2():
+    """Phase 2 flipped the helper — success path now points at
+    /dashboard/shipment-detail.html.  The legacy /dashboard/dashboard.html
+    string still appears as the empty-id fallback (no id → bounce to
+    dashboard list), but the success return must be the new file."""
     snippet = DASH[DASH.index("function buildShipmentDetailUrl("):
-                   DASH.index("function buildShipmentDetailUrl(") + 500]
-    assert "/dashboard/dashboard.html" in snippet
-    assert "/dashboard/shipment-detail.html" not in snippet
+                   DASH.index("function buildShipmentDetailUrl(") + 800]
+    success_returns = [l for l in snippet.splitlines()
+                       if "return" in l and "shipment-detail.html" in l]
+    assert success_returns, (
+        "helper success path must point at shipment-detail.html"
+    )
 
 
 def test_helper_uses_encode_uri_component():
@@ -72,23 +77,22 @@ def test_no_other_hardcoded_detail_query_strings():
 
 # ── Boundary: nothing else extracted yet ────────────────────────────────
 
-def test_shipment_detail_html_does_not_exist_yet():
-    """Phase 0 must NOT create the new file — only the helper."""
-    assert not (STATIC_DIR / "shipment-detail.html").exists(), (
-        "shipment-detail.html must not exist until Phase 1"
-    )
+def test_shipment_detail_html_exists_after_phase_2():
+    """Phase 2 lifted the Phase-0 boundary — file now exists."""
+    assert (STATIC_DIR / "shipment-detail.html").exists()
 
 
 def test_dashboard_shared_js_exists_after_phase_1():
     """Phase 1 lifted the original Phase-0 'must-not-exist' boundary.
-    The file now exists and houses the 8 shared utilities. See
-    test_phase1_dashboard_shared.py for the full contract."""
+    The file now exists and houses the 8 shared utilities."""
     assert (STATIC_DIR / "dashboard-shared.js").exists()
 
 
-def test_batch_detail_page_still_in_dashboard():
-    """BatchDetailPage stays in dashboard.html in Phase 0."""
-    assert "function BatchDetailPage(" in DASH
+def test_batch_detail_page_moved_to_shipment_detail_after_phase_2():
+    """Phase 2 moved BatchDetailPage out of dashboard.html."""
+    assert "function BatchDetailPage(" not in DASH
+    sdet_src = (STATIC_DIR / "shipment-detail.html").read_text(encoding="utf-8")
+    assert "function BatchDetailPage(" in sdet_src
 
 
 def test_existing_id_query_param_still_handled():

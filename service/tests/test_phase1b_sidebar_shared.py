@@ -130,13 +130,17 @@ def test_destructure_includes_sidebar_estrella_subtab():
 
 # ── Boundaries: nothing else moved ──────────────────────────────────────
 
-def test_batch_detail_page_still_in_dashboard():
-    """Phase 2 has not happened — BatchDetailPage stays."""
-    assert "function BatchDetailPage(" in _read(DASH)
+def test_batch_detail_page_moved_to_shipment_detail():
+    """Phase 2 moved BatchDetailPage into shipment-detail.html.
+    This was a Phase-1B boundary; updated in Phase 2."""
+    assert "function BatchDetailPage(" not in _read(DASH)
+    sdet = STATIC / "shipment-detail.html"
+    assert sdet.exists()
+    assert "function BatchDetailPage(" in sdet.read_text(encoding="utf-8")
 
 
-def test_shipment_detail_html_not_created():
-    assert not (STATIC / "shipment-detail.html").exists()
+def test_shipment_detail_html_exists_after_phase_2():
+    assert (STATIC / "shipment-detail.html").exists()
 
 
 def test_app_root_still_in_dashboard():

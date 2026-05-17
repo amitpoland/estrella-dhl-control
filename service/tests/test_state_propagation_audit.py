@@ -15,9 +15,14 @@ import re
 from pathlib import Path
 
 
-DASH = (Path(__file__).resolve().parents[1] / "app" / "static"
-        / "dashboard.html").read_text(encoding="utf-8")
 STATIC_DIR = Path(__file__).resolve().parents[1] / "app" / "static"
+
+# Phase 2 — BatchDetailPage now lives in shipment-detail.html. The
+# BatchDetailPage-internal assertions in this file target that path.
+# The buildShipmentDetailUrl helper + Phase 0/1B boundary assertions
+# stay pointed at dashboard.html where the helper lives.
+DASH      = (STATIC_DIR / "shipment-detail.html").read_text(encoding="utf-8")
+DASH_HTML = (STATIC_DIR / "dashboard.html").read_text(encoding="utf-8")
 
 
 # ── refreshAll helper ────────────────────────────────────────────────────
@@ -162,21 +167,26 @@ def test_no_backend_url_changes():
         )
 
 
-def test_shipment_detail_html_not_created():
-    assert not (STATIC_DIR / "shipment-detail.html").exists()
+def test_shipment_detail_html_exists_after_phase_2():
+    assert (STATIC_DIR / "shipment-detail.html").exists()
 
 
-def test_batch_detail_page_still_in_dashboard():
+def test_batch_detail_page_lives_in_shipment_detail():
+    """Phase 2 moved BatchDetailPage out of dashboard.html."""
     assert "function BatchDetailPage(" in DASH
+    assert "function BatchDetailPage(" not in DASH_HTML
 
 
 def test_sidebar_moved_to_shared_after_phase_1b():
-    """Phase 1B lifted Sidebar into dashboard-shared.js."""
-    hits = re.findall(r"\bfunction\s+Sidebar\b\s*\(", DASH)
-    assert len(hits) == 0, "Sidebar must live in dashboard-shared.js after Phase 1B"
+    """Phase 1B lifted Sidebar into dashboard-shared.js (both files
+    consume the shared module — neither redeclares Sidebar)."""
+    hits_sdet = re.findall(r"\bfunction\s+Sidebar\b\s*\(", DASH)
+    hits_dash = re.findall(r"\bfunction\s+Sidebar\b\s*\(", DASH_HTML)
+    assert len(hits_sdet) == 0 and len(hits_dash) == 0, \
+        "Sidebar must live in dashboard-shared.js"
 
 
 def test_route_helper_unchanged():
-    """Phase 0 helper survives."""
-    assert "function buildShipmentDetailUrl(" in DASH
-    assert "window.EstrellaRoutes" in DASH
+    """Phase 0 helper stays in dashboard.html (App-side)."""
+    assert "function buildShipmentDetailUrl(" in DASH_HTML
+    assert "window.EstrellaRoutes" in DASH_HTML
