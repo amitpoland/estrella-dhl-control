@@ -2696,15 +2696,41 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
     """Return the full editable payload for a single draft.
 
     Read-only. 404 if no draft with this id exists.
+
+    Includes an additive ``customer_resolution`` block (PR — proforma UI
+    usability) so the dashboard can surface customer-mapping status
+    without a second roundtrip.  The block is the same shape that
+    ``_resolve_customer`` returns for preview/post — read-only against
+    the local ``wfirma_customers`` mirror.  Never calls the wFirma API.
+    Failure to resolve returns a safe ``"none"`` shape; the GET never
+    500s on resolver errors.
     """
     if not isinstance(draft_id, int) or draft_id <= 0:
         raise HTTPException(status_code=400, detail="invalid draft_id")
     d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
     if d is None:
         raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    full = _draft_to_full(d)
+    # Customer resolution — defensive: failure must not 500 the GET.
+    try:
+        full["customer_resolution"] = _resolve_customer(d.client_name or "")
+    except Exception as exc:
+        log.warning("draft %s customer_resolution failed (non-fatal): %s",
+                    draft_id, exc)
+        full["customer_resolution"] = {
+            "raw_input":             d.client_name or "",
+            "normalized_name":       "",
+            "found":                 False,
+            "ambiguous":             False,
+            "match_strategy":        "none",
+            "customer":              None,
+            "wfirma_customer_id":    "",
+            "resolved_wfirma_name":  "",
+            "candidates":            [],
+        }
     return JSONResponse({
         "ok":    True,
-        "draft": _draft_to_full(d),
+        "draft": full,
     })
 
 

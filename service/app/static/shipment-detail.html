@@ -11375,6 +11375,25 @@ function ProformaDraftPanel({ batchId, onToast }) {
       }),
     });
 
+  // ── Line CRUD (existing backend; UI added) ────────────────────────────
+  const onAddLine = (line) =>
+    _writeCall('Add line', `/api/v1/proforma/draft/${openId}/lines`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        line,
+      }),
+    });
+
+  const onDeleteLine = (lineId) =>
+    _writeCall(`Delete line ${lineId}`,
+               `/api/v1/proforma/draft/${openId}/lines/${lineId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+      }),
+    });
+
   const onRemoveCharge = (chargeId) =>
     _writeCall('Remove service charge',
                `/api/v1/proforma/draft/${openId}/service-charges/${chargeId}`
@@ -11893,6 +11912,15 @@ function ProformaDraftPanel({ batchId, onToast }) {
                 </div>
               </div>
 
+              {/* Customer mapping card — read-only summary from
+                  customer_resolution (added to GET /draft/{id}).
+                  Surfaces wfirma_customer_id and match strategy so the
+                  operator can see at a glance whether the post will
+                  resolve.  Never hides unresolved state. */}
+              <ProformaCustomerCard
+                  resolution={openDraft.customer_resolution}
+                  clientName={openDraft.client_name} />
+
               {/* Posted-state panel — branded "Total due" treatment from
                   the Estrella Document Suite (emerald block + gold accent).
                   Same single wired endpoint, no fake buttons. */}
@@ -12202,7 +12230,8 @@ function ProformaDraftPanel({ batchId, onToast }) {
                           key={ln.line_id}
                           line={ln}
                           editable={isEditable}
-                          onPatch={(patch) => onPatchLine(ln.line_id, patch)} />
+                          onPatch={(patch) => onPatchLine(ln.line_id, patch)}
+                          onDelete={onDeleteLine} />
                     ))}
                   </tbody>
                 </table>
@@ -12210,6 +12239,11 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   <div style={{ padding: 8, fontSize: 12, color: 'var(--text-3)' }}>
                     (no lines)
                   </div>
+                )}
+                {isEditable && (
+                  <ProformaAddLineForm
+                      draftCurrency={openDraft.currency}
+                      onAdd={onAddLine} />
                 )}
               </div>
 
@@ -12256,26 +12290,56 @@ function ProformaDraftPanel({ batchId, onToast }) {
               </div>
 
               {/* Top-level fields */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12,
-                              marginBottom: 14, fontSize: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr',
+                              gap: 12, marginBottom: 14, fontSize: 12 }}>
                 <ProformaDraftRemarksEditor
                     value={openDraft.remarks || ''}
                     editable={isEditable}
                     onSave={(v) => onPatchField('remarks', v)} />
                 <div data-testid="draft-overrides-summary"
-                     style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                  <div><strong>Buyer:</strong>{' '}
-                    {Object.keys(openDraft.buyer_override || {}).length
-                      ? JSON.stringify(openDraft.buyer_override) : '— default —'}
-                  </div>
-                  <div><strong>Ship-to:</strong>{' '}
-                    {Object.keys(openDraft.ship_to_override || {}).length
-                      ? JSON.stringify(openDraft.ship_to_override) : '— default —'}
-                  </div>
-                  <div><strong>Payment terms:</strong>{' '}
-                    {Object.keys(openDraft.payment_terms || {}).length
-                      ? JSON.stringify(openDraft.payment_terms) : '— default —'}
-                  </div>
+                     style={{ display: 'grid',
+                                gridTemplateColumns: 'repeat(3, 1fr)',
+                                gap: 8, fontSize: 12 }}>
+                  <ProformaJsonObjectEditor
+                      label="Buyer override"
+                      testidPrefix="draft-buyer"
+                      fields={[
+                        { key: 'name',    label: 'Name',     placeholder: 'Company name' },
+                        { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
+                        { key: 'city',    label: 'City',     placeholder: 'City' },
+                        { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
+                        { key: 'country', label: 'Country',  placeholder: 'ISO country' },
+                        { key: 'vat_id',  label: 'VAT ID',   placeholder: 'Tax ID' },
+                      ]}
+                      value={openDraft.buyer_override}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('buyer_override', v)} />
+                  <ProformaJsonObjectEditor
+                      label="Ship-to override"
+                      testidPrefix="draft-ship-to"
+                      fields={[
+                        { key: 'name',    label: 'Name',     placeholder: 'Recipient name' },
+                        { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
+                        { key: 'city',    label: 'City',     placeholder: 'City' },
+                        { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
+                        { key: 'country', label: 'Country',  placeholder: 'ISO country' },
+                        { key: 'phone',   label: 'Phone',    placeholder: '+...' },
+                        { key: 'email',   label: 'Email',    placeholder: 'name@…' },
+                      ]}
+                      value={openDraft.ship_to_override}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('ship_to_override', v)} />
+                  <ProformaJsonObjectEditor
+                      label="Payment terms"
+                      testidPrefix="draft-payment-terms"
+                      fields={[
+                        { key: 'days',   label: 'Days',     placeholder: 'e.g. 30' },
+                        { key: 'method', label: 'Method',   placeholder: 'transfer / cash / …' },
+                        { key: 'note',   label: 'Note',     placeholder: 'Free text' },
+                      ]}
+                      value={openDraft.payment_terms}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('payment_terms', v)} />
                 </div>
               </div>
 
@@ -12502,7 +12566,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
   );
 }
 
-function ProformaDraftLineRow({ line, editable, onPatch }) {
+function ProformaDraftLineRow({ line, editable, onPatch, onDelete }) {
   const [qty,   setQty]   = React.useState(String(line.qty));
   const [price, setPrice] = React.useState(String(line.unit_price));
   React.useEffect(() => {
@@ -12547,10 +12611,205 @@ function ProformaDraftLineRow({ line, editable, onPatch }) {
                                          unit_price: parseFloat(price) })}
                data-testid={`btn-line-save-${line.line_id}`}>Save</Btn>
         )}
+        {editable && onDelete && (
+          <Btn small
+               onClick={() => {
+                 if (window.confirm(
+                   `Delete line ${line.product_code || line.line_id}?`)) {
+                   onDelete(line.line_id);
+                 }
+               }}
+               data-testid={`btn-line-delete-${line.line_id}`}
+               style={{ marginLeft: 4 }}>Delete</Btn>
+        )}
       </td>
     </tr>
   );
 }
+
+
+// ── Customer-resolution card (read-only summary; no actions) ──────────────
+function ProformaCustomerCard({ resolution, clientName }) {
+  if (!resolution) return null;
+  const r = resolution;
+  const matched = !!r.wfirma_customer_id;
+  const status = r.match_strategy || "none";
+  const badgeBg = matched
+    ? 'var(--badge-green-bg)'
+    : (r.ambiguous ? 'var(--badge-amber-bg)' : 'var(--badge-red-bg)');
+  const badgeFg = matched
+    ? 'var(--badge-green-text)'
+    : (r.ambiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)');
+  return (
+    <div data-testid="draft-customer-card"
+         style={{ marginBottom: 14, padding: 10,
+                    background: 'var(--card-hover)',
+                    border: '1px solid var(--card-border)',
+                    borderRadius: 4, fontSize: 12 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                      letterSpacing: '0.06em', textTransform: 'uppercase',
+                      marginBottom: 6 }}>
+        Customer mapping
+      </div>
+      <div style={{ display: 'grid',
+                      gridTemplateColumns: '180px 1fr', gap: 4 }}>
+        <div style={{ color: 'var(--text-3)' }}>Sales client name</div>
+        <div><strong>{clientName || '—'}</strong></div>
+        <div style={{ color: 'var(--text-3)' }}>wFirma customer ID</div>
+        <div data-testid="draft-customer-wfirma-id">
+          {matched
+            ? <code>{r.wfirma_customer_id}</code>
+            : <span style={{ color: 'var(--text-3)' }}>— unmatched —</span>}
+        </div>
+        <div style={{ color: 'var(--text-3)' }}>wFirma stored name</div>
+        <div>{r.resolved_wfirma_name || '—'}</div>
+        <div style={{ color: 'var(--text-3)' }}>Match strategy</div>
+        <div>
+          <span style={{ background: badgeBg, color: badgeFg,
+                            padding: '1px 6px', borderRadius: 4,
+                            fontSize: 10, fontWeight: 700,
+                            textTransform: 'uppercase' }}
+                data-testid="draft-customer-match-strategy">
+            {status}
+          </span>
+          {r.ambiguous && r.candidates && r.candidates.length > 0 && (
+            <span style={{ marginLeft: 8, color: 'var(--text-3)',
+                              fontSize: 11 }}>
+              candidates: {r.candidates.slice(0, 4).join(', ')}
+              {r.candidates.length > 4 ? ` (+${r.candidates.length - 4})` : ''}
+            </span>
+          )}
+        </div>
+      </div>
+      {!matched && (
+        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-3)' }}>
+          Not auto-resolvable.  Use the Customer Master surface to map this
+          client to a wFirma customer before posting.
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ── Editable JSON-blob form (buyer / ship-to / payment terms) ─────────────
+function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
+                                     testidPrefix }) {
+  // value: dict {key: str} from the draft's *_override or payment_terms.
+  // fields: ordered list of {key, label, placeholder, type?}
+  const [draft, setDraft] = React.useState({ ...(value || {}) });
+  React.useEffect(() => { setDraft({ ...(value || {}) }); }, [value]);
+  const set = (k, v) => setDraft(d => ({ ...d, [k]: v }));
+  const stripped = React.useMemo(() => {
+    // Drop empty keys so we don't store '' fields.
+    const out = {};
+    Object.keys(draft || {}).forEach(k => {
+      const v = (draft[k] == null ? '' : String(draft[k])).trim();
+      if (v !== '') out[k] = v;
+    });
+    return out;
+  }, [draft]);
+  const dirty = React.useMemo(() => {
+    const a = JSON.stringify(stripped);
+    const b = JSON.stringify(value || {});
+    return a !== b;
+  }, [stripped, value]);
+  const isEmpty = Object.keys(value || {}).length === 0;
+  return (
+    <div data-testid={`${testidPrefix}-editor`}
+         style={{ padding: 8, border: '1px solid var(--card-border)',
+                    borderRadius: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between',
+                      alignItems: 'baseline', marginBottom: 6 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                        letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+          {label}
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text-3)' }}>
+          {isEmpty ? '— default —' : 'override active'}
+        </div>
+      </div>
+      {fields.map(f => (
+        <div key={f.key} style={{ display: 'flex', gap: 6, marginBottom: 4,
+                                     alignItems: 'baseline' }}>
+          <label style={{ width: 120, fontSize: 11, color: 'var(--text-3)' }}>
+            {f.label}
+          </label>
+          {editable ? (
+            <Inp value={draft[f.key] || ''}
+                 onChange={(v) => set(f.key, v)}
+                 placeholder={f.placeholder || ''}
+                 data-testid={`${testidPrefix}-${f.key}`} />
+          ) : (
+            <div style={{ fontSize: 12 }}>
+              {draft[f.key] || <span style={{ color: 'var(--text-3)' }}>—</span>}
+            </div>
+          )}
+        </div>
+      ))}
+      {editable && dirty && (
+        <div style={{ marginTop: 6 }}>
+          <Btn small variant="primary"
+               onClick={() => onSave(stripped)}
+               data-testid={`btn-${testidPrefix}-save`}>Save</Btn>
+          <Btn small
+               onClick={() => setDraft({ ...(value || {}) })}
+               style={{ marginLeft: 6 }}
+               data-testid={`btn-${testidPrefix}-reset`}>Revert</Btn>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ── Add-line form ────────────────────────────────────────────────────────
+function ProformaAddLineForm({ draftCurrency, onAdd }) {
+  const [pc, setPc]       = React.useState('');
+  const [design, setDes]  = React.useState('');
+  const [qty, setQty]     = React.useState('1');
+  const [price, setPrice] = React.useState('0');
+  const [ccy, setCcy]     = React.useState(draftCurrency || 'USD');
+  const canAdd = pc.trim() !== '' && parseFloat(qty) > 0;
+  const submit = () => {
+    onAdd({
+      product_code: pc.trim(),
+      design_no:    design.trim(),
+      qty:          parseFloat(qty),
+      unit_price:   parseFloat(price),
+      currency:     (ccy || draftCurrency || 'USD').toUpperCase(),
+    });
+    setPc(''); setDes(''); setQty('1'); setPrice('0');
+  };
+  return (
+    <div data-testid="draft-add-line-form"
+         style={{ display: 'flex', gap: 6, marginTop: 6,
+                    alignItems: 'baseline', flexWrap: 'wrap',
+                    fontSize: 12 }}>
+      <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Add line:</span>
+      <Inp value={pc} onChange={setPc}
+           placeholder="product_code (canonical)"
+           data-testid="add-line-pc" style={{ width: 160 }} />
+      <Inp value={design} onChange={setDes}
+           placeholder="design_no"
+           data-testid="add-line-design" style={{ width: 120 }} />
+      <Inp value={qty} onChange={setQty}
+           placeholder="qty"
+           data-testid="add-line-qty" style={{ width: 60 }} />
+      <Inp value={price} onChange={setPrice}
+           placeholder="unit_price"
+           data-testid="add-line-price" style={{ width: 80 }} />
+      <Inp value={ccy} onChange={setCcy}
+           placeholder="currency"
+           data-testid="add-line-ccy" style={{ width: 60 }} />
+      <Btn small variant="primary"
+           onClick={submit}
+           disabled={!canAdd}
+           data-testid="btn-add-line">Add</Btn>
+    </div>
+  );
+}
+
 
 function ProformaDraftRemarksEditor({ value, editable, onSave }) {
   const [v, setV] = React.useState(value || '');
