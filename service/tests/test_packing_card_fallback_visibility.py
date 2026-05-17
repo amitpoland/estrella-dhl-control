@@ -155,7 +155,8 @@ def test_fallback_block_does_not_reference_external_systems():
 
 
 def test_dashboard_card_renders_fallback_markers():
-    dash = (Path(__file__).resolve().parents[1] / "app" / "static" / "dashboard.html").read_text(encoding="utf-8")
+    # Phase 2 — Packing List card moved to shipment-detail.html.
+    dash = (Path(__file__).resolve().parents[1] / "app" / "static" / "shipment-detail.html").read_text(encoding="utf-8")
     assert "fallback_unparsed" in dash
     assert "Uploaded — extraction pending or failed" in dash
     assert "packing-list-row-fallback" in dash
