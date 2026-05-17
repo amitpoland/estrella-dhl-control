@@ -820,6 +820,23 @@ async def shipment_intake(
                     sp_rows, supplier_candidates, invoice_no=inv_no_for_pnd,
                 )
 
+            # ── PR-3b: Sales packing matcher (canonical pc projection) ──
+            # Copy canonical product_code from same-batch purchase
+            # packing_lines into sp_rows BEFORE persistence.  The PND
+            # disambiguator's choice (if it fired) is preserved by the
+            # matcher's existing-wins branch.  The legacy
+            # "design_no as product_code" fallback below is removed —
+            # rows that can't be resolved persist product_code=''.
+            from ..services.sales_packing_matcher import (
+                match_sales_lines_to_packing as _match_sales,
+            )
+            sp_rows, sales_matcher_summary = _match_sales(batch_id, sp_rows)
+            if (sales_matcher_summary.get("designs_resolved")
+                    or sales_matcher_summary.get("designs_ambiguous")
+                    or sales_matcher_summary.get("designs_unresolved")):
+                log.info("[%s] intake sales matcher: %s",
+                         batch_id, sales_matcher_summary)
+
             if sp_rows and sales_doc_id:
                 line_records = []
                 for r in sp_rows:
@@ -828,11 +845,15 @@ async def shipment_intake(
                     line_records.append({
                         "client_name":  client,
                         "client_ref":   client_ref,
-                        # Use the disambiguator's product_code if it fired;
-                        # otherwise fall back to design_no (preserves
-                        # existing behaviour for non-PND rows).
-                        "product_code": (r.get("product_code")
-                                          or r.get("design_no") or ""),
+                        # Canonical product_code only.  Sources (in order
+                        # of precedence, all canonical EJL/...-N codes):
+                        #   1. parser-emitted pc (rare for sales)
+                        #   2. PND disambiguator's choice
+                        #   3. sales_packing_matcher resolution
+                        # Empty when none of the above resolved — DB
+                        # layer accepts empty.  design_no is NEVER used
+                        # as a product_code fallback.
+                        "product_code": str(r.get("product_code") or ""),
                         "design_no":    str(r.get("design_no", "") or ""),
                         "bag_id":       str(r.get("bag_id", "") or ""),
                         "quantity":     float(r.get("quantity", 0) or 0),
@@ -877,6 +898,7 @@ async def shipment_intake(
                 ("ambiguous" if has_pnd else "n/a")
             ),
             "pnd_summary":        pnd_summary,
+            "sales_matcher_summary": sales_matcher_summary,
             "warnings": (
                 (["currency missing — Proforma will block until set"]
                  if currency_source == "missing" else [])
@@ -1818,6 +1840,22 @@ async def sales_packing_reingest(
                 log.warning("[%s] reingest PND tiebreak failed: %s",
                              batch_id, exc)
 
+        # ── PR-3b: Sales packing matcher (canonical pc projection) ──
+        # Mirrors the shipment_intake wiring. Runs AFTER the PND
+        # disambiguator so its choices are preserved by the matcher's
+        # existing-wins branch. The legacy "design_no as product_code"
+        # fallback below is removed — unresolved rows persist
+        # product_code=''.
+        from ..services.sales_packing_matcher import (
+            match_sales_lines_to_packing as _match_sales,
+        )
+        sp_rows, sales_matcher_summary = _match_sales(batch_id, sp_rows)
+        if (sales_matcher_summary.get("designs_resolved")
+                or sales_matcher_summary.get("designs_ambiguous")
+                or sales_matcher_summary.get("designs_unresolved")):
+            log.info("[%s] reingest sales matcher: %s",
+                     batch_id, sales_matcher_summary)
+
         # Build line records with the ladder-resolved currency.
         line_records: List[Dict[str, Any]] = []
         for r in sp_rows:
@@ -1826,8 +1864,9 @@ async def sales_packing_reingest(
             line_records.append({
                 "client_name":  client,
                 "client_ref":   client_ref,
-                "product_code": (r.get("product_code")
-                                  or r.get("design_no") or ""),
+                # Canonical product_code only — no design_no fallback.
+                # See shipment_intake comment block for source order.
+                "product_code": str(r.get("product_code") or ""),
                 "design_no":    str(r.get("design_no", "") or ""),
                 "bag_id":       str(r.get("bag_id", "") or ""),
                 "quantity":     float(r.get("quantity", 0) or 0),
@@ -1854,6 +1893,7 @@ async def sales_packing_reingest(
         per_file["currency_source"]   = currency_source
         per_file["currency_conflict"] = mixed
         per_file["pnd_summary"]       = pnd_summary
+        per_file["sales_matcher_summary"] = sales_matcher_summary
         # Phase 2 — auto-create / surface local editable Proforma Draft.
         # Idempotent: re-ingest does NOT replace draft lines on a live
         # draft (only first-time creation populates editable_lines_json).
