@@ -3038,73 +3038,97 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               dhlReadiness={dhlReadiness}
               onTabSwitch={setActiveTab}
             />
-            <OverallReadinessCard
-              batchReadiness={batchReadiness}
-              loading={batchReadinessLoading}
-              error={batchReadinessError}
-              decisionData={decisionData}
-              decisionLoading={decisionLoading}
-            />
+            {/* Phase 2C — Detailed readiness moved into a collapsed
+                <details> so the Overview surfaces one primary readiness
+                card (BatchControlCenter).  Operators can expand to see
+                OverallReadinessCard + MissingFunctionsMatrix on demand. */}
+            <details data-testid="overview-detailed-readiness"
+                     style={{ marginTop: 12, padding: '4px 0' }}>
+              <summary style={{ cursor: 'pointer', fontSize: 11,
+                                color: 'var(--text-2)', padding: '6px 0',
+                                letterSpacing: '0.04em' }}>
+                Detailed readiness breakdown
+              </summary>
+              <OverallReadinessCard
+                batchReadiness={batchReadiness}
+                loading={batchReadinessLoading}
+                error={batchReadinessError}
+                decisionData={decisionData}
+                decisionLoading={decisionLoading}
+              />
+              <MissingFunctionsMatrix />
+            </details>
 
             {/* ── Phase 4.2: Inventory state strip (per-batch, read-only) ──
                 Source: GET /api/v1/inventory/state/{batchId}
-                Honest empty when total=0; honest degraded when DB unavailable. */}
-            <div
-              data-testid="inventory-batch-state-strip"
-              style={{
-                margin: '12px 0', padding: '12px 14px',
-                background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
-                fontSize: 13,
-              }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between',
-                            alignItems: 'baseline', marginBottom: 8 }}>
-                <strong style={{ color: '#111827' }}>Inventory state</strong>
-                {invStateLoading && (
-                  <span data-testid="inventory-batch-state-loading"
-                        style={{ color: '#6b7280', fontSize: 12 }}>…</span>
-                )}
-                {!invStateLoading && invState && (
-                  <span style={{ color: '#6b7280', fontSize: 12 }}>
-                    total {invState.total}
-                    {invState.degraded ? ' · degraded' : ''}
-                  </span>
-                )}
-              </div>
-              {invStateError && (
-                <div data-testid="inventory-batch-state-error"
-                     style={{ color: '#991b1b', fontSize: 12 }}>
-                  ⚠ {invStateError}
-                </div>
-              )}
-              {!invStateError && invState && invState.total === 0 && !invStateLoading && (
+                Phase 2C — collapse under <details> when total === 0 so the
+                empty state stops occupying the Overview viewport. */}
+            {!invStateError && invState && invState.total === 0 && !invStateLoading ? (
+              <details data-testid="inventory-batch-state-collapsed"
+                       style={{ margin: '12px 0', padding: '10px 14px',
+                                background: '#fff', border: '1px solid #e5e7eb',
+                                borderRadius: 8, fontSize: 13 }}>
+                <summary style={{ cursor: 'pointer', color: '#6b7280',
+                                  fontSize: 11 }}>
+                  Inventory: 0 rows
+                </summary>
                 <div data-testid="inventory-batch-state-empty"
-                     style={{ color: '#6b7280', fontSize: 12 }}>
+                     style={{ color: '#6b7280', fontSize: 12, marginTop: 8 }}>
                   No inventory rows for this batch yet.
                 </div>
-              )}
-              {!invStateError && invState && invState.total > 0 && (
-                <div style={{ display: 'grid',
-                              gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-                              gap: 8 }}>
-                  {Object.entries(invState.counts || {}).map(([stateName, count]) => (
-                    <div key={stateName}
-                         data-testid={`inventory-batch-state-tile-${stateName}`}
-                         data-pending={count === 0 ? 'true' : undefined}
-                         style={{ padding: '8px 10px', background: '#f9fafb',
-                                  border: '1px solid #e5e7eb', borderRadius: 6 }}>
-                      <div style={{ fontSize: 11, color: '#6b7280',
-                                    textTransform: 'lowercase' }}>
-                        {stateName.replace(/_/g, ' ').toLowerCase()}
-                      </div>
-                      <div style={{ fontSize: 18, color: count > 0 ? '#111827' : '#9ca3af',
-                                    fontWeight: 600 }}>
-                        {count > 0 ? String(count) : '—'}
-                      </div>
-                    </div>
-                  ))}
+              </details>
+            ) : (
+              <div
+                data-testid="inventory-batch-state-strip"
+                style={{
+                  margin: '12px 0', padding: '12px 14px',
+                  background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
+                  fontSize: 13,
+                }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between',
+                              alignItems: 'baseline', marginBottom: 8 }}>
+                  <strong style={{ color: '#111827' }}>Inventory state</strong>
+                  {invStateLoading && (
+                    <span data-testid="inventory-batch-state-loading"
+                          style={{ color: '#6b7280', fontSize: 12 }}>…</span>
+                  )}
+                  {!invStateLoading && invState && (
+                    <span style={{ color: '#6b7280', fontSize: 12 }}>
+                      total {invState.total}
+                      {invState.degraded ? ' · degraded' : ''}
+                    </span>
+                  )}
                 </div>
-              )}
-            </div>
+                {invStateError && (
+                  <div data-testid="inventory-batch-state-error"
+                       style={{ color: '#991b1b', fontSize: 12 }}>
+                    ⚠ {invStateError}
+                  </div>
+                )}
+                {!invStateError && invState && invState.total > 0 && (
+                  <div style={{ display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                                gap: 8 }}>
+                    {Object.entries(invState.counts || {}).map(([stateName, count]) => (
+                      <div key={stateName}
+                           data-testid={`inventory-batch-state-tile-${stateName}`}
+                           data-pending={count === 0 ? 'true' : undefined}
+                           style={{ padding: '8px 10px', background: '#f9fafb',
+                                    border: '1px solid #e5e7eb', borderRadius: 6 }}>
+                        <div style={{ fontSize: 11, color: '#6b7280',
+                                      textTransform: 'lowercase' }}>
+                          {stateName.replace(/_/g, ' ').toLowerCase()}
+                        </div>
+                        <div style={{ fontSize: 18, color: count > 0 ? '#111827' : '#9ca3af',
+                                      fontWeight: 600 }}>
+                          {count > 0 ? String(count) : '—'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* ── UI-3.4: Per-Batch Pipeline Summary ─────────────────────────
                 Read-only three-section snapshot mirroring the cross-batch
@@ -3440,7 +3464,9 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               );
             })()}
 
-            <MissingFunctionsMatrix />
+            {/* MissingFunctionsMatrix moved into the Overview
+                <details data-testid="overview-detailed-readiness"> above
+                (Phase 2C deduplication). */}
 
             {/* ── Closure Evaluation ── */}
             {(() => {
@@ -4210,6 +4236,24 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         color: 'var(--badge-purple-text, #6b21a8)',
                         fontFamily: 'inherit',
                       }}>Open Accounting</button>
+                  </div>
+                )}
+                {!showSales && (
+                  <div
+                    data-testid="lane-readiness-sales-empty"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '10px 14px',
+                      background: 'var(--bg-subtle)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 6,
+                      fontSize: 11, color: 'var(--text-3)',
+                    }}>
+                    <span style={{ fontSize: 12 }}>🧾</span>
+                    <span style={{ fontSize: 11, fontWeight: 700,
+                                   letterSpacing: 0.6,
+                                   color: 'var(--text-2)' }}>SALES LANE</span>
+                    <span>· Sales drafts: 0 — run Reparse all after upload</span>
                   </div>
                 )}
                 <div
@@ -6772,16 +6816,38 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 status={dhlClearance ? mapDhlStatus(dhlClearance) : undefined} />
               <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
                 <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Shipment Info</div>
-                  <InfoRow label="AWB / Tracking" value={trackingNo || '—'} mono />
-                  <InfoRow label="Carrier" value={carrier} />
-                  <InfoRow label="Batch ID" value={batchId} mono />
-                  <InfoRow label="Invoice Files" value={(inp.invoices || []).length > 0 ? `${(inp.invoices || []).length} file(s)` : 'None uploaded'} />
-                  <InfoRow label="AWB PDF" value={inp.awb ? 'Uploaded ✓' : 'Not uploaded'} />
+                  {/* Phase 2C — collapse duplicate Shipment metadata under
+                      <details>.  The same AWB / Carrier / Batch ID values
+                      are surfaced by detail-subheader-* at the top of every
+                      tab; copy/paste access preserved via expand. */}
+                  <details data-testid="dhl-shipment-metadata-collapsed"
+                           style={{ marginBottom: 12 }}>
+                    <summary style={{ cursor: 'pointer', fontSize: 10,
+                                      fontWeight: 700, color: 'var(--text-3)',
+                                      letterSpacing: '0.08em',
+                                      textTransform: 'uppercase' }}>
+                      Shipment metadata
+                    </summary>
+                    <div style={{ marginTop: 8 }}>
+                      <InfoRow label="AWB / Tracking" value={trackingNo || '—'} mono />
+                      <InfoRow label="Carrier" value={carrier} />
+                      <InfoRow label="Batch ID" value={batchId} mono />
+                      <InfoRow label="Invoice Files" value={(inp.invoices || []).length > 0 ? `${(inp.invoices || []).length} file(s)` : 'None uploaded'} />
+                      <InfoRow label="AWB PDF" value={inp.awb ? 'Uploaded ✓' : 'Not uploaded'} />
+                    </div>
+                  </details>
 
                   {/* ── Live Tracking Status ── */}
                   {trackingNo && (() => {
                     const td = trackingData;
+                    // Phase 2C — hide tracking block entirely when carrier
+                    // API is unconfigured AND operator hasn't manually
+                    // set tracking.  Operator should configure credentials
+                    // in admin, not see a per-batch reminder.
+                    const _apiModeGuard = (td && td.api_status) || '';
+                    const _isManualGuard = _apiModeGuard === 'manual' || (td && td.source === 'manual');
+                    const isNoCreds = _apiModeGuard === 'no_credentials' || _apiModeGuard === 'disabled';
+                    if (isNoCreds && !_isManualGuard) return null;
                     const STATUS_DOT = { delivered: '#16a34a', in_transit: '#2563eb', out_for_delivery: '#d97706', exception: '#dc2626', unknown: '#9ca3af' };
                     const dotColor   = td ? (STATUS_DOT[td.status] || STATUS_DOT.unknown) : STATUS_DOT.unknown;
                     // API states: disabled = no creds; failed = call errored; active = OK; manual = operator-set.
