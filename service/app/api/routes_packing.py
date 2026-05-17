@@ -1320,12 +1320,18 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
         "drafts_approved":     0,
         "drafts_posted":       0,
         "drafts_post_failed":  0,
+        # Drafts whose editable_lines_json holds at least one line. A draft
+        # with editable_lines_json='[]' has no actionable content even
+        # when draft_state is editable — so it must not count toward
+        # sales_ready.
+        "drafts_with_lines":   0,
     }
     try:
         from ..services import proforma_invoice_link_db as _pildb
         _pf_db_path = settings.storage_root / "proforma_links.db"
         drafts = _pildb.list_drafts_for_batch(_pf_db_path, batch_id) or []
         sales_counts["drafts_total"] = len(drafts)
+        import json as _json
         for d in drafts:
             state = (
                 (d.get("draft_state") if isinstance(d, dict) else None)
@@ -1340,12 +1346,28 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
                 sales_counts["drafts_posted"] += 1
             elif state == "post_failed":
                 sales_counts["drafts_post_failed"] += 1
+            # drafts_with_lines — non-empty editable_lines_json
+            raw = (
+                (d.get("editable_lines_json") if isinstance(d, dict) else None)
+                or getattr(d, "editable_lines_json", "")
+                or ""
+            )
+            try:
+                parsed = _json.loads(raw) if raw else []
+            except Exception:
+                parsed = []
+            if isinstance(parsed, list) and len(parsed) > 0:
+                sales_counts["drafts_with_lines"] += 1
     except Exception as exc:
         log.warning("[%s] lane-readiness sales counts failed (non-fatal): %s",
                     batch_id, exc)
 
+    # sales_ready now requires at least one draft with actionable lines.
+    # drafts_total alone is insufficient — a draft created without any
+    # resolvable product_code rows has editable_lines_json='[]' and
+    # cannot be posted.
     sales_ready = (
-        sales_counts["drafts_total"] > 0
+        sales_counts["drafts_with_lines"] > 0
         and sales_counts["drafts_post_failed"] == 0
     )
 
