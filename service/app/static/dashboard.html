@@ -19487,9 +19487,11 @@ function App() {
           onCreated={(data) => {
             setShowNewShipment(false);
             if (data.batchId) {
-              setSelectedBatch(data.batchId);
-              setPage('detail');
-              history.pushState({}, '', `?id=${encodeURIComponent(data.batchId)}`);
+              // Phase 2 — detail now lives in shipment-detail.html.
+              // Route through the helper instead of the dead
+              // setPage('detail') + pushState path.
+              window.location.href = buildShipmentDetailUrl(data.batchId);
+              return;
             }
             loadBatches();
           }}
