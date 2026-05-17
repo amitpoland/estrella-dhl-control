@@ -118,6 +118,41 @@ def test_view_shipment_uses_window_location_href():
     assert "buildShipmentDetailUrl" in body
 
 
+def test_no_stale_set_page_detail_callsites():
+    """Phase 2 leftover hunt — no active code path may call
+    setPage('detail') anymore. The page === 'detail' render branch
+    has been removed; any remaining call would set unreachable state
+    and bypass the new shipment-detail.html URL.
+
+    Comments mentioning the historical call are allowed (they explain
+    the deletion); only ACTIVE JS statements are forbidden."""
+    src = _read(DASH)
+    # Match the call as an executable statement (not embedded in a comment).
+    # An active call line has no `//` before setPage on the same line.
+    for line in src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("//"):
+            continue
+        if "setPage('detail')" in line or 'setPage("detail")' in line:
+            assert False, (
+                f"active setPage('detail') callsite found: {line!r} — "
+                f"replace with window.location.href = buildShipmentDetailUrl(id)"
+            )
+
+
+def test_new_shipment_modal_uses_helper_on_create():
+    """NewShipmentModal.onCreated must navigate through the helper
+    on success, not via the dead setPage('detail') + pushState path."""
+    src = _read(DASH)
+    idx = src.index("<NewShipmentModal")
+    block = src[idx:idx + 1200]
+    assert "buildShipmentDetailUrl(data.batchId)" in block or \
+           "buildShipmentDetailUrl(data.batch_id)" in block, (
+        "NewShipmentModal.onCreated must call "
+        "window.location.href = buildShipmentDetailUrl(data.batchId)"
+    )
+
+
 def test_dashboard_redirects_id_query_param():
     """dashboard.html?id=… must redirect to shipment-detail.html?id=…
     so existing operator bookmarks keep working."""
