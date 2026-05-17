@@ -7978,16 +7978,21 @@ const IntakeRemoveBtn = ({ onClick }) => (
 // No hardcoded Estrella/Bonacchi party rows. Free-text fallback
 // is preserved only when master data is empty.
 
+// Per-slot extension policy MUST mirror the backend allow-list in
+// routes_intake.py (_ALLOWED_INVOICE_EXT / _PACKING_EXT / _SERVICE_EXT /
+// _CARNET_EXT / _OTHER_EXT). Used both as the HTML `<input accept>` and
+// as the client-side preflight check before submit, so users see a
+// friendly error before the request fires. Hotfix 2026-05-17.
 const _NS_DOC_TYPES = [
-  { id: 'purchase_invoice', label: 'Purchase Invoice',       icon: '📄', hint: 'Commercial invoice from supplier (purchase price)',                multi: true,  needsClient: false, needsSupplier: true  },
-  { id: 'sales_proforma',   label: 'Sales Proforma Invoice', icon: '📑', hint: 'Proforma issued to client — sales price · pre-acceptance',         multi: true,  needsClient: true,  needsSupplier: false },
-  { id: 'sales_invoice',    label: 'Sales Invoice (Final)',  icon: '🧾', hint: 'Final commercial invoice issued to client',                         multi: true,  needsClient: true,  needsSupplier: false },
-  { id: 'purchase_packing', label: 'Purchase Packing List',  icon: '📋', hint: 'Items + purchase prices — flows to customs (CIF / SAD)',           multi: true,  needsClient: false, needsSupplier: true  },
-  { id: 'sales_packing',    label: 'Sales Packing List',     icon: '📋', hint: 'Same items + sales prices — flows to warehouse stock valuation',   multi: true,  needsClient: true,  needsSupplier: false },
-  { id: 'awb',              label: 'AWB / Tracking PDF',     icon: '📎', hint: 'Air-waybill / tracking document',                                   multi: false, needsClient: false, needsSupplier: false },
-  { id: 'service_invoice',  label: 'Service Invoice',        icon: '💼', hint: 'Shipping, insurance, customs-agent or handling invoice',           multi: true,  needsClient: false, needsSupplier: true  },
-  { id: 'carnet',           label: 'ATA Carnet / Temp Doc',  icon: '🛂', hint: 'Temporary import / export document',                                multi: false, needsClient: false, needsSupplier: false },
-  { id: 'other',            label: 'Other Document',         icon: '📁', hint: 'Any supporting document',                                            multi: true,  needsClient: false, needsSupplier: false },
+  { id: 'purchase_invoice', label: 'Purchase Invoice',       icon: '📄', hint: 'Commercial invoice from supplier (purchase price)',                multi: true,  needsClient: false, needsSupplier: true,  accept: '.pdf',                          allowedExts: ['.pdf'] },
+  { id: 'sales_proforma',   label: 'Sales Proforma Invoice', icon: '📑', hint: 'Proforma issued to client — sales price · pre-acceptance',         multi: true,  needsClient: true,  needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
+  { id: 'sales_invoice',    label: 'Sales Invoice (Final)',  icon: '🧾', hint: 'Final commercial invoice issued to client',                         multi: true,  needsClient: true,  needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
+  { id: 'purchase_packing', label: 'Purchase Packing List',  icon: '📋', hint: 'Items + purchase prices — flows to customs (CIF / SAD)',           multi: true,  needsClient: false, needsSupplier: true,  accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
+  { id: 'sales_packing',    label: 'Sales Packing List',     icon: '📋', hint: 'Same items + sales prices — flows to warehouse stock valuation',   multi: true,  needsClient: true,  needsSupplier: false, accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
+  { id: 'awb',              label: 'AWB / Tracking PDF',     icon: '📎', hint: 'Air-waybill / tracking document',                                   multi: false, needsClient: false, needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
+  { id: 'service_invoice',  label: 'Service Invoice',        icon: '💼', hint: 'Shipping, insurance, customs-agent or handling invoice',           multi: true,  needsClient: false, needsSupplier: true,  accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
+  { id: 'carnet',           label: 'ATA Carnet / Temp Doc',  icon: '🛂', hint: 'Temporary import / export document',                                multi: false, needsClient: false, needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
+  { id: 'other',            label: 'Other Document',         icon: '📁', hint: 'Any supporting document',                                            multi: true,  needsClient: false, needsSupplier: false, accept: '.pdf,.xlsx,.xls,.jpg,.jpeg,.png', allowedExts: ['.pdf', '.xlsx', '.xls', '.jpg', '.jpeg', '.png'] },
 ];
 
 // Document-types whose files the current /shipment/intake endpoint accepts.
@@ -8472,9 +8477,29 @@ function NewShipmentDocumentSlot({ doc, onUpdate, onRemove, clientList, supplier
   const [showOverride, setShowOverride] = React.useState(false);
   const fileInputRef = React.useRef(null);
 
+  const [slotError, setSlotError] = React.useState('');
   const handleFiles = e => {
     const incoming = Array.from(e.target.files || []);
-    onUpdate({ files: type.multi ? [...doc.files, ...incoming] : incoming.slice(0, 1) });
+    // Preflight: filter against the slot's allowed extensions BEFORE
+    // touching state so the backend never sees a wrong-type file. Mirrors
+    // routes_intake.py allow-lists (PDF for invoices/AWB/carnet; PDF+xlsx
+    // for packing / service; PDF+xlsx+images for `other`).
+    const allowed = (type.allowedExts || ['.pdf']).map(s => s.toLowerCase());
+    const accepted = [];
+    const rejected = [];
+    incoming.forEach(f => {
+      const dot = f.name.lastIndexOf('.');
+      const ext = (dot >= 0 ? f.name.slice(dot) : '').toLowerCase();
+      if (allowed.indexOf(ext) >= 0) { accepted.push(f); } else { rejected.push(f.name); }
+    });
+    if (rejected.length > 0) {
+      setSlotError(`Rejected ${rejected.length} file(s) of unsupported type. Allowed: ${allowed.join(', ')}`);
+    } else {
+      setSlotError('');
+    }
+    if (accepted.length > 0) {
+      onUpdate({ files: type.multi ? [...doc.files, ...accepted] : accepted.slice(0, 1) });
+    }
     // Allow re-selecting the same filename later.
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -8580,7 +8605,7 @@ function NewShipmentDocumentSlot({ doc, onUpdate, onRemove, clientList, supplier
           ref={fileInputRef}
           data-testid={`new-shipment-slot-file-input-${type.id}`}
           type="file"
-          accept=".pdf,.jpg,.png,.xlsx,.xls"
+          accept={type.accept || '.pdf'}
           multiple={type.multi}
           onChange={handleFiles}
           style={{ display: 'none' }}
@@ -8592,6 +8617,13 @@ function NewShipmentDocumentSlot({ doc, onUpdate, onRemove, clientList, supplier
             : (type.multi ? 'Click to add more files' : 'Click to replace file')}
         </span>
       </label>
+
+      {slotError && (
+        <div data-testid={`new-shipment-slot-error-${type.id}`} style={{
+          padding: '6px 12px 8px', fontSize: 11,
+          color: 'var(--badge-red-text)',
+        }}>{slotError}</div>
+      )}
 
       {/* Files list */}
       {doc.files.length > 0 && (
