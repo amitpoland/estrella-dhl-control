@@ -1162,6 +1162,39 @@ def get_invoice_lines_for_batch(batch_id: str) -> List[Dict[str, Any]]:
     return get_invoice_lines(batch_id)
 
 
+def get_invoice_lines_for_document(
+    document_id: str,
+    limit:       int = 50,
+) -> List[Dict[str, Any]]:
+    """Return invoice_lines belonging to a single shipment_documents row.
+
+    Used by the Document Registry to surface line counts + preview for
+    purchase_invoice rows. Read-only; capped at `limit` rows for payload
+    safety (matches the existing fields cap on the registry endpoint).
+    """
+    if _db_path is None or not document_id:
+        return []
+    with _connect() as con:
+        rows = con.execute(
+            """SELECT * FROM invoice_lines
+               WHERE document_id=? ORDER BY line_position LIMIT ?""",
+            (document_id, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_invoice_lines_for_document(document_id: str) -> int:
+    """Count invoice_lines for a single document row (no preview)."""
+    if _db_path is None or not document_id:
+        return 0
+    with _connect() as con:
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM invoice_lines WHERE document_id=?",
+            (document_id,),
+        ).fetchone()
+    return int(row["n"] if row else 0)
+
+
 # ── Sales documents ────────────────────────────────────────────────────────────
 
 def store_sales_document(
