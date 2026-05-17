@@ -529,6 +529,23 @@ async def shipment_intake(
             inv_lines_source = result.get("invoice_lines_source", "unknown")
             doc_id_pdb = pdb.upsert_packing_document(**result["document"])
             rows = result.get("packing_rows", [])
+            # P1: capture raw-header fingerprint artifact on failure (zero rows).
+            try:
+                _diag = (result.get("parser_diagnostic") or {})
+                if not rows or _diag.get("failure_reason"):
+                    from ..services.parser_diagnostic_writer import write_packing_diagnostic_artifact
+                    write_packing_diagnostic_artifact(
+                        storage_root=settings.storage_root,
+                        batch_id=batch_id,
+                        document_id=pack_doc_id,
+                        filename=name,
+                        document_type="purchase_packing_list",
+                        source_path=path,
+                        parser_diagnostic=_diag,
+                    )
+            except Exception as _exc:
+                log.warning("[%s] purchase packing diagnostic artifact failed (non-fatal): %s",
+                            batch_id, _exc)
             line_records = [
                 {
                     "packing_document_id":   doc_id_pdb,
@@ -679,7 +696,23 @@ async def shipment_intake(
         }
         try:
             from ..services.invoice_packing_extractor import extract_packing
-            sp_rows, _, _ = extract_packing(path)
+            sp_rows, _, _, _sp_diag = extract_packing(path)
+            # P1: write artifact on failure for sales packing too.
+            try:
+                if not sp_rows or (_sp_diag or {}).get("failure_reason"):
+                    from ..services.parser_diagnostic_writer import write_packing_diagnostic_artifact
+                    write_packing_diagnostic_artifact(
+                        storage_root=settings.storage_root,
+                        batch_id=batch_id,
+                        document_id=sp_doc_id,
+                        filename=name,
+                        document_type="sales_packing_list",
+                        source_path=path,
+                        parser_diagnostic=_sp_diag or {},
+                    )
+            except Exception as _exc:
+                log.warning("[%s] sales packing diagnostic artifact failed (non-fatal): %s",
+                            batch_id, _exc)
             export_invs = [r.get("invoice_no", "") for r in sp_rows if r.get("invoice_no")]
             if export_invs:
                 from collections import Counter
@@ -1687,7 +1720,7 @@ async def sales_packing_reingest(
         # currency symbol fix that landed earlier.
         try:
             from ..services.invoice_packing_extractor import extract_packing
-            sp_rows, _, _ = extract_packing(path)
+            sp_rows, _, _, _sp_diag = extract_packing(path)
         except Exception as exc:
             per_file["warnings"].append(f"parse failed: {exc}")
             results.append(per_file); continue
