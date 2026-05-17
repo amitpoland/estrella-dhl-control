@@ -130,12 +130,46 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ── Additive migration helper ──────────────────────────────────────────────────
+
+def _add_column_if_missing(
+    con:        sqlite3.Connection,
+    table:      str,
+    column:     str,
+    definition: str,
+) -> None:
+    """Add *column* to *table* if it does not already exist. Additive only —
+    never drops or alters existing columns.  Mirrors the pattern used in
+    packing_db._add_column_if_missing and tracking_db._add_column_if_missing.
+    Safe to call repeatedly (idempotent)."""
+    cols = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+    if column in cols:
+        return
+    con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+# product_master forward-compat columns added by PR-1 Product Master Foundation.
+# Additive only.  Existing rows acquire the default for each new column.
+_PRODUCT_MASTER_ADDITIVE_COLUMNS = (
+    ("item_type",          "TEXT NOT NULL DEFAULT ''"),
+    ("hsn_code",           "TEXT NOT NULL DEFAULT ''"),
+    ("unit_price_ref",     "REAL NOT NULL DEFAULT 0.0"),
+    ("currency_ref",       "TEXT NOT NULL DEFAULT ''"),
+    ("confidence",         "TEXT NOT NULL DEFAULT 'high'"),
+    ("source_document_id", "TEXT NOT NULL DEFAULT ''"),
+    ("last_seen_batch_id", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
 # ── Init ───────────────────────────────────────────────────────────────────────
 
 def init_reservation_db(db_path: Path) -> None:
-    """Create all 5 reservation tables if they don't exist."""
+    """Create all 5 reservation tables if they don't exist and apply any
+    forward-compat additive column migrations (idempotent)."""
     with _connect(db_path) as con:
         con.executescript(_DDL)
+        for col, ddl in _PRODUCT_MASTER_ADDITIVE_COLUMNS:
+            _add_column_if_missing(con, "product_master", col, ddl)
 
 
 # ── product_master ─────────────────────────────────────────────────────────────
@@ -149,32 +183,95 @@ def upsert_product_master(
     category: str = "",
     source_invoice_no: str = "",
     source_batch_id: str = "",
+    *,
+    item_type:          str   = "",
+    hsn_code:           str   = "",
+    unit_price_ref:     float = 0.0,
+    currency_ref:       str   = "",
+    confidence:         str   = "high",
+    source_document_id: str   = "",
+    last_seen_batch_id: str   = "",
 ) -> int:
-    """Insert or update a product_master row. Returns the row id."""
+    """Insert or update a product_master row. Returns the row id.
+
+    Idempotency key: UNIQUE(product_code). Re-running with the same
+    product_code UPDATEs the existing row and refreshes ``updated_at`` —
+    no duplicate row is ever created.
+
+    Preserve-on-blank semantics: when an existing row has a non-empty
+    ``design_no`` and the caller passes ``design_no=""`` (e.g. at invoice
+    intake before packing is parsed), the existing value is preserved.
+    This mirrors the self-heal pattern from PR #190 and prevents later
+    invoice-only refreshes from wiping a packing-resolved design_no.
+
+    ``last_seen_batch_id`` is refreshed on every call so observability
+    can answer "when was this code last referenced?"; ``source_batch_id``
+    stays at the originating batch.
+
+    Never invents product_code — caller must pass an already-minted code
+    (the single canonical generator is store_invoice_lines in
+    document_db.py)."""
     now = _now()
     with _connect(db_path) as con:
         con.execute("PRAGMA foreign_keys=ON")
         existing = con.execute(
-            "SELECT id FROM product_master WHERE product_code=?",
+            "SELECT * FROM product_master WHERE product_code=?",
             (product_code,),
         ).fetchone()
         if existing:
+            # Preserve-on-blank semantics for the originating identity:
+            #   - design_no:          keep existing when new is blank
+            #   - source_batch_id:    NEVER overwrite — first batch wins
+            #   - source_invoice_no:  NEVER overwrite — first invoice wins
+            #   - source_document_id: NEVER overwrite — first document wins
+            # last_seen_batch_id always advances to the latest referencing
+            # batch (observability of recent activity).
+            def _keep(new_v: Any, existing_key: str) -> Any:
+                exv = existing[existing_key]
+                if isinstance(new_v, str):
+                    return new_v if new_v.strip() else (exv or "")
+                return new_v if new_v else (exv or new_v)
+
+            new_design_no         = _keep(design_no,         "design_no")
+            keep_source_batch_id  = (existing["source_batch_id"]   or source_batch_id)
+            keep_source_invoice   = (existing["source_invoice_no"] or source_invoice_no)
+            keep_source_doc_id    = (existing["source_document_id"] or source_document_id)
+            new_last_seen         = (last_seen_batch_id or source_batch_id
+                                     or existing["last_seen_batch_id"] or "")
             con.execute(
                 """UPDATE product_master
                    SET design_no=?, description=?, metal=?, category=?,
-                       source_invoice_no=?, source_batch_id=?, updated_at=?
+                       source_invoice_no=?, source_batch_id=?,
+                       item_type=?, hsn_code=?, unit_price_ref=?,
+                       currency_ref=?, confidence=?,
+                       source_document_id=?, last_seen_batch_id=?,
+                       updated_at=?
                    WHERE product_code=?""",
-                (design_no, description, metal, category,
-                 source_invoice_no, source_batch_id, now, product_code),
+                (new_design_no, description, metal, category,
+                 keep_source_invoice, keep_source_batch_id,
+                 item_type, hsn_code, unit_price_ref,
+                 currency_ref, confidence,
+                 keep_source_doc_id,
+                 new_last_seen,
+                 now, product_code),
             )
             return existing["id"]
         cur = con.execute(
             """INSERT INTO product_master
                (product_code, design_no, description, metal, category,
-                source_invoice_no, source_batch_id, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                source_invoice_no, source_batch_id,
+                item_type, hsn_code, unit_price_ref,
+                currency_ref, confidence,
+                source_document_id, last_seen_batch_id,
+                created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (product_code, design_no, description, metal, category,
-             source_invoice_no, source_batch_id, now, now),
+             source_invoice_no, source_batch_id,
+             item_type, hsn_code, unit_price_ref,
+             currency_ref, confidence,
+             source_document_id,
+             (last_seen_batch_id or source_batch_id),
+             now, now),
         )
         return cur.lastrowid
 
