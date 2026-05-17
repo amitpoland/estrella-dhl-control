@@ -93,9 +93,12 @@ def test_dashboard_html_no_duplicate_definitions():
 
 # ── Boundaries: nothing else moved ──────────────────────────────────────
 
-def test_sidebar_still_in_dashboard():
-    """Sidebar is deferred to Phase 1B per scope rules."""
-    assert re.search(r"\bfunction\s+Sidebar\b\s*\(", _read(DASH))
+def test_sidebar_moved_to_shared_after_phase_1b():
+    """Phase 1B lifted Sidebar into dashboard-shared.js. The Phase 1
+    boundary that asserted Sidebar must remain in dashboard.html no
+    longer applies — see test_phase1b_sidebar_shared.py."""
+    hits = re.findall(r"\bfunction\s+Sidebar\b\s*\(", _read(DASH))
+    assert len(hits) == 0, "Sidebar must be removed from dashboard.html in Phase 1B"
 
 
 def test_batch_detail_page_still_in_dashboard():
