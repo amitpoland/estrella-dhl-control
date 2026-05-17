@@ -967,6 +967,30 @@ async def reprocess_packing_documents(
             # ── Sales-side: extract_packing + store_sales_packing_lines ─
             elif document_type == "sales_packing_list":
                 sp_rows, _, _, sp_diag = extract_packing(file_path)
+
+                # ── PR-3: Sales Packing Matcher ─────────────────────
+                # Copy canonical product_code from same-batch purchase
+                # packing_lines into the parsed sales rows BEFORE the
+                # reshape loop reads r["product_code"].  Batch-scoped
+                # only — cross-batch design collisions cannot leak.
+                # Existing non-empty product_code on a row is
+                # preserved untouched.  Never invents codes; never
+                # uses design_no as a fallback.
+                from ..services.sales_packing_matcher import (
+                    match_sales_lines_to_packing as _match_sales,
+                )
+                sp_rows, _matcher_summary = _match_sales(batch_id, sp_rows)
+                if _matcher_summary.get("designs_resolved") \
+                        or _matcher_summary.get("designs_ambiguous") \
+                        or _matcher_summary.get("designs_unresolved"):
+                    log.info(
+                        "[%s] sales matcher: %s",
+                        batch_id, _matcher_summary,
+                    )
+                # Surface matcher buckets on the per-file response so
+                # the dashboard can render resolved/ambiguous/unresolved
+                # without re-deriving from logs.
+                result_entry["sales_matcher_summary"] = _matcher_summary
                 # Resolve a sales_documents id for this batch so sales
                 # lines are properly linked. If none exists yet, register
                 # a sales_invoice placeholder so the FK is satisfiable.
