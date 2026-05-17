@@ -149,6 +149,33 @@ def test_sales_only_batch_still_renders_sales(client):
     assert sales["side"] == "sales"
     assert sales["row_count"] == 5
     assert sales["fallback_unparsed"] is False  # rows present → not fallback
+    # 2026-05-17 follow-up: row_count > 0 must surface as extracted, NOT
+    # the stale shipment_documents.extraction_status='pending' value.
+    assert sales["extraction_status"] == "extracted"
+    assert sales["parser_status"] == "extracted"
+
+
+def test_sales_row_with_lines_shows_extracted_not_pending(client):
+    """Regression for the 2026-05-17 'sales shows pending despite 28 rows'
+    bug. shipment_documents.extraction_status carries 'pending' from
+    intake and was never updated by the reprocess path; the route must
+    override it when sales_packing_lines actually has rows."""
+    cli, tmp = client
+    bid = "B-SALES-EXTRACTED"
+    _make_batch_folder(tmp, bid)
+    sales_doc_id = _seed_sales_shipment_doc(tmp, bid, file_hash="h-sp",
+                                            file_name="sp.xlsx")
+    _seed_sales_packing_lines(tmp, bid, sales_doc_id, count=28)
+
+    r = cli.get(f"/api/v1/packing/{bid}")
+    sales = next(d for d in r.json()["documents"]
+                 if d["document_type"] == "sales_packing_list")
+    # The stored shipment_documents row has extraction_status='pending'
+    # (intake default).  The endpoint must override when row_count > 0.
+    assert sales["row_count"] == 28
+    assert sales["extraction_status"] == "extracted"
+    assert sales["parser_status"] == "extracted"
+    assert sales["fallback_unparsed"] is False
 
 
 def test_sales_uploaded_no_rows_marked_fallback(client):
@@ -164,6 +191,27 @@ def test_sales_uploaded_no_rows_marked_fallback(client):
     assert sales["row_count"] == 0
     assert sales["fallback_unparsed"] is True
     assert sales["side"] == "sales"
+    # Honest pending — row_count==0 must stay pending, never claim extracted.
+    assert sales["extraction_status"] == "pending"
+    assert sales["parser_status"] == "pending"
+
+
+def test_sales_row_diagnostic_dict_empty_when_unavailable(client):
+    """Sales side does not persist parser_diagnostic_json (the column is
+    purchase-only on packing_documents).  The route must therefore emit
+    parser_diagnostic={} so the UI suppresses a misleading toggle.
+    Once a real persistence path exists, this assertion can relax."""
+    cli, tmp = client
+    bid = "B-SALES-DIAG"
+    _make_batch_folder(tmp, bid)
+    sales_doc_id = _seed_sales_shipment_doc(tmp, bid, file_hash="h-sp",
+                                            file_name="sp.xlsx")
+    _seed_sales_packing_lines(tmp, bid, sales_doc_id, count=3)
+
+    r = cli.get(f"/api/v1/packing/{bid}")
+    sales = next(d for d in r.json()["documents"]
+                 if d["document_type"] == "sales_packing_list")
+    assert sales["parser_diagnostic"] == {}
 
 
 def test_purchase_parsed_doc_carries_side_purchase(client):
