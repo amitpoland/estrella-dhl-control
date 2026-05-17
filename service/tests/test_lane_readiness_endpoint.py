@@ -152,6 +152,36 @@ def _seed_packing(tmp: Path, bid: str, codes: list) -> None:
     pdb.upsert_packing_lines(lines)
 
 
+def _seed_invoice_lines_anchor(tmp: Path, bid: str, *,
+                                invoice_no: str) -> None:
+    """Seed a stub invoice_lines row so the PR-8 missing-invoice gate
+    sees the anchor as present.  Tests that exercise PZ happy path
+    must call this when their _seed_packing helper uses an invoice_no
+    that isn't otherwise anchored."""
+    import uuid as _u, time as _t
+    from app.services import document_db as ddb
+    ddb.init_document_db(tmp / "documents.db")
+    doc_id = ddb.register_document(
+        batch_id=bid, document_type="invoice",
+        file_name=f"{invoice_no}.pdf",
+        file_path=f"/tmp/{invoice_no}.pdf",
+        file_hash=f"h-{invoice_no}", source="intake",
+    ) or ""
+    now = _t.strftime("%Y-%m-%dT%H:%M:%S", _t.gmtime())
+    with _s.connect(str(tmp / "documents.db")) as con:
+        con.execute(
+            """INSERT OR IGNORE INTO invoice_lines
+               (id, document_id, batch_id, invoice_no, line_position,
+                product_code, description, quantity, unit_price,
+                total_value, currency, hs_code, gross_weight, net_weight,
+                rate_usd, amount_usd, hsn_code, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (str(_u.uuid4()), doc_id, bid, invoice_no, 1,
+             f"{invoice_no}-stub", "Ring", 1.0, 0.0, 0.0, "",
+             "", 0, 0, 0.0, 0.0, "", now),
+        )
+
+
 def _seed_product_master(tmp: Path, codes, *, batch_id: str = "") -> None:
     """Seed product_master rows so PR-5's product_master_missing gate
     does not trip happy-path tests.  Tests probing the gate explicitly
@@ -327,19 +357,24 @@ def test_pz_blocked_by_uses_enumerated_reasons_only(client):
     body = cli.get("/api/v1/packing/B-EMPTY/lane-readiness").json()
     blocked = body["purchase"]["pz_blocked_by"]
     # PR-5: closed enum extended with product_master_missing.
+    # PR-8: closed enum extended with purchase_invoice_missing.
     valid = {"no_packing_rows", "products_missing", "sad_missing",
-             "product_master_missing"}
+             "product_master_missing", "purchase_invoice_missing"}
     assert set(blocked).issubset(valid), f"unexpected reasons: {blocked}"
     assert "no_packing_rows" in blocked
     assert "sad_missing" in blocked
 
 
-def test_pz_ready_requires_all_three_conditions(client):
+def test_pz_ready_requires_all_three_conditions(client, monkeypatch):
     cli, tmp = client
     bid = "B-READY"
     _make_batch(tmp, bid, sad=True)
     _seed_packing(tmp, bid, ["A", "B"])
     _seed_wfirma_products(tmp, {"A": "ready", "B": "created"})
+    # PR-8: also seed invoice_lines anchor for "INV" (what _seed_packing
+    # uses as invoice_no) so the new purchase_invoice_missing gate stays
+    # clean for this happy-path test.
+    _seed_invoice_lines_anchor(tmp, bid, invoice_no="INV")
     body = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
     p = body["purchase"]
     assert p["sad_present"] is True
@@ -449,6 +484,9 @@ def test_pr5_purchase_unblocked_after_product_master_present(client):
     _make_batch(tmp, bid, sad=True)
     _seed_packing(tmp, bid, ["EJL/Y-1"])
     _seed_wfirma_products(tmp, {"EJL/Y-1": "created"})
+    # PR-8: also seed invoice_lines anchor for "INV" so the new
+    # purchase_invoice_missing gate stays clean for this happy path.
+    _seed_invoice_lines_anchor(tmp, bid, invoice_no="INV")
     body = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
     p = body["purchase"]
     assert "product_master_missing" not in p["pz_blocked_by"]
@@ -682,4 +720,244 @@ def test_pr5_source_grep_no_external_calls():
                       "process_sad", "queue_email"):
         assert forbidden not in body, (
             f"lane-readiness body must not reference {forbidden!r}"
+        )
+
+
+# ── PR-8: Missing purchase invoice gate ──────────────────────────────────
+
+def _seed_purchase_packing_inv(tmp: Path, bid: str, *,
+                                invoice_no: str,
+                                product_code: str = "",
+                                design_no: str = "D-A") -> None:
+    """Seed one packing.db row carrying invoice_no (canonical detector)."""
+    from app.services import packing_db as pdb
+    pdb.init_packing_db(tmp / "packing.db")
+    doc_id = pdb.upsert_packing_document(
+        batch_id=bid, document_id=f"pd-{bid}-{invoice_no}",
+        source_file_path="/tmp/p.xlsx", invoice_no=invoice_no,
+        parser_name="t", parser_version="1",
+        source_file_hash=f"h-{bid}-{invoice_no}",
+    )
+    pdb.upsert_packing_lines([{
+        "packing_document_id": doc_id, "batch_id": bid,
+        "invoice_no": invoice_no, "invoice_line_position": 1,
+        "product_code": product_code, "design_no": design_no,
+        "batch_no": "", "bag_id": "", "tray_id": "",
+        "item_type": "", "uom": "PCS",
+        "quantity": 1.0, "gross_weight": 0, "net_weight": 0,
+        "metal": "", "karat": "", "stone_type": "", "remarks": "",
+        "extracted_confidence": 1.0, "requires_manual_review": False,
+        "pack_sr": 1, "unit_price": 0.0, "total_value": 0.0,
+    }])
+
+
+def _seed_invoice_line(tmp: Path, bid: str, *, invoice_no: str,
+                       product_code: str) -> None:
+    """Seed one invoice_lines row directly."""
+    import uuid as _u, sqlite3 as _sq, time as _t
+    from app.services import document_db as ddb
+    ddb.init_document_db(tmp / "documents.db")
+    doc_id = ddb.register_document(
+        batch_id=bid, document_type="invoice",
+        file_name=f"{invoice_no}.pdf", file_path=f"/tmp/{invoice_no}.pdf",
+        file_hash=f"h-{invoice_no}", source="intake",
+    ) or ""
+    now = _t.strftime("%Y-%m-%dT%H:%M:%S", _t.gmtime())
+    with _sq.connect(str(tmp / "documents.db")) as con:
+        con.execute(
+            """INSERT OR IGNORE INTO invoice_lines
+               (id, document_id, batch_id, invoice_no, line_position,
+                product_code, description, quantity, unit_price,
+                total_value, currency, hs_code, gross_weight, net_weight,
+                rate_usd, amount_usd, hsn_code, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (str(_u.uuid4()), doc_id, bid, invoice_no, 1, product_code,
+             "Ring", 1.0, 100.0, 100.0, "USD", "7113", 0, 0,
+             100.0, 100.0, "7113", now),
+        )
+
+
+def _seed_sales_packing_doc(tmp: Path, bid: str, file_name: str) -> None:
+    """Seed a shipment_documents row for a sales packing file (no parser)."""
+    from app.services import document_db as ddb
+    ddb.init_document_db(tmp / "documents.db")
+    ddb.register_document(
+        batch_id=bid, document_type="sales_packing_list",
+        file_name=file_name, file_path=f"/tmp/{file_name}",
+        file_hash=f"h-{file_name}", source="intake",
+    )
+
+
+# ── 1. purchase blocked by purchase_invoice_missing ──────────────────────
+
+def test_pr8_purchase_blocked_by_purchase_invoice_missing(client):
+    cli, tmp = client
+    bid = "B-PR8-PURCH"
+    _make_batch(tmp, bid, sad=True)
+    # packing_lines tagged invoice_no=EJL/26-27/200 but no invoice_lines.
+    _seed_purchase_packing_inv(tmp, bid, invoice_no="EJL/26-27/200",
+                                 product_code="EJL/26-27/200-1")
+    body = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
+    p = body["purchase"]
+    assert "purchase_invoice_missing" in p["pz_blocked_by"]
+    assert p["missing_purchase_invoices"] == ["EJL/26-27/200"]
+    assert p["pz_ready"] is False
+
+
+# ── 2. sales blocked by purchase_invoice_missing ─────────────────────────
+
+def test_pr8_sales_blocked_by_purchase_invoice_missing(client):
+    cli, tmp = client
+    bid = "B-PR8-SALES"
+    _make_batch(tmp, bid)
+    # Sales filename anchors on invoice 200 — no invoice_lines for 200.
+    _seed_sales_packing_doc(
+        tmp, bid, "EJL-26-27-200-Shipment packing list of -4pcs-Client Foo.xlsx",
+    )
+    body = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
+    s = body["sales"]
+    assert "purchase_invoice_missing" in s["blocked_by"]
+    assert s["missing_purchase_invoices_for_sales"] == ["EJL/26-27/200"]
+    assert s["ready"] is False
+
+
+# ── 3. gate clears after invoice_lines seeded ────────────────────────────
+
+def test_pr8_gate_clears_after_invoice_lines_seeded(client):
+    cli, tmp = client
+    bid = "B-PR8-CLEAR"
+    _make_batch(tmp, bid, sad=True)
+    _seed_purchase_packing_inv(tmp, bid, invoice_no="EJL/26-27/201",
+                                 product_code="EJL/26-27/201-1")
+    _seed_sales_packing_doc(
+        tmp, bid, "EJL-26-27-201-Shipment packing list-Client Bar.xlsx",
+    )
+    body1 = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
+    assert "purchase_invoice_missing" in body1["purchase"]["pz_blocked_by"]
+    assert "purchase_invoice_missing" in body1["sales"]["blocked_by"]
+
+    # Now seed an invoice_lines anchor for 201 → gates clear.
+    _seed_invoice_line(tmp, bid, invoice_no="EJL/26-27/201",
+                        product_code="EJL/26-27/201-1")
+    body2 = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
+    assert "purchase_invoice_missing" not in body2["purchase"]["pz_blocked_by"]
+    assert "purchase_invoice_missing" not in body2["sales"]["blocked_by"]
+    assert body2["purchase"]["missing_purchase_invoices"] == []
+    assert body2["sales"]["missing_purchase_invoices_for_sales"] == []
+
+
+# ── 4. lists sorted and deduped ──────────────────────────────────────────
+
+def test_pr8_missing_invoice_lists_sorted_dedup(client):
+    cli, tmp = client
+    bid = "B-PR8-SORT"
+    _make_batch(tmp, bid, sad=True)
+    # Two distinct missing invoices, seeded out of order.
+    _seed_purchase_packing_inv(tmp, bid, invoice_no="EJL/26-27/203",
+                                 product_code="EJL/26-27/203-1",
+                                 design_no="D-Z")
+    _seed_purchase_packing_inv(tmp, bid, invoice_no="EJL/26-27/202",
+                                 product_code="EJL/26-27/202-1",
+                                 design_no="D-Y")
+    _seed_sales_packing_doc(tmp, bid, "EJL-26-27-203-X.xlsx")
+    _seed_sales_packing_doc(tmp, bid, "EJL-26-27-202-X.xlsx")
+    # Duplicate sales filename anchor (same inv): must still dedup.
+    _seed_sales_packing_doc(tmp, bid, "EJL-26-27-202-Y.xlsx")
+    body = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
+    p, s = body["purchase"], body["sales"]
+    assert p["missing_purchase_invoices"] == ["EJL/26-27/202", "EJL/26-27/203"]
+    assert s["missing_purchase_invoices_for_sales"] == ["EJL/26-27/202", "EJL/26-27/203"]
+
+
+# ── 5. no false positive when invoice_lines present ──────────────────────
+
+def test_pr8_no_false_positive_when_invoice_present(client):
+    cli, tmp = client
+    bid = "B-PR8-OK"
+    _make_batch(tmp, bid, sad=True)
+    _seed_purchase_packing_inv(tmp, bid, invoice_no="EJL/26-27/204",
+                                 product_code="EJL/26-27/204-1")
+    _seed_invoice_line(tmp, bid, invoice_no="EJL/26-27/204",
+                        product_code="EJL/26-27/204-1")
+    _seed_sales_packing_doc(tmp, bid, "EJL-26-27-204-X.xlsx")
+    body = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
+    p, s = body["purchase"], body["sales"]
+    assert "purchase_invoice_missing" not in p["pz_blocked_by"]
+    assert "purchase_invoice_missing" not in s["blocked_by"]
+    assert p["missing_purchase_invoices"] == []
+    assert s["missing_purchase_invoices_for_sales"] == []
+
+
+# ── 6. sales filename without EJL pattern is ignored ────────────────────
+
+def test_pr8_non_ejl_sales_filename_ignored(client):
+    cli, tmp = client
+    bid = "B-PR8-NONEJL"
+    _make_batch(tmp, bid)
+    _seed_sales_packing_doc(tmp, bid,
+                              "RANDOM_NAME_NOT_EJL.xlsx")
+    body = cli.get(f"/api/v1/packing/{bid}/lane-readiness").json()
+    s = body["sales"]
+    # No anchor derivable → list empty → gate not raised by THIS file.
+    assert s["missing_purchase_invoices_for_sales"] == []
+    assert "purchase_invoice_missing" not in s["blocked_by"]
+
+
+# ── 7. read-only invariance under new fields ─────────────────────────────
+
+def test_pr8_endpoint_read_only_with_new_fields(client):
+    cli, tmp = client
+    bid = "B-PR8-RO"
+    _make_batch(tmp, bid, sad=True)
+    _seed_purchase_packing_inv(tmp, bid, invoice_no="EJL/26-27/205",
+                                 product_code="EJL/26-27/205-1")
+    _seed_sales_packing_doc(tmp, bid, "EJL-26-27-205-X.xlsx")
+
+    def _snap():
+        out = {}
+        for fname, tables in (
+            ("packing.db",            ["packing_documents", "packing_lines"]),
+            ("documents.db",          ["invoice_lines", "shipment_documents"]),
+            ("reservation_queue.db",  ["product_master"]),
+            ("wfirma.db",             ["wfirma_products"]),
+            ("proforma_links.db",     ["proforma_drafts"]),
+        ):
+            p = tmp / fname
+            if not p.exists(): continue
+            with _s.connect(str(p)) as c:
+                for t in tables:
+                    try:
+                        out[t] = c.execute(
+                            f"SELECT COUNT(*) FROM {t}"
+                        ).fetchone()[0]
+                    except Exception:
+                        pass
+        return out
+
+    before = _snap()
+    cli.get(f"/api/v1/packing/{bid}/lane-readiness")
+    cli.get(f"/api/v1/packing/{bid}/lane-readiness")
+    after = _snap()
+    assert before == after, f"row counts changed: before={before} after={after}"
+
+
+# ── 8. architectural guards — no writes, no externals in new path ───────
+
+def test_pr8_no_external_calls_or_writes_in_lane_readiness_body():
+    src = (Path(__file__).resolve().parents[1] / "app" / "api"
+           / "routes_packing.py").read_text(encoding="utf-8")
+    start = src.index("def get_lane_readiness(")
+    end   = src.index("# ── GET /api/v1/packing/{batch_id}/lines", start)
+    body  = src[start:end]
+    for forbidden in ("requests.", "httpx.", "wfirma_client",
+                      "smtp", "send_email", "dhl_dispatch",
+                      "process_sad", "queue_email"):
+        assert forbidden not in body, (
+            f"lane-readiness body must not reference {forbidden!r}"
+        )
+    for write_kw in ("INSERT INTO", "UPDATE ", "DELETE FROM",
+                     "upsert_", "store_", "replace_"):
+        assert write_kw not in body, (
+            f"lane-readiness body must not perform writes "
+            f"(found {write_kw!r})"
         )

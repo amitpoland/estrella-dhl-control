@@ -1322,18 +1322,29 @@ async def reprocess_packing_documents(
 # (zeros + safe defaults) on any internal failure.
 
 # Closed enum — never expand without API contract bump.
-_PZ_BLOCKED_NO_PACKING_ROWS       = "no_packing_rows"
-_PZ_BLOCKED_PRODUCTS_MISSING      = "products_missing"
-_PZ_BLOCKED_SAD_MISSING           = "sad_missing"
-_PZ_BLOCKED_PRODUCT_MASTER_MISSING = "product_master_missing"   # PR-5
+_PZ_BLOCKED_NO_PACKING_ROWS         = "no_packing_rows"
+_PZ_BLOCKED_PRODUCTS_MISSING        = "products_missing"
+_PZ_BLOCKED_SAD_MISSING             = "sad_missing"
+_PZ_BLOCKED_PRODUCT_MASTER_MISSING  = "product_master_missing"      # PR-5
+_PZ_BLOCKED_PURCHASE_INVOICE_MISSING = "purchase_invoice_missing"   # PR-8
 
 # Sales blocked_by — new closed enum introduced in PR-5.  Operator
 # dashboard derives a reason list parallel to pz_blocked_by.
-_SALES_BLOCKED_NO_DRAFTS               = "no_drafts"
-_SALES_BLOCKED_DRAFTS_HAVE_NO_LINES    = "drafts_have_no_lines"
-_SALES_BLOCKED_WFIRMA_PRODUCTS_MISSING = "wfirma_products_missing"
-_SALES_BLOCKED_PRODUCT_MASTER_MISSING  = "product_master_missing"
-_SALES_BLOCKED_POST_FAILED             = "post_failed"
+_SALES_BLOCKED_NO_DRAFTS                = "no_drafts"
+_SALES_BLOCKED_DRAFTS_HAVE_NO_LINES     = "drafts_have_no_lines"
+_SALES_BLOCKED_WFIRMA_PRODUCTS_MISSING  = "wfirma_products_missing"
+_SALES_BLOCKED_PRODUCT_MASTER_MISSING   = "product_master_missing"
+_SALES_BLOCKED_POST_FAILED              = "post_failed"
+_SALES_BLOCKED_PURCHASE_INVOICE_MISSING = "purchase_invoice_missing"  # PR-8
+
+
+# PR-8: regex used to derive an invoice_no anchor from sales packing
+# filenames. Matches the leading `EJL-YY-YY-NNN` prefix that intake
+# uses for every sales packing file. Non-matching filenames are
+# ignored — no false positives.
+_SALES_FILENAME_INVOICE_RE = re.compile(
+    r"^EJL-(\d+)-(\d+)-(\d+)", re.IGNORECASE,
+)
 
 
 @router.get("/{batch_id}/lane-readiness", dependencies=[_auth])
@@ -1432,6 +1443,12 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
         "product_master_missing":            [],
         "wfirma_products_missing":           [],
         "unresolved_purchase_product_codes": [],
+        # PR-8: invoice_no values present in packing_lines for this
+        # batch but ABSENT from invoice_lines.  Indicates a purchase
+        # invoice document was never uploaded/parsed — product_code
+        # cannot be minted, so any sales row referencing the same
+        # invoice will fail to resolve.
+        "missing_purchase_invoices":         [],
     }
     purch_pcs: set = set()
     wfirma_ready_pcs: set = set()
@@ -1544,6 +1561,48 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
         log.warning("[%s] lane-readiness audit.json read failed (non-fatal): %s",
                     batch_id, exc)
 
+    # ── PR-8: missing purchase invoice detection ─────────────────────────
+    # Purchase side — invoice_no values claimed by packing_lines that
+    # have no corresponding invoice_lines anchor.
+    pack_invs: set = set()
+    inv_lines_invs: set = set()
+    sales_filename_invs: set = set()
+    try:
+        for ln in (plines if 'plines' in locals() else
+                   (pdb.get_packing_lines_for_batch(batch_id) or [])):
+            inv = str(ln.get("invoice_no") or "").strip()
+            if inv:
+                pack_invs.add(inv)
+        from ..services import document_db as _ddb_inv
+        for r in (_ddb_inv.get_invoice_lines_for_batch(batch_id) or []):
+            inv = str(r.get("invoice_no") or "").strip()
+            if inv:
+                inv_lines_invs.add(inv)
+    except Exception as exc:
+        log.warning("[%s] lane-readiness missing-invoice scan failed "
+                    "(non-fatal): %s", batch_id, exc)
+    purchase["missing_purchase_invoices"] = sorted(
+        pack_invs - inv_lines_invs
+    )
+
+    # Sales side — derive an invoice_no anchor per sales_packing_list
+    # filename and check it against invoice_lines.
+    try:
+        from ..services import document_db as _ddb_sales_inv
+        sales_docs = _ddb_sales_inv.get_documents_for_batch(
+            batch_id, document_type="sales_packing_list",
+        ) or []
+        for sd in sales_docs:
+            fn = sd.get("file_name") or ""
+            m = _SALES_FILENAME_INVOICE_RE.match(fn)
+            if m:
+                anchor = f"EJL/{m.group(1)}-{m.group(2)}/{m.group(3)}"
+                sales_filename_invs.add(anchor)
+    except Exception as exc:
+        log.warning("[%s] lane-readiness sales-filename scan failed "
+                    "(non-fatal): %s", batch_id, exc)
+    missing_sales_invs = sorted(sales_filename_invs - inv_lines_invs)
+
     # PZ readiness + closed-enum blocked_by list.
     blocked: List[str] = []
     if purchase["packing_rows"] == 0:
@@ -1552,6 +1611,9 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
         blocked.append(_PZ_BLOCKED_PRODUCTS_MISSING)
     if not purchase["sad_present"]:
         blocked.append(_PZ_BLOCKED_SAD_MISSING)
+    # PR-8: surface purchase_invoice_missing on both lanes.
+    if purchase["missing_purchase_invoices"]:
+        blocked.append(_PZ_BLOCKED_PURCHASE_INVOICE_MISSING)
     # PR-5: product_master coverage gate.  product_master_missing
     # surfaces purchase-side codes that are absent from the canonical
     # identity registry — operator must repair before PZ posts.
@@ -1582,6 +1644,10 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
         sales_blocked.append(_SALES_BLOCKED_PRODUCT_MASTER_MISSING)
     if sales_counts["drafts_post_failed"] > 0:
         sales_blocked.append(_SALES_BLOCKED_POST_FAILED)
+    # PR-8: sales filename references an invoice anchor that was never
+    # parsed → product_code can never be minted/matched for those rows.
+    if missing_sales_invs:
+        sales_blocked.append(_SALES_BLOCKED_PURCHASE_INVOICE_MISSING)
     sales_blocked_sorted = sorted(set(sales_blocked))
     sales_ready = (sales_blocked_sorted == [])
 
@@ -1592,6 +1658,9 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
             "ready":                          sales_ready,
             "blocked_by":                     sales_blocked_sorted,
             "unresolved_sales_product_codes": unresolved_sales_pcs,
+            # PR-8: invoice anchors implied by sales filenames that
+            # have no invoice_lines evidence.  Always a list, sorted.
+            "missing_purchase_invoices_for_sales": missing_sales_invs,
         },
         "purchase": purchase,
     }
