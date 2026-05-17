@@ -200,9 +200,166 @@
     );
   }
 
+  // ── Phase 1B — sidebar shell primitives ─────────────────────────────
+  // EstrellaMark, SubTabStrip, and Sidebar live here so a future
+  // shipment-detail.html can render an identical nav chrome. Sidebar
+  // is prop-driven (navTree) — it does NOT close over NAV_TREE /
+  // NAV_INDEX / ROUTE_REDIRECTS / navGroupOf (those remain
+  // dashboard-specific app config in dashboard.html).
+
+  const _DEFAULT_SIDEBAR_W = 220;
+
+  // Private helper — mirrors dashboard.html's navGroupOf but operates
+  // on whatever navTree the caller passes. Keeps Sidebar self-contained
+  // inside the shared IIFE.
+  function _findActiveGroup(navTree, active) {
+    if (!Array.isArray(navTree)) return null;
+    for (const n of navTree) {
+      if (n.children && n.children.some(c => c.id === active)) return n;
+    }
+    return null;
+  }
+
+  function EstrellaMark({ size = 32 }) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 40 40" style={{ flexShrink: 0 }}>
+        <path d="M20 3 L37 20 L20 37 L3 20 Z" fill="none" stroke="var(--accent)" strokeWidth="1.6"/>
+        <path d="M20 13 L27 20 L20 27 L13 20 Z" fill="var(--accent)"/>
+        <path d="M16.5 16.5 L23.5 16.5" stroke="var(--sidebar-bg)" strokeWidth="0.8" opacity="0.5"/>
+      </svg>
+    );
+  }
+
+  function SubTabStrip({ group, active, onNav }) {
+    if (!group || !group.children) return null;
+    return (
+      <div style={{ display: 'flex', gap: 2, padding: '0 32px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', flexShrink: 0, overflowX: 'auto' }}>
+        {group.children.map(child => {
+          const isActive = active === child.id;
+          return (
+            <button key={child.id} onClick={() => child.href ? (window.location.href = child.href) : onNav(child.id)} style={{
+              padding: '8px 14px', border: 'none', cursor: 'pointer',
+              background: 'transparent', fontFamily: 'inherit', fontSize: 12, fontWeight: isActive ? 600 : 400,
+              color: isActive ? 'var(--accent)' : 'var(--text-2)',
+              borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+              transition: 'color 0.15s', whiteSpace: 'nowrap',
+            }}>{child.label}</button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function Sidebar({ active, onNav, collapsed, onToggle, navTree, width }) {
+    // Defensive defaults so a caller that forgets navTree degrades to
+    // an empty sidebar instead of throwing.
+    const tree = Array.isArray(navTree) ? navTree : [];
+    const W = typeof width === 'number' ? width : _DEFAULT_SIDEBAR_W;
+
+    const [openGroups, setOpenGroups] = React.useState(() => {
+      const init = {};
+      tree.forEach(n => { if (n.children) { init[n.id] = n.children.some(c => c.id === active); } });
+      return init;
+    });
+
+    const toggleGroup = (id) => setOpenGroups(g => ({ ...g, [id]: !g[id] }));
+
+    const activeGroup = _findActiveGroup(tree, active);
+
+    return (
+      <aside style={{
+        width: collapsed ? 52 : W, minWidth: collapsed ? 52 : W,
+        background: 'var(--sidebar-bg)', display: 'flex', flexDirection: 'column',
+        transition: 'width 0.2s,min-width 0.2s', overflow: 'hidden', zIndex: 10,
+        borderRight: '1px solid var(--sidebar-border)',
+      }}>
+        <div style={{ padding: '16px 14px', borderBottom: '1px solid var(--sidebar-border)', display: 'flex', alignItems: 'center', gap: 10, minHeight: 60 }}>
+          <EstrellaMark size={collapsed ? 28 : 30} />
+          {!collapsed && (
+            <div style={{ overflow: 'hidden' }}>
+              <div style={{ color: 'var(--sidebar-text)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', fontFamily: '"DM Serif Display",serif', lineHeight: 1.2 }}>Estrella</div>
+              <div style={{ color: 'var(--accent)', fontSize: 9, letterSpacing: '0.12em', marginTop: 1, opacity: 0.85 }}>ATLAS</div>
+            </div>
+          )}
+        </div>
+        <nav style={{ flex: 1, padding: '6px 0', overflowY: 'auto' }}>
+          {tree.map(item => {
+            const isLeafActive = active === item.id;
+            const isGroupActive = !!(item.children && item.children.some(c => c.id === active));
+            const isOpen = openGroups[item.id];
+
+            if (item.children) {
+              return (
+                <React.Fragment key={item.id}>
+                  <button onClick={() => { toggleGroup(item.id); if (!isOpen && !isGroupActive) onNav(item.defaultId || item.children[0].id); }}
+                    style={{
+                      width: '100%', display: 'flex', alignItems: 'center',
+                      gap: 10, padding: collapsed ? '9px 14px' : '9px 16px',
+                      background: isGroupActive ? 'var(--sidebar-active)' : 'transparent',
+                      border: 'none', cursor: 'pointer', textAlign: 'left',
+                      borderLeft: isGroupActive ? '2px solid var(--accent)' : '2px solid transparent',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={e => { if (!isGroupActive) e.currentTarget.style.background = 'var(--sidebar-hover)'; }}
+                    onMouseLeave={e => { if (!isGroupActive) e.currentTarget.style.background = isGroupActive ? 'var(--sidebar-active)' : 'transparent'; }}
+                  >
+                    <span style={{ color: isGroupActive ? 'var(--accent)' : 'var(--sidebar-icon)', fontSize: 14, minWidth: 18, textAlign: 'center' }}>{item.icon}</span>
+                    {!collapsed && <>
+                      <span style={{ flex: 1, color: isGroupActive ? 'var(--sidebar-text)' : 'var(--sidebar-text-muted)', fontSize: 12, fontWeight: isGroupActive ? 600 : 400 }}>{item.label}</span>
+                      <span style={{ color: 'var(--sidebar-text-muted)', fontSize: 10 }}>{isOpen ? '▾' : '▸'}</span>
+                    </>}
+                  </button>
+                  {!collapsed && isOpen && item.children.map(child => {
+                    const isChildActive = active === child.id;
+                    return (
+                      <button key={child.id} onClick={() => child.href ? (window.location.href = child.href) : onNav(child.id)} style={{
+                        width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '7px 16px 7px 42px',
+                        background: isChildActive ? 'var(--sidebar-active)' : 'transparent',
+                        border: 'none', cursor: 'pointer', textAlign: 'left',
+                        borderLeft: isChildActive ? '2px solid var(--accent)' : '2px solid transparent',
+                        transition: 'background 0.15s',
+                      }}
+                        onMouseEnter={e => { if (!isChildActive) e.currentTarget.style.background = 'var(--sidebar-hover)'; }}
+                        onMouseLeave={e => { if (!isChildActive) e.currentTarget.style.background = 'transparent'; }}
+                      >
+                        <span style={{ color: isChildActive ? 'var(--sidebar-text)' : 'var(--sidebar-text-muted)', fontSize: 11, fontWeight: isChildActive ? 600 : 400 }}>{child.label}</span>
+                      </button>
+                    );
+                  })}
+                </React.Fragment>
+              );
+            }
+
+            return (
+              <button key={item.id} onClick={() => onNav(item.id)} style={{
+                width: '100%', display: 'flex', alignItems: 'center',
+                gap: 10, padding: collapsed ? '9px 14px' : '9px 16px',
+                background: isLeafActive ? 'var(--sidebar-active)' : 'transparent',
+                border: 'none', cursor: 'pointer', textAlign: 'left',
+                borderLeft: isLeafActive ? '2px solid var(--accent)' : '2px solid transparent',
+                transition: 'background 0.15s',
+              }}
+                onMouseEnter={e => { if (!isLeafActive) e.currentTarget.style.background = 'var(--sidebar-hover)'; }}
+                onMouseLeave={e => { if (!isLeafActive) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <span style={{ color: isLeafActive ? 'var(--accent)' : 'var(--sidebar-icon)', fontSize: 14, minWidth: 18, textAlign: 'center' }}>{item.icon}</span>
+                {!collapsed && <span style={{ color: isLeafActive ? 'var(--sidebar-text)' : 'var(--sidebar-text-muted)', fontSize: 12, fontWeight: isLeafActive ? 600 : 400 }}>{item.label}</span>}
+              </button>
+            );
+          })}
+        </nav>
+        <button onClick={onToggle} style={{ padding: '12px 16px', background: 'transparent', border: 'none', borderTop: '1px solid var(--sidebar-border)', cursor: 'pointer', color: 'var(--sidebar-icon)', fontSize: 12, display: 'flex', justifyContent: collapsed ? 'center' : 'flex-end' }}>
+          {collapsed ? '›' : '‹'}
+        </button>
+      </aside>
+    );
+  }
+
   // ── Export ─────────────────────────────────────────────────────────
   window.EstrellaShared = Object.freeze({
     apiFetch, fmtPLN,
     Badge, Card, Btn, Sel, Toast, SessionBanner,
+    EstrellaMark, SubTabStrip, Sidebar,
   });
 })();

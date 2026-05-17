@@ -170,9 +170,10 @@ def test_batch_detail_page_still_in_dashboard():
     assert "function BatchDetailPage(" in DASH
 
 
-def test_sidebar_still_in_dashboard():
-    """Phase 1B has not happened yet — Sidebar stays."""
-    assert re.search(r"\bfunction\s+Sidebar\b\s*\(", DASH)
+def test_sidebar_moved_to_shared_after_phase_1b():
+    """Phase 1B lifted Sidebar into dashboard-shared.js."""
+    hits = re.findall(r"\bfunction\s+Sidebar\b\s*\(", DASH)
+    assert len(hits) == 0, "Sidebar must live in dashboard-shared.js after Phase 1B"
 
 
 def test_route_helper_unchanged():
