@@ -10739,6 +10739,323 @@ function SelfclearanceStatePill({ batchId }) {
   );
 }
 
+// ── B0.X R3 — Contractor Resolution panel ─────────────────────────────────
+//
+// Operator-facing UI for the packing-list contractor resolver (PR #161 +
+// #162). Reads + writes ONLY the new
+//   GET  /api/v1/packing/{batch_id}/contractor-resolution
+//   POST /api/v1/packing/{batch_id}/contractor-resolution
+//   POST /api/v1/packing/{batch_id}/contractor-resolution/confirm
+// routes. Never calls wFirma. Never touches proforma / PZ / DHL / customs /
+// finance. "Create new" stays disabled until a separate confirm-modal
+// batch is approved.
+
+function ContractorResolutionRoleCard({
+  batchId, role, label, suggestedSource, onToast,
+}) {
+  const [verdict, setVerdict]   = React.useState(null);   // null | persisted row
+  const [loading, setLoading]   = React.useState(false);
+  const [busy, setBusy]         = React.useState(false);
+  const [error, setError]       = React.useState(null);
+  const [chosenId, setChosenId] = React.useState("");
+
+  // Load on mount + when batchId or role changes.
+  React.useEffect(() => {
+    if (!batchId) return;
+    let alive = true;
+    setLoading(true); setError(null);
+    apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution/${role}`)
+      .then(d => { if (alive) { setVerdict(d); setChosenId(d.matched_master_id ? String(d.matched_master_id) : ""); } })
+      .catch(e => {
+        if (!alive) return;
+        // 404 just means nothing resolved yet — not an error to display.
+        if (/\b404\b/.test(String(e.message || ""))) {
+          setVerdict(null);
+        } else {
+          setError(e.message || String(e));
+        }
+      })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [batchId, role]);
+
+  const reload = React.useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const d = await apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution/${role}`);
+      setVerdict(d);
+      setChosenId(d.matched_master_id ? String(d.matched_master_id) : "");
+    } catch (e) {
+      if (/\b404\b/.test(String(e.message || ""))) setVerdict(null);
+      else setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [batchId, role]);
+
+  const resolveNow = async () => {
+    const parsed_name    = window.prompt(
+      `Parsed ${label} name (from packing list / filename):`,
+      (suggestedSource && suggestedSource[role]) || ""
+    );
+    if (!parsed_name) return;
+    const parsed_country = window.prompt(`Parsed country (ISO alpha-2, optional):`, "") || "";
+    setBusy(true); setError(null);
+    try {
+      const body = { role, parsed_name, parsed_country };
+      const r = await apiFetch(
+        `/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution`,
+        { method: "POST", headers: { "X-Operator-User": "dashboard" }, body: JSON.stringify(body) },
+      );
+      setVerdict(r);
+      setChosenId(r.matched_master_id ? String(r.matched_master_id) : "");
+      onToast && onToast(`${label} resolver: ${r.status} (tier ${r.tier})`, "success");
+    } catch (e) {
+      setError(e.message || String(e));
+      onToast && onToast(`${label} resolve failed: ${e.message || e}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmOrOverride = async () => {
+    if (!verdict) return;
+    setBusy(true); setError(null);
+    try {
+      const body = { role };
+      // If operator picked a candidate different from the auto match,
+      // attach the override fields so the route flips status to 'overridden'.
+      const currentMatchId = verdict.matched_master_id ? String(verdict.matched_master_id) : "";
+      if (chosenId && chosenId !== currentMatchId) {
+        const cand = (verdict.candidates || []).find(c => String(c.master_id) === chosenId);
+        if (cand) {
+          body.matched_master_type = cand.master_type;
+          body.matched_master_id   = cand.master_id;
+          body.matched_wfirma_id   = cand.wfirma_id;
+        }
+      }
+      const r = await apiFetch(
+        `/api/v1/packing/${encodeURIComponent(batchId)}/contractor-resolution/confirm`,
+        { method: "POST", headers: { "X-Operator-User": "dashboard" }, body: JSON.stringify(body) },
+      );
+      setVerdict(r);
+      onToast && onToast(`${label} ${r.status}` + (r.operator_override ? " (override)" : ""), "success");
+    } catch (e) {
+      setError(e.message || String(e));
+      onToast && onToast(`${label} confirm failed: ${e.message || e}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Visual styles for status badge.
+  const statusStyle = (s) => {
+    const map = {
+      auto:        { bg: 'var(--badge-blue-bg)',  fg: 'var(--badge-blue-text)',  brd: 'var(--badge-blue-border)' },
+      unresolved:  { bg: 'var(--badge-red-bg)',   fg: 'var(--badge-red-text)',   brd: 'var(--badge-red-border)' },
+      confirmed:   { bg: 'var(--badge-green-bg)', fg: 'var(--badge-green-text)', brd: 'var(--badge-green-border)' },
+      overridden:  { bg: 'var(--badge-amber-bg)', fg: 'var(--badge-amber-text)', brd: 'var(--badge-amber-border)' },
+    };
+    return map[s] || { bg: 'var(--badge-neutral-bg)', fg: 'var(--badge-neutral-text)', brd: 'var(--badge-neutral-border)' };
+  };
+
+  return (
+    <div data-testid={`contractor-resolution-${role}-card`}
+      data-status={verdict ? verdict.status : 'none'}
+      style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8,
+        background: 'var(--card)', marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <div style={{ flex: 1, fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>
+          {label} role
+        </div>
+        {verdict && (() => {
+          const st = statusStyle(verdict.status);
+          return (
+            <span data-testid={`contractor-resolution-${role}-status`}
+              style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                borderRadius: 10, background: st.bg, color: st.fg,
+                border: `1px solid ${st.brd}`, letterSpacing: '0.04em',
+                textTransform: 'uppercase' }}>
+              {verdict.status}
+            </span>
+          );
+        })()}
+        {verdict && (
+          <span data-testid={`contractor-resolution-${role}-tier`}
+            style={{ fontSize: 10, color: 'var(--text-3)' }}>
+            tier {verdict.tier} · conf {Number(verdict.confidence || 0).toFixed(2)}
+          </span>
+        )}
+      </div>
+
+      {loading && (
+        <div data-testid={`contractor-resolution-${role}-loading`}
+          style={{ padding: 8, fontSize: 11, color: 'var(--text-3)' }}>Loading…</div>
+      )}
+      {error && (
+        <div data-testid={`contractor-resolution-${role}-error`}
+          style={{ padding: 8, fontSize: 11, color: 'var(--badge-red-text)',
+            background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+            borderRadius: 6 }}>{error}</div>
+      )}
+
+      {!loading && !verdict && (
+        <div data-testid={`contractor-resolution-${role}-empty`}
+          style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+          No resolution stored yet. Click <strong>Resolve</strong> to match the
+          packing list {label.toLowerCase()} against the local master cache.
+        </div>
+      )}
+
+      {verdict && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 11, color: 'var(--text-2)', marginBottom: 8 }}>
+          <div>
+            <div style={{ fontSize: 9, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>parsed</div>
+            <div data-testid={`contractor-resolution-${role}-parsed-name`} style={{ fontWeight: 600 }}>
+              {verdict.parsed_name || '—'}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)' }}>
+              {[verdict.parsed_country, verdict.parsed_tax_id].filter(Boolean).join(' · ') || '—'}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>matched</div>
+            <div data-testid={`contractor-resolution-${role}-matched`} style={{ fontWeight: 600 }}>
+              {(verdict.candidates || []).find(c => String(c.master_id) === String(verdict.matched_master_id))
+                ?.display_name || (verdict.matched_master_id ? `#${verdict.matched_master_id}` : '—')}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)' }}>
+              {verdict.matched_master_type || '—'}
+              {verdict.matched_wfirma_id && <span> · wFirma {verdict.matched_wfirma_id}</span>}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)' }}>reason: {verdict.reason || '—'}</div>
+          </div>
+        </div>
+      )}
+
+      {verdict && (verdict.candidates || []).length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 9, color: 'var(--text-3)', textTransform: 'uppercase',
+            letterSpacing: '0.04em', marginBottom: 4 }}>Override (pick from candidates)</div>
+          <select data-testid={`contractor-resolution-${role}-override`}
+            value={chosenId} onChange={e => setChosenId(e.target.value)}
+            style={{ width: '100%', padding: '5px 8px', fontSize: 11, fontFamily: 'inherit',
+              background: 'var(--bg-subtle)', color: 'var(--text)',
+              border: '1px solid var(--border)', borderRadius: 4 }}>
+            <option value="">— Keep automatic match —</option>
+            {(verdict.candidates || []).map((c, i) => (
+              <option key={c.master_id || i} value={String(c.master_id || '')}>
+                {c.display_name || `#${c.master_id}`} · {c.country || '?'}
+                {c.score != null ? ` · score ${c.score}` : ''}
+                {c.wfirma_id ? ` · wFirma ${c.wfirma_id}` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button data-testid={`contractor-resolution-${role}-resolve-btn`}
+          disabled={busy || loading || !batchId}
+          onClick={resolveNow}
+          style={{ padding: '5px 10px', fontSize: 11, fontWeight: 600,
+            background: 'var(--accent)', color: '#fff',
+            border: 'none', borderRadius: 6,
+            cursor: (busy || loading || !batchId) ? 'not-allowed' : 'pointer',
+            opacity: (busy || loading || !batchId) ? 0.5 : 1, fontFamily: 'inherit' }}>
+          {busy ? '…' : 'Resolve'}
+        </button>
+        <button data-testid={`contractor-resolution-${role}-confirm-btn`}
+          disabled={busy || loading || !verdict}
+          onClick={confirmOrOverride}
+          title={!verdict ? 'No resolution to confirm yet' : ''}
+          style={{ padding: '5px 10px', fontSize: 11, fontWeight: 600,
+            background: 'var(--bg-subtle)', color: 'var(--text)',
+            border: '1px solid var(--accent)', borderRadius: 6,
+            cursor: (busy || loading || !verdict) ? 'not-allowed' : 'pointer',
+            opacity: (busy || loading || !verdict) ? 0.5 : 1, fontFamily: 'inherit' }}>
+          {chosenId && verdict && chosenId !== (verdict.matched_master_id ? String(verdict.matched_master_id) : '')
+            ? 'Override'
+            : 'Use this match'}
+        </button>
+        {verdict && verdict.matched_master_id && (
+          <button data-testid={`contractor-resolution-${role}-open-master-btn`}
+            onClick={() => {
+              const tip = role === 'client'
+                ? 'Open Master Data → Client Master → row id ' + verdict.matched_master_id
+                : 'Open Master Data → Suppliers → row id ' + verdict.matched_master_id;
+              onToast && onToast(tip, 'info');
+            }}
+            style={{ padding: '5px 10px', fontSize: 11, background: 'var(--card)',
+              color: 'var(--text-2)', border: '1px solid var(--border)', borderRadius: 6,
+              cursor: 'pointer', fontFamily: 'inherit' }}>
+            Open {role === 'client' ? 'Client Master' : 'Supplier Master'}
+          </button>
+        )}
+        <button data-testid={`contractor-resolution-${role}-create-new-btn`}
+          disabled
+          title="Create-new path is disabled in R3. The operator must create the master row via the existing Client/Supplier Master CRUD endpoints first, then re-Resolve."
+          style={{ padding: '5px 10px', fontSize: 11, background: 'var(--card)',
+            color: 'var(--text-3)', border: '1px dashed var(--border)', borderRadius: 6,
+            cursor: 'not-allowed', fontFamily: 'inherit', opacity: 0.6 }}>
+          + Create new (disabled)
+        </button>
+      </div>
+
+      {verdict && verdict.status === 'unresolved' && (
+        <div data-testid={`contractor-resolution-${role}-unresolved-warning`}
+          style={{ marginTop: 8, padding: '6px 10px', fontSize: 11,
+            background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+            border: '1px solid var(--badge-amber-border)', borderRadius: 6 }}>
+          Operator must pick a candidate (or create the master row separately)
+          before proforma / PZ can use this {label.toLowerCase()}.
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function ContractorResolutionPanel({ batchId, packingInfo }) {
+  // Pre-fill the resolve prompt with whatever the existing packing parser
+  // suggested for the client. The supplier side has no parser today —
+  // operator types it in manually.
+  const suggested = React.useMemo(() => {
+    const docs = (packingInfo && packingInfo.documents) || [];
+    const first = docs[0] || {};
+    return { client: first.suggested_client_name || '', supplier: '' };
+  }, [packingInfo]);
+
+  if (!batchId) return null;
+
+  return (
+    <Card data-testid="contractor-resolution-panel" style={{ marginTop: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+            🧭 Contractor resolution
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+            Match the packing-list contractors against the local Client / Supplier
+            Master cache. Read-only against wFirma. No automatic create.
+          </div>
+        </div>
+      </div>
+      <ContractorResolutionRoleCard
+        batchId={batchId} role="client" label="Client"
+        suggestedSource={suggested}
+        onToast={(msg, kind) => { /* parent toast already exists via packing parent */ }}
+      />
+      <ContractorResolutionRoleCard
+        batchId={batchId} role="supplier" label="Supplier"
+        suggestedSource={suggested}
+        onToast={(msg, kind) => { /* parent toast */ }}
+      />
+    </Card>
+  );
+}
+
+
 function BatchDetailPage({ batchId, onBack, onToast }) {
   const [audit, setAudit] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -12397,6 +12714,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               </Card>
             );
           })()}
+
+          {/* ── B0.X R3 — Contractor Resolution panel ─────────────────────
+              Pre-flights the packing-list contractor matches against the
+              local Client Master + Supplier Master caches and persists
+              the operator's confirm/override decision via the R2 routes
+              (PR #162). Inserted between the Packing List card and the
+              Document Registry. Does NOT change proforma / PZ / DHL /
+              customs / finance behaviour. Does NOT auto-create master
+              rows. Does NOT call wFirma. */}
+          <ContractorResolutionPanel batchId={batchId} packingInfo={packingInfo} />
 
           {/* ── Document Registry (per-batch, read-only) ─────────────────── */}
           {(() => {
