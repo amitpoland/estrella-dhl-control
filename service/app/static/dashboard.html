@@ -12983,7 +12983,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 {(() => {
                   const fn = audit.polish_desc_filename;
                   return (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)' }}>
+                    <div data-testid="generated-output-polish-desc" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)' }}>
                       <div style={{ width: 36, height: 36, borderRadius: 6, background: fn ? 'var(--badge-blue-bg)' : 'var(--badge-neutral-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>📄</div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 12, fontWeight: 600, color: fn ? 'var(--text)' : 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fn || 'Polish Customs Description'}</div>
@@ -12992,6 +12992,29 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         {fn ? <span style={{ fontSize: 10, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Generated</span> : <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Not generated</span>}
                         {fn && <a href={`/api/v1/dhl/download/${encodeURIComponent(fn)}`} download style={{ textDecoration: 'none' }}><Btn small variant="outline">↓</Btn></a>}
+                        {fn && <button onClick={() => deleteOutputFile(fn)} title="Delete file"
+                          style={{ background: 'none', border: '1px solid #e8a0a0', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: '#c44', lineHeight: 1 }}>✕</button>}
+                      </div>
+                    </div>
+                  );
+                })()}
+                {/* DSK Document — stored separately via audit.dsk_filename. Display-only
+                    parallel to the Polish Description row above; reuses the same
+                    /api/v1/dhl/download endpoint and the same status pattern. */}
+                {(() => {
+                  const fn = audit.dsk_filename;
+                  return (
+                    <div data-testid="generated-output-dsk" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)' }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 6, background: fn ? 'var(--badge-blue-bg)' : 'var(--badge-neutral-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>📄</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: fn ? 'var(--text)' : 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fn || 'DSK Document'}</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-2)', marginTop: 1 }}>DSK Document (Broker Notification)</div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {fn
+                          ? <span data-testid="generated-output-dsk-status" style={{ fontSize: 10, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Generated</span>
+                          : <span data-testid="generated-output-dsk-status" style={{ fontSize: 10, color: 'var(--text-3)' }}>Not generated</span>}
+                        {fn && <a data-testid="generated-output-dsk-download" href={`/api/v1/dhl/download/${encodeURIComponent(fn)}`} download style={{ textDecoration: 'none' }}><Btn small variant="outline">↓</Btn></a>}
                         {fn && <button onClick={() => deleteOutputFile(fn)} title="Delete file"
                           style={{ background: 'none', border: '1px solid #e8a0a0', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: '#c44', lineHeight: 1 }}>✕</button>}
                       </div>
