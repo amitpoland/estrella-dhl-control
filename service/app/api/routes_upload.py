@@ -1122,13 +1122,31 @@ def list_batch_documents(batch_id: str) -> JSONResponse:
     docs = ddb.get_documents_for_batch(batch_id)
     enriched = []
     for d in docs:
-        all_fields = ddb.get_fields_for_document(d.get("id", ""))
-        enriched.append({
+        doc_id = d.get("id", "")
+        all_fields = ddb.get_fields_for_document(doc_id)
+        row = {
             **d,
             "fields":            all_fields[:50],
             "fields_total":      len(all_fields),
             "fields_truncated":  len(all_fields) > 50,
-        })
+        }
+        # ── Invoice-side enrichment: 2026-05-17 hotfix ────────────────
+        # Invoice extraction writes to invoice_lines, not
+        # document_extracted_fields. The Document Registry used to read
+        # only the latter and render "Fields: 0" for invoice rows even
+        # when invoice_lines existed. Surface the line count + a small
+        # preview so the UI can render "N lines" honestly.
+        if (d.get("document_type") or "") in ("purchase_invoice", "sales_invoice"):
+            try:
+                lines_preview = ddb.get_invoice_lines_for_document(doc_id, limit=20)
+                lines_total   = ddb.count_invoice_lines_for_document(doc_id)
+                row["lines_preview"]   = lines_preview
+                row["lines_count"]     = lines_total
+                row["lines_truncated"] = lines_total > len(lines_preview)
+            except Exception as exc:
+                log.warning("[%s] invoice lines enrichment failed (non-fatal) doc=%s: %s",
+                            batch_id, doc_id, exc)
+        enriched.append(row)
     return JSONResponse({
         "batch_id": batch_id,
         "count":    len(enriched),

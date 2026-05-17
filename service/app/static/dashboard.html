@@ -13229,16 +13229,42 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         <th style={thStyle}>Review</th>
                         <th style={thStyle}>Hash</th>
                         <th style={thStyle}>Created</th>
-                        <th style={thStyle}>Fields</th>
+                        <th style={thStyle}>Lines / Fields</th>
                       </tr></thead>
                       <tbody>
                         {docs.map((d, i) => {
                           const isOpen = expandedDocId === d.id;
                           const fields = d.fields || [];
                           const fieldsTotal = d.fields_total ?? fields.length;
+                          // Invoice rows: invoice extraction writes to
+                          // invoice_lines, not document_extracted_fields.
+                          // The 2026-05-17 registry payload enrichment adds
+                          // lines_count + lines_preview so we can show
+                          // "N lines" instead of misleading "Fields: 0".
+                          const isInvoice = d.document_type === 'purchase_invoice' || d.document_type === 'sales_invoice';
+                          const linesCount = d.lines_count;
+                          const linesPreview = d.lines_preview || [];
+                          // Count column: invoices show "N lines"; everything
+                          // else keeps "N fields" semantics. Honest "—"
+                          // when the relevant store is empty for the row's
+                          // doc type (avoids the misleading "0").
+                          let countCell;
+                          if (isInvoice) {
+                            if (typeof linesCount === 'number') {
+                              countCell = linesCount > 0
+                                ? <span data-testid="doc-registry-lines-count">{linesCount}{d.lines_truncated ? '+' : ''} lines</span>
+                                : (d.extraction_status === 'extraction_failed'
+                                    ? <span style={{ color: 'var(--badge-amber-text)' }}>extraction failed</span>
+                                    : <span style={{ color: 'var(--text-3)' }}>no lines</span>);
+                            } else {
+                              countCell = <span style={{ color: 'var(--text-3)' }}>—</span>;
+                            }
+                          } else {
+                            countCell = <span>{fieldsTotal}{d.fields_truncated ? '+' : ''}{fieldsTotal > 0 ? ' fields' : ''}</span>;
+                          }
                           return (
                             <React.Fragment key={d.id || i}>
-                              <tr style={{ cursor: 'pointer' }} onClick={() => setExpandedDocId(isOpen ? null : d.id)}>
+                              <tr data-testid={isInvoice ? 'doc-registry-row-invoice' : 'doc-registry-row-other'} style={{ cursor: 'pointer' }} onClick={() => setExpandedDocId(isOpen ? null : d.id)}>
                                 <td style={{ ...tdStyle, color: 'var(--text-3)' }}>{isOpen ? '▾' : '▸'}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace', color: 'var(--text)', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.canonical_file_name || d.file_name}>
                                   {d.canonical_file_name || d.file_name || '—'}
@@ -13253,12 +13279,52 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                 </td>
                                 <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace', fontSize: 10 }} title={d.file_hash}>{(d.file_hash || '').slice(0, 8) || '—'}</td>
                                 <td style={tdStyle}>{d.created_at ? d.created_at.slice(0,16).replace('T',' ') : '—'}</td>
-                                <td style={tdStyle}>{fieldsTotal}{d.fields_truncated ? '+' : ''}</td>
+                                <td style={tdStyle}>{countCell}</td>
                               </tr>
                               {isOpen && (
                                 <tr>
                                   <td colSpan={9} style={{ padding: '0 8px 12px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border-subtle)' }}>
-                                    {fields.length === 0 ? (
+                                    {isInvoice && linesPreview.length > 0 ? (
+                                      <div data-testid="doc-registry-invoice-preview">
+                                        <table style={{ ...tblStyle, marginTop: 8, marginBottom: 4, marginLeft: 16 }}>
+                                          <thead><tr>
+                                            <th style={thStyle}>#</th>
+                                            <th style={thStyle}>Invoice</th>
+                                            <th style={thStyle}>Product</th>
+                                            <th style={thStyle}>Description</th>
+                                            <th style={thStyle}>Qty</th>
+                                            <th style={thStyle}>Unit</th>
+                                            <th style={thStyle}>Total</th>
+                                            <th style={thStyle}>Currency</th>
+                                          </tr></thead>
+                                          <tbody>
+                                            {linesPreview.map((ln, li) => (
+                                              <tr key={ln.id || li}>
+                                                <td style={tdStyle}>{ln.line_position ?? li + 1}</td>
+                                                <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{ln.invoice_no || '—'}</td>
+                                                <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{ln.product_code || '—'}</td>
+                                                <td style={{ ...tdStyle, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ln.description}>{ln.description || '—'}</td>
+                                                <td style={tdStyle}>{ln.quantity ?? 0}</td>
+                                                <td style={tdStyle}>{typeof ln.unit_price === 'number' ? ln.unit_price.toFixed(2) : (ln.unit_price || 0)}</td>
+                                                <td style={tdStyle}>{typeof ln.total_value === 'number' ? ln.total_value.toFixed(2) : (ln.total_value || 0)}</td>
+                                                <td style={tdStyle}>{ln.currency || '—'}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                        {d.lines_truncated && (
+                                          <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '4px 16px 8px' }}>Showing first {linesPreview.length} of {linesCount} lines.</div>
+                                        )}
+                                      </div>
+                                    ) : isInvoice ? (
+                                      <div data-testid="doc-registry-invoice-empty" style={{ fontSize: 11, color: 'var(--text-3)', padding: '12px 4px' }}>
+                                        {d.extraction_status === 'extraction_failed'
+                                          ? 'Invoice extraction failed. Re-upload or run Recheck after fixing the source PDF.'
+                                          : (d.parser_status === 'pending' || d.extraction_status === 'pending')
+                                            ? 'Invoice extraction pending — run Recheck to parse.'
+                                            : 'No invoice lines extracted for this document.'}
+                                      </div>
+                                    ) : fields.length === 0 ? (
                                       <div style={{ fontSize: 11, color: 'var(--text-3)', padding: '12px 4px' }}>No extracted fields for this document.</div>
                                     ) : (
                                       <table style={{ ...tblStyle, marginTop: 8, marginBottom: 4, marginLeft: 16 }}>
@@ -13284,7 +13350,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                                         </tbody>
                                       </table>
                                     )}
-                                    {d.fields_truncated && (
+                                    {!isInvoice && d.fields_truncated && (
                                       <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '4px 16px 8px' }}>Showing first 50 of {fieldsTotal} fields.</div>
                                     )}
                                   </td>
