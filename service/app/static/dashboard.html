@@ -13425,6 +13425,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       // badge instead of the green "extracted" badge so
                       // we never claim parsed status that doesn't exist.
                       const isFallback = !!doc.fallback_unparsed;
+                      // Purchase vs sales badge sourced from backend
+                      // `side` field (preferred) with document_type fallback.
+                      // Never inferred from filename — keeps purchase/sales
+                      // separation honest end-to-end.
+                      const sideRaw = (doc.side || '').toLowerCase();
+                      const isSales = sideRaw === 'sales' || doc.document_type === 'sales_packing_list';
+                      const sideLabel  = isSales ? 'SALES' : 'PURCHASE';
+                      const sideBadgeBg     = isSales ? 'var(--badge-purple-bg, #f3e8ff)'   : 'var(--badge-blue-bg)';
+                      const sideBadgeText   = isSales ? 'var(--badge-purple-text, #6b21a8)' : 'var(--badge-blue-text)';
+                      const sideBadgeBorder = isSales ? 'var(--badge-purple-border, #c4b5fd)' : 'var(--badge-blue-border)';
                       const badgeBg     = isFallback ? 'var(--badge-amber-bg)'     : 'var(--badge-green-bg)';
                       const badgeText   = isFallback ? 'var(--badge-amber-text)'   : 'var(--badge-green-text)';
                       const badgeBorder = isFallback ? 'var(--badge-amber-border)' : 'var(--badge-green-border)';
@@ -13458,11 +13468,23 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           <div style={{ width: 32, height: 32, borderRadius: 6, background: isFallback ? 'var(--badge-amber-bg)' : 'var(--badge-blue-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>📄</div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={fileName}>{fileName}</div>
-                            <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
-                              {uploadedAt}
-                              {doc.document_type && <span style={{ marginLeft: 8, color: 'var(--text-2)' }}>{doc.document_type}</span>}
-                              {isLatest && !isFallback && lineCount > 0 && <span style={{ marginLeft: 8, color: 'var(--text-2)' }}>{lineCount} rows extracted</span>}
-                              {isFallback && <span style={{ marginLeft: 8, color: 'var(--badge-amber-text)' }}>Uploaded — extraction pending or failed</span>}
+                            <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              <span>{uploadedAt}</span>
+                              <span
+                                data-testid={isSales ? 'packing-list-row-side-sales' : 'packing-list-row-side-purchase'}
+                                style={{
+                                  fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
+                                  background: sideBadgeBg, color: sideBadgeText,
+                                  border: '1px solid ' + sideBadgeBorder,
+                                  letterSpacing: 0.4,
+                                }}>{sideLabel}</span>
+                              {isSales && typeof doc.row_count === 'number' && doc.row_count > 0 && (
+                                <span style={{ color: 'var(--text-2)' }}>{doc.row_count} rows extracted</span>
+                              )}
+                              {!isSales && isLatest && !isFallback && lineCount > 0 && (
+                                <span style={{ color: 'var(--text-2)' }}>{lineCount} rows extracted</span>
+                              )}
+                              {isFallback && <span style={{ color: 'var(--badge-amber-text)' }}>Uploaded — extraction pending or failed</span>}
                             </div>
                           </div>
                           {hasDiag && (
