@@ -991,17 +991,76 @@ async def reprocess_packing_documents(
                     except Exception:
                         sales_doc_id = doc_id
 
+                # ── Preserve operator-supplied identity across reprocess ──
+                # The parser does not know client_name / client_ref — the
+                # operator sets these at intake via slot metadata.  The
+                # atomic DELETE+INSERT in replace_sales_packing_lines
+                # would otherwise wipe them, and downstream
+                # sync_draft_from_packing_upload would skip the empty
+                # client group → zero proforma drafts.
+                #
+                # Linkage caveat: reprocess uses shipment_documents.id as
+                # sales_doc_id, but intake-stored rows are scoped to the
+                # sales_documents.id created by store_sales_document
+                # (different uuid). Per-doc match is therefore unreliable.
+                # Fallback: any existing row in the batch with a non-empty
+                # client_name. In normal operator flow each shipment has
+                # one client per sales file and the values agree across
+                # rows; in the rare case of mixed clients across files
+                # the operator can reupload with corrected metadata.
+                preserved_client_name = ""
+                preserved_client_ref  = ""
+                try:
+                    existing_rows = _ddb.get_sales_packing_lines(batch_id) or []
+                    # Pass 1: prefer rows scoped to the same sales_doc_id.
+                    for er in existing_rows:
+                        if er.get("sales_document_id") != sales_doc_id:
+                            continue
+                        if er.get("client_name") and not preserved_client_name:
+                            preserved_client_name = er["client_name"]
+                        if er.get("client_ref") and not preserved_client_ref:
+                            preserved_client_ref = er["client_ref"]
+                        if preserved_client_name and preserved_client_ref:
+                            break
+                    # Pass 2: fall back to any row in the batch.
+                    if not preserved_client_name:
+                        for er in existing_rows:
+                            if er.get("client_name"):
+                                preserved_client_name = er["client_name"]
+                                break
+                    if not preserved_client_ref:
+                        for er in existing_rows:
+                            if er.get("client_ref"):
+                                preserved_client_ref = er["client_ref"]
+                                break
+                except Exception as exc:
+                    log.warning("[%s] sales reprocess: client preservation "
+                                "lookup failed (non-fatal): %s", batch_id, exc)
+
                 # Reshape parser rows → sales_packing_lines schema.
                 line_records = []
                 for r in sp_rows:
+                    # Quantity: replace_sales_packing_lines reads
+                    # ln.get("quantity"); some parser variants emit "qty"
+                    # instead.  Accept both so the column never
+                    # silently zeroes.
+                    qty_val = r.get("quantity")
+                    if qty_val is None:
+                        qty_val = r.get("qty", 0)
+                    # Product code: defensive coerce of None → "" so the
+                    # column never stores the literal "None" string.
+                    pc_val = r.get("product_code")
                     line_records.append({
                         "batch_id":              batch_id,
                         "sales_document_id":     sales_doc_id,
+                        # Operator-supplied identity, preserved across reprocess.
+                        "client_name":           preserved_client_name,
+                        "client_ref":            preserved_client_ref,
                         "invoice_no":            r.get("invoice_no", ""),
                         "design_no":             str(r.get("design_no", "") or ""),
                         "bag_id":                str(r.get("bag_id", "") or ""),
-                        "product_code":          r.get("product_code"),
-                        "qty":                   float(r.get("quantity", 0) or 0),
+                        "product_code":          pc_val if pc_val is not None else "",
+                        "quantity":              float(qty_val or 0),
                         "unit_price":            float(r.get("unit_price", 0) or 0),
                         "currency":              (r.get("currency") or "").upper(),
                         "total_value":           float(r.get("total_value", 0) or 0),
