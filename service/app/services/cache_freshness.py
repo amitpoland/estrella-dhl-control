@@ -34,6 +34,12 @@ def is_audit_stale(audit: Dict[str, Any]) -> Tuple[bool, str]:
       1. row_schema_version is missing or older than CURRENT_ROW_SCHEMA_VERSION.
       2. Any row in audit['rows'] is missing a required v2 field.
 
+    Atlas-style intake-draft audits have NEITHER ``rows`` nor a
+    ``row_schema_version`` stamp — the engine simply has not been run
+    on them yet. Those are not stale, just not-yet-generated; return
+    (False, "") so the dashboard does not surface the misleading
+    "schema (missing) → v2" banner on fresh drafts.
+
     The dashboard / regeneration entrypoints should call this BEFORE rendering
     the audit and force a full regenerate when stale=True.
     """
@@ -41,6 +47,13 @@ def is_audit_stale(audit: Dict[str, Any]) -> Tuple[bool, str]:
         return True, "audit is not a dict"
 
     stamped = audit.get("row_schema_version", "")
+    rows    = audit.get("rows")
+
+    # Not-yet-engine-generated draft audit: no rows AND no stamp.
+    # Treat as not stale — no cached rows to be stale against.
+    if not stamped and (rows is None or rows == []):
+        return False, ""
+
     if stamped != CURRENT_ROW_SCHEMA_VERSION:
         return True, (
             f"row_schema_version={stamped!r} (expected {CURRENT_ROW_SCHEMA_VERSION!r})"
