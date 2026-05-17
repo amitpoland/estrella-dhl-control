@@ -1220,6 +1220,13 @@ EDITABLE_LINE_FIELDS = (
     "client_ref",
     "price_source",
     "remarks",
+    # PR #199: operator override layer.  item_type and name_pl normally
+    # come from product_descriptions (via enrich_lines_from_product_
+    # descriptions) but the operator must be able to set them per-line
+    # before posting — drafts are the override surface.  Enrich remains
+    # available as a helper but is no longer the only path.
+    "item_type",
+    "name_pl",
 )
 
 ALLOWED_SERVICE_CHARGE_TYPES = ("freight", "insurance")

@@ -11375,6 +11375,85 @@ function ProformaDraftPanel({ batchId, onToast }) {
       }),
     });
 
+  // ── Line CRUD (existing backend; UI added) ────────────────────────────
+  const onAddLine = (line) =>
+    _writeCall('Add line', `/api/v1/proforma/draft/${openId}/lines`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+        line,
+      }),
+    });
+
+  const onDeleteLine = (lineId) =>
+    _writeCall(`Delete line ${lineId}`,
+               `/api/v1/proforma/draft/${openId}/lines/${lineId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({
+        expected_updated_at: openDraft.updated_at,
+      }),
+    });
+
+  // ── Pre-post preview ─────────────────────────────────────────────────
+  // Primary (operator-facing): GET /draft/{id}/preview.html — readable
+  // printable HTML, opens in a new tab, browser-printable to PDF.
+  // Debug (developer-facing): POST /preview/{batch}/{client} — raw JSON
+  // shown in the existing modal with a Download JSON button.
+  // Both are read-only; neither calls wFirma writes (verified by tests).
+  const onPreviewHtml = React.useCallback(() => {
+    if (!openDraft) return;
+    try {
+      window.open(`/api/v1/proforma/draft/${openDraft.id}/preview.html`,
+                  '_blank');
+    } catch (_) {
+      // fall through; user can click the JSON debug option
+    }
+  }, [openDraft]);
+
+  const [previewModal, setPreviewModal] = React.useState(null);
+  const onPreviewJsonDebug = React.useCallback(async () => {
+    if (!openDraft) return;
+    setPreviewModal({ loading: true });
+    try {
+      const r = await apiFetch(
+        `/api/v1/proforma/preview/${encodeURIComponent(batchId)}/`
+        + encodeURIComponent(openDraft.client_name),
+        { method: 'POST' });
+      const body = await (r.text ? r.text() : r);
+      let parsed;
+      try { parsed = JSON.parse(body); } catch { parsed = body; }
+      setPreviewModal({ loading: false, ok: r.ok !== false, body: parsed });
+    } catch (e) {
+      setPreviewModal({ loading: false, ok: false,
+                          error: String((e && e.message) || e) });
+    }
+  }, [openDraft, batchId]);
+  const onPreviewDownload = React.useCallback(() => {
+    if (!previewModal || !previewModal.body) return;
+    const blob = new Blob(
+      [JSON.stringify(previewModal.body, null, 2)],
+      { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `proforma-preview-${batchId}-${openDraft.client_name}.json`
+                   .replace(/[^A-Za-z0-9._-]/g, '_');
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }, [previewModal, batchId, openDraft]);
+
+  // ── Customer re-map helper (open the Customer Master tab) ─────────────
+  // Wires a single button on the customer card when the resolution is
+  // unmatched/ambiguous.  Does NOT call /auto-create-from-name from this
+  // surface — that endpoint is gated and operator-controlled elsewhere.
+  const onCustomerRemapOpen = React.useCallback(() => {
+    try {
+      window.open('/dashboard/dashboard.html#customer-master', '_blank');
+    } catch (_) {
+      // no-op: operator can navigate manually
+    }
+  }, []);
+
   const onRemoveCharge = (chargeId) =>
     _writeCall('Remove service charge',
                `/api/v1/proforma/draft/${openId}/service-charges/${chargeId}`
@@ -11893,6 +11972,16 @@ function ProformaDraftPanel({ batchId, onToast }) {
                 </div>
               </div>
 
+              {/* Customer mapping card — read-only summary from
+                  customer_resolution (added to GET /draft/{id}).
+                  Surfaces wfirma_customer_id and match strategy so the
+                  operator can see at a glance whether the post will
+                  resolve.  Never hides unresolved state. */}
+              <ProformaCustomerCard
+                  resolution={openDraft.customer_resolution}
+                  clientName={openDraft.client_name}
+                  onRemapOpen={onCustomerRemapOpen} />
+
               {/* Posted-state panel — branded "Total due" treatment from
                   the Estrella Document Suite (emerald block + gold accent).
                   Same single wired endpoint, no fake buttons. */}
@@ -12202,7 +12291,9 @@ function ProformaDraftPanel({ batchId, onToast }) {
                           key={ln.line_id}
                           line={ln}
                           editable={isEditable}
-                          onPatch={(patch) => onPatchLine(ln.line_id, patch)} />
+                          onPatch={(patch) => onPatchLine(ln.line_id, patch)}
+                          onDelete={onDeleteLine}
+                          sourceLines={openDraft.source_lines || []} />
                     ))}
                   </tbody>
                 </table>
@@ -12210,6 +12301,11 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   <div style={{ padding: 8, fontSize: 12, color: 'var(--text-3)' }}>
                     (no lines)
                   </div>
+                )}
+                {isEditable && (
+                  <ProformaAddLineForm
+                      draftCurrency={openDraft.currency}
+                      onAdd={onAddLine} />
                 )}
               </div>
 
@@ -12256,26 +12352,56 @@ function ProformaDraftPanel({ batchId, onToast }) {
               </div>
 
               {/* Top-level fields */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12,
-                              marginBottom: 14, fontSize: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr',
+                              gap: 12, marginBottom: 14, fontSize: 12 }}>
                 <ProformaDraftRemarksEditor
                     value={openDraft.remarks || ''}
                     editable={isEditable}
                     onSave={(v) => onPatchField('remarks', v)} />
                 <div data-testid="draft-overrides-summary"
-                     style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                  <div><strong>Buyer:</strong>{' '}
-                    {Object.keys(openDraft.buyer_override || {}).length
-                      ? JSON.stringify(openDraft.buyer_override) : '— default —'}
-                  </div>
-                  <div><strong>Ship-to:</strong>{' '}
-                    {Object.keys(openDraft.ship_to_override || {}).length
-                      ? JSON.stringify(openDraft.ship_to_override) : '— default —'}
-                  </div>
-                  <div><strong>Payment terms:</strong>{' '}
-                    {Object.keys(openDraft.payment_terms || {}).length
-                      ? JSON.stringify(openDraft.payment_terms) : '— default —'}
-                  </div>
+                     style={{ display: 'grid',
+                                gridTemplateColumns: 'repeat(3, 1fr)',
+                                gap: 8, fontSize: 12 }}>
+                  <ProformaJsonObjectEditor
+                      label="Buyer override"
+                      testidPrefix="draft-buyer"
+                      fields={[
+                        { key: 'name',    label: 'Name',     placeholder: 'Company name' },
+                        { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
+                        { key: 'city',    label: 'City',     placeholder: 'City' },
+                        { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
+                        { key: 'country', label: 'Country',  placeholder: 'ISO country' },
+                        { key: 'vat_id',  label: 'VAT ID',   placeholder: 'Tax ID' },
+                      ]}
+                      value={openDraft.buyer_override}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('buyer_override', v)} />
+                  <ProformaJsonObjectEditor
+                      label="Ship-to override"
+                      testidPrefix="draft-ship-to"
+                      fields={[
+                        { key: 'name',    label: 'Name',     placeholder: 'Recipient name' },
+                        { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
+                        { key: 'city',    label: 'City',     placeholder: 'City' },
+                        { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
+                        { key: 'country', label: 'Country',  placeholder: 'ISO country' },
+                        { key: 'phone',   label: 'Phone',    placeholder: '+...' },
+                        { key: 'email',   label: 'Email',    placeholder: 'name@…' },
+                      ]}
+                      value={openDraft.ship_to_override}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('ship_to_override', v)} />
+                  <ProformaJsonObjectEditor
+                      label="Payment terms"
+                      testidPrefix="draft-payment-terms"
+                      fields={[
+                        { key: 'days',   label: 'Days',     placeholder: 'e.g. 30' },
+                        { key: 'method', label: 'Method',   placeholder: 'transfer / cash / …' },
+                        { key: 'note',   label: 'Note',     placeholder: 'Free text' },
+                      ]}
+                      value={openDraft.payment_terms}
+                      editable={isEditable}
+                      onSave={(v) => onPatchField('payment_terms', v)} />
                 </div>
               </div>
 
@@ -12288,10 +12414,20 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   <React.Fragment>
                     <Btn small variant="primary" onClick={onApprove}
                          data-testid="btn-draft-approve">Approve</Btn>
+                    <Btn small onClick={onPreviewHtml}
+                         data-testid="btn-draft-preview-html"
+                         title="Open a human-readable proforma draft preview in a new tab. Browser-printable to PDF. Read-only — does not post.">
+                      Preview / print draft
+                    </Btn>
+                    <Btn small onClick={onPreviewJsonDebug}
+                         data-testid="btn-draft-preview-json"
+                         title="Developer-only: show the raw JSON payload that would be sent to wFirma. Read-only.">
+                      JSON (debug)
+                    </Btn>
                     {(openDraft.editable_lines || []).length > 0 && (
                       <Btn small variant="outline" onClick={onEnrichProductNames}
                            data-testid="btn-enrich-product-names"
-                           title="Copy item_type, name_pl, description from product_descriptions">
+                           title="Copy item_type, name_pl, description from product_descriptions. Overwrites prior values — use after sales packing changes.">
                         Enrich product names
                       </Btn>
                     )}
@@ -12299,6 +12435,20 @@ function ProformaDraftPanel({ batchId, onToast }) {
                          data-testid="btn-draft-reset">Reload items from warehouse data</Btn>
                     <Btn small onClick={onResetAll}
                          data-testid="btn-draft-reset-all">Reset ALL</Btn>
+                  </React.Fragment>
+                )}
+                {!isEditable && openDraft.draft_state === 'approved' && (
+                  <React.Fragment>
+                    <Btn small onClick={onPreviewHtml}
+                         data-testid="btn-draft-preview-html-approved"
+                         title="Open a human-readable proforma draft preview in a new tab. Read-only — does not post.">
+                      Preview / print draft
+                    </Btn>
+                    <Btn small onClick={onPreviewJsonDebug}
+                         data-testid="btn-draft-preview-json-approved"
+                         title="Developer-only: raw JSON payload. Read-only.">
+                      JSON (debug)
+                    </Btn>
                   </React.Fragment>
                 )}
                 {openDraft.draft_state === 'approved' && (
@@ -12360,6 +12510,50 @@ function ProformaDraftPanel({ batchId, onToast }) {
               )}
             </React.Fragment>
           )}
+        </div>
+      )}
+
+      {/* ── Preview modal — read-only payload audit, never posts ─────────── */}
+      {previewModal && (
+        <div data-testid="draft-preview-modal"
+             style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                        background: 'rgba(0,0,0,0.4)', zIndex: 9000,
+                        display: 'flex', alignItems: 'center',
+                        justifyContent: 'center' }}
+             onClick={() => setPreviewModal(null)}>
+          <div onClick={e => e.stopPropagation()}
+               style={{ background: 'var(--card)', borderRadius: 6,
+                          width: '80%', maxWidth: 920, maxHeight: '80vh',
+                          display: 'flex', flexDirection: 'column',
+                          border: '1px solid var(--card-border)' }}>
+            <div style={{ padding: 12,
+                            borderBottom: '1px solid var(--card-border)',
+                            display: 'flex', justifyContent: 'space-between',
+                            alignItems: 'center' }}>
+              <strong>Proforma preview (read-only — does not post)</strong>
+              <div>
+                {previewModal.body && (
+                  <Btn small variant="primary"
+                       onClick={onPreviewDownload}
+                       data-testid="btn-draft-preview-download">
+                    Download JSON
+                  </Btn>
+                )}
+                <Btn small onClick={() => setPreviewModal(null)}
+                     style={{ marginLeft: 6 }}
+                     data-testid="btn-draft-preview-close">Close</Btn>
+              </div>
+            </div>
+            <div style={{ padding: 12, overflow: 'auto',
+                            fontFamily: 'monospace', fontSize: 11,
+                            whiteSpace: 'pre-wrap' }}>
+              {previewModal.loading
+                ? 'Loading preview…'
+                : (previewModal.error
+                   ? `Error: ${previewModal.error}`
+                   : JSON.stringify(previewModal.body, null, 2))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -12502,55 +12696,358 @@ function ProformaDraftPanel({ batchId, onToast }) {
   );
 }
 
-function ProformaDraftLineRow({ line, editable, onPatch }) {
-  const [qty,   setQty]   = React.useState(String(line.qty));
-  const [price, setPrice] = React.useState(String(line.unit_price));
+function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }) {
+  const [qty,    setQty]    = React.useState(String(line.qty));
+  const [price,  setPrice]  = React.useState(String(line.unit_price));
+  const [pc,     setPc]     = React.useState(line.product_code || '');
+  const [design, setDesign] = React.useState(line.design_no || '');
+  const [ccy,    setCcy]    = React.useState(line.currency || '');
+  const [itype,  setItype]  = React.useState(line.item_type || '');
+  const [namePl, setNamePl] = React.useState(line.name_pl || '');
   React.useEffect(() => {
     setQty(String(line.qty));
     setPrice(String(line.unit_price));
-  }, [line.qty, line.unit_price, line.line_id]);
+    setPc(line.product_code || '');
+    setDesign(line.design_no || '');
+    setCcy(line.currency || '');
+    setItype(line.item_type || '');
+    setNamePl(line.name_pl || '');
+  }, [line.qty, line.unit_price, line.product_code, line.design_no,
+      line.currency, line.item_type, line.name_pl, line.line_id]);
 
   const dirty = (parseFloat(qty)   !== Number(line.qty)) ||
-                (parseFloat(price) !== Number(line.unit_price));
+                (parseFloat(price) !== Number(line.unit_price)) ||
+                (pc.trim()     !== (line.product_code || '').trim()) ||
+                (design.trim() !== (line.design_no    || '').trim()) ||
+                (ccy.trim().toUpperCase() !==
+                   (line.currency || '').toUpperCase()) ||
+                (itype.trim()  !== (line.item_type || '').trim()) ||
+                (namePl !== (line.name_pl || ''));
+
+  // Manual override marker — product_code differs from any value
+  // present in source_lines for the same line_id (or a canonical
+  // EJL/.../-N source mint). If the operator changed pc, show a
+  // visible "OVERRIDE" badge so the audit story is obvious.
+  const sourceMatch = (sourceLines || []).find(
+    s => Number(s.line_id) === Number(line.line_id),
+  );
+  const sourcePc = (sourceMatch && sourceMatch.product_code) || '';
+  const pcManualOverride = !!(line.product_code && sourcePc &&
+                              line.product_code !== sourcePc);
 
   const namePlFull = line.name_pl || '';
   const namePlShort = namePlFull.length > 35 ? namePlFull.slice(0, 35) + '…' : namePlFull;
+
+  const save = () => {
+    const patch = {};
+    if (parseFloat(qty)   !== Number(line.qty))         patch.qty        = parseFloat(qty);
+    if (parseFloat(price) !== Number(line.unit_price))  patch.unit_price = parseFloat(price);
+    if (pc.trim()     !== (line.product_code || '').trim()) patch.product_code = pc.trim();
+    if (design.trim() !== (line.design_no    || '').trim()) patch.design_no    = design.trim();
+    if (ccy.trim().toUpperCase() !== (line.currency || '').toUpperCase()) {
+      patch.currency = ccy.trim().toUpperCase();
+    }
+    if (itype.trim() !== (line.item_type || '').trim()) patch.item_type = itype.trim();
+    if (namePl !== (line.name_pl || ''))                patch.name_pl   = namePl;
+    if (Object.keys(patch).length) onPatch(patch);
+  };
+
   return (
     <tr data-testid={`draft-line-${line.line_id}`}>
       <td>{line.line_id}</td>
-      <td><code>{line.product_code}</code></td>
-      <td style={{ fontSize: 11, color: line.item_type ? 'var(--text-2)' : 'var(--text-3)' }}>
-        {line.item_type || '—'}
+      <td>
+        {editable ? (
+          <Inp value={pc} onChange={setPc}
+               data-testid={`draft-line-pc-input-${line.line_id}`}
+               style={{ width: 130, fontFamily: 'monospace', fontSize: 11 }} />
+        ) : (
+          <code>{line.product_code}</code>
+        )}
+        {pcManualOverride && (
+          <div data-testid={`draft-line-pc-override-${line.line_id}`}
+               title={`Original source product_code: ${sourcePc}`}
+               style={{ marginTop: 2, fontSize: 10, fontWeight: 700,
+                          color: 'var(--badge-amber-text)',
+                          background: 'var(--badge-amber-bg)',
+                          display: 'inline-block', padding: '1px 4px',
+                          borderRadius: 3 }}>
+            MANUAL OVERRIDE
+          </div>
+        )}
       </td>
-      <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis',
-                   whiteSpace: 'nowrap', color: line.name_pl ? 'var(--text)' : 'var(--text-3)' }}
-          title={namePlFull || undefined}
+      <td style={{ fontSize: 11 }}
+          title="item_type — Enrich copies from product_descriptions; operator may override here">
+        {editable ? (
+          <Inp value={itype} onChange={setItype}
+               data-testid={`draft-line-item-type-input-${line.line_id}`}
+               style={{ width: 110, fontSize: 11 }} />
+        ) : (
+          <span style={{ color: line.item_type ? 'var(--text-2)' : 'var(--text-3)' }}>
+            {line.item_type || '—'}
+          </span>
+        )}
+      </td>
+      <td style={{ maxWidth: 220 }}
+          title={namePlFull || 'name_pl — Enrich copies from product_descriptions; operator may override here'}
           data-testid={`draft-line-name-pl-${line.line_id}`}>
-        {namePlShort || '—'}
+        {editable ? (
+          <Inp value={namePl} onChange={setNamePl}
+               data-testid={`draft-line-name-pl-input-${line.line_id}`}
+               style={{ width: 200, fontSize: 11 }} />
+        ) : (
+          <span style={{ display: 'inline-block', maxWidth: 200,
+                            overflow: 'hidden', textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            color: line.name_pl ? 'var(--text)' : 'var(--text-3)' }}>
+            {namePlShort || '—'}
+          </span>
+        )}
       </td>
-      <td>{line.design_no || '—'}</td>
+      <td>
+        {editable ? (
+          <Inp value={design} onChange={setDesign}
+               data-testid={`draft-line-design-input-${line.line_id}`}
+               style={{ width: 110, fontSize: 11 }} />
+        ) : (
+          line.design_no || '—'
+        )}
+      </td>
       <td style={{ width: 90 }}>
         {editable
-          ? <Inp value={qty} onChange={setQty} />
+          ? <Inp value={qty} onChange={setQty}
+                 data-testid={`draft-line-qty-input-${line.line_id}`} />
           : line.qty}
       </td>
       <td style={{ width: 110 }}>
         {editable
-          ? <Inp value={price} onChange={setPrice} />
+          ? <Inp value={price} onChange={setPrice}
+                 data-testid={`draft-line-price-input-${line.line_id}`} />
           : line.unit_price}
       </td>
-      <td>{line.currency}</td>
+      <td>
+        {editable
+          ? <Inp value={ccy} onChange={setCcy}
+                 data-testid={`draft-line-ccy-input-${line.line_id}`}
+                 style={{ width: 60 }} />
+          : line.currency}
+      </td>
       <td>
         {editable && dirty && (
           <Btn small variant="primary"
-               onClick={() => onPatch({ qty: parseFloat(qty),
-                                         unit_price: parseFloat(price) })}
+               onClick={save}
                data-testid={`btn-line-save-${line.line_id}`}>Save</Btn>
+        )}
+        {editable && onDelete && (
+          <Btn small
+               onClick={() => {
+                 if (window.confirm(
+                   `Delete line ${line.product_code || line.line_id}?`)) {
+                   onDelete(line.line_id);
+                 }
+               }}
+               data-testid={`btn-line-delete-${line.line_id}`}
+               style={{ marginLeft: 4 }}>Delete</Btn>
         )}
       </td>
     </tr>
   );
 }
+
+
+// ── Customer-resolution card (read-only summary; optional re-map link) ──
+function ProformaCustomerCard({ resolution, clientName, onRemapOpen }) {
+  if (!resolution) return null;
+  const r = resolution;
+  const matched = !!r.wfirma_customer_id;
+  const status = r.match_strategy || "none";
+  const badgeBg = matched
+    ? 'var(--badge-green-bg)'
+    : (r.ambiguous ? 'var(--badge-amber-bg)' : 'var(--badge-red-bg)');
+  const badgeFg = matched
+    ? 'var(--badge-green-text)'
+    : (r.ambiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)');
+  return (
+    <div data-testid="draft-customer-card"
+         style={{ marginBottom: 14, padding: 10,
+                    background: 'var(--card-hover)',
+                    border: '1px solid var(--card-border)',
+                    borderRadius: 4, fontSize: 12 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                      letterSpacing: '0.06em', textTransform: 'uppercase',
+                      marginBottom: 6 }}>
+        Customer mapping
+      </div>
+      <div style={{ display: 'grid',
+                      gridTemplateColumns: '180px 1fr', gap: 4 }}>
+        <div style={{ color: 'var(--text-3)' }}>Sales client name</div>
+        <div><strong>{clientName || '—'}</strong></div>
+        <div style={{ color: 'var(--text-3)' }}>wFirma customer ID</div>
+        <div data-testid="draft-customer-wfirma-id">
+          {matched
+            ? <code>{r.wfirma_customer_id}</code>
+            : <span style={{ color: 'var(--text-3)' }}>— unmatched —</span>}
+        </div>
+        <div style={{ color: 'var(--text-3)' }}>wFirma stored name</div>
+        <div>{r.resolved_wfirma_name || '—'}</div>
+        <div style={{ color: 'var(--text-3)' }}>Match strategy</div>
+        <div>
+          <span style={{ background: badgeBg, color: badgeFg,
+                            padding: '1px 6px', borderRadius: 4,
+                            fontSize: 10, fontWeight: 700,
+                            textTransform: 'uppercase' }}
+                data-testid="draft-customer-match-strategy">
+            {status}
+          </span>
+          {r.ambiguous && r.candidates && r.candidates.length > 0 && (
+            <span style={{ marginLeft: 8, color: 'var(--text-3)',
+                              fontSize: 11 }}>
+              candidates: {r.candidates.slice(0, 4).join(', ')}
+              {r.candidates.length > 4 ? ` (+${r.candidates.length - 4})` : ''}
+            </span>
+          )}
+        </div>
+      </div>
+      {!matched && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)',
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        flexWrap: 'wrap' }}>
+          <span>
+            Not auto-resolvable.  Use the Customer Master surface to map
+            this client to a wFirma customer before posting.
+          </span>
+          {onRemapOpen && (
+            <Btn small
+                 onClick={onRemapOpen}
+                 data-testid="btn-draft-customer-remap"
+                 title="Opens the Customer Master tab so the operator can map this client to a wFirma customer. No write fires from this screen.">
+              Open Customer Master
+            </Btn>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ── Editable JSON-blob form (buyer / ship-to / payment terms) ─────────────
+function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
+                                     testidPrefix }) {
+  // value: dict {key: str} from the draft's *_override or payment_terms.
+  // fields: ordered list of {key, label, placeholder, type?}
+  const [draft, setDraft] = React.useState({ ...(value || {}) });
+  React.useEffect(() => { setDraft({ ...(value || {}) }); }, [value]);
+  const set = (k, v) => setDraft(d => ({ ...d, [k]: v }));
+  const stripped = React.useMemo(() => {
+    // Drop empty keys so we don't store '' fields.
+    const out = {};
+    Object.keys(draft || {}).forEach(k => {
+      const v = (draft[k] == null ? '' : String(draft[k])).trim();
+      if (v !== '') out[k] = v;
+    });
+    return out;
+  }, [draft]);
+  const dirty = React.useMemo(() => {
+    const a = JSON.stringify(stripped);
+    const b = JSON.stringify(value || {});
+    return a !== b;
+  }, [stripped, value]);
+  const isEmpty = Object.keys(value || {}).length === 0;
+  return (
+    <div data-testid={`${testidPrefix}-editor`}
+         style={{ padding: 8, border: '1px solid var(--card-border)',
+                    borderRadius: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between',
+                      alignItems: 'baseline', marginBottom: 6 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                        letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+          {label}
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text-3)' }}>
+          {isEmpty ? '— default —' : 'override active'}
+        </div>
+      </div>
+      {fields.map(f => (
+        <div key={f.key} style={{ display: 'flex', gap: 6, marginBottom: 4,
+                                     alignItems: 'baseline' }}>
+          <label style={{ width: 120, fontSize: 11, color: 'var(--text-3)' }}>
+            {f.label}
+          </label>
+          {editable ? (
+            <Inp value={draft[f.key] || ''}
+                 onChange={(v) => set(f.key, v)}
+                 placeholder={f.placeholder || ''}
+                 data-testid={`${testidPrefix}-${f.key}`} />
+          ) : (
+            <div style={{ fontSize: 12 }}>
+              {draft[f.key] || <span style={{ color: 'var(--text-3)' }}>—</span>}
+            </div>
+          )}
+        </div>
+      ))}
+      {editable && dirty && (
+        <div style={{ marginTop: 6 }}>
+          <Btn small variant="primary"
+               onClick={() => onSave(stripped)}
+               data-testid={`btn-${testidPrefix}-save`}>Save</Btn>
+          <Btn small
+               onClick={() => setDraft({ ...(value || {}) })}
+               style={{ marginLeft: 6 }}
+               data-testid={`btn-${testidPrefix}-reset`}>Revert</Btn>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ── Add-line form ────────────────────────────────────────────────────────
+function ProformaAddLineForm({ draftCurrency, onAdd }) {
+  const [pc, setPc]       = React.useState('');
+  const [design, setDes]  = React.useState('');
+  const [qty, setQty]     = React.useState('1');
+  const [price, setPrice] = React.useState('0');
+  const [ccy, setCcy]     = React.useState(draftCurrency || 'USD');
+  const canAdd = pc.trim() !== '' && parseFloat(qty) > 0;
+  const submit = () => {
+    onAdd({
+      product_code: pc.trim(),
+      design_no:    design.trim(),
+      qty:          parseFloat(qty),
+      unit_price:   parseFloat(price),
+      currency:     (ccy || draftCurrency || 'USD').toUpperCase(),
+    });
+    setPc(''); setDes(''); setQty('1'); setPrice('0');
+  };
+  return (
+    <div data-testid="draft-add-line-form"
+         style={{ display: 'flex', gap: 6, marginTop: 6,
+                    alignItems: 'baseline', flexWrap: 'wrap',
+                    fontSize: 12 }}>
+      <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Add line:</span>
+      <Inp value={pc} onChange={setPc}
+           placeholder="product_code (canonical)"
+           data-testid="add-line-pc" style={{ width: 160 }} />
+      <Inp value={design} onChange={setDes}
+           placeholder="design_no"
+           data-testid="add-line-design" style={{ width: 120 }} />
+      <Inp value={qty} onChange={setQty}
+           placeholder="qty"
+           data-testid="add-line-qty" style={{ width: 60 }} />
+      <Inp value={price} onChange={setPrice}
+           placeholder="unit_price"
+           data-testid="add-line-price" style={{ width: 80 }} />
+      <Inp value={ccy} onChange={setCcy}
+           placeholder="currency"
+           data-testid="add-line-ccy" style={{ width: 60 }} />
+      <Btn small variant="primary"
+           onClick={submit}
+           disabled={!canAdd}
+           data-testid="btn-add-line">Add</Btn>
+    </div>
+  );
+}
+
 
 function ProformaDraftRemarksEditor({ value, editable, onSave }) {
   const [v, setV] = React.useState(value || '');
