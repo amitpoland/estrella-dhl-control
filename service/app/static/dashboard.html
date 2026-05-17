@@ -16014,8 +16014,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                   // Clearance decision from audit
                   const dec      = audit.clearance_decision || {};
                   const decPath  = dec.clearance_path || 'routing_pending';
-                  const isAgency = decPath === 'external_agency_clearance';
-                  const isCarrier = decPath === 'carrier_self_clearance';
+                  // Accept both canonical (spec) names and legacy aliases so
+                  // the UI keeps working regardless of which writer last
+                  // touched audit.json. Canonical: agency_clearance /
+                  // dhl_self_clearance / routing_pending.
+                  const isAgency  = decPath === 'agency_clearance'   || decPath === 'external_agency_clearance';
+                  const isCarrier = decPath === 'dhl_self_clearance' || decPath === 'carrier_self_clearance';
                   const decPending = decPath === 'routing_pending';
                   const pathLabel  = isAgency  ? '🏢 External Agency (>$2500)' :
                                     isCarrier  ? '🚚 Carrier Self-Clearance (≤$2500)' :
@@ -16052,12 +16056,49 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       })()}
 
                       {/* ── Clearance Decision ── */}
-                      <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+                      <div data-testid="clearance-routing-card" style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Clearance Routing</div>
                         <InfoRow label="Clearance Path"
-                          value={<span style={{ color: pathColor, fontWeight: 600 }}>{pathLabel}</span>} />
-                        {/* "DHL Action" InfoRow removed — DhlActionCard is
-                            authoritative for the next-action surface. */}
+                          value={<span data-testid="clearance-path-label" style={{ color: pathColor, fontWeight: 600 }}>{pathLabel}</span>} />
+                        {/* Decision inputs — what's driving the route, in operator-friendly form. */}
+                        {(() => {
+                          const decCif       = (dec.total_value_usd != null) ? Number(dec.total_value_usd) : null;
+                          const decThreshold = (dec.threshold_usd != null) ? Number(dec.threshold_usd) : 2500;
+                          const decSource    = dec.cif_source || (decCif ? 'invoice CIF' : 'unavailable');
+                          const decReason    = dec.missing_reason || dec.decision_reason || '';
+                          const sourceLabel  = ({
+                            'verification.invoice_cif_total_usd':    'verified invoice CIF',
+                            'invoice_totals.total_cif_usd':          'invoice totals (CIF)',
+                            'invoice_totals.total_fob_usd':          'invoice totals (FOB fallback — freight not allocated)',
+                            'dhl_precheck.invoice_cif_total_usd':    'DHL pre-check CIF',
+                            'dhl_precheck.fob_total_usd':            'DHL pre-check FOB',
+                            'unavailable':                           'unavailable',
+                          })[decSource] || decSource;
+                          return (
+                            <>
+                              <InfoRow label="Decision Value (USD)"
+                                value={<span data-testid="clearance-decision-value" style={{ fontWeight: 600 }}>
+                                  {decCif != null && decCif > 0
+                                    ? `USD ${decCif.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                    : 'Not calculated'}
+                                </span>} />
+                              <InfoRow label="Threshold"
+                                value={<span data-testid="clearance-threshold" style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                                  USD {decThreshold.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>} />
+                              <InfoRow label="Value Source"
+                                value={<span data-testid="clearance-value-source" style={{ fontSize: 11, color: decSource === 'unavailable' ? 'var(--badge-amber-text)' : 'var(--text-2)' }}>
+                                  {sourceLabel}
+                                </span>} />
+                              {decPending && (
+                                <InfoRow label="Reason"
+                                  value={<span data-testid="clearance-pending-reason" style={{ fontSize: 11, color: 'var(--badge-amber-text)' }}>
+                                    Routing Pending — {dec.missing_reason || 'CIF not calculated yet'}
+                                  </span>} />
+                              )}
+                            </>
+                          );
+                        })()}
                         {isAgency && (
                           <InfoRow label="Agency"
                             value={<span style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>{dec.agency || 'Agencja Celna Spedycja'}</span>} />
