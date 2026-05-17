@@ -8619,6 +8619,221 @@ function NewShipmentDocumentSlot({ doc, onUpdate, onRemove, clientList, supplier
   );
 }
 
+// ══════════════════════════════════════════════════════════
+// UI-3.x SHARED OPERATIONAL PREDICATES (module scope)
+// ──────────────────────────────────────────────────────────
+// Single source of truth for bucket logic, used by:
+//   - DashboardPage cross-batch cards (UI-3.1b / UI-3.2a / UI-3.2b)
+//   - DashboardPage active-table filter (UI-3.3)
+//   - BatchDetailPage per-batch Pipeline Summary (UI-3.4)
+// Lifted out of DashboardPage in UI-3.4 so per-batch and cross-batch
+// surfaces consume the SAME predicate set. React state (opFilter and
+// its setter/handlers) intentionally remains inside DashboardPage.
+// ══════════════════════════════════════════════════════════
+const PZ_DONE_LABELS     = new Set(['Generated', 'Exported']);
+const PZ_PENDING_LABELS  = new Set(['Ready for PZ', 'Locked']);
+const SAD_CLEARED_KEYS   = new Set(['uploaded_parsed', 'customs_parsed', 'customs_verified']);
+const TRACK_ATTENTION    = new Set(['exception', 'customs']);
+const DHL_FLOW_LIVE_KEYS = new Set([
+  'dhl_email_received', 'reply_queued', 'reply_sent',
+  'reply_package_prepared', 'pre_check_pending', 'pre_check_completed',
+]);
+const OP_PREDICATES = {
+  warehouse: {
+    unknown:          (r) => (r.warehouseHint || 'n/a') === 'n/a',
+    awaiting:         (r) => r.warehouseHint === 'empty',
+    partial_received: (r) => r.warehouseHint === 'partial',
+    in_warehouse:     (r) => r.warehouseHint === 'clean' && !PZ_DONE_LABELS.has(r.pzStatus || ''),
+    reserved:         (r) => r.warehouseHint === 'clean' &&  PZ_DONE_LABELS.has(r.pzStatus || ''),
+  },
+  sales_accounting: {
+    sales_ready:    (r) => (r.salesHint || 'n/a') === 'present',
+    sales_missing:  (r) => { const h = r.salesHint || 'n/a'; return h === 'none' || h === 'n/a'; },
+    wfirma_preview: (r) => (r.wfirmaHint || 'n/a') === 'preview_built',
+    wfirma_pending: (r) => { const h = r.wfirmaHint || 'n/a'; return h === 'none' || h === 'n/a'; },
+    pz_done:        (r) =>  PZ_DONE_LABELS.has(r.pzStatus || ''),
+    pz_pending:     (r) => !PZ_DONE_LABELS.has(r.pzStatus || ''),
+  },
+  dhl_customs: {
+    awaiting_customs_docs: (r) => !r.has_sad && DHL_FLOW_LIVE_KEYS.has((r._raw && r._raw.dhl_status) || ''),
+    sad_present:     (r) => !!r.has_sad,
+    sad_missing:     (r) => !r.has_sad,
+    customs_cleared: (r) => !!r.has_sad && SAD_CLEARED_KEYS.has((r._raw && r._raw.sad_status) || ''),
+    dhl_in_transit:  (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'in_transit',
+    dhl_delivered:   (r) => ((r._raw && r._raw.tracking_status_key) || '') === 'delivered',
+  },
+};
+const WAREHOUSE_LIFECYCLE_KEYS = ['unknown', 'awaiting', 'partial_received', 'in_warehouse', 'reserved'];
+const deriveWarehouseLifecycle = (row) => {
+  for (const k of WAREHOUSE_LIFECYCLE_KEYS) {
+    if (OP_PREDICATES.warehouse[k](row)) return k;
+  }
+  return 'unknown';
+};
+const ATTENTION_PREDICATES = {
+  warehouse:        (r) =>
+    OP_PREDICATES.warehouse.awaiting(r) ||
+    OP_PREDICATES.warehouse.partial_received(r),
+  sales_accounting: (r) =>
+    OP_PREDICATES.sales_accounting.sales_missing(r) ||
+    OP_PREDICATES.sales_accounting.wfirma_pending(r) ||
+    OP_PREDICATES.sales_accounting.pz_pending(r),
+  dhl_customs:      (r) =>
+    OP_PREDICATES.dhl_customs.awaiting_customs_docs(r) ||
+    (((r._raw && r._raw.sad_status)         || '') === 'missing') ||
+    (((r._raw && r._raw.dhl_status)         || '') === 'dhl_email_received') ||
+    TRACK_ATTENTION.has((r._raw && r._raw.tracking_status_key) || ''),
+};
+// Lifecycle label/tone tables — shared so cross-batch (UI-3.1b) and
+// per-batch (UI-3.4) surfaces use identical operator-readable copy.
+const WAREHOUSE_LIFECYCLE_LABEL = {
+  unknown:          'No packing list',
+  awaiting:         'Awaiting receipt',
+  partial_received: 'Partially received',
+  in_warehouse:     'In warehouse',
+  reserved:         'Reserved (PZ created)',
+};
+
+// ══════════════════════════════════════════════════════════
+// DASHBOARD KANBAN — workflow-first pipeline view (real batch data)
+// ══════════════════════════════════════════════════════════
+
+const KANBAN_LANES = [
+  { id: 'new',     label: 'New / Drafting',     hint: 'no PI yet',                color: 'var(--badge-neutral-text)', bg: 'var(--badge-neutral-bg)', border: 'var(--badge-neutral-border)' },
+  { id: 'docs',    label: 'Awaiting Documents', hint: 'DHL · SAD pending',        color: 'var(--badge-amber-text)',   bg: 'var(--badge-amber-bg)',   border: 'var(--badge-amber-border)' },
+  { id: 'customs', label: 'Customs Clearance',  hint: 'SAD · ZC429 in progress',  color: 'var(--badge-red-text)',     bg: 'var(--badge-red-bg)',     border: 'var(--badge-red-border)' },
+  { id: 'ready',   label: 'Ready for PZ',       hint: 'verified · awaiting PZ',   color: 'var(--badge-purple-text)',  bg: 'var(--badge-purple-bg)',  border: 'var(--badge-purple-border)' },
+  { id: 'booked',  label: 'PZ Generated',       hint: 'awaiting wFirma export',   color: 'var(--badge-blue-text)',    bg: 'var(--badge-blue-bg)',    border: 'var(--badge-blue-border)' },
+  { id: 'done',    label: 'Exported',           hint: 'wFirma booked · closed',   color: 'var(--badge-green-text)',   bg: 'var(--badge-green-bg)',   border: 'var(--badge-green-border)' },
+];
+
+function _batchLane(b) {
+  const pz = (b.pzStatus || '').toString();
+  const sad = (b.sadStatus || '').toString();
+  const dhl = (b.dhlStatus || '').toString();
+  const overall = (b.overall || '').toString();
+  if (pz === 'Exported' || overall === 'Completed') return 'done';
+  if (pz === 'Generated' || overall === 'Ready for Booking') return 'booked';
+  if (pz === 'Ready for PZ' || overall === 'Ready for PZ' || sad === 'Customs Verified') return 'ready';
+  if (sad === 'SAD Uploaded' || sad === 'Customs Parsed' || sad === 'Verification Needed' || overall === 'Awaiting Clearance') return 'customs';
+  if (dhl === 'DHL Email Received' || dhl === 'Reply Sent' || dhl === 'Reply Queued' || dhl === 'Reply Package Prepared' || overall === 'Awaiting SAD' || overall === 'Awaiting DHL' || sad === 'SAD Pending') return 'docs';
+  return 'new';
+}
+
+const QUICK_FLOWS = [
+  { id: 'inbound',  icon: '📥', label: 'Receive shipment',  hint: 'Inbound · PZ · SAD',     color: 'var(--badge-blue-text)',   bg: 'var(--badge-blue-bg)',   border: 'var(--badge-blue-border)' },
+  { id: 'outbound', icon: '📤', label: 'New shipment',       hint: 'AWB · Invoice · Pack',    color: 'var(--accent)',            bg: 'var(--accent-subtle)',   border: 'var(--accent-border)' },
+  { id: 'email',    icon: '✉',  label: 'Scan DHL inbox',     hint: 'Parse · Match · Reply',   color: 'var(--badge-purple-text)', bg: 'var(--badge-purple-bg)', border: 'var(--badge-purple-border)' },
+  { id: 'pz',       icon: '⊞', label: 'Generate PZ',        hint: 'Verify · Generate · Send',color: 'var(--badge-green-text)',  bg: 'var(--badge-green-bg)',  border: 'var(--badge-green-border)' },
+];
+
+function CompactKpi({ label, value, hint, accent }) {
+  return (
+    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px' }}>
+      <div style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: accent || 'var(--text)', marginTop: 4, fontFamily: '"DM Serif Display", serif' }}>{value}</div>
+      <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{hint}</div>
+    </div>
+  );
+}
+
+function _fmtAge(ts) {
+  if (!ts) return '';
+  const t = new Date(ts).getTime();
+  if (isNaN(t)) return '';
+  const diffMs = Date.now() - t;
+  if (diffMs < 0) return '';
+  const m = Math.floor(diffMs / 60000);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h';
+  const d = Math.floor(h / 24);
+  if (d < 30) return d + 'd';
+  const mo = Math.floor(d / 30);
+  return mo + 'mo';
+}
+
+function _shortId(s) {
+  if (!s) return '';
+  const parts = String(s).split('_');
+  if (parts.length >= 4) return parts.slice(2).join('-');
+  return String(s).slice(-12);
+}
+
+function KanbanCard({ batch, onClick }) {
+  const isUrgent = (batch.overall === 'Action Required' || batch.sadStatus === 'Verification Needed');
+  const isHigh   = (batch.overall === 'Awaiting DHL' || batch.overall === 'Awaiting SAD');
+  const age      = _fmtAge(batch.timestamp);
+  const raw      = batch._raw || {};
+  const invCount = Array.isArray(raw.invoice_refs) ? raw.invoice_refs.length : 0;
+  return (
+    <button data-testid="kanban-card" onClick={onClick} style={{
+      background: 'var(--card)', border: '1px solid var(--border)',
+      borderRadius: 5, padding: '8px 10px', cursor: 'pointer', textAlign: 'left',
+      borderLeft: isUrgent ? '3px solid var(--badge-red-text)' : isHigh ? '3px solid var(--badge-amber-text)' : '1px solid var(--border)',
+      transition: 'transform 0.12s, box-shadow 0.12s',
+      display: 'flex', flexDirection: 'column', gap: 4, width: '100%',
+      fontFamily: 'inherit',
+    }}
+      onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 3px 10px var(--shadow)'; }}
+      onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}>
+      {/* Top row: direction badge · short id · age */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{
+          fontSize: 9, padding: '0px 4px', borderRadius: 2,
+          background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)',
+          border: '1px solid var(--badge-blue-border)',
+          fontWeight: 700, letterSpacing: '0.04em',
+        }}>IN</span>
+        <span style={{ fontSize: 10.5, fontFamily: 'monospace', fontWeight: 600, color: 'var(--text)' }}>{_shortId(batch.batch_id)}</span>
+        <span style={{ flex: 1 }} />
+        {age && <span style={{ fontSize: 9.5, color: 'var(--text-3)' }}>{age}</span>}
+      </div>
+      {/* Title row: doc_no or AWB */}
+      <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {batch.doc_no || batch.awb || batch.batch_id}
+      </div>
+      {/* Meta row: carrier · invoices · net value */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9.5, color: 'var(--text-3)', flexWrap: 'wrap' }}>
+        <span style={{ fontFamily: 'monospace' }}>{batch.carrier || '—'}</span>
+        {invCount > 0 && <><span>·</span><span>{invCount} inv</span></>}
+        {batch.net && batch.net !== '—' && <><span>·</span><span style={{ fontFamily: 'monospace' }}>{batch.net}</span></>}
+      </div>
+      {/* Flag row: urgent / high */}
+      {(isUrgent || isHigh) && (
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 2,
+          fontSize: 9.5, fontWeight: 600,
+          color: isUrgent ? 'var(--badge-red-text)' : 'var(--badge-amber-text)',
+        }}>
+          <span>{isUrgent ? '⚠' : '◐'}</span>
+          <span>{batch.action_reason || (isUrgent ? 'needs attention' : batch.overall)}</span>
+        </div>
+      )}
+    </button>
+  );
+}
+
+function KanbanLane({ lane, cards, onCardClick }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 220, background: 'var(--bg-subtle)', borderRadius: 8, border: '1px solid var(--border)' }}>
+      <div style={{ padding: '10px 12px', borderBottom: `2px solid ${lane.border}`, background: lane.bg, borderRadius: '8px 8px 0 0' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 2 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: lane.color, letterSpacing: '0.02em' }}>{lane.label}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: lane.color, fontFamily: 'monospace' }}>{cards.length}</span>
+        </div>
+        <div style={{ fontSize: 9.5, color: lane.color, opacity: 0.75 }}>{lane.hint}</div>
+      </div>
+      <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 6, minHeight: 200, maxHeight: 480, overflowY: 'auto' }}>
+        {cards.length === 0 && <div style={{ padding: 16, textAlign: 'center', fontSize: 10.5, color: 'var(--text-3)', fontStyle: 'italic' }}>—</div>}
+        {cards.map(c => <KanbanCard key={c.batch_id || c.id} batch={c} onClick={() => onCardClick && onCardClick(c)} />)}
+      </div>
+    </div>
+  );
+}
+
+
+
 function DashboardKanban({ batches, onViewShipment, onNav, onNewShipment, onOpenSearch }) {
   const rows = (batches || []).map(transformBatch);
   const byLane = KANBAN_LANES.reduce((acc, l) => { acc[l.id] = rows.filter(b => _batchLane(b) === l.id); return acc; }, {});
