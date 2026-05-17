@@ -25911,6 +25911,22 @@ function AiBridgePage({ onToast }) {
 }
 
 // ══════════════════════════════════════════════════════════
+// SHIPMENT DETAIL NAVIGATION CONTRACT (Phase 0)
+// Single source of truth for the URL of a shipment-detail view.
+// Today: same dashboard.html with ?id=<batchId>.
+// Future (Phase 1): swap the return value to
+//   `/dashboard/shipment-detail.html?id=${encodeURIComponent(batchId)}`
+// All callers go through this helper so the future swap is one line.
+// ══════════════════════════════════════════════════════════
+function buildShipmentDetailUrl(batchId) {
+  const id = String(batchId || '').trim();
+  if (!id) return '/dashboard/dashboard.html';
+  return `/dashboard/dashboard.html?id=${encodeURIComponent(id)}`;
+}
+window.EstrellaRoutes = window.EstrellaRoutes || {};
+window.EstrellaRoutes.buildShipmentDetailUrl = buildShipmentDetailUrl;
+
+// ══════════════════════════════════════════════════════════
 // APP ROOT
 // ══════════════════════════════════════════════════════════
 
@@ -25985,7 +26001,12 @@ function App() {
     const id = row.batch_id || row.id;
     setSelectedBatch(id);
     setPage('detail');
-    history.pushState({}, '', `?id=${encodeURIComponent(id)}`);
+    // URL state — sourced from the route helper so Phase 1 can flip
+    // to /dashboard/shipment-detail.html?id=... in one place.
+    const url = buildShipmentDetailUrl(id);
+    const qIdx = url.indexOf('?');
+    const queryOnly = qIdx >= 0 ? url.slice(qIdx) : '';
+    history.pushState({}, '', queryOnly || window.location.pathname);
   };
 
   const goBack = () => {
