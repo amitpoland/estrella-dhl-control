@@ -79,10 +79,11 @@ def test_shipment_detail_html_does_not_exist_yet():
     )
 
 
-def test_dashboard_shared_js_does_not_exist_yet():
-    assert not (STATIC_DIR / "dashboard-shared.js").exists(), (
-        "dashboard-shared.js must not exist until Phase 1"
-    )
+def test_dashboard_shared_js_exists_after_phase_1():
+    """Phase 1 lifted the original Phase-0 'must-not-exist' boundary.
+    The file now exists and houses the 8 shared utilities. See
+    test_phase1_dashboard_shared.py for the full contract."""
+    assert (STATIC_DIR / "dashboard-shared.js").exists()
 
 
 def test_batch_detail_page_still_in_dashboard():
