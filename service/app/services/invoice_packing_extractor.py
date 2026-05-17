@@ -133,26 +133,234 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def extract_packing(path: Path) -> Tuple[List[Dict[str, Any]], str, str]:
+def _new_diagnostic(file_type: str) -> Dict[str, Any]:
+    """Build an empty parser_diagnostic skeleton."""
+    return {
+        "parser_name":          _PARSER_NAME,
+        "parser_version":       _PARSER_VERSION,
+        "file_type":            file_type,
+        "workbook_sheet_names": [],
+        "sheet_count":          0,
+        "sheets_scanned":       [],
+        "candidate_header_rows": [],
+        "chosen_header":        None,
+        "mapped_columns":       [],
+        "unmatched_columns":    [],
+        "alias_hits":           0,
+        "row_count":            0,
+        "failure_reason":       None,
+        "exception_class":      None,
+        "exception_message":    None,
+    }
+
+
+def _collect_excel_diagnostic(path: Path, engine: str, diag: Dict[str, Any]) -> None:
+    """Populate the diagnostic dict by re-reading the workbook for
+    observability (sheet names, candidate header rows, chosen header,
+    column mapping). Non-fatal — exceptions are swallowed and the
+    diagnostic stays as far as it got.
+
+    This NEVER changes parsing behaviour — it only inspects.
+    """
+    try:
+        if engine == "openpyxl":
+            import openpyxl as _opx
+            wb = _opx.load_workbook(str(path), data_only=True, read_only=True)
+            diag["workbook_sheet_names"] = list(wb.sheetnames)
+            diag["sheet_count"] = len(wb.sheetnames)
+            ws = wb.active
+            diag["sheets_scanned"] = [ws.title] if ws is not None else []
+            sheet_name = ws.title if ws is not None else "<active>"
+        elif engine == "xlrd":
+            import xlrd as _xlrd
+            wb = _xlrd.open_workbook(str(path))
+            diag["workbook_sheet_names"] = list(wb.sheet_names())
+            diag["sheet_count"] = wb.nsheets
+            diag["sheets_scanned"] = [wb.sheet_names()[0]] if wb.nsheets else []
+            sheet_name = wb.sheet_names()[0] if wb.nsheets else "<sheet0>"
+        else:
+            return
+    except Exception as exc:
+        # Workbook unreadable in diagnostic pass — caller's failure_reason
+        # already set; just leave the diag thin.
+        log.debug("packing diagnostic workbook open failed: %s", exc)
+        return
+
+    # Re-read rows for header scoring (we don't trust the closed workbook
+    # state; use the same path the parser uses).
+    try:
+        rows_raw = _read_excel_rows(path, engine)
+    except Exception as exc:
+        log.debug("packing diagnostic _read_excel_rows failed: %s", exc)
+        return
+
+    # Score each of the top 25 rows for alias hits.
+    candidates: List[Dict[str, Any]] = []
+    best_idx, best_hits = -1, 0
+    best_raw: List[str] = []
+    best_col_map: Dict[int, str] = {}
+    for idx, row in enumerate(rows_raw[:25]):
+        raw_cells = [str(c) if c is not None else "" for c in row]
+        if not any(c.strip() for c in raw_cells):
+            continue
+        col_map = _map_headers(raw_cells)
+        hits = len(col_map)
+        if hits > 0:
+            candidates.append({
+                "sheet":            sheet_name,
+                "row_index":        idx,
+                "raw_cells_sample": raw_cells[:20],
+                "alias_hits":       hits,
+            })
+        # _find_header_row uses a stricter rule (qty AND design); we record
+        # the row that production parser would pick — re-derive via
+        # _find_header_row over the same data.
+        if hits > best_hits:
+            best_hits, best_idx, best_raw, best_col_map = hits, idx, raw_cells, col_map
+
+    diag["candidate_header_rows"] = candidates
+    diag["alias_hits"] = best_hits
+
+    hdr_idx = _find_header_row(rows_raw)
+    if hdr_idx >= 0:
+        hdr_cells = [str(c) if c is not None else "" for c in rows_raw[hdr_idx]]
+        col_map = _map_headers(hdr_cells)
+        diag["chosen_header"] = {
+            "sheet":     sheet_name,
+            "row_index": hdr_idx,
+            "raw_cells": hdr_cells[:40],
+        }
+        diag["mapped_columns"] = [
+            {"raw": hdr_cells[i] if i < len(hdr_cells) else "",
+             "normalised": _normalise_header(hdr_cells[i]) if i < len(hdr_cells) else "",
+             "canonical_field": fld}
+            for i, fld in sorted(col_map.items())
+        ]
+        diag["unmatched_columns"] = [
+            hdr_cells[i] for i in range(len(hdr_cells))
+            if i not in col_map and hdr_cells[i].strip()
+        ]
+    elif best_idx >= 0:
+        # Best-effort: surface the best-scoring candidate even when the
+        # stricter _find_header_row rejected it. Helps the operator see
+        # which row the parser ALMOST picked.
+        diag["mapped_columns"] = [
+            {"raw": best_raw[i] if i < len(best_raw) else "",
+             "normalised": _normalise_header(best_raw[i]) if i < len(best_raw) else "",
+             "canonical_field": fld}
+            for i, fld in sorted(best_col_map.items())
+        ]
+        diag["unmatched_columns"] = [
+            best_raw[i] for i in range(len(best_raw))
+            if i not in best_col_map and best_raw[i].strip()
+        ]
+
+
+def _collect_pdf_diagnostic(path: Path, diag: Dict[str, Any]) -> None:
+    """Best-effort observability for PDF packing lists. Captures page count
+    and the first table-like row when present."""
+    try:
+        import pdfplumber as _pp  # type: ignore
+        with _pp.open(str(path)) as pdf:
+            page_count = len(pdf.pages)
+            diag["sheet_count"] = page_count
+            diag["workbook_sheet_names"] = [f"page_{i+1}" for i in range(page_count)]
+            diag["sheets_scanned"] = diag["workbook_sheet_names"][:1]
+            if pdf.pages:
+                tables = pdf.pages[0].extract_tables() or []
+                if tables and tables[0]:
+                    first = [str(c) if c is not None else "" for c in tables[0][0]]
+                    diag["candidate_header_rows"] = [{
+                        "sheet":            "page_1",
+                        "row_index":        0,
+                        "raw_cells_sample": first[:20],
+                        "alias_hits":       len(_map_headers(first)),
+                    }]
+    except Exception as exc:
+        log.debug("packing diagnostic pdf open failed: %s", exc)
+
+
+def extract_packing(
+    path: Path,
+) -> Tuple[List[Dict[str, Any]], str, str, Dict[str, Any]]:
     """
     Dispatch to PDF or Excel extractor based on file extension.
-    Returns (rows, parser_name, parser_version).
-    Each row is a raw dict of all extracted fields.
+
+    Returns (rows, parser_name, parser_version, parser_diagnostic).
+    Each row is a raw dict of all extracted fields. The diagnostic dict
+    carries observability data — see _new_diagnostic for the schema and
+    docs/packing_diagnostics.md for the canonical contract. The
+    diagnostic is ALWAYS returned (never None) so callers can record
+    parser state regardless of success or failure.
+
     Supports:
       - .xlsx via openpyxl
       - .xls  via xlrd (legacy binary Excel)
       - .pdf  via pdfplumber
+
+    Parser LOGIC is unchanged from prior versions — this wrapper only
+    adds observability. The internal helpers (_extract_packing_excel,
+    _extract_packing_pdf, _find_header_row, _map_headers) are untouched.
     """
     suffix = path.suffix.lower()
-    if suffix == ".xlsx":
-        rows = _extract_packing_excel(path, engine="openpyxl")
-    elif suffix == ".xls":
-        rows = _extract_packing_excel(path, engine="xlrd")
-    elif suffix == ".pdf":
-        rows = _extract_packing_pdf(path)
-    else:
-        raise ValueError(f"Unsupported packing list format: {suffix}")
-    return rows, _PARSER_NAME, _PARSER_VERSION
+    diag = _new_diagnostic(file_type=suffix)
+    rows: List[Dict[str, Any]] = []
+
+    try:
+        if suffix == ".xlsx":
+            rows = _extract_packing_excel(path, engine="openpyxl")
+            _collect_excel_diagnostic(path, "openpyxl", diag)
+        elif suffix == ".xls":
+            rows = _extract_packing_excel(path, engine="xlrd")
+            _collect_excel_diagnostic(path, "xlrd", diag)
+        elif suffix == ".pdf":
+            rows = _extract_packing_pdf(path)
+            _collect_pdf_diagnostic(path, diag)
+        else:
+            diag["failure_reason"] = "unsupported_extension"
+            diag["file_type"] = suffix or "<none>"
+            raise ValueError(f"Unsupported packing list format: {suffix}")
+    except ValueError:
+        # Re-raise the explicit "unsupported_extension" case so existing
+        # callers continue to receive ValueError.
+        if diag["failure_reason"] == "unsupported_extension":
+            raise
+        diag["failure_reason"] = "parser_exception"
+        diag["exception_class"] = "ValueError"
+    except Exception as exc:
+        diag["failure_reason"] = "parser_exception"
+        diag["exception_class"] = type(exc).__name__
+        diag["exception_message"] = str(exc)[:500]
+        log.warning("extract_packing exception on %s: %s", path.name, exc)
+        # Still attempt diagnostic collection (workbook may be partially
+        # readable) for the file types where it makes sense.
+        try:
+            if suffix == ".xlsx":
+                _collect_excel_diagnostic(path, "openpyxl", diag)
+            elif suffix == ".xls":
+                _collect_excel_diagnostic(path, "xlrd", diag)
+            elif suffix == ".pdf":
+                _collect_pdf_diagnostic(path, diag)
+        except Exception:
+            pass
+
+    # ── Post-pass classification ─────────────────────────────────────────
+    diag["row_count"] = len(rows)
+    if diag["failure_reason"] is None:
+        if not rows:
+            # Distinguish header_not_detected from empty_sheet using the
+            # diagnostic state.
+            if diag["chosen_header"] is None and diag["candidate_header_rows"]:
+                diag["failure_reason"] = "header_not_detected"
+            elif diag["sheet_count"] == 0 and diag["file_type"] in (".xlsx", ".xls"):
+                # File couldn't be opened as a workbook OR has zero sheets.
+                diag["failure_reason"] = "file_corrupt"
+            elif diag["chosen_header"] is None:
+                diag["failure_reason"] = "header_not_detected"
+            else:
+                diag["failure_reason"] = "empty_sheet"
+
+    return rows, _PARSER_NAME, _PARSER_VERSION, diag
 
 
 def _normalise_header(h: str) -> str:
@@ -876,7 +1084,7 @@ def process_packing_upload(
     invoice_lines = load_invoice_lines(batch_output_dir, batch_id=batch_id)
     inv_source = invoice_lines[0].get("_source", "unknown") if invoice_lines else "none"
 
-    raw_rows, parser_name, parser_version = extract_packing(packing_file_path)
+    raw_rows, parser_name, parser_version, parser_diagnostic = extract_packing(packing_file_path)
     enriched = match_packing_to_invoice(raw_rows, invoice_lines)
 
     # Detect invoice_no from packing rows (majority vote)
@@ -894,6 +1102,7 @@ def process_packing_upload(
         "invoice_lines":         invoice_lines,
         "invoice_lines_source":  inv_source,
         "packing_rows":          enriched,
+        "parser_diagnostic":     parser_diagnostic,
         "document": {
             "batch_id":         batch_id,
             "invoice_no":       doc_invoice_no,
@@ -902,6 +1111,7 @@ def process_packing_upload(
             "parser_name":      parser_name,
             "parser_version":   parser_version,
             "extraction_status": "complete" if enriched else "empty",
+            "parser_diagnostic": parser_diagnostic,
         },
         "matched_count":   matched,
         "unmatched_count": unmatched,

@@ -591,6 +591,16 @@ def get_batch_packing(batch_id: str) -> Dict[str, Any]:
     packing_lines = pdb.get_packing_lines_for_batch(batch_id)
     documents     = pdb.get_packing_documents_for_batch(batch_id)
 
+    # P1 parser observability: decode parser_diagnostic_json on each row.
+    # Older rows have '{}' (idempotent ALTER default), so decode succeeds.
+    import json as _json
+    for d in documents:
+        raw = d.pop("parser_diagnostic_json", None) if isinstance(d, dict) else None
+        try:
+            d["parser_diagnostic"] = _json.loads(raw) if raw else {}
+        except Exception:
+            d["parser_diagnostic"] = {}
+
     # ── Fallback visibility: 2026-05-17 hotfix ────────────────────────────
     # Atlas intake writes shipment_documents rows BEFORE running the
     # best-effort packing extractor. When extraction fails (unsupported
@@ -608,6 +618,20 @@ def get_batch_packing(batch_id: str) -> Dict[str, Any]:
                 for r in rows:
                     if r.get("file_hash") and r["file_hash"] in existing_hashes:
                         continue   # already covered by parsed packing_documents
+                    # P1 — best-effort surface of any packing_documents
+                    # diagnostic for the same file (parsed pass produced
+                    # nothing but may have written diagnostic data).
+                    diag: Dict[str, Any] = {}
+                    try:
+                        for pdoc in pdb.get_packing_documents_for_batch(batch_id) or []:
+                            if pdoc.get("source_file_hash") and pdoc["source_file_hash"] == r.get("file_hash"):
+                                raw = pdoc.pop("parser_diagnostic_json", None)
+                                if raw:
+                                    import json as _json
+                                    diag = _json.loads(raw) if isinstance(raw, str) else {}
+                                break
+                    except Exception:
+                        diag = {}
                     fallback_docs.append({
                         "id":                   r.get("id"),
                         "batch_id":             r.get("batch_id"),
@@ -622,6 +646,7 @@ def get_batch_packing(batch_id: str) -> Dict[str, Any]:
                         "extraction_status":    r.get("extraction_status") or "pending",
                         "fallback_unparsed":    True,
                         "row_count":            0,
+                        "parser_diagnostic":    diag,
                         "created_at":           r.get("created_at"),
                         "updated_at":           r.get("updated_at"),
                     })

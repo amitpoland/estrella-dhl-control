@@ -11765,6 +11765,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   // Post-draft "+ Add Document" modal: backed by the live endpoint
   // POST /api/v1/shipment/{batch}/add-document.
   const [addDocOpen, setAddDocOpen] = React.useState(false);
+  // P1 parser observability: which Packing List row's diagnostic is expanded.
+  const [expandedDiagDocId, setExpandedDiagDocId] = React.useState(null);
   const [packingInfo, setPackingInfo] = React.useState(null);            // null | {documents,packing_lines,...}
   const [packingInfoLoading, setPackingInfoLoading] = React.useState(false);
   const [packingUploading, setPackingUploading] = React.useState(false);
@@ -13365,6 +13367,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
                 {hasDoc && (
                   <div data-testid="packing-list-status">
+                    {/* P1 parser observability: track which diagnostic is open */}
+                    {(() => null)()}
                     {docs.map((doc, i) => {
                       const fileName = (doc.source_file_path || '').split('/').pop() || doc.file_name || doc.invoice_no || '—';
                       const uploadedAt = doc.created_at ? doc.created_at.slice(0, 16).replace('T', ' ') : '—';
@@ -13385,13 +13389,26 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                             ? 'extraction failed'
                             : 'extraction pending')
                         : (doc.extraction_status || 'extracted');
+                      const diag = doc.parser_diagnostic || null;
+                      const hasDiag = diag && Object.keys(diag).length > 0;
+                      const diagOpen = expandedDiagDocId === (doc.id || ('row-' + i));
+                      const matched = diag && Array.isArray(diag.mapped_columns)
+                        ? diag.mapped_columns.map(m => `${m.raw}→${m.canonical_field}`).slice(0, 12)
+                        : [];
+                      const unmatched = diag && Array.isArray(diag.unmatched_columns)
+                        ? diag.unmatched_columns.slice(0, 20)
+                        : [];
+                      const sheetNames = diag && Array.isArray(diag.workbook_sheet_names)
+                        ? diag.workbook_sheet_names.join(', ')
+                        : '';
                       return (
-                        <div key={doc.id || i}
+                        <React.Fragment key={doc.id || i}>
+                        <div
                           data-testid={isFallback ? 'packing-list-row-fallback' : 'packing-list-row-parsed'}
                           style={{
                           display: 'flex', alignItems: 'center', gap: 12,
                           padding: '10px 0',
-                          borderBottom: i < docs.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+                          borderBottom: (!diagOpen && i < docs.length - 1) ? '1px solid var(--border-subtle)' : 'none',
                         }}>
                           <div style={{ width: 32, height: 32, borderRadius: 6, background: isFallback ? 'var(--badge-amber-bg)' : 'var(--badge-blue-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>📄</div>
                           <div style={{ flex: 1, minWidth: 0 }}>
@@ -13403,11 +13420,97 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                               {isFallback && <span style={{ marginLeft: 8, color: 'var(--badge-amber-text)' }}>Uploaded — extraction pending or failed</span>}
                             </div>
                           </div>
+                          {hasDiag && (
+                            <button
+                              data-testid={`packing-list-diagnostic-toggle-${doc.id || i}`}
+                              onClick={() => setExpandedDiagDocId(diagOpen ? null : (doc.id || ('row-' + i)))}
+                              style={{
+                                padding: '2px 8px', fontSize: 10, fontWeight: 600,
+                                background: 'transparent', border: '1px solid var(--border)',
+                                borderRadius: 4, cursor: 'pointer',
+                                color: 'var(--text-2)', fontFamily: 'inherit',
+                              }}
+                              title="Parser diagnostic"
+                            >{diagOpen ? '▾ Diagnostic' : '▸ Diagnostic'}</button>
+                          )}
                           <span style={{
                             fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
                             background: badgeBg, color: badgeText, border: '1px solid ' + badgeBorder,
                           }}>{badgeIcon} {badgeLabel}</span>
                         </div>
+                        {hasDiag && diagOpen && (
+                          <div
+                            data-testid={`packing-list-diagnostic-${doc.id || i}`}
+                            style={{
+                              padding: '10px 12px 12px',
+                              fontSize: 11,
+                              background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border-subtle)',
+                              borderRadius: 6,
+                              marginTop: 4,
+                              marginBottom: 8,
+                              borderBottom: i < docs.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+                              fontFamily: 'ui-monospace, monospace',
+                              color: 'var(--text-2)',
+                              whiteSpace: 'normal',
+                            }}
+                          >
+                            <div style={{ marginBottom: 4 }}>
+                              <span style={{ color: 'var(--text-3)' }}>Reason: </span>
+                              <span style={{ color: 'var(--badge-amber-text)', fontWeight: 700 }}>
+                                {diag.failure_reason || 'none'}
+                              </span>
+                            </div>
+                            <div style={{ marginBottom: 4 }}>
+                              <span style={{ color: 'var(--text-3)' }}>Parser: </span>
+                              {diag.parser_name || '—'} v{diag.parser_version || '?'} ({diag.file_type || '—'})
+                            </div>
+                            {sheetNames && (
+                              <div style={{ marginBottom: 4 }}>
+                                <span style={{ color: 'var(--text-3)' }}>Sheets: </span>{sheetNames}
+                              </div>
+                            )}
+                            <div style={{ marginBottom: 4 }}>
+                              <span style={{ color: 'var(--text-3)' }}>Header detected: </span>
+                              {diag.chosen_header
+                                ? `yes (row ${diag.chosen_header.row_index} on "${diag.chosen_header.sheet}")`
+                                : 'no'}
+                            </div>
+                            {diag.exception_class && (
+                              <div style={{ marginBottom: 4, color: 'var(--badge-red-text)' }}>
+                                <span style={{ color: 'var(--text-3)' }}>Exception: </span>
+                                {diag.exception_class}: {diag.exception_message || ''}
+                              </div>
+                            )}
+                            {matched.length > 0 && (
+                              <div style={{ marginBottom: 4 }}>
+                                <span style={{ color: 'var(--text-3)' }}>Matched aliases: </span>
+                                <span style={{ color: 'var(--badge-green-text)' }}>
+                                  {matched.join(', ')}
+                                </span>
+                              </div>
+                            )}
+                            {unmatched.length > 0 && (
+                              <div style={{ marginBottom: 4 }}>
+                                <span style={{ color: 'var(--text-3)' }}>Raw columns seen (unmatched): </span>
+                                <span style={{ color: 'var(--text)' }}>
+                                  {unmatched.map(c => JSON.stringify(c)).join(', ')}
+                                </span>
+                              </div>
+                            )}
+                            {Array.isArray(diag.candidate_header_rows) && diag.candidate_header_rows.length > 0 && (
+                              <div style={{ marginTop: 6 }}>
+                                <div style={{ color: 'var(--text-3)' }}>Candidate header rows:</div>
+                                {diag.candidate_header_rows.slice(0, 5).map((c, ci) => (
+                                  <div key={ci} style={{ paddingLeft: 12 }}>
+                                    • {c.sheet} row {c.row_index} ({c.alias_hits} hits): {(c.raw_cells_sample || []).slice(0, 8).map(x => JSON.stringify(x)).join(', ')}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        </React.Fragment>
                       );
                     })}
                   </div>

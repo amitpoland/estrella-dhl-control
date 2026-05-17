@@ -18,12 +18,16 @@ Thread-safe: connection per call, WAL mode, threading.Lock.
 """
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+log = logging.getLogger(__name__)
 
 
 _lock = threading.Lock()
@@ -147,6 +151,12 @@ def init_packing_db(db_path: Path) -> None:
         _add_column_if_missing(con, "packing_lines", "metal_color",    "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(con, "packing_lines", "quality_string", "TEXT NOT NULL DEFAULT ''")
 
+        # P1 parser observability: per-document parser_diagnostic_json column
+        # carries the structured diagnostic dict captured by extract_packing.
+        # Read-only by callers; writers serialise via json.dumps.
+        _add_column_if_missing(con, "packing_documents", "parser_diagnostic_json",
+                               "TEXT NOT NULL DEFAULT '{}'")
+
         # Index for O(1) warehouse scan lookups (added lazily so existing DBs pick it up)
         con.execute(
             "CREATE INDEX IF NOT EXISTS idx_pl_scan_code ON packing_lines (scan_code)"
@@ -180,12 +190,27 @@ def upsert_packing_document(
     parser_name: str = "",
     parser_version: str = "",
     extraction_status: str = "pending",
+    parser_diagnostic: Optional[Dict[str, Any]] = None,
     document_id: Optional[str] = None,
 ) -> str:
-    """Insert or update a packing document record. Returns document id."""
+    """Insert or update a packing document record. Returns document id.
+
+    `parser_diagnostic` (P1 observability) is JSON-serialised into the
+    parser_diagnostic_json column. Passing None preserves any prior value
+    on UPDATE and writes '{}' on INSERT.
+    """
     if _db_path is None:
         raise RuntimeError("packing_db not initialised — call init_packing_db() first")
     now = _now_iso()
+    diag_json: Optional[str]
+    if parser_diagnostic is None:
+        diag_json = None
+    else:
+        try:
+            diag_json = json.dumps(parser_diagnostic, ensure_ascii=False)
+        except Exception as exc:
+            log.warning("parser_diagnostic JSON serialise failed (non-fatal): %s", exc)
+            diag_json = "{}"
     with _lock:
         with _connect() as con:
             # If document_id supplied → update existing
@@ -194,22 +219,32 @@ def upsert_packing_document(
                     "SELECT id FROM packing_documents WHERE id=?", (document_id,)
                 ).fetchone()
                 if row:
-                    con.execute(
-                        """UPDATE packing_documents
-                           SET invoice_no=?, source_file_path=?, source_file_hash=?,
-                               parser_name=?, parser_version=?, extraction_status=?,
-                               updated_at=?
-                           WHERE id=?""",
-                        (invoice_no, source_file_path, source_file_hash,
-                         parser_name, parser_version, extraction_status,
-                         now, document_id),
-                    )
+                    if diag_json is None:
+                        con.execute(
+                            """UPDATE packing_documents
+                               SET invoice_no=?, source_file_path=?, source_file_hash=?,
+                                   parser_name=?, parser_version=?, extraction_status=?,
+                                   updated_at=?
+                               WHERE id=?""",
+                            (invoice_no, source_file_path, source_file_hash,
+                             parser_name, parser_version, extraction_status,
+                             now, document_id),
+                        )
+                    else:
+                        con.execute(
+                            """UPDATE packing_documents
+                               SET invoice_no=?, source_file_path=?, source_file_hash=?,
+                                   parser_name=?, parser_version=?, extraction_status=?,
+                                   parser_diagnostic_json=?, updated_at=?
+                               WHERE id=?""",
+                            (invoice_no, source_file_path, source_file_hash,
+                             parser_name, parser_version, extraction_status,
+                             diag_json, now, document_id),
+                        )
                     return document_id
 
             # Hash-based dedup: if another record for this batch already has the
             # same file hash, return it without creating a ghost duplicate.
-            # This covers rapid re-uploads and retry scenarios where no
-            # document_id was threaded through by the caller.
             if source_file_hash:
                 dup = con.execute(
                     "SELECT id FROM packing_documents "
@@ -217,6 +252,15 @@ def upsert_packing_document(
                     (batch_id, source_file_hash),
                 ).fetchone()
                 if dup:
+                    # Update diagnostic on the deduped row so the latest
+                    # parser pass is visible to operators.
+                    if diag_json is not None:
+                        con.execute(
+                            """UPDATE packing_documents
+                               SET parser_diagnostic_json=?, updated_at=?
+                               WHERE id=?""",
+                            (diag_json, now, dup[0]),
+                        )
                     return dup[0]
 
             # Otherwise insert new
@@ -224,10 +268,12 @@ def upsert_packing_document(
             con.execute(
                 """INSERT INTO packing_documents
                        (id, batch_id, invoice_no, source_file_path, source_file_hash,
-                        parser_name, parser_version, extraction_status, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        parser_name, parser_version, extraction_status,
+                        parser_diagnostic_json, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (doc_id, batch_id, invoice_no, source_file_path, source_file_hash,
-                 parser_name, parser_version, extraction_status, now, now),
+                 parser_name, parser_version, extraction_status,
+                 diag_json or "{}", now, now),
             )
             return doc_id
 
