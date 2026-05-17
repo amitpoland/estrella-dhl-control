@@ -662,6 +662,268 @@ def get_batch_packing(batch_id: str) -> Dict[str, Any]:
     }
 
 
+# ── POST /api/v1/packing/{batch_id}/reprocess ───────────────────────────────
+#
+# Re-run the safe packing parser against every shipment_documents row of
+# type purchase_packing_list / sales_packing_list whose file still
+# exists on disk. Useful for:
+#   • Batches that pre-date a parser/dependency fix (e.g. .xls files
+#     that failed because xlrd was missing at intake time).
+#   • Operator-driven re-parse after a vendor template change.
+#
+# Hard rules:
+#   - Per-batch only. No cross-batch fan-out.
+#   - Purchase vs sales separation preserved: parser_document_type
+#     comes from the shipment_documents row, never inferred from
+#     filename or path heuristics.
+#   - purchase_packing_list → packing_lines (purchase-side)
+#   - sales_packing_list    → sales_packing_lines (sales-side)
+#   - No DHL/SAD/PZ/wFirma/proforma execution. Sales-side draft seed
+#     uses the SAME helper intake already calls (idempotent).
+#   - Parser failures non-fatal — endpoint returns 200 with per-file
+#     status; diagnostic artifact written via the existing writer.
+#   - Idempotent: hash-dedup in upsert_packing_document avoids
+#     duplicates; sales_packing_lines.replace mode in
+#     store_sales_packing_lines keeps the set canonical.
+
+class _ReprocessRequest(BaseModel):
+    document_id: Optional[str] = None
+
+
+@router.post("/{batch_id}/reprocess", dependencies=[_auth])
+async def reprocess_packing_documents(
+    batch_id: str,
+    body:     Optional[_ReprocessRequest] = None,
+) -> Dict[str, Any]:
+    """Re-run the safe packing parser against on-disk packing files.
+
+    Returns:
+        {
+          "batch_id":  "...",
+          "files":     [
+            {
+              "file_name":           str,
+              "document_id":         str,
+              "document_type":       "purchase_packing_list" | "sales_packing_list",
+              "rows_extracted":      int,
+              "parser_status":       str,
+              "failure_reason":      str | None,
+              "diagnostic_artifact": str | None,
+            }, ...
+          ],
+          "summary": {
+            "files":    int,
+            "rows":     int,        # sum of rows_extracted
+            "purchase": int,
+            "sales":    int,
+          }
+        }
+    """
+    output_dir = _validate_batch(batch_id)
+    audit_path = output_dir / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail=f"Batch {batch_id} not found.")
+
+    # Pull AWB for register_document writes (existing pattern).
+    awb_canonical = ""
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        awb_canonical = str(audit.get("awb") or "")
+    except Exception:
+        pass
+
+    only_doc_id = (body.document_id or "").strip() if body else ""
+
+    from ..services import document_db as _ddb
+    from ..services.invoice_packing_extractor import (
+        process_packing_upload, extract_packing,
+    )
+    from ..services.parser_diagnostic_writer import write_packing_diagnostic_artifact
+    from .. import services
+    from ..services import packing_resolution_db as _prdb  # noqa: F401 (kept for parity)
+
+    # Collect candidate shipment_documents rows.
+    candidates: List[Dict[str, Any]] = []
+    for dtype in ("purchase_packing_list", "sales_packing_list"):
+        rows = _ddb.get_documents_for_batch(batch_id, document_type=dtype) or []
+        for r in rows:
+            if only_doc_id and r.get("id") != only_doc_id:
+                continue
+            candidates.append(r)
+
+    results: List[Dict[str, Any]] = []
+    sum_purchase = 0
+    sum_sales    = 0
+
+    for row in candidates:
+        doc_id        = row.get("id") or ""
+        document_type = row.get("document_type") or ""
+        file_name     = row.get("file_name") or ""
+        file_path_str = row.get("file_path") or ""
+        result_entry: Dict[str, Any] = {
+            "file_name":           file_name,
+            "document_id":         doc_id,
+            "document_type":       document_type,
+            "rows_extracted":      0,
+            "parser_status":       "skipped",
+            "failure_reason":      None,
+            "diagnostic_artifact": None,
+        }
+
+        try:
+            file_path = Path(file_path_str) if file_path_str else None
+            if not file_path or not file_path.exists():
+                result_entry["parser_status"]  = "file_missing"
+                result_entry["failure_reason"] = "file_not_found_on_disk"
+                results.append(result_entry)
+                continue
+
+            # ── Purchase-side: full process_packing_upload pipeline ─────
+            if document_type == "purchase_packing_list":
+                result = process_packing_upload(
+                    batch_id=batch_id,
+                    batch_output_dir=output_dir,
+                    packing_file_path=file_path,
+                    force_reextract=False,
+                )
+                diag = result.get("parser_diagnostic") or {}
+                rows_parsed = result.get("packing_rows", []) or []
+                # Persist packing_documents row + lines via the SAME helpers
+                # intake uses. Hash-dedup makes this idempotent.
+                doc_id_pdb = pdb.upsert_packing_document(**result["document"])
+                line_records = [
+                    {
+                        "packing_document_id":   doc_id_pdb,
+                        "batch_id":              batch_id,
+                        "invoice_no":            r.get("invoice_no", ""),
+                        "invoice_line_position": r.get("invoice_line_position"),
+                        "product_code":          r.get("product_code"),
+                        "design_no":             str(r.get("design_no", "") or ""),
+                        "batch_no":              str(r.get("batch_no", "") or ""),
+                        "bag_id":                str(r.get("bag_id", "") or ""),
+                        "tray_id":               str(r.get("tray_id", "") or ""),
+                        "item_type":             str(r.get("item_type", "") or ""),
+                        "uom":                   str(r.get("uom", "") or ""),
+                        "quantity":              float(r.get("quantity", 0) or 0),
+                        "gross_weight":          float(r.get("gross_weight", 0) or 0),
+                        "net_weight":            float(r.get("net_weight", 0) or 0),
+                        "metal":                 str(r.get("metal", "") or ""),
+                        "karat":                 str(r.get("karat", "") or ""),
+                        "stone_type":            str(r.get("stone_type", "") or ""),
+                        "remarks":               str(r.get("remarks", "") or ""),
+                        "extracted_confidence":  float(r.get("extracted_confidence", 0) or 0),
+                        "requires_manual_review": bool(r.get("requires_manual_review", False)),
+                        "pack_sr":               r.get("line_position"),
+                        "unit_price":            float(r.get("unit_price", 0) or 0),
+                        "total_value":           float(r.get("total_value", 0) or 0),
+                    }
+                    for r in rows_parsed
+                ]
+                if line_records:
+                    pdb.upsert_packing_lines(line_records)
+                    seed_purchase_transit(batch_id, line_records)
+                result_entry["rows_extracted"] = len(rows_parsed)
+                result_entry["parser_status"]  = "extracted" if rows_parsed else "empty"
+                result_entry["failure_reason"] = diag.get("failure_reason")
+                # Artifact on failure
+                if not rows_parsed or diag.get("failure_reason"):
+                    art = write_packing_diagnostic_artifact(
+                        storage_root=settings.storage_root,
+                        batch_id=batch_id, document_id=doc_id,
+                        filename=file_name, document_type=document_type,
+                        source_path=file_path, parser_diagnostic=diag,
+                    )
+                    result_entry["diagnostic_artifact"] = str(art) if art else None
+                sum_purchase += result_entry["rows_extracted"]
+
+            # ── Sales-side: extract_packing + store_sales_packing_lines ─
+            elif document_type == "sales_packing_list":
+                sp_rows, _, _, sp_diag = extract_packing(file_path)
+                # Resolve a sales_documents id for this batch so sales
+                # lines are properly linked. If none exists yet, register
+                # a sales_invoice placeholder so the FK is satisfiable.
+                sales_docs = _ddb.get_documents_for_batch(batch_id, document_type="sales_invoice") or []
+                sales_doc_id = sales_docs[0]["id"] if sales_docs else ""
+                if not sales_doc_id:
+                    # Soft-register a sales_documents row keyed off the
+                    # packing file so downstream proforma readiness has
+                    # a join target. NEVER triggers external flows.
+                    try:
+                        _ddb.store_sales_document(
+                            batch_id=batch_id, document_id=doc_id,
+                            data={
+                                "client_name":      "",
+                                "client_ref":       "",
+                                "document_type":    "sales_packing_list",
+                                "source_file_path": str(file_path),
+                                "extraction_status": "pending",
+                            },
+                        )
+                        sales_doc_id = doc_id
+                    except Exception:
+                        sales_doc_id = doc_id
+
+                # Reshape parser rows → sales_packing_lines schema.
+                line_records = []
+                for r in sp_rows:
+                    line_records.append({
+                        "batch_id":              batch_id,
+                        "sales_document_id":     sales_doc_id,
+                        "invoice_no":            r.get("invoice_no", ""),
+                        "design_no":             str(r.get("design_no", "") or ""),
+                        "bag_id":                str(r.get("bag_id", "") or ""),
+                        "product_code":          r.get("product_code"),
+                        "qty":                   float(r.get("quantity", 0) or 0),
+                        "unit_price":            float(r.get("unit_price", 0) or 0),
+                        "currency":              (r.get("currency") or "").upper(),
+                        "total_value":           float(r.get("total_value", 0) or 0),
+                        "price_source":          r.get("price_source") or r.get("currency_source") or "",
+                        "client_po":             r.get("client_po") or "",
+                        "remarks":               str(r.get("remarks", "") or ""),
+                    })
+                if line_records:
+                    try:
+                        _ddb.replace_sales_packing_lines(sales_doc_id, batch_id, line_records)
+                    except AttributeError:
+                        # Helper name varies between writers; fall back.
+                        _ddb.store_sales_packing_lines(sales_doc_id, batch_id, line_records)
+                result_entry["rows_extracted"] = len(sp_rows)
+                result_entry["parser_status"]  = "extracted" if sp_rows else "empty"
+                result_entry["failure_reason"] = sp_diag.get("failure_reason")
+                if not sp_rows or sp_diag.get("failure_reason"):
+                    art = write_packing_diagnostic_artifact(
+                        storage_root=settings.storage_root,
+                        batch_id=batch_id, document_id=doc_id,
+                        filename=file_name, document_type=document_type,
+                        source_path=file_path, parser_diagnostic=sp_diag or {},
+                    )
+                    result_entry["diagnostic_artifact"] = str(art) if art else None
+                sum_sales += result_entry["rows_extracted"]
+
+            else:
+                result_entry["parser_status"]  = "skipped_unsupported_type"
+                result_entry["failure_reason"] = "unsupported_document_type"
+
+        except Exception as exc:
+            log.warning("[%s] reprocess failed (non-fatal) for %s: %s",
+                        batch_id, file_name, exc)
+            result_entry["parser_status"]  = "extraction_failed"
+            result_entry["failure_reason"] = type(exc).__name__
+
+        results.append(result_entry)
+
+    return {
+        "batch_id": batch_id,
+        "files":    results,
+        "summary": {
+            "files":    len(results),
+            "rows":     sum_purchase + sum_sales,
+            "purchase": sum_purchase,
+            "sales":    sum_sales,
+        },
+    }
+
+
 # ── GET /api/v1/packing/{batch_id}/lines ─────────────────────────────────────
 
 @router.get("/{batch_id}/lines", dependencies=[_auth])

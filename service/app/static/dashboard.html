@@ -11767,6 +11767,9 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [addDocOpen, setAddDocOpen] = React.useState(false);
   // P1 parser observability: which Packing List row's diagnostic is expanded.
   const [expandedDiagDocId, setExpandedDiagDocId] = React.useState(null);
+  // P2 "Reparse all" busy + summary state.
+  const [reparseBusy, setReparseBusy]         = React.useState(false);
+  const [reparseSummary, setReparseSummary]   = React.useState('');
   const [packingInfo, setPackingInfo] = React.useState(null);            // null | {documents,packing_lines,...}
   const [packingInfoLoading, setPackingInfoLoading] = React.useState(false);
   const [packingUploading, setPackingUploading] = React.useState(false);
@@ -13328,6 +13331,38 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>Packing list upload feeds Warehouse Audit and Sales Linkage.</div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Btn small variant="outline"
+                         data-testid="packing-list-reparse-all"
+                         onClick={async () => {
+                           if (reparseBusy) return;
+                           setReparseBusy(true);
+                           setReparseSummary('');
+                           try {
+                             const r = await fetch(`/api/v1/packing/${encodeURIComponent(batchId)}/reprocess`, {
+                               method: 'POST',
+                               headers: { 'Content-Type': 'application/json' },
+                               credentials: 'include',
+                               body: JSON.stringify({}),
+                             });
+                             if (!r.ok) {
+                               const msg = await r.text().catch(() => 'Reparse failed');
+                               throw new Error(msg);
+                             }
+                             const data = await r.json();
+                             const s = data && data.summary ? data.summary : {};
+                             setReparseSummary(`Reparse complete: ${s.files ?? 0} files, ${s.rows ?? 0} rows (${s.purchase ?? 0} purchase, ${s.sales ?? 0} sales)`);
+                             load();
+                             loadDocRegistry();
+                             loadPackingInfo();
+                           } catch (e) {
+                             setReparseSummary('Reparse failed: ' + (e.message || 'unknown'));
+                           } finally {
+                             setReparseBusy(false);
+                           }
+                         }}
+                         disabled={reparseBusy || packingInfoLoading || packingUploading}>
+                      {reparseBusy ? 'Reparsing…' : '⟳ Reparse all'}
+                    </Btn>
                     <Btn small variant="outline" onClick={loadPackingInfo} disabled={packingInfoLoading || packingUploading}>
                       {packingInfoLoading ? 'Loading…' : '↺ Refresh'}
                     </Btn>
@@ -13353,6 +13388,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
                 {packingInfoLoading && !pl && (
                   <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>Loading packing info…</div>
+                )}
+
+                {reparseSummary && (
+                  <div data-testid="packing-list-reparse-summary"
+                       style={{ fontSize: 11, color: 'var(--text-2)', padding: '6px 8px',
+                                marginBottom: 8, borderRadius: 4,
+                                background: 'var(--bg-subtle)',
+                                border: '1px solid var(--border-subtle)' }}>
+                    {reparseSummary}
+                  </div>
                 )}
 
                 {packingInfo && packingInfo.error && (
