@@ -100,3 +100,56 @@ def send_queued_email_endpoint(
         confirm_mcp_send=body.confirm_mcp_send,
         approved_by=body.approved_by,
     )
+
+
+# ── Product Master backfill (PR-4) ────────────────────────────────────────────
+
+class _ProductMasterBackfillRequest(BaseModel):
+    """Default dry_run=True — operator must explicitly opt into writes.
+    Mirrors the safe-by-default pattern of other admin endpoints."""
+    dry_run:         bool          = True
+    batch_id_filter: Optional[str] = None
+
+
+@router.post("/product-master/backfill")
+def trigger_product_master_backfill(
+    body: _ProductMasterBackfillRequest = _ProductMasterBackfillRequest(),
+    user: dict                          = Depends(require_admin),
+):
+    """Admin-only.  Idempotent projection of historical invoice_lines.
+    product_code values into product_master.
+
+    Behaviour:
+      * default dry_run=True (returns preview, writes nothing).
+      * dry_run=False executes idempotent UPSERT via PR #193's
+        reservation_db.upsert_product_master helper — existing rows'
+        non-empty source_* identity is preserved.
+      * batch_id_filter restricts the scan to a single batch.
+      * Local-DB only.  No external calls.  No schema changes.
+
+    Returns the backfill summary directly (see
+    product_master_backfill.backfill_from_invoice_lines docstring).
+    """
+    from ..core.config import settings
+    from ..services.product_master_backfill import (
+        backfill_from_invoice_lines,
+    )
+    result = backfill_from_invoice_lines(
+        settings.storage_root,
+        dry_run         = bool(body.dry_run),
+        batch_id_filter = (body.batch_id_filter or "").strip() or None,
+    )
+    # Operator-facing audit trail.
+    import logging as _logging
+    _logging.getLogger(__name__).info(
+        "product-master backfill triggered by user=%s dry_run=%s "
+        "filter=%r → scanned_codes=%d inserted=%d updated=%d errors=%d",
+        user.get("email", "?"),
+        result.get("dry_run"),
+        body.batch_id_filter,
+        result.get("scanned_codes", 0),
+        result.get("inserted", 0),
+        result.get("updated", 0),
+        len(result.get("errors", []) or []),
+    )
+    return result
