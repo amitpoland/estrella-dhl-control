@@ -87,18 +87,44 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
     it       = audit.get("invoice_totals") or {}
     precheck = audit.get("dhl_precheck") or {}
 
-    cif: float = (
-        float(ver.get("invoice_cif_total_usd") or 0)
-        or float(it.get("total_cif_usd") or 0)
-        or float(it.get("total_fob_usd") or 0)
-        or float(precheck.get("invoice_cif_total_usd") or 0)
-        or float(precheck.get("fob_total_usd") or 0)
-    )
+    # Resolve CIF + source in one pass so the UI can show which input
+    # actually drove the decision (operator clarity for the Clearance
+    # Routing card).
+    cif: float = 0.0
+    cif_source: str = "unavailable"
+    for value, source_label in (
+        (ver.get("invoice_cif_total_usd"),     "verification.invoice_cif_total_usd"),
+        (it.get("total_cif_usd"),              "invoice_totals.total_cif_usd"),
+        (it.get("total_fob_usd"),              "invoice_totals.total_fob_usd"),
+        (precheck.get("invoice_cif_total_usd"), "dhl_precheck.invoice_cif_total_usd"),
+        (precheck.get("fob_total_usd"),        "dhl_precheck.fob_total_usd"),
+    ):
+        try:
+            v = float(value or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if v:
+            cif, cif_source = v, source_label
+            break
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
     if cif == 0.0:
-        log.warning("[clearance_decision] CIF = 0 for batch — routing_pending")
+        # Surface which downstream input is missing so the operator knows
+        # the smallest next step. Order matters — prefer the most operator-
+        # actionable missing piece.
+        if not audit.get("invoice_names") and not audit.get("inputs", {}).get("invoices"):
+            missing_reason = "Purchase invoice not uploaded yet"
+        elif not it and not ver and not precheck:
+            missing_reason = "Purchase invoice not parsed yet — run Recheck"
+        elif not (ver.get("invoice_cif_total_usd") or it.get("total_cif_usd")) and (
+            it.get("total_fob_usd") or precheck.get("fob_total_usd")
+        ):
+            missing_reason = "FOB available but freight not allocated — CIF pending"
+        else:
+            missing_reason = "CIF not calculated yet — run Recheck after invoice parse"
+
+        log.warning("[clearance_decision] CIF = 0 for batch — routing_pending (%s)", missing_reason)
         return {
             "total_value_usd":           0.0,
             "threshold_usd":             THRESHOLD_USD,
@@ -108,14 +134,16 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
             "carrier_handles":           None,
             "agency":                    None,
             "agency_email":              None,
+            "cif_source":                cif_source,        # always "unavailable" here
+            "missing_reason":            missing_reason,
             "decision_reason":           "cif_zero_routing_pending",
             "computed_at":               now_iso,
         }
 
     if cif >= THRESHOLD_USD:
         log.info(
-            "[clearance_decision] CIF=%.2f >= %.0f → %s",
-            cif, THRESHOLD_USD, PATH_AGENCY_CLEARANCE,
+            "[clearance_decision] CIF=%.2f >= %.0f → %s (source=%s)",
+            cif, THRESHOLD_USD, PATH_AGENCY_CLEARANCE, cif_source,
         )
         return {
             "total_value_usd":           round(cif, 2),
@@ -126,13 +154,14 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
             "carrier_handles":           False,
             "agency":                    AGENCY_NAME,
             "agency_email":              AGENCY_EMAIL,
+            "cif_source":                cif_source,
             "decision_reason":           "value_above_threshold",
             "computed_at":               now_iso,
         }
 
     log.info(
-        "[clearance_decision] CIF=%.2f ≤ %.0f → %s",
-        cif, THRESHOLD_USD, PATH_DHL_SELF_CLEARANCE,
+        "[clearance_decision] CIF=%.2f ≤ %.0f → %s (source=%s)",
+        cif, THRESHOLD_USD, PATH_DHL_SELF_CLEARANCE, cif_source,
     )
     return {
         "total_value_usd":           round(cif, 2),
@@ -143,6 +172,7 @@ def build_clearance_decision(audit: Dict[str, Any]) -> Dict[str, Any]:
         "carrier_handles":           True,
         "agency":                    None,
         "agency_email":              None,
+        "cif_source":                cif_source,
         "decision_reason":           "value_below_threshold",
         "computed_at":               now_iso,
     }
