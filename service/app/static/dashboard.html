@@ -13078,28 +13078,47 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 {hasDoc && (
                   <div data-testid="packing-list-status">
                     {docs.map((doc, i) => {
-                      const fileName = (doc.source_file_path || '').split('/').pop() || doc.invoice_no || '—';
+                      const fileName = (doc.source_file_path || '').split('/').pop() || doc.file_name || doc.invoice_no || '—';
                       const uploadedAt = doc.created_at ? doc.created_at.slice(0, 16).replace('T', ' ') : '—';
                       const isLatest = i === 0;
+                      // Fallback rows from shipment_documents (Atlas-intake
+                      // uploads with no parser output) are flagged by the
+                      // backend with fallback_unparsed=true. Render them
+                      // with an amber "uploaded — extraction pending"
+                      // badge instead of the green "extracted" badge so
+                      // we never claim parsed status that doesn't exist.
+                      const isFallback = !!doc.fallback_unparsed;
+                      const badgeBg     = isFallback ? 'var(--badge-amber-bg)'     : 'var(--badge-green-bg)';
+                      const badgeText   = isFallback ? 'var(--badge-amber-text)'   : 'var(--badge-green-text)';
+                      const badgeBorder = isFallback ? 'var(--badge-amber-border)' : 'var(--badge-green-border)';
+                      const badgeIcon   = isFallback ? '⏳' : '✓';
+                      const badgeLabel  = isFallback
+                        ? (doc.extraction_status === 'extraction_failed'
+                            ? 'extraction failed'
+                            : 'extraction pending')
+                        : (doc.extraction_status || 'extracted');
                       return (
-                        <div key={doc.id || i} style={{
+                        <div key={doc.id || i}
+                          data-testid={isFallback ? 'packing-list-row-fallback' : 'packing-list-row-parsed'}
+                          style={{
                           display: 'flex', alignItems: 'center', gap: 12,
                           padding: '10px 0',
                           borderBottom: i < docs.length - 1 ? '1px solid var(--border-subtle)' : 'none',
                         }}>
-                          <div style={{ width: 32, height: 32, borderRadius: 6, background: 'var(--badge-blue-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>📄</div>
+                          <div style={{ width: 32, height: 32, borderRadius: 6, background: isFallback ? 'var(--badge-amber-bg)' : 'var(--badge-blue-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>📄</div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={fileName}>{fileName}</div>
                             <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
                               {uploadedAt}
-                              {isLatest && lineCount > 0 && <span style={{ marginLeft: 8, color: 'var(--text-2)' }}>{lineCount} rows extracted</span>}
+                              {doc.document_type && <span style={{ marginLeft: 8, color: 'var(--text-2)' }}>{doc.document_type}</span>}
+                              {isLatest && !isFallback && lineCount > 0 && <span style={{ marginLeft: 8, color: 'var(--text-2)' }}>{lineCount} rows extracted</span>}
+                              {isFallback && <span style={{ marginLeft: 8, color: 'var(--badge-amber-text)' }}>Uploaded — extraction pending or failed</span>}
                             </div>
                           </div>
                           <span style={{
                             fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
-                            background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)',
-                            border: '1px solid var(--badge-green-border)',
-                          }}>✓ {doc.extraction_status || 'extracted'}</span>
+                            background: badgeBg, color: badgeText, border: '1px solid ' + badgeBorder,
+                          }}>{badgeIcon} {badgeLabel}</span>
                         </div>
                       );
                     })}

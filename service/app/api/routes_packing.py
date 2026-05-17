@@ -591,11 +591,49 @@ def get_batch_packing(batch_id: str) -> Dict[str, Any]:
     packing_lines = pdb.get_packing_lines_for_batch(batch_id)
     documents     = pdb.get_packing_documents_for_batch(batch_id)
 
+    # ── Fallback visibility: 2026-05-17 hotfix ────────────────────────────
+    # Atlas intake writes shipment_documents rows BEFORE running the
+    # best-effort packing extractor. When extraction fails (unsupported
+    # spreadsheet schema, corrupt PDF, etc.) packing_documents stays empty
+    # and the Packing List card used to render "No packing list uploaded
+    # yet" even though the file is on disk. Surface those uploaded-but-
+    # unparsed files here so the card can show them honestly.
+    fallback_docs: List[Dict[str, Any]] = []
+    if not documents:
+        try:
+            from ..services import document_db as _ddb
+            existing_hashes = {d.get("file_hash") for d in documents if d.get("file_hash")}
+            for dtype in ("purchase_packing_list", "sales_packing_list"):
+                rows = _ddb.get_documents_for_batch(batch_id, document_type=dtype) or []
+                for r in rows:
+                    if r.get("file_hash") and r["file_hash"] in existing_hashes:
+                        continue   # already covered by parsed packing_documents
+                    fallback_docs.append({
+                        "id":                   r.get("id"),
+                        "batch_id":             r.get("batch_id"),
+                        "document_type":        r.get("document_type"),
+                        "file_name":            r.get("file_name") or "",
+                        "source_file_path":     r.get("file_path") or "",
+                        "file_hash":            r.get("file_hash") or "",
+                        # Mark as fallback so the UI can label it
+                        # "Uploaded — extraction pending / failed" rather
+                        # than claim parsed status.
+                        "parser_status":        r.get("parser_status") or "pending",
+                        "extraction_status":    r.get("extraction_status") or "pending",
+                        "fallback_unparsed":    True,
+                        "row_count":            0,
+                        "created_at":           r.get("created_at"),
+                        "updated_at":           r.get("updated_at"),
+                    })
+        except Exception as exc:
+            log.warning("[%s] packing fallback enumeration failed (non-fatal): %s",
+                        batch_id, exc)
+
     return {
         "batch_id":      batch_id,
         "invoice_lines": invoice_lines,
         "packing_lines": packing_lines,
-        "documents":     documents,
+        "documents":     documents + fallback_docs,
     }
 
 
