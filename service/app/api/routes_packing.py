@@ -719,9 +719,17 @@ def get_batch_packing(batch_id: str) -> Dict[str, Any]:
             # stores sales_document_id = shipment_documents.id).
             if row_count == 0 and doc_id and doc_id in sales_line_counts:
                 row_count = int(sales_line_counts[doc_id])
-            parser_status = r.get("parser_status") or (
-                "extracted" if row_count > 0 else "pending"
-            )
+            # When sales_packing_lines has rows for this file, the parse
+            # definitively succeeded — surface "extracted" regardless of
+            # the stale shipment_documents.extraction_status carried over
+            # from intake (which is "pending" by table default and was
+            # never updated by the reprocess endpoint on the sales side).
+            if row_count > 0:
+                parser_status_out     = "extracted"
+                extraction_status_out = "extracted"
+            else:
+                parser_status_out     = r.get("parser_status") or "pending"
+                extraction_status_out = r.get("extraction_status") or "pending"
             fallback_docs.append({
                 "id":                   doc_id,
                 "batch_id":             r.get("batch_id"),
@@ -730,15 +738,19 @@ def get_batch_packing(batch_id: str) -> Dict[str, Any]:
                 "file_name":            r.get("file_name") or "",
                 "source_file_path":     r.get("file_path") or "",
                 "file_hash":            r.get("file_hash") or "",
-                "parser_status":        parser_status,
-                "extraction_status":    r.get("extraction_status") or (
-                    "extracted" if row_count > 0 else "pending"
-                ),
+                "parser_status":        parser_status_out,
+                "extraction_status":    extraction_status_out,
                 # fallback_unparsed=False when sales rows are present
                 # (we have real extracted lines); True when only the
                 # shipment_documents row exists.
                 "fallback_unparsed":    row_count == 0,
                 "row_count":            row_count,
+                # parser_diagnostic deliberately empty here — the sales
+                # diagnostic isn't persisted to the packing_documents
+                # store (sales lives in sales_packing_lines instead).
+                # The UI suppresses the Diagnostic toggle when this
+                # dict is empty, which is the honest behaviour: no
+                # misleading button when we have nothing to show.
                 "parser_diagnostic":    {},
                 "created_at":           r.get("created_at"),
                 "updated_at":           r.get("updated_at"),
