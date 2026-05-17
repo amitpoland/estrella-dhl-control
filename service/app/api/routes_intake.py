@@ -58,6 +58,17 @@ _CARRIERS            = {"DHL", "FedEx", "Other"}
 _ALLOWED_INVOICE_EXT = {".pdf"}
 _ALLOWED_PACKING_EXT = {".pdf", ".xlsx", ".xls"}
 _ALLOWED_SAD_EXT     = {".pdf", ".xml"}
+# Per-doc-type extension policy for the New Shipment Atlas local-only
+# slots. Central source of truth so the frontend `<input accept>` can
+# mirror it exactly (see _NS_DOC_TYPES in dashboard.html). Tightened
+# 2026-05-17 hotfix after a user dropped an xlsx packing list into the
+# default first (purchase_invoice) slot and saw "Allowed: ['.pdf']".
+_ALLOWED_SERVICE_EXT = {".pdf", ".xlsx", ".xls"}
+_ALLOWED_CARNET_EXT  = {".pdf"}
+# `other_document` keeps the historical generic-safe rule (PDF +
+# spreadsheets + images); we explicitly avoid widening to anything
+# executable / archive.
+_ALLOWED_OTHER_EXT   = {".pdf", ".xlsx", ".xls", ".jpg", ".jpeg", ".png"}
 _MAX_BYTES: int      = settings.max_upload_bytes   # 20 MB
 
 
@@ -289,15 +300,14 @@ async def shipment_intake(
         _validate_file(f, _ALLOWED_INVOICE_EXT)
     for f in sales_packing_lists:
         _validate_file(f, _ALLOWED_PACKING_EXT)
-    # Local-only Atlas types: same broad attachment allow-list as packing
-    # (PDF + spreadsheet). No parsing, just file save.
-    _ALLOWED_LOCAL_EXT = {".pdf", ".xlsx", ".xls", ".jpg", ".jpeg", ".png"}
+    # Per-doc-type allow-lists (hotfix 2026-05-17). Each slot type honors
+    # its own extension policy mirroring the frontend `<input accept>`.
     for f in service_invoices:
-        _validate_file(f, _ALLOWED_LOCAL_EXT)
+        _validate_file(f, _ALLOWED_SERVICE_EXT)
     for f in carnet_docs:
-        _validate_file(f, _ALLOWED_LOCAL_EXT)
+        _validate_file(f, _ALLOWED_CARNET_EXT)
     for f in other_docs:
-        _validate_file(f, _ALLOWED_LOCAL_EXT)
+        _validate_file(f, _ALLOWED_OTHER_EXT)
     if awb and awb.filename:
         _validate_file(awb, _ALLOWED_INVOICE_EXT)
     else:
