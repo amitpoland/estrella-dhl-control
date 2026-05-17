@@ -919,6 +919,109 @@ async def shipment_intake(
         is_supplier_side=False,
     )
 
+    # ── E3. Seed packing_contractor_resolution from operator's dropdown picks
+    # The ContractorResolutionPanel reads packing_contractor_resolution (the
+    # R2 resolver's output table). Atlas intake captures contractor IDs from
+    # master-data dropdowns directly — treat that as an explicit operator
+    # confirmation so the panel shows the picked identities without forcing
+    # a redundant "Resolve" click. No resolver algorithm runs here; no
+    # wFirma call; no contractor record is created. Failure is non-fatal.
+    try:
+        from ..services import packing_resolution_db as prdb
+        _pr_db_path = settings.storage_root / "packing_resolutions.sqlite"
+
+        def _resolve_master_row(contractor_id: str, role: str) -> Dict[str, Any]:
+            """Look up the operator-picked master-data row for this role.
+            Returns a dict with at least {name, country, vat_id} or empty
+            on miss. Read-only against existing master tables; no writes."""
+            if not contractor_id:
+                return {}
+            try:
+                if role == "client":
+                    from ..services.customer_master_db import get_customer
+                    _cm_path = settings.storage_root / "customer_master.sqlite"
+                    rec = get_customer(_cm_path, contractor_id)
+                    if rec is None:
+                        return {}
+                    return {
+                        "name":     getattr(rec, "bill_to_name", "") or "",
+                        "country":  getattr(rec, "country", "") or "",
+                        "vat_id":   getattr(rec, "nip", "") or getattr(rec, "vat_eu_number", "") or "",
+                    }
+                # supplier — main canonical MasterData-B4 store
+                from ..services.suppliers_db import get_supplier
+                _sup_path = settings.storage_root / "suppliers.sqlite"
+                # contractor_id may be the str(id); accept int conversion
+                try:
+                    sup_id = int(contractor_id)
+                except (TypeError, ValueError):
+                    return {}
+                rec = get_supplier(_sup_path, sup_id)
+                if rec is None:
+                    return {}
+                return {
+                    "name":    getattr(rec, "name", "") or "",
+                    "country": getattr(rec, "country", "") or "",
+                    "vat_id":  getattr(rec, "vat_id", "") or "",
+                }
+            except Exception as exc:
+                log.warning("[%s] master-data lookup failed for %s=%r: %s",
+                            batch_id, role, contractor_id, exc)
+                return {}
+
+        # Supplier: prefer the shipment-level id, else first non-empty
+        # per-block id (already resolved at the top of the route).
+        sup_cid = _shipment_supplier_cid or next(
+            (str(b.get("supplier_contractor_id") or "").strip()
+             for b in purchase_blocks
+             if str(b.get("supplier_contractor_id") or "").strip()),
+            "",
+        )
+        cli_cid = _shipment_client_cid or next(
+            (str(b.get("client_contractor_id") or "").strip()
+             for b in sales_blocks
+             if str(b.get("client_contractor_id") or "").strip()),
+            "",
+        )
+
+        def _seed(role: str, contractor_id: str) -> None:
+            if not contractor_id:
+                return
+            master = _resolve_master_row(contractor_id, role)
+            parsed_name = master.get("name") or contractor_id   # fallback so
+            # upsert_resolution's required parsed_name is satisfied even when
+            # master-data lookup missed (operator can still see the id).
+            verdict = {
+                "parsed_name":         parsed_name,
+                "parsed_tax_id":       master.get("vat_id") or None,
+                "parsed_country":      master.get("country") or None,
+                "matched_master_type": "customer_master" if role == "client" else "suppliers",
+                "matched_master_id":   contractor_id,
+                "tier":                1,        # exact-id match
+                "confidence":          1.0,      # operator-confirmed
+                "reason":              "atlas_intake_dropdown_pick",
+                "evidence":            {"source": "intake_dropdown"},
+                "candidates":          [],
+                "status":              "confirmed",
+            }
+            prdb.upsert_resolution(
+                _pr_db_path,
+                batch_id          = batch_id,
+                role              = role,
+                verdict           = verdict,
+                operator_user     = "intake",
+                operator_override = False,
+                status_override   = "confirmed",
+            )
+            log.info("[%s] contractor-resolution seeded: role=%s id=%s name=%s",
+                     batch_id, role, contractor_id, parsed_name)
+
+        _seed("supplier", sup_cid)
+        _seed("client",   cli_cid)
+    except Exception as exc:
+        log.warning("[%s] contractor-resolution seed failed (non-fatal): %s",
+                    batch_id, exc)
+
     # ── F. Write draft audit + timeline ──────────────────────────────────────
     _write_draft_audit(output_dir, batch_id, tracking_no, carrier, inv_names, awb_name)
     audit_path = output_dir / "audit.json"
