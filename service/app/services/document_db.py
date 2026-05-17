@@ -347,6 +347,19 @@ def init_document_db(db_path: Path) -> None:
             except sqlite3.OperationalError:
                 pass
 
+        # ── Parser-observability for sales side: mirror the
+        # packing_documents.parser_diagnostic_json column on
+        # sales_documents so successful sales-packing parses expose the
+        # same Diagnostic toggle as purchase rows.  Default '{}' keeps
+        # legacy rows JSON-decodable.  Idempotent on every boot.
+        try:
+            con.execute(
+                "ALTER TABLE sales_documents ADD COLUMN "
+                "parser_diagnostic_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
         # ── Sales-side pricing: customer Proforma must use SALES prices,
         # not import/customs cost. Schema gap before this migration: only
         # quantity was captured; unit_price / currency were dropped at
@@ -1242,6 +1255,34 @@ def get_sales_documents(batch_id: str) -> List[Dict[str, Any]]:
             (batch_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def update_sales_document_parser_diagnostic(
+    sales_document_id: str,
+    parser_diagnostic: Dict[str, Any],
+) -> bool:
+    """Persist parser_diagnostic dict on sales_documents.
+
+    Mirrors packing_documents.parser_diagnostic_json (purchase side).
+    Returns True on success.  NEVER raises — diagnostic persistence is
+    observability and must not break the parse path.
+    """
+    if _db_path is None or not sales_document_id:
+        return False
+    try:
+        import json as _json
+        payload = _json.dumps(parser_diagnostic or {}, ensure_ascii=False)
+        now = _now()
+        with _lock, _connect() as con:
+            con.execute(
+                "UPDATE sales_documents "
+                "SET parser_diagnostic_json=?, updated_at=? WHERE id=?",
+                (payload, now, sales_document_id),
+            )
+        return True
+    except Exception as exc:
+        log.warning("update_sales_document_parser_diagnostic failed: %s", exc)
+        return False
 
 
 def get_or_create_sales_document_for_packing(

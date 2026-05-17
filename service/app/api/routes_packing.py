@@ -704,6 +704,24 @@ def get_batch_packing(batch_id: str) -> Dict[str, Any]:
         except Exception:
             sd_by_doc_id = {}
 
+        # Pre-decode sales-side parser_diagnostic_json from
+        # sales_documents so the Packing List card Diagnostic toggle
+        # renders for sales rows symmetric with purchase.  Key is the
+        # sales_documents.id (== sales_document_id on lines).
+        sales_diag_by_sd_id: Dict[str, Dict[str, Any]] = {}
+        try:
+            import json as _json2
+            for sd in _ddb.get_sales_documents(batch_id) or []:
+                raw = sd.get("parser_diagnostic_json")
+                try:
+                    sales_diag_by_sd_id[sd.get("id") or ""] = (
+                        _json2.loads(raw) if raw else {}
+                    )
+                except Exception:
+                    sales_diag_by_sd_id[sd.get("id") or ""] = {}
+        except Exception:
+            sales_diag_by_sd_id = {}
+
         sales_rows = _ddb.get_documents_for_batch(
             batch_id, document_type="sales_packing_list") or []
         for r in sales_rows:
@@ -745,13 +763,17 @@ def get_batch_packing(batch_id: str) -> Dict[str, Any]:
                 # shipment_documents row exists.
                 "fallback_unparsed":    row_count == 0,
                 "row_count":            row_count,
-                # parser_diagnostic deliberately empty here — the sales
-                # diagnostic isn't persisted to the packing_documents
-                # store (sales lives in sales_packing_lines instead).
-                # The UI suppresses the Diagnostic toggle when this
-                # dict is empty, which is the honest behaviour: no
-                # misleading button when we have nothing to show.
-                "parser_diagnostic":    {},
+                # parser_diagnostic surfaced from
+                # sales_documents.parser_diagnostic_json (mirrors the
+                # purchase-side packing_documents column).  Empty {} when
+                # the sales doc hasn't been parsed yet — UI suppresses
+                # the Diagnostic toggle in that case, which is the
+                # honest behaviour.
+                "parser_diagnostic":    (
+                    sales_diag_by_sd_id.get(sd_id)
+                    or sales_diag_by_sd_id.get(doc_id)
+                    or {}
+                ),
                 "created_at":           r.get("created_at"),
                 "updated_at":           r.get("updated_at"),
             })
@@ -992,6 +1014,17 @@ async def reprocess_packing_documents(
                     except AttributeError:
                         # Helper name varies between writers; fall back.
                         _ddb.store_sales_packing_lines(sales_doc_id, batch_id, line_records)
+                # Persist parser_diagnostic on sales_documents so the
+                # Packing List card Diagnostic toggle renders for sales
+                # rows symmetric with purchase.  Always written (success
+                # OR failure) — observability symmetry with purchase
+                # side (packing_documents.parser_diagnostic_json).
+                try:
+                    _ddb.update_sales_document_parser_diagnostic(
+                        sales_doc_id, sp_diag or {})
+                except Exception as exc:
+                    log.warning("[%s] sales parser_diagnostic persist failed "
+                                "(non-fatal): %s", batch_id, exc)
                 result_entry["rows_extracted"] = len(sp_rows)
                 result_entry["parser_status"]  = "extracted" if sp_rows else "empty"
                 result_entry["failure_reason"] = sp_diag.get("failure_reason")
