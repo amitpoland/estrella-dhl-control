@@ -1322,9 +1322,18 @@ async def reprocess_packing_documents(
 # (zeros + safe defaults) on any internal failure.
 
 # Closed enum — never expand without API contract bump.
-_PZ_BLOCKED_NO_PACKING_ROWS = "no_packing_rows"
-_PZ_BLOCKED_PRODUCTS_MISSING = "products_missing"
-_PZ_BLOCKED_SAD_MISSING      = "sad_missing"
+_PZ_BLOCKED_NO_PACKING_ROWS       = "no_packing_rows"
+_PZ_BLOCKED_PRODUCTS_MISSING      = "products_missing"
+_PZ_BLOCKED_SAD_MISSING           = "sad_missing"
+_PZ_BLOCKED_PRODUCT_MASTER_MISSING = "product_master_missing"   # PR-5
+
+# Sales blocked_by — new closed enum introduced in PR-5.  Operator
+# dashboard derives a reason list parallel to pz_blocked_by.
+_SALES_BLOCKED_NO_DRAFTS               = "no_drafts"
+_SALES_BLOCKED_DRAFTS_HAVE_NO_LINES    = "drafts_have_no_lines"
+_SALES_BLOCKED_WFIRMA_PRODUCTS_MISSING = "wfirma_products_missing"
+_SALES_BLOCKED_PRODUCT_MASTER_MISSING  = "product_master_missing"
+_SALES_BLOCKED_POST_FAILED             = "post_failed"
 
 
 @router.get("/{batch_id}/lane-readiness", dependencies=[_auth])
@@ -1350,6 +1359,9 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
         # sales_ready.
         "drafts_with_lines":   0,
     }
+    # PR-5: collect distinct product_codes referenced in any draft so we
+    # can later evaluate product_master + wFirma coverage.
+    draft_pcs: set = set()
     try:
         from ..services import proforma_invoice_link_db as _pildb
         _pf_db_path = settings.storage_root / "proforma_links.db"
@@ -1382,18 +1394,30 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
                 parsed = []
             if isinstance(parsed, list) and len(parsed) > 0:
                 sales_counts["drafts_with_lines"] += 1
+                for ln in parsed:
+                    if isinstance(ln, dict):
+                        pc = str(ln.get("product_code") or "").strip()
+                        if pc:
+                            draft_pcs.add(pc)
     except Exception as exc:
         log.warning("[%s] lane-readiness sales counts failed (non-fatal): %s",
                     batch_id, exc)
 
-    # sales_ready now requires at least one draft with actionable lines.
-    # drafts_total alone is insufficient — a draft created without any
-    # resolvable product_code rows has editable_lines_json='[]' and
-    # cannot be posted.
-    sales_ready = (
-        sales_counts["drafts_with_lines"] > 0
-        and sales_counts["drafts_post_failed"] == 0
-    )
+    # PR-5: unresolved sales-side designs.  sales_packing_lines rows with
+    # empty product_code carry an honest design_no — surface them so the
+    # operator can repair the upstream parser/mapping.
+    unresolved_sales_pcs: List[str] = []
+    try:
+        from ..services import document_db as _ddb_lr
+        for r in (_ddb_lr.get_sales_packing_lines(batch_id) or []):
+            pc = str(r.get("product_code") or "").strip()
+            dn = str(r.get("design_no") or "").strip()
+            if not pc and dn:
+                unresolved_sales_pcs.append(dn)
+        unresolved_sales_pcs = sorted(set(unresolved_sales_pcs))
+    except Exception as exc:
+        log.warning("[%s] lane-readiness unresolved sales scan failed "
+                    "(non-fatal): %s", batch_id, exc)
 
     # ── Purchase lane ────────────────────────────────────────────────────
     purchase: Dict[str, Any] = {
@@ -1404,35 +1428,64 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
         "sad_present":            False,
         "pz_ready":               False,
         "pz_blocked_by":          [],
+        # PR-5: additive coverage lists (all default to []).
+        "product_master_missing":            [],
+        "wfirma_products_missing":           [],
+        "unresolved_purchase_product_codes": [],
     }
+    purch_pcs: set = set()
+    wfirma_ready_pcs: set = set()
+    unresolved_purchase: List[str] = []
     try:
         plines = pdb.get_packing_lines_for_batch(batch_id) or []
         purchase["packing_rows"] = len(plines)
-        codes = {
+        # Canonical codes present on purchase packing rows.
+        purch_pcs = {
             str(ln.get("product_code") or "").strip()
             for ln in plines
             if (ln.get("product_code") or "").strip()
         }
-        purchase["distinct_product_codes"] = len(codes)
+        purchase["distinct_product_codes"] = len(purch_pcs)
+
+        # PR-5: purchase rows whose product_code is empty/NULL — surface
+        # their design_no so the operator can repair the upstream
+        # invoice→packing match (parser-side).
+        for ln in plines:
+            pc = str(ln.get("product_code") or "").strip()
+            dn = str(ln.get("design_no") or "").strip()
+            if not pc and dn:
+                unresolved_purchase.append(dn)
+        unresolved_purchase = sorted(set(unresolved_purchase))
 
         ready_count = 0
-        if codes:
+        # PR-5: union of purchase + draft codes — same single SELECT
+        # services both purchase.wfirma_products_missing and sales
+        # blocked_by.wfirma_products_missing.
+        union_pcs = purch_pcs | draft_pcs
+        if union_pcs:
             try:
-                from ..services import wfirma_db as _wfdb
+                from ..services import wfirma_db as _wfdb  # noqa: F401
                 wfdb_path = settings.storage_root / "wfirma.db"
                 if wfdb_path.exists():
                     with sqlite3.connect(str(wfdb_path)) as _wcon:
                         _wcon.row_factory = sqlite3.Row
-                        placeholders = ",".join(["?"] * len(codes))
+                        placeholders = ",".join(["?"] * len(union_pcs))
                         rows = _wcon.execute(
                             f"SELECT product_code, sync_status "
                             f"FROM wfirma_products "
                             f"WHERE product_code IN ({placeholders})",
-                            list(codes),
+                            list(union_pcs),
                         ).fetchall()
                         for r in rows:
-                            if (r["sync_status"] or "").strip() in ("created", "ready"):
-                                ready_count += 1
+                            pc = (r["product_code"] or "").strip()
+                            status = (r["sync_status"] or "").strip()
+                            if status in ("created", "ready"):
+                                wfirma_ready_pcs.add(pc)
+                        # Existing legacy count is over the purchase-side
+                        # only — preserve back-compat semantics.
+                        ready_count = sum(
+                            1 for pc in purch_pcs if pc in wfirma_ready_pcs
+                        )
             except Exception as exc:
                 log.warning("[%s] lane-readiness wfirma cache lookup failed "
                             "(non-fatal): %s", batch_id, exc)
@@ -1440,9 +1493,39 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
         purchase["products_missing"] = max(
             0, purchase["distinct_product_codes"] - ready_count
         )
+        purchase["unresolved_purchase_product_codes"] = unresolved_purchase
+        # purchase-side missing = packing codes lacking a wfirma ready row
+        purchase["wfirma_products_missing"] = sorted(
+            purch_pcs - wfirma_ready_pcs
+        )
     except Exception as exc:
         log.warning("[%s] lane-readiness purchase counts failed (non-fatal): %s",
                     batch_id, exc)
+
+    # PR-5: product_master coverage — single SELECT IN(union of purchase
+    # + draft codes).  reservation_queue.db is the canonical identity
+    # registry (PR #193 schema + PR #196 backfill).  Read-only.
+    pm_pcs: set = set()
+    try:
+        union_pcs_for_pm = purch_pcs | draft_pcs
+        if union_pcs_for_pm:
+            rdb_path = settings.storage_root / "reservation_queue.db"
+            if rdb_path.exists():
+                with sqlite3.connect(str(rdb_path)) as _rcon:
+                    _rcon.row_factory = sqlite3.Row
+                    placeholders = ",".join(["?"] * len(union_pcs_for_pm))
+                    for r in _rcon.execute(
+                        f"SELECT product_code FROM product_master "
+                        f"WHERE product_code IN ({placeholders})",
+                        list(union_pcs_for_pm),
+                    ).fetchall():
+                        pm_pcs.add((r["product_code"] or "").strip())
+        purchase["product_master_missing"] = sorted(
+            (purch_pcs | draft_pcs) - pm_pcs
+        )
+    except Exception as exc:
+        log.warning("[%s] lane-readiness product_master lookup failed "
+                    "(non-fatal): %s", batch_id, exc)
 
     # SAD presence — read audit.json once, look for importer / sad_number / mrn.
     try:
@@ -1469,14 +1552,47 @@ def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
         blocked.append(_PZ_BLOCKED_PRODUCTS_MISSING)
     if not purchase["sad_present"]:
         blocked.append(_PZ_BLOCKED_SAD_MISSING)
+    # PR-5: product_master coverage gate.  product_master_missing
+    # surfaces purchase-side codes that are absent from the canonical
+    # identity registry — operator must repair before PZ posts.
+    if purchase["product_master_missing"]:
+        # Restrict the PZ-side gate to the purchase intersection so it
+        # is symmetric with the existing products_missing semantics
+        # (sales-only missing codes are flagged on the sales side).
+        purch_pm_missing = sorted(purch_pcs - pm_pcs)
+        if purch_pm_missing:
+            blocked.append(_PZ_BLOCKED_PRODUCT_MASTER_MISSING)
     # Stable order, no duplicates (the conditions above are mutually
     # distinct, but enforce defensively).
     purchase["pz_blocked_by"] = sorted(set(blocked))
     purchase["pz_ready"] = not purchase["pz_blocked_by"]
 
+    # ── Sales blocked_by (PR-5) ──────────────────────────────────────────
+    # Closed-enum reason list parallel to pz_blocked_by.  Derived from
+    # the already-computed counts + draft_pcs/pm_pcs/wfirma_ready_pcs.
+    sales_blocked: List[str] = []
+    if sales_counts["drafts_total"] == 0:
+        sales_blocked.append(_SALES_BLOCKED_NO_DRAFTS)
+    if (sales_counts["drafts_total"] > 0
+            and sales_counts["drafts_with_lines"] == 0):
+        sales_blocked.append(_SALES_BLOCKED_DRAFTS_HAVE_NO_LINES)
+    if draft_pcs and (draft_pcs - wfirma_ready_pcs):
+        sales_blocked.append(_SALES_BLOCKED_WFIRMA_PRODUCTS_MISSING)
+    if draft_pcs and (draft_pcs - pm_pcs):
+        sales_blocked.append(_SALES_BLOCKED_PRODUCT_MASTER_MISSING)
+    if sales_counts["drafts_post_failed"] > 0:
+        sales_blocked.append(_SALES_BLOCKED_POST_FAILED)
+    sales_blocked_sorted = sorted(set(sales_blocked))
+    sales_ready = (sales_blocked_sorted == [])
+
     return {
         "batch_id": batch_id,
-        "sales": {**sales_counts, "ready": sales_ready},
+        "sales": {
+            **sales_counts,
+            "ready":                          sales_ready,
+            "blocked_by":                     sales_blocked_sorted,
+            "unresolved_sales_product_codes": unresolved_sales_pcs,
+        },
         "purchase": purchase,
     }
 
