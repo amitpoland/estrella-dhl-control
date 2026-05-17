@@ -11772,6 +11772,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [reparseSummary, setReparseSummary]   = React.useState('');
   const [packingInfo, setPackingInfo] = React.useState(null);            // null | {documents,packing_lines,...}
   const [packingInfoLoading, setPackingInfoLoading] = React.useState(false);
+  // Lane readiness (sales + purchase) — single read-only banner fetch
+  // attached to the Packing List card lifecycle.  Refetched after
+  // Reparse-all completes.
+  const [laneReadiness, setLaneReadiness] = React.useState(null);
   const [packingUploading, setPackingUploading] = React.useState(false);
   const [timelineFilter, setTimelineFilter] = React.useState('all'); // 'all' | 'ai_bridge'
   // Phase 2: batch + DHL readiness (read-only)
@@ -12156,6 +12160,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     setPackingInfoLoading(false);
   }, [batchId]);
 
+  // Lane readiness — read-only, attached to Packing List card lifecycle.
+  const loadLaneReadiness = React.useCallback(async () => {
+    try {
+      const d = await apiFetch(`/api/v1/packing/${encodeURIComponent(batchId)}/lane-readiness`);
+      setLaneReadiness(d);
+    } catch (e) { setLaneReadiness({ error: e.message }); }
+  }, [batchId]);
+
   // Phase 2 — read-only readiness loaders (no side effects)
   const loadBatchReadiness = React.useCallback(async () => {
     setBatchReadinessLoading(true); setBatchReadinessError('');
@@ -12241,6 +12253,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   React.useEffect(() => { if (activeTab === 'Documents' && !docRegistry) loadDocRegistry(); }, [activeTab]);
   // Fetch packing info when Documents tab is activated
   React.useEffect(() => { if (activeTab === 'Documents' && !packingInfo) loadPackingInfo(); }, [activeTab]);
+  React.useEffect(() => { if (activeTab === 'Documents' && !laneReadiness) loadLaneReadiness(); }, [activeTab]);
   // Phase 2: fetch batch readiness on mount (Pipeline tab shows OverallReadinessCard)
   // Phase 3.6: also fetch decision advisory on mount — runs alongside readiness, never blocks
   React.useEffect(() => { loadBatchReadiness(); loadDecision(); loadInvState(); }, [batchId]);
@@ -13354,6 +13367,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                              load();
                              loadDocRegistry();
                              loadPackingInfo();
+                             loadLaneReadiness();
                            } catch (e) {
                              setReparseSummary('Reparse failed: ' + (e.message || 'unknown'));
                            } finally {
@@ -13583,6 +13597,131 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                   </div>
                 )}
               </Card>
+            );
+          })()}
+
+          {/* ── Lane Readiness banners (read-only operator visibility) ───
+              Sales and purchase lane readiness in one glance.  No
+              execution buttons. No new fetch loops — single load
+              attached to Documents tab + Reparse-all completion.
+              Sales banner hidden when drafts_total === 0 to avoid
+              shouting empty state at the operator. */}
+          {(() => {
+            const lr = laneReadiness;
+            if (!lr || lr.error) return null;
+            const s = lr.sales    || {};
+            const p = lr.purchase || {};
+            const switchToAccounting = () => {
+              try { setActiveTab && setActiveTab('PZ / Accounting'); }
+              catch (_) {}
+            };
+            // Purchase banner color: blue when ready, amber when blocked,
+            // neutral when no packing yet.
+            const pzReady = !!p.pz_ready;
+            const noPacking = (p.packing_rows || 0) === 0;
+            const purchaseBg     = noPacking ? 'var(--bg-subtle)'
+              : pzReady ? 'var(--badge-blue-bg)'  : 'var(--badge-amber-bg)';
+            const purchaseBorder = noPacking ? 'var(--border-subtle)'
+              : pzReady ? 'var(--badge-blue-border)' : 'var(--badge-amber-border)';
+            const purchaseText   = noPacking ? 'var(--text-2)'
+              : pzReady ? 'var(--badge-blue-text)' : 'var(--badge-amber-text)';
+            const blockedLabel = Array.isArray(p.pz_blocked_by) && p.pz_blocked_by.length > 0
+              ? p.pz_blocked_by.join(', ')
+              : '';
+            const showSales = (s.drafts_total || 0) > 0;
+            return (
+              <div style={{ marginTop: 12, display: 'flex',
+                            flexDirection: 'column', gap: 8 }}>
+                {showSales && (
+                  <div
+                    data-testid="lane-readiness-sales"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 12,
+                      padding: '10px 14px',
+                      background: 'var(--badge-purple-bg, #f3e8ff)',
+                      border: '1px solid var(--badge-purple-border, #c4b5fd)',
+                      borderRadius: 6,
+                    }}>
+                    <div style={{
+                      width: 28, height: 28, borderRadius: 6,
+                      background: 'var(--badge-purple-bg, #f3e8ff)',
+                      display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', fontSize: 14,
+                    }}>🧾</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700,
+                                    letterSpacing: 0.6,
+                                    color: 'var(--badge-purple-text, #6b21a8)' }}>
+                        SALES LANE
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text)',
+                                    marginTop: 2, display: 'flex',
+                                    gap: 14, flexWrap: 'wrap' }}>
+                        <span><strong>{s.drafts_total || 0}</strong> drafts</span>
+                        <span><strong>{s.drafts_needs_review || 0}</strong> need review</span>
+                        <span><strong>{s.drafts_posted || 0}</strong> posted</span>
+                        {(s.drafts_post_failed || 0) > 0 && (
+                          <span style={{ color: 'var(--badge-red-text)' }}>
+                            <strong>{s.drafts_post_failed}</strong> post failed
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      data-testid="lane-readiness-sales-open-accounting"
+                      onClick={switchToAccounting}
+                      style={{
+                        padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                        background: 'transparent',
+                        border: '1px solid var(--badge-purple-border, #c4b5fd)',
+                        borderRadius: 4, cursor: 'pointer',
+                        color: 'var(--badge-purple-text, #6b21a8)',
+                        fontFamily: 'inherit',
+                      }}>Open Accounting</button>
+                  </div>
+                )}
+                <div
+                  data-testid="lane-readiness-purchase"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '10px 14px',
+                    background: purchaseBg,
+                    border: '1px solid ' + purchaseBorder,
+                    borderRadius: 6,
+                  }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: 6,
+                    background: purchaseBg,
+                    display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', fontSize: 14,
+                  }}>📦</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700,
+                                  letterSpacing: 0.6, color: purchaseText }}>
+                      PURCHASE LANE
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text)',
+                                  marginTop: 2, display: 'flex',
+                                  gap: 14, flexWrap: 'wrap' }}>
+                      <span>
+                        products: <strong>{p.products_ready || 0}</strong>
+                        {' / '}<strong>{p.distinct_product_codes || 0}</strong> ready
+                      </span>
+                      {(p.products_missing || 0) > 0 && (
+                        <span><strong>{p.products_missing}</strong> missing</span>
+                      )}
+                      <span data-testid="lane-readiness-purchase-pz-status">
+                        PZ:{' '}
+                        {pzReady
+                          ? <strong style={{ color: 'var(--badge-blue-text)' }}>READY</strong>
+                          : noPacking
+                            ? <span style={{ color: 'var(--text-3)' }}>awaiting packing</span>
+                            : <span>blocked by <strong>{blockedLabel}</strong></span>}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             );
           })()}
 

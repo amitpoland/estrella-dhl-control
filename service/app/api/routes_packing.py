@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import re
 import socket
+import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1050,6 +1051,39 @@ async def reprocess_packing_documents(
 
         results.append(result_entry)
 
+    # Auto-sync proforma drafts after reprocess.  Fires once per call
+    # (not per file).  Only when batch carries sales rows or sales
+    # shipment_documents — otherwise no-op.  Non-blocking: reprocess
+    # response is never affected by sync failure.
+    try:
+        has_sales = False
+        try:
+            has_sales = bool(_ddb.get_sales_packing_lines(batch_id))
+        except Exception:
+            has_sales = False
+        if not has_sales:
+            try:
+                has_sales = bool(
+                    _ddb.get_documents_for_batch(
+                        batch_id, document_type="sales_packing_list") or []
+                )
+            except Exception:
+                has_sales = False
+        if has_sales:
+            from ..services.proforma_draft_sync import sync_draft_from_packing_upload
+            _pf_db_path = settings.storage_root / "proforma_links.db"
+            _sync_result = sync_draft_from_packing_upload(
+                batch_id=batch_id,
+                operator="reprocess",
+                db_path=_pf_db_path,
+                audit_path=output_dir / "audit.json",
+            )
+            log.info("[%s] reprocess proforma draft sync: %s",
+                     batch_id, _sync_result)
+    except Exception as _exc:
+        log.warning("[%s] reprocess proforma draft sync failed (non-fatal): %s",
+                    batch_id, _exc)
+
     return {
         "batch_id": batch_id,
         "files":    results,
@@ -1059,6 +1093,156 @@ async def reprocess_packing_documents(
             "purchase": sum_purchase,
             "sales":    sum_sales,
         },
+    }
+
+
+# ── GET /api/v1/packing/{batch_id}/lane-readiness ────────────────────────────
+#
+# Read-only operator dashboard. Aggregates lane-level readiness from
+# existing tables — no new persistence.  Sales lane: proforma_drafts
+# counts by draft_state.  Purchase lane: packing_lines × wfirma_products
+# cache + audit.json SAD presence.  Reason taxonomy is enumerated and
+# closed; no freeform strings.
+#
+# Hard rules: NO writes, NO outbound HTTP, NO email/SMTP, NO wFirma
+# calls.  All reads wrapped — endpoint returns 200 with degraded data
+# (zeros + safe defaults) on any internal failure.
+
+# Closed enum — never expand without API contract bump.
+_PZ_BLOCKED_NO_PACKING_ROWS = "no_packing_rows"
+_PZ_BLOCKED_PRODUCTS_MISSING = "products_missing"
+_PZ_BLOCKED_SAD_MISSING      = "sad_missing"
+
+
+@router.get("/{batch_id}/lane-readiness", dependencies=[_auth])
+def get_lane_readiness(batch_id: str) -> Dict[str, Any]:
+    """Aggregate lane readiness (sales + purchase) for the Documents tab.
+
+    Returns the shape documented in service/docs/lane_readiness.md and
+    contract-tested in tests/test_lane_readiness_endpoint.py.
+    """
+    _validate_batch(batch_id)
+    output_dir = get_output_dir(batch_id)
+
+    # ── Sales lane ───────────────────────────────────────────────────────
+    sales_counts = {
+        "drafts_total":        0,
+        "drafts_needs_review": 0,
+        "drafts_approved":     0,
+        "drafts_posted":       0,
+        "drafts_post_failed":  0,
+    }
+    try:
+        from ..services import proforma_invoice_link_db as _pildb
+        _pf_db_path = settings.storage_root / "proforma_links.db"
+        drafts = _pildb.list_drafts_for_batch(_pf_db_path, batch_id) or []
+        sales_counts["drafts_total"] = len(drafts)
+        for d in drafts:
+            state = (
+                (d.get("draft_state") if isinstance(d, dict) else None)
+                or getattr(d, "draft_state", "")
+                or ""
+            ).strip()
+            if state in ("draft", "editing"):
+                sales_counts["drafts_needs_review"] += 1
+            elif state == "approved":
+                sales_counts["drafts_approved"] += 1
+            elif state == "posted":
+                sales_counts["drafts_posted"] += 1
+            elif state == "post_failed":
+                sales_counts["drafts_post_failed"] += 1
+    except Exception as exc:
+        log.warning("[%s] lane-readiness sales counts failed (non-fatal): %s",
+                    batch_id, exc)
+
+    sales_ready = (
+        sales_counts["drafts_total"] > 0
+        and sales_counts["drafts_post_failed"] == 0
+    )
+
+    # ── Purchase lane ────────────────────────────────────────────────────
+    purchase: Dict[str, Any] = {
+        "packing_rows":           0,
+        "distinct_product_codes": 0,
+        "products_ready":         0,
+        "products_missing":       0,
+        "sad_present":            False,
+        "pz_ready":               False,
+        "pz_blocked_by":          [],
+    }
+    try:
+        plines = pdb.get_packing_lines_for_batch(batch_id) or []
+        purchase["packing_rows"] = len(plines)
+        codes = {
+            str(ln.get("product_code") or "").strip()
+            for ln in plines
+            if (ln.get("product_code") or "").strip()
+        }
+        purchase["distinct_product_codes"] = len(codes)
+
+        ready_count = 0
+        if codes:
+            try:
+                from ..services import wfirma_db as _wfdb
+                wfdb_path = settings.storage_root / "wfirma.db"
+                if wfdb_path.exists():
+                    with sqlite3.connect(str(wfdb_path)) as _wcon:
+                        _wcon.row_factory = sqlite3.Row
+                        placeholders = ",".join(["?"] * len(codes))
+                        rows = _wcon.execute(
+                            f"SELECT product_code, sync_status "
+                            f"FROM wfirma_products "
+                            f"WHERE product_code IN ({placeholders})",
+                            list(codes),
+                        ).fetchall()
+                        for r in rows:
+                            if (r["sync_status"] or "").strip() in ("created", "ready"):
+                                ready_count += 1
+            except Exception as exc:
+                log.warning("[%s] lane-readiness wfirma cache lookup failed "
+                            "(non-fatal): %s", batch_id, exc)
+        purchase["products_ready"]   = ready_count
+        purchase["products_missing"] = max(
+            0, purchase["distinct_product_codes"] - ready_count
+        )
+    except Exception as exc:
+        log.warning("[%s] lane-readiness purchase counts failed (non-fatal): %s",
+                    batch_id, exc)
+
+    # SAD presence — read audit.json once, look for importer / sad_number / mrn.
+    try:
+        audit_path = output_dir / "audit.json"
+        if audit_path.exists():
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            for key in ("importer", "sad_number", "mrn"):
+                v = audit.get(key)
+                if isinstance(v, str) and v.strip():
+                    purchase["sad_present"] = True
+                    break
+                if v not in (None, "", 0):
+                    purchase["sad_present"] = True
+                    break
+    except Exception as exc:
+        log.warning("[%s] lane-readiness audit.json read failed (non-fatal): %s",
+                    batch_id, exc)
+
+    # PZ readiness + closed-enum blocked_by list.
+    blocked: List[str] = []
+    if purchase["packing_rows"] == 0:
+        blocked.append(_PZ_BLOCKED_NO_PACKING_ROWS)
+    if purchase["products_missing"] > 0:
+        blocked.append(_PZ_BLOCKED_PRODUCTS_MISSING)
+    if not purchase["sad_present"]:
+        blocked.append(_PZ_BLOCKED_SAD_MISSING)
+    # Stable order, no duplicates (the conditions above are mutually
+    # distinct, but enforce defensively).
+    purchase["pz_blocked_by"] = sorted(set(blocked))
+    purchase["pz_ready"] = not purchase["pz_blocked_by"]
+
+    return {
+        "batch_id": batch_id,
+        "sales": {**sales_counts, "ready": sales_ready},
+        "purchase": purchase,
     }
 
 
