@@ -404,6 +404,25 @@ def get_customer(client_name: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def get_customer_by_wfirma_id(wfirma_id: str) -> Optional[Dict[str, Any]]:
+    """Reverse lookup: wfirma_customer_id → wfirma_customers row.
+
+    Read-only local DB query.  Returns None when the contractor id is
+    not present in the local cache.  **Never calls the wFirma API** —
+    used by self-healing sales reprocess to recover client_name from
+    operator-supplied client_contractor_id when sales_packing_lines
+    rows have been corrupted (empty client_name).
+    """
+    if _db_path is None or not (wfirma_id or "").strip():
+        return None
+    with _connect() as con:
+        row = con.execute(
+            "SELECT * FROM wfirma_customers WHERE wfirma_customer_id=?",
+            (str(wfirma_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def list_customers(match_status: Optional[str] = None) -> List[Dict[str, Any]]:
     if _db_path is None:
         return []

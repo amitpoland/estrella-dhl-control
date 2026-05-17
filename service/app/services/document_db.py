@@ -1257,6 +1257,38 @@ def get_sales_documents(batch_id: str) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def update_sales_document_client_name(
+    sales_document_id: str,
+    client_name:       str,
+) -> bool:
+    """Local UPDATE: set sales_documents.client_name when non-empty.
+
+    Used by the self-healing sales reprocess resolver to backfill
+    client_name on sales_documents rows that were corrupted before
+    PR #187 (empty client_name). No-op when client_name is empty or
+    whitespace. NEVER raises — local-DB only, no external paths.
+
+    Returns True on successful update, False otherwise.
+    """
+    if _db_path is None or not sales_document_id:
+        return False
+    cn = (client_name or "").strip()
+    if not cn:
+        return False
+    try:
+        now = _now()
+        with _lock, _connect() as con:
+            con.execute(
+                "UPDATE sales_documents "
+                "SET client_name=?, updated_at=? WHERE id=?",
+                (cn, now, sales_document_id),
+            )
+        return True
+    except Exception as exc:
+        log.warning("update_sales_document_client_name failed: %s", exc)
+        return False
+
+
 def update_sales_document_parser_diagnostic(
     sales_document_id: str,
     parser_diagnostic: Dict[str, Any],
