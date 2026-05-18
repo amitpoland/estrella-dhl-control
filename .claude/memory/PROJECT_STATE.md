@@ -11,7 +11,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 # FACTS
 
 ## Current origin/main HEAD
-- **2026-05-19** — `302848f` fix(security): Lesson E ENV isolation + path traversal (#223, #224 closed) — **CAMPAIGN V4 IN PROGRESS**
+- **2026-05-19** — `49da2f6` fix(config): Pydantic V2 deprecation cleanup — 82 warnings eliminated, 0 env= kwargs remaining — **CAMPAIGN V5 IN PROGRESS**
+- **2026-05-19** — `302848f` fix(security): Lesson E ENV isolation + path traversal (#223, #224 closed) — **prior**
 - **2026-05-19** — `6f57e2c` chore(deploy-prep): Windows reconciliation #222 merged — **prior**
 - **2026-05-19** — `119e0fe` fix(safety): GATE 4 BLOCKER-1+ADV-1 (#225 merged) — routes_settings 422 guard + write_json_atomic
 - **2026-05-19** — `f4736ab` chore(state): master campaign closure — Phases A-E complete
@@ -374,7 +375,7 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 1. **Windows deploy** — 7-AGENT GATE: READY-TO-DEPLOY (Campaign V4 Phase 2 complete). Run: `nssm stop PZService && git pull --ff-only origin main && nssm start PZService` on Windows. Current HEAD: `302848f` (1 commit ahead of gate run on `989f4b1` — additive security fix only; no new gate required). Rollback: `git reset --hard 4c797e4`. Verify health after start.
 2. **P2 live promotion** — after Tejal reviews shadow corpus: flip `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` and `DHL_SELFCLEARANCE_P2_SHADOW_MODE=false` in Windows `.env`. No code changes needed.
-3. **GATE 2 slot available** — 2/3 slots occupied (#10 deferred, #1 REFERENCE_ONLY). One slot open for next implementation work. Issues #223 + #224: CLOSED (fixed in `302848f`).
+3. **P2 live promotion** — after Tejal reviews shadow corpus: set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` + `DHL_SELFCLEARANCE_P2_SHADOW_MODE=false` in Windows .env. No code changes. Coordinator ADR-018 flag-combination enforcement in place. Issues #223/#224: CLOSED. Pydantic warnings: CLEARED.
 
 ## Completed actions (previously "next")
 
