@@ -11,7 +11,10 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 # FACTS
 
 ## Current origin/main HEAD
-- **2026-05-13** — `1ee83e52` Merge PR #77: chore(reconcile): backfill 4c797e4 and add Lesson D lead coordinator backstop (updated — origin advanced by PR #77 merge)
+- **2026-05-18** — `150b2c9` chore: fix skill discovery — move Wave 1A skills to .claude/commands/ (PR #215 merge)
+  - Prior: `e294160` chore: skill-system Wave 1A — pz-shipment, cowork-integration, engineering-lessons (PR #214 merge)
+  - Prior: `67a1af8` fix(p1): SyntheticEvent onChange repair + learning_traces flag writer (PR #213 merge)
+  - Prior: `1ee83e52` Merge PR #77: chore(reconcile): backfill 4c797e4 and add Lesson D lead coordinator backstop
 
 ## Windows production local HEAD (NOT on origin/main)
 - **2026-05-13** — `4c797e4` fix(email): prevent outbound customs emails sending without attachments ← **DEPLOYED TO PRODUCTION 2026-05-13T10:43Z**
@@ -38,6 +41,9 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **SHA lineage verified (STEP 4):** `git log 0b4e381..4c797e4` → 1 commit (`4c797e4` only). `git merge-base 0b4e381 4c797e4` → `1b38ea0`. Conclusion: `4d595ca`, `80e3469`, `1b38ea0` are already on origin/main (reachable from `0b4e381`). Only `4c797e4` is unique to Windows local chain. PROJECT_STATE.md "4 local hotfix commits" description was partially incorrect — 3 of 4 were already on origin/main. **Governance note:** `4c797e4` was deployed without a GitHub PR (local-commit-only deploy). 7-agent gate was run inline; CLAUDE.md gate spirit was observed. See Lesson D candidate in Scorecard § 4.
 
 ## Merged PRs (this session window, latest first)
+- **#215** 2026-05-18T18:09Z — chore: fix skill discovery — move Wave 1A skills to .claude/commands/ — merge SHA `150b2c9` — rename-only, zero content changes, zero blast radius. Corrects `.claude/skills/` → `.claude/commands/` after runtime discovery.
+- **#214** 2026-05-18T18:01Z — chore: skill-system Wave 1A — pz-shipment, cowork-integration, engineering-lessons — merge SHA `e294160` — governance/tooling only. Creates `.claude/commands/` retrieval modules. No CLAUDE.md changes. No production code.
+- **#213** 2026-05-18T17:58Z — fix(p1): SyntheticEvent onChange repair + learning_traces flag writer — merge SHA `67a1af8` — P1 production defect batch. 6 Inp/Sel onChange sites fixed. learn_from_parse both return paths emit `flag`. 19 regression tests (test_p1_defect_batch.py).
 - **#77** 2026-05-13T16:00Z — chore(reconcile): backfill 4c797e4 and add Lesson D lead coordinator backstop — merge SHA `1ee83e52` — governance-only, no production code changes. Closes 4c797e4 reconciliation. Adds lead coordinator LOCAL-COMMIT-ONLY backstop.
 - **#76** 2026-05-13T14:30Z — chore(governance): codify Lesson D — LOCAL-COMMIT-ONLY deploys require disclosure + reconciliation — merge SHA `ba84ee3` — governance-only, no production code changes
 - **#74** 2026-05-13T12:26Z — fix(timeline): add EV_PACKING_LIST_EXTRACTED + EV_PACKING_MATCHED_TO_INVOICE constants — merge SHA `5ee390b` — HOTFIX for active broken packing upload endpoint
@@ -171,6 +177,11 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 ## Registry
 - **2026-05-13** — Project registry healthy with 15 project agents at `.claude/agents/` (includes `gap-hunter`, `adr-historian`, `agent-performance-observer`, `flow-context-keeper`). Global registry at `~/.claude/agents/` has 54 agents. Total reachable agents in session: 79 (incl. plugin + built-in). No naming collisions.
+- **2026-05-18** — Project retrieval modules added to `.claude/commands/` (Wave 1A, PRs #214+#215):
+  - `pz-shipment` — PZ shipment workflow, financial rules, verification semantics, Cliq posting formats, WorkDrive flow
+  - `cowork-integration` — Cowork→PZ→SMTP architecture, result processor, action runner, email drafting rules
+  - `engineering-lessons` — Lessons A–D (test stubs, agent registry refresh, scorecard writes, LOCAL-COMMIT-ONLY deploys)
+  - All 3 confirmed invocable via `Skill()` tool in session post-commit. Runtime discovery: `.claude/skills/` is inert; `.claude/commands/` is the active project retrieval surface.
 
 ## RULE 6 visibility entries (scorecards on disk + expected)
 - **2026-05-13** — Scorecard recorded: `.claude/memory/scorecards/2026-05-13-w5-p0-adr018-p2-deployment-campaign.md` — observer: `agent-performance-observer` post PR #41 registry-refresh validation — 14 verdicts scored, all EXEMPLARY, zero NEEDS-TUNING / UNRELIABLE.
@@ -248,6 +259,55 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Current attachment guard shadow status: `SHADOW-OBSERVING-REAL-TRAFFIC`** — production deploy of SHA `4c797e4` verified, infrastructure end-to-end verified, awaiting first real outbound customs email attempt.
 - ~~**Lesson D candidate**~~ → **CODIFIED 2026-05-13 via PR #76** (`ba84ee3`): any commit deployed to production that does not exist on `origin/main` via a PR requires a LOCAL-COMMIT-ONLY disclosure header + operator acknowledgment + reconciliation PR before next `git pull --ff-only`. 5 binding rules + JSONL audit trail. Governance reference: `docs/governance/lesson-d-local-commit-only-deploys.md`. Audit record: `.claude/memory/local-commit-deploys.jsonl`.
 - **Inline 7-agent gate disclosure requirement** — when all 7 deploy agents are run inline (no spawned Tool calls), the gate output MUST include a disclosure header stating: "Gate mode: inline execution — agents not spawned; project-local agent files at `.claude/agents/deploy_*.md` used directly." Source: Wave 1 closure scorecard § 1 (Substitution column).
+
+## Four-layer governance architecture (locked 2026-05-18, Wave 1A closure)
+
+**This model replaces any prior informal "CLAUDE.md = everything" assumption.**
+
+| Layer | Path | Always loaded | Role |
+|-------|------|--------------|------|
+| L0 | `CLAUDE.md` | Yes | Governance kernel: invariants, sequencing semantics, gate imperatives, observer triggers |
+| L1 | `.claude/commands/*.md` | On-demand | Project retrieval modules: procedures, workflows, engineering lessons |
+| L2 | `.claude/agents/*.md` | Dispatched | Specialist executors: review roles, deploy gating, observation analysis |
+| L3 | gates + observers | Always-active | Enforcement runtime: scorecards, PR discipline, behavioral verification |
+
+**Directional rule (permanent):** L0 → L1 migration is permitted only for explanatory cognition. Enforcement cognition never leaves L0. L3 verifies the boundary holds.
+
+**Runtime discovery (validated 2026-05-18):**
+- `.claude/skills/` — inert in this Claude Code runtime; NOT scanned by skill loader
+- `.claude/commands/` — active project retrieval surface; indexed and invocable via `Skill()` tool
+- `.claude/skills/` + `.claude/commands/` are conceptually converging in Claude Code docs but `.claude/commands/` is the verified working path
+
+## Wave 2 kernel-patch rules (locked 2026-05-18)
+
+Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "skill migration." Not "prompt cleanup." These are kernel patch rules:
+
+1. Only sections already extracted to `.claude/commands/` are candidates for condensation
+2. Section headers survive unchanged
+3. Gate triggers (Gates 1–6 imperatives) survive unchanged
+4. Observation auto-fire semantics (Rules 2–3) remain always-loaded — cannot move to on-demand retrieval
+5. Every removed sentence has an equivalent reachable via `Skill()` in `.claude/commands/`
+6. **Never condense execution-ordering semantics.** The invariant triple (trigger condition + actor + ordering) must survive verbatim. Removing explanation is safe. Weakening sequencing is not.
+
+**Wave 2 allowed / forbidden:**
+
+| Allowed | Forbidden |
+|---------|-----------|
+| Remove explanation | Remove imperative |
+| Remove examples | Remove ordering |
+| Shorten prose | Weaken trigger |
+| Replace detail with command reference | Replace governance with suggestion |
+| Condense repeated rationale | Condense enforcement semantics |
+
+**Wave 2 execution protocol:**
+1. Operator names the section to condense
+2. Extract invariant triples from that section before touching anything
+3. Write condensed version
+4. Diff the invariant triples — if any changed, stop and report
+5. PR for that section only
+6. Merge and observe one session before touching the next section
+
+**Current boundary:** Wave 1A complete. Wave 2 not started. First Wave 2 target must be named explicitly by operator.
 
 ## Next 3 actions in queue
 
