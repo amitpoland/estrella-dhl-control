@@ -510,3 +510,135 @@ def test_fallback_preserves_manual_rows(fresh, monkeypatch):
     r = _get_pd("EJL/PR207M-1")
     assert r["source"]  == "manual"
     assert r["name_pl"] == "OPERATOR_MANUAL"
+
+
+# ── PR-208: explicit cache-reset helper ────────────────────────────────
+
+def test_reset_caches_clears_all_three_sentinels():
+    """reset_caches() resets the three module-level loader caches to
+    their pre-load ``None`` sentinel state without raising and without
+    side effects beyond the cache mutation."""
+    from app.services import description_engine as de
+    # Poison the caches with stand-in non-None values to prove the
+    # helper actually rewrites them.
+    de._CUSTOMS_ENGINE_CACHE = False          # loader-style failure sentinel
+    de._TRANSLATIONS_CACHE   = {"poisoned": True}
+    de._DEFAULT_CACHE        = {"poisoned": True}
+    assert de._CUSTOMS_ENGINE_CACHE is not None
+    assert de._TRANSLATIONS_CACHE   is not None
+    assert de._DEFAULT_CACHE        is not None
+
+    out = de.reset_caches()
+    assert de._CUSTOMS_ENGINE_CACHE is None
+    assert de._TRANSLATIONS_CACHE   is None
+    assert de._DEFAULT_CACHE        is None
+    # Return contract — every field True.
+    assert out == {
+        "customs_engine_cache_reset": True,
+        "translations_cache_reset":   True,
+        "default_cache_reset":        True,
+    }
+
+
+def test_reset_caches_return_is_json_serialisable():
+    """Operator REPL output must be safe to print / log / echo —
+    confirms no Exception or non-serialisable object leaks into the
+    return dict."""
+    import json
+    from app.services import description_engine as de
+    out = de.reset_caches()
+    s = json.dumps(out)  # raises if any value isn't serialisable
+    assert json.loads(s) == out
+
+
+def test_loader_retries_import_after_reset_caches(monkeypatch):
+    """After reset_caches(), the very next ``_load_customs_engine()``
+    call must re-attempt the import (proving the operator's mid-session
+    sys.path repair becomes visible without a process restart)."""
+    from app.services import description_engine as de
+
+    # Step 1 — poison the cache with the loader-style failure sentinel.
+    de._CUSTOMS_ENGINE_CACHE = False
+    assert de._load_customs_engine() is None, (
+        "while poisoned, loader must return None (sticky cache check)"
+    )
+
+    # Step 2 — operator-style recovery: reset + stub a successful import.
+    de.reset_caches()
+
+    sentinel_module = object()
+    def _fake_import(name, *_a, **_kw):
+        if name == "customs_description_engine":
+            return sentinel_module
+        # Defer to real import for anything else (Python uses this hook
+        # for chained imports during module setup).
+        import builtins as _bi
+        return _bi.__import__(name, *_a, **_kw)
+    monkeypatch.setattr("builtins.__import__", _fake_import)
+
+    # Step 3 — loader should now perform a fresh import attempt and
+    # cache the new module object.
+    result = de._load_customs_engine()
+    assert result is sentinel_module, (
+        f"loader should have re-imported after reset_caches(); got {result!r}"
+    )
+    assert de._CUSTOMS_ENGINE_CACHE is sentinel_module
+
+
+def test_reset_caches_does_not_change_fallback_metadata_semantics(fresh):
+    """reset_caches() is a state helper, not a behavior change: a
+    follow-up regenerate_descriptions_for_invoice_lines call still
+    reports fallback_used per the actual loader outcome."""
+    from app.services import description_engine as de
+    de.reset_caches()
+    # Force an unreachable engine to confirm the metadata path still
+    # works exactly as PR-207 defined.
+    import importlib  # noqa: F401 — ensure import-system fresh
+    res = de.regenerate_descriptions_for_invoice_lines(
+        batch_id="NO-SUCH-BATCH", dry_run=True,
+    )
+    for k in ("engine_import_ok", "translations_import_ok",
+              "fallback_used", "fallback_reason"):
+        assert k in res, f"PR-207 metadata key {k!r} missing after reset"
+    # Whichever direction the loaders resolve in this fresh process,
+    # the four keys remain internally consistent (PR-207 invariant).
+    if not res["engine_import_ok"] or not res["translations_import_ok"]:
+        assert res["fallback_used"] is True
+        assert isinstance(res["fallback_reason"], list)
+    else:
+        assert res["fallback_used"] is False
+        assert res["fallback_reason"] == []
+
+
+def test_reset_caches_source_has_no_routes_or_db_calls():
+    """Source-grep guard: reset_caches() must not touch routes, DB,
+    HTTP, wFirma, PZ, DHL, proforma posting, or schema."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "app" / "services"
+           / "description_engine.py").read_text(encoding="utf-8")
+    start = src.index("def reset_caches(")
+    end   = src.index("\n\n\ndef ", start)
+    body  = src[start:end]
+    for bad in (
+        "routes_", "/api/v1/", "wfirma_client",
+        "requests.", "httpx.", "con.execute(",
+        "sqlite3", "create_proforma", "create_customer",
+        "create_product", "send_email", "dhl_dispatch",
+        "log.info(", "log.warning(", "log.error(",
+    ):
+        assert bad not in body, (
+            f"reset_caches body must not reference {bad!r}"
+        )
+
+
+def test_reset_caches_docstring_marks_repl_admin_only():
+    """The docstring must explicitly forbid invocation from request-
+    handling paths so future readers don't wire it into a route."""
+    from app.services import description_engine as de
+    doc = (de.reset_caches.__doc__ or "")
+    assert "REPL" in doc or "repl" in doc.lower(), (
+        f"docstring must mention REPL/admin context; got: {doc[:120]!r}"
+    )
+    assert "request" in doc.lower(), (
+        "docstring must explicitly forbid request-handling invocation"
+    )

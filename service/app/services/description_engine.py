@@ -73,6 +73,66 @@ _DEFAULT_CACHE:       Optional[Dict[str, str]]            = None
 _CUSTOMS_ENGINE_CACHE = None  # lazy-imported customs_description_engine
 
 
+# ── PR-208: explicit cache-reset helper ────────────────────────────────────
+#
+# REPL / debug / admin-only utility.  NEVER invoke from request-handling
+# paths or any automatic intake / generation flow — the loader caches
+# are intentionally sticky inside a process so request lifecycles see a
+# stable environment.  This helper exists ONLY for the operator-driven
+# scenario where an REPL session attempted regeneration with the wrong
+# sys.path, surfaced fallback_used=True via PR-207, and then fixed
+# sys.path mid-session.  Without this helper, the operator must restart
+# the Python process to retry; with it, the next _load_* call re-attempts
+# the import naturally.
+#
+# Pure / synchronous / no DB / no HTTP / no wFirma / PZ / DHL.
+#
+# Returns serializable disposition dict for operator logs.
+def reset_caches() -> Dict[str, bool]:
+    """Reset the three module-level loader caches to their pre-load
+    sentinel state (``None``).
+
+    Use case
+    --------
+    After an REPL run reported ``fallback_used=True`` (see
+    :func:`regenerate_descriptions_for_invoice_lines`'s PR-207 metadata)
+    and the operator has corrected ``sys.path`` so
+    ``customs_description_engine`` / ``polish_description_generator``
+    can now be imported, calling ``reset_caches()`` clears the cached
+    ``False`` sentinels so the very next ``_load_customs_engine()`` /
+    ``_load_translations()`` call attempts the import again.
+
+    DO NOT invoke this function from:
+      - any HTTP route handler
+      - any automatic intake / parser / generator pipeline
+      - any scheduled background task
+
+    Returns
+    -------
+    dict[str, bool]
+        ``{"customs_engine_cache_reset": True,
+           "translations_cache_reset":   True,
+           "default_cache_reset":        True}``
+        — fully JSON-serialisable; safe to print, log, or echo to an
+        operator REPL.
+
+    Side effects
+    ------------
+    Resets three module-level globals.  Performs no DB query, no HTTP
+    request, no wFirma / PZ / DHL / proforma execution.  Does not log
+    (the caller is the operator; log noise would be unhelpful).
+    """
+    global _TRANSLATIONS_CACHE, _DEFAULT_CACHE, _CUSTOMS_ENGINE_CACHE
+    _CUSTOMS_ENGINE_CACHE = None
+    _TRANSLATIONS_CACHE   = None
+    _DEFAULT_CACHE        = None
+    return {
+        "customs_engine_cache_reset": True,
+        "translations_cache_reset":   True,
+        "default_cache_reset":        True,
+    }
+
+
 def _load_customs_engine():
     """
     Lazily import customs_description_engine for rich per-line Polish
