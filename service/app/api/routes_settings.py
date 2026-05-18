@@ -8,7 +8,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..core.config import settings
 from ..core.security import require_api_key
@@ -40,7 +40,10 @@ async def get_company_profile_endpoint() -> Dict[str, Any]:
 
 @router.patch("/company-profile", dependencies=[_auth])
 async def patch_company_profile_endpoint(request: Request) -> Dict[str, Any]:
-    body: Dict[str, Any] = await request.json()
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid JSON body")
     filtered = {k: v for k, v in body.items() if k in _ALLOWED_FIELDS}
     db_path = settings.storage_root / "master_data.sqlite"
     profile = upsert_company_profile(db_path, **filtered)
