@@ -1137,6 +1137,37 @@ def get_documents_for_batch(
     return [dict(r) for r in rows]
 
 
+def get_documents_by_awb(
+    awb:           str,
+    document_type: Optional[str] = "purchase_invoice",
+) -> List[Dict[str, Any]]:
+    """Return documents sharing the given AWB across batches.
+
+    Used by the DHL Polish description generator to union invoice_lines
+    across batches that share the same AWB (e.g. one shipment uploaded
+    twice under different batch_ids — AWB 4218922912 has both
+    SHIPMENT_*_9040dd39 and SHIPMENT_*_bd18ec98).  Read-only.
+    """
+    awb_n = (awb or "").strip()
+    if _db_path is None or not awb_n:
+        return []
+    with _connect() as con:
+        if document_type:
+            rows = con.execute(
+                """SELECT * FROM shipment_documents
+                   WHERE awb=? AND document_type=?
+                   ORDER BY batch_id, created_at""",
+                (awb_n, document_type),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """SELECT * FROM shipment_documents
+                   WHERE awb=? ORDER BY batch_id, created_at""",
+                (awb_n,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_document_by_hash(
     batch_id:      str,
     document_type: str,

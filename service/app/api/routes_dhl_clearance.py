@@ -232,6 +232,288 @@ def _inject_rows_from_xlsx(batch_id: str, audit: dict) -> dict:
     return audit
 
 
+# ── PR-206: DB-first row injection ─────────────────────────────────────────
+#
+# Source priority for batch["rows"] (engine input):
+#   1. invoice_lines from documents.db for THIS batch_id        (primary)
+#   2. invoice_lines from documents.db for batches sharing the
+#      same AWB                                                  (cross-batch
+#                                                                 union fallback)
+#   3. XLSX Rows sheet (existing _inject_rows_from_xlsx)         (legacy)
+#   4. nothing — guard fires below, generation refused
+#
+# Synthetic per-piece averaging (_build_synthetic_lines_from_totals in the
+# engine) is intentionally unreachable in production after this PR: when
+# none of the four sources produce rows, the route refuses generation
+# with HTTP 422 lines_missing_for_description.
+#
+# Pure / read-only.  No wFirma / PZ / DHL email / proforma posting writes.
+
+
+def _row_uom_from_description(desc: str) -> str:
+    """Derive UoM from the leading token of an EJL invoice line description.
+
+    Real lines start with "PCS, " or "PRS, " — we honour that prefix.
+    Falls back to PCS when the prefix is absent or unrecognised.
+    """
+    if not desc:
+        return "PCS"
+    head = desc.strip().split(",", 1)[0].strip().upper()
+    if head in ("PCS", "PRS"):
+        return head
+    return "PCS"
+
+
+def _project_invoice_line_to_engine_row(line: dict) -> dict:
+    """Map a documents.db invoice_lines row to the engine row shape used
+    by customs_description_engine._extract_invoices / process_batch_items.
+
+    Permissive aliases on the engine side:
+      description: description | desc | name
+      quantity:    quantity | qty | line_qty
+      unit_price:  unit_price | rate | price
+      line_total:  line_total | amount | total
+      hsn_code:    hsn_code | hs_code | hsn
+      uom:         unit | uom (default 'PCS')
+    """
+    desc      = str(line.get("description") or "")
+    unit_p    = float(line.get("unit_price") or line.get("rate_usd") or 0.0)
+    line_tot  = float(line.get("total_value") or line.get("amount_usd") or 0.0)
+    hsn       = str(line.get("hsn_code") or line.get("hs_code") or "")
+    return {
+        "invoice_number": str(line.get("invoice_no") or ""),
+        "line_position":  int(line.get("line_position") or 0),
+        "product_code":   str(line.get("product_code") or ""),
+        "description":    desc,
+        "item_type":      "",            # engine derives from description
+        "quantity":       float(line.get("quantity") or 0.0),
+        "unit_price":     unit_p,
+        "line_total":     line_tot,
+        "hsn_code":       hsn,
+        "currency":       str(line.get("currency") or "USD"),
+        "uom":            _row_uom_from_description(desc),
+    }
+
+
+def _inject_rows_from_db_invoice_lines(batch_id: str, audit: dict) -> dict:
+    """Project documents.db invoice_lines into ``audit["rows"]``.
+
+    Primary path:
+      - Read invoice_lines for ``batch_id``.
+      - If empty AND the audit carries an AWB, union invoice_lines from
+        all batches sharing the same AWB (dedup by
+        (invoice_no, line_position, product_code)).
+
+    Idempotent: if ``audit`` already has ``rows`` or ``invoices``, no-op.
+    """
+    if audit.get("rows") or audit.get("invoices"):
+        return audit
+
+    try:
+        from app.services import document_db as _ddb
+        rows = _ddb.get_invoice_lines_for_batch(batch_id) or []
+
+        if not rows:
+            # Cross-batch fallback: same AWB, different batch_id.
+            awb = (
+                audit.get("dhl_awb")
+                or audit.get("awb")
+                or (audit.get("batch_meta") or {}).get("awb")
+                or audit.get("tracking_no")
+                or ""
+            )
+            if awb:
+                seen: set = set()
+                docs = _ddb.get_documents_by_awb(awb, "purchase_invoice")
+                # Iterate distinct batch_ids referenced by these documents.
+                visited_batches: set = set()
+                for d in docs:
+                    bid = str(d.get("batch_id") or "")
+                    if not bid or bid == batch_id or bid in visited_batches:
+                        continue
+                    visited_batches.add(bid)
+                    for ln in (_ddb.get_invoice_lines_for_batch(bid) or []):
+                        key = (
+                            str(ln.get("invoice_no") or ""),
+                            int(ln.get("line_position") or 0),
+                            str(ln.get("product_code") or ""),
+                        )
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        rows.append(ln)
+
+        if not rows:
+            return audit
+
+        projected = [_project_invoice_line_to_engine_row(r) for r in rows]
+        audit["rows"]            = projected
+        audit["_rows_source"]    = "db_invoice_lines"
+        audit["_rows_row_count"] = len(projected)
+        log.info(
+            "[%s] _inject_rows_from_db_invoice_lines: projected %d rows from "
+            "invoice_lines (this batch + shared-AWB union)",
+            batch_id, len(projected),
+        )
+    except Exception as exc:
+        log.warning(
+            "[%s] _inject_rows_from_db_invoice_lines: failed (non-fatal): %s",
+            batch_id, exc,
+        )
+    return audit
+
+
+def _inject_rows_from_sources(batch_id: str, audit: dict) -> dict:
+    """Chain the DB-first row injection with the legacy XLSX path.
+
+    Order:
+      1. _inject_rows_from_db_invoice_lines  (PR-206 primary + cross-batch)
+      2. _inject_rows_from_xlsx              (legacy XLSX Rows sheet)
+
+    Idempotent on subsequent calls.  Caller MUST apply the lines-missing
+    guard (HTTP 422) when the chain still produces no rows.
+    """
+    audit = _inject_rows_from_db_invoice_lines(batch_id, audit)
+    audit = _inject_rows_from_xlsx(batch_id, audit)
+    return audit
+
+
+def _reconcile_rows_with_audit_totals(audit: dict) -> dict:
+    """Validate ``audit["rows"]`` (or projected invoices) against the
+    aggregate totals declared in ``audit["invoice_totals"]``.
+
+    Pure / deterministic / side-effect free.  Returns a dict::
+
+        {
+          "ok":            bool,
+          "warnings":      list[str],
+          "details": {
+            "row_count":              int,
+            "row_invoice_numbers":    list[str],
+            "row_fob_sum":            float,
+            "row_qty_total":          int,
+            "audit_invoice_names":    list[str],
+            "audit_fob_total":        float,
+            "audit_qty_total":        int,
+            "fob_drift_usd":          float,
+            "qty_drift_units":        int,
+            "missing_in_rows":        list[str],
+            "extra_in_rows":          list[str],
+          }
+        }
+
+    The caller decides whether ``ok=False`` is a hard block (route returns
+    HTTP 422) or just a flag.  All checks are tolerant of empty totals
+    (drift defaults to 0 when the audit totals are absent / zero).
+    """
+    import re as _re
+
+    def _safe_float(x):
+        try: return float(x or 0)
+        except Exception: return 0.0
+
+    rows = audit.get("rows") or []
+    invoice_totals = audit.get("invoice_totals") or {}
+    audit_names    = audit.get("invoice_names") or []
+
+    # Row-side aggregates
+    row_inv_set: set = set()
+    row_fob_sum = 0.0
+    row_qty_tot = 0
+    for r in rows:
+        inv = str(r.get("invoice_number") or r.get("invoice_no") or "").strip()
+        if inv:
+            row_inv_set.add(inv)
+        row_fob_sum += _safe_float(r.get("line_total")
+                                    or r.get("amount")
+                                    or r.get("total"))
+        try:
+            row_qty_tot += int(round(_safe_float(r.get("quantity")
+                                                  or r.get("qty"))))
+        except Exception:
+            pass
+
+    # Audit-side aggregates
+    audit_fob = _safe_float(invoice_totals.get("total_fob_usd"))
+    audit_units = invoice_totals.get("total_units")
+    try:
+        audit_qty = int(round(_safe_float(audit_units))) if audit_units is not None else 0
+    except Exception:
+        audit_qty = 0
+
+    # Extract invoice-number tokens from both sides.
+    #
+    # invoice_names entries look like one of:
+    #     "180 Invoice EJL-26-27-180-16-05-26.pdf"   ← leading numeric token
+    #     "Invoice EJL-26-27-180-16-05-26.pdf"       ← no leading number
+    # Row-side invoice_number is the canonical "EJL/26-27/180" form.
+    #
+    # We try (in order): EJL-NN-NN-NNN  pattern → leading "^\d+" →
+    # last "\d{3,}" digit run in the stem.  Same rule for both sides
+    # so the resulting sets compare apples to apples.
+    def _token(s: str) -> Optional[str]:
+        if not s:
+            return None
+        # Normalise separators
+        norm = s.replace("\\", "/").replace("_", "-")
+        # EJL[-/]NN[-/]NN[-/](NNN…)
+        m = _re.search(r"EJL[\-/]\d+[\-/]\d+[\-/](\d+)", norm, _re.IGNORECASE)
+        if m:
+            return m.group(1)
+        stem = Path(norm).stem
+        m = _re.match(r"^(\d+)\b", stem)
+        if m:
+            return m.group(1)
+        m = _re.search(r"(\d{3,})", stem)
+        return m.group(1) if m else None
+
+    audit_tokens = {t for t in (_token(n) for n in audit_names) if t}
+    row_tokens   = {t for t in (_token(i) for i in row_inv_set)  if t}
+
+    missing_in_rows = sorted(audit_tokens - row_tokens) if audit_tokens else []
+    extra_in_rows   = sorted(row_tokens - audit_tokens) if audit_tokens else []
+
+    fob_drift = round(row_fob_sum - audit_fob, 2) if audit_fob else 0.0
+    qty_drift = (row_qty_tot - audit_qty) if audit_qty else 0
+
+    warnings: list[str] = []
+    # Tolerances: ±$1 FOB, ±0 units, exact invoice set.
+    if audit_fob and abs(fob_drift) > 1.00:
+        warnings.append(
+            f"fob_total_drift: row sum USD {row_fob_sum:,.2f} differs from "
+            f"audit total USD {audit_fob:,.2f} by USD {fob_drift:+,.2f}"
+        )
+    if audit_qty and qty_drift != 0:
+        warnings.append(
+            f"qty_total_drift: row qty {row_qty_tot} differs from "
+            f"audit total {audit_qty} by {qty_drift:+d}"
+        )
+    if missing_in_rows:
+        warnings.append(
+            "invoices_missing_in_rows: "
+            + ", ".join(missing_in_rows)
+            + " present in invoice_names but not in projected rows"
+        )
+
+    return {
+        "ok":       not warnings,
+        "warnings": warnings,
+        "details":  {
+            "row_count":           len(rows),
+            "row_invoice_numbers": sorted(row_inv_set),
+            "row_fob_sum":         round(row_fob_sum, 2),
+            "row_qty_total":       row_qty_tot,
+            "audit_invoice_names": list(audit_names),
+            "audit_fob_total":     round(audit_fob, 2),
+            "audit_qty_total":     audit_qty,
+            "fob_drift_usd":       fob_drift,
+            "qty_drift_units":     qty_drift,
+            "missing_in_rows":     missing_in_rows,
+            "extra_in_rows":       extra_in_rows,
+        },
+    }
+
+
 def _find_sad_json(batch_id: str, awb: Optional[str] = None) -> Optional[Path]:
     """Find the SAD_READY JSON file for a batch."""
     # Search by awb-derived filename pattern or scan the sad_ready dir
@@ -817,8 +1099,50 @@ async def generate_description(
             detail="AWB not provided and not found in batch audit.json.",
         )
 
-    # Enrich audit with invoice rows from the PZ XLSX (if not already present)
-    audit = _inject_rows_from_xlsx(batch_id, audit)
+    # PR-206: Enrich audit with invoice rows.  Priority chain is
+    # DB invoice_lines (this batch + shared-AWB union) → legacy XLSX
+    # Rows sheet → (no rows → 422 below).  Synthetic per-piece averaging
+    # in the engine is intentionally unreachable: when neither the DB
+    # nor the XLSX has rows, the operator gets a clear manual-review
+    # error instead of a misleading PDF.
+    audit = _inject_rows_from_sources(batch_id, audit)
+
+    if not audit.get("rows") and not audit.get("invoices"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":  "lines_missing_for_description",
+                "error":  "No per-line invoice data found in DB invoice_lines, "
+                          "XLSX Rows sheet, or audit.json. Generating from "
+                          "aggregate totals would average per-piece values "
+                          "and lose per-line HSN/karat/stone detail.",
+                "code":   "lines_missing_for_description",
+                "hint":   "Re-process the batch with valid invoice PDFs or "
+                          "attach the PZ calculation XLSX.",
+            },
+        )
+
+    # PR-206: Reconcile projected rows against aggregate audit totals.
+    # Hard block when the row set is materially inconsistent — missing
+    # invoices, FOB drift > $1, or qty mismatch — so an obviously-wrong
+    # PDF is never produced.
+    _recon = _reconcile_rows_with_audit_totals(audit)
+    if not _recon["ok"]:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":    "rows_audit_reconciliation_failed",
+                "error":    "Projected per-line rows do not reconcile with "
+                            "the aggregate invoice_totals declared in "
+                            "audit.json. Generating a customs document with "
+                            "this mismatch would be unsafe.",
+                "code":     "rows_audit_reconciliation_failed",
+                "warnings": _recon["warnings"],
+                "details":  _recon["details"],
+                "hint":     "Re-process the batch (Reparse all) or attach a "
+                            "fresh PZ calculation XLSX, then retry.",
+            },
+        )
 
     try:
         pkg = generate_customs_description_package(
@@ -1002,8 +1326,36 @@ async def generate_customs_package(
     if not awb:
         raise HTTPException(status_code=422, detail="AWB not provided and not found in audit.json.")
 
-    # Enrich audit with invoice rows from the PZ XLSX (if not already present)
-    audit = _inject_rows_from_xlsx(batch_id, audit)
+    # PR-206: DB-first row injection + lines-missing guard + reconciliation.
+    audit = _inject_rows_from_sources(batch_id, audit)
+
+    if not audit.get("rows") and not audit.get("invoices"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":  "lines_missing_for_description",
+                "error":  "No per-line invoice data found in DB invoice_lines, "
+                          "XLSX Rows sheet, or audit.json.",
+                "code":   "lines_missing_for_description",
+                "hint":   "Re-process the batch with valid invoice PDFs or "
+                          "attach the PZ calculation XLSX.",
+            },
+        )
+
+    _recon = _reconcile_rows_with_audit_totals(audit)
+    if not _recon["ok"]:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":    "rows_audit_reconciliation_failed",
+                "error":    "Projected rows do not reconcile with aggregate "
+                            "invoice_totals declared in audit.json.",
+                "code":     "rows_audit_reconciliation_failed",
+                "warnings": _recon["warnings"],
+                "details":  _recon["details"],
+                "hint":     "Re-process the batch or attach a fresh PZ XLSX.",
+            },
+        )
 
     try:
         pkg = generate_customs_description_package(
