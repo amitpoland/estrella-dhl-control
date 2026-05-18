@@ -50,18 +50,18 @@ class Settings(BaseSettings):
     # ── Zoho WorkDrive direct upload (REST API — primary cloud path) ──────────
     # Set these via .env. Obtain via Zoho Self Client (api-console.zoho.in).
     # Scope: WorkDrive.files.CREATE,WorkDrive.files.READ,WorkDrive.files.ALL
-    workdrive_client_id:      str = Field(default="", env="WORKDRIVE_CLIENT_ID")
-    workdrive_client_secret:  str = Field(default="", env="WORKDRIVE_CLIENT_SECRET")
-    workdrive_refresh_token:  str = Field(default="", env="WORKDRIVE_REFRESH_TOKEN")
+    workdrive_client_id:      str = Field(default="")
+    workdrive_client_secret:  str = Field(default="")
+    workdrive_refresh_token:  str = Field(default="")
     # myfolder_id of the WorkDrive user (MYSPACE_LIBRARY root). Pre-discovered:
-    workdrive_myfolder_id:    str = Field(default="", env="WORKDRIVE_MYFOLDER_ID")
+    workdrive_myfolder_id:    str = Field(default="")
     # Optional: override upload root to a specific subfolder inside MYSPACE_LIBRARY
-    workdrive_parent_id:      str = Field(default="", env="WORKDRIVE_PARENT_ID")
+    workdrive_parent_id:      str = Field(default="")
     workdrive_token_url:      str = Field(
-        default="https://accounts.zoho.in/oauth/v2/token", env="WORKDRIVE_TOKEN_URL"
+        default="https://accounts.zoho.in/oauth/v2/token"
     )
     workdrive_api_url:        str = Field(
-        default="https://workdrive.zoho.in", env="WORKDRIVE_API_URL"
+        default="https://workdrive.zoho.in"
     )
 
     # ── Delivery ──────────────────────────────────────────────────────────────
@@ -88,14 +88,14 @@ class Settings(BaseSettings):
     cliq_channel_api_url: str = "https://cliq.zoho.in/company/60014108075/api/v2/channelsbyname/pz/message"
 
     # ── AI customs parser (fallback only — XML is source of truth) ──────────
-    anthropic_api_key:   Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
-    ai_parser_model:     str           = Field(default="claude-sonnet-4-6", env="AI_PARSER_MODEL")
-    ai_parser_enabled:   bool          = Field(default=False, env="AI_PARSER_ENABLED")
+    anthropic_api_key:   Optional[str] = Field(default=None)
+    ai_parser_model:     str           = Field(default="claude-sonnet-4-6")
+    ai_parser_enabled:   bool          = Field(default=False)
 
     # ── Carrier tracking API credentials ─────────────────────────────────────
-    dhl_api_key:         Optional[str] = Field(default=None, env="DHL_API_KEY")
-    fedex_client_id:     Optional[str] = Field(default=None, env="FEDEX_CLIENT_ID")
-    fedex_client_secret: Optional[str] = Field(default=None, env="FEDEX_CLIENT_SECRET")
+    dhl_api_key:         Optional[str] = Field(default=None)
+    fedex_client_id:     Optional[str] = Field(default=None)
+    fedex_client_secret: Optional[str] = Field(default=None)
 
     # ── DHL Shipment Tracking Unified API (OAuth2 client-credentials) ─────────
     # Status gate — controls whether live API calls are allowed.
@@ -109,9 +109,9 @@ class Settings(BaseSettings):
     #   1. Set DHL_TRACKING_API_STATUS=active in .env
     #   2. Set DHL_TRACKING_API_KEY and DHL_TRACKING_API_SECRET
     #   3. Restart service — no code changes required
-    dhl_tracking_api_key:    Optional[str] = Field(default=None, env="DHL_TRACKING_API_KEY")
-    dhl_tracking_api_secret: Optional[str] = Field(default=None, env="DHL_TRACKING_API_SECRET")
-    dhl_tracking_api_status: str           = Field(default="pending", env="DHL_TRACKING_API_STATUS")
+    dhl_tracking_api_key:    Optional[str] = Field(default=None)
+    dhl_tracking_api_secret: Optional[str] = Field(default=None)
+    dhl_tracking_api_status: str           = Field(default="pending")
 
     # ── DHL customs email routing (P2 Slice A — proactive dispatch) ───────────
     # Authoritative recipient + CC for proactive customs dispatch emails.
@@ -119,8 +119,8 @@ class Settings(BaseSettings):
     # Empty string means "not configured":
     #   - dev/local/test → falls back to dev-null@localhost (test sink)
     #   - any other environment → queue aborts with 500 (fail loud)
-    dhl_customs_email: str = Field(default="", env="DHL_CUSTOMS_EMAIL")
-    dhl_customs_cc:    str = Field(default="", env="DHL_CUSTOMS_CC")
+    dhl_customs_email: str = Field(default="")
+    dhl_customs_cc:    str = Field(default="")
 
     # ── Phase 2.3 — Path A auto-queue at Departed origin ──────────────────────
     # Default-False feature flag. When True, the active_shipment_monitor sweep
@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     # gate. Spec ref: docs/dhl_clearance_paths.md hard rules 9, 11, 12 and the
     # Tracking-driven triggers section. SECURITY review required all twelve
     # hard guarantees from the pre-implementation security pass be encoded.
-    enable_path_a_auto_queue: bool = Field(default=False, env="ENABLE_PATH_A_AUTO_QUEUE")
+    enable_path_a_auto_queue: bool = Field(default=False)
 
     # ── W-5 / P2 ignition (Model C) ── gate-flip for legacy _ensure_path_a_auto_queue
     # Default False: new coordinator-based P2 ignition (sweep → dispatch_proactive)
@@ -141,7 +141,6 @@ class Settings(BaseSettings):
     # docs/operational-memory/dhl-selfclearance/02b_P2_IGNITION_SWITCH_DESIGN.md §P0-PREC1.
     dhl_selfclearance_legacy_path_a_queue_enabled: bool = Field(
         default=False,
-        env="DHL_SELFCLEARANCE_LEGACY_PATH_A_QUEUE_ENABLED",
     )
 
     # ── Zoho Mail (OAuth2 with refresh-token rotation) ────────────────────────
@@ -150,28 +149,28 @@ class Settings(BaseSettings):
     # When refresh_token + client_id + client_secret are set, access_token is
     # auto-refreshed when expired; the static ZOHO_MAIL_API_TOKEN is optional
     # bootstrap-only and never written back.
-    zoho_mail_api_token:     Optional[str] = Field(default=None, env="ZOHO_MAIL_API_TOKEN")
-    zoho_mail_refresh_token: Optional[str] = Field(default=None, env="ZOHO_MAIL_REFRESH_TOKEN")
-    zoho_client_id:          Optional[str] = Field(default=None, env="ZOHO_CLIENT_ID")
-    zoho_client_secret:      Optional[str] = Field(default=None, env="ZOHO_CLIENT_SECRET")
-    zoho_accounts_base:      str           = Field(default="https://accounts.zoho.eu", env="ZOHO_ACCOUNTS_BASE")
+    zoho_mail_api_token:     Optional[str] = Field(default=None)
+    zoho_mail_refresh_token: Optional[str] = Field(default=None)
+    zoho_client_id:          Optional[str] = Field(default=None)
+    zoho_client_secret:      Optional[str] = Field(default=None)
+    zoho_accounts_base:      str           = Field(default="https://accounts.zoho.eu")
     # NOTE: The Estrella mailbox (account 2261204000000002002) is hosted on Zoho's
     # India data centre. The .eu and .com API bases reject its tokens with
     # 401 INVALID_OAUTHTOKEN. zmail.zoho.in is empirically verified as correct.
     # Override via ZOHO_MAIL_API_BASE env var if the mailbox region ever changes.
-    zoho_mail_api_base:      str           = Field(default="https://zmail.zoho.in/api", env="ZOHO_MAIL_API_BASE")
-    zoho_mail_account_id:    Optional[str] = Field(default=None, env="ZOHO_MAIL_ACCOUNT_ID")
+    zoho_mail_api_base:      str           = Field(default="https://zmail.zoho.in/api")
+    zoho_mail_account_id:    Optional[str] = Field(default=None)
 
     # ── Email scan routing ────────────────────────────────────────────────────
     # "auto"        → use Zoho REST API when creds present, else AI Bridge
     # "bridge_only" → always route to AI Bridge regardless of credentials
     # "api_only"    → always use Zoho REST; never fall back to bridge
-    email_scan_mode: str = Field(default="auto", env="EMAIL_SCAN_MODE")
+    email_scan_mode: str = Field(default="auto")
 
     # Email Evidence V2 — default ON. Set EMAIL_EVIDENCE_V2=0 to disable (rollback).
     # When ON, ingestion writes to the local evidence store, uses since-cursor for
     # Zoho REST searches, and routes via the processor pipeline.
-    email_evidence_v2: bool = Field(default=True, env="EMAIL_EVIDENCE_V2")
+    email_evidence_v2: bool = Field(default=True)
 
     # ── SMTP send (Zoho App Password) ─────────────────────────────────────────
     # Required for actual outgoing email delivery via /api/v1/email-queue/{id}/send.
@@ -180,74 +179,74 @@ class Settings(BaseSettings):
     #   https://accounts.zoho.in/home#security/app_passwords
     # Default to smtppro.zoho.in (paid Zoho Workplace). Free accounts use
     # smtp.zoho.in — override via SMTP_HOST in .env if needed.
-    smtp_host:     str = Field(default="smtppro.zoho.in", env="SMTP_HOST")
-    smtp_port:     int = Field(default=465,               env="SMTP_PORT")
-    smtp_user:     Optional[str] = Field(default=None,    env="SMTP_USER")
-    smtp_password: Optional[str] = Field(default=None,    env="SMTP_PASSWORD")
-    smtp_use_ssl:  bool = Field(default=True,             env="SMTP_USE_SSL")
+    smtp_host:     str = Field(default="smtppro.zoho.in")
+    smtp_port:     int = Field(default=465)
+    smtp_user:     Optional[str] = Field(default=None)
+    smtp_password: Optional[str] = Field(default=None)
+    smtp_use_ssl:  bool = Field(default=True)
     # Read-receipt headers (Disposition-Notification-To / Return-Receipt-To /
     # X-Confirm-Reading-To). When enabled, every outgoing email asks the
     # recipient's MUA to send a read confirmation back to email_read_receipt_to
     # (defaults to the sender identity if blank).
-    email_read_receipt_enabled: bool = Field(default=False, env="EMAIL_READ_RECEIPT_ENABLED")
-    email_read_receipt_to:      str  = Field(default="",    env="EMAIL_READ_RECEIPT_TO")
+    email_read_receipt_enabled: bool = Field(default=False)
+    email_read_receipt_to:      str  = Field(default="")
     # MCP send fallback — total attachment-size cap (bytes). Above this,
     # MCP send refuses (PDFs too heavy via tool-call args). Default 200KB.
-    mcp_send_max_attachment_bytes: int = Field(default=200_000, env="MCP_SEND_MAX_ATTACHMENT_BYTES")
+    mcp_send_max_attachment_bytes: int = Field(default=200_000)
 
     # ── wFirma API (3-header key auth — Basic Auth deprecated 2023-07-02) ───────
     # Source: wFirma → Ustawienia → Bezpieczeństwo → Aplikacje → Klucze API
     # All fields default to "" so the app starts safely without wFirma configured.
     # wfirma_capabilities.get_capabilities() reports api_configured=False when empty.
-    wfirma_access_key:              str  = Field(default="",    env="WFIRMA_ACCESS_KEY")
-    wfirma_secret_key:              str  = Field(default="",    env="WFIRMA_SECRET_KEY")
-    wfirma_app_key:                 str  = Field(default="",    env="WFIRMA_APP_KEY")
-    wfirma_company_id:              str  = Field(default="",    env="WFIRMA_COMPANY_ID")
-    wfirma_warehouse_id:            str  = Field(default="",    env="WFIRMA_WAREHOUSE_ID")
-    wfirma_warehouse_module_enabled: bool = Field(default=False, env="WFIRMA_WAREHOUSE_MODULE_ENABLED")
-    wfirma_create_product_allowed:  bool = Field(default=False, env="WFIRMA_CREATE_PRODUCT_ALLOWED")
-    wfirma_create_customer_allowed: bool = Field(default=False, env="WFIRMA_CREATE_CUSTOMER_ALLOWED")
-    wfirma_create_proforma_allowed: bool = Field(default=False, env="WFIRMA_CREATE_PROFORMA_ALLOWED")
-    wfirma_edit_product_allowed:    bool = Field(default=False, env="WFIRMA_EDIT_PRODUCT_ALLOWED")
-    wfirma_edit_invoice_allowed:    bool = Field(default=False, env="WFIRMA_EDIT_INVOICE_ALLOWED")
-    wfirma_sync_customers_allowed:  bool = Field(default=False, env="WFIRMA_SYNC_CUSTOMERS_ALLOWED")
+    wfirma_access_key:              str  = Field(default="")
+    wfirma_secret_key:              str  = Field(default="")
+    wfirma_app_key:                 str  = Field(default="")
+    wfirma_company_id:              str  = Field(default="")
+    wfirma_warehouse_id:            str  = Field(default="")
+    wfirma_warehouse_module_enabled: bool = Field(default=False)
+    wfirma_create_product_allowed:  bool = Field(default=False)
+    wfirma_create_customer_allowed: bool = Field(default=False)
+    wfirma_create_proforma_allowed: bool = Field(default=False)
+    wfirma_edit_product_allowed:    bool = Field(default=False)
+    wfirma_edit_invoice_allowed:    bool = Field(default=False)
+    wfirma_sync_customers_allowed:  bool = Field(default=False)
     # B0 (MDOC-cache): controls local-only persistence of wFirma contractors
     # into the suppliers table via POST /api/v1/suppliers/sync-from-wfirma.
     # Reads wFirma; never writes to wFirma. When False, the route returns a
     # dry-run plan (preview) and refuses to mutate suppliers.sqlite.
-    wfirma_sync_suppliers_allowed:  bool = Field(default=False, env="WFIRMA_SYNC_SUPPLIERS_ALLOWED")
-    wfirma_delete_invoice_allowed:  bool = Field(default=False, env="WFIRMA_DELETE_INVOICE_ALLOWED")
-    wfirma_create_pz_allowed:       bool = Field(default=False, env="WFIRMA_CREATE_PZ_ALLOWED")
+    wfirma_sync_suppliers_allowed:  bool = Field(default=False)
+    wfirma_delete_invoice_allowed:  bool = Field(default=False)
+    wfirma_create_pz_allowed:       bool = Field(default=False)
     # Manual Proforma → final invoice conversion gate. Off by default;
     # operator flips to true only for the conversion run, then back.
-    wfirma_create_invoice_allowed:  bool = Field(default=False, env="WFIRMA_CREATE_INVOICE_ALLOWED")
-    wfirma_supplier_contractor_id:  str  = Field(default="",    env="WFIRMA_SUPPLIER_CONTRACTOR_ID")
+    wfirma_create_invoice_allowed:  bool = Field(default=False)
+    wfirma_supplier_contractor_id:  str  = Field(default="")
 
     # ── Carrier subsystem (DHL Express outbound shipping) ────────────────────
     # Status gate — controls carrier API adapter selection.
     # "pending" (default): all carrier routes return 503; no API calls possible.
     # "shadow":            DhlExpressShadowAdapter used; responses are simulated.
     # "live":              DhlExpressLiveAdapter used; requires allowlist entry.
-    carrier_api_status: str = Field(default="pending", env="CARRIER_API_STATUS")
+    carrier_api_status: str = Field(default="pending")
 
     # PLT (Paperless Trade) gate — independent of carrier_api_status.
-    carrier_plt_status: str = Field(default="pending", env="CARRIER_PLT_STATUS")
+    carrier_plt_status: str = Field(default="pending")
 
     # Comma-separated batch_ids allowed for live carrier calls.
     # Empty = no live calls permitted even when carrier_api_status=live.
-    carrier_live_allowlist: str = Field(default="", env="CARRIER_LIVE_ALLOWLIST")
+    carrier_live_allowlist: str = Field(default="")
 
     # DHL Express API credentials — all None by default (no live capability).
-    dhl_express_api_key:        Optional[str] = Field(default=None, env="DHL_EXPRESS_API_KEY")
-    dhl_express_api_secret:     Optional[str] = Field(default=None, env="DHL_EXPRESS_API_SECRET")
-    dhl_express_api_url:        str           = Field(default="https://express.api.dhl.com", env="DHL_EXPRESS_API_URL")
-    dhl_express_account_number: Optional[str] = Field(default=None, env="DHL_EXPRESS_ACCOUNT_NUMBER")
+    dhl_express_api_key:        Optional[str] = Field(default=None)
+    dhl_express_api_secret:     Optional[str] = Field(default=None)
+    dhl_express_api_url:        str           = Field(default="https://express.api.dhl.com")
+    dhl_express_account_number: Optional[str] = Field(default=None)
 
     # DHL webhook HMAC secret. None = webhook endpoint returns 503 (never silently open).
-    dhl_webhook_secret: Optional[str] = Field(default=None, env="DHL_WEBHOOK_SECRET")
+    dhl_webhook_secret: Optional[str] = Field(default=None)
 
     # Carrier file storage root. None = defaults to storage_root / "carrier" at runtime.
-    carrier_storage_root: Optional[Path] = Field(default=None, env="CARRIER_STORAGE_ROOT")
+    carrier_storage_root: Optional[Path] = Field(default=None)
 
     # ── Cliq bot batch collection ─────────────────────────────────────────────
     # Expire an incomplete (missing files) session after N minutes of inactivity
@@ -271,30 +270,30 @@ class Settings(BaseSettings):
     #   • p3_tracker_paused is a kill switch (no shadow equivalent meaningful).
     #   • p5_pz_trigger_enabled is an inner gate (no shadow equivalent — shadow
     #     vs live is governed by p5_live_enabled).
-    dhl_selfclearance_p2_live_enabled:        bool = Field(default=False, env="DHL_SELFCLEARANCE_P2_LIVE_ENABLED")
-    dhl_selfclearance_p2_shadow_mode:         bool = Field(default=True,  env="DHL_SELFCLEARANCE_P2_SHADOW_MODE")
-    dhl_selfclearance_p3_live_enabled:        bool = Field(default=False, env="DHL_SELFCLEARANCE_P3_LIVE_ENABLED")
-    dhl_selfclearance_p3_shadow_mode:         bool = Field(default=True,  env="DHL_SELFCLEARANCE_P3_SHADOW_MODE")
-    dhl_selfclearance_p3_tracker_paused:      bool = Field(default=False, env="DHL_SELFCLEARANCE_P3_TRACKER_PAUSED")
-    dhl_selfclearance_p4_live_enabled:        bool = Field(default=False, env="DHL_SELFCLEARANCE_P4_LIVE_ENABLED")
-    dhl_selfclearance_p4_shadow_mode:         bool = Field(default=True,  env="DHL_SELFCLEARANCE_P4_SHADOW_MODE")
-    dhl_selfclearance_p5_live_enabled:        bool = Field(default=False, env="DHL_SELFCLEARANCE_P5_LIVE_ENABLED")
-    dhl_selfclearance_p5_shadow_mode:         bool = Field(default=True,  env="DHL_SELFCLEARANCE_P5_SHADOW_MODE")
-    dhl_selfclearance_p5_pz_trigger_enabled:  bool = Field(default=False, env="DHL_SELFCLEARANCE_P5_PZ_TRIGGER_ENABLED")
+    dhl_selfclearance_p2_live_enabled:        bool = Field(default=False)
+    dhl_selfclearance_p2_shadow_mode:         bool = Field(default=True)
+    dhl_selfclearance_p3_live_enabled:        bool = Field(default=False)
+    dhl_selfclearance_p3_shadow_mode:         bool = Field(default=True)
+    dhl_selfclearance_p3_tracker_paused:      bool = Field(default=False)
+    dhl_selfclearance_p4_live_enabled:        bool = Field(default=False)
+    dhl_selfclearance_p4_shadow_mode:         bool = Field(default=True)
+    dhl_selfclearance_p5_live_enabled:        bool = Field(default=False)
+    dhl_selfclearance_p5_shadow_mode:         bool = Field(default=True)
+    dhl_selfclearance_p5_pz_trigger_enabled:  bool = Field(default=False)
 
     # Classifier confidence thresholds (literal identifiers — phases quote verbatim)
-    dhl_selfclearance_p4_classifier_min_confidence:  float = Field(default=0.85, env="DHL_SELFCLEARANCE_P4_CLASSIFIER_MIN_CONFIDENCE")
-    dhl_selfclearance_p5_classifier_min_confidence:  float = Field(default=0.95, env="DHL_SELFCLEARANCE_P5_CLASSIFIER_MIN_CONFIDENCE")
+    dhl_selfclearance_p4_classifier_min_confidence:  float = Field(default=0.85)
+    dhl_selfclearance_p5_classifier_min_confidence:  float = Field(default=0.95)
 
     # Follow-up scheduler (ADR-014 policy)
-    dhl_selfclearance_followup_working_interval_sec:  int = Field(default=7200,                env="DHL_SELFCLEARANCE_FOLLOWUP_WORKING_INTERVAL_SEC")
-    dhl_selfclearance_followup_offhours_interval_sec: int = Field(default=21600,               env="DHL_SELFCLEARANCE_FOLLOWUP_OFFHOURS_INTERVAL_SEC")
-    dhl_selfclearance_followup_working_hours_window:  str = Field(default="08:00-16:00 CET",   env="DHL_SELFCLEARANCE_FOLLOWUP_WORKING_HOURS_WINDOW")
-    dhl_selfclearance_followup_livelock_budget_hours: int = Field(default=168,                 env="DHL_SELFCLEARANCE_FOLLOWUP_LIVELOCK_BUDGET_HOURS")
+    dhl_selfclearance_followup_working_interval_sec:  int = Field(default=7200)
+    dhl_selfclearance_followup_offhours_interval_sec: int = Field(default=21600)
+    dhl_selfclearance_followup_working_hours_window:  str = Field(default="08:00-16:00 CET")
+    dhl_selfclearance_followup_livelock_budget_hours: int = Field(default=168)
 
     # Path A clearance value threshold. Reading site lives in clearance_decision.py;
     # this exposes it as config so an operator can override via the admin endpoint.
-    dhl_selfclearance_value_threshold_usd:    int = Field(default=2500, env="DHL_SELFCLEARANCE_VALUE_THRESHOLD_USD")
+    dhl_selfclearance_value_threshold_usd:    int = Field(default=2500)
 
     # ── Phase 6F.5 — Dual-write finance postings (feature-flagged, default OFF) ─
     # When ``finance_dual_write_enabled`` is True, the /post proforma route
@@ -312,8 +311,8 @@ class Settings(BaseSettings):
     # Both default to False. Production deploys must verify these are unset
     # or false in the NSSM env block before any operator-driven activation.
     # Approval package: tasks/phase-6f-5-dual-write-approval-package.md
-    finance_dual_write_enabled:  bool = Field(default=False, env="FINANCE_DUAL_WRITE_ENABLED")
-    finance_dual_write_shadow:   bool = Field(default=False, env="FINANCE_DUAL_WRITE_SHADOW")
+    finance_dual_write_enabled:  bool = Field(default=False)
+    finance_dual_write_shadow:   bool = Field(default=False)
 
 
 settings = Settings()
