@@ -11222,6 +11222,10 @@ function ProformaDraftPanel({ batchId, onToast }) {
   // Both endpoints are local-DB only; no wFirma call, no write.
   const [productOptions,  setProductOptions]  = React.useState([]);
   const [customerOptions, setCustomerOptions] = React.useState([]);
+  // PR-203a: status banner for the single Bill-to cascade.
+  // Shape: null | { phase: 'buyer'|'ship_to'|'payment_terms'|'done'|'error',
+  //                 message: string }
+  const [applyingCustomer, setApplyingCustomer] = React.useState(null);
   React.useEffect(() => {
     if (!openId) return;
     let cancelled = false;
@@ -11342,6 +11346,106 @@ function ProformaDraftPanel({ batchId, onToast }) {
       throw e;
     }
   }, [onToast, reloadOpen, refreshList]);
+
+  // ── PR-203a: single Bill-to cascade ──────────────────────────────────
+  // Selecting ONE customer applies buyer / ship-to / payment-terms in
+  // three sequential PATCHes, each using the freshly-returned updated_at
+  // from the previous call (no 409 race against React state).  No
+  // wFirma / PZ / DHL surface is touched — purely PATCH the editor JSON
+  // columns the operator could already drive manually.
+  const onApplyCustomerDefaults = React.useCallback(async (c) => {
+    if (!openId || !openDraft || !c) return;
+    const op = _resolveOperator();
+    if (!op) {
+      onToast && onToast('Customer apply: operator name required', 'error');
+      return;
+    }
+    const _trim = (v) => (v == null ? '' : String(v).trim());
+    const _put  = (target, key, value) => {
+      const v = _trim(value);
+      if (v) target[key] = v;
+    };
+
+    // Buyer payload — bill_to_* fields from customer_master.
+    const buyer = {};
+    _put(buyer, 'type',    'company');
+    _put(buyer, 'name',    c.bill_to_name || c.client_name);
+    _put(buyer, 'vat_id',  c.nip || c.vat_eu_number || c.vat_id);
+    _put(buyer, 'country', c.country);
+    _put(buyer, 'street',  c.bill_to_street);
+    _put(buyer, 'city',    c.bill_to_city);
+    _put(buyer, 'zip',     c.bill_to_postal_code);
+    _put(buyer, 'email',   c.bill_to_email);
+    _put(buyer, 'phone',   c.bill_to_phone || c.bill_to_mobile);
+
+    // Ship-to payload — ship_to_* with bill_to_* fallback.
+    const ship = {};
+    _put(ship, 'type',    'company');
+    _put(ship, 'name',    c.ship_to_name    || c.bill_to_name || c.client_name);
+    _put(ship, 'street',  c.ship_to_street  || c.bill_to_street);
+    _put(ship, 'city',    c.ship_to_city    || c.bill_to_city);
+    _put(ship, 'zip',     c.ship_to_zip     || c.bill_to_postal_code);
+    _put(ship, 'country', c.ship_to_country || c.country);
+    _put(ship, 'email',   c.ship_to_email   || c.bill_to_email);
+    _put(ship, 'phone',   c.ship_to_phone   || c.bill_to_phone || c.bill_to_mobile);
+
+    // Payment terms — days from customer_master.payment_terms_days.
+    const terms = {};
+    if (c.payment_terms_days != null && _trim(c.payment_terms_days) !== '') {
+      _put(terms, 'days', String(c.payment_terms_days));
+    }
+
+    let currentUpdatedAt = openDraft.updated_at;
+    const headers = { 'X-Operator': op, 'Content-Type': 'application/json' };
+
+    const _patch = async (phaseLabel, payload) => {
+      const r = await apiFetch(`/api/v1/proforma/draft/${openId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({
+          expected_updated_at: currentUpdatedAt,
+          patch: payload,
+        }),
+      });
+      // apiFetch returns the JSON body; thread the fresh updated_at
+      // through to the next call so we never race React state.
+      if (r && r.draft && r.draft.updated_at) {
+        currentUpdatedAt = r.draft.updated_at;
+      }
+      return r;
+    };
+
+    setApplyingCustomer({ phase: 'buyer',
+                           message: 'Applying customer defaults…' });
+    try {
+      if (Object.keys(buyer).length) {
+        await _patch('buyer', { buyer_override: buyer });
+      }
+      setApplyingCustomer({ phase: 'ship_to',
+                             message: 'Buyer saved · saving ship-to…' });
+      if (Object.keys(ship).length) {
+        await _patch('ship_to', { ship_to_override: ship });
+      }
+      setApplyingCustomer({ phase: 'payment_terms',
+                             message: 'Ship-to saved · saving payment terms…' });
+      if (Object.keys(terms).length) {
+        await _patch('payment_terms', { payment_terms: terms });
+      }
+      setApplyingCustomer({ phase: 'done',
+                             message: 'Customer defaults applied' });
+      onToast && onToast('Customer defaults applied', 'success');
+      await reloadOpen();
+      await refreshList();
+      // Clear the banner shortly after success so the editor isn't
+      // visually noisy on the next interaction.
+      setTimeout(() => setApplyingCustomer(null), 1500);
+    } catch (e) {
+      setApplyingCustomer({ phase: 'error',
+                             message: 'Failed: ' + (e && e.message || e) });
+      onToast && onToast('Apply customer defaults failed: '
+                          + (e && e.message || e), 'error');
+    }
+  }, [openId, openDraft, onToast, reloadOpen, refreshList]);
 
   // ── Per-action handlers ───────────────────────────────────────────────
   const onPatchField = (field, value) =>
@@ -12396,6 +12500,17 @@ function ProformaDraftPanel({ batchId, onToast }) {
               {/* Top-level fields */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr',
                               gap: 12, marginBottom: 14, fontSize: 12 }}>
+                {/* PR-203a: single Bill-to customer picker that cascades
+                    buyer / ship-to / payment-terms onto the draft so the
+                    operator no longer has to click three separate Save
+                    buttons. */}
+                {isEditable && (
+                  <ProformaBillToPicker
+                      customers={customerOptions}
+                      status={applyingCustomer}
+                      onApply={onApplyCustomerDefaults}
+                      testid="draft-bill-to-picker-top" />
+                )}
                 <ProformaDraftRemarksEditor
                     value={openDraft.remarks || ''}
                     editable={isEditable}
@@ -13007,6 +13122,78 @@ function ProformaCustomerCard({ resolution, clientName, onRemapOpen }) {
 // Rows carry bill_to_*, ship_to_*, freight_*, insurance_* and
 // payment_terms_days.  The picker shows a `bill_to_name · country · nip`
 // summary in the dropdown and emits the full row to `onPick`.
+// ── PR-203a: top-level Bill-to picker ───────────────────────────────────
+// Renders ONE dropdown.  Selecting a customer fires `onApply(row)` which
+// the panel converts into three sequential PATCHes (buyer / ship-to /
+// payment-terms).  Shows a small status banner (`status` prop) so the
+// operator can see each phase complete.  No wFirma / PZ / DHL touched.
+function ProformaBillToPicker({ customers, status, onApply, testid }) {
+  if (!customers || !customers.length) {
+    return (
+      <div data-testid={testid}
+           style={{ padding: 8, border: '1px dashed var(--card-border)',
+                      borderRadius: 4, fontSize: 11,
+                      color: 'var(--text-3)' }}>
+        Bill-to: customer master is empty — register a customer first.
+      </div>
+    );
+  }
+  const _id = (c) => String(c.bill_to_contractor_id || c.bill_to_name
+                              || c.client_name || '');
+  const _label = (c) => {
+    const name = c.bill_to_name || c.client_name || '?';
+    const country = c.country || '';
+    const nip = c.nip || c.vat_eu_number || c.vat_id || '';
+    return name
+         + (country ? ' · ' + country : '')
+         + (nip     ? ' · VAT ' + nip : '');
+  };
+  const banner = (() => {
+    if (!status) return null;
+    const colour = status.phase === 'error' ? '#b45309'
+                 : status.phase === 'done'  ? '#065f46'
+                                            : 'var(--text-2)';
+    return (
+      <div data-testid={`${testid}-status`}
+           style={{ fontSize: 11, marginTop: 4, color: colour }}>
+        {status.message}
+      </div>
+    );
+  })();
+  return (
+    <div data-testid={testid}
+         style={{ padding: 8, border: '1px solid var(--card-border)',
+                    borderRadius: 4 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                      letterSpacing: '0.06em', textTransform: 'uppercase',
+                      marginBottom: 4 }}>
+        Bill-to customer
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>
+        One pick fills buyer, ship-to, and payment terms from the
+        customer master and saves them onto the draft.
+      </div>
+      <select onChange={(e) => {
+                const id = e.target.value;
+                const c = customers.find(x => _id(x) === id);
+                e.target.value = '';
+                if (c) onApply(c);
+              }}
+              data-testid={`${testid}-select`}
+              disabled={status && status.phase !== 'done'
+                                && status.phase !== 'error'}
+              style={{ fontSize: 12, padding: '4px 6px', minWidth: 280 }}>
+        <option value="">— select bill-to customer —</option>
+        {customers.map(c => (
+          <option key={_id(c)} value={_id(c)}>{_label(c)}</option>
+        ))}
+      </select>
+      {banner}
+    </div>
+  );
+}
+
+
 function ProformaCustomerPicker({ customers, onPick, testid }) {
   if (!customers || !customers.length) return null;
   // bill_to_contractor_id is the customer_master PK we can key by; fall
