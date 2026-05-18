@@ -298,15 +298,11 @@ plist moved to `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabl
 
 ## Available integration
 
-The Zoho Cliq MCP connector for Estrella is:
+Zoho Cliq MCP connector (use for all Cliq operations):
 - **Connector ID:** `mcp__1760d1e3-ee15-43d5-af3a-3528cf9a21ce`
 - **Org ID:** `60014108075`
 - **Tool:** `ZohoCliq_Post_message_in_a_channel`
-- **Production delivery target:** channel `pz` (ID: `O190928000006027001`)
-
-Always use that connector when the workflow requires posting results or updates into Zoho Cliq.
-
-### Delivery split
+- **Production channel:** `pz` (ID: `O190928000006027001`)
 
 | Path | Tool | Target |
 |------|------|--------|
@@ -318,17 +314,9 @@ Always use that connector when the workflow requires posting results or updates 
 
 ## System architecture
 
-### 1. Source of truth
-
-`process_batch()` is the only calculation path. Never recalculate landed cost, freight, duty, totals, or notes outside the Python engine.
-
-### 2. Output renderers
-
-All outputs must render from the same validated `process_batch()` result object.
-
-### 3. Zoho Cliq role
-
-Do not treat Cliq as the calculation engine.
+- `process_batch()` is the only calculation path. Never recalculate landed cost, freight, duty, totals, or notes outside the Python engine.
+- All outputs must render from the same validated `process_batch()` result object.
+- Do not treat Cliq as the calculation engine.
 
 > For full architecture detail: invoke `pz-shipment`.
 
@@ -336,71 +324,34 @@ Do not treat Cliq as the calculation engine.
 
 ## Required workflow
 
-### Step A — Validate engine before live batch
-
-Before processing a live shipment, run `make verify`. If it fails: stop, do not process the batch, report failure reason.
-
-### Step B — Process uploaded shipment
-
-Run the engine via CLI or `process_batch()`. For CLI syntax and optional flags: invoke `pz-shipment`.
-
-### Step C — Generate outputs
-
-Always generate: final PZ PDF + calculation XLSX. If either is not produced when requested: treat the run as failed, report failure honestly, exit non-zero.
-
-### Step D — Post results to Zoho Cliq using "Estrella Cliq"
-
-After successful processing: post a concise summary into Cliq, attach or send the generated PDF and XLSX. If there are amendment flags or verification failures: say so explicitly in the Cliq message, do not hide them.
+- **Step A:** Run `make verify` before any live batch. If it fails: stop, do not process, report reason.
+- **Step B:** Run engine via CLI or `process_batch()`. For CLI syntax and flags: invoke `pz-shipment`.
+- **Step C:** Always generate PDF + XLSX. If either absent: treat as failed, report honestly, exit non-zero.
+- **Step D:** Post summary + files to Cliq. If amendment flags present: say so explicitly. Do not hide.
 
 ---
 
 ## Financial rules (must never change)
 
-### Freight allocation
+- Freight and insurance: proportional by value within each invoice. Never allocate by piece count.
+- Duty: from ZC429 / A00 only, proportional by before-duty value. Never assume a fixed %.
+- B00 VAT: reference-only. Not included in landed cost.
+- Notes/UWAGI: from the engine only. Never reconstruct independently.
 
-Freight and insurance are allocated proportionally by value within each invoice.
-Never allocate freight by piece count.
-
-### Duty allocation
-
-Duty is never assumed as a fixed customs %.
-Duty must always come from ZC429 / A00 Kwota należnej opł., then distributed proportionally across rows by before-duty value.
-
-### VAT
-
-B00 VAT is reference-only and not included in landed cost.
-
-### Notes / UWAGI
-
-Build from the engine only. Do not reconstruct independently.
-
-Dynamic note 4 logic:
-- if art33a → `Import towarów rozliczany zgodnie z art. 33a ustawy o VAT.`
-- else if agent exists → `Odprawa celna przez: <agent>`
-- else if carrier provided → carrier
-- else fallback
-
-Also include: `Koszty frachtu i cła rozliczono proporcjonalnie do wartości pozycji.`
+> For dynamic note 4 logic, required UWAGI text, and examples: invoke `pz-shipment`.
 
 ---
 
 ## Verification rules
 
-The engine returns structured verification. Treat verification states exactly as follows:
+Three-state semantics (treat exactly as follows):
 - `True` = verified
-- `False` = confirmed mismatch
-- `None` = could not verify from SAD format
+- `False` = confirmed mismatch → escalate as amendment flag
+- `None` = could not verify → may emit `[VERIFY-GAP]` prefix; NOT a mismatch, NOT an amendment flag
 
-If a check is `None`, it may produce a correction log line prefixed with `[VERIFY-GAP]`.
-This is visible to humans, not a mismatch, and not an amendment flag by itself.
+Escalate only on confirmed `False`. `None` is not an escalation trigger.
 
-### Amendment flags
-
-Escalate only on confirmed `False`, not on `None`.
-
-### Strict mode
-
-If `--strict-match` is enabled: any confirmed mismatch must fail the run.
+If `--strict-match` enabled: any confirmed mismatch must fail the run.
 
 ---
 
@@ -414,26 +365,13 @@ Three scenarios: success, partial (VERIFY-GAP present), and failure. Each must i
 
 ## WorkDrive automation flow
 
-### Architecture (permanent — do not revert)
-
-```
-Local storage  = source of truth
-WorkDrive REST = primary cloud upload  (via workdrive_uploader.py)
-TrueSync       = optional convenience mirror only — NEVER a success condition
-Cliq           = notification layer — posts immediately, never waits for WorkDrive
-Audit          = final record
-```
-
-> For the full MCP step sequence and Cliq posting format variants: invoke `pz-shipment`.
-
-### Rules
+Architecture: local storage = truth; WorkDrive REST = primary upload; TrueSync = optional mirror only (NEVER a success condition); Cliq = immediate notification layer. For MCP step sequence: invoke `pz-shipment`.
 
 - **Never search WorkDrive for files** — resource IDs come from the API response
-- **Never wait for TrueSync** — TrueSync is an optional mirror, not a cloud upload path
+- **Never wait for TrueSync** — it is not a cloud upload path
 - **Never block Cliq notification** because WorkDrive failed — always post immediately
 - **Never send local file paths or localhost URLs** in Cliq
-- TrueSync folder = convenience backup only; its visibility state is irrelevant to PZ outcome
-- If share link creation fails: report it explicitly, state "WorkDrive pending retry"
+- If share link creation fails: report explicitly, state "WorkDrive pending retry"
 
 ---
 
@@ -451,14 +389,13 @@ Audit          = final record
 
 ## When asked to run a shipment
 
-Do this in order:
-1. confirm inputs are present
-2. run verification gate (`make verify`)
-3. call `/api/v1/pz/process` (without `post_to_cliq`)
-4. read `workdrive_pdf_resource_id` + `workdrive_xlsx_resource_id` from the response
-5. if resource IDs present → create WorkDrive share links via `ZohoWorkdrive_createExternalShareLink`
-6. post concise result + links (or "WorkDrive pending") via Estrella Cliq to `#PZ`
-7. surface mismatches or verification gaps honestly
+1. Confirm inputs are present.
+2. Run `make verify`. Stop if it fails.
+3. Call `/api/v1/pz/process` (without `post_to_cliq`).
+4. Read `workdrive_pdf_resource_id` + `workdrive_xlsx_resource_id` from the response.
+5. If resource IDs present → create WorkDrive share links via `ZohoWorkdrive_createExternalShareLink`.
+6. Post concise result + links (or "WorkDrive pending") via Estrella Cliq to `#PZ`.
+7. Surface mismatches or verification gaps honestly.
 
 ---
 
@@ -507,12 +444,4 @@ For full architecture, flow, implementation details, and draft type reference: i
 
 ## Short instruction version
 
-```
-Use the Claude connector named "Estrella Cliq" only for messaging and file return.
-Keep all calculations in the Python engine via process_batch().
-For every shipment: run make verify, process invoices + ZC429, generate both PDF and XLSX,
-and post a concise summary plus both files back to Cliq.
-Treat A00 as the only duty source, allocate freight and duty proportionally by value,
-preserve three-state verification (True / False / None+[VERIFY-GAP]),
-and fail honestly if any requested deliverable is not produced.
-```
+> Full operational summary: invoke `pz-shipment`.

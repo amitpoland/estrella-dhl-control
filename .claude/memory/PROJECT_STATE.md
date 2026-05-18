@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-18T(post-219-merge)Z (RULE 3 auto-fire: PR #219 merged SHA `9230a6e`. Wave 2 patch #3 complete. 4 governance contracts extracted to `.claude/contracts/`. 7 governance-normalization files modified (unstaged, governance PR pending). Prior run: 2026-05-13T16:00:00Z (Lesson D closure PR #77). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
+**Last-run-at:** 2026-05-18T(wave2-patch4-batch)Z (RULE 3 auto-fire: Wave 2 patch #4 batch condensation PR pending. 8 remaining retrieval-eligible sections condensed. CLAUDE.md 518→447 lines (−71). Governance kernel verified intact (GATES 1–6, RULES 1–6, Lessons A–E). PR opening. Prior run: 2026-05-18T(post-219-merge)Z (PR #220 merge + contracts extraction). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
 
 ---
 
