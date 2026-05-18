@@ -2198,6 +2198,79 @@ def fetch_invoice_xml(invoice_id: str) -> str:
     return response_text
 
 
+def fetch_proforma_enrichment(invoice_id: str) -> dict:
+    """Phase 3 — read post-posting enrichment fields from wFirma.
+
+    Calls ``fetch_invoice_xml()`` (invoices/get/{id}) and extracts the
+    three fields needed to enrich a posted ProformaDraft:
+
+    - ``issue_date``      (wFirma XML element <date>)
+    - ``payment_due``     (wFirma XML element <paymentdate>)
+    - ``payment_method``  (wFirma XML element <paymentmethod>)
+
+    Returns a dict with those three keys. Values are strings (empty string
+    when the element is absent). Never raises on a missing XML element —
+    callers should treat empty strings as "not available".
+
+    Raises RuntimeError / ConnectionError when the API call itself fails
+    (same contract as ``fetch_invoice_xml``).
+
+    READ-ONLY — never writes to wFirma.
+    """
+    xml_text = fetch_invoice_xml(invoice_id)
+    root = ET.fromstring(xml_text)
+    node = root.find(".//invoice")
+
+    def _t(*tags: str) -> str:
+        for tag in tags:
+            v = _find_text(node, tag) if node is not None else ""
+            if v:
+                return v
+        return ""
+
+    return {
+        "issue_date":     _t("date"),
+        "payment_due":    _t("paymentdate", "payment_date"),
+        "payment_method": _t("paymentmethod", "payment_method"),
+    }
+
+
+def fetch_company_account_iban(account_id: str) -> Optional[str]:
+    """Phase 3 — fetch the IBAN string for a wFirma company bank account.
+
+    Uses ``GET company_accounts/get/{id}`` (read-only). Returns the IBAN
+    string (stripped) or None when the account has no IBAN or the
+    element is absent.
+
+    Raises RuntimeError on wFirma error status.
+    Raises ConnectionError on network failure.
+    Returns None (not raises) when the account_id maps to no IBAN.
+
+    READ-ONLY — never writes to wFirma.
+    """
+    if not (account_id or "").strip():
+        return None
+    safe_id = _esc(str(account_id).strip())
+    http_status, response_text = _http_request(
+        "GET", "company_accounts", f"get/{safe_id}", "")
+    if http_status == 404:
+        return None
+    if http_status >= 400:
+        raise RuntimeError(
+            f"company_accounts/get HTTP {http_status}: {response_text[:200]}")
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(
+            f"company_accounts/get wFirma status={code}: {desc}")
+    try:
+        root = ET.fromstring(response_text)
+        node = root.find(".//company_account")
+        iban_raw = _find_text(node, "iban") if node is not None else ""
+        return iban_raw.strip() or None
+    except Exception:
+        return None
+
+
 def fetch_invoice_pdf(invoice_id: str) -> bytes:
     """Fetch the PDF bytes for a wFirma invoice / proforma.
 

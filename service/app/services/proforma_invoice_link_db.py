@@ -440,6 +440,10 @@ class ProformaDraft:
     fx_rate_source:  str             = "NBP"  # rate source label
     incoterm:        Optional[str]   = None   # per-shipment incoterm (DAP/FCA/…)
     insurance_eur:   Optional[float] = None   # declared shipment insurance EUR
+    # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
+    wfirma_issue_date:      Optional[str] = None   # from wFirma invoices/get
+    wfirma_payment_due:     Optional[str] = None   # paymentdate from wFirma
+    wfirma_payment_method:  Optional[str] = None   # payment_method from wFirma
 
 
 def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
@@ -496,6 +500,10 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         ("fx_rate_source", "TEXT NOT NULL DEFAULT 'NBP'"),
         ("incoterm",       "TEXT"),
         ("insurance_eur",  "REAL"),
+        # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
+        ("wfirma_issue_date",     "TEXT"),
+        ("wfirma_payment_due",    "TEXT"),
+        ("wfirma_payment_method", "TEXT"),
     )
     for _col, _ddl in _ADDITIVE_DRAFT_COLUMNS:
         try:
@@ -682,6 +690,10 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         fx_rate_source             = (_opt("fx_rate_source") or "NBP"),
         incoterm                   = _opt("incoterm"),
         insurance_eur              = _opt("insurance_eur"),
+        # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
+        wfirma_issue_date          = _opt("wfirma_issue_date"),
+        wfirma_payment_due         = _opt("wfirma_payment_due"),
+        wfirma_payment_method      = _opt("wfirma_payment_method"),
     )
 
 
@@ -949,6 +961,47 @@ def mark_draft_issued(db_path: Path, batch_id: str, client_name: str,
         conn.commit()
         if cur.rowcount == 0:
             raise KeyError(f"no draft for ({batch_id!r}, {client_name!r})")
+
+
+def write_postposting_enrichment(
+    db_path: Path,
+    draft_id: int,
+    *,
+    wfirma_issue_date:     Optional[str],
+    wfirma_payment_due:    Optional[str],
+    wfirma_payment_method: Optional[str],
+) -> None:
+    """Phase 3 — store wFirma post-posting enrichment fields on a draft.
+
+    Called best-effort after a successful wFirma post so that
+    issue_date / payment_due / payment_method are available for
+    renderer display without a second live call.
+
+    Only the three enrichment columns are touched; all other fields
+    (including the snapshot-frozen commercial fields) are left intact.
+    Raises KeyError when no draft with the given id exists.
+    Raises ValueError when draft_id is invalid.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise ValueError(f"draft_id must be a positive int, got {draft_id!r}")
+    with sqlite3.connect(str(db_path)) as conn:
+        _ensure_drafts_table(conn)
+        cur = conn.execute(
+            "UPDATE proforma_drafts "
+            "SET wfirma_issue_date=?, wfirma_payment_due=?, "
+            "    wfirma_payment_method=?, updated_at=? "
+            "WHERE id=?",
+            (
+                wfirma_issue_date,
+                wfirma_payment_due,
+                wfirma_payment_method,
+                _now_utc_iso(),
+                draft_id,
+            ),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise KeyError(f"no draft with id={draft_id}")
 
 
 # ── Phase 2 — local editable Proforma Draft auto-create + read helpers ─────

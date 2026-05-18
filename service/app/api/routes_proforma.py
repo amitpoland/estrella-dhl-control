@@ -1106,6 +1106,26 @@ def proforma_create(
     )
     final = pildb.get_draft(_proforma_db_path(), batch_id, cn)
 
+    # ── 6a. Phase 3 — best-effort post-posting enrichment ─────────────────
+    # Fetch issue_date / payment_due / payment_method from wFirma and store
+    # on the draft. Best-effort: never fails the main flow.
+    _wfirma_id_for_enrich = (result.wfirma_invoice_id or "").strip()
+    if _wfirma_id_for_enrich and final:
+        try:
+            _enrich = wfirma_client.fetch_proforma_enrichment(
+                _wfirma_id_for_enrich)
+            pildb.write_postposting_enrichment(
+                _proforma_db_path(),
+                final.id,
+                wfirma_issue_date     = _enrich.get("issue_date") or None,
+                wfirma_payment_due    = _enrich.get("payment_due") or None,
+                wfirma_payment_method = _enrich.get("payment_method") or None,
+            )
+            final = pildb.get_draft(_proforma_db_path(), batch_id, cn)
+        except Exception as _enrich_exc:
+            log.warning("[%s] post-posting enrichment skipped: %s",
+                        batch_id, _enrich_exc)
+
     # Append-only audit hardening: persist Proforma id under
     # audit.proforma_issued[] and emit a timeline event so audit.json
     # alone reflects the issued state. Best-effort.
@@ -3142,6 +3162,25 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
             "</div>"
         )
 
+    # ── Phase 3 — wFirma post-posting enrichment display ──────────────────────
+    _wfirma_dates_html = ""
+    _issue_date   = getattr(d, "wfirma_issue_date", None)
+    _payment_due  = getattr(d, "wfirma_payment_due", None)
+    _pay_method   = getattr(d, "wfirma_payment_method", None)
+    if any((_issue_date, _payment_due, _pay_method)):
+        _rows = []
+        if _issue_date:
+            _rows.append(f"<dt>Issue date:</dt><dd>{_safe(_issue_date)}</dd>")
+        if _payment_due:
+            _rows.append(f"<dt>Payment due:</dt><dd>{_safe(_payment_due)}</dd>")
+        if _pay_method:
+            _rows.append(f"<dt>Payment method:</dt><dd>{_safe(_pay_method)}</dd>")
+        _wfirma_dates_html = (
+            "<dl class='terms' style='margin-top:6px;'>"
+            + "".join(_rows)
+            + "</dl>"
+        )
+
     # ── Incoterm + insurance section ───────────────────────────────────────────
     _incoterm_val  = _safe(d.incoterm) if d.incoterm else "—"
     try:
@@ -3207,6 +3246,7 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
   </div>
   <h1>Proforma DRAFT — {_safe(d.client_name)}</h1>
   {_doc_number_html}
+  {_wfirma_dates_html}
   <div class="meta">
     Draft #{d.id} · v{d.draft_version} ·
     state <span class="pill">{_safe(d.draft_state)}</span> ·
