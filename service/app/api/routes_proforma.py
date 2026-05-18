@@ -2735,27 +2735,51 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
     # immediately sees the canonical bilingual block without having
     # to click Enrich.  Manual overrides (non-blank values already in
     # editable_lines_json) are preserved untouched.
+    # PR-202: extend enrichment with a product_master fallback for
+    # item_type ONLY (name_pl has no canonical source in product_master).
+    # Operator-supplied values are still NEVER overwritten — the
+    # `if not (ln.get(key) or "").strip()` guard applies to both the
+    # product_descriptions read and the product_master fallback.
+    pm_index: Dict[str, Dict[str, Any]] = {}
+    try:
+        from ..services import reservation_db as _rdb
+        rdb_path = settings.storage_root / "reservation_queue.db"
+        if rdb_path.exists():
+            for pm in (_rdb.list_product_masters(rdb_path) or []):
+                code = str(pm.get("product_code") or "").strip()
+                if code and code not in pm_index:
+                    pm_index[code] = pm
+    except Exception as exc:
+        log.warning("draft %s product_master fallback unavailable "
+                    "(non-fatal): %s", draft_id, exc)
     try:
         for ln in (full.get("editable_lines") or []):
             pc = str(ln.get("product_code") or "").strip()
             if not pc:
                 continue
-            row = ddb.get_product_description(pc)
-            if not row:
-                continue
+            row = ddb.get_product_description(pc) or {}
+            if row:
+                if not (ln.get("item_type") or "").strip():
+                    v = (row.get("item_type") or "").strip()
+                    if v:
+                        ln["item_type"] = v
+                if not (ln.get("name_pl") or "").strip():
+                    v = (row.get("name_pl") or "").strip()
+                    if v:
+                        ln["name_pl"] = v
+                if not (ln.get("description_bilingual") or "").strip():
+                    v = ((row.get("description_bilingual") or "").strip()
+                         or (row.get("description_block") or "").strip())
+                    if v:
+                        ln["description_bilingual"] = v
+            # product_master fallback — item_type only.  Never aliases
+            # design_no as product_code; never invents product_code.
             if not (ln.get("item_type") or "").strip():
-                v = (row.get("item_type") or "").strip()
-                if v:
-                    ln["item_type"] = v
-            if not (ln.get("name_pl") or "").strip():
-                v = (row.get("name_pl") or "").strip()
-                if v:
-                    ln["name_pl"] = v
-            if not (ln.get("description_bilingual") or "").strip():
-                v = ((row.get("description_bilingual") or "").strip()
-                     or (row.get("description_block") or "").strip())
-                if v:
-                    ln["description_bilingual"] = v
+                pm = pm_index.get(pc)
+                if pm:
+                    v = (pm.get("item_type") or "").strip()
+                    if v:
+                        ln["item_type"] = v
     except Exception as exc:
         log.warning("draft %s read-time enrichment failed (non-fatal): %s",
                     draft_id, exc)

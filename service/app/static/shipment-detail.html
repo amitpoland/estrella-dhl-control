@@ -5408,6 +5408,15 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {/* PR-202: Proforma draft editor is a Sales-flow surface.
+                  This primary mount lives in the Sales tab; the existing
+                  PZ/Accounting mount is preserved for backwards
+                  compatibility but the Sales tab is the canonical
+                  operator entry point. */}
+              <div data-testid="sales-tab-proforma-draft-panel">
+                <ProformaDraftPanel batchId={batchId} onToast={onToast} />
+              </div>
+
               {/* Phase 2: Readiness banner */}
               <ReadinessBanner
                 data-testid="readiness-banner-sales"
@@ -11224,7 +11233,11 @@ function ProformaDraftPanel({ batchId, onToast }) {
         if (!cancelled) setProductOptions([]);
       }
       try {
-        const r = await apiFetch('/api/v1/wfirma/customers');
+        // PR-202: source rich master data (bill_to_*, ship_to_*,
+        // payment_terms_days, freight/insurance ids) from customer_master.
+        // The legacy /api/v1/wfirma/customers mapping table only carries
+        // client_name/vat_id/country and is unfit for editor pre-fill.
+        const r = await apiFetch('/api/v1/customer-master/');
         if (!cancelled) setCustomerOptions((r && r.customers) || []);
       } catch (_) {
         if (!cancelled) setCustomerOptions([]);
@@ -12371,6 +12384,10 @@ function ProformaDraftPanel({ batchId, onToast }) {
                     </div>
                     <ProformaDraftAddChargeForm onAdd={onAddCharge}
                                                draftCurrency={openDraft.currency}
+                                               lineCurrencies={Array.from(new Set(
+                                                 ((openDraft.editable_lines || [])
+                                                   .map(l => (l.currency || '').toUpperCase())
+                                                   .filter(c => c))))}
                                                prefill={chargePrefill} />
                   </div>
                 )}
@@ -12390,6 +12407,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   <ProformaJsonObjectEditor
                       label="Buyer override"
                       testidPrefix="draft-buyer"
+                      pickerMode="buyer"
                       fields={[
                         { key: 'type',    label: 'Type',     placeholder: 'company / individual' },
                         { key: 'name',    label: 'Name',     placeholder: 'Company or individual name' },
@@ -12413,6 +12431,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   <ProformaJsonObjectEditor
                       label="Ship-to override"
                       testidPrefix="draft-ship-to"
+                      pickerMode="ship_to"
                       fields={[
                         { key: 'type',    label: 'Type',     placeholder: 'company / individual' },
                         { key: 'name',    label: 'Name',     placeholder: 'Recipient name' },
@@ -12435,6 +12454,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   <ProformaJsonObjectEditor
                       label="Payment terms"
                       testidPrefix="draft-payment-terms"
+                      pickerMode="payment_terms"
                       fields={[
                         { key: 'days',   label: 'Days',     placeholder: 'e.g. 30' },
                         { key: 'method', label: 'Method',   placeholder: 'transfer / cash / …' },
@@ -12442,7 +12462,13 @@ function ProformaDraftPanel({ batchId, onToast }) {
                       ]}
                       value={openDraft.payment_terms}
                       editable={isEditable}
-                      onSave={(v) => onPatchField('payment_terms', v)} />
+                      onSave={(v) => onPatchField('payment_terms', v)}
+                      extras={({ pickFromCustomer }) => (
+                        <ProformaCustomerPicker
+                            customers={customerOptions}
+                            onPick={pickFromCustomer}
+                            testid="draft-payment-terms-customer-picker" />
+                      )} />
                 </div>
               </div>
 
@@ -12976,29 +13002,43 @@ function ProformaCustomerCard({ resolution, clientName, onRemapOpen }) {
 }
 
 
-// ── Customer picker — populates buyer/ship-to fields from wfirma_customers
+// ── Customer picker — populates buyer/ship-to/payment fields from
+// customer_master (NOT the legacy wfirma_customers mapping table).
+// Rows carry bill_to_*, ship_to_*, freight_*, insurance_* and
+// payment_terms_days.  The picker shows a `bill_to_name · country · nip`
+// summary in the dropdown and emits the full row to `onPick`.
 function ProformaCustomerPicker({ customers, onPick, testid }) {
   if (!customers || !customers.length) return null;
+  // bill_to_contractor_id is the customer_master PK we can key by; fall
+  // back to bill_to_name when present for backwards compatibility.
+  const _id = (c) => String(c.bill_to_contractor_id || c.bill_to_name
+                              || c.client_name || '');
+  const _label = (c) => {
+    const name = c.bill_to_name || c.client_name || '?';
+    const country = c.country || '';
+    const nip = c.nip || c.vat_eu_number || c.vat_id || '';
+    return name
+         + (country ? ' · ' + country : '')
+         + (nip     ? ' · VAT ' + nip : '');
+  };
   return (
     <div style={{ marginBottom: 6, fontSize: 11 }}>
       <label style={{ color: 'var(--text-3)', marginRight: 6 }}>
         Pick from master:
       </label>
       <select onChange={(e) => {
-                const cn = e.target.value;
-                const c = customers.find(x => (x.client_name || '') === cn);
+                const id = e.target.value;
+                const c = customers.find(x => _id(x) === id);
                 if (c) onPick(c);
                 e.target.value = '';
               }}
               data-testid={testid}
               style={{ fontSize: 12, padding: '4px 6px',
-                         minWidth: 220 }}>
+                         minWidth: 240 }}>
         <option value="">— select customer —</option>
         {customers.map(c => (
-          <option key={c.client_name} value={c.client_name || ''}>
-            {(c.client_name || '?')}
-            {c.country ? ` · ${c.country}` : ''}
-            {c.vat_id ? ` · VAT ${c.vat_id}` : ''}
+          <option key={_id(c)} value={_id(c)}>
+            {_label(c)}
           </option>
         ))}
       </select>
@@ -13013,7 +13053,8 @@ function ProformaCustomerPicker({ customers, onPick, testid }) {
 // `seedFrom` (optional): callback receiving an object whose keys we copy
 //                         into the local draft when the picker fires.
 function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
-                                     testidPrefix, extras, onTypeChange }) {
+                                     testidPrefix, extras, onTypeChange,
+                                     pickerMode }) {
   // value: dict {key: str} from the draft's *_override or payment_terms.
   // fields: ordered list of {key, label, placeholder, type?}
   const [draft, setDraft] = React.useState({ ...(value || {}) });
@@ -13035,21 +13076,44 @@ function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
   }, [stripped, value]);
   const isEmpty = Object.keys(value || {}).length === 0;
   // Picker drop-in: extras may include a customer picker that fires
-  // pickFromCustomer(customer-row) — we copy normalised fields into
-  // the local draft so the operator can review/edit before saving.
+  // pickFromCustomer(customer_master-row).  Fields are sourced from
+  // customer_master (bill_to_*, ship_to_*, payment_terms_days).
+  // Behaviour is gated by `pickerMode` ('buyer' default, 'ship_to',
+  // 'payment_terms').  Operator-supplied values are NEVER overwritten —
+  // we fill only blank keys.
   const pickFromCustomer = (c) => {
     const next = { ...draft };
-    if (c.client_name && !next.name) next.name = c.client_name;
-    if (c.vat_id      && !next.vat_id)  next.vat_id  = c.vat_id;
-    if (c.country     && !next.country) next.country = c.country;
-    if (c.city        && !next.city)    next.city    = c.city;
-    if (c.zip         && !next.zip)     next.zip     = c.zip;
-    if (c.street      && !next.street)  next.street  = c.street;
-    if (c.email       && !next.email)   next.email   = c.email;
-    if (c.phone       && !next.phone)   next.phone   = c.phone;
-    // Default type to 'company' on customer-master picks; operator may
-    // toggle below.
-    if (!next.type) next.type = 'company';
+    const set_if_blank = (k, v) => {
+      const cur = (next[k] == null ? '' : String(next[k])).trim();
+      const inc = (v == null ? '' : String(v)).trim();
+      if (!cur && inc) next[k] = inc;
+    };
+    const mode = pickerMode || 'buyer';
+    if (mode === 'payment_terms') {
+      set_if_blank('days', c.payment_terms_days);
+    } else if (mode === 'ship_to') {
+      // Ship-to: prefer ship_to_* fields, fall back to bill_to_*.
+      set_if_blank('name',    c.ship_to_name    || c.bill_to_name || c.client_name);
+      set_if_blank('street',  c.ship_to_street  || c.bill_to_street);
+      set_if_blank('city',    c.ship_to_city    || c.bill_to_city);
+      set_if_blank('zip',     c.ship_to_zip     || c.bill_to_postal_code);
+      set_if_blank('country', c.ship_to_country || c.country);
+      set_if_blank('email',   c.ship_to_email   || c.bill_to_email);
+      set_if_blank('phone',   c.ship_to_phone   || c.bill_to_phone || c.bill_to_mobile);
+      // VAT id is bill-to only by definition; do not auto-copy.
+      if (!next.type) next.type = 'company';
+    } else {
+      // Buyer
+      set_if_blank('name',    c.bill_to_name || c.client_name);
+      set_if_blank('vat_id',  c.nip || c.vat_eu_number || c.vat_id);
+      set_if_blank('country', c.country);
+      set_if_blank('street',  c.bill_to_street);
+      set_if_blank('city',    c.bill_to_city);
+      set_if_blank('zip',     c.bill_to_postal_code);
+      set_if_blank('email',   c.bill_to_email);
+      set_if_blank('phone',   c.bill_to_phone || c.bill_to_mobile);
+      if (!next.type) next.type = 'company';
+    }
     setDraft(next);
   };
 
@@ -13145,14 +13209,28 @@ function ProformaAddLineForm({ draftCurrency, onAdd, productOptions }) {
     if (opt && !design.trim() && opt.design_no) setDes(opt.design_no);
   };
   const submit = () => {
-    onAdd({
+    // PR-202: reset the form ONLY on a successful POST.  The previous
+    // implementation reset unconditionally, so a failed add looked
+    // identical to a successful one to the operator (form blank, no
+    // line added — error visible only via the toast).
+    const payload = {
       product_code: pc.trim(),
       design_no:    design.trim(),
       qty:          parseFloat(qty),
       unit_price:   parseFloat(price),
       currency:     (ccy || draftCurrency || 'USD').toUpperCase(),
-    });
-    setPc(''); setDes(''); setQty('1'); setPrice('0');
+    };
+    const p = onAdd(payload);
+    if (p && typeof p.then === 'function') {
+      p.then(() => {
+        setPc(''); setDes(''); setQty('1'); setPrice('0');
+      }).catch(() => {
+        // Keep the operator's input so they can correct and re-submit.
+      });
+    } else {
+      // Synchronous onAdd (defensive) — assume success.
+      setPc(''); setDes(''); setQty('1'); setPrice('0');
+    }
   };
   return (
     <div data-testid="draft-add-line-form"
@@ -13226,11 +13304,32 @@ function ProformaDraftRemarksEditor({ value, editable, onSave }) {
   );
 }
 
-function ProformaDraftAddChargeForm({ onAdd, draftCurrency, prefill }) {
+function ProformaDraftAddChargeForm({ onAdd, draftCurrency, lineCurrencies,
+                                       prefill }) {
+  // PR-202: default currency comes from the first line of the draft when
+  // present; falls back to the draft-level currency, then USD.  This
+  // matches the backend's currency-match guard (add_draft_service_charge
+  // rejects when the charge currency is not one of the line currencies).
+  const _firstLineCcy = Array.isArray(lineCurrencies) && lineCurrencies.length
+                         ? String(lineCurrencies[0] || '').toUpperCase()
+                         : '';
+  const _defaultCcy = (_firstLineCcy
+                       || String(draftCurrency || '').toUpperCase()
+                       || 'USD');
   const [type,   setType]   = React.useState('freight');
   const [amount, setAmount] = React.useState('');
-  const [ccy,    setCcy]    = React.useState(draftCurrency || 'EUR');
+  const [ccy,    setCcy]    = React.useState(_defaultCcy);
   const [label,  setLabel]  = React.useState('');
+
+  // Keep ccy in sync if the draft's first-line currency changes (e.g.
+  // operator edits the line currency).  Only updates while ccy still
+  // matches a previous default — never overwrites a value the operator
+  // typed manually.
+  React.useEffect(() => {
+    if (!_firstLineCcy) return;
+    setCcy((cur) => (!cur || cur === _defaultCcy) ? _firstLineCcy : cur);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [_firstLineCcy]);
 
   // When a suggestion arrives via `prefill`, populate the form fields.
   React.useEffect(() => {
@@ -13241,20 +13340,32 @@ function ProformaDraftAddChargeForm({ onAdd, draftCurrency, prefill }) {
     if (prefill.label != null) setLabel(prefill.label);
   }, [prefill]);
 
+  // Currency-mismatch detection.  If any draft line carries a currency
+  // and the operator's input does not match, block submit client-side
+  // and surface a visible hint — saves a 400 round-trip and explains the
+  // reason directly under the form.
+  const ccyMismatch = (() => {
+    if (!Array.isArray(lineCurrencies) || !lineCurrencies.length) return false;
+    return !lineCurrencies.includes(String(ccy || '').toUpperCase());
+  })();
+
   const submit = () => {
     const a = parseFloat(amount);
     if (!isFinite(a) || a < 0) return;
-    onAdd({ charge_type: type, amount: a, currency: ccy, label });
+    if (ccyMismatch) return;
+    onAdd({ charge_type: type, amount: a,
+            currency: String(ccy || '').toUpperCase(),
+            label });
     setAmount(''); setLabel('');
   };
   return (
     <div data-testid="draft-add-charge-form"
-         style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+         style={{ display: 'flex', gap: 6, marginTop: 6,
+                    flexWrap: 'wrap', alignItems: 'baseline' }}>
       <Sel value={type} onChange={(e) => setType(e.target.value)}
            data-testid="add-charge-type">
         <option value="freight">freight</option>
         <option value="insurance">insurance</option>
-        <option value="shipping">shipping</option>
       </Sel>
       <Inp value={amount} onChange={(e) => setAmount(e.target.value)}
            placeholder="amount" data-testid="add-charge-amount" />
@@ -13263,8 +13374,16 @@ function ProformaDraftAddChargeForm({ onAdd, draftCurrency, prefill }) {
            placeholder="ccy" data-testid="add-charge-ccy" />
       <Inp value={label} onChange={(e) => setLabel(e.target.value)}
            placeholder="label (optional)" data-testid="add-charge-label" />
-      <Btn small variant="primary" onClick={submit}
+      <Btn small variant="primary" onClick={submit} disabled={ccyMismatch}
            data-testid="btn-add-charge">Add</Btn>
+      {ccyMismatch && (
+        <div data-testid="add-charge-ccy-mismatch"
+             style={{ flexBasis: '100%', fontSize: 11, color: '#b45309' }}>
+          Currency {String(ccy || '').toUpperCase() || '—'} does not match
+          this draft's line currencies ({lineCurrencies.join(', ')}). Update
+          the charge currency to match before adding.
+        </div>
+      )}
     </div>
   );
 }

@@ -184,3 +184,61 @@ def test_draft_get_customer_resolution_no_external_calls():
         assert forbidden not in body, (
             f"get_proforma_draft must not reference {forbidden!r}"
         )
+
+
+# ── 6. PR-202: customer_master endpoint returns address + contact fields
+
+def test_customer_master_endpoint_returns_rich_address_fields(
+        client, monkeypatch):
+    """The UI now sources picker rows from /api/v1/customer-master/.
+    Verify the endpoint actually returns the keys the picker needs
+    (bill_to_street, bill_to_city, bill_to_postal_code, bill_to_email,
+    bill_to_phone, country, nip / vat_eu_number, ship_to_*)."""
+    cli, tmp = client
+    # routes_customer_master binds _DB_PATH at import — re-point it at
+    # the per-test tmp path so the seed below is visible to the route.
+    from app.api import routes_customer_master as rcm
+    db = tmp / "customer_master.sqlite"
+    monkeypatch.setattr(rcm, "_DB_PATH", db, raising=False)
+    from app.services import customer_master_db as cmdb
+    cmdb.init_db(db)
+    import sqlite3 as _s3
+    with _s3.connect(str(db)) as con:
+        con.execute(
+            "INSERT INTO customer_master "
+            "(bill_to_contractor_id, bill_to_name, country, nip, "
+            " bill_to_street, bill_to_city, bill_to_postal_code, "
+            " bill_to_email, bill_to_phone, ship_to_name, ship_to_street, "
+            " ship_to_city, ship_to_zip, ship_to_country, "
+            " payment_terms_days, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("CM-202-1", "ACME Test", "PL", "PL1234567890",
+             "ul. Próbna 1", "Warszawa", "00-001",
+             "ops@acme.test", "+48 600 000 000",
+             "ACME Receiver", "ul. Odbiorcza 5",
+             "Kraków", "30-001", "PL",
+             14, "2026-05-18T00:00:00+00:00", "2026-05-18T00:00:00+00:00"),
+        )
+        con.commit()
+
+    # The endpoint reads from settings.storage_root / customer_master.sqlite.
+    r = cli.get("/api/v1/customer-master/")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    rows = body.get("customers") or []
+    assert any((c.get("bill_to_name") or "") == "ACME Test"
+               for c in rows), \
+        f"seeded customer missing from response: {rows!r}"
+    row = next(c for c in rows if c.get("bill_to_name") == "ACME Test")
+    for key in ("bill_to_street", "bill_to_city", "bill_to_postal_code",
+                "bill_to_email", "bill_to_phone", "country", "nip",
+                "ship_to_name", "ship_to_street", "ship_to_city",
+                "ship_to_zip", "ship_to_country",
+                "payment_terms_days"):
+        assert key in row, (
+            f"customer_master response missing key {key!r} — picker "
+            f"cannot pre-fill: {row!r}"
+        )
+    assert row["bill_to_street"] == "ul. Próbna 1"
+    assert row["bill_to_postal_code"] == "00-001"
+    assert int(row["payment_terms_days"]) == 14
