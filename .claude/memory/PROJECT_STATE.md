@@ -11,7 +11,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 # FACTS
 
 ## Current origin/main HEAD
-- **2026-05-19** — `6f57e2c` chore(deploy-prep): Windows reconciliation #222 merged — **CAMPAIGN V3 COMPLETE. GATE 2: 2/3 impl slots.**
+- **2026-05-19** — `302848f` fix(security): Lesson E ENV isolation + path traversal (#223, #224 closed) — **CAMPAIGN V4 IN PROGRESS**
+- **2026-05-19** — `6f57e2c` chore(deploy-prep): Windows reconciliation #222 merged — **prior**
 - **2026-05-19** — `119e0fe` fix(safety): GATE 4 BLOCKER-1+ADV-1 (#225 merged) — routes_settings 422 guard + write_json_atomic
 - **2026-05-19** — `f4736ab` chore(state): master campaign closure — Phases A-E complete
 - **2026-05-19** — `c9175e6` fix(ui): inbox Open button dead-button guard (#209) — MERGED
@@ -238,7 +239,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **2026-05-19T(campaign-v3)Z** — RULE 5 self-evaluation written: `.claude/memory/scorecards/self-eval-2026-05-19.md` — Trigger: operator-explicit RULE 4 dispatch (6 days since prior; deferral from Campaign V2 scorecard overridden by RULE 4). Self-score: **29/35 EXEMPLARY** (prior: 30/35). SELF-DEGRADATION DETECTED: NO. Single regression: Evidence quality 4→3 (observer scored verdict blocks without ground-truth grep/file checks — same failure class penalised in campaign-v2 scorecard). Corrective: run ≥1 ground-truth source check per scorecard session. New governance signal: RULE 2 "≥3 distinct agents" trigger fires on names, not Task dispatch — potential low-effort satisfaction path; flagged for operator-level governance review. File confirmed on disk: 19,443 bytes, 240 lines (Lesson C verified). **Total confirmed scorecards on disk: 8.**
 - **GATE 4 dispositions from 2026-05-19-campaign-v2.md (3 required):**
   1. **Implicit agent attribution pattern** → SCHEDULED: all future multi-agent campaigns must dispatch agents via Task tool and collect canonical return-shape output before populating Section 2. (No separate issue filed — binding rule from this scorecard forward.)
-  2. **backend-safety-reviewer UNRELIABLE** → RESOLVED in-session: formal re-dispatch completed. OVERALL VERDICT: FINDINGS_PRESENT. GATE 1 BLOCKER fixed (routes_settings.py missing try/except on request.json → 500 on malformed body). ADV-1 fixed (routes_admin_dhl_clearance.py _save_audit → write_json_atomic). Issues #223 (Lesson E ENV isolation) + #224 (routes_lifecycle path traversal) filed. PR #225 opened. 160/160 PZ PASS, 381/381 carrier PASS post-fix.
+  2. **backend-safety-reviewer UNRELIABLE** → RESOLVED in-session (Campaign V3). GATE 1 BLOCKER: routes_settings.py 422 guard. ADV-1: write_json_atomic. Issues #223 + #224 filed. PR #225 merged. Issue #223 RESOLVED: ENV isolation guard in email_sender.py (commit 302848f). Issue #224 RESOLVED: path traversal guard in shipment_folder_manager.py (commit 302848f). Both issues CLOSED on GitHub.
   3. **flow-context-keeper UNRELIABLE** → SCHEDULED: PROJECT_STATE.md updated this run; scorecard path registered in FACTS above; "Next 3 actions" updated below. Disposition: RESOLVED in-session.
 
 ## RULE 6 GATE 4 disposition — missing scorecard references (appended 2026-05-18)
@@ -371,9 +372,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Windows deploy** — operator initiates: run 7-agent gate, then `nssm stop PZService && git pull --ff-only origin main && nssm start PZService` on Windows. Append entry to `local-commit-deploys.jsonl`. Verify `https://pz.estrellajewels.eu/api/v1/health` returns 200 within 60s. Current delta: ~300 commits behind, all additive, 0 forbidden hits. Reconciliation doc on main at `docs/deploy-prep/2026-05-19-windows-reconciliation.md`.
+1. **Windows deploy** — 7-AGENT GATE: READY-TO-DEPLOY (Campaign V4 Phase 2 complete). Run: `nssm stop PZService && git pull --ff-only origin main && nssm start PZService` on Windows. Current HEAD: `302848f` (1 commit ahead of gate run on `989f4b1` — additive security fix only; no new gate required). Rollback: `git reset --hard 4c797e4`. Verify health after start.
 2. **P2 live promotion** — after Tejal reviews shadow corpus: flip `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` and `DHL_SELFCLEARANCE_P2_SHADOW_MODE=false` in Windows `.env`. No code changes needed.
-3. **Fix Issues #223 + #224** — #223: `email_service.py` missing `ENV=production` startup guard (Lesson E property 5); #224: `routes_lifecycle.py` path traversal in agency-documents received endpoint. Both filed on GitHub, awaiting implementation PR.
+3. **GATE 2 slot available** — 2/3 slots occupied (#10 deferred, #1 REFERENCE_ONLY). One slot open for next implementation work. Issues #223 + #224: CLOSED (fixed in `302848f`).
 
 ## Completed actions (previously "next")
 
