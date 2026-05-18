@@ -48,6 +48,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
+from ..utils.io import write_json_atomic
 
 from ..core.config import settings
 from ..core.security import require_api_key
@@ -185,11 +186,9 @@ def _load_audit(batch_id: str) -> Dict[str, Any]:
 
 
 def _save_audit(batch_id: str, audit: Dict[str, Any]) -> None:
-    """Write audit.json back atomically (tmp + replace)."""
+    """Write audit.json back via project-canonical write_json_atomic."""
     audit_path = settings.storage_root / "outputs" / batch_id / "audit.json"
-    tmp = audit_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(audit, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(audit_path)
+    write_json_atomic(audit_path, audit)
 
 
 # ── Request shape ────────────────────────────────────────────────────────────
