@@ -426,6 +426,17 @@ def regenerate_descriptions_for_invoice_lines(
           "dry_run":             bool,
           "filter":              {"batch_id": str|None,
                                    "product_code": str|None},
+          # ── PR-207 fallback-visibility metadata ────────────────────
+          "engine_import_ok":       bool,  # customs_description_engine reachable
+          "translations_import_ok": bool,  # polish_description_generator
+                                            # ITEM_TRANSLATIONS reachable
+          "fallback_used":          bool,  # True when EITHER import failed
+                                            # — generated rows will use the
+                                            # in-module DEFAULT_TRANSLATION
+                                            # ("Biżuteria"); operator-visible
+                                            # signal that a REPL run is in
+                                            # the wrong runtime context.
+          "fallback_reason":        list[str],
         }
 
     No wFirma / PZ / DHL / proforma post path is touched.  Pure local-DB
@@ -442,7 +453,64 @@ def regenerate_descriptions_for_invoice_lines(
         "dry_run":           bool(dry_run),
         "filter":            {"batch_id":     batch_id,
                               "product_code": product_code},
+        # PR-207: engine fallback visibility — see docstring above.
+        "engine_import_ok":       False,
+        "translations_import_ok": False,
+        "fallback_used":          False,
+        "fallback_reason":        [],
     }
+
+    # ── PR-207: probe engine + translations reachability once ────────────
+    # We call the loaders so any cached "False" sentinel left from a prior
+    # failed attempt is honoured, and so a healthy call refreshes the cache
+    # state for downstream get_description_block consumers.  Errors here
+    # are NEVER fatal — the function still runs, but produces minimal
+    # DEFAULT_TRANSLATION text and reports `fallback_used=True` so callers
+    # can flag the run as low quality and / or re-execute from a context
+    # where settings.engine_dir is on sys.path.
+    fallback_reasons: List[str] = []
+    try:
+        _cde = _load_customs_engine()
+        out["engine_import_ok"] = _cde is not None
+    except Exception as _exc:
+        out["engine_import_ok"] = False
+        fallback_reasons.append(
+            f"customs_description_engine probe raised "
+            f"{type(_exc).__name__}: {_exc}"
+        )
+    try:
+        _trans, _default = _load_translations()
+        out["translations_import_ok"] = bool(_trans)
+    except Exception as _exc:
+        out["translations_import_ok"] = False
+        fallback_reasons.append(
+            f"polish_description_generator probe raised "
+            f"{type(_exc).__name__}: {_exc}"
+        )
+    if not out["engine_import_ok"]:
+        fallback_reasons.append(
+            "customs_description_engine not importable from "
+            "settings.engine_dir — descriptions will lack rich "
+            "customs phrasing"
+        )
+    if not out["translations_import_ok"]:
+        fallback_reasons.append(
+            "polish_description_generator.ITEM_TRANSLATIONS not "
+            "importable — using minimal in-module DEFAULT_TRANSLATION "
+            "('Biżuteria' / 'Wyrób jubilerski')"
+        )
+    if fallback_reasons:
+        out["fallback_used"]   = True
+        out["fallback_reason"] = fallback_reasons
+        log.error(
+            "regenerate_descriptions_for_invoice_lines: ENGINE FALLBACK "
+            "ACTIVE — generated rows will use the minimal "
+            "DEFAULT_TRANSLATION ('Biżuteria').  Re-run from a context "
+            "where settings.engine_dir (currently %r) is on sys.path "
+            "before invoking with dry_run=False.  Reasons: %s",
+            str(getattr(settings, "engine_dir", "")),
+            "; ".join(fallback_reasons),
+        )
 
     if ddb._db_path is None:
         out["errors"].append({"stage": "init",

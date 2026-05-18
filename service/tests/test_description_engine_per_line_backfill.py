@@ -370,3 +370,143 @@ def test_function_source_never_aliases_design_no_as_product_code():
     # No assignment that uses design_no as product_code.
     assert "design_no" not in body or "product_code = design_no" not in body
     assert "product_code=design_no" not in body
+
+
+# ── PR-207: engine fallback visibility ─────────────────────────────────
+
+def test_return_dict_carries_fallback_visibility_keys(fresh):
+    """New keys must always be present in the return shape, regardless
+    of whether the function actually scans anything."""
+    from app.services import description_engine as de
+    res = de.regenerate_descriptions_for_invoice_lines(
+        batch_id="NO-SUCH-BATCH-FOR-PR207", dry_run=True,
+    )
+    for key in ("engine_import_ok", "translations_import_ok",
+                "fallback_used", "fallback_reason"):
+        assert key in res, f"return dict missing PR-207 key: {key!r}"
+    assert isinstance(res["engine_import_ok"], bool)
+    assert isinstance(res["translations_import_ok"], bool)
+    assert isinstance(res["fallback_used"], bool)
+    assert isinstance(res["fallback_reason"], list)
+
+
+def test_engine_import_missing_flips_fallback_used(fresh, monkeypatch):
+    """Simulate the REPL scenario where customs_description_engine
+    cannot be imported.  The function must NOT fail; it must set
+    engine_import_ok=False, fallback_used=True, and surface a reason."""
+    from app.services import description_engine as de
+    monkeypatch.setattr(de, "_load_customs_engine", lambda: None,
+                         raising=True)
+    res = de.regenerate_descriptions_for_invoice_lines(
+        batch_id="NO-SUCH-BATCH", dry_run=True,
+    )
+    assert res["engine_import_ok"] is False
+    assert res["fallback_used"] is True
+    assert any("customs_description_engine" in r
+               for r in res["fallback_reason"]), res["fallback_reason"]
+
+
+def test_translations_import_missing_flips_fallback_used(fresh,
+                                                          monkeypatch):
+    """Simulate polish_description_generator import failure: _load_translations
+    in that case returns an empty dict (per the existing loader
+    fallback at description_engine.py:165)."""
+    from app.services import description_engine as de
+    monkeypatch.setattr(de, "_load_translations", lambda: ({}, {}),
+                         raising=True)
+    res = de.regenerate_descriptions_for_invoice_lines(
+        batch_id="NO-SUCH-BATCH", dry_run=True,
+    )
+    assert res["translations_import_ok"] is False
+    assert res["fallback_used"] is True
+    assert any("polish_description_generator" in r
+               for r in res["fallback_reason"]), res["fallback_reason"]
+
+
+def test_both_imports_missing_logs_error_level(fresh, monkeypatch, caplog):
+    """When fallback_used flips True, the function must log at ERROR
+    level (not just WARNING) so REPL invocations surface the gap
+    immediately in operator-visible streams."""
+    import logging
+    from app.services import description_engine as de
+    monkeypatch.setattr(de, "_load_customs_engine", lambda: None,
+                         raising=True)
+    monkeypatch.setattr(de, "_load_translations", lambda: ({}, {}),
+                         raising=True)
+    with caplog.at_level(logging.ERROR, logger=de.log.name):
+        res = de.regenerate_descriptions_for_invoice_lines(
+            batch_id="NO-SUCH-BATCH", dry_run=True,
+        )
+    assert res["fallback_used"] is True
+    error_records = [r for r in caplog.records
+                     if r.levelno >= logging.ERROR
+                     and "ENGINE FALLBACK ACTIVE" in r.getMessage()]
+    assert error_records, (
+        f"expected ERROR-level fallback message; got: "
+        f"{[(r.levelname, r.getMessage()[:80]) for r in caplog.records]}"
+    )
+
+
+def test_normal_path_keeps_fallback_used_false(fresh, monkeypatch):
+    """When BOTH imports succeed, fallback_used must stay False."""
+    from app.services import description_engine as de
+    monkeypatch.setattr(de, "_load_customs_engine",
+                         lambda: object(), raising=True)
+    monkeypatch.setattr(de, "_load_translations",
+                         lambda: ({"RING": {"name_pl": "Pierścionek"}},
+                                  {"name_pl": "Biżuteria"}),
+                         raising=True)
+    res = de.regenerate_descriptions_for_invoice_lines(
+        batch_id="NO-SUCH-BATCH", dry_run=True,
+    )
+    assert res["engine_import_ok"]       is True
+    assert res["translations_import_ok"] is True
+    assert res["fallback_used"]          is False
+    assert res["fallback_reason"]        == []
+
+
+def test_fallback_does_not_halt_function(fresh, monkeypatch):
+    """fallback_used MUST NOT stop the scan; the function still returns
+    scan counts (would_write etc.) so callers can decide what to do."""
+    from app.services import description_engine as de
+    monkeypatch.setattr(de, "_load_customs_engine", lambda: None,
+                         raising=True)
+    _seed_invoice_line(fresh, batch_id="B-PR207",
+                       invoice_no="EJL/PR207", position=1,
+                       product_code="EJL/PR207-1",
+                       description="PCS, 14KT Gold, Plain Jewellery RING")
+    res = de.regenerate_descriptions_for_invoice_lines(
+        batch_id="B-PR207", dry_run=True,
+    )
+    assert res["fallback_used"] is True
+    assert res["scanned"]       == 1
+    assert res["would_write"]   == 1
+    assert res["written"]       == 0   # dry_run honoured
+
+
+def test_fallback_preserves_manual_rows(fresh, monkeypatch):
+    """Defence-in-depth: even in fallback mode, a pre-existing
+    source='manual' row must remain untouched."""
+    from app.services import description_engine as de
+    monkeypatch.setattr(de, "_load_customs_engine", lambda: None,
+                         raising=True)
+    _seed_invoice_line(fresh, batch_id="B-PR207M",
+                       invoice_no="EJL/PR207M", position=1,
+                       product_code="EJL/PR207M-1",
+                       description="PCS, 14KT Gold, Plain Jewellery RING")
+    de.set_manual_block(
+        product_code   = "EJL/PR207M-1",
+        item_type      = "RING",
+        name_pl        = "OPERATOR_MANUAL",
+        description_pl = "OPERATOR_MANUAL_DESC",
+        material_pl    = "m",
+        purpose_pl     = "p",
+    )
+    res = de.regenerate_descriptions_for_invoice_lines(
+        batch_id="B-PR207M", dry_run=False,
+    )
+    assert res["fallback_used"]      is True
+    assert res["skipped_manual"]     >= 1
+    r = _get_pd("EJL/PR207M-1")
+    assert r["source"]  == "manual"
+    assert r["name_pl"] == "OPERATOR_MANUAL"
