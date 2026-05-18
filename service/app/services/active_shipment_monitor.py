@@ -133,7 +133,25 @@ def _all_audit_paths() -> List[Path]:
 
 
 def _is_active(audit: Dict[str, Any]) -> bool:
-    """A shipment is active if it hasn't reached a terminal clearance + tracking state."""
+    """A shipment is active if it hasn't reached a terminal state.
+
+    Operator rule (hard, no exceptions): a shipment whose tracking
+    status is ``delivered`` is closed — regardless of clearance status.
+    The canonical check delegates to
+    :func:`shipment_delivered_guard.is_audit_delivered` so the scheduler
+    and the email-send guard agree on what "delivered" means.
+    """
+    # ── PR-209.5: hard-stop on delivered, independent of clearance ─────
+    try:
+        from .shipment_delivered_guard import is_audit_delivered as _is_delivered
+        if _is_delivered(audit):
+            return False
+    except Exception:
+        # Guard import failure must NOT silently keep delivered shipments
+        # active — but we also do not crash the scheduler.  Fall through
+        # to the legacy check which has its own delivered handling.
+        pass
+
     clearance = audit.get("clearance_status", "")
     if clearance in _TERMINAL_CLEARANCE_STATUSES:
         # Even if clearance is sent, tracking-not-delivered still counts as active for monitoring
