@@ -2728,10 +2728,130 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
             "resolved_wfirma_name":  "",
             "candidates":            [],
         }
+    # Read-time enrichment — when a line's item_type / name_pl /
+    # description_bilingual are blank/null, look them up from
+    # product_descriptions and surface on the GET response.  NEVER
+    # writes back; this is a pure projection so the operator UI
+    # immediately sees the canonical bilingual block without having
+    # to click Enrich.  Manual overrides (non-blank values already in
+    # editable_lines_json) are preserved untouched.
+    try:
+        for ln in (full.get("editable_lines") or []):
+            pc = str(ln.get("product_code") or "").strip()
+            if not pc:
+                continue
+            row = ddb.get_product_description(pc)
+            if not row:
+                continue
+            if not (ln.get("item_type") or "").strip():
+                v = (row.get("item_type") or "").strip()
+                if v:
+                    ln["item_type"] = v
+            if not (ln.get("name_pl") or "").strip():
+                v = (row.get("name_pl") or "").strip()
+                if v:
+                    ln["name_pl"] = v
+            if not (ln.get("description_bilingual") or "").strip():
+                v = ((row.get("description_bilingual") or "").strip()
+                     or (row.get("description_block") or "").strip())
+                if v:
+                    ln["description_bilingual"] = v
+    except Exception as exc:
+        log.warning("draft %s read-time enrichment failed (non-fatal): %s",
+                    draft_id, exc)
     return JSONResponse({
         "ok":    True,
         "draft": full,
     })
+
+
+@router.get("/product-options", dependencies=[_auth])
+def list_proforma_product_options() -> JSONResponse:
+    """Return the local product-master option list for the Add-line
+    selector in the proforma draft UI.
+
+    Read-only.  Reads ``product_descriptions`` (canonical bilingual
+    name/item_type per product_code) and joins with ``product_master``
+    (canonical identity registry) when present.  Never calls the
+    wFirma API; never writes any local row.
+
+    Response shape::
+
+        {
+          "ok":    true,
+          "count": int,
+          "options": [
+            {
+              "product_code": str,
+              "item_type":    str,    # may be ""
+              "name_pl":      str,    # may be ""
+              "design_no":    str,    # may be "" (from product_master)
+            },
+            ...
+          ]
+        }
+    """
+    options: List[Dict[str, Any]] = []
+    seen: set = set()
+    # Read product_descriptions directly — no helper in document_db today
+    # and adding one is out of scope for this PR.  Read-only SELECT.
+    try:
+        import sqlite3 as _sql
+        docs_path = settings.storage_root / "documents.db"
+        if docs_path.exists():
+            with _sql.connect(str(docs_path)) as con:
+                con.row_factory = _sql.Row
+                for r in con.execute(
+                    "SELECT product_code, item_type, name_pl "
+                    "FROM product_descriptions "
+                    "WHERE product_code<>'' "
+                    "ORDER BY product_code"
+                ).fetchall():
+                    pc = (r["product_code"] or "").strip()
+                    if not pc or pc in seen:
+                        continue
+                    seen.add(pc)
+                    options.append({
+                        "product_code": pc,
+                        "item_type":    (r["item_type"] or "").strip(),
+                        "name_pl":      (r["name_pl"] or "").strip(),
+                        "design_no":    "",
+                    })
+    except Exception as exc:
+        log.warning("product-options: product_descriptions read failed "
+                    "(non-fatal): %s", exc)
+    # Augment with design_no from product_master where available.
+    try:
+        from ..core.config import settings as _s
+        from ..services import reservation_db as _rdb
+        rdb_path = _s.storage_root / "reservation_queue.db"
+        if rdb_path.exists():
+            pm_rows = _rdb.list_product_masters(rdb_path) or []
+            pm_by_code = {(r.get("product_code") or "").strip(): r
+                          for r in pm_rows
+                          if (r.get("product_code") or "").strip()}
+            for opt in options:
+                pm = pm_by_code.get(opt["product_code"])
+                if pm:
+                    opt["design_no"] = (pm.get("design_no") or "").strip()
+            # Include any product_master codes missing from
+            # product_descriptions so the operator can still pick them.
+            for pc, pm in pm_by_code.items():
+                if pc in seen:
+                    continue
+                seen.add(pc)
+                options.append({
+                    "product_code": pc,
+                    "item_type":    "",
+                    "name_pl":      "",
+                    "design_no":    (pm.get("design_no") or "").strip(),
+                })
+    except Exception as exc:
+        log.warning("product-options: product_master read failed "
+                    "(non-fatal): %s", exc)
+    options.sort(key=lambda o: o["product_code"])
+    return JSONResponse({"ok": True, "count": len(options),
+                         "options": options})
 
 
 @router.get("/draft/{draft_id}/preview.html", dependencies=[_auth])
