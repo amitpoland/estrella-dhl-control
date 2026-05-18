@@ -30,6 +30,13 @@ CREATE TABLE IF NOT EXISTS carrier_shipments (
 );
 """
 
+# Phase 5 — additive columns.  Separate from _DDL so older DBs can be
+# migrated at init_db() time without recreating the table.
+_ADDITIVE_COLUMNS = [
+    ("service_product", "TEXT"),       # carrier service code (e.g. EXPRESS_WORLDWIDE)
+    ("dimensions_json", "TEXT"),       # JSON snapshot of ShipmentRequest.dimensions
+]
+
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
@@ -40,9 +47,21 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path) -> None:
-    """Create the carrier_shipments table if it does not exist."""
+    """Create the carrier_shipments table if it does not exist.
+
+    Idempotent: additive ALTER TABLE for Phase-5 columns so existing DBs
+    are migrated transparently.
+    """
     with _connect(db_path) as conn:
         conn.executescript(_DDL)
+        for col, ddl in _ADDITIVE_COLUMNS:
+            try:
+                conn.execute(
+                    f"ALTER TABLE carrier_shipments ADD COLUMN {col} {ddl}"
+                )
+            except sqlite3.OperationalError as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    raise
 
 
 def insert_shipment(db_path: Path, result: ShipmentResult, batch_id: str) -> None:
@@ -61,8 +80,9 @@ def insert_shipment(db_path: Path, result: ShipmentResult, batch_id: str) -> Non
         conn.execute(
             """
             INSERT INTO carrier_shipments
-                (idempotency_key, batch_id, mode, state, error, simulated)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (idempotency_key, batch_id, mode, state, error, simulated,
+                 service_product, dimensions_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.idempotency_key,
@@ -71,6 +91,8 @@ def insert_shipment(db_path: Path, result: ShipmentResult, batch_id: str) -> Non
                 result.state.value,
                 result.error,
                 int(result.simulated),
+                result.service_product,
+                result.dimensions_json,
             ),
         )
 
@@ -122,4 +144,33 @@ def update_state(
             WHERE idempotency_key = ?
             """,
             (state.value, error, idempotency_key),
+        )
+
+
+def update_shipment_fields(
+    db_path: Path,
+    idempotency_key: str,
+    *,
+    service_product: Optional[str] = None,
+    dimensions_json: Optional[str] = None,
+) -> None:
+    """Persist Phase-5 carrier API response fields on an existing row.
+
+    Only writes non-None arguments.  A call with all None is a no-op.
+    """
+    sets, args = [], []
+    if service_product is not None:
+        sets.append("service_product = ?")
+        args.append(service_product)
+    if dimensions_json is not None:
+        sets.append("dimensions_json = ?")
+        args.append(dimensions_json)
+    if not sets:
+        return
+    sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
+    args.append(idempotency_key)
+    with _connect(db_path) as conn:
+        conn.execute(
+            f"UPDATE carrier_shipments SET {', '.join(sets)} WHERE idempotency_key = ?",
+            tuple(args),
         )
