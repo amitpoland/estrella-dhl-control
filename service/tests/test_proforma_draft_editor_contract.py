@@ -827,3 +827,155 @@ def test_ui_source_does_not_invoke_wfirma_or_pz_post_from_editor():
         assert bad not in panel, (
             f"Proforma draft editor must not invoke {bad!r}"
         )
+
+
+# ── 21. ProformaDraftAddChargeForm uses e.target.value extraction ───────
+#       (companion fix to PR #200 — service-charge add form was the one
+#       remaining SyntheticEvent surface in the editor).
+
+def test_charge_form_source_uses_event_target_value_extraction():
+    """The service-charge add form (ProformaDraftAddChargeForm) must
+    extract e.target.value from every onChange handler.  Passing the
+    React setter directly stores a SyntheticEvent in state — which
+    JSON-stringifies to the literal '[object Object]'.  This is a
+    source-grep guard over the function body."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("function ProformaDraftAddChargeForm(")
+    end   = src.index("\n}\n", start) + 2
+    body  = src[start:end]
+    for bad in (
+        "onChange={setType}",
+        "onChange={setAmount}",
+        "onChange={setCcy}",
+        "onChange={setLabel}",
+    ):
+        assert bad not in body, (
+            f"ProformaDraftAddChargeForm contains broken handler {bad!r}; "
+            f"must use (e) => setter(e.target.value)"
+        )
+    for required in (
+        "setType(e.target.value)",
+        "setAmount(e.target.value)",
+        "setCcy(",                        # accepts toUpperCase wrapper
+        "setLabel(e.target.value)",
+    ):
+        assert required in body, (
+            f"ProformaDraftAddChargeForm missing {required!r} — "
+            f"event extraction not wired correctly"
+        )
+
+
+def test_charge_form_ccy_handler_uppercases_value_not_event():
+    """The currency input wrapper must read e.target.value before
+    .toUpperCase() — calling toUpperCase() on a SyntheticEvent crashes
+    at runtime."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("function ProformaDraftAddChargeForm(")
+    end   = src.index("\n}\n", start) + 2
+    body  = src[start:end]
+    assert "(v) => setCcy(v.toUpperCase())" not in body, (
+        "Broken ccy handler '(v) => setCcy(v.toUpperCase())' still present"
+    )
+    assert "e.target.value" in body and "toUpperCase" in body, (
+        "ccy handler must extract e.target.value before toUpperCase()"
+    )
+
+
+def test_freight_charge_endpoint_stores_clean_strings_and_numbers(client):
+    """Round-trip a freight charge through POST → GET and assert clean
+    types + no '[object Object]' literal in serialised charges JSON."""
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-CHG-FR",
+                                       client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    r = cli.post(
+        f"/api/v1/proforma/draft/{draft_id}/service-charges",
+        json={"expected_updated_at": d["updated_at"],
+              "charge": {"charge_type": "freight",
+                         "amount": 100.0,
+                         "currency": "USD",
+                         "label": "DHL Express"}},
+        headers={"X-Operator": "tester@local"},
+    )
+    assert r.status_code == 200, r.text
+    d2 = _get_draft(cli, draft_id)
+    charges = d2.get("service_charges") or []
+    fr = next((c for c in charges if c.get("charge_type") == "freight"),
+                None)
+    assert fr is not None, f"freight row missing: {charges!r}"
+    assert fr.get("currency") == "USD"
+    assert isinstance(fr.get("amount"), (int, float))
+    assert float(fr.get("amount")) == 100.0
+    assert fr.get("label") == "DHL Express"
+    assert "[object Object]" not in json.dumps(charges), \
+        f"service-charges round-trip emitted [object Object]: {charges!r}"
+
+
+def test_insurance_charge_endpoint_stores_clean_strings_and_numbers(client):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-CHG-INS",
+                                       client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    r = cli.post(
+        f"/api/v1/proforma/draft/{draft_id}/service-charges",
+        json={"expected_updated_at": d["updated_at"],
+              "charge": {"charge_type": "insurance",
+                         "amount": 25.5,
+                         "currency": "USD",
+                         "label": "Cargo insurance"}},
+        headers={"X-Operator": "tester@local"},
+    )
+    assert r.status_code == 200, r.text
+    d2 = _get_draft(cli, draft_id)
+    charges = d2.get("service_charges") or []
+    ins = next((c for c in charges if c.get("charge_type") == "insurance"),
+                None)
+    assert ins is not None, f"insurance row missing: {charges!r}"
+    assert ins.get("currency") == "USD"
+    assert float(ins.get("amount")) == 25.5
+    assert ins.get("label") == "Cargo insurance"
+    assert "[object Object]" not in json.dumps(charges)
+
+
+def test_service_charges_json_never_contains_object_object_literal(client):
+    """Source-of-truth guard: the proforma_drafts.service_charges_json
+    column on disk must never carry the broken '[object Object]'
+    literal that SyntheticEvent serialisation used to emit."""
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-NOJ",
+                                       client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    for ct, amt, ccy, lab in (
+        ("freight",   75.0, "USD", "Courier"),
+        ("insurance", 12.5, "USD", "Insure"),
+    ):
+        r = cli.post(
+            f"/api/v1/proforma/draft/{draft_id}/service-charges",
+            json={"expected_updated_at": d["updated_at"],
+                  "charge": {"charge_type": ct, "amount": amt,
+                             "currency": ccy, "label": lab}},
+            headers={"X-Operator": "tester@local"},
+        )
+        assert r.status_code == 200, r.text
+        d = _get_draft(cli, draft_id)
+    db = tmp / "proforma_links.db"
+    with _s.connect(str(db)) as con:
+        row = con.execute(
+            "SELECT service_charges_json FROM proforma_drafts WHERE id=?",
+            (draft_id,)).fetchone()
+    assert row is not None, "draft row missing"
+    raw = row[0] or "[]"
+    assert "[object Object]" not in raw, (
+        f"service_charges_json contains broken literal: {raw!r}"
+    )
+    persisted = json.loads(raw)
+    assert isinstance(persisted, list) and len(persisted) >= 2, (
+        f"expected ≥2 charges persisted, got {persisted!r}"
+    )
+    for c in persisted:
+        for k, v in c.items():
+            assert "[object Object]" not in str(v), (
+                f"service_charges_json {k}={v!r} contains broken literal"
+            )
