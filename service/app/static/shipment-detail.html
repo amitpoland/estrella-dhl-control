@@ -11209,6 +11209,30 @@ function ProformaDraftPanel({ batchId, onToast }) {
     }
   }, [openId, onToast]);
 
+  // ── Master-data lookups for the editor (loaded once per open draft) ──
+  // Both endpoints are local-DB only; no wFirma call, no write.
+  const [productOptions,  setProductOptions]  = React.useState([]);
+  const [customerOptions, setCustomerOptions] = React.useState([]);
+  React.useEffect(() => {
+    if (!openId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiFetch('/api/v1/proforma/product-options');
+        if (!cancelled) setProductOptions((r && r.options) || []);
+      } catch (_) {
+        if (!cancelled) setProductOptions([]);
+      }
+      try {
+        const r = await apiFetch('/api/v1/wfirma/customers');
+        if (!cancelled) setCustomerOptions((r && r.customers) || []);
+      } catch (_) {
+        if (!cancelled) setCustomerOptions([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [openId]);
+
   const loadEvents = React.useCallback(async () => {
     if (!openId) return;
     try {
@@ -12305,7 +12329,8 @@ function ProformaDraftPanel({ batchId, onToast }) {
                 {isEditable && (
                   <ProformaAddLineForm
                       draftCurrency={openDraft.currency}
-                      onAdd={onAddLine} />
+                      onAdd={onAddLine}
+                      productOptions={productOptions} />
                 )}
               </div>
 
@@ -12366,20 +12391,30 @@ function ProformaDraftPanel({ batchId, onToast }) {
                       label="Buyer override"
                       testidPrefix="draft-buyer"
                       fields={[
-                        { key: 'name',    label: 'Name',     placeholder: 'Company name' },
+                        { key: 'type',    label: 'Type',     placeholder: 'company / individual' },
+                        { key: 'name',    label: 'Name',     placeholder: 'Company or individual name' },
+                        { key: 'vat_id',  label: 'VAT ID',   placeholder: 'Tax ID (companies)' },
                         { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
                         { key: 'city',    label: 'City',     placeholder: 'City' },
                         { key: 'zip',     label: 'ZIP',      placeholder: 'Postal code' },
                         { key: 'country', label: 'Country',  placeholder: 'ISO country' },
-                        { key: 'vat_id',  label: 'VAT ID',   placeholder: 'Tax ID' },
+                        { key: 'email',   label: 'Email',    placeholder: 'name@…' },
+                        { key: 'phone',   label: 'Phone',    placeholder: '+...' },
                       ]}
                       value={openDraft.buyer_override}
                       editable={isEditable}
-                      onSave={(v) => onPatchField('buyer_override', v)} />
+                      onSave={(v) => onPatchField('buyer_override', v)}
+                      extras={({ pickFromCustomer }) => (
+                        <ProformaCustomerPicker
+                            customers={customerOptions}
+                            onPick={pickFromCustomer}
+                            testid="draft-buyer-customer-picker" />
+                      )} />
                   <ProformaJsonObjectEditor
                       label="Ship-to override"
                       testidPrefix="draft-ship-to"
                       fields={[
+                        { key: 'type',    label: 'Type',     placeholder: 'company / individual' },
                         { key: 'name',    label: 'Name',     placeholder: 'Recipient name' },
                         { key: 'street',  label: 'Street',   placeholder: 'Street + No.' },
                         { key: 'city',    label: 'City',     placeholder: 'City' },
@@ -12390,7 +12425,13 @@ function ProformaDraftPanel({ batchId, onToast }) {
                       ]}
                       value={openDraft.ship_to_override}
                       editable={isEditable}
-                      onSave={(v) => onPatchField('ship_to_override', v)} />
+                      onSave={(v) => onPatchField('ship_to_override', v)}
+                      extras={({ pickFromCustomer }) => (
+                        <ProformaCustomerPicker
+                            customers={customerOptions}
+                            onPick={pickFromCustomer}
+                            testid="draft-ship-to-customer-picker" />
+                      )} />
                   <ProformaJsonObjectEditor
                       label="Payment terms"
                       testidPrefix="draft-payment-terms"
@@ -12697,6 +12738,10 @@ function ProformaDraftPanel({ batchId, onToast }) {
 }
 
 function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }) {
+  // PR-fix: store plain strings; handlers below extract e.target.value.
+  // Earlier code passed setX directly to <Inp onChange={...}/>, which
+  // stored the React SyntheticEvent — JSON-stringifying it produced
+  // "[object Object]" on save.
   const [qty,    setQty]    = React.useState(String(line.qty));
   const [price,  setPrice]  = React.useState(String(line.unit_price));
   const [pc,     setPc]     = React.useState(line.product_code || '');
@@ -12704,6 +12749,7 @@ function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }
   const [ccy,    setCcy]    = React.useState(line.currency || '');
   const [itype,  setItype]  = React.useState(line.item_type || '');
   const [namePl, setNamePl] = React.useState(line.name_pl || '');
+  const _h = (setter) => (e) => setter(e.target.value);
   React.useEffect(() => {
     setQty(String(line.qty));
     setPrice(String(line.unit_price));
@@ -12757,7 +12803,7 @@ function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }
       <td>{line.line_id}</td>
       <td>
         {editable ? (
-          <Inp value={pc} onChange={setPc}
+          <Inp value={pc} onChange={_h(setPc)}
                data-testid={`draft-line-pc-input-${line.line_id}`}
                style={{ width: 130, fontFamily: 'monospace', fontSize: 11 }} />
         ) : (
@@ -12778,7 +12824,7 @@ function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }
       <td style={{ fontSize: 11 }}
           title="item_type — Enrich copies from product_descriptions; operator may override here">
         {editable ? (
-          <Inp value={itype} onChange={setItype}
+          <Inp value={itype} onChange={_h(setItype)}
                data-testid={`draft-line-item-type-input-${line.line_id}`}
                style={{ width: 110, fontSize: 11 }} />
         ) : (
@@ -12791,7 +12837,7 @@ function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }
           title={namePlFull || 'name_pl — Enrich copies from product_descriptions; operator may override here'}
           data-testid={`draft-line-name-pl-${line.line_id}`}>
         {editable ? (
-          <Inp value={namePl} onChange={setNamePl}
+          <Inp value={namePl} onChange={_h(setNamePl)}
                data-testid={`draft-line-name-pl-input-${line.line_id}`}
                style={{ width: 200, fontSize: 11 }} />
         ) : (
@@ -12805,7 +12851,7 @@ function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }
       </td>
       <td>
         {editable ? (
-          <Inp value={design} onChange={setDesign}
+          <Inp value={design} onChange={_h(setDesign)}
                data-testid={`draft-line-design-input-${line.line_id}`}
                style={{ width: 110, fontSize: 11 }} />
         ) : (
@@ -12814,19 +12860,19 @@ function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }
       </td>
       <td style={{ width: 90 }}>
         {editable
-          ? <Inp value={qty} onChange={setQty}
+          ? <Inp value={qty} onChange={_h(setQty)}
                  data-testid={`draft-line-qty-input-${line.line_id}`} />
           : line.qty}
       </td>
       <td style={{ width: 110 }}>
         {editable
-          ? <Inp value={price} onChange={setPrice}
+          ? <Inp value={price} onChange={_h(setPrice)}
                  data-testid={`draft-line-price-input-${line.line_id}`} />
           : line.unit_price}
       </td>
       <td>
         {editable
-          ? <Inp value={ccy} onChange={setCcy}
+          ? <Inp value={ccy} onChange={_h(setCcy)}
                  data-testid={`draft-line-ccy-input-${line.line_id}`}
                  style={{ width: 60 }} />
           : line.currency}
@@ -12930,9 +12976,44 @@ function ProformaCustomerCard({ resolution, clientName, onRemapOpen }) {
 }
 
 
+// ── Customer picker — populates buyer/ship-to fields from wfirma_customers
+function ProformaCustomerPicker({ customers, onPick, testid }) {
+  if (!customers || !customers.length) return null;
+  return (
+    <div style={{ marginBottom: 6, fontSize: 11 }}>
+      <label style={{ color: 'var(--text-3)', marginRight: 6 }}>
+        Pick from master:
+      </label>
+      <select onChange={(e) => {
+                const cn = e.target.value;
+                const c = customers.find(x => (x.client_name || '') === cn);
+                if (c) onPick(c);
+                e.target.value = '';
+              }}
+              data-testid={testid}
+              style={{ fontSize: 12, padding: '4px 6px',
+                         minWidth: 220 }}>
+        <option value="">— select customer —</option>
+        {customers.map(c => (
+          <option key={c.client_name} value={c.client_name || ''}>
+            {(c.client_name || '?')}
+            {c.country ? ` · ${c.country}` : ''}
+            {c.vat_id ? ` · VAT ${c.vat_id}` : ''}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+
 // ── Editable JSON-blob form (buyer / ship-to / payment terms) ─────────────
+// `extras` (optional): React node rendered above the field list — used
+//                       to inject the customer picker + type radio.
+// `seedFrom` (optional): callback receiving an object whose keys we copy
+//                         into the local draft when the picker fires.
 function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
-                                     testidPrefix }) {
+                                     testidPrefix, extras, onTypeChange }) {
   // value: dict {key: str} from the draft's *_override or payment_terms.
   // fields: ordered list of {key, label, placeholder, type?}
   const [draft, setDraft] = React.useState({ ...(value || {}) });
@@ -12953,6 +13034,27 @@ function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
     return a !== b;
   }, [stripped, value]);
   const isEmpty = Object.keys(value || {}).length === 0;
+  // Picker drop-in: extras may include a customer picker that fires
+  // pickFromCustomer(customer-row) — we copy normalised fields into
+  // the local draft so the operator can review/edit before saving.
+  const pickFromCustomer = (c) => {
+    const next = { ...draft };
+    if (c.client_name && !next.name) next.name = c.client_name;
+    if (c.vat_id      && !next.vat_id)  next.vat_id  = c.vat_id;
+    if (c.country     && !next.country) next.country = c.country;
+    if (c.city        && !next.city)    next.city    = c.city;
+    if (c.zip         && !next.zip)     next.zip     = c.zip;
+    if (c.street      && !next.street)  next.street  = c.street;
+    if (c.email       && !next.email)   next.email   = c.email;
+    if (c.phone       && !next.phone)   next.phone   = c.phone;
+    // Default type to 'company' on customer-master picks; operator may
+    // toggle below.
+    if (!next.type) next.type = 'company';
+    setDraft(next);
+  };
+
+  // Render the type radio when the field list includes a "type" entry.
+  const hasTypeField = !!fields.find(f => f.key === 'type');
   return (
     <div data-testid={`${testidPrefix}-editor`}
          style={{ padding: 8, border: '1px solid var(--card-border)',
@@ -12967,7 +13069,28 @@ function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
           {isEmpty ? '— default —' : 'override active'}
         </div>
       </div>
-      {fields.map(f => (
+      {editable && extras && (typeof extras === 'function'
+          ? extras({ pickFromCustomer })
+          : extras)}
+      {editable && hasTypeField && (
+        <div data-testid={`${testidPrefix}-type-row`}
+             style={{ display: 'flex', gap: 10, marginBottom: 6,
+                        fontSize: 11 }}>
+          <label style={{ color: 'var(--text-3)' }}>Type:</label>
+          {['company', 'individual'].map(t => (
+            <label key={t} style={{ display: 'inline-flex',
+                                      gap: 4, cursor: 'pointer' }}>
+              <input type="radio" name={`${testidPrefix}-type`}
+                     value={t}
+                     checked={(draft.type || 'company') === t}
+                     onChange={(e) => set('type', e.target.value)}
+                     data-testid={`${testidPrefix}-type-${t}`} />
+              {t}
+            </label>
+          ))}
+        </div>
+      )}
+      {fields.filter(f => f.key !== 'type').map(f => (
         <div key={f.key} style={{ display: 'flex', gap: 6, marginBottom: 4,
                                      alignItems: 'baseline' }}>
           <label style={{ width: 120, fontSize: 11, color: 'var(--text-3)' }}>
@@ -12975,7 +13098,7 @@ function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
           </label>
           {editable ? (
             <Inp value={draft[f.key] || ''}
-                 onChange={(v) => set(f.key, v)}
+                 onChange={(e) => set(f.key, e.target.value)}
                  placeholder={f.placeholder || ''}
                  data-testid={`${testidPrefix}-${f.key}`} />
           ) : (
@@ -13001,14 +13124,26 @@ function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
 }
 
 
-// ── Add-line form ────────────────────────────────────────────────────────
-function ProformaAddLineForm({ draftCurrency, onAdd }) {
+// ── Add-line form (with product selector from local product master) ───────
+// Loads the canonical product_code list once (via the new local-only
+// GET /api/v1/proforma/product-options endpoint).  Operator can either
+// pick from the datalist OR type a code manually.  No invention; the
+// PATCH-line backend already validates non-blank product_code.
+function ProformaAddLineForm({ draftCurrency, onAdd, productOptions }) {
   const [pc, setPc]       = React.useState('');
   const [design, setDes]  = React.useState('');
   const [qty, setQty]     = React.useState('1');
   const [price, setPrice] = React.useState('0');
   const [ccy, setCcy]     = React.useState(draftCurrency || 'USD');
   const canAdd = pc.trim() !== '' && parseFloat(qty) > 0;
+
+  // When operator picks a code from the datalist, auto-fill design_no
+  // from the local product master if a default is known.
+  const handlePcChange = (v) => {
+    setPc(v);
+    const opt = (productOptions || []).find(o => o.product_code === v.trim());
+    if (opt && !design.trim() && opt.design_no) setDes(opt.design_no);
+  };
   const submit = () => {
     onAdd({
       product_code: pc.trim(),
@@ -13025,19 +13160,30 @@ function ProformaAddLineForm({ draftCurrency, onAdd }) {
                     alignItems: 'baseline', flexWrap: 'wrap',
                     fontSize: 12 }}>
       <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Add line:</span>
-      <Inp value={pc} onChange={setPc}
-           placeholder="product_code (canonical)"
-           data-testid="add-line-pc" style={{ width: 160 }} />
-      <Inp value={design} onChange={setDes}
+      <input list="proforma-add-line-product-codes"
+             value={pc}
+             onChange={(e) => handlePcChange(e.target.value)}
+             placeholder="product_code (canonical) — type or pick"
+             data-testid="add-line-pc"
+             style={{ width: 220, padding: '8px 10px', borderRadius: 6,
+                        border: '1px solid var(--border)', fontSize: 12 }} />
+      <datalist id="proforma-add-line-product-codes">
+        {(productOptions || []).map(o => (
+          <option key={o.product_code} value={o.product_code}>
+            {o.item_type ? `${o.item_type} · ` : ''}{o.name_pl || ''}
+          </option>
+        ))}
+      </datalist>
+      <Inp value={design} onChange={(e) => setDes(e.target.value)}
            placeholder="design_no"
            data-testid="add-line-design" style={{ width: 120 }} />
-      <Inp value={qty} onChange={setQty}
+      <Inp value={qty} onChange={(e) => setQty(e.target.value)}
            placeholder="qty"
            data-testid="add-line-qty" style={{ width: 60 }} />
-      <Inp value={price} onChange={setPrice}
+      <Inp value={price} onChange={(e) => setPrice(e.target.value)}
            placeholder="unit_price"
            data-testid="add-line-price" style={{ width: 80 }} />
-      <Inp value={ccy} onChange={setCcy}
+      <Inp value={ccy} onChange={(e) => setCcy(e.target.value)}
            placeholder="currency"
            data-testid="add-line-ccy" style={{ width: 60 }} />
       <Btn small variant="primary"

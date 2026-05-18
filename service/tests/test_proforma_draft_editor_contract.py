@@ -440,3 +440,390 @@ def test_draft_html_preview_route_source_has_no_wfirma_writes():
         assert forbidden not in body, (
             f"preview.html handler body must not reference {forbidden!r}"
         )
+
+
+# ── 15. buyer_override saves dict (never "[object Object]") ─────────────
+
+def _patch_fields(cli: TestClient, draft_id: int, expected: str, patch: dict):
+    return cli.patch(
+        f"/api/v1/proforma/draft/{draft_id}",
+        json={"expected_updated_at": expected, "patch": patch},
+        headers={"X-Operator": "tester@local"},
+    )
+
+
+def test_patch_buyer_override_saves_object_never_object_object(client):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-BUY",
+                                       client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    buyer = {"type": "company", "name": "ACME Sp. z o.o.",
+             "vat_id": "PL1234567890", "country": "PL",
+             "city": "Warszawa", "street": "ul. Główna 1"}
+    r = _patch_fields(cli, draft_id, d["updated_at"],
+                      {"buyer_override": buyer})
+    assert r.status_code == 200, r.text
+    d2 = _get_draft(cli, draft_id)
+    bo = d2.get("buyer_override")
+    assert isinstance(bo, dict), \
+        f"buyer_override must round-trip as dict; got {type(bo).__name__}"
+    assert bo.get("type") == "company"
+    assert bo.get("name") == "ACME Sp. z o.o."
+    assert bo.get("vat_id") == "PL1234567890"
+    # JSON-string serialisation must not regress to "[object Object]"
+    assert "[object Object]" not in json.dumps(bo)
+
+
+def test_patch_ship_to_override_saves_object_never_object_object(client):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-SHIP",
+                                       client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    ship = {"type": "individual", "name": "Jan Kowalski",
+            "country": "PL", "city": "Kraków",
+            "street": "ul. Krakowska 5", "zip": "30-001"}
+    r = _patch_fields(cli, draft_id, d["updated_at"],
+                      {"ship_to_override": ship})
+    assert r.status_code == 200, r.text
+    d2 = _get_draft(cli, draft_id)
+    so = d2.get("ship_to_override")
+    assert isinstance(so, dict)
+    assert so.get("type") == "individual"
+    assert so.get("name") == "Jan Kowalski"
+    assert "[object Object]" not in json.dumps(so)
+
+
+def test_payment_terms_saves_days_method_note(client):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-PT",
+                                       client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    terms = {"days": "30", "method": "transfer",
+             "note": "Net 30, bank transfer EUR account"}
+    r = _patch_fields(cli, draft_id, d["updated_at"],
+                      {"payment_terms": terms})
+    assert r.status_code == 200, r.text
+    d2 = _get_draft(cli, draft_id)
+    pt = d2.get("payment_terms")
+    assert isinstance(pt, dict)
+    assert pt.get("days")   == "30"
+    assert pt.get("method") == "transfer"
+    assert pt.get("note")   == "Net 30, bank transfer EUR account"
+
+
+# ── 16. /product-options endpoint shape + local-only behaviour ──────────
+
+def test_product_options_endpoint_returns_local_master_codes(client):
+    cli, tmp = client
+    # Seed document_db with a couple of product_descriptions rows.
+    from app.services import document_db as ddb
+    ddb.init_document_db(tmp / "documents.db")
+    ddb.upsert_product_description(
+        product_code="EJL/PO-1", item_type="RING",
+        name_pl="pierścionek złoty",
+        description_pl="", material_pl="złoto 14k",
+        purpose_pl="", description_block="", source="auto",
+    )
+    ddb.upsert_product_description(
+        product_code="EJL/PO-2", item_type="EARRING",
+        name_pl="kolczyki srebrne",
+        description_pl="", material_pl="srebro",
+        purpose_pl="", description_block="", source="auto",
+    )
+    r = cli.get("/api/v1/proforma/product-options")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("ok") is True
+    opts = body.get("options") or []
+    codes = [o.get("product_code") for o in opts]
+    assert "EJL/PO-1" in codes
+    assert "EJL/PO-2" in codes
+    by_pc = {o["product_code"]: o for o in opts}
+    assert by_pc["EJL/PO-1"]["item_type"] == "RING"
+    assert by_pc["EJL/PO-1"]["name_pl"]   == "pierścionek złoty"
+    # design_no slot always present (may be empty when no product_master row)
+    assert "design_no" in by_pc["EJL/PO-1"]
+
+
+def test_product_options_endpoint_is_read_only(client):
+    cli, tmp = client
+    from app.services import document_db as ddb
+    ddb.init_document_db(tmp / "documents.db")
+    ddb.upsert_product_description(
+        product_code="EJL/RO-1", item_type="RING", name_pl="ring",
+        description_pl="", material_pl="", purpose_pl="",
+        description_block="", source="auto",
+    )
+
+    def _snap():
+        out = {}
+        for fname, tables in (
+            ("documents.db",      ["product_descriptions"]),
+            ("proforma_links.db", ["proforma_drafts"]),
+            ("wfirma.db",         ["wfirma_customers", "wfirma_products"]),
+        ):
+            p = tmp / fname
+            if not p.exists():
+                continue
+            with _s.connect(str(p)) as c:
+                for t in tables:
+                    try:
+                        out[t] = c.execute(
+                            f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                    except Exception:
+                        pass
+        return out
+
+    before = _snap()
+    for _ in range(3):
+        cli.get("/api/v1/proforma/product-options")
+    after = _snap()
+    assert before == after, (
+        f"/product-options must be read-only; row counts changed: "
+        f"{before} → {after}"
+    )
+
+
+def test_product_options_endpoint_source_has_no_external_calls():
+    src = (Path(__file__).resolve().parents[1] / "app" / "api"
+           / "routes_proforma.py").read_text(encoding="utf-8")
+    start = src.index("def list_proforma_product_options(")
+    end   = src.index("@router.", start + 50)
+    body  = src[start:end]
+    for forbidden in (
+        "requests.", "httpx.", "wfirma_client",
+        "create_product", "create_customer", "send_email",
+    ):
+        assert forbidden not in body, (
+            f"list_proforma_product_options must not reference {forbidden!r}"
+        )
+
+
+# ── 17. GET /draft enrichment from product_descriptions (no writes) ─────
+
+def test_draft_get_enriches_blank_item_type_and_name_pl(client):
+    cli, tmp = client
+    from app.services import document_db as ddb
+    ddb.init_document_db(tmp / "documents.db")
+    ddb.upsert_product_description(
+        product_code="EJL/EN-1", item_type="BRACELET",
+        name_pl="bransoletka złota",
+        description_pl="", material_pl="", purpose_pl="",
+        description_block="", source="auto",
+    )
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-EN",
+                                       client_name="ACME",
+                                       product_code="EJL/EN-1")
+    # Clear blank-out item_type/name_pl on the seeded row to force enrichment.
+    db = tmp / "proforma_links.db"
+    with _s.connect(str(db)) as con:
+        row = con.execute(
+            "SELECT editable_lines_json FROM proforma_drafts WHERE id=?",
+            (draft_id,)).fetchone()
+        lines = json.loads(row[0])
+        for ln in lines:
+            ln["item_type"] = ""
+            ln["name_pl"]   = ""
+        con.execute(
+            "UPDATE proforma_drafts SET editable_lines_json=? WHERE id=?",
+            (json.dumps(lines, sort_keys=True), draft_id))
+        con.commit()
+
+    d = _get_draft(cli, draft_id)
+    ln0 = d["editable_lines"][0]
+    assert ln0["item_type"] == "BRACELET", \
+        f"GET draft should enrich blank item_type from product_descriptions; " \
+        f"got {ln0!r}"
+    assert ln0["name_pl"] == "bransoletka złota"
+
+
+def test_draft_get_does_not_overwrite_existing_item_type(client):
+    cli, tmp = client
+    from app.services import document_db as ddb
+    ddb.init_document_db(tmp / "documents.db")
+    ddb.upsert_product_description(
+        product_code="EJL/OV-1", item_type="RING_CANONICAL",
+        name_pl="canonical_name",
+        description_pl="", material_pl="", purpose_pl="",
+        description_block="", source="auto",
+    )
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-OV",
+                                       client_name="ACME",
+                                       product_code="EJL/OV-1")
+    # Operator already set item_type — must be preserved on GET.
+    d = _get_draft(cli, draft_id)
+    _patch_line(cli, draft_id, 1, d["updated_at"],
+                {"item_type": "OPERATOR_OVERRIDE",
+                 "name_pl":   "operator name"})
+    d2 = _get_draft(cli, draft_id)
+    ln0 = d2["editable_lines"][0]
+    assert ln0["item_type"] == "OPERATOR_OVERRIDE", \
+        "Enrichment must not overwrite operator-supplied item_type"
+    assert ln0["name_pl"]   == "operator name", \
+        "Enrichment must not overwrite operator-supplied name_pl"
+
+
+def test_draft_get_enrichment_does_not_write_back(client):
+    cli, tmp = client
+    from app.services import document_db as ddb
+    ddb.init_document_db(tmp / "documents.db")
+    ddb.upsert_product_description(
+        product_code="EJL/RB-1", item_type="NECKLACE",
+        name_pl="naszyjnik",
+        description_pl="", material_pl="", purpose_pl="",
+        description_block="", source="auto",
+    )
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-RB",
+                                       client_name="ACME",
+                                       product_code="EJL/RB-1")
+    # Blank the columns
+    db = tmp / "proforma_links.db"
+    with _s.connect(str(db)) as con:
+        row = con.execute(
+            "SELECT editable_lines_json FROM proforma_drafts WHERE id=?",
+            (draft_id,)).fetchone()
+        lines = json.loads(row[0])
+        for ln in lines:
+            ln["item_type"] = ""
+            ln["name_pl"]   = ""
+        con.execute(
+            "UPDATE proforma_drafts SET editable_lines_json=? WHERE id=?",
+            (json.dumps(lines, sort_keys=True), draft_id))
+        con.commit()
+    # GET multiple times
+    for _ in range(3):
+        cli.get(f"/api/v1/proforma/draft/{draft_id}")
+    # Stored row must still be blank — enrichment is projection only.
+    with _s.connect(str(db)) as con:
+        row = con.execute(
+            "SELECT editable_lines_json FROM proforma_drafts WHERE id=?",
+            (draft_id,)).fetchone()
+        lines = json.loads(row[0])
+    assert lines[0]["item_type"] == "", \
+        "GET enrichment must not write back to editable_lines_json"
+    assert lines[0]["name_pl"]   == ""
+
+
+# ── 18. Service-charge add: freight + insurance ─────────────────────────
+
+def test_freight_charge_add_works(client):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-FR",
+                                       client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    r = cli.post(
+        f"/api/v1/proforma/draft/{draft_id}/service-charges",
+        json={"expected_updated_at": d["updated_at"],
+              "charge": {"charge_type": "freight", "amount": 75.0,
+                         "currency": "USD", "label": "DHL Express"}},
+        headers={"X-Operator": "tester@local"},
+    )
+    assert r.status_code == 200, r.text
+    d2 = _get_draft(cli, draft_id)
+    charges = d2.get("service_charges") or []
+    types   = [c.get("charge_type") for c in charges]
+    assert "freight" in types
+
+
+def test_insurance_charge_add_works(client):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-INS",
+                                       client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    r = cli.post(
+        f"/api/v1/proforma/draft/{draft_id}/service-charges",
+        json={"expected_updated_at": d["updated_at"],
+              "charge": {"charge_type": "insurance", "amount": 25.0,
+                         "currency": "USD", "label": "Cargo insurance"}},
+        headers={"X-Operator": "tester@local"},
+    )
+    assert r.status_code == 200, r.text
+    d2 = _get_draft(cli, draft_id)
+    charges = d2.get("service_charges") or []
+    types   = [c.get("charge_type") for c in charges]
+    assert "insurance" in types
+
+
+# ── 19. HTML preview includes buyer / ship-to / payment terms / charges ─
+
+def test_html_preview_includes_buyer_ship_to_payment_terms_charges(client):
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-HTML-FULL",
+                                       client_name="Verhoeven Joaillier",
+                                       product_code="EJL/HT-1")
+    d = _get_draft(cli, draft_id)
+    # Fill buyer, ship-to, payment-terms.
+    _patch_fields(cli, draft_id, d["updated_at"], {
+        "buyer_override":   {"type": "company",
+                              "name": "ACME Buyer",
+                              "vat_id": "PL9999999999",
+                              "city": "Warszawa"},
+    })
+    d = _get_draft(cli, draft_id)
+    _patch_fields(cli, draft_id, d["updated_at"], {
+        "ship_to_override": {"type": "individual",
+                              "name": "Jan Recipient",
+                              "city": "Kraków"},
+    })
+    d = _get_draft(cli, draft_id)
+    _patch_fields(cli, draft_id, d["updated_at"], {
+        "payment_terms":    {"days": "14", "method": "transfer",
+                              "note": "Net 14"},
+    })
+    d = _get_draft(cli, draft_id)
+    cli.post(
+        f"/api/v1/proforma/draft/{draft_id}/service-charges",
+        json={"expected_updated_at": d["updated_at"],
+              "charge": {"charge_type": "freight", "amount": 99.0,
+                         "currency": "USD", "label": "Courier"}},
+        headers={"X-Operator": "tester@local"},
+    )
+
+    r = cli.get(f"/api/v1/proforma/draft/{draft_id}/preview.html")
+    assert r.status_code == 200, r.text
+    body = r.text
+    for marker in ("ACME Buyer", "Jan Recipient",
+                   "Courier"):
+        assert marker in body, (
+            f"preview.html must contain operator-readable marker {marker!r}"
+        )
+
+
+# ── 20. UI surfaces — customer picker + type radio + product datalist ──
+
+def test_ui_source_includes_customer_picker_and_type_selectors():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    for marker in (
+        "draft-buyer-customer-picker",
+        "draft-ship-to-customer-picker",
+        "proforma-add-line-product-codes",   # datalist for Add-line
+        "ProformaCustomerPicker",
+        "ProformaAddLineForm",
+    ):
+        assert marker in src, (
+            f"shipment-detail.html missing {marker!r} — customer/product "
+            f"selector wiring not present"
+        )
+
+
+def test_ui_source_does_not_invoke_wfirma_or_pz_post_from_editor():
+    """Source-grep: the proforma draft editor section must not call any
+    write/post path against wFirma / PZ / DHL / customs."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # Look at the slice from ProformaDraftPanel to the closing of the file
+    # for forbidden client-side write paths.  These tokens never appear in
+    # legit editor code; presence means a regression.
+    start = src.index("function ProformaDraftPanel(")
+    panel = src[start:]
+    forbidden = (
+        "/api/v1/proforma/post",
+        "/api/v1/proforma/create",
+        "/api/v1/pz/process",
+        "/api/v1/dhl/",
+    )
+    for bad in forbidden:
+        assert bad not in panel, (
+            f"Proforma draft editor must not invoke {bad!r}"
+        )
