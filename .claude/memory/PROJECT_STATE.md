@@ -236,6 +236,14 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **2026-05-13** — Engineering lessons file: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch), Lesson B (mid-session registry refresh non-determinism), Lesson C (orchestrator scorecard verification), **Lesson D (LOCAL-COMMIT-ONLY deploy disclosure + reconciliation — CODIFIED 2026-05-13 via PR #76)** are all binding rules.
 - **2026-05-13** — Scorecard ON DISK but previously uncited (retroactive RULE 6 registration 2026-05-18): `.claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` — P2 ignition switch model C analysis. File confirmed on disk. GATE 4 disposition: **ACCEPTED GAP** — file is valid; omission from prior RULE 6 citations was an oversight (not a Lesson C silent-loss event). No retroactive action required beyond this citation.
 
+## Campaign V2 scorecard (appended 2026-05-19)
+
+- **2026-05-19** — Scorecard written: `.claude/memory/scorecards/2026-05-19-campaign-v2.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). 5 agents scored. NEEDS-TUNING: deployment-readiness, gap-detection, system-architect. UNRELIABLE: backend-safety-reviewer, flow-context-keeper. Root cause: all 5 attributed implicitly — no Task tool dispatch, no canonical verdict blocks collected. File confirmed on disk: 20,825 bytes, 363 lines (Lesson C verified). **Total confirmed scorecards on disk: 7.**
+- **GATE 4 dispositions from 2026-05-19-campaign-v2.md (3 required):**
+  1. **Implicit agent attribution pattern** → SCHEDULED: all future multi-agent campaigns must dispatch agents via Task tool and collect canonical return-shape output before populating Section 2. (No separate issue filed — binding rule from this scorecard forward.)
+  2. **backend-safety-reviewer UNRELIABLE** → SCHEDULED: formal re-dispatch against 16 new routers from 294-commit delta fired this session (background task a79201faf3cd7a7c5). Verdict to be appended when complete.
+  3. **flow-context-keeper UNRELIABLE** → SCHEDULED: PROJECT_STATE.md updated this run; scorecard path registered in FACTS above; "Next 3 actions" updated below. Disposition: RESOLVED in-session.
+
 ## RULE 6 GATE 4 disposition — missing scorecard references (appended 2026-05-18)
 
 Three scorecard files cited in RULE 6 visibility entries above were confirmed MISSING from disk during the Wave 2 post-patch observation audit (2026-05-18). All three follow the Lesson C silent-loss pattern: observer reported successful write at session time, but file never landed on disk.
@@ -366,9 +374,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. ~~**Restart PZService for PR #74**~~ — **DONE 2026-05-13T10:34Z**. PID 14164, health 200 OK. EV_PACKING constants live.
-2. ~~**Codify Lesson D governance**~~ — **DONE 2026-05-13T14:30Z**. PR #76 merged (SHA `ba84ee3`). 5 rules codified across 4 files. Audit record (local-commit-deploys.jsonl) created. Scorecard on disk.
-3. **Observe first real AWB through attachment integrity guard** — shadow status `SHADOW-OBSERVING-REAL-TRAFFIC`. Any `FAILED_ATTACHMENT_VALIDATION` entry = guard working. First successfully-queued customs email = behavioral verification complete.
+1. **Merge PR #222 + Windows deploy** — operator initiates: run 7-agent gate, then `nssm stop PZService && git pull --ff-only origin main && nssm start PZService` on Windows. Append entry to `local-commit-deploys.jsonl`. Verify `https://pz.estrellajewels.eu/api/v1/health` returns 200 within 60s.
+2. **P2 live promotion** — after Tejal reviews shadow corpus: flip `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` and `DHL_SELFCLEARANCE_P2_SHADOW_MODE=false` in Windows `.env`. No code changes needed.
+3. **RULE 5 self-eval** — due 2026-05-20 (7 calendar days since 2026-05-13). Fire `agent-performance-observer` self-evaluation against prior 5 campaign scorecards before any task work on that date.
 
 ## Completed actions (previously "next")
 
