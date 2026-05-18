@@ -17974,12 +17974,12 @@ function ProformaDraftLineRow({ line, editable, onPatch }) {
       <td>{line.design_no || '—'}</td>
       <td style={{ width: 90 }}>
         {editable
-          ? <Inp value={qty} onChange={setQty} />
+          ? <Inp value={qty} onChange={e => setQty(e.target.value)} />
           : line.qty}
       </td>
       <td style={{ width: 110 }}>
         {editable
-          ? <Inp value={price} onChange={setPrice} />
+          ? <Inp value={price} onChange={e => setPrice(e.target.value)} />
           : line.unit_price}
       </td>
       <td>{line.currency}</td>
@@ -18050,13 +18050,13 @@ function ProformaDraftAddChargeForm({ onAdd, draftCurrency, prefill }) {
   return (
     <div data-testid="draft-add-charge-form"
          style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-      <Sel value={type} onChange={setType}>
+      <Sel value={type} onChange={e => setType(e.target.value)}>
         <option value="freight">freight</option>
         <option value="insurance">insurance</option>
       </Sel>
-      <Inp value={amount} onChange={setAmount} placeholder="amount" />
-      <Inp value={ccy} onChange={(v) => setCcy(v.toUpperCase())} placeholder="ccy" />
-      <Inp value={label} onChange={setLabel} placeholder="label (optional)" />
+      <Inp value={amount} onChange={e => setAmount(e.target.value)} placeholder="amount" />
+      <Inp value={ccy} onChange={e => setCcy(e.target.value.toUpperCase())} placeholder="ccy" />
+      <Inp value={label} onChange={e => setLabel(e.target.value)} placeholder="label (optional)" />
       <Btn small variant="primary" onClick={submit}
            data-testid="btn-add-charge">Add</Btn>
     </div>

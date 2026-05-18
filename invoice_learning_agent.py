@@ -392,6 +392,7 @@ def learn_from_parse(
             "supplier_key":        supplier_key,
             "layout_fingerprint":  fingerprint,
             "learning_confidence": entry["confidence"],
+            "flag":                entry["confidence"],  # hard-failure path: use confidence (not unstable yet)
             "hints_used":          [],
             "fields_recovered":    [],
             "learning_note":       "Parse had hard failures — patterns NOT updated",
@@ -441,19 +442,27 @@ def learn_from_parse(
     total = success_count + failure_count
     reliability_pct = round(100 * success_count / total) if total > 0 else 100
 
+    _is_unstable   = layout.get("is_unstable", False)
+    _confidence    = entry["confidence"]
+    # flag: compact single-token classifier for diagnostic queries and UI.
+    # Priority: unstable overrides confidence tier so operators see the
+    # degraded state immediately without reading two separate fields.
+    _flag = "unstable" if _is_unstable else _confidence  # e.g. 'unconfirmed'|'emerging'|'stable'|'trusted'
+
     return {
         "supplier_key":        supplier_key,
         "display_name":        supplier_display,
         "layout_fingerprint":  fingerprint,
         "invoice_format":      inv_format,
-        "learning_confidence": entry["confidence"],
+        "learning_confidence": _confidence,
         "confirmed_count":     entry["confirmed_count"],
         "hints_used":          [],        # populated by apply_hints_to_result()
         "fields_recovered":    [],        # populated by apply_hints_to_result()
         "patterns_stored":     list(patterns.keys()),
-        "is_unstable":         layout.get("is_unstable", False),
+        "is_unstable":         _is_unstable,
         "reliability_pct":     reliability_pct,
         "last_failed":         layout.get("last_failed"),
+        "flag":                _flag,
     }
 
 
