@@ -249,7 +249,9 @@ gap-detection → [write document] → git-workflow → pr-author
 - P2 stays in shadow — no `.env` change needed
 
 **Deploy cycle 2 (after Tejal shadow corpus review):**
-- Flip `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` + `DHL_SELFCLEARANCE_P2_SHADOW_MODE=false`
+- Set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` ONLY — `P2_SHADOW_MODE` must stay `true`
+- **DO NOT** set `P2_SHADOW_MODE=false` — that combination raises `ForbiddenFlagCombination` (ADR-018)
+- LIVE state = shadow_mode=true + live_enabled=true (coordinator queues real email)
 - First live proactive DHL customs dispatch to Warsaw customs
 - Monitor: `awaiting_poland_arrival` flag set correctly, no DSK created, PZ unmodified
 

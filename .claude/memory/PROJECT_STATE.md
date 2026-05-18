@@ -374,8 +374,8 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ## Next 3 actions in queue
 
 1. **Windows deploy** — 7-AGENT GATE: READY-TO-DEPLOY (Campaign V4 Phase 2 complete). Run: `nssm stop PZService && git pull --ff-only origin main && nssm start PZService` on Windows. Current HEAD: `302848f` (1 commit ahead of gate run on `989f4b1` — additive security fix only; no new gate required). Rollback: `git reset --hard 4c797e4`. Verify health after start.
-2. **P2 live promotion** — after Tejal reviews shadow corpus: flip `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` and `DHL_SELFCLEARANCE_P2_SHADOW_MODE=false` in Windows `.env`. No code changes needed.
-3. **P2 live promotion** — after Tejal reviews shadow corpus: set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` + `DHL_SELFCLEARANCE_P2_SHADOW_MODE=false` in Windows .env. No code changes. Coordinator ADR-018 flag-combination enforcement in place. Issues #223/#224: CLOSED. Pydantic warnings: CLEARED.
+2. **P2 live promotion** — after Tejal reviews shadow corpus: set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` in Windows .env ONLY. **DO NOT** set `P2_SHADOW_MODE=false` — that combination (shadow=False, live=True) is FORBIDDEN by ADR-018 and raises ForbiddenFlagCombination. Live state = shadow=True + live_enabled=True. No code changes needed.
+3. **Issues + warnings closed** — #223/#224 CLOSED. Pydantic: 0 warnings. **P2 flag correction**: LIVE = `P2_LIVE_ENABLED=true` (shadow_mode stays true). Campaign V2-V5 instructions to set shadow_mode=false were WRONG. Corrected in V6.
 
 ## Completed actions (previously "next")
 
