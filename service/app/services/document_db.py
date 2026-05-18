@@ -567,8 +567,13 @@ def update_document_status(
     related_pz_no:      Optional[str] = None,
     related_invoice_no: Optional[str] = None,
     workdrive_id:       Optional[str] = None,
+    requires_manual_review: Optional[bool] = None,
 ) -> None:
-    """Patch status fields on an existing document row."""
+    """Patch status fields on an existing document row.
+
+    ``requires_manual_review`` accepts True/False to flip the flag
+    explicitly; passing None (default) leaves the column unchanged.
+    """
     if _db_path is None:
         return
     sets: list[str] = ["updated_at=?"]
@@ -583,12 +588,73 @@ def update_document_status(
         sets.append("related_pz_no=?");      vals.append(related_pz_no)
     if related_invoice_no is not None:
         sets.append("related_invoice_no=?"); vals.append(related_invoice_no)
+    if requires_manual_review is not None:
+        sets.append("requires_manual_review=?")
+        vals.append(1 if requires_manual_review else 0)
     vals.append(document_id)
     with _lock:
         with _connect() as con:
             con.execute(
                 f"UPDATE shipment_documents SET {', '.join(sets)} WHERE id=?",
                 vals,
+            )
+
+
+def merge_document_normalized_json(
+    document_id: str,
+    batch_id:    str,
+    blob:        Dict[str, Any],
+    document_type: str = "purchase_invoice",
+) -> None:
+    """Merge ``blob`` into ``document_extraction_json.normalized_json``
+    for the given document_id without touching ``extracted_json``.
+
+    Idempotent: if no row exists, inserts a new one with ``extracted_json
+    = '{}'`` and ``normalized_json = blob``.  If a row exists, the
+    stored normalized JSON is parsed, the blob keys are merged on top
+    (shallow merge), and the row is updated in place.
+
+    Used by intake-time diagnostics surfaces (e.g.
+    invoice_line_diagnostics) that need to append a structured
+    diagnostics record to a document without clobbering any extraction
+    payload other code might have written.
+
+    No schema change.  Best-effort: returns silently if _db_path is
+    None or any DB error occurs (the caller is expected to log)."""
+    if _db_path is None:
+        return
+    now = _now()
+    with _lock:
+        with _connect() as con:
+            row = con.execute(
+                "SELECT id, normalized_json FROM document_extraction_json "
+                "WHERE document_id=? LIMIT 1",
+                (document_id,),
+            ).fetchone()
+            if row is None:
+                con.execute(
+                    """INSERT INTO document_extraction_json
+                           (id, document_id, batch_id, document_type,
+                            extracted_json, normalized_json,
+                            schema_version, created_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (str(uuid.uuid4()), document_id, batch_id,
+                     document_type, "{}",
+                     json.dumps(blob, ensure_ascii=False),
+                     "1", now),
+                )
+                return
+            try:
+                cur = json.loads(row["normalized_json"] or "{}")
+                if not isinstance(cur, dict):
+                    cur = {}
+            except Exception:
+                cur = {}
+            cur.update(blob or {})
+            con.execute(
+                "UPDATE document_extraction_json "
+                "SET normalized_json=? WHERE id=?",
+                (json.dumps(cur, ensure_ascii=False), row["id"]),
             )
 
 

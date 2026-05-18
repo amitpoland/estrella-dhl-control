@@ -480,6 +480,44 @@ async def shipment_intake(
                     )
                 except Exception:
                     pass
+            # PR-205: per-line description diagnostics.  Pure, deterministic
+            # check that emits warning codes when invoice_lines.description
+            # looks like the overall header / customs goods description
+            # instead of the per-position line text.  Never blocks intake.
+            # Diagnostic blob lands in document_extraction_json.normalized_json
+            # (no schema change).  Sets requires_manual_review when warn/error
+            # codes fire.
+            if doc_id and method != "filename_only" and lines:
+                try:
+                    from app.services import invoice_line_diagnostics as ild
+                    diag = ild.evaluate_invoice_lines(lines)
+                    if diag.get("any_warning"):
+                        try:
+                            ddb.merge_document_normalized_json(
+                                document_id=doc_id, batch_id=batch_id,
+                                blob=diag, document_type="purchase_invoice",
+                            )
+                        except Exception as _diag_store_exc:
+                            log.warning(
+                                "[%s] invoice-line diagnostics store failed "
+                                "(non-fatal): %s", batch_id, _diag_store_exc,
+                            )
+                        if diag.get("requires_manual_review"):
+                            try:
+                                ddb.update_document_status(
+                                    document_id=doc_id,
+                                    requires_manual_review=True,
+                                )
+                            except Exception as _diag_flag_exc:
+                                log.warning(
+                                    "[%s] requires_manual_review flip failed "
+                                    "(non-fatal): %s", batch_id, _diag_flag_exc,
+                                )
+                except Exception as _diag_exc:
+                    log.warning(
+                        "[%s] invoice-line diagnostics failed "
+                        "(non-fatal): %s", batch_id, _diag_exc,
+                    )
         except Exception as exc:
             log.warning("[%s] Invoice parse failed (non-fatal): %s — %s", batch_id, name, exc)
             inv_summaries.append({"file": name, "error": str(exc), "lines_stored": 0})
@@ -1500,6 +1538,39 @@ async def add_document_to_batch(
                     )
                 except Exception:
                     pass
+            # PR-205: per-line description diagnostics — mirror of the
+            # batch-upload path above.  Pure / additive / never blocks.
+            if doc_id and method != "filename_only" and lines:
+                try:
+                    from app.services import invoice_line_diagnostics as ild
+                    diag = ild.evaluate_invoice_lines(lines)
+                    if diag.get("any_warning"):
+                        try:
+                            ddb.merge_document_normalized_json(
+                                document_id=doc_id, batch_id=batch_id,
+                                blob=diag, document_type="purchase_invoice",
+                            )
+                        except Exception as _diag_store_exc:
+                            log.warning(
+                                "[%s] invoice-line diagnostics store failed "
+                                "(non-fatal): %s", batch_id, _diag_store_exc,
+                            )
+                        if diag.get("requires_manual_review"):
+                            try:
+                                ddb.update_document_status(
+                                    document_id=doc_id,
+                                    requires_manual_review=True,
+                                )
+                            except Exception as _diag_flag_exc:
+                                log.warning(
+                                    "[%s] requires_manual_review flip failed "
+                                    "(non-fatal): %s", batch_id, _diag_flag_exc,
+                                )
+                except Exception as _diag_exc:
+                    log.warning(
+                        "[%s] invoice-line diagnostics failed "
+                        "(non-fatal): %s", batch_id, _diag_exc,
+                    )
         except Exception as exc:
             log.warning("[%s] invoice parse failed (non-fatal): %s — %s",
                         batch_id, name, exc)
