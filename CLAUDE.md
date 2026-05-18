@@ -428,42 +428,17 @@ Always use that connector when the workflow requires posting results or updates 
 
 ### 1. Source of truth
 
-The Python engine is the only calculation path.
-
-Core engine entrypoint:
-- `process_batch()`
-
-The engine is responsible for:
-- parsing invoice PDFs
-- parsing ZC429 / SAD
-- landed cost calculations
-- SAD vs invoice verification
-- amendment flags
-- bilingual item naming
-- generating final result object
-
-Never recalculate landed cost, freight, duty, totals, or notes outside the Python engine.
+`process_batch()` is the only calculation path. Never recalculate landed cost, freight, duty, totals, or notes outside the Python engine.
 
 ### 2. Output renderers
 
-All outputs must render from the same validated `process_batch()` result object:
-- terminal summary
-- clipboard block
-- PDF
-- XLSX
+All outputs must render from the same validated `process_batch()` result object.
 
 ### 3. Zoho Cliq role
 
-Zoho Cliq is the interaction layer only.
-
-Use **Estrella Cliq** to:
-- post status updates
-- post verification summary
-- post amendment / review warnings
-- send final PDF and XLSX back into Cliq
-- optionally notify a channel or user
-
 Do not treat Cliq as the calculation engine.
+
+> For full architecture detail: invoke `pz-shipment`.
 
 ---
 
@@ -471,58 +446,19 @@ Do not treat Cliq as the calculation engine.
 
 ### Step A — Validate engine before live batch
 
-Before processing a live shipment, run:
-```bash
-make verify
-```
-
-If it fails:
-- stop
-- do not process the batch
-- report failure reason
+Before processing a live shipment, run `make verify`. If it fails: stop, do not process the batch, report failure reason.
 
 ### Step B — Process uploaded shipment
 
-Inputs:
-- invoice PDFs
-- one ZC429 / SAD PDF
-- optional batch metadata: `settlement_mode`, `carrier`, `doc_no`, `strict_match`
-
-Run the engine through the CLI or `process_batch()`.
-
-Preferred CLI shape:
-```bash
-python3 pz_import_processor.py \
-  --invoices <invoice_folder_or_files> \
-  --zc429 <zc429_pdf> \
-  --pdf <output_pdf> \
-  --xlsx <output_xlsx> \
-  --doc-no "<document_no>"
-```
-
-Optional flags: `--clipboard`, `--carrier`, `--settlement-mode art33a`, `--strict-match`
+Run the engine via CLI or `process_batch()`. For CLI syntax and optional flags: invoke `pz-shipment`.
 
 ### Step C — Generate outputs
 
-Always generate:
-1. final PZ PDF
-2. calculation XLSX
-
-If the user requested either output and it is not produced:
-- treat the run as failed
-- report failure honestly
-- exit non-zero
+Always generate: final PZ PDF + calculation XLSX. If either is not produced when requested: treat the run as failed, report failure honestly, exit non-zero.
 
 ### Step D — Post results to Zoho Cliq using "Estrella Cliq"
 
-After successful processing:
-- post a concise summary into Cliq
-- attach or send the generated PDF
-- attach or send the generated XLSX
-
-If there are amendment flags or verification failures:
-- say so explicitly in the Cliq message
-- do not hide them
+After successful processing: post a concise summary into Cliq, attach or send the generated PDF and XLSX. If there are amendment flags or verification failures: say so explicitly in the Cliq message, do not hide them.
 
 ---
 
@@ -532,10 +468,6 @@ If there are amendment flags or verification failures:
 
 Freight and insurance are allocated proportionally by value within each invoice.
 Never allocate freight by piece count.
-
-Correct model:
-- $200 item with 10% freight allocation → $220
-- $50 item with 10% freight allocation → $55
 
 ### Duty allocation
 
@@ -582,45 +514,9 @@ If `--strict-match` is enabled: any confirmed mismatch must fail the run.
 
 ## Required Cliq posting format
 
-### On success
+Three scenarios: success, partial (VERIFY-GAP present), and failure. Each must include doc_no, line count, net, gross, and duty totals. Failure messages must state "No final files were posted." Partial messages must list all gaps explicitly. Amendment flags must not be hidden.
 
-```
-PZ processed successfully
-Document: PZ 12/3/2026
-Lines: 10
-Netto: 48 778,64 PLN
-Brutto: 59 997,72 PLN
-Duty A00: 1 181,00 PLN
-Verification: clean
-Amendment flags: none
-```
-
-Then send PDF and XLSX.
-
-### On partial verification (VERIFY-GAP present)
-
-```
-PZ processed with verification gaps
-Document: PZ 12/3/2026
-Lines: 10
-Netto: 48 778,64 PLN
-Brutto: 59 997,72 PLN
-Duty A00: 1 181,00 PLN
-Verification gaps:
-- qty_by_type could not be verified
-- exporter could not be verified
-Files attached below.
-```
-
-### On failure
-
-```
-PZ processing failed
-Reason:
-- XLSX export failed: permission denied
-- strict-match failed: importer mismatch
-No final files were posted.
-```
+> For exact format blocks: invoke `pz-shipment`.
 
 ---
 
@@ -636,88 +532,7 @@ Cliq           = notification layer — posts immediately, never waits for WorkD
 Audit          = final record
 ```
 
-**What changed and why:**  
-TrueSync and the WorkDrive REST API are two separate namespaces. Files written to the
-TrueSync Finder folder are NOT visible via the WorkDrive MCP connector or REST API.
-Waiting for TrueSync sync was the root cause of all "files not found" failures.  
-The fix: Python uploads directly to WorkDrive REST API immediately after generation.
-Resource IDs come back in the API response — no search, no waiting.
-
-### After /api/v1/pz/process responds — Claude MCP steps
-
-**If response `status` is `"blocked"`:** post to Cliq and stop:
-```
-⚠️ PZ BLOCKED — verification mismatch
-Document: <doc_no>
-Reason: <errors[0]>
-No files posted.
-```
-
-**If response `status` is `"success"` or `"partial"`:**
-
-1. Extract from the response:
-   - `batch_id`
-   - `doc_no`, `line_count`, `total_net`, `total_gross`, `duty_a00`
-   - `workdrive_pdf_resource_id`   (may be null if upload failed/not configured)
-   - `workdrive_xlsx_resource_id`  (may be null if upload failed/not configured)
-   - `workdrive_upload_status`     (`success` | `retry_queued` | `failed` | null)
-
-2. **If `workdrive_upload_status == "success"`** (resource IDs are present):
-   - Call `ZohoWorkdrive_createExternalShareLink(resource_id=<pdf_id>, link_type="download")`
-   - Call `ZohoWorkdrive_createExternalShareLink(resource_id=<xlsx_id>, link_type="download")`
-   - Post to `#PZ` with both links (see format below)
-
-3. **If `workdrive_upload_status != "success"`** (upload failed or not configured):
-   - Post to `#PZ` WITHOUT WorkDrive links — do NOT search TrueSync, do NOT retry
-   - State that WorkDrive upload is pending retry
-   - Local files are safe — the service retry queue will handle upload
-
-4. **Never** wait for TrueSync, never call `searchTeamFoldersFiles`, never poll for files.
-   Resource IDs come directly from the API response.
-
-### Cliq posting format
-
-**On success with WorkDrive links:**
-```
-PZ processed successfully
-Document: <doc_no>
-Lines: <n>
-Netto: <x> PLN
-Brutto: <x> PLN
-Duty A00: <x> PLN
-Verification: clean
-Amendment flags: none
-Files:
-PDF: <workdrive_share_link>
-XLSX: <workdrive_share_link>
-```
-
-**On success, WorkDrive upload pending:**
-```
-PZ processed successfully
-Document: <doc_no>
-Lines: <n>
-Netto: <x> PLN
-Brutto: <x> PLN
-Duty A00: <x> PLN
-Verification: clean
-Amendment flags: none
-WorkDrive: upload pending retry — local files are safe
-```
-
-**On partial (VERIFY-GAP only):**
-```
-PZ processed (partial)
-Document: <doc_no>
-Netto: <x> PLN
-Brutto: <x> PLN
-Duty A00: <x> PLN
-Gaps:
-- <gap 1>
-Files:
-PDF: <workdrive_share_link or "pending retry">
-XLSX: <workdrive_share_link or "pending retry">
-```
+> For the full MCP step sequence and Cliq posting format variants: invoke `pz-shipment`.
 
 ### Rules
 
