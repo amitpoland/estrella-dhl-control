@@ -11,7 +11,9 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 # FACTS
 
 ## Current origin/main HEAD
-- **2026-05-19** — `f4736ab` chore(state): master campaign closure — Phases A-E complete — **CAMPAIGN V2 PHASE 1 COMPLETE: PR #222 filed (Windows reconciliation)**
+- **2026-05-19** — `6f57e2c` chore(deploy-prep): Windows reconciliation #222 merged — **CAMPAIGN V3 COMPLETE. GATE 2: 2/3 impl slots.**
+- **2026-05-19** — `119e0fe` fix(safety): GATE 4 BLOCKER-1+ADV-1 (#225 merged) — routes_settings 422 guard + write_json_atomic
+- **2026-05-19** — `f4736ab` chore(state): master campaign closure — Phases A-E complete
 - **2026-05-19** — `c9175e6` fix(ui): inbox Open button dead-button guard (#209) — MERGED
 - **2026-05-19** — `ca9a212` chore(state): Wave 2 closure — PROJECT_STATE frozen, PR #221 merged
 - **2026-05-19** — `a64d295` chore(kernel): Wave 2 patch #4 batch — condense 8 retrieval-eligible CLAUDE.md sections (#221) — **WAVE 2 COMPLETE**
@@ -90,13 +92,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Sequencing model** — three-PR cascade (Option B) chosen over single atomic PR for clean per-step rollback + GATE 2 compliance (max 3 open). Each PR in/out before next opened.
 
 ## Open PRs
-(Implementation slot: 2/3 used. #88 closed, #209 merged, #4-#8 closed.)
-- **#222** 2026-05-19 — chore(deploy-prep): Windows reconciliation delta map 4c797e4→f4736ab — DOCS-ONLY — Lesson D disclosure PR for Windows deploy prep. SHA `cbe94a2`.
-- **#140** docs(e2e): real operator browser E2E validation report — historical analysis, no code.
-- **#138** docs(audit): Estrella production UI parity audit — historical analysis, no code.
-- **#137** docs(final): Estrella final live status report — historical analysis, no code.
-- **#116** docs(phase-6f-2): backfill inspection report (no code) — historical analysis.
-- **#114** docs(phase-6f-3): implementation plan (no code) — historical analysis.
+(Implementation slot: 2/3 used. #225 merged, #222 merged, #114/#116/#137/#138/#140 closed.)
 - **#10** feat(inventory): Risk-3/4 button stubs — deferred per operator instruction; do not touch. **IMPL SLOT 1/3.**
 - **#1** ui: align sidebar IA with Estrella Atlas design — historical Atlas branch (REFERENCE_ONLY pending). **IMPL SLOT 2/3.**
 
@@ -236,9 +232,10 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **2026-05-13** — Engineering lessons file: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch), Lesson B (mid-session registry refresh non-determinism), Lesson C (orchestrator scorecard verification), **Lesson D (LOCAL-COMMIT-ONLY deploy disclosure + reconciliation — CODIFIED 2026-05-13 via PR #76)** are all binding rules.
 - **2026-05-13** — Scorecard ON DISK but previously uncited (retroactive RULE 6 registration 2026-05-18): `.claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` — P2 ignition switch model C analysis. File confirmed on disk. GATE 4 disposition: **ACCEPTED GAP** — file is valid; omission from prior RULE 6 citations was an oversight (not a Lesson C silent-loss event). No retroactive action required beyond this citation.
 
-## Campaign V2 scorecard (appended 2026-05-19)
+## Campaign V2 scorecard + RULE 5 self-eval (appended 2026-05-19)
 
 - **2026-05-19** — Scorecard written: `.claude/memory/scorecards/2026-05-19-campaign-v2.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). 5 agents scored. NEEDS-TUNING: deployment-readiness, gap-detection, system-architect. UNRELIABLE: backend-safety-reviewer, flow-context-keeper. Root cause: all 5 attributed implicitly — no Task tool dispatch, no canonical verdict blocks collected. File confirmed on disk: 20,825 bytes, 363 lines (Lesson C verified). **Total confirmed scorecards on disk: 7.**
+- **2026-05-19T(campaign-v3)Z** — RULE 5 self-evaluation written: `.claude/memory/scorecards/self-eval-2026-05-19.md` — Trigger: operator-explicit RULE 4 dispatch (6 days since prior; deferral from Campaign V2 scorecard overridden by RULE 4). Self-score: **29/35 EXEMPLARY** (prior: 30/35). SELF-DEGRADATION DETECTED: NO. Single regression: Evidence quality 4→3 (observer scored verdict blocks without ground-truth grep/file checks — same failure class penalised in campaign-v2 scorecard). Corrective: run ≥1 ground-truth source check per scorecard session. New governance signal: RULE 2 "≥3 distinct agents" trigger fires on names, not Task dispatch — potential low-effort satisfaction path; flagged for operator-level governance review. File confirmed on disk: 19,443 bytes, 240 lines (Lesson C verified). **Total confirmed scorecards on disk: 8.**
 - **GATE 4 dispositions from 2026-05-19-campaign-v2.md (3 required):**
   1. **Implicit agent attribution pattern** → SCHEDULED: all future multi-agent campaigns must dispatch agents via Task tool and collect canonical return-shape output before populating Section 2. (No separate issue filed — binding rule from this scorecard forward.)
   2. **backend-safety-reviewer UNRELIABLE** → RESOLVED in-session: formal re-dispatch completed. OVERALL VERDICT: FINDINGS_PRESENT. GATE 1 BLOCKER fixed (routes_settings.py missing try/except on request.json → 500 on malformed body). ADV-1 fixed (routes_admin_dhl_clearance.py _save_audit → write_json_atomic). Issues #223 (Lesson E ENV isolation) + #224 (routes_lifecycle path traversal) filed. PR #225 opened. 160/160 PZ PASS, 381/381 carrier PASS post-fix.
@@ -374,9 +371,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Merge PR #222 + Windows deploy** — operator initiates: run 7-agent gate, then `nssm stop PZService && git pull --ff-only origin main && nssm start PZService` on Windows. Append entry to `local-commit-deploys.jsonl`. Verify `https://pz.estrellajewels.eu/api/v1/health` returns 200 within 60s.
+1. **Windows deploy** — operator initiates: run 7-agent gate, then `nssm stop PZService && git pull --ff-only origin main && nssm start PZService` on Windows. Append entry to `local-commit-deploys.jsonl`. Verify `https://pz.estrellajewels.eu/api/v1/health` returns 200 within 60s. Current delta: ~300 commits behind, all additive, 0 forbidden hits. Reconciliation doc on main at `docs/deploy-prep/2026-05-19-windows-reconciliation.md`.
 2. **P2 live promotion** — after Tejal reviews shadow corpus: flip `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` and `DHL_SELFCLEARANCE_P2_SHADOW_MODE=false` in Windows `.env`. No code changes needed.
-3. **RULE 5 self-eval** — due 2026-05-20 (7 calendar days since 2026-05-13). Fire `agent-performance-observer` self-evaluation against prior 5 campaign scorecards before any task work on that date.
+3. **Fix Issues #223 + #224** — #223: `email_service.py` missing `ENV=production` startup guard (Lesson E property 5); #224: `routes_lifecycle.py` path traversal in agency-documents received endpoint. Both filed on GitHub, awaiting implementation PR.
 
 ## Completed actions (previously "next")
 
