@@ -1262,3 +1262,282 @@ def test_pr202_no_wfirma_pz_dhl_post_execution_added():
         assert bad not in panel, (
             f"PR-202 must not add a call to {bad!r} from the editor"
         )
+
+
+# ── 29. PR-203a: top-level Bill-to picker exists in ProformaDraftPanel ──
+
+def test_ui_top_level_bill_to_picker_mounted_in_proforma_draft_panel():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # The new picker component is defined …
+    assert "function ProformaBillToPicker(" in src, (
+        "ProformaBillToPicker component must exist"
+    )
+    # …and mounted inside ProformaDraftPanel.
+    panel_start = src.index("function ProformaDraftPanel(")
+    panel_end   = src.index("\n}\n", panel_start) + 2
+    panel       = src[panel_start:panel_end]
+    assert "<ProformaBillToPicker" in panel, (
+        "ProformaBillToPicker must be mounted inside ProformaDraftPanel"
+    )
+    assert 'testid="draft-bill-to-picker-top"' in panel, (
+        "Top-level Bill-to picker must carry testid='draft-bill-to-picker-top'"
+    )
+
+
+def test_ui_bill_to_picker_source_remains_customer_master():
+    """The single picker reuses the existing customer_master fetch — no
+    new endpoint, no wFirma source."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # Only the existing /api/v1/customer-master/ load must populate it.
+    panel_start = src.index("function ProformaDraftPanel(")
+    panel_end   = src.index("\n}\n", panel_start) + 2
+    panel       = src[panel_start:panel_end]
+    assert "apiFetch('/api/v1/customer-master/')" in panel
+    # The cascade callback must not reach wfirma/customers as a fallback.
+    assert "apiFetch('/api/v1/wfirma/customers')" not in panel
+
+
+# ── 30. PR-203a: cascade fires 3 PATCHes in order ──────────────────────
+
+def test_ui_cascade_callback_issues_buyer_then_ship_to_then_payment_terms():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # Locate the cascade callback body.
+    start = src.index("const onApplyCustomerDefaults =")
+    end   = src.index("}, [openId, openDraft", start)
+    body  = src[start:end]
+    # Three PATCH call sites, in order. Match the literal patch-payload
+    # tokens (with the leading { space) so we don't collide with the
+    # earlier payload-building section's references like
+    # `c.payment_terms_days`.
+    i_buyer = body.index("{ buyer_override:")
+    i_ship  = body.index("{ ship_to_override:")
+    i_terms = body.index("{ payment_terms:")
+    assert i_buyer < i_ship < i_terms, (
+        "cascade must PATCH buyer_override → ship_to_override → "
+        "payment_terms in that order"
+    )
+
+
+def test_ui_cascade_threads_fresh_updated_at_between_patches():
+    """The cascade must use the freshly-returned draft.updated_at from
+    each PATCH response as the expected_updated_at for the next call,
+    so we never race React state and never collide with the backend's
+    OCC lock check."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("const onApplyCustomerDefaults =")
+    end   = src.index("}, [openId, openDraft", start)
+    body  = src[start:end]
+    # Local variable that holds the latest updated_at.
+    assert "currentUpdatedAt" in body, (
+        "cascade must declare a local currentUpdatedAt to thread"
+    )
+    # Each PATCH reads from currentUpdatedAt and re-assigns from the
+    # PATCH response's draft.updated_at.
+    assert "expected_updated_at: currentUpdatedAt" in body, (
+        "each PATCH body must read expected_updated_at from "
+        "currentUpdatedAt"
+    )
+    assert "r.draft.updated_at" in body, (
+        "cascade must thread r.draft.updated_at back into currentUpdatedAt"
+    )
+
+
+def test_ui_cascade_uses_apifetch_with_method_patch():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("const onApplyCustomerDefaults =")
+    end   = src.index("}, [openId, openDraft", start)
+    body  = src[start:end]
+    assert "apiFetch(`/api/v1/proforma/draft/${openId}`" in body, (
+        "cascade must PATCH /api/v1/proforma/draft/{id}"
+    )
+    assert "method: 'PATCH'" in body, "cascade must use PATCH method"
+
+
+# ── 31. PR-203a: field mapping bill_to → buyer / ship_to fallback ──────
+
+def test_ui_cascade_buyer_payload_maps_bill_to_fields():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("const onApplyCustomerDefaults =")
+    end   = src.index("}, [openId, openDraft", start)
+    body  = src[start:end]
+    for key in ("c.bill_to_name", "c.nip", "c.vat_eu_number", "c.country",
+                "c.bill_to_street", "c.bill_to_city",
+                "c.bill_to_postal_code", "c.bill_to_email",
+                "c.bill_to_phone", "c.bill_to_mobile"):
+        assert key in body, (
+            f"cascade buyer payload must read {key!r} from customer_master"
+        )
+
+
+def test_ui_cascade_ship_to_payload_uses_ship_to_then_bill_to_fallback():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("const onApplyCustomerDefaults =")
+    end   = src.index("}, [openId, openDraft", start)
+    body  = src[start:end]
+    # Each ship_to_* line must include the bill_to_* fallback via ||.
+    for line in (
+        "c.ship_to_street  || c.bill_to_street",
+        "c.ship_to_city    || c.bill_to_city",
+        "c.ship_to_zip     || c.bill_to_postal_code",
+        "c.ship_to_country || c.country",
+        "c.ship_to_email   || c.bill_to_email",
+    ):
+        assert line in body, (
+            f"ship_to fallback chain missing {line!r}"
+        )
+
+
+def test_ui_cascade_payment_terms_maps_days_from_customer_master():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("const onApplyCustomerDefaults =")
+    end   = src.index("}, [openId, openDraft", start)
+    body  = src[start:end]
+    assert "c.payment_terms_days" in body, (
+        "cascade payment_terms payload must read c.payment_terms_days"
+    )
+    # And copy into a top-level 'days' key on the payment_terms blob.
+    assert "_put(terms, 'days'" in body or "terms['days']" in body, (
+        "cascade payment_terms payload must write into 'days'"
+    )
+
+
+# ── 32. PR-203a: existing per-section pickers still mounted ────────────
+
+def test_ui_existing_per_section_pickers_still_exist():
+    """The new top-level picker is additive; the per-section pickers
+    remain available for operators who want to apply a different
+    customer to one section only."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    for marker in (
+        "draft-buyer-customer-picker",
+        "draft-ship-to-customer-picker",
+        "draft-payment-terms-customer-picker",
+    ):
+        assert marker in src, (
+            f"per-section picker {marker!r} must remain available"
+        )
+
+
+# ── 33. PR-203a: cascade callback never invokes wFirma/PZ/DHL/post ─────
+
+def test_ui_cascade_callback_makes_no_wfirma_pz_dhl_post_calls():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("const onApplyCustomerDefaults =")
+    end   = src.index("}, [openId, openDraft", start)
+    body  = src[start:end]
+    for bad in (
+        "/api/v1/proforma/post",
+        "/api/v1/proforma/create",
+        "/api/v1/pz/",
+        "/api/v1/dhl/",
+        "/api/v1/wfirma/",
+        "create_proforma",
+        "create_customer",
+        "create_product",
+    ):
+        assert bad not in body, (
+            f"cascade callback must not invoke {bad!r}"
+        )
+
+
+# ── 34. PR-203a: behavioural — 3 sequential PATCHes persist on the
+#                draft and preview reflects the saved values.
+
+def test_three_sequential_patches_persist_on_draft_and_appear_in_preview(client):
+    """Simulates the cascade at the backend level: PATCH buyer, then
+    ship_to, then payment_terms — each call refreshes expected_updated_at
+    from the prior response.  After all three, GET draft shows the saved
+    overrides and the HTML preview no longer shows '— default —'."""
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-CASCADE",
+                                       client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    expected = d["updated_at"]
+
+    def _patch(payload, exp):
+        r = cli.patch(
+            f"/api/v1/proforma/draft/{draft_id}",
+            json={"expected_updated_at": exp, "patch": payload},
+            headers={"X-Operator": "tester@local"},
+        )
+        assert r.status_code == 200, r.text
+        return r.json()["draft"]["updated_at"]
+
+    expected = _patch({"buyer_override": {
+        "type":    "company",
+        "name":    "ACME Bill-to",
+        "vat_id":  "PL1234567890",
+        "country": "PL",
+        "street":  "ul. Main 1",
+        "city":    "Warszawa",
+    }}, expected)
+    expected = _patch({"ship_to_override": {
+        "type":   "company",
+        "name":   "ACME Receiver",
+        "street": "ul. Recipient 2",
+        "city":   "Kraków",
+    }}, expected)
+    expected = _patch({"payment_terms": {"days": "30"}}, expected)
+
+    # GET — all three blocks now non-empty.
+    d2 = _get_draft(cli, draft_id)
+    bo  = d2.get("buyer_override")   or {}
+    so  = d2.get("ship_to_override") or {}
+    pt  = d2.get("payment_terms")    or {}
+    assert bo.get("name")   == "ACME Bill-to"
+    assert bo.get("vat_id") == "PL1234567890"
+    assert so.get("name")   == "ACME Receiver"
+    assert so.get("city")   == "Kraków"
+    assert pt.get("days")   == "30"
+
+    # Preview reflects the saved overrides.
+    r = cli.get(f"/api/v1/proforma/draft/{draft_id}/preview.html")
+    assert r.status_code == 200
+    body = r.text
+    assert "ACME Bill-to"  in body
+    assert "ACME Receiver" in body
+    # If overrides are present, the preview must NOT render '— default —'
+    # for buyer or ship-to.  (Operator-visible regression guard.)
+    # We count blocks at most one '— default —' tolerated (terms block
+    # may still be empty depending on layout; here we asserted days
+    # above so it should not appear).
+    assert body.count("— default —") == 0, (
+        "preview still shows '— default —' even though overrides "
+        "were saved — preview→override key mismatch?"
+    )
+
+
+def test_cascade_uses_fresh_updated_at_returned_by_each_patch(client):
+    """End-to-end: each PATCH response returns the refreshed draft and
+    its current updated_at.  The cascade threads that fresh value into
+    the next call's expected_updated_at, so we never depend on React
+    state propagation.  Verify the returned updated_at exists on each
+    response."""
+    cli, tmp = client
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-FRESH", client_name="ACME")
+    d = _get_draft(cli, draft_id)
+    expected = d["updated_at"]
+    for payload in (
+        {"buyer_override":   {"name": "Cascade Buyer"}},
+        {"ship_to_override": {"name": "Cascade Ship"}},
+        {"payment_terms":    {"days": "21"}},
+    ):
+        r = cli.patch(
+            f"/api/v1/proforma/draft/{draft_id}",
+            json={"expected_updated_at": expected, "patch": payload},
+            headers={"X-Operator": "tester@local"},
+        )
+        assert r.status_code == 200, r.text
+        new_updated_at = r.json()["draft"]["updated_at"]
+        assert new_updated_at, "PATCH response must carry draft.updated_at"
+        expected = new_updated_at
