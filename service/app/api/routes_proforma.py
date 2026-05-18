@@ -35,6 +35,7 @@ from ..services import proforma_invoice_link_db as pildb
 from ..services import wfirma_client
 from ..services.customer_master_db import get_customer as get_customer_master
 from ..services.customer_master import pick_freight, compute_insurance_suggestion
+from ..services.master_data_db import get_company_profile
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/proforma", tags=["proforma"])
@@ -1104,6 +1105,26 @@ def proforma_create(
         wfirma_proforma_fullnumber = result.wfirma_invoice_number or "",
     )
     final = pildb.get_draft(_proforma_db_path(), batch_id, cn)
+
+    # ── 6a. Phase 3 — best-effort post-posting enrichment ─────────────────
+    # Fetch issue_date / payment_due / payment_method from wFirma and store
+    # on the draft. Best-effort: never fails the main flow.
+    _wfirma_id_for_enrich = (result.wfirma_invoice_id or "").strip()
+    if _wfirma_id_for_enrich and final:
+        try:
+            _enrich = wfirma_client.fetch_proforma_enrichment(
+                _wfirma_id_for_enrich)
+            pildb.write_postposting_enrichment(
+                _proforma_db_path(),
+                final.id,
+                wfirma_issue_date     = _enrich.get("issue_date") or None,
+                wfirma_payment_due    = _enrich.get("payment_due") or None,
+                wfirma_payment_method = _enrich.get("payment_method") or None,
+            )
+            final = pildb.get_draft(_proforma_db_path(), batch_id, cn)
+        except Exception as _enrich_exc:
+            log.warning("[%s] post-posting enrichment skipped: %s",
+                        batch_id, _enrich_exc)
 
     # Append-only audit hardening: persist Proforma id under
     # audit.proforma_issued[] and emit a timeline event so audit.json
@@ -2899,9 +2920,33 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
 
     from html import escape as _esc
     import json as _json
+    from pathlib import Path as _Path
 
     def _safe(s) -> str:
         return _esc(str(s)) if s is not None else ""
+
+    # ── Company profile (read-only; missing → banner) ─────────────────────────
+    _master_db = settings.storage_root / "master_data.sqlite"
+    try:
+        company_profile = get_company_profile(_master_db)
+    except Exception:
+        company_profile = None
+
+    # ── Audit.json read-through (read-only; never raises) ─────────────────────
+    _audit_awb = "—"
+    _audit_carrier = "—"
+    _audit_clearance_path = "—"
+    try:
+        _audit_path = settings.storage_root / "outputs" / (d.batch_id or "") / "audit.json"
+        if _audit_path.exists():
+            with open(str(_audit_path), "r", encoding="utf-8") as _af:
+                _audit_data = _json.load(_af)
+            _audit_awb = _safe(_audit_data.get("awb") or "—")
+            _audit_carrier = _safe(_audit_data.get("carrier") or "—")
+            _cd = _audit_data.get("clearance_decision") or {}
+            _audit_clearance_path = _safe(_cd.get("clearance_path") or "—")
+    except Exception:
+        pass  # leave defaults as "—"
 
     # Lines.
     try:
@@ -2932,6 +2977,26 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
         cust = {"wfirma_customer_id": "", "resolved_wfirma_name": "",
                 "match_strategy": "none", "found": False}
 
+    # ── VAT context label (document-level, same for all lines) ────────────────
+    try:
+        _cust_country = cust.get("country") or ""
+        _cust_vat     = cust.get("vat_id") or ""
+        _vat_decision = wfirma_client.decide_proforma_vat_context(
+            _cust_country, _cust_vat
+        )
+        _vat_label = {
+            "domestic": "23% VAT",
+            "wdt":      "0% (WDT)",
+            "export":   "0% (EXP)",
+            "blocked":  "VAT TBD",
+        }.get(_vat_decision.get("context", ""), "VAT TBD")
+    except Exception:
+        # Fallback: simple heuristic when decide_proforma_vat_context fails
+        if (d.currency or "") == "EUR" and cust.get("wfirma_customer_id"):
+            _vat_label = "0% (WDT/EXP)"
+        else:
+            _vat_label = "23% VAT"
+
     # Totals — additive only; no engine calls.
     def _num(x):
         try: return float(x or 0)
@@ -2941,6 +3006,31 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
     charges_total = sum(_num(c.get("amount")) for c in charges)
     grand_total = lines_total + charges_total
 
+    # ── PLN reference total ────────────────────────────────────────────────────
+    _pln_total_html = ""
+    _fx_info_html   = ""
+    try:
+        _exr = float(d.exchange_rate or 0)
+    except Exception:
+        _exr = 0.0
+    if _exr and _exr > 0:
+        _pln_total = grand_total * _exr
+        _pln_total_html = (
+            f"<dt>PLN equivalent:</dt>"
+            f"<dd>{_pln_total:.2f} PLN</dd>"
+        )
+        _fx_parts: List[str] = []
+        if d.fx_rate_date:
+            _fx_parts.append(f"Rate date: {_safe(d.fx_rate_date)}")
+        if d.fx_rate_source:
+            _fx_parts.append(f"Source: {_safe(d.fx_rate_source)}")
+        if _fx_parts:
+            _fx_info_html = (
+                f"<dt style='font-size:10px;color:#888;'>"
+                f"{' · '.join(_fx_parts)}</dt>"
+                f"<dd></dd>"
+            )
+
     rows_html: List[str] = []
     for ln in lines:
         rows_html.append(
@@ -2948,7 +3038,10 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
             f"<td>{_safe(ln.get('product_code'))}</td>"
             f"<td>{_safe(ln.get('item_type'))}</td>"
             f"<td>{_safe(ln.get('name_pl'))}</td>"
+            f"<td>{_safe(ln.get('name_en'))}</td>"
             f"<td>{_safe(ln.get('design_no'))}</td>"
+            f"<td>{_safe(ln.get('hs_code'))}</td>"
+            f"<td>{_vat_label}</td>"
             f"<td class='num'>{_safe(ln.get('qty'))}</td>"
             f"<td class='num'>{_safe(ln.get('unit_price'))}</td>"
             f"<td>{_safe(ln.get('currency'))}</td>"
@@ -2991,13 +3084,118 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
                   else ("⚠ Ambiguous" if cust.get("ambiguous")
                         else "✗ Unmatched"))
 
+    # ── Seller block HTML ──────────────────────────────────────────────────────
+    if company_profile is None:
+        _seller_html = (
+            "<div style='background:#fde;color:#831;padding:8px 12px;"
+            "border-radius:4px;font-size:12px;font-weight:700;'>"
+            "Company profile not configured — go to Settings &gt; Company profile "
+            "to add seller details."
+            "</div>"
+        )
+        _bank_html = ""
+    else:
+        cp = company_profile
+        _seller_lines: List[str] = []
+        if cp.legal_name:
+            _seller_lines.append(
+                f"<div style='font-weight:700;'>{_safe(cp.legal_name)}</div>"
+            )
+        if cp.street:
+            _seller_lines.append(f"<div>{_safe(cp.street)}</div>")
+        if cp.postal_city:
+            _seller_lines.append(f"<div>{_safe(cp.postal_city)}</div>")
+        if cp.country:
+            _seller_lines.append(f"<div>{_safe(cp.country)}</div>")
+        if cp.nip:
+            _seller_lines.append(f"<div>NIP: {_safe(cp.nip)}</div>")
+        if cp.vat_eu:
+            _seller_lines.append(f"<div>VAT-EU: {_safe(cp.vat_eu)}</div>")
+        if cp.email:
+            _seller_lines.append(f"<div>{_safe(cp.email)}</div>")
+        if cp.phone:
+            _seller_lines.append(f"<div>{_safe(cp.phone)}</div>")
+        _seller_html = (
+            "<div class='addr'>"
+            "<div class='addr-h'>Seller</div>"
+            + "".join(_seller_lines)
+            + "</div>"
+        )
+
+        # Bank details — omit entire section if all fields are None
+        _bank_fields = [
+            ("IBAN EUR", cp.iban_eur),
+            ("IBAN USD", cp.iban_usd),
+            ("IBAN PLN", cp.iban_pln),
+            ("SWIFT/BIC", cp.swift),
+            ("Bank",      cp.bank_name),
+        ]
+        _bank_rows = [
+            f"<div><span style='color:#888;min-width:72px;display:inline-block;'>"
+            f"{_safe(lbl)}:</span> {_safe(val)}</div>"
+            for lbl, val in _bank_fields if val
+        ]
+        if _bank_rows:
+            _bank_html = (
+                "<h2>Bank details</h2>"
+                "<div class='addr'>"
+                + "".join(_bank_rows)
+                + "</div>"
+            )
+        else:
+            _bank_html = ""
+
+    # ── Document number header (draft vs posted) ───────────────────────────────
+    _doc_number_html: str
+    if getattr(d, "wfirma_proforma_fullnumber", None):
+        _doc_number_html = (
+            f"<div style='font-size:13px;font-weight:700;margin-bottom:4px;'>"
+            f"Document: {_safe(d.wfirma_proforma_fullnumber)}"
+            f"</div>"
+        )
+    else:
+        _doc_number_html = (
+            "<div style='display:inline-block;background:#fff3cd;"
+            "color:#856404;padding:2px 8px;border-radius:3px;"
+            "font-size:11px;font-weight:700;margin-bottom:4px;'>"
+            "DRAFT — not yet posted"
+            "</div>"
+        )
+
+    # ── Phase 3 — wFirma post-posting enrichment display ──────────────────────
+    _wfirma_dates_html = ""
+    _issue_date   = getattr(d, "wfirma_issue_date", None)
+    _payment_due  = getattr(d, "wfirma_payment_due", None)
+    _pay_method   = getattr(d, "wfirma_payment_method", None)
+    if any((_issue_date, _payment_due, _pay_method)):
+        _rows = []
+        if _issue_date:
+            _rows.append(f"<dt>Issue date:</dt><dd>{_safe(_issue_date)}</dd>")
+        if _payment_due:
+            _rows.append(f"<dt>Payment due:</dt><dd>{_safe(_payment_due)}</dd>")
+        if _pay_method:
+            _rows.append(f"<dt>Payment method:</dt><dd>{_safe(_pay_method)}</dd>")
+        _wfirma_dates_html = (
+            "<dl class='terms' style='margin-top:6px;'>"
+            + "".join(_rows)
+            + "</dl>"
+        )
+
+    # ── Incoterm + insurance section ───────────────────────────────────────────
+    _incoterm_val  = _safe(d.incoterm) if d.incoterm else "—"
+    try:
+        _ins_eur = float(d.insurance_eur)
+        _insurance_val = f"{_ins_eur:.2f} EUR"
+    except (TypeError, ValueError, AttributeError):
+        _insurance_val = "—"
+
     html = f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <title>Proforma draft #{d.id} — {_safe(d.client_name)}</title>
 <style>
   body {{ font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-          max-width: 940px; margin: 18px auto; padding: 12px 24px;
+          max-width: 960px; margin: 18px auto; padding: 12px 24px;
           color: #1a1a1a; }}
   h1 {{ font-size: 22px; margin: 0 0 4px; }}
   h2 {{ font-size: 13px; text-transform: uppercase;
@@ -3022,7 +3220,7 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
   th {{ font-size: 10px; text-transform: uppercase;
         letter-spacing: 0.05em; color: #666; }}
   .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
-  .totals {{ margin-top: 12px; width: 320px; margin-left: auto;
+  .totals {{ margin-top: 12px; width: 360px; margin-left: auto;
               font-size: 12px; }}
   .totals dt {{ display: inline-block; width: 60%; }}
   .totals dd {{ display: inline-block; width: 40%; text-align: right;
@@ -3047,11 +3245,17 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
     Read-only proforma draft preview · browser-print to PDF
   </div>
   <h1>Proforma DRAFT — {_safe(d.client_name)}</h1>
+  {_doc_number_html}
+  {_wfirma_dates_html}
   <div class="meta">
     Draft #{d.id} · v{d.draft_version} ·
     state <span class="pill">{_safe(d.draft_state)}</span> ·
     batch <code>{_safe(d.batch_id)}</code>
   </div>
+
+  <h2>Seller</h2>
+  {_seller_html}
+  {_bank_html}
 
   <h2>Customer mapping</h2>
   <div style="font-size:12px;">
@@ -3071,15 +3275,34 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
       {terms_html}</div>
   </div>
 
+  <h2>Shipment</h2>
+  <div style="font-size:12px;">
+    <div><span style="color:#888;min-width:110px;display:inline-block;">AWB:</span>
+      {_audit_awb}</div>
+    <div><span style="color:#888;min-width:110px;display:inline-block;">Carrier:</span>
+      {_audit_carrier}</div>
+    <div><span style="color:#888;min-width:110px;display:inline-block;">Clearance path:</span>
+      {_audit_clearance_path}</div>
+  </div>
+
+  <h2>Shipment terms</h2>
+  <div style="font-size:12px;">
+    <div><span style="color:#888;min-width:110px;display:inline-block;">Incoterm:</span>
+      {_incoterm_val}</div>
+    <div><span style="color:#888;min-width:110px;display:inline-block;">Insurance declared:</span>
+      {_insurance_val}</div>
+  </div>
+
   <h2>Lines ({len(lines)})</h2>
   <table>
     <thead><tr>
       <th>Product code</th><th>Item type</th><th>Name (PL)</th>
-      <th>Design</th><th class="num">Qty</th>
+      <th>Name (EN)</th><th>Design</th><th>HS code</th><th>VAT</th>
+      <th class="num">Qty</th>
       <th class="num">Unit price</th><th>Currency</th>
       <th class="num">Line total</th>
     </tr></thead>
-    <tbody>{''.join(rows_html) or '<tr><td colspan="8" style="color:#aaa;text-align:center;">(no lines)</td></tr>'}</tbody>
+    <tbody>{''.join(rows_html) or '<tr><td colspan="11" style="color:#aaa;text-align:center;">(no lines)</td></tr>'}</tbody>
   </table>
 
   <h2>Service charges ({len(charges)})</h2>
@@ -3096,6 +3319,8 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
       <dt>Lines total:</dt><dd>{lines_total:.2f}</dd>
       <dt>Service charges:</dt><dd>{charges_total:.2f}</dd>
       <dt class="grand">Grand total:</dt><dd class="grand">{grand_total:.2f} {_safe(d.currency)}</dd>
+      {_pln_total_html}
+      {_fx_info_html}
     </dl>
   </div>
 

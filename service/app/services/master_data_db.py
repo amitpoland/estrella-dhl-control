@@ -55,6 +55,8 @@ class ProductLocal:
     unit_override:    Optional[str] = None
     design_code_link: Optional[str] = None
     notes:            Optional[str] = None
+    # Phase 4 — origin country for customs (seeded 'IN' for all jewellery)
+    origin_country:   str = "IN"
     created_at:       Optional[str] = None
     updated_at:       Optional[str] = None
 
@@ -229,6 +231,16 @@ def init_db(db_path: Path) -> None:
                 updated_at        TEXT NOT NULL
             )
         """)
+        # Phase 4 — additive ALTER: origin_country defaults to 'IN'
+        # so all existing jewellery rows (sourced from India) are seeded.
+        try:
+            conn.execute(
+                "ALTER TABLE product_local ADD COLUMN origin_country "
+                "TEXT NOT NULL DEFAULT 'IN'"
+            )
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
 
         # ── B7 ─────────────────────────────────────────────────────────
         conn.execute("""
@@ -1081,10 +1093,17 @@ def validate_product_local(data: Dict[str, Any]) -> List[str]:
 
 
 def _row_to_pl(row: sqlite3.Row) -> ProductLocal:
+    keys = row.keys() if hasattr(row, "keys") else []
     return ProductLocal(
-        product_code=row["product_code"], hs_code_override=row["hs_code_override"],
-        unit_override=row["unit_override"], design_code_link=row["design_code_link"],
-        notes=row["notes"], created_at=row["created_at"], updated_at=row["updated_at"],
+        product_code     = row["product_code"],
+        hs_code_override = row["hs_code_override"],
+        unit_override    = row["unit_override"],
+        design_code_link = row["design_code_link"],
+        notes            = row["notes"],
+        # Phase 4 — origin_country: fall back to 'IN' if column absent
+        origin_country   = (row["origin_country"] if "origin_country" in keys else "IN") or "IN",
+        created_at       = row["created_at"],
+        updated_at       = row["updated_at"],
     )
 
 
@@ -1099,24 +1118,31 @@ def upsert_product_local(db_path: Path, data: Dict[str, Any]) -> ProductLocal:
         "unit_override":    _clean(data.get("unit_override")),
         "design_code_link": _clean(data.get("design_code_link")),
         "notes":            _clean(data.get("notes")),
+        # Phase 4 — origin_country; default 'IN' when not supplied
+        "origin_country":   (_clean(data.get("origin_country")) or "IN"),
     }
     now = _now()
     with sqlite3.connect(str(db_path)) as conn:
         existing = conn.execute("SELECT 1 FROM product_local WHERE product_code=?",
                                 (payload["product_code"],)).fetchone()
         if existing:
-            conn.execute("""UPDATE product_local SET hs_code_override=?, unit_override=?,
-                            design_code_link=?, notes=?, updated_at=? WHERE product_code=?""",
-                         (payload["hs_code_override"], payload["unit_override"],
-                          payload["design_code_link"], payload["notes"], now,
-                          payload["product_code"]))
+            conn.execute(
+                """UPDATE product_local SET hs_code_override=?, unit_override=?,
+                   design_code_link=?, notes=?, origin_country=?, updated_at=?
+                   WHERE product_code=?""",
+                (payload["hs_code_override"], payload["unit_override"],
+                 payload["design_code_link"], payload["notes"],
+                 payload["origin_country"], now,
+                 payload["product_code"]))
         else:
-            conn.execute("""INSERT INTO product_local (product_code, hs_code_override,
-                            unit_override, design_code_link, notes, created_at, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                         (payload["product_code"], payload["hs_code_override"],
-                          payload["unit_override"], payload["design_code_link"],
-                          payload["notes"], now, now))
+            conn.execute(
+                """INSERT INTO product_local (product_code, hs_code_override,
+                   unit_override, design_code_link, notes, origin_country,
+                   created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (payload["product_code"], payload["hs_code_override"],
+                 payload["unit_override"], payload["design_code_link"],
+                 payload["notes"], payload["origin_country"], now, now))
         conn.commit()
     return get_product_local(db_path, payload["product_code"])
 
@@ -1321,3 +1347,182 @@ def delete_design(db_path: Path, design_code: str) -> bool:
             return cur.rowcount > 0
         except sqlite3.OperationalError:
             return False
+
+
+# ── CompanyProfile (Phase 7 — commercial document platform) ──────────────────
+
+@dataclass
+class CompanyProfile:
+    # Identity
+    legal_name:        str
+    short_name:        Optional[str] = None
+    street:            Optional[str] = None
+    postal_city:       Optional[str] = None
+    country:           str           = "PL"
+    nip:               Optional[str] = None
+    vat_eu:            Optional[str] = None
+    regon:             Optional[str] = None
+    # Contact
+    email:             Optional[str] = None
+    phone:             Optional[str] = None
+    # Bank — Estrella as payee
+    iban_eur:          Optional[str] = None
+    iban_usd:          Optional[str] = None
+    iban_pln:          Optional[str] = None
+    swift:             Optional[str] = None
+    bank_name:         Optional[str] = None
+    # Legal boilerplate
+    place_of_issue:    Optional[str] = None
+    signatory_name:    Optional[str] = None
+    signatory_title:   Optional[str] = None
+    returns_policy_pl: Optional[str] = None
+    gdpr_text_pl:      Optional[str] = None
+    # Meta
+    updated_at:        Optional[str] = None
+
+
+def _row_to_company_profile(row: sqlite3.Row) -> "CompanyProfile":
+    return CompanyProfile(
+        legal_name        = row["legal_name"],
+        short_name        = row["short_name"],
+        street            = row["street"],
+        postal_city       = row["postal_city"],
+        country           = row["country"] or "PL",
+        nip               = row["nip"],
+        vat_eu            = row["vat_eu"],
+        regon             = row["regon"],
+        email             = row["email"],
+        phone             = row["phone"],
+        iban_eur          = row["iban_eur"],
+        iban_usd          = row["iban_usd"],
+        iban_pln          = row["iban_pln"],
+        swift             = row["swift"],
+        bank_name         = row["bank_name"],
+        place_of_issue    = row["place_of_issue"],
+        signatory_name    = row["signatory_name"],
+        signatory_title   = row["signatory_title"],
+        returns_policy_pl = row["returns_policy_pl"],
+        gdpr_text_pl      = row["gdpr_text_pl"],
+        updated_at        = row["updated_at"],
+    )
+
+
+_COMPANY_PROFILE_COLUMNS = [
+    "legal_name", "short_name", "street", "postal_city", "country",
+    "nip", "vat_eu", "regon", "email", "phone",
+    "iban_eur", "iban_usd", "iban_pln", "swift", "bank_name",
+    "place_of_issue", "signatory_name", "signatory_title",
+    "returns_policy_pl", "gdpr_text_pl", "updated_at",
+]
+
+
+def _ensure_company_profile_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS company_profile (
+            id                INTEGER PRIMARY KEY,
+            legal_name        TEXT NOT NULL DEFAULT '',
+            short_name        TEXT,
+            street            TEXT,
+            postal_city       TEXT,
+            country           TEXT NOT NULL DEFAULT 'PL',
+            nip               TEXT,
+            vat_eu            TEXT,
+            regon             TEXT,
+            email             TEXT,
+            phone             TEXT,
+            iban_eur          TEXT,
+            iban_usd          TEXT,
+            iban_pln          TEXT,
+            swift             TEXT,
+            bank_name         TEXT,
+            place_of_issue    TEXT,
+            signatory_name    TEXT,
+            signatory_title   TEXT,
+            returns_policy_pl TEXT,
+            gdpr_text_pl      TEXT,
+            updated_at        TEXT
+        )
+    """)
+    # Additive ALTER for future columns — same pattern as the rest of the file
+    for col, col_type in [
+        ("short_name",        "TEXT"),
+        ("street",            "TEXT"),
+        ("postal_city",       "TEXT"),
+        ("country",           "TEXT NOT NULL DEFAULT 'PL'"),
+        ("nip",               "TEXT"),
+        ("vat_eu",            "TEXT"),
+        ("regon",             "TEXT"),
+        ("email",             "TEXT"),
+        ("phone",             "TEXT"),
+        ("iban_eur",          "TEXT"),
+        ("iban_usd",          "TEXT"),
+        ("iban_pln",          "TEXT"),
+        ("swift",             "TEXT"),
+        ("bank_name",         "TEXT"),
+        ("place_of_issue",    "TEXT"),
+        ("signatory_name",    "TEXT"),
+        ("signatory_title",   "TEXT"),
+        ("returns_policy_pl", "TEXT"),
+        ("gdpr_text_pl",      "TEXT"),
+        ("updated_at",        "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE company_profile ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    conn.commit()
+
+
+def get_company_profile(db_path: Path) -> Optional[CompanyProfile]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            _ensure_company_profile_table(conn)
+            row = conn.execute(
+                "SELECT * FROM company_profile WHERE id=1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return _row_to_company_profile(row) if row else None
+
+
+def upsert_company_profile(db_path: Path, **fields) -> CompanyProfile:
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Filter to only known fields (exclude id and updated_at — we set updated_at ourselves)
+    allowed = set(_COMPANY_PROFILE_COLUMNS) - {"updated_at"}
+    payload = {k: v for k, v in fields.items() if k in allowed}
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_company_profile_table(conn)
+        existing = conn.execute(
+            "SELECT * FROM company_profile WHERE id=1"
+        ).fetchone()
+        if existing:
+            # Merge: start from existing values, overlay with supplied fields
+            merged: Dict[str, Any] = {col: existing[col] for col in _COMPANY_PROFILE_COLUMNS}
+            merged.update(payload)
+        else:
+            merged = {col: None for col in _COMPANY_PROFILE_COLUMNS}
+            merged["legal_name"] = ""
+            merged["country"]    = "PL"
+            merged.update(payload)
+
+        cols   = ["id"] + _COMPANY_PROFILE_COLUMNS
+        values = [1]    + [merged[c] for c in _COMPANY_PROFILE_COLUMNS]
+        placeholders = ", ".join(["?"] * len(cols))
+        col_list     = ", ".join(cols)
+        conn.execute(
+            f"INSERT OR REPLACE INTO company_profile ({col_list}) VALUES ({placeholders})",
+            values,
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM company_profile WHERE id=1"
+        ).fetchone()
+    return _row_to_company_profile(row)

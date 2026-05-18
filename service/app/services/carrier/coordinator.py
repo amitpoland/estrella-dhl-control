@@ -22,6 +22,7 @@ No live AWBs, no label bytes, no HTTP.
 from __future__ import annotations
 
 import dataclasses
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import FrozenSet, Optional
@@ -217,4 +218,32 @@ class CarrierCoordinator:
 
         _db_update(self._config.shipment_db_path, key, ShipmentState.COMPLETE)
 
-        return dataclasses.replace(raw_result, state=ShipmentState.COMPLETE)
+        # Phase 5 — attach request dimensions so they are captured in the DB
+        # via the COMPLETE result. service_product is adapter-provided (None
+        # for shadow mode; Phase D live adapter will populate it).
+        dimensions_json: Optional[str] = None
+        try:
+            if request.dimensions:
+                dimensions_json = json.dumps(request.dimensions, ensure_ascii=False)
+        except (TypeError, ValueError):
+            pass
+
+        complete = dataclasses.replace(
+            raw_result,
+            state=ShipmentState.COMPLETE,
+            dimensions_json=dimensions_json,
+        )
+
+        # Update the DB row with the enriched fields now that we have them.
+        from .persistence.shipment_db import update_shipment_fields as _db_update_fields
+        try:
+            _db_update_fields(
+                self._config.shipment_db_path,
+                key,
+                service_product=complete.service_product,
+                dimensions_json=complete.dimensions_json,
+            )
+        except Exception:
+            pass  # best-effort — state already COMPLETE above
+
+        return complete

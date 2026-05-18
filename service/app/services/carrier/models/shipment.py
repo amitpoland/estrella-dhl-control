@@ -44,6 +44,9 @@ class ShipmentResult:
     tracking_ref: Optional[str] = None
     error: Optional[str] = None
     simulated: bool = False
+    # Phase 5 — carrier API response fields captured for audit/proforma
+    service_product: Optional[str] = None   # e.g. "EXPRESS_WORLDWIDE"
+    dimensions_json: Optional[str] = None   # JSON-serialised dimensions dict
 
 
 class CarrierGateError(Exception):

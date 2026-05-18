@@ -16628,6 +16628,10 @@ function ProformaDraftPanel({ batchId, onToast }) {
 
   const [chargePrefill, setChargePrefill] = React.useState(null);
 
+  // ── Phase 2-B: incoterm + insurance_eur inline-edit state ────────────────
+  const [incotermBusy,  setIncotermBusy]  = React.useState(false);
+  const [insuranceBusy, setInsuranceBusy] = React.useState(false);
+
   // ── PR 2C.3c — bulk price recovery state ─────────────────────────────────
   const [priceRecoveryOpen,     setPriceRecoveryOpen]     = React.useState(false);
   const [bulkPriceText,         setBulkPriceText]         = React.useState('');
@@ -16718,6 +16722,44 @@ function ProformaDraftPanel({ batchId, onToast }) {
       onToast && onToast(`Suggest insurance failed: ${e.message}`, 'error');
     }
   }, [openId, openDraft, onToast]);
+
+  // ── Phase 2-B: incoterm + insurance_eur save handlers ───────────────────
+  const onSaveIncoterm = React.useCallback(async (value) => {
+    if (!openId) return;
+    setIncotermBusy(true);
+    try {
+      const r = await _writeCall('Incoterm', `/api/v1/proforma/draft/${openId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          expected_updated_at: openDraft && openDraft.updated_at,
+          patch: { incoterm: value || null },
+        }),
+      });
+      if (r && r.draft) setOpenDraft(r.draft);
+    } catch (e) {
+      // _writeCall already toasts on error
+    }
+    setIncotermBusy(false);
+  }, [openId, openDraft, _writeCall]);
+
+  const onSaveInsuranceEur = React.useCallback(async (value) => {
+    if (!openId) return;
+    setInsuranceBusy(true);
+    try {
+      const parsed = value === '' ? null : parseFloat(value);
+      const r = await _writeCall('Insurance EUR', `/api/v1/proforma/draft/${openId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          expected_updated_at: openDraft && openDraft.updated_at,
+          patch: { insurance_eur: (parsed !== null && !isNaN(parsed)) ? parsed : null },
+        }),
+      });
+      if (r && r.draft) setOpenDraft(r.draft);
+    } catch (e) {
+      // _writeCall already toasts on error
+    }
+    setInsuranceBusy(false);
+  }, [openId, openDraft, _writeCall]);
 
   const onApprove = () => {
     const token = window.prompt(
@@ -17579,6 +17621,89 @@ function ProformaDraftPanel({ batchId, onToast }) {
                 </div>
               </div>
 
+              {/* Phase 2-B: Shipment terms — incoterm + insurance_eur */}
+              <div data-testid="draft-shipment-terms"
+                   style={{ display: 'flex', gap: 16, flexWrap: 'wrap',
+                              marginBottom: 14, fontSize: 12,
+                              padding: '10px 12px',
+                              background: 'var(--bg-subtle)',
+                              border: '1px solid var(--border-1)',
+                              borderRadius: 4 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 140 }}>
+                  <label style={{ fontSize: 10, fontWeight: 700,
+                                    color: 'var(--text-3)',
+                                    letterSpacing: '0.06em',
+                                    textTransform: 'uppercase' }}>
+                    Incoterm
+                  </label>
+                  {isEditable ? (
+                    <select
+                      data-testid="select-draft-incoterm"
+                      value={openDraft.incoterm || ''}
+                      disabled={incotermBusy}
+                      onChange={e => onSaveIncoterm(e.target.value)}
+                      style={{ fontSize: 12, padding: '3px 6px',
+                                 border: '1px solid var(--border-1)',
+                                 borderRadius: 4,
+                                 background: 'var(--bg-1)',
+                                 color: 'var(--text-1)',
+                                 cursor: incotermBusy ? 'wait' : 'pointer' }}>
+                      <option value="">—</option>
+                      <option value="DAP">DAP</option>
+                      <option value="FCA">FCA</option>
+                      <option value="DDP">DDP</option>
+                      <option value="EXW">EXW</option>
+                      <option value="CPT">CPT</option>
+                      <option value="CIP">CIP</option>
+                    </select>
+                  ) : (
+                    <span data-testid="display-draft-incoterm"
+                          style={{ color: openDraft.incoterm
+                                     ? 'var(--text-1)' : 'var(--text-3)',
+                                   fontWeight: openDraft.incoterm ? 600 : 400 }}>
+                      {openDraft.incoterm || '—'}
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
+                  <label style={{ fontSize: 10, fontWeight: 700,
+                                    color: 'var(--text-3)',
+                                    letterSpacing: '0.06em',
+                                    textTransform: 'uppercase' }}>
+                    Insurance (EUR)
+                  </label>
+                  {isEditable ? (
+                    <input
+                      data-testid="input-draft-insurance-eur"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      disabled={insuranceBusy}
+                      defaultValue={openDraft.insurance_eur != null ? openDraft.insurance_eur : ''}
+                      key={`insurance-${openDraft.id}-${openDraft.updated_at}`}
+                      placeholder="0.00"
+                      onBlur={e => onSaveInsuranceEur(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') { e.target.blur(); } }}
+                      style={{ fontSize: 12, padding: '3px 6px', width: 120,
+                                 border: '1px solid var(--border-1)',
+                                 borderRadius: 4,
+                                 background: 'var(--bg-1)',
+                                 color: 'var(--text-1)',
+                                 cursor: insuranceBusy ? 'wait' : 'text' }} />
+                  ) : (
+                    <span data-testid="display-draft-insurance-eur"
+                          style={{ color: openDraft.insurance_eur != null
+                                     ? 'var(--text-1)' : 'var(--text-3)',
+                                   fontWeight: openDraft.insurance_eur != null ? 600 : 400 }}>
+                      {openDraft.insurance_eur != null
+                        ? openDraft.insurance_eur.toFixed(2) + ' EUR'
+                        : '—'}
+                    </span>
+                  )}
+                </div>
+              </div>
+
               {/* Action row — gated by current draft_state */}
               <div data-testid="draft-action-row"
                    style={{ display: 'flex', gap: 8, flexWrap: 'wrap',
@@ -17635,6 +17760,24 @@ function ProformaDraftPanel({ batchId, onToast }) {
                     {isPosted ? 'Posted — read-only.' : 'Cancelled — read-only.'}
                   </span>
                 )}
+                {/* Phase 2-B: Preview button — always visible when a draft is open */}
+                <a href={`/api/v1/proforma/draft/${openDraft.id}/preview.html`}
+                   target="_blank"
+                   rel="noreferrer"
+                   data-testid="btn-draft-preview"
+                   style={{
+                     display: 'inline-flex', alignItems: 'center', gap: 4,
+                     padding: '3px 10px', fontSize: 11, fontWeight: 600,
+                     background: 'var(--bg-subtle)',
+                     border: '1px solid var(--border-1)',
+                     borderRadius: 4,
+                     color: 'var(--text-1)',
+                     textDecoration: 'none',
+                     cursor: 'pointer',
+                     alignSelf: 'center',
+                   }}>
+                  Preview ↗
+                </a>
               </div>
 
               {/* Events drawer */}
