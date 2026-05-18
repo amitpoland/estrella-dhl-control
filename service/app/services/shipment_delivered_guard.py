@@ -99,6 +99,54 @@ def load_audit_for_batch(batch_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+# ── PR-211 extension: spec alias + idempotency-key helper ────────────────
+#
+# Operator spec calls the canonical check ``is_shipment_closed_for_followup``.
+# Provide that name as the public alias of ``is_audit_delivered`` so callers
+# can use the spec wording.  Same behaviour, no semantic change.
+
+def is_shipment_closed_for_followup(audit: Dict[str, Any]) -> bool:
+    """Spec-named alias of :func:`is_audit_delivered`.
+
+    A shipment is closed for follow-up iff its delivered state is true on
+    any of the canonical surfaces (``tracking.status``, ``delivered_at``,
+    ``proactive_dispatch_delivered_at``).  Pure; never raises.
+    """
+    return is_audit_delivered(audit)
+
+
+def build_idempotency_key(batch_id: str,
+                          email_type: str = "",
+                          to: str = "",
+                          purpose: str = "") -> str:
+    """Build a deterministic idempotency key for a follow-up email.
+
+    Key shape: ``"{batch_id}|{email_type}|{recipients_csv_lower}|{purpose}"``.
+
+    - ``batch_id`` distinguishes shipments
+    - ``email_type`` distinguishes follow-up purpose category
+      (e.g. ``"agency"`` / ``"dhl_reply"`` / ``"agency_followup"``)
+    - ``to`` is normalised: split on comma, trimmed, lowercased, sorted
+      so ``"A@x,B@y"`` and ``"b@y, a@x"`` produce identical keys
+    - ``purpose`` is optional free-form discriminator (e.g.
+      ``"sad_overdue"``) supplied by the caller when ``email_type`` is
+      too coarse
+
+    Pure / deterministic / side-effect free.  Used by queue-time
+    deduplication to refuse duplicate pending entries for the same
+    shipment+type+recipient.
+    """
+    bid_n   = (batch_id   or "").strip()
+    type_n  = (email_type or "").strip().lower()
+    pur_n   = (purpose    or "").strip().lower()
+    to_addrs = sorted({
+        a.strip().lower()
+        for a in str(to or "").split(",")
+        if a.strip()
+    })
+    return f"{bid_n}|{type_n}|{','.join(to_addrs)}|{pur_n}"
+
+
 def check_send_allowed(batch_id: str) -> Dict[str, Any]:
     """Single decision point for "may this batch's queued follow-up
     actually be sent now?"

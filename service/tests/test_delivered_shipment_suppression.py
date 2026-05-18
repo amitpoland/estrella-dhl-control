@@ -352,3 +352,208 @@ def test_email_sender_guard_does_not_invent_status_for_unknown_batches(fresh):
     assert res["status"] not in (
         "suppressed_delivered", "expired_stale_queue",
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Tier 5 — PR-211 extension: enqueue-time guard + idempotency
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_is_shipment_closed_for_followup_alias_matches_canonical(fresh):
+    """Spec-named helper is a true alias of is_audit_delivered."""
+    from app.services.shipment_delivered_guard import (
+        is_shipment_closed_for_followup, is_audit_delivered,
+    )
+    for sample in (
+        {"tracking": {"status": "delivered"}},
+        {"delivered_at": "2026-05-18T10:00:00Z"},
+        {"proactive_dispatch_delivered_at": "2026-05-18T10:00:00Z"},
+        {"tracking": {"status": "in_transit"}},
+        {},
+        None,
+    ):
+        assert (is_shipment_closed_for_followup(sample)
+                == is_audit_delivered(sample))
+
+
+def test_build_idempotency_key_is_deterministic_and_order_invariant():
+    from app.services.shipment_delivered_guard import build_idempotency_key
+    a = build_idempotency_key("B-1", "agency_followup",
+                                "a@x.com, b@y.com", "sad_overdue")
+    b = build_idempotency_key("B-1", "AGENCY_FOLLOWUP",
+                                "B@Y.COM,a@x.com", "SAD_OVERDUE")
+    assert a == b, f"key normalisation mismatch: {a!r} != {b!r}"
+    c = build_idempotency_key("B-2", "agency_followup",
+                                "a@x.com, b@y.com", "sad_overdue")
+    assert a != c
+    d = build_idempotency_key("B-1", "agency_followup",
+                                "a@x.com", "sad_overdue")
+    assert a != d
+    e = build_idempotency_key("B-1", "agency_followup",
+                                "a@x.com, b@y.com", "different")
+    assert a != e
+
+
+def test_queue_email_refuses_enqueue_for_delivered_shipment(fresh):
+    """queue_email must NOT write a queue entry — and therefore must
+    NOT trigger the immediate synchronous SMTP attempt — when the
+    shipment is already delivered.  Closes the rogue-instance gap
+    surfaced on Mon 21:01."""
+    from app.services import email_service as esvc
+    _write_audit(fresh, "SHIPMENT_DEL_ENQ",
+                 {"tracking": {"status": "delivered"}})
+    with pytest.raises(esvc.FollowupSuppressedError) as excinfo:
+        esvc.queue_email(
+            to="dhl@example.com",
+            subject="Follow-up on customs clearance",
+            body_html="<p>x</p>",
+            body_text="x",
+            batch_id="SHIPMENT_DEL_ENQ",
+            email_type="agency_followup",
+        )
+    assert excinfo.value.reason   == "shipment_delivered"
+    assert excinfo.value.batch_id == "SHIPMENT_DEL_ENQ"
+    # No queue entry written for this batch.
+    if (fresh / "email_queue.json").exists():
+        q = _read_queue(fresh)
+        assert all(e.get("batch_id") != "SHIPMENT_DEL_ENQ" for e in q), \
+            f"queue_email wrote an entry despite refusal: {q!r}"
+
+
+def test_queue_email_proceeds_when_shipment_not_delivered(fresh, monkeypatch):
+    """In-transit shipment must queue normally."""
+    from app.services import email_service as esvc
+    from app.services import email_sender as es
+    _write_audit(fresh, "SHIPMENT_ACT_ENQ",
+                 {"tracking": {"status": "in_transit"}})
+    monkeypatch.setattr(es, "_smtp_configured", lambda: False)
+    out_id = esvc.queue_email(
+        to="dhl@example.com",
+        subject="Hi", body_html="<p>x</p>", body_text="x",
+        batch_id="SHIPMENT_ACT_ENQ",
+        email_type="agency_followup",
+    )
+    assert out_id
+    q = _read_queue(fresh)
+    assert any(e.get("id") == out_id for e in q)
+
+
+def test_queue_email_idempotency_returns_existing_id(fresh, monkeypatch):
+    """Two queue_email calls with the same idempotency key must return
+    the SAME id and produce only ONE queue entry."""
+    from app.services import email_service as esvc
+    from app.services import email_sender as es
+    _write_audit(fresh, "SHIPMENT_DUP_1",
+                 {"tracking": {"status": "in_transit"}})
+    monkeypatch.setattr(es, "_smtp_configured", lambda: False)
+    id1 = esvc.queue_email(
+        to="agency@x.com, broker@y.com",
+        subject="Follow-up", body_html="<p>x</p>", body_text="x",
+        batch_id="SHIPMENT_DUP_1", email_type="agency_followup",
+    )
+    id2 = esvc.queue_email(
+        to="agency@x.com, broker@y.com",
+        subject="Follow-up #2", body_html="<p>x</p>", body_text="x",
+        batch_id="SHIPMENT_DUP_1", email_type="agency_followup",
+    )
+    assert id1 == id2, \
+        f"duplicate pending key produced different ids: {id1!r} vs {id2!r}"
+    q = _read_queue(fresh)
+    matching = [
+        e for e in q
+        if e.get("batch_id") == "SHIPMENT_DUP_1"
+        and e.get("email_type") == "agency_followup"
+        and (e.get("status") or "") == "pending"
+    ]
+    assert len(matching) == 1, \
+        f"expected 1 pending entry; got {len(matching)}: {matching!r}"
+
+
+def test_queue_email_idempotency_order_invariant(fresh, monkeypatch):
+    """Reordering / case-flipping recipients or email_type must still
+    hit the same idempotency key."""
+    from app.services import email_service as esvc
+    from app.services import email_sender as es
+    _write_audit(fresh, "SHIPMENT_DUP_2",
+                 {"tracking": {"status": "in_transit"}})
+    monkeypatch.setattr(es, "_smtp_configured", lambda: False)
+    id1 = esvc.queue_email(
+        to="a@x.com, b@y.com",
+        subject="A", body_html="<p>x</p>", body_text="x",
+        batch_id="SHIPMENT_DUP_2", email_type="dhl_reply",
+    )
+    id2 = esvc.queue_email(
+        to="B@Y.COM,a@x.com",       # reordered + case-flipped
+        subject="A again", body_html="<p>x</p>", body_text="x",
+        batch_id="SHIPMENT_DUP_2", email_type="DHL_REPLY",
+    )
+    assert id1 == id2
+
+
+def test_queue_email_distinct_email_type_creates_separate_entry(fresh, monkeypatch):
+    """Different email_type must NOT collapse — agency vs dhl_reply
+    are separate purposes and both must fire."""
+    from app.services import email_service as esvc
+    from app.services import email_sender as es
+    _write_audit(fresh, "SHIPMENT_DUP_3",
+                 {"tracking": {"status": "in_transit"}})
+    monkeypatch.setattr(es, "_smtp_configured", lambda: False)
+    id_a = esvc.queue_email(
+        to="dest@x.com", subject="A", body_html="<p>x</p>", body_text="x",
+        batch_id="SHIPMENT_DUP_3", email_type="agency_followup",
+    )
+    id_b = esvc.queue_email(
+        to="dest@x.com", subject="B", body_html="<p>x</p>", body_text="x",
+        batch_id="SHIPMENT_DUP_3", email_type="dhl_reply",
+    )
+    assert id_a != id_b
+    q = _read_queue(fresh)
+    pending = [e for e in q if (e.get("status") or "") == "pending"]
+    assert len(pending) == 2
+
+
+def test_dev_instance_scenario_no_sent_email_when_shipment_delivered(fresh, monkeypatch):
+    """End-to-end reproduction of the Mon 21:01 incident: a rogue
+    uvicorn tries to queue an agency follow-up to ACS for a delivered
+    shipment.  The guard must refuse and the SMTP path must NEVER
+    be reached."""
+    from app.services import email_service as esvc
+    from app.services import email_sender as es
+    _write_audit(fresh, "SHIPMENT_DEV_INSTANCE",
+                 {"tracking": {"status": "delivered"},
+                  "delivered_at": "2026-05-18T20:00:00Z"})
+    monkeypatch.setattr(
+        es, "_smtp_configured",
+        lambda: pytest.fail("smtp path was reached — guard failed"),
+    )
+    with pytest.raises(esvc.FollowupSuppressedError):
+        esvc.queue_email(
+            to="piotr@acspedycja.pl, biuro@acspedycja.pl",
+            subject="Follow-up on customs clearance",
+            body_html="<p>Please provide an update on customs clearance.</p>",
+            body_text="Please provide an update on customs clearance.",
+            batch_id="SHIPMENT_DEV_INSTANCE",
+            email_type="agency_followup",
+            from_address="import@estrellajewels.eu",
+        )
+    if (fresh / "email_queue.json").exists():
+        q = _read_queue(fresh)
+        assert all(e.get("batch_id") != "SHIPMENT_DEV_INSTANCE" for e in q)
+
+
+def test_followup_suppressed_error_is_catchable_by_callers(fresh):
+    """Callers can discriminate by .reason and .batch_id."""
+    from app.services import email_service as esvc
+    _write_audit(fresh, "SHIPMENT_CATCH",
+                 {"tracking": {"status": "delivered"}})
+    try:
+        esvc.queue_email(
+            to="dhl@example.com",
+            subject="x", body_html="<p>x</p>", body_text="x",
+            batch_id="SHIPMENT_CATCH", email_type="agency_followup",
+        )
+    except esvc.FollowupSuppressedError as e:
+        assert e.reason   == "shipment_delivered"
+        assert e.batch_id == "SHIPMENT_CATCH"
+        assert "delivered" in str(e).lower()
+    else:
+        pytest.fail("FollowupSuppressedError was not raised")
