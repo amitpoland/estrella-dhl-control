@@ -11194,6 +11194,11 @@ function ProformaDraftPanel({ batchId, onToast }) {
     setBulkPriceText('');
     setBulkPriceResult(null);
     setBulkPriceNeedsConfirm(null);
+    // Reset visibility/intelligence panels on open (Phase 5.5A)
+    setVisibility(null);
+    setIntelligence(null);
+    setVisOpen(false);
+    setIntelOpen(false);
     try {
       const d = await apiFetch(`/api/v1/proforma/draft/${draftId}`);
       setOpenDraft(d.draft);
@@ -11206,7 +11211,33 @@ function ProformaDraftPanel({ batchId, onToast }) {
     setOpenBusy(false);
   }, [onToast]);
 
-  const closeOne = () => { setOpenId(null); setOpenDraft(null); setEvents(null); setEventsOpen(false); };
+  const closeOne = () => {
+    setOpenId(null); setOpenDraft(null); setEvents(null); setEventsOpen(false);
+    setVisibility(null); setIntelligence(null); setVisOpen(false); setIntelOpen(false);
+  };
+
+  // Phase 5.5A — lazy-load visibility and intelligence on demand
+  const loadVisibility = React.useCallback(async () => {
+    if (!openId) return;
+    try {
+      const d = await apiFetch(`/api/v1/proforma/draft/${openId}/visibility`);
+      setVisibility(d);
+      setVisOpen(true);
+    } catch (e) {
+      onToast && onToast('Visibility load failed: ' + e.message, 'error');
+    }
+  }, [openId, onToast]);
+
+  const loadIntelligence = React.useCallback(async () => {
+    if (!openId) return;
+    try {
+      const d = await apiFetch(`/api/v1/proforma/draft/${openId}/intelligence`);
+      setIntelligence(d);
+      setIntelOpen(true);
+    } catch (e) {
+      onToast && onToast('Intelligence load failed: ' + e.message, 'error');
+    }
+  }, [openId, onToast]);
 
   const reloadOpen = React.useCallback(async () => {
     if (!openId) return;
@@ -11474,6 +11505,12 @@ function ProformaDraftPanel({ batchId, onToast }) {
   const [bulkPriceText,         setBulkPriceText]         = React.useState('');
   const [bulkPriceResult,       setBulkPriceResult]       = React.useState(null);
   const [bulkPriceNeedsConfirm, setBulkPriceNeedsConfirm] = React.useState(null);
+
+  // ── Phase 5.5A — visibility + intelligence state ──────────────────────────
+  const [visibility,      setVisibility]      = React.useState(null);
+  const [intelligence,    setIntelligence]    = React.useState(null);
+  const [visOpen,         setVisOpen]         = React.useState(false);
+  const [intelOpen,       setIntelOpen]       = React.useState(false);
 
   const onApplyBulkPrices = React.useCallback(async (withConfirm) => {
     const parsed = parseBulkPriceText(bulkPriceText);
@@ -12109,6 +12146,14 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   <Btn small onClick={loadEvents} data-testid="btn-draft-events">
                     {eventsOpen ? '▲ Hide history' : '▼ History'}
                   </Btn>
+                  <Btn small onClick={() => { if (visOpen) { setVisOpen(false); } else { loadVisibility(); } }}
+                       data-testid="btn-draft-visibility">
+                    {visOpen ? '▲ Visibility' : '▼ Visibility'}
+                  </Btn>
+                  <Btn small onClick={() => { if (intelOpen) { setIntelOpen(false); } else { loadIntelligence(); } }}
+                       data-testid="btn-draft-intelligence">
+                    {intelOpen ? '▲ AI' : '▼ AI'}
+                  </Btn>
                   <Btn small onClick={closeOne}>Close</Btn>
                 </div>
               </div>
@@ -12401,6 +12446,300 @@ function ProformaDraftPanel({ batchId, onToast }) {
                       Clear
                     </Btn>
                   </div>
+                </div>
+              )}
+
+              {/* ── Phase 5.5A — Visibility panel ──────────────────────────────── */}
+              {visOpen && visibility && (
+                <div data-testid="draft-visibility-panel"
+                     style={{ marginBottom: 14, borderRadius: 6, overflow: 'hidden',
+                                border: '1px solid var(--card-border)',
+                                fontSize: 12 }}>
+                  {/* Readiness section */}
+                  <div style={{ padding: '8px 12px',
+                                  background: visibility.readiness && visibility.readiness.blockers && visibility.readiness.blockers.length > 0
+                                    ? 'var(--badge-red-bg, #fef2f2)'
+                                    : visibility.readiness && visibility.readiness.warnings && visibility.readiness.warnings.length > 0
+                                      ? 'var(--badge-amber-bg, #fffbeb)'
+                                      : '#f0fdf4',
+                                  borderBottom: '1px solid var(--card-border)' }}>
+                    <div style={{ fontWeight: 700, fontSize: 11, textTransform: 'uppercase',
+                                    letterSpacing: '0.06em', marginBottom: 4,
+                                    color: 'var(--text-3)' }}>
+                      Readiness
+                      <span data-testid="draft-commercial-state"
+                            style={{ marginLeft: 8, fontWeight: 600, fontSize: 10,
+                                       textTransform: 'none', letterSpacing: 0,
+                                       color: (visibility.readiness && visibility.readiness.ready_for_posting)
+                                         ? '#166534' : 'var(--text-2)' }}>
+                        · {(visibility.readiness && visibility.readiness.commercial_state) || '—'}
+                      </span>
+                    </div>
+                    {visibility.readiness && (visibility.readiness.blockers || []).map((b, i) => (
+                      <div key={i} data-testid="draft-readiness-blocker"
+                           style={{ color: 'var(--badge-red-text, #991b1b)',
+                                      marginBottom: 2, display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                        <span>✗</span><span>{b}</span>
+                      </div>
+                    ))}
+                    {visibility.readiness && (visibility.readiness.warnings || []).map((w, i) => (
+                      <div key={i} data-testid="draft-readiness-warning"
+                           style={{ color: 'var(--badge-amber-text, #92400e)',
+                                      marginBottom: 2, display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                        <span>⚠</span><span>{w}</span>
+                      </div>
+                    ))}
+                    {visibility.readiness && (visibility.readiness.safe_to_defer || []).map((s, i) => (
+                      <div key={i} style={{ color: 'var(--text-3)', marginBottom: 2,
+                                              display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                        <span>ℹ</span><span>{s}</span>
+                      </div>
+                    ))}
+                    {visibility.readiness
+                      && !(visibility.readiness.blockers || []).length
+                      && !(visibility.readiness.warnings || []).length && (
+                      <div style={{ color: '#166534', fontSize: 11 }}>✓ No issues detected</div>
+                    )}
+                  </div>
+                  {/* Shipment + company + document row */}
+                  <div style={{ display: 'flex', gap: 0, flexWrap: 'wrap' }}>
+                    {/* Shipment panel */}
+                    <div data-testid="draft-shipment-panel"
+                         style={{ padding: '8px 12px', flex: '1 1 180px',
+                                    borderRight: '1px solid var(--card-border)',
+                                    borderBottom: '1px solid var(--card-border)' }}>
+                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
+                        Shipment
+                      </div>
+                      {visibility.shipment_panel && (
+                        <>
+                          <div><span style={{ color: 'var(--text-3)' }}>AWB </span>
+                            <strong data-testid="draft-shipment-awb">
+                              {visibility.shipment_panel.awb || '—'}
+                            </strong>
+                          </div>
+                          <div><span style={{ color: 'var(--text-3)' }}>Carrier </span>
+                            {visibility.shipment_panel.carrier || '—'}
+                          </div>
+                          {visibility.shipment_panel.service_product && (
+                            <div><span style={{ color: 'var(--text-3)' }}>Service </span>
+                              {visibility.shipment_panel.service_product}
+                            </div>
+                          )}
+                          {visibility.shipment_panel.clearance_path && (
+                            <div><span style={{ color: 'var(--text-3)' }}>Clearance </span>
+                              {visibility.shipment_panel.clearance_path}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    {/* Company completeness */}
+                    <div data-testid="draft-company-completeness"
+                         style={{ padding: '8px 12px', flex: '1 1 180px',
+                                    borderRight: '1px solid var(--card-border)',
+                                    borderBottom: '1px solid var(--card-border)' }}>
+                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
+                        Company profile
+                        {visibility.company_completeness && (
+                          <span style={{ marginLeft: 6, fontWeight: 600, fontSize: 10,
+                                           textTransform: 'none', letterSpacing: 0,
+                                           color: visibility.company_completeness.score >= 0.8 ? '#166534'
+                                             : visibility.company_completeness.score >= 0.5 ? '#92400e'
+                                             : '#991b1b' }}>
+                            {Math.round((visibility.company_completeness.score || 0) * 100)}%
+                          </span>
+                        )}
+                      </div>
+                      {visibility.company_completeness && !visibility.company_completeness.present && (
+                        <div style={{ color: 'var(--badge-red-text, #991b1b)', fontWeight: 600 }}>
+                          Not configured
+                        </div>
+                      )}
+                      {visibility.company_completeness && (visibility.company_completeness.missing_mandatory || []).map((f, i) => (
+                        <div key={i} style={{ color: 'var(--badge-red-text, #991b1b)' }}>✗ {f}</div>
+                      ))}
+                      {visibility.company_completeness && (visibility.company_completeness.missing_recommended || []).slice(0, 3).map((f, i) => (
+                        <div key={i} style={{ color: 'var(--badge-amber-text, #92400e)' }}>⚠ {f}</div>
+                      ))}
+                    </div>
+                    {/* Document status */}
+                    <div data-testid="draft-document-status"
+                         style={{ padding: '8px 12px', flex: '1 1 180px',
+                                    borderBottom: '1px solid var(--card-border)' }}>
+                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
+                        Document
+                      </div>
+                      {visibility.document_status && (
+                        <>
+                          <div>
+                            <span style={{ color: 'var(--text-3)' }}>Preview </span>
+                            <span style={{ color: '#166534' }}>✓ ready</span>
+                          </div>
+                          <div>
+                            <span style={{ color: 'var(--text-3)' }}>wFirma </span>
+                            {visibility.document_status.wfirma_issued
+                              ? <span style={{ color: '#166534' }}>
+                                  ✓ {visibility.document_status.wfirma_proforma_fullnumber || visibility.document_status.wfirma_proforma_id}
+                                </span>
+                              : <span style={{ color: 'var(--text-3)' }}>not issued</span>
+                            }
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  {/* Product lines enrichment preview */}
+                  {visibility.product_lines_panel && visibility.product_lines_panel.length > 0 && (
+                    <div style={{ padding: '8px 12px' }}>
+                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
+                        Product lines · names &amp; HS codes
+                      </div>
+                      <table data-testid="draft-product-lines-panel"
+                             style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ color: 'var(--text-3)', textAlign: 'left' }}>
+                            <th style={{ paddingBottom: 3 }}>code</th>
+                            <th>name_pl</th>
+                            <th>name_en</th>
+                            <th>hs_code</th>
+                            <th>origin</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {visibility.product_lines_panel.map((row, i) => (
+                            <tr key={i} style={{ borderTop: '1px solid var(--card-border)' }}>
+                              <td style={{ padding: '2px 4px 2px 0', fontFamily: 'monospace',
+                                             fontWeight: 600 }}>
+                                {row.product_code || '—'}
+                              </td>
+                              <td style={{ padding: '2px 4px' }}>
+                                {row.name_pl || <span style={{ color: 'var(--badge-red-text, #991b1b)' }}>missing</span>}
+                                {row.name_pl_source === 'product_descriptions' && (
+                                  <span style={{ color: 'var(--text-3)', fontSize: 9, marginLeft: 3 }}>(db)</span>
+                                )}
+                              </td>
+                              <td style={{ padding: '2px 4px' }}>
+                                {row.name_en || <span style={{ color: 'var(--text-3)', fontSize: 10 }}>—</span>}
+                                {row.name_en_source === 'product_descriptions' && (
+                                  <span style={{ color: 'var(--text-3)', fontSize: 9, marginLeft: 3 }}>(db)</span>
+                                )}
+                              </td>
+                              <td style={{ padding: '2px 4px', fontFamily: 'monospace' }}>
+                                {row.hs_code || <span style={{ color: 'var(--badge-amber-text, #92400e)' }}>—</span>}
+                                {row.hs_source === 'product_local' && (
+                                  <span style={{ color: 'var(--text-3)', fontSize: 9, marginLeft: 3 }}>(db)</span>
+                                )}
+                              </td>
+                              <td style={{ padding: '2px 4px', fontFamily: 'monospace' }}>
+                                {row.origin_country || '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── Phase 6 — AI Intelligence panel ─────────────────────────────── */}
+              {intelOpen && intelligence && (
+                <div data-testid="draft-intelligence-panel"
+                     style={{ marginBottom: 14, borderRadius: 6, overflow: 'hidden',
+                                border: '1px solid var(--card-border)',
+                                fontSize: 12 }}>
+                  {/* Confidence scores */}
+                  <div style={{ padding: '8px 12px', background: '#f8fafc',
+                                  borderBottom: '1px solid var(--card-border)',
+                                  display: 'flex', gap: 16, flexWrap: 'wrap',
+                                  alignItems: 'center' }}>
+                    <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                    letterSpacing: '0.06em', color: 'var(--text-3)' }}>
+                      AI Confidence
+                    </div>
+                    {intelligence.confidence && Object.entries(intelligence.confidence).map(([k, v]) => (
+                      <div key={k} data-testid={`draft-confidence-${k}`}
+                           style={{ fontSize: 11 }}>
+                        <span style={{ color: 'var(--text-3)' }}>{k} </span>
+                        <strong style={{ color: v >= 0.8 ? '#166534' : v >= 0.5 ? '#92400e' : '#991b1b' }}>
+                          {Math.round(v * 100)}%
+                        </strong>
+                      </div>
+                    ))}
+                    {intelligence.corpus_size > 0 && (
+                      <div style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 'auto' }}>
+                        corpus: {intelligence.corpus_size} posted drafts
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Anomalies */}
+                  {(intelligence.anomalies || []).length > 0 && (
+                    <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--card-border)' }}>
+                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
+                        Anomalies ({intelligence.anomalies.length})
+                      </div>
+                      {intelligence.anomalies.map((a, i) => (
+                        <div key={i} data-testid="draft-anomaly-row"
+                             style={{ marginBottom: 3, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                          <span style={{ fontFamily: 'monospace', color: 'var(--text-3)', minWidth: 80,
+                                           fontSize: 10 }}>
+                            {a.product_code || '?'}
+                          </span>
+                          <span style={{ color: a.severity === 'high' ? '#991b1b'
+                                                : a.severity === 'medium' ? '#92400e' : 'var(--text-2)',
+                                           flex: 1 }}>
+                            {a.message}
+                          </span>
+                          <span style={{ fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+                            {a.severity}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {(intelligence.anomalies || []).length === 0 && (
+                    <div style={{ padding: '8px 12px', color: '#166534', fontSize: 11,
+                                    borderBottom: '1px solid var(--card-border)' }}>
+                      ✓ No anomalies detected
+                    </div>
+                  )}
+
+                  {/* Suggestions */}
+                  {(intelligence.suggestions || []).length > 0 && (
+                    <div style={{ padding: '8px 12px' }}>
+                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
+                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
+                        Suggested fills ({intelligence.suggestions.length}) · review before applying
+                      </div>
+                      {intelligence.suggestions.map((s, i) => (
+                        <div key={i} data-testid="draft-suggestion-row"
+                             style={{ marginBottom: 3, display: 'flex', gap: 8,
+                                        alignItems: 'flex-start', fontSize: 11 }}>
+                          <span style={{ fontFamily: 'monospace', color: 'var(--text-3)', minWidth: 80,
+                                           fontSize: 10 }}>
+                            {s.product_code}
+                          </span>
+                          <span style={{ color: 'var(--text-3)', minWidth: 70 }}>{s.field}</span>
+                          <span style={{ flex: 1, fontWeight: 600 }}>{s.suggested_value}</span>
+                          <span style={{ fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+                            {Math.round(s.confidence * 100)}% · {s.source}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {(intelligence.suggestions || []).length === 0 && (
+                    <div style={{ padding: '8px 12px', color: 'var(--text-3)', fontSize: 11 }}>
+                      No field suggestions — all visible fields are populated.
+                    </div>
+                  )}
                 </div>
               )}
 

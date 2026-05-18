@@ -4685,3 +4685,401 @@ def get_proforma_pipeline(batch_id: str):
         "queue_stats":    queue_stats,
         "drafts":         enriched_drafts,
     })
+
+
+# ── Phase 5.5A / 6 — Visibility + Intelligence helpers + endpoints ─────────────
+
+def _master_db_path() -> "Path":
+    return settings.storage_root / "master_data.sqlite"
+
+
+def _carrier_shipment_db_path() -> "Path":
+    return settings.storage_root / "carrier_shipments.db"
+
+
+def _build_shipment_panel(batch_id: Optional[str]) -> Dict[str, Any]:
+    """Read-only: returns shipment intelligence for a batch.
+
+    Sources: audit.json (AWB, carrier, clearance_path) + carrier_shipments DB
+    (service_product, dimensions). Never raises — bad data returns None fields.
+    """
+    result: Dict[str, Any] = {
+        "awb":             None,
+        "carrier":         None,
+        "clearance_path":  None,
+        "service_product": None,
+        "dimensions":      None,
+    }
+    if not batch_id:
+        return result
+
+    # audit.json
+    try:
+        _audit_path = settings.storage_root / "outputs" / batch_id / "audit.json"
+        if _audit_path.exists():
+            with open(str(_audit_path), "r", encoding="utf-8") as _af:
+                _ad = json.load(_af)
+            result["awb"]     = _ad.get("awb") or None
+            result["carrier"] = _ad.get("carrier") or None
+            _cd = _ad.get("clearance_decision") or {}
+            result["clearance_path"] = _cd.get("clearance_path") or None
+    except Exception:
+        pass
+
+    # carrier_shipments DB (Phase 5 fields: service_product, dimensions_json)
+    try:
+        from ..services.carrier.persistence.shipment_db import (
+            get_shipment_by_batch_id as _get_carrier_shipment,
+        )
+        _cdb = _carrier_shipment_db_path()
+        if _cdb.exists():
+            row = _get_carrier_shipment(_cdb, batch_id)
+            if row:
+                result["service_product"] = row.get("service_product")
+                _dims_raw = row.get("dimensions_json")
+                if _dims_raw:
+                    try:
+                        result["dimensions"] = json.loads(_dims_raw)
+                    except Exception:
+                        result["dimensions"] = None
+    except Exception:
+        pass
+
+    return result
+
+
+def _build_draft_readiness_panel(
+    draft: "pildb.ProformaDraft",
+    lines: List[Dict[str, Any]],
+    company_completeness: Dict[str, Any],
+    shipment_panel: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Return a readiness inspection dict.
+
+    Fields: commercial_state (str), blockers (list), warnings (list),
+    safe_to_defer (list), ready_for_posting (bool).
+    Read-only. Never raises.
+    """
+    blockers: List[str] = []
+    warnings: List[str] = []
+    safe_to_defer: List[str] = []
+
+    # Company profile
+    if not company_completeness.get("present"):
+        blockers.append("Company profile not configured — required for posting.")
+    else:
+        for f in company_completeness.get("missing_mandatory", []):
+            blockers.append(f"Company profile missing mandatory field: {f}")
+        for f in company_completeness.get("missing_recommended", []):
+            warnings.append(f"Company profile missing recommended field: {f}")
+
+    # Client name
+    if not (draft.client_name or "").strip():
+        blockers.append("No client name — draft cannot be posted.")
+
+    # Lines
+    if not lines:
+        blockers.append("No product lines — add at least one line before posting.")
+    else:
+        zero_price = [ln for ln in lines if float(ln.get("unit_price", 0) or 0) <= 0]
+        if zero_price:
+            pcs = ", ".join(str(ln.get("product_code", "?")) for ln in zero_price[:5])
+            blockers.append(f"Lines with zero/missing price: {pcs}")
+
+        missing_hs = [
+            ln for ln in lines
+            if not str(ln.get("hs_code") or ln.get("hsn_code") or "").strip()
+        ]
+        if missing_hs:
+            pcs = ", ".join(str(ln.get("product_code", "?")) for ln in missing_hs[:5])
+            warnings.append(f"Lines missing HS code (required for customs): {pcs}")
+
+        missing_pl = [
+            ln for ln in lines
+            if not str(ln.get("name_pl") or "").strip()
+        ]
+        if missing_pl:
+            pcs = ", ".join(str(ln.get("product_code", "?")) for ln in missing_pl[:5])
+            warnings.append(f"Lines missing Polish name (name_pl): {pcs}")
+
+    # AWB — optional but worth noting
+    if not shipment_panel.get("awb"):
+        safe_to_defer.append("AWB not linked — can post without it but limits tracking.")
+
+    # Draft state checks
+    state = draft.draft_state or "draft"
+    if state == "posted":
+        blockers.append("Draft already posted — create a new draft to re-post.")
+    elif state == "cancelled":
+        blockers.append("Draft is cancelled — cannot post.")
+    elif state == "posting":
+        warnings.append("Posting already in progress — wait for completion.")
+    elif state == "post_failed":
+        warnings.append("Previous posting attempt failed — check error and retry.")
+
+    # Derive commercial state label
+    if draft.wfirma_proforma_id and state == "posted":
+        commercial_state = "posted"
+    elif state == "approved":
+        commercial_state = "ready_for_posting"
+    elif not blockers:
+        commercial_state = "ready_for_review"
+    elif lines:
+        commercial_state = "partial"
+    else:
+        commercial_state = "draft"
+
+    ready_for_posting = (
+        len(blockers) == 0
+        and state in ("draft", "editing", "approved")
+    )
+
+    return {
+        "commercial_state":  commercial_state,
+        "blockers":          blockers,
+        "warnings":          warnings,
+        "safe_to_defer":     safe_to_defer,
+        "ready_for_posting": ready_for_posting,
+    }
+
+
+def _build_document_status(draft: "pildb.ProformaDraft") -> Dict[str, Any]:
+    """Read-only document status projection."""
+    return {
+        "has_local_preview":          True,   # always: preview.html endpoint
+        "wfirma_issued":              bool(draft.wfirma_proforma_id),
+        "wfirma_proforma_id":         draft.wfirma_proforma_id,
+        "wfirma_proforma_fullnumber": draft.wfirma_proforma_fullnumber,
+        "draft_state":                draft.draft_state,
+        "posted_at":                  draft.posted_at,
+        "posted_by":                  draft.posted_by,
+    }
+
+
+def _build_product_lines_panel(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Read-only: return a display projection of editable lines.
+
+    Enriches with master_data.sqlite (product_local + product_descriptions)
+    for HS code override and PL/EN names where the line lacks them.
+    Language policy: PL + EN only — name_sk is never surfaced.
+    Never raises; enrichment failures are absorbed silently.
+    """
+    from ..services.master_data_db import get_product_local as _get_pl
+    from ..services import document_db as _ddb_local
+
+    _mdb = _master_db_path()
+    _docs_db = getattr(_ddb_local, "_db_path", None)
+
+    # Build name lookup from product_descriptions once (PL + EN only)
+    _name_lookup: Dict[str, Dict[str, str]] = {}
+    if _docs_db:
+        try:
+            with sqlite3.connect(str(_docs_db)) as _c:
+                _c.row_factory = sqlite3.Row
+                for _r in _c.execute(
+                    "SELECT product_code, name_pl, name_en FROM product_descriptions"
+                ).fetchall():
+                    _pc = (_r["product_code"] or "").strip()
+                    if _pc:
+                        _name_lookup[_pc] = {
+                            "name_pl": _r["name_pl"] or "",
+                            "name_en": _r["name_en"] or "",
+                        }
+        except Exception:
+            pass
+
+    result = []
+    for ln in lines:
+        pc = str(ln.get("product_code") or "").strip()
+
+        hs         = str(ln.get("hs_code") or ln.get("hsn_code") or "").strip()
+        hs_source  = "line" if hs else None
+        origin_country = "IN"
+
+        if pc and _mdb.exists():
+            try:
+                pl_row = _get_pl(_mdb, pc)
+                if pl_row:
+                    origin_country = pl_row.origin_country or "IN"
+                    if not hs and pl_row.hs_code_override:
+                        hs        = pl_row.hs_code_override
+                        hs_source = "product_local"
+            except Exception:
+                pass
+
+        name_pl        = str(ln.get("name_pl") or "").strip()
+        name_en        = str(ln.get("name_en") or "").strip()
+        name_pl_source = "line" if name_pl else None
+        name_en_source = "line" if name_en else None
+
+        if pc and pc in _name_lookup:
+            if not name_pl and _name_lookup[pc].get("name_pl"):
+                name_pl        = _name_lookup[pc]["name_pl"]
+                name_pl_source = "product_descriptions"
+            if not name_en and _name_lookup[pc].get("name_en"):
+                name_en        = _name_lookup[pc]["name_en"]
+                name_en_source = "product_descriptions"
+
+        result.append({
+            "line_id":         ln.get("line_id") or ln.get("id"),
+            "product_code":    pc,
+            "name_pl":         name_pl,
+            "name_en":         name_en,
+            "name_pl_source":  name_pl_source,
+            "name_en_source":  name_en_source,
+            "hs_code":         hs,
+            "hs_source":       hs_source,
+            "origin_country":  origin_country,
+            "unit_price":      ln.get("unit_price"),
+            "qty":             ln.get("qty"),
+            "currency":        ln.get("currency"),
+        })
+
+    return result
+
+
+@router.get("/draft/{draft_id}/visibility", dependencies=[_auth])
+def get_proforma_draft_visibility(draft_id: int) -> JSONResponse:
+    """Phase 5.5A — Operator-facing workflow visibility for a single draft.
+
+    Returns:
+    - shipment_panel: AWB, carrier, service_product, dimensions, clearance_path
+    - company_completeness: score, missing mandatory/recommended fields
+    - readiness: commercial_state, blockers, warnings, safe_to_defer
+    - document_status: wfirma_issued, wfirma_proforma_id, draft_state
+    - product_lines_panel: per-line display projection (PL+EN names, HS, origin)
+
+    Read-only. No mutations. 404 if draft does not exist.
+    """
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+
+    # Decode lines once
+    try:
+        lines: List[Dict[str, Any]] = json.loads(d.editable_lines_json or "[]") or []
+    except Exception:
+        lines = []
+    if not isinstance(lines, list):
+        lines = []
+
+    # Company profile + completeness
+    try:
+        company_profile = get_company_profile(_master_db_path())
+    except Exception:
+        company_profile = None
+
+    from ..services.proforma_intelligence import (
+        company_profile_completeness as _cp_completeness,
+    )
+    company_completeness = _cp_completeness(company_profile)
+
+    # Panels
+    shipment_panel      = _build_shipment_panel(d.batch_id)
+    readiness           = _build_draft_readiness_panel(
+        d, lines, company_completeness, shipment_panel,
+    )
+    document_status     = _build_document_status(d)
+    product_lines_panel = _build_product_lines_panel(lines)
+
+    return JSONResponse({
+        "ok":                   True,
+        "draft_id":             draft_id,
+        "batch_id":             d.batch_id,
+        "client_name":          d.client_name,
+        "shipment_panel":       shipment_panel,
+        "company_completeness": company_completeness,
+        "readiness":            readiness,
+        "document_status":      document_status,
+        "product_lines_panel":  product_lines_panel,
+    })
+
+
+@router.get("/draft/{draft_id}/intelligence", dependencies=[_auth])
+def get_proforma_draft_intelligence(draft_id: int) -> JSONResponse:
+    """Phase 6 — AI intelligence lane for a single draft.
+
+    Returns:
+    - anomalies: detected price / HS / naming anomalies per line
+    - suggestions: inferred missing field values (PL+EN names, HS codes)
+    - confidence: overall draft confidence score (0.0–1.0) with sub-scores
+    - corpus_size: number of historical posted drafts used for corpus stats
+
+    All values are assistive only. Every suggestion requires operator
+    review before downstream action. Language policy: PL + EN only.
+    Read-only. 404 if draft does not exist.
+    """
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+
+    from ..services import proforma_intelligence as _intel
+
+    try:
+        lines: List[Dict[str, Any]] = json.loads(d.editable_lines_json or "[]") or []
+    except Exception:
+        lines = []
+    if not isinstance(lines, list):
+        lines = []
+
+    # Company profile for confidence scoring
+    try:
+        company_profile = get_company_profile(_master_db_path())
+    except Exception:
+        company_profile = None
+
+    cp_info = _intel.company_profile_completeness(company_profile)
+
+    # Corpus stats from posted drafts only (trusted historical data)
+    corpus = _intel.build_corpus_stats(_proforma_db_path())
+
+    # Anomaly detection + missing-field inference
+    anomalies   = _intel.detect_line_anomalies(lines, corpus=corpus)
+    suggestions = _intel.infer_missing_fields(lines, master_db_path=_master_db_path())
+
+    # Confidence scoring
+    has_awb = bool(_build_shipment_panel(d.batch_id).get("awb"))
+    cp_fields = cp_info.get("fields", {})
+    confidence = _intel.score_draft_confidence(
+        lines=lines,
+        company_profile_present=cp_info["present"],
+        company_profile_fields_filled=sum(1 for v in cp_fields.values() if v),
+        company_profile_fields_total=len(cp_fields),
+        has_shipment_awb=has_awb,
+    )
+
+    return JSONResponse({
+        "ok":          True,
+        "draft_id":    draft_id,
+        "batch_id":    d.batch_id,
+        "client_name": d.client_name,
+        "anomalies": [
+            {
+                "line_id":      a.line_id,
+                "product_code": a.product_code,
+                "anomaly_type": a.anomaly_type,
+                "severity":     a.severity,
+                "message":      a.message,
+                "confidence":   a.confidence,
+            }
+            for a in anomalies
+        ],
+        "suggestions": [
+            {
+                "product_code":    s.product_code,
+                "field":           s.field,
+                "suggested_value": s.suggested_value,
+                "confidence":      s.confidence,
+                "source":          s.source,
+            }
+            for s in suggestions
+        ],
+        "confidence": {
+            "overall":  confidence.overall,
+            "company":  confidence.company,
+            "lines":    confidence.lines,
+            "shipment": confidence.shipment,
+            "pricing":  confidence.pricing,
+        },
+        "corpus_size": corpus.corpus_size,
+    })
