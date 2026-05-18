@@ -1,12 +1,13 @@
 ---
 name: engineering-lessons
 description: >
-  Binding engineering lessons from real production campaigns (A–D).
+  Binding engineering lessons from real production campaigns (A–E).
   Each lesson states what broke, why, the permanent rule that prevents
   recurrence, and where in the governance gates it binds. These are
   append-only. Invoke when writing test stubs, wiring coordinators to
   builders, adding new agent files, producing scorecard artefacts,
-  or preparing LOCAL-COMMIT-ONLY deploys.
+  preparing LOCAL-COMMIT-ONLY deploys, or building background email
+  automation.
 triggers:
   - "test stub"
   - "builder wiring"
@@ -21,6 +22,12 @@ triggers:
   - "lesson B"
   - "lesson C"
   - "lesson D"
+  - "lesson E"
+  - "background email"
+  - "email automation"
+  - "scheduler"
+  - "launchd"
+  - "email safety"
 ---
 
 # Engineering Lessons (permanent)
@@ -194,3 +201,43 @@ returns commits; `deploy_release_manager.md` § Branch hygiene item 5
 `docs/governance/lesson-d-local-commit-only-deploys.md`;
 `.claude/memory/local-commit-deploys.jsonl`;
 Wave 1 closure scorecard `.claude/memory/scorecards/2026-05-13-wave1-deploy-closure.md` § 4.
+
+## Lesson E — Background email automation requires five mandatory safety properties (2026-05-18)
+
+**Origin**: MacBook `pz-launcher.py` incident (2026-05-18). A launchd agent running since
+2026-05-10 held live SMTP credentials, ran live dev source on `0.0.0.0:8000`, and was
+capable of sending real outbound emails from a dev/local process with no isolation from
+production state. Contained by `launchctl unload` + plist disablement.
+
+**Binding rule** — every background email automation (scheduler, launchd agent, cron,
+cowork pipeline, follow-up SLA runner, or any process that may call `queue_email` or
+`send`) MUST implement all five properties before being deployed:
+
+1. **Execution-time validation** — validate shipment state, AWB, recipients, and
+   attachment integrity at the moment the email is about to send, not just at schedule
+   time. State may have changed between scheduling and execution.
+
+2. **Idempotency** — a given email event (identified by AWB + email type + date window)
+   must be sendable exactly once. Duplicate detection must be checked immediately before
+   send, not only at enqueue time.
+
+3. **Terminal-state suppression** — if the shipment is in a closed, cancelled, or
+   otherwise terminal state at execution time, abort the send and log the suppression.
+   Never rely on the caller to have checked terminal state earlier.
+
+4. **Replay safety** — if the process restarts, crashes, or replays a queue, already-sent
+   emails must not be re-sent. Sent state must be durably written before the send call
+   returns, and checked on every replay path.
+
+5. **Environment isolation** — dev, staging, and local processes must not send real SMTP
+   emails. Environment must be asserted at startup (not inferred). A process without an
+   explicit `ENV=production` guard must refuse to connect to the live SMTP server.
+
+**Where it binds**: every new scheduler, launchd/cron/NSSM job, cowork pipeline action
+runner, SLA follow-up service, or any module that imports `email_service`, `queue_email`,
+or `smtplib`; every code review of background automation; every deploy gate where an
+email-capable service is being restarted.
+
+**Reference**: `.claude/memory/engineering_lessons.md` Lesson E;
+2026-05-18 containment: `launchctl unload ~/Library/LaunchAgents/eu.estrellajewels.pz-service.plist`,
+plist moved to `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabled`.

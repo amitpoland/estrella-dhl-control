@@ -228,3 +228,42 @@ Three of the four previously-documented "local hotfix commits" (`4d595ca`, `80e3
 4. Do not proceed with any subsequent origin-pull deploy until reconciliation is merged
 
 **Reference**: Wave 1 closure cycle (2026-05-13); SHA `4c797e4`; SHA lineage verification section of `PROJECT_STATE.md`; Wave 1 closure scorecard `.claude/memory/scorecards/2026-05-13-wave1-deploy-closure.md` § 4 (Lesson D candidate). Governance reference: `docs/governance/lesson-d-local-commit-only-deploys.md`. Audit record: `.claude/memory/local-commit-deploys.jsonl` (first entry: `4c797e4` retroactive).
+
+---
+
+## Lesson E — Background email automation requires five mandatory safety properties (2026-05-18)
+
+**Origin**: MacBook `pz-launcher.py` incident (2026-05-18). A launchd agent (`eu.estrellajewels.pz-service`) had been running since 2026-05-10, binding to `0.0.0.0:8000`, loading live dev source from `/Downloads/CLI/service`, and holding live SMTP credentials in `~/Library/Application Support/estrellajewels/.env`. The process was capable of sending real outbound emails with no isolation guard between the dev environment and production SMTP. Contained by `launchctl unload` + plist moved to `~/LaunchAgent-Disabled/`.
+
+**Root cause**: No environment isolation check at startup; no idempotency guard in the follow-up scheduler; no terminal-state suppression in the SLA runner. The process treated itself as production because no explicit `ENV=production` assertion existed.
+
+**Binding rule** — every background email automation MUST implement all five properties:
+
+**Property 1 — Execution-time validation**
+Validate shipment state, AWB, recipients, and attachment integrity at execution time — the moment the email is about to be sent. Do not rely solely on validation done at schedule/enqueue time. State may have changed in the interval.
+
+Detection signal: any `queue_email()` call not preceded by a fresh audit-state read in the same function scope.
+
+**Property 2 — Idempotency**
+A given email event (identified by `AWB + email_type + date_window`) must be sendable exactly once. Duplicate detection must be checked immediately before the send call, not only at enqueue time. The sent-state record must be written atomically with (or before) the SMTP call.
+
+Detection signal: `queue_email()` called without a preceding `already_sent(awb, type, window)` check; or sent-state written after the SMTP call returns.
+
+**Property 3 — Terminal-state suppression**
+If the shipment is closed, cancelled, or in any terminal state at execution time, abort the send and log the suppression event. Never rely on the caller to have checked terminal state earlier in the call chain.
+
+Detection signal: `queue_email()` reachable from a code path where `audit["status"]` is not re-read in the same function; or no `if status in TERMINAL_STATES: return` guard before the send.
+
+**Property 4 — Replay safety**
+If the process restarts, crashes, or replays a queue, already-sent emails must not be re-sent. Sent state must be durably persisted (audit.json write or DB commit) before the send call returns. Every queue-drain path must check sent state before acting.
+
+Detection signal: scheduler that re-reads the full pending queue on startup without filtering by already-sent; or crash-recovery path that does not re-check sent state.
+
+**Property 5 — Environment isolation**
+Dev, staging, and local processes must not connect to the live SMTP server. The environment must be asserted explicitly at startup (e.g., `assert os.environ["ENV"] == "production"` or equivalent guard in `email_service.py`). A missing or ambiguous `ENV` value must default to dry-run (log only, no send).
+
+Detection signal: `email_service.py` or `smtplib` import reachable without an environment assertion; `ENV` read from `.env` without a startup-time check that aborts on non-production values.
+
+**Where it binds**: every scheduler, launchd/cron/NSSM/systemd job, cowork pipeline action runner, SLA follow-up service, or any module that imports `email_service`, `queue_email`, or `smtplib`; every code review of background automation; every deploy gate where an email-capable service is being restarted or added.
+
+**Reference**: 2026-05-18 MacBook containment; `CLAUDE.md` Lesson E summary; plist archived at `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabled`.
