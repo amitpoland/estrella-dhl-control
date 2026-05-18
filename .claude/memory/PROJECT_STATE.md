@@ -4,13 +4,15 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-19T(wave2-patch4-batch-complete)Z (RULE 3 auto-fire: Wave 2 patch #4 batch condensation PR #221 open. 8 retrieval-eligible sections condensed. CLAUDE.md 518→447 lines (−71). Governance kernel verified intact (GATES 1–6, RULES 1–6, Lessons A–E). Prior run: 2026-05-18T(post-219-merge)Z (PR #220 merge + contracts extraction). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
+**Last-run-at:** 2026-05-19T(wave2-closure)Z (RULE 3 auto-fire: PR #221 squash-merged SHA `a64d295`. Wave 2 COMPLETE. L0=447 lines, 8 retrieval pointers, 4 L3 contracts, 8 L1 commands. Final drift audit PASS. Governance architecture FROZEN. Prior run: 2026-05-19T(wave2-patch4-batch-complete)Z. Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
 
 ---
 
 # FACTS
 
 ## Current origin/main HEAD
+- **2026-05-19** — `a64d295` chore(kernel): Wave 2 patch #4 batch — condense 8 retrieval-eligible CLAUDE.md sections (#221) — **WAVE 2 COMPLETE**
+- **2026-05-18** — `f10e2a1` chore(governance): post-PR-219 contract-reference extraction (#220)
 - **2026-05-18** — `9230a6e` chore(kernel): Wave 2 patch #3 — condense Engineering Lessons A–D into retrieval module (PR #219 merge)
   - Prior: `4f95ed3` Merge PR #211: feat(dhl-followup): delivered-shipment suppression guards
   - Prior: `ba8cf24` feat(dhl-followup): enqueue-time guard + idempotency key (PR #211 extension)
@@ -42,6 +44,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **SHA lineage verified (STEP 4):** `git log 0b4e381..4c797e4` → 1 commit (`4c797e4` only). `git merge-base 0b4e381 4c797e4` → `1b38ea0`. Conclusion: `4d595ca`, `80e3469`, `1b38ea0` are already on origin/main (reachable from `0b4e381`). Only `4c797e4` is unique to Windows local chain. PROJECT_STATE.md "4 local hotfix commits" description was partially incorrect — 3 of 4 were already on origin/main. **Governance note:** `4c797e4` was deployed without a GitHub PR (local-commit-only deploy). 7-agent gate was run inline; CLAUDE.md gate spirit was observed. See Lesson D candidate in Scorecard § 4.
 
 ## Merged PRs (this session window, latest first)
+- **#221** 2026-05-19 — chore(kernel): Wave 2 patch #4 batch — condense 8 retrieval-eligible CLAUDE.md sections — merge SHA `a64d295` — governance/kernel only. 518→447 lines. All 15 invariants preserved. GATES/RULES/Lessons unchanged. Zero production code. **WAVE 2 COMPLETE.**
+- **#220** 2026-05-18 — chore(governance): post-PR-219 contract-reference extraction — merge SHA `f10e2a1` — 4 contracts created, 7 governance files updated, .gitignore updated. Zero production code.
 - **#219** 2026-05-18 — chore(kernel): Wave 2 patch #3 — condense Engineering Lessons A–D into retrieval module — merge SHA `9230a6e` — governance/kernel only. Squash-merged via GitHub REST API (local checkout blocked by unstaged governance normalization files). CLAUDE.md Engineering Lessons section condensed + Lesson E (background email automation 5 safety properties) added. Zero production code, zero test changes. Post-merge governance normalization (7 modified files + 4 contracts) committed as stabilization PR (see governance-contracts fact below).
 - **#216** 2026-05-18T18:28Z — chore(kernel): Wave 2 patch #1 — condense CLAUDE.md shipment sections (pz-shipment retrieval) — merge SHA `4083d84` — governance/kernel only. Condensed 8 shipment-processing sections in CLAUDE.md from 329 to 143 lines (−186 lines). 18 enforcement invariants preserved verbatim (machine-verified 29/29 fragments). Removed content is explanatory/reference, present verbatim in `.claude/commands/pz-shipment.md`. Post-patch observation audit 2026-05-18: STABLE — no enforcement regression, no sequencing drift, three LOW-risk items all mitigated by L1 triggers.
 - **#215** 2026-05-18T18:09Z — chore: fix skill discovery — move Wave 1A skills to .claude/commands/ — merge SHA `150b2c9` — rename-only, zero content changes, zero blast radius. Corrects `.claude/skills/` → `.claude/commands/` after runtime discovery.
@@ -82,7 +86,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Sequencing model** — three-PR cascade (Option B) chosen over single atomic PR for clean per-step rollback + GATE 2 compliance (max 3 open). Each PR in/out before next opened.
 
 ## Open PRs
-- **#221** 2026-05-19 — chore(kernel): Wave 2 patch #4 batch — condense 8 retrieval-eligible CLAUDE.md sections — governance-only, zero production code. SHA `033e200`. Awaiting merge.
+(#221 merged a64d295 — removed from open list)
 - **#10** feat(inventory): Risk-3/4 button stubs — deferred per operator instruction; do not touch.
 - **#8** docs(inventory): Doc 4 — failure modes — superseded by PR #34 merge (closeable / archiveable).
 - **#7** docs(inventory): Doc 3 — data source mapping — superseded by PR #34.
@@ -208,7 +212,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Shipment condensation stable** — post-patch observation audit 2026-05-18: no enforcement regression (all 7 `Never` imperatives intact), no sequencing drift (all invariant triples intact), no observer-trigger drift (Rules 2–3 at lines 155–178, outside condensed section). Three LOW-risk items identified (blocked format, Cliq field names, WorkDrive format variants), all mitigated by correctly-placed L1 triggers.
 - **`.claude/commands/` confirmed active retrieval surface** — runtime-validated 2026-05-18 across PRs #214, #215. All three modules (`pz-shipment`, `cowork-integration`, `engineering-lessons`) invocable via `Skill()` tool in session.
 - **`.claude/skills/` confirmed inert** — not scanned by skill loader in current Claude Code runtime. Validated by empirical failure + resolution cycle (PR #215).
-- **Wave 2 patch #4 PR OPEN** — PR #221, branch `chore/wave2-patch4-batch-condensation`, SHA `033e200`. 8 retrieval-eligible sections condensed in batch. CLAUDE.md 518→447 lines (−71 lines, −14%). All 15 enforcement invariants preserved (verified). GATES 1–6 (6/6), RULES 1–6 (6/6), Lessons A–E (5/5) UNCHANGED. Sections kept intact: `Operating rules` + `Required Cliq posting format`. Zero production code, zero test changes, zero agent changes.
+- **Wave 2 patch #4 MERGED** — PR #221, SHA `a64d295`, 2026-05-19. **WAVE 2 COMPLETE. GOVERNANCE ARCHITECTURE FROZEN.**, branch `chore/wave2-patch4-batch-condensation`, SHA `033e200`. 8 retrieval-eligible sections condensed in batch. CLAUDE.md 518→447 lines (−71 lines, −14%). All 15 enforcement invariants preserved (verified). GATES 1–6 (6/6), RULES 1–6 (6/6), Lessons A–E (5/5) UNCHANGED. Sections kept intact: `Operating rules` + `Required Cliq posting format`. Zero production code, zero test changes, zero agent changes.
   - Sections condensed: Financial rules, WorkDrive automation flow, Required workflow, Verification rules, Available integration, System architecture, When asked to run a shipment, Short instruction version.
   - 6 retrieval pointers added to `pz-shipment` L1.
   - Rollback: `git revert 033e200 --no-edit`.
