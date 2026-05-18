@@ -392,7 +392,7 @@ def learn_from_parse(
             "supplier_key":        supplier_key,
             "layout_fingerprint":  fingerprint,
             "learning_confidence": entry["confidence"],
-            "flag":                entry["confidence"],  # hard-failure path: use confidence (not unstable yet)
+            "flag":                entry["confidence"],  # hard-failure path: layout instability unknown — layout lookup is skipped on hard-failure path
             "hints_used":          [],
             "fields_recovered":    [],
             "learning_note":       "Parse had hard failures — patterns NOT updated",

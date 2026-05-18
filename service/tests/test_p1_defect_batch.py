@@ -188,14 +188,21 @@ class TestLearningTraceFlagWriter:
         )
 
     def test_unstable_produces_flag_unstable(self, tmp_path):
-        """learn_from_parse returns flag='unstable' for unstable layouts."""
+        """learn_from_parse returns flag='unstable' for unstable layouts.
+
+        The store is seeded with the actual fingerprint produced by
+        fingerprint_layout("", []) == "e3b0c44298fc" so the layout lookup
+        hits the unstable entry rather than creating a fresh one.
+        """
         import json
         try:
             import invoice_learning_agent as m
         except ImportError:
             pytest.skip("invoice_learning_agent not importable from sys.path")
 
-        # Build a temporary store with one supplier, one unstable layout
+        # fingerprint_layout("", []) == "e3b0c44298fc" — seed the store with
+        # exactly that fingerprint marked unstable so learn_from_parse hits it.
+        _FP = m.fingerprint_layout("", [])
         store_data = {
             "test_unstable_co": {
                 "supplier_key":    "test_unstable_co",
@@ -209,8 +216,8 @@ class TestLearningTraceFlagWriter:
                 "last_seen":       "2026-01-01",
                 "parse_count":     4,
                 "layouts": {
-                    "fp_unstable_test": {
-                        "layout_fingerprint":   "fp_unstable_test",
+                    _FP: {
+                        "layout_fingerprint":   _FP,
                         "confirmed_count":      0,
                         "success_count":        0,
                         "failure_count":        3,
@@ -227,15 +234,7 @@ class TestLearningTraceFlagWriter:
         store_path = tmp_path / "test_store_unstable.json"
         store_path.write_text(json.dumps(store_data), encoding="utf-8")
 
-        # Provide a fingerprint that matches the unstable layout
         result = m.learn_from_parse(
-            invoice={"supplier_name": "Test Unstable Co", "exporter_name": "Test Unstable Co"},
-            text="",
-            lines=[],
-            corrections_log=[],
-            store_path=store_path,
-            fingerprint_override="fp_unstable_test",
-        ) if hasattr(m.learn_from_parse, "__code__") and "fingerprint_override" in m.learn_from_parse.__code__.co_varnames else m.learn_from_parse(
             invoice={"supplier_name": "Test Unstable Co", "exporter_name": "Test Unstable Co"},
             text="",
             lines=[],
@@ -244,12 +243,15 @@ class TestLearningTraceFlagWriter:
         )
 
         assert "flag" in result, f"flag key missing from learn_from_parse result: {list(result.keys())}"
-        if result.get("supplier_key") == "test_unstable_co":
-            # Layout fingerprint matching depends on text — skip if not matched
-            if result.get("is_unstable"):
-                assert result["flag"] == "unstable", (
-                    f"Unstable layout must produce flag='unstable', got {result.get('flag')!r}"
-                )
+        assert result.get("supplier_key") == "test_unstable_co", (
+            f"Expected supplier_key 'test_unstable_co', got {result.get('supplier_key')!r}"
+        )
+        assert result.get("is_unstable") is True, (
+            f"Expected is_unstable=True for seeded unstable layout, got {result.get('is_unstable')!r}"
+        )
+        assert result["flag"] == "unstable", (
+            f"Unstable layout must produce flag='unstable', got {result['flag']!r}"
+        )
 
     def test_stable_supplier_produces_confidence_flag(self, tmp_path):
         """learn_from_parse returns flag matching confidence when not unstable."""
@@ -322,4 +324,61 @@ class TestLearningTraceFlagWriter:
         assert "flag" in result, "flag key must be present in all learn_from_parse results"
         assert result["flag"] in _VALID_FLAGS, (
             f"flag={result['flag']!r} not in valid set {_VALID_FLAGS}"
+        )
+
+    def test_hard_failure_path_emits_flag(self, tmp_path):
+        """learn_from_parse hard-failure early return must emit 'flag'.
+
+        The hard-failure branch fires when corrections_log contains an entry
+        with 'suspicious', 'failed', or 'invalid'. It exits before the normal
+        layout-processing path and must still include 'flag' in its return dict.
+        """
+        import json
+        try:
+            import invoice_learning_agent as m
+        except ImportError:
+            pytest.skip("invoice_learning_agent not importable from sys.path")
+
+        store_data = {
+            "hard_fail_co": {
+                "supplier_key":    "hard_fail_co",
+                "display_name":    "Hard Fail Co",
+                "invoice_format":  "generic",
+                "gstin":           "",
+                "confidence":      "emerging",
+                "confirmed_count": 5,
+                "failed_count":    0,
+                "first_seen":      "2026-01-01",
+                "last_seen":       "2026-01-01",
+                "parse_count":     5,
+                "layouts":         {},
+            }
+        }
+        store_path = tmp_path / "test_store_hardfail.json"
+        store_path.write_text(json.dumps(store_data), encoding="utf-8")
+
+        # "qty suspicious: 0.0" contains "suspicious" → triggers hard_failures list
+        result = m.learn_from_parse(
+            invoice={"supplier_name": "Hard Fail Co", "exporter_name": "Hard Fail Co"},
+            text="",
+            lines=[],
+            corrections_log=["qty suspicious: 0.0"],
+            store_path=store_path,
+        )
+
+        assert "flag" in result, (
+            f"Hard-failure return path must emit 'flag' key — "
+            f"got keys: {list(result.keys())}"
+        )
+        assert result["flag"] in _VALID_FLAGS, (
+            f"Hard-failure flag={result['flag']!r} not in valid set {_VALID_FLAGS}"
+        )
+        # Hard-failure path uses entry["confidence"] as the flag value
+        assert result["flag"] == "emerging", (
+            f"Hard-failure path must set flag=entry['confidence']='emerging', "
+            f"got {result['flag']!r}"
+        )
+        # Confirm the learning_note marks this as a hard-failure trace
+        assert "hard failure" in result.get("learning_note", "").lower(), (
+            "Hard-failure return must include a learning_note mentioning hard failures"
         )
