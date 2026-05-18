@@ -502,6 +502,22 @@ def _smtp_configured() -> bool:
     return bool(settings.smtp_user and settings.smtp_password and settings.smtp_host)
 
 
+def _assert_production_env_for_smtp() -> None:
+    """Lesson E Property 5 — environment isolation guard.
+
+    Raises RuntimeError if SMTP credentials are set but environment is NOT prod.
+    A dev/local process with credentials must never connect to the live SMTP server.
+    Call this once before any SMTP connect attempt.
+    """
+    if _smtp_configured() and settings.environment != "prod":
+        raise RuntimeError(
+            f"email_sender: SMTP credentials are configured but environment="
+            f"{settings.environment!r} (expected 'prod'). "
+            "Set ENVIRONMENT=prod in .env to enable real outbound email, "
+            "or unset SMTP_USER/SMTP_PASSWORD/SMTP_HOST in dev."
+        )
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def send_queued_email(
@@ -672,7 +688,8 @@ def send_queued_email(
             "available_methods": ["smtp", "manual_package"],
         }
 
-    # ── SMTP creds check ──────────────────────────────────────────────────
+    # ── SMTP creds check + Lesson E Property 5 environment isolation ─────
+    _assert_production_env_for_smtp()
     if not _smtp_configured():
         return {
             "ok":       False,

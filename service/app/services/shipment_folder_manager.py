@@ -93,7 +93,18 @@ def save_file(batch_id: str, src_path: str, doc_type: str,
     (no overwrite). If size differs, writes alongside as `<stem>_v2.<ext>`,
     `_v3`, etc. — never silently clobbers.
     """
-    src = Path(src_path)
+    src = Path(src_path).resolve()
+    # Issue #224: path traversal guard — source must reside under storage_root.
+    # This prevents an authenticated operator from supplying arbitrary server-side
+    # paths (e.g. /etc/passwd) and having them copied into the batch folder.
+    allowed_root = settings.storage_root.resolve()
+    try:
+        src.relative_to(allowed_root)
+    except ValueError:
+        raise PermissionError(
+            f"save_file: source path {src_path!r} is outside allowed storage root "
+            f"({allowed_root}). Operator-supplied file paths must be under storage_root."
+        )
     if not src.is_file():
         raise FileNotFoundError(f"Source file not found: {src_path}")
     dest_dir = folder_for(batch_id, doc_type)
