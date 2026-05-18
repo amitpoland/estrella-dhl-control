@@ -311,6 +311,8 @@ def init_document_db(db_path: Path) -> None:
         for col, ddl in (
             ("description_en",   "TEXT NOT NULL DEFAULT ''"),
             ("description_line", "TEXT NOT NULL DEFAULT ''"),
+            # Phase 4 — name_sk: Slovak product name (nullable, operator-populated)
+            ("name_sk",          "TEXT"),
         ):
             try:
                 con.execute(

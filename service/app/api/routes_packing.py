@@ -401,6 +401,7 @@ async def upload_packing_list(
             operator="packing_upload",
             db_path=_pf_db_path,
             audit_path=output_dir / "audit.json",
+            master_db_path=settings.storage_root / "master_data.sqlite",
         )
         log.info("[%s] proforma draft sync: %s", batch_id, _sync_result)
     except Exception as _pf_exc:
@@ -1290,6 +1291,7 @@ async def reprocess_packing_documents(
                 operator="reprocess",
                 db_path=_pf_db_path,
                 audit_path=output_dir / "audit.json",
+                master_db_path=settings.storage_root / "master_data.sqlite",
             )
             log.info("[%s] reprocess proforma draft sync: %s",
                      batch_id, _sync_result)
@@ -1974,6 +1976,7 @@ def link_packing_as_sales(
             operator="link_as_sales",
             db_path=_pf_db_path,
             audit_path=output_dir / "audit.json",
+            master_db_path=settings.storage_root / "master_data.sqlite",
         )
         log.info("[%s] link_as_sales draft sync: %s", batch_id, sync_summary)
     except Exception as exc:

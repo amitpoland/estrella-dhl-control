@@ -55,6 +55,8 @@ class ProductLocal:
     unit_override:    Optional[str] = None
     design_code_link: Optional[str] = None
     notes:            Optional[str] = None
+    # Phase 4 — origin country for customs (seeded 'IN' for all jewellery)
+    origin_country:   str = "IN"
     created_at:       Optional[str] = None
     updated_at:       Optional[str] = None
 
@@ -229,6 +231,16 @@ def init_db(db_path: Path) -> None:
                 updated_at        TEXT NOT NULL
             )
         """)
+        # Phase 4 — additive ALTER: origin_country defaults to 'IN'
+        # so all existing jewellery rows (sourced from India) are seeded.
+        try:
+            conn.execute(
+                "ALTER TABLE product_local ADD COLUMN origin_country "
+                "TEXT NOT NULL DEFAULT 'IN'"
+            )
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
 
         # ── B7 ─────────────────────────────────────────────────────────
         conn.execute("""
@@ -1081,10 +1093,17 @@ def validate_product_local(data: Dict[str, Any]) -> List[str]:
 
 
 def _row_to_pl(row: sqlite3.Row) -> ProductLocal:
+    keys = row.keys() if hasattr(row, "keys") else []
     return ProductLocal(
-        product_code=row["product_code"], hs_code_override=row["hs_code_override"],
-        unit_override=row["unit_override"], design_code_link=row["design_code_link"],
-        notes=row["notes"], created_at=row["created_at"], updated_at=row["updated_at"],
+        product_code     = row["product_code"],
+        hs_code_override = row["hs_code_override"],
+        unit_override    = row["unit_override"],
+        design_code_link = row["design_code_link"],
+        notes            = row["notes"],
+        # Phase 4 — origin_country: fall back to 'IN' if column absent
+        origin_country   = (row["origin_country"] if "origin_country" in keys else "IN") or "IN",
+        created_at       = row["created_at"],
+        updated_at       = row["updated_at"],
     )
 
 
@@ -1099,24 +1118,31 @@ def upsert_product_local(db_path: Path, data: Dict[str, Any]) -> ProductLocal:
         "unit_override":    _clean(data.get("unit_override")),
         "design_code_link": _clean(data.get("design_code_link")),
         "notes":            _clean(data.get("notes")),
+        # Phase 4 — origin_country; default 'IN' when not supplied
+        "origin_country":   (_clean(data.get("origin_country")) or "IN"),
     }
     now = _now()
     with sqlite3.connect(str(db_path)) as conn:
         existing = conn.execute("SELECT 1 FROM product_local WHERE product_code=?",
                                 (payload["product_code"],)).fetchone()
         if existing:
-            conn.execute("""UPDATE product_local SET hs_code_override=?, unit_override=?,
-                            design_code_link=?, notes=?, updated_at=? WHERE product_code=?""",
-                         (payload["hs_code_override"], payload["unit_override"],
-                          payload["design_code_link"], payload["notes"], now,
-                          payload["product_code"]))
+            conn.execute(
+                """UPDATE product_local SET hs_code_override=?, unit_override=?,
+                   design_code_link=?, notes=?, origin_country=?, updated_at=?
+                   WHERE product_code=?""",
+                (payload["hs_code_override"], payload["unit_override"],
+                 payload["design_code_link"], payload["notes"],
+                 payload["origin_country"], now,
+                 payload["product_code"]))
         else:
-            conn.execute("""INSERT INTO product_local (product_code, hs_code_override,
-                            unit_override, design_code_link, notes, created_at, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                         (payload["product_code"], payload["hs_code_override"],
-                          payload["unit_override"], payload["design_code_link"],
-                          payload["notes"], now, now))
+            conn.execute(
+                """INSERT INTO product_local (product_code, hs_code_override,
+                   unit_override, design_code_link, notes, origin_country,
+                   created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (payload["product_code"], payload["hs_code_override"],
+                 payload["unit_override"], payload["design_code_link"],
+                 payload["notes"], payload["origin_country"], now, now))
         conn.commit()
     return get_product_local(db_path, payload["product_code"])
 

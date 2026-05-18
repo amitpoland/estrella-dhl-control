@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import document_db as ddb
+from . import master_data_db as mdb
 from . import packing_db as _pdb
 from . import proforma_invoice_link_db as pildb
 from ..core import timeline as tl
@@ -181,6 +182,105 @@ def _modal_currency(lines: List[Dict[str, Any]], fallback: str = "EUR") -> str:
     return counts.most_common(1)[0][0] if counts else fallback
 
 
+# ── HS code resolution (Phase 4) ─────────────────────────────────────────────
+#
+# Priority chain (per product_code):
+#   1. product_local.hs_code_override   (master_data.sqlite, operator-curated)
+#   2. invoice_lines.hs_code / hsn_code (documents.db, parsed from invoices)
+#   3. None — caller leaves existing value unchanged
+#
+# All lookups are best-effort: any exception or None result falls through
+# to the next level. Never raises.
+
+def _resolve_hs_code(
+    product_code:   str,
+    master_db_path: Optional[Path],
+) -> Optional[str]:
+    """Return the best-available HS code for *product_code*, or None.
+
+    Level 1 — product_local.hs_code_override (master_data.sqlite).
+    Level 2 — invoice_lines.hs_code / hsn_code from documents.db.
+    Returns None if neither source has a non-empty value.
+    """
+    if not (product_code or "").strip():
+        return None
+
+    # ── Level 1: product_local override ──────────────────────────────────────
+    if master_db_path is not None:
+        try:
+            pl = mdb.get_product_local(master_db_path, product_code.strip())
+            if pl and (pl.hs_code_override or "").strip():
+                return pl.hs_code_override.strip()
+        except Exception as _exc:
+            log.debug(
+                "_resolve_hs_code: product_local lookup failed for %r: %s",
+                product_code, _exc,
+            )
+
+    # ── Level 2: invoice_lines in documents.db ────────────────────────────────
+    docs_db = getattr(ddb, "_db_path", None)
+    if docs_db is not None:
+        try:
+            with sqlite3.connect(str(docs_db)) as con:
+                con.row_factory = sqlite3.Row
+                row = con.execute(
+                    """
+                    SELECT hs_code, hsn_code
+                      FROM invoice_lines
+                     WHERE UPPER(TRIM(product_code)) = UPPER(TRIM(?))
+                       AND (
+                             (hs_code  IS NOT NULL AND hs_code  <> '')
+                             OR
+                             (hsn_code IS NOT NULL AND hsn_code <> '')
+                           )
+                     ORDER BY rowid DESC
+                     LIMIT 1
+                    """,
+                    (product_code.strip(),),
+                ).fetchone()
+                if row:
+                    hs = (row["hs_code"] or row["hsn_code"] or "").strip()
+                    if hs:
+                        return hs
+        except Exception as _exc:
+            log.debug(
+                "_resolve_hs_code: invoice_lines lookup failed for %r: %s",
+                product_code, _exc,
+            )
+
+    return None
+
+
+def _enrich_lines_with_hs(
+    lines:          List[Dict[str, Any]],
+    master_db_path: Optional[Path],
+) -> List[Dict[str, Any]]:
+    """Return a copy of *lines* with ``hs_code`` filled from the resolution chain.
+
+    Lines that already carry a non-empty ``hs_code`` are left unchanged
+    (operator-entered values take precedence). Lines whose resolved value is
+    None are left unchanged. Never mutates the input list.
+    """
+    if not master_db_path and getattr(ddb, "_db_path", None) is None:
+        return lines  # no resolution source available — fast exit
+
+    result: List[Dict[str, Any]] = []
+    for ln in lines:
+        existing = str(ln.get("hs_code") or "").strip()
+        if existing:
+            result.append(ln)
+            continue
+        pc = str(ln.get("product_code") or "").strip()
+        resolved = _resolve_hs_code(pc, master_db_path) if pc else None
+        if resolved:
+            clone = dict(ln)
+            clone["hs_code"] = resolved
+            result.append(clone)
+        else:
+            result.append(ln)
+    return result
+
+
 def _write_sync_metadata(
     db_path:  Path,
     draft_id: int,
@@ -213,12 +313,17 @@ def _write_sync_metadata(
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def sync_draft_from_packing_upload(
-    batch_id:   str,
-    operator:   str,
-    db_path:    Path,
-    audit_path: Optional[Path] = None,
+    batch_id:       str,
+    operator:       str,
+    db_path:        Path,
+    audit_path:     Optional[Path] = None,
+    master_db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Auto-create/sync proforma drafts from packing upload.
+
+    ``master_db_path`` — path to master_data.sqlite.  When provided, HS code
+    resolution is attempted for every line (priority: product_local.hs_code_override
+    → invoice_lines.hs_code).  Omitting it disables HS enrichment (no error).
 
     Returns a summary dict suitable for log.info(). Never raises.
     """
@@ -249,6 +354,11 @@ def sync_draft_from_packing_upload(
     resolved_lines, resolution_summary = resolve_sales_lines_for_batch(
         batch_id, sales_lines,
     )
+
+    # ── 1.6 Enrich lines with HS codes (best-effort, Phase 4) ────────────────
+    # Priority: product_local.hs_code_override → invoice_lines.hs_code.
+    # Lines that already carry hs_code are left unchanged.
+    resolved_lines = _enrich_lines_with_hs(resolved_lines, master_db_path)
 
     # ── 2. Group by client_name ───────────────────────────────────────────────
     by_client: Dict[str, List[Dict[str, Any]]] = {}
