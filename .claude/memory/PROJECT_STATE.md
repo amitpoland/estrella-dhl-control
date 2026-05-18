@@ -11,6 +11,9 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 # FACTS
 
 ## Current origin/main HEAD
+- **2026-05-19** — `f4736ab` chore(state): master campaign closure — Phases A-E complete — **CAMPAIGN V2 PHASE 1 COMPLETE: PR #222 filed (Windows reconciliation)**
+- **2026-05-19** — `c9175e6` fix(ui): inbox Open button dead-button guard (#209) — MERGED
+- **2026-05-19** — `ca9a212` chore(state): Wave 2 closure — PROJECT_STATE frozen, PR #221 merged
 - **2026-05-19** — `a64d295` chore(kernel): Wave 2 patch #4 batch — condense 8 retrieval-eligible CLAUDE.md sections (#221) — **WAVE 2 COMPLETE**
 - **2026-05-18** — `f10e2a1` chore(governance): post-PR-219 contract-reference extraction (#220)
 - **2026-05-18** — `9230a6e` chore(kernel): Wave 2 patch #3 — condense Engineering Lessons A–D into retrieval module (PR #219 merge)
@@ -87,14 +90,15 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Sequencing model** — three-PR cascade (Option B) chosen over single atomic PR for clean per-step rollback + GATE 2 compliance (max 3 open). Each PR in/out before next opened.
 
 ## Open PRs
-(Implementation slot: 0/3 used. #88 closed, #209 merged, #4-#8 closed.)
-- **#10** feat(inventory): Risk-3/4 button stubs — deferred per operator instruction; do not touch.
-- **#8** docs(inventory): Doc 4 — failure modes — superseded by PR #34 merge (closeable / archiveable).
-- **#7** docs(inventory): Doc 3 — data source mapping — superseded by PR #34.
-- **#6** docs(inventory): Doc 2 — button registry — superseded by PR #34.
-- **#5** docs(inventory): Doc 1 v2 — allocation ledger — superseded by PR #34.
-- **#4** docs(inventory): Phase 1 inspector report.
-- **#1** ui: align sidebar IA with Estrella Atlas design — historical Atlas branch (REFERENCE_ONLY pending).
+(Implementation slot: 2/3 used. #88 closed, #209 merged, #4-#8 closed.)
+- **#222** 2026-05-19 — chore(deploy-prep): Windows reconciliation delta map 4c797e4→f4736ab — DOCS-ONLY — Lesson D disclosure PR for Windows deploy prep. SHA `cbe94a2`.
+- **#140** docs(e2e): real operator browser E2E validation report — historical analysis, no code.
+- **#138** docs(audit): Estrella production UI parity audit — historical analysis, no code.
+- **#137** docs(final): Estrella final live status report — historical analysis, no code.
+- **#116** docs(phase-6f-2): backfill inspection report (no code) — historical analysis.
+- **#114** docs(phase-6f-3): implementation plan (no code) — historical analysis.
+- **#10** feat(inventory): Risk-3/4 button stubs — deferred per operator instruction; do not touch. **IMPL SLOT 1/3.**
+- **#1** ui: align sidebar IA with Estrella Atlas design — historical Atlas branch (REFERENCE_ONLY pending). **IMPL SLOT 2/3.**
 
 (Note: PR #33 ADR-010 conflict was resolved by PR #43 / #46 / #50 cascade — see merged list.)
 
@@ -143,6 +147,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 | `feat/doc-3-data-source-mapping` | ACTIVE → eligible-for-archive | superseded by PR #34 |
 | `feat/doc-4-failure-modes` | ACTIVE → eligible-for-archive | superseded by PR #34 |
 | `claude/zealous-johnson-6d6d34` | ACTIVE | UI sidebar IA — PR #1 |
+| `chore/windows-deploy-prep-2026-05-19` | ACTIVE | PR #222 open — Windows reconciliation docs |
 | `archive/may9-stale-main` | ARCHIVED | pre-existing archive |
 | `archive/feature-dhl-label-workflow-planning-2026-05-13` | ARCHIVED (tag) | salvage-source for PR #52 |
 
