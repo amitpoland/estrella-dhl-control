@@ -83,6 +83,35 @@ def _mark_queue_error(queue_id: str, error: str, error_detail: str) -> None:
         pass
 
 
+def _mark_queue_terminal(queue_id: str, terminal_status: str,
+                         reason: str, detail: str = "") -> None:
+    """Flip a queue entry to a terminal status so subsequent retry
+    replays skip it.  Used by the delivered-shipment guard and the
+    stale-queue guard — both must prevent any future send for the
+    given queue_id without manual operator action.
+
+    Unlike _mark_queue_error, this sets ``status`` itself.  Valid
+    terminal_status values are short tokens such as
+    ``"suppressed_delivered"`` or ``"expired_stale_queue"``.  Writes
+    are idempotent: subsequent invocations with the same terminal
+    status overwrite the marker fields but do not reset to pending.
+    """
+    try:
+        queue = _load_queue()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for e in queue:
+            if e.get("id") == queue_id:
+                e["status"]              = terminal_status
+                e["suppression_reason"]  = reason
+                e["suppression_detail"]  = (detail or "")[:500]
+                e["suppressed_at"]       = now_iso
+                # Keep the prior error fields for forensic trace.
+                break
+        _save_queue(queue)
+    except Exception:
+        pass
+
+
 def _split_recipients(value: str) -> List[str]:
     if not value:
         return []
@@ -525,6 +554,104 @@ def send_queued_email(
             },
             "already_sent":      True,
         }
+
+    # ── Already-suppressed terminal states: don't re-attempt ─────────────
+    # If a prior call already flipped this entry to a delivered-suppress
+    # or stale-expire terminal status, return the suppression result
+    # verbatim so retry replays observe the same outcome.
+    if entry.get("status") in ("suppressed_delivered", "expired_stale_queue"):
+        return {
+            "ok":                  False,
+            "queue_id":            queue_id,
+            "status":              entry.get("status"),
+            "guard":               entry.get("status"),
+            "guard_reason":        entry.get("suppression_reason") or "",
+            "suppressed_at":       entry.get("suppressed_at"),
+            "error":               entry.get("status"),
+            "error_detail":        entry.get("suppression_detail") or "",
+            "already_suppressed":  True,
+        }
+
+    # ── Hard guard: shipment delivered → suppress send ──────────────────
+    # Re-checks the shipment's live audit state at EXECUTION TIME, not
+    # only at enqueue time. Required by the operator rule:
+    #   "If shipment status is delivered, the shipment is closed.
+    #    Don't follow up."
+    # The guard flips the queue entry to a terminal `suppressed_delivered`
+    # status so any subsequent retry replay also skips it without trying
+    # to send again. Re-opening a delivered shipment requires explicit
+    # operator action outside this guard.
+    try:
+        from .shipment_delivered_guard import (
+            check_send_allowed as _ssa_check_send_allowed,
+            is_queue_entry_stale as _ssa_is_stale,
+            STALE_QUEUE_DAYS    as _ssa_stale_days,
+        )
+        _bid = str(entry.get("batch_id") or "").strip()
+        _g   = _ssa_check_send_allowed(_bid)
+        if not _g["allowed"]:
+            _mark_queue_terminal(
+                queue_id,
+                terminal_status="suppressed_delivered",
+                reason=_g["reason"],
+                detail=(
+                    f"shipment for batch_id={_bid!r} is delivered; "
+                    "follow-up email suppressed per operator policy."
+                ),
+            )
+            return {
+                "ok":            False,
+                "queue_id":      queue_id,
+                "status":        "suppressed_delivered",
+                "guard":         "shipment_delivered",
+                "guard_reason":  _g["reason"],
+                "audit_found":   _g["audit_found"],
+                "batch_id":      _bid,
+                "error":         "shipment_delivered",
+                "error_detail":  (
+                    "Shipment is delivered — follow-up email "
+                    "suppressed. Re-open the shipment to send."
+                ),
+            }
+        # ── Stale-queue expiry ─────────────────────────────────────
+        # An entry older than STALE_QUEUE_DAYS that has never sent
+        # is almost certainly stale.  Refuse with a terminal
+        # `expired_stale_queue` status so replays don't fire it.
+        if _ssa_is_stale(entry):
+            _mark_queue_terminal(
+                queue_id,
+                terminal_status="expired_stale_queue",
+                reason="stale_queue_entry",
+                detail=(
+                    f"queued_at={entry.get('queued_at')!r} is older than "
+                    f"{_ssa_stale_days} days; entry expired."
+                ),
+            )
+            return {
+                "ok":           False,
+                "queue_id":     queue_id,
+                "status":       "expired_stale_queue",
+                "guard":        "stale_queue",
+                "guard_reason": "stale_queue_entry",
+                "queued_at":    entry.get("queued_at"),
+                "max_age_days": _ssa_stale_days,
+                "error":        "stale_queue_entry",
+                "error_detail": (
+                    f"Queue entry older than {_ssa_stale_days} days. "
+                    "Manually re-queue if a fresh send is needed."
+                ),
+            }
+    except Exception as _guard_exc:
+        # Guards are non-fatal: log and continue.  A guard failure must
+        # NOT block legitimate sends.  Operator can observe the warn.
+        try:
+            from ..core.logging import get_logger as _get_logger
+            _get_logger(__name__).warning(
+                "send_queued_email: delivered/stale guard failed (non-fatal) "
+                "for queue_id=%r: %s", queue_id, _guard_exc,
+            )
+        except Exception:
+            pass
 
     # ── Method routing: manual_package / mcp / smtp ──────────────────────
     if method == "manual_package":

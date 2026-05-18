@@ -26,9 +26,85 @@ ZOHO_FROM_EMAIL  = "info@estrellajewels.eu"
 ZOHO_FROM_NAME   = "Estrella Jewels"
 ZOHO_SEND_ID     = "2261204000001932001"   # "INFO" send address ID
 
+
+# ── PR-211 extension: enqueue-time refusal exception ─────────────────────
+#
+# Raised by queue_email when the operator-rule guard determines that a
+# follow-up must NOT enter the queue — i.e. the shipment is already
+# delivered (= closed) or another pending entry for the same
+# (batch_id, email_type, recipients) is already in flight.
+#
+# Callers should treat this as a non-fatal refusal: the email was never
+# queued, no SMTP was attempted, no audit was mutated.  Catch + log;
+# do not retry without re-checking the shipment state.
+
+class FollowupSuppressedError(RuntimeError):
+    """queue_email refused to enqueue because of a hard guard.
+
+    The exception carries:
+      - reason  : one of "shipment_delivered" / "duplicate_pending"
+      - batch_id: the shipment that triggered the refusal
+      - detail  : human-readable explanation safe to surface to UI / logs
+
+    Catch by callers that want to surface the refusal to the operator
+    without crashing the surrounding flow.
+    """
+
+    def __init__(self, reason: str, batch_id: str, detail: str = ""):
+        self.reason   = reason
+        self.batch_id = batch_id
+        self.detail   = detail
+        super().__init__(detail or f"queue_email refused ({reason}) for batch_id={batch_id!r}")
+
+
 def _queue_file() -> Path:
     """Resolve queue path at runtime so test overrides of settings.storage_root are respected."""
     return settings.storage_root / "email_queue.json"
+
+
+def _find_pending_duplicate(batch_id: str, email_type: str, to: str) -> Optional[dict]:
+    """Return an existing pending queue entry matching the idempotency
+    key (batch_id, email_type, recipients) or None.
+
+    Read-only.  Uses :func:`shipment_delivered_guard.build_idempotency_key`
+    so the key shape stays canonical across producers (UI, scheduler,
+    cowork pipeline).
+
+    Considers only entries with ``status='pending'`` — terminal entries
+    (``sent``, ``suppressed_delivered``, ``expired_stale_queue``) are
+    ignored because the spec says "prevent duplicate PENDING follow-ups
+    for same key".
+    """
+    bid = (batch_id or "").strip()
+    if not bid:
+        return None
+    try:
+        from .shipment_delivered_guard import build_idempotency_key as _build_key
+    except Exception:
+        return None
+    target_key = _build_key(bid, email_type, to)
+    p = _queue_file()
+    if not p.exists():
+        return None
+    try:
+        queue = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(queue, list):
+        return None
+    for e in queue:
+        if not isinstance(e, dict):
+            continue
+        if (e.get("status") or "") != "pending":
+            continue
+        cur_key = _build_key(
+            e.get("batch_id") or "",
+            e.get("email_type") or "",
+            e.get("to") or "",
+        )
+        if cur_key == target_key:
+            return e
+    return None
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -63,6 +139,76 @@ def queue_email(
     """
     if not to or not to.strip():
         raise ValueError("queue_email: 'to' is required — cannot queue email without recipients")
+
+    # ── PR-211 extension: enqueue-time delivered-shipment guard ─────────
+    # Operator rule: if shipment is delivered, follow-up is closed.  The
+    # send-time guard already exists inside email_sender.send_queued_email,
+    # but queue_email triggers an IMMEDIATE synchronous SMTP attempt right
+    # after writing the queue entry (see "Attempt immediate SMTP delivery"
+    # block below).  The dev-instance incident (Mon 21:01) confirmed that
+    # rogue uvicorn copies bypass the production-side guard entirely and
+    # send via their own SMTP credentials.  Guarding at the enqueue boundary
+    # closes the only remaining hole: refuse to write the queue entry at
+    # all if the shipment is delivered.
+    #
+    # The guard is best-effort: if the audit cannot be loaded (missing
+    # batch_id, file absent, parse error) it allows the enqueue.  This
+    # matches the documented semantics of check_send_allowed and avoids
+    # blocking legitimate queueing for batches whose metadata is missing.
+    if batch_id:
+        try:
+            from .shipment_delivered_guard import check_send_allowed as _ssa
+            _g = _ssa(batch_id)
+            if not _g["allowed"]:
+                log.error(
+                    "queue_email REFUSED ENQUEUE — shipment delivered. "
+                    "batch_id=%r reason=%r to=%r email_type=%r subject=%r. "
+                    "No queue entry written, no SMTP attempted. "
+                    "Re-open shipment to send a follow-up.",
+                    batch_id, _g["reason"], to, email_type, subject,
+                )
+                raise FollowupSuppressedError(
+                    reason="shipment_delivered",
+                    batch_id=batch_id,
+                    detail=(
+                        f"Shipment {batch_id!r} is delivered "
+                        f"({_g['reason']}); follow-up email "
+                        f"({email_type or 'generic'}) refused at enqueue."
+                    ),
+                )
+        except FollowupSuppressedError:
+            raise
+        except Exception as _g_exc:
+            log.warning(
+                "queue_email: delivered guard failed (non-fatal): %s — "
+                "proceeding with enqueue",
+                _g_exc,
+            )
+
+    # ── PR-211 extension: idempotency check ─────────────────────────────
+    # Prevent duplicate pending follow-ups for the same
+    # (batch_id, email_type, recipients) tuple.  Returns the existing
+    # entry's id rather than creating a second queue entry.  Best-effort:
+    # any failure during the duplicate scan logs and falls through to
+    # normal enqueue (legitimate queueing must never be blocked by a
+    # bookkeeping glitch).
+    if batch_id:
+        try:
+            _dup = _find_pending_duplicate(batch_id, email_type, to)
+            if _dup is not None:
+                log.info(
+                    "queue_email: duplicate pending entry detected — "
+                    "returning existing id=%s without creating a second "
+                    "queue entry. batch_id=%r email_type=%r to=%r",
+                    _dup.get("id"), batch_id, email_type, to,
+                )
+                return str(_dup.get("id") or "")
+        except Exception as _dup_exc:
+            log.warning(
+                "queue_email: idempotency dedup failed (non-fatal): %s — "
+                "proceeding with enqueue",
+                _dup_exc,
+            )
 
     email_id = str(uuid.uuid4())
     entry = {
