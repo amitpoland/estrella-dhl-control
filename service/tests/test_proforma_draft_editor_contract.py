@@ -979,3 +979,286 @@ def test_service_charges_json_never_contains_object_object_literal(client):
             assert "[object Object]" not in str(v), (
                 f"service_charges_json {k}={v!r} contains broken literal"
             )
+
+
+# ── 22. PR-202: customer picker sources customer_master, not wfirma ─────
+
+def test_ui_customer_picker_fetches_from_customer_master_endpoint():
+    """The buyer/ship-to/payment-terms picker must source rich master
+    data (bill_to_*, ship_to_*, payment_terms_days) from
+    /api/v1/customer-master/.  The legacy /api/v1/wfirma/customers
+    mapping table has only 11 columns and cannot pre-fill addresses."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # The editor load-once effect must call customer-master.
+    assert "apiFetch('/api/v1/customer-master/')" in src, (
+        "ProformaDraftPanel must load customers from /api/v1/customer-master/"
+    )
+    # And NOT call the legacy mapping endpoint for picker population.
+    # (Other parts of the dashboard may still call /wfirma/customers for
+    # mapping purposes — guard only the picker effect.)
+    panel_start = src.index("function ProformaDraftPanel(")
+    panel_end   = src.index("\n}\n", panel_start) + 2
+    panel = src[panel_start:panel_end]
+    assert "apiFetch('/api/v1/wfirma/customers')" not in panel, (
+        "ProformaDraftPanel must not fall back to /api/v1/wfirma/customers"
+    )
+
+
+def test_ui_buyer_picker_maps_customer_master_bill_to_fields():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # The pickFromCustomer for buyer mode must reference each canonical
+    # customer_master key.
+    for key in (
+        "c.bill_to_name",
+        "c.bill_to_street",
+        "c.bill_to_city",
+        "c.bill_to_postal_code",
+        "c.bill_to_email",
+        "c.bill_to_phone",
+        "c.nip",
+        "c.vat_eu_number",
+        "c.country",
+    ):
+        assert key in src, (
+            f"pickFromCustomer (buyer mode) must read {key!r} from "
+            f"customer_master"
+        )
+
+
+def test_ui_ship_to_picker_uses_ship_to_then_bill_to_fallback():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # ship-to mode must prefer ship_to_* and fall back to bill_to_*.
+    for key in (
+        "c.ship_to_name",
+        "c.ship_to_street",
+        "c.ship_to_city",
+        "c.ship_to_zip",
+        "c.ship_to_country",
+        "c.ship_to_email",
+        "c.ship_to_phone",
+    ):
+        assert key in src, f"ship_to picker must read {key!r}"
+
+
+def test_ui_payment_terms_editor_has_picker_and_reads_days():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # The payment-terms editor must mount a picker.
+    assert "draft-payment-terms-customer-picker" in src, (
+        "payment-terms editor must expose a customer picker"
+    )
+    # And copy payment_terms_days into the days field.
+    assert "c.payment_terms_days" in src, (
+        "payment_terms picker must read c.payment_terms_days"
+    )
+
+
+def test_ui_editor_has_picker_mode_props():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    for marker in ('pickerMode="buyer"',
+                   'pickerMode="ship_to"',
+                   'pickerMode="payment_terms"'):
+        assert marker in src, (
+            f"ProformaJsonObjectEditor call site missing {marker!r}"
+        )
+
+
+# ── 23. PR-202: GET /draft enrichment falls back to product_master ──────
+
+def test_draft_get_enriches_item_type_from_product_master_fallback(client):
+    """When a line's product_code has no row in product_descriptions but
+    HAS a row in product_master with item_type set, the GET response
+    fills item_type from product_master.  name_pl has no fallback
+    source — must remain blank."""
+    cli, tmp = client
+    # Seed product_master with a row carrying item_type.  Note: no
+    # product_descriptions row exists for this product_code.
+    from app.services import reservation_db as _rdb
+    rdb = tmp / "reservation_queue.db"
+    _rdb.init_reservation_db(rdb)
+    _rdb.upsert_product_master(
+        rdb,
+        product_code="EJL/PM-FB-1",
+        design_no="DPM-1",
+        item_type="BRACELET_FROM_PM",
+        source_batch_id="B-PMFB",
+    )
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-PMFB",
+                                       client_name="ACME",
+                                       product_code="EJL/PM-FB-1")
+    # Force blank item_type / name_pl on the seeded row.
+    db = tmp / "proforma_links.db"
+    with _s.connect(str(db)) as con:
+        row = con.execute(
+            "SELECT editable_lines_json FROM proforma_drafts WHERE id=?",
+            (draft_id,)).fetchone()
+        lines = json.loads(row[0])
+        for ln in lines:
+            ln["item_type"] = ""
+            ln["name_pl"]   = ""
+        con.execute(
+            "UPDATE proforma_drafts SET editable_lines_json=? WHERE id=?",
+            (json.dumps(lines, sort_keys=True), draft_id))
+        con.commit()
+    d = _get_draft(cli, draft_id)
+    ln0 = d["editable_lines"][0]
+    assert ln0["item_type"] == "BRACELET_FROM_PM", (
+        f"item_type must fall back to product_master.item_type; got {ln0!r}"
+    )
+    # name_pl has no product_master source — stays blank.
+    assert ln0.get("name_pl", "") == ""
+
+
+def test_draft_get_fallback_does_not_overwrite_existing_item_type(client):
+    """If both product_descriptions and product_master rows exist with
+    different item_type values, and the line already has a value,
+    the operator value wins."""
+    cli, tmp = client
+    from app.services import reservation_db as _rdb
+    rdb = tmp / "reservation_queue.db"
+    _rdb.init_reservation_db(rdb)
+    _rdb.upsert_product_master(
+        rdb,
+        product_code="EJL/PM-NOOV-1",
+        design_no="DNO-1",
+        item_type="WOULD_BE_OVERWRITTEN",
+        source_batch_id="B-NOOV",
+    )
+    draft_id = _seed_draft_with_line(tmp, batch_id="B-NOOV",
+                                       client_name="ACME",
+                                       product_code="EJL/PM-NOOV-1")
+    d = _get_draft(cli, draft_id)
+    _patch_line(cli, draft_id, 1, d["updated_at"],
+                {"item_type": "OPERATOR_WINS"})
+    d2 = _get_draft(cli, draft_id)
+    assert d2["editable_lines"][0]["item_type"] == "OPERATOR_WINS", (
+        "operator-supplied item_type must not be replaced by "
+        "product_master fallback"
+    )
+
+
+# ── 24. PR-202: Add Line form resets only on successful POST ────────────
+
+def test_ui_add_line_form_resets_only_on_promise_resolve():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("function ProformaAddLineForm(")
+    end   = src.index("\n}\n", start) + 2
+    body  = src[start:end]
+    # Reset must live inside a .then(...) chain or an explicit
+    # success-only branch — never unconditionally after onAdd().
+    assert ".then(" in body and "setPc('')" in body, (
+        "ProformaAddLineForm.submit must reset state inside Promise.then"
+    )
+    assert ".catch(" in body, (
+        "ProformaAddLineForm.submit must catch the rejection so the "
+        "operator's input survives a failed POST"
+    )
+
+
+# ── 25. PR-202: Charge form drops 'shipping' option ─────────────────────
+
+def test_ui_charge_form_does_not_offer_shipping_option():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("function ProformaDraftAddChargeForm(")
+    end   = src.index("\n}\n", start) + 2
+    body  = src[start:end]
+    assert '<option value="shipping">' not in body, (
+        "shipping option must not appear in the charge dropdown; "
+        "backend ALLOWED_SERVICE_CHARGE_TYPES does not accept it"
+    )
+    # freight + insurance still present
+    assert '<option value="freight">'   in body
+    assert '<option value="insurance">' in body
+
+
+# ── 26. PR-202: Charge form defaults ccy from first line + mismatch hint
+
+def test_ui_charge_form_default_ccy_comes_from_first_line():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("function ProformaDraftAddChargeForm(")
+    end   = src.index("\n}\n", start) + 2
+    body  = src[start:end]
+    # Must accept a lineCurrencies prop and derive _firstLineCcy from it.
+    assert "lineCurrencies" in body, (
+        "charge form must accept lineCurrencies prop"
+    )
+    assert "_firstLineCcy" in body, (
+        "charge form must derive _firstLineCcy from the first line"
+    )
+
+
+def test_ui_charge_form_mount_passes_line_currencies():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # The mount point must compute lineCurrencies from editable_lines.
+    assert ("lineCurrencies={Array.from(new Set("
+            in src), (
+        "ProformaDraftAddChargeForm mount must pass lineCurrencies "
+        "derived from openDraft.editable_lines"
+    )
+
+
+def test_ui_charge_form_blocks_mismatched_currency_client_side():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    start = src.index("function ProformaDraftAddChargeForm(")
+    end   = src.index("\n}\n", start) + 2
+    body  = src[start:end]
+    # Must declare a ccyMismatch flag and gate submit / disable Add.
+    assert "ccyMismatch" in body, (
+        "charge form must declare ccyMismatch flag"
+    )
+    assert "disabled={ccyMismatch}" in body, (
+        "Add button must be disabled on mismatch"
+    )
+    assert "add-charge-ccy-mismatch" in body, (
+        "mismatch hint must be visible (data-testid present)"
+    )
+
+
+# ── 27. PR-202: ProformaDraftPanel mounted in Sales tab ─────────────────
+
+def test_ui_proforma_draft_panel_mounted_in_sales_tab():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    # Locate the Sales-tab RENDER branch (activeTab === 'Sales' && (() => {).
+    # An earlier hit appears in a useEffect — skip past it.
+    start = src.index("activeTab === 'Sales' && (() =>")
+    # Bound at the next sibling activeTab render branch.
+    end   = src.index("activeTab === 'PZ / Accounting'", start)
+    sales_block = src[start:end]
+    assert "<ProformaDraftPanel" in sales_block, (
+        "Sales tab must mount <ProformaDraftPanel> as the primary "
+        "operator entry point"
+    )
+    # And keep a distinguishing data-testid so smoke tests can locate it.
+    assert "sales-tab-proforma-draft-panel" in sales_block, (
+        "Sales-tab mount must carry data-testid='sales-tab-proforma-draft-panel'"
+    )
+
+
+# ── 28. PR-202: No wFirma/PZ/DHL/post execution added in this PR ────────
+
+def test_pr202_no_wfirma_pz_dhl_post_execution_added():
+    """Source-grep guard: the proforma editor surface in the UI must not
+    invoke any wFirma write / PZ / DHL / proforma post path."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "static"
+           / "shipment-detail.html").read_text(encoding="utf-8")
+    panel_start = src.index("function ProformaDraftPanel(")
+    panel       = src[panel_start:]
+    for bad in (
+        "/api/v1/proforma/post",
+        "/api/v1/proforma/create",
+        "/api/v1/pz/process",
+        "/api/v1/dhl/",
+    ):
+        assert bad not in panel, (
+            f"PR-202 must not add a call to {bad!r} from the editor"
+        )
