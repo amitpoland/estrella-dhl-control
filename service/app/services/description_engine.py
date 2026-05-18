@@ -333,3 +333,222 @@ def set_manual_block(*,
             f"description_engine: row vanished after manual upsert for {pc!r}"
         )
     return row
+
+
+# ── Per-line backfill from invoice_lines (PR for line-vs-header bug) ────────
+#
+# Source-priority rule:
+#   1. invoice_lines.description  — per-line, per-product_code (canonical
+#                                   intake source from purchase invoices)
+#   2. product_master.description — per-line projection written by
+#                                   store_invoice_lines at intake time
+#                                   (fallback when invoice_lines query
+#                                   returns nothing for the code)
+#   3. ""                          — fed to description_engine, which then
+#                                   falls back to the item_type generic
+#                                   template in ITEM_TRANSLATIONS.
+#
+# Never invents product_code.  Never aliases design_no as product_code.
+# Never overwrites source='manual' rows.  No wFirma / PZ / DHL calls.
+
+# Canonical item-type tokens — kept inline to avoid importing
+# wfirma_product_auto_register (which depends on wfirma_client at import).
+_ITEM_TYPE_TOKENS = frozenset({
+    "RING", "RINGS",
+    "PENDANT", "PENDANTS",
+    "EARRING", "EARRINGS",
+    "BRACELET", "BRACELETS", "BANGLE", "BANGLES",
+    "NECKLACE", "NECKLACES",
+    "CHAIN", "CHAINS",
+    "CUFFLINK", "CUFFLINKS",
+    "SET", "SETS",
+})
+
+
+def _derive_item_type_from_description(description: str) -> str:
+    """Pick the trailing item-type token from an invoice-line description.
+
+    Returns the canonical singular form (RING / PENDANT / EARRINGS /
+    BRACELET / NECKLACE / CHAIN / CUFFLINK / SET) or '' if no token is
+    found.  Operator-facing surfaces always see one of the singular forms
+    after _normalise_item_type runs inside get_description_block.
+    """
+    import re as _re
+    if not description:
+        return ""
+    tokens = _re.findall(r"[A-Z][A-Z]+", str(description).upper())
+    for t in reversed(tokens):
+        if t in _ITEM_TYPE_TOKENS:
+            return t
+    return ""
+
+
+def regenerate_descriptions_for_invoice_lines(
+    *,
+    batch_id:      Optional[str] = None,
+    product_code:  Optional[str] = None,
+    dry_run:       bool          = True,
+) -> Dict[str, Any]:
+    """Walk ``invoice_lines`` and ensure every per-line ``product_code``
+    has a corresponding ``product_descriptions`` row generated from its
+    OWN per-line description text — never from the overall invoice
+    header.
+
+    Scope:
+      - ``batch_id``     filters to one shipment batch
+      - ``product_code`` filters to one canonical code (overrides batch)
+      - if both omitted, walks all invoice_lines (use with care)
+
+    Behaviour:
+      - ``dry_run=True`` (default): no writes; returns ``would_write`` /
+        ``would_skip_existing`` / ``would_skip_manual`` counts plus the
+        per-code plan list.
+      - ``dry_run=False``: invokes :func:`get_description_block` per
+        code.  Existing rows with ``source='manual'`` are NEVER replaced
+        (enforced inside ``upsert_product_description``).  Existing
+        ``source='auto'`` (or ``'pz_rows_backfill'``) rows are also
+        preserved — ``get_description_block`` is idempotent and returns
+        the existing row unchanged.
+
+    Returns::
+
+        {
+          "scanned":             int,
+          "written":             int,
+          "would_write":         int,    # dry-run only
+          "skipped_existing":    int,    # row already present (any source)
+          "skipped_manual":      int,    # row present with source='manual'
+          "skipped_blank":       int,    # neither invoice_lines nor
+                                          # product_master had a usable
+                                          # English source AND no item_type
+                                          # could be derived
+          "errors":              list[dict],
+          "dry_run":             bool,
+          "filter":              {"batch_id": str|None,
+                                   "product_code": str|None},
+        }
+
+    No wFirma / PZ / DHL / proforma post path is touched.  Pure local-DB
+    read-and-write.
+    """
+    out: Dict[str, Any] = {
+        "scanned":           0,
+        "written":           0,
+        "would_write":       0,
+        "skipped_existing":  0,
+        "skipped_manual":    0,
+        "skipped_blank":     0,
+        "errors":            [],
+        "dry_run":           bool(dry_run),
+        "filter":            {"batch_id":     batch_id,
+                              "product_code": product_code},
+    }
+
+    if ddb._db_path is None:
+        out["errors"].append({"stage": "init",
+                              "detail": "document_db not initialised"})
+        return out
+
+    # Build the read SQL with the requested scope.  Read-only.
+    where_clauses: list = []
+    params:        list = []
+    if product_code:
+        where_clauses.append("product_code = ?")
+        params.append(str(product_code).strip())
+    if batch_id and not product_code:
+        where_clauses.append("batch_id = ?")
+        params.append(str(batch_id).strip())
+    where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    try:
+        from . import reservation_db as _rdb  # for product_master fallback
+        _rdb_path = settings.storage_root / "reservation_queue.db"
+        if _rdb_path.exists():
+            pm_rows = _rdb.list_product_masters(_rdb_path) or []
+        else:
+            pm_rows = []
+    except Exception as exc:
+        log.warning("regenerate_descriptions: product_master fallback "
+                    "unavailable (non-fatal): %s", exc)
+        pm_rows = []
+    pm_by_code = {(r.get("product_code") or "").strip(): r for r in pm_rows
+                  if (r.get("product_code") or "").strip()}
+
+    # De-duplicate by product_code so a code appearing on N invoice_lines
+    # rows triggers only one get_description_block call.  First-seen
+    # invoice description wins as the English source.
+    seen_codes: dict = {}
+    try:
+        import sqlite3 as _sql
+        with _sql.connect(str(ddb._db_path)) as con:
+            con.row_factory = _sql.Row
+            sql = (
+                "SELECT product_code, description "
+                "FROM invoice_lines"
+                + where_sql
+                + " ORDER BY batch_id, invoice_no, line_position"
+            )
+            for r in con.execute(sql, params).fetchall():
+                pc   = (r["product_code"] or "").strip()
+                desc = (r["description"]  or "").strip()
+                if not pc or pc in seen_codes:
+                    continue
+                seen_codes[pc] = desc
+    except Exception as exc:
+        out["errors"].append({"stage": "read_invoice_lines",
+                              "detail": f"{type(exc).__name__}: {exc}"})
+        return out
+
+    out["scanned"] = len(seen_codes)
+
+    for pc, line_desc in seen_codes.items():
+        # Pre-existing row check — guard order mirrors upsert semantics
+        # so the dry-run plan matches the write-mode outcome exactly.
+        try:
+            existing = ddb.get_product_description(pc)
+        except Exception as exc:
+            out["errors"].append({"product_code": pc,
+                                  "stage": "read_existing",
+                                  "detail": f"{type(exc).__name__}: {exc}"})
+            continue
+
+        if existing is not None:
+            if (existing.get("source") or "") == "manual":
+                out["skipped_manual"] += 1
+            else:
+                out["skipped_existing"] += 1
+            continue
+
+        # Build the English source per the documented priority order.
+        #   1. invoice_lines.description (per-line)  ←  primary
+        #   2. product_master.description (per-line projection)  ←  fallback
+        #   3. ""  →  description_engine falls back to ITEM_TRANSLATIONS
+        eff_desc_en = line_desc
+        if not eff_desc_en:
+            pm = pm_by_code.get(pc) or {}
+            eff_desc_en = str(pm.get("description") or "").strip()
+
+        item_type = _derive_item_type_from_description(eff_desc_en)
+        if not item_type and not eff_desc_en:
+            # Nothing to seed: no per-line description, no item type.
+            # Skipping is safer than writing a generic stub.
+            out["skipped_blank"] += 1
+            continue
+
+        if dry_run:
+            out["would_write"] += 1
+            continue
+
+        try:
+            get_description_block(
+                product_code   = pc,
+                item_type      = item_type,
+                description_en = eff_desc_en,
+            )
+            out["written"] += 1
+        except Exception as exc:
+            out["errors"].append({"product_code": pc,
+                                  "stage": "get_description_block",
+                                  "detail": f"{type(exc).__name__}: {exc}"})
+
+    return out
