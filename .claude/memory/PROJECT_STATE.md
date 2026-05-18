@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-18T(wave2-patch4-batch)Z (RULE 3 auto-fire: Wave 2 patch #4 batch condensation PR pending. 8 remaining retrieval-eligible sections condensed. CLAUDE.md 518→447 lines (−71). Governance kernel verified intact (GATES 1–6, RULES 1–6, Lessons A–E). PR opening. Prior run: 2026-05-18T(post-219-merge)Z (PR #220 merge + contracts extraction). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
+**Last-run-at:** 2026-05-19T(wave2-patch4-batch-complete)Z (RULE 3 auto-fire: Wave 2 patch #4 batch condensation PR #221 open. 8 retrieval-eligible sections condensed. CLAUDE.md 518→447 lines (−71). Governance kernel verified intact (GATES 1–6, RULES 1–6, Lessons A–E). Prior run: 2026-05-18T(post-219-merge)Z (PR #220 merge + contracts extraction). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
 
 ---
 
@@ -82,6 +82,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Sequencing model** — three-PR cascade (Option B) chosen over single atomic PR for clean per-step rollback + GATE 2 compliance (max 3 open). Each PR in/out before next opened.
 
 ## Open PRs
+- **#221** 2026-05-19 — chore(kernel): Wave 2 patch #4 batch — condense 8 retrieval-eligible CLAUDE.md sections — governance-only, zero production code. SHA `033e200`. Awaiting merge.
 - **#10** feat(inventory): Risk-3/4 button stubs — deferred per operator instruction; do not touch.
 - **#8** docs(inventory): Doc 4 — failure modes — superseded by PR #34 merge (closeable / archiveable).
 - **#7** docs(inventory): Doc 3 — data source mapping — superseded by PR #34.
@@ -201,13 +202,16 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 **Files NOT committed:** `.claude/agents/prompt-engineer.md` (npx-installed template, not production governance), `.claude/memory/PROJECT_STATE.LOCAL_BACKUP.md` (local only), `.claude/worktrees/confident-margulis-fce564/` (Ruflo MCP sandbox artifact, large, not project code).
 
-## Wave 2 kernel condensation facts (appended 2026-05-18)
+## Wave 2 kernel condensation facts (appended 2026-05-18; updated 2026-05-19)
 
 - **Wave 2 patch #1 MERGED** — SHA `4083d84`, PR #216, 2026-05-18T18:28Z. Governance/kernel change only. CLAUDE.md shipment-processing sections condensed. Zero production code, zero test changes, zero agent changes.
 - **Shipment condensation stable** — post-patch observation audit 2026-05-18: no enforcement regression (all 7 `Never` imperatives intact), no sequencing drift (all invariant triples intact), no observer-trigger drift (Rules 2–3 at lines 155–178, outside condensed section). Three LOW-risk items identified (blocked format, Cliq field names, WorkDrive format variants), all mitigated by correctly-placed L1 triggers.
 - **`.claude/commands/` confirmed active retrieval surface** — runtime-validated 2026-05-18 across PRs #214, #215. All three modules (`pz-shipment`, `cowork-integration`, `engineering-lessons`) invocable via `Skill()` tool in session.
 - **`.claude/skills/` confirmed inert** — not scanned by skill loader in current Claude Code runtime. Validated by empirical failure + resolution cycle (PR #215).
-- **Wave 2 patch #2 pending operator start signal** — next candidate section: `## 9. Action execution after Cowork result`, backed by `.claude/commands/cowork-integration.md`. Protocol: operator names section explicitly → extract invariant triples → condense → PR → observe one session before patch #3.
+- **Wave 2 patch #4 PR OPEN** — PR #221, branch `chore/wave2-patch4-batch-condensation`, SHA `033e200`. 8 retrieval-eligible sections condensed in batch. CLAUDE.md 518→447 lines (−71 lines, −14%). All 15 enforcement invariants preserved (verified). GATES 1–6 (6/6), RULES 1–6 (6/6), Lessons A–E (5/5) UNCHANGED. Sections kept intact: `Operating rules` + `Required Cliq posting format`. Zero production code, zero test changes, zero agent changes.
+  - Sections condensed: Financial rules, WorkDrive automation flow, Required workflow, Verification rules, Available integration, System architecture, When asked to run a shipment, Short instruction version.
+  - 6 retrieval pointers added to `pz-shipment` L1.
+  - Rollback: `git revert 033e200 --no-edit`.
 
 ## RULE 6 visibility entries (scorecards on disk + expected)
 - **2026-05-13** — Scorecard recorded: `.claude/memory/scorecards/2026-05-13-w5-p0-adr018-p2-deployment-campaign.md` — observer: `agent-performance-observer` post PR #41 registry-refresh validation — 14 verdicts scored, all EXEMPLARY, zero NEEDS-TUNING / UNRELIABLE.
