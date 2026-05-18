@@ -6,6 +6,13 @@ __pycache__/
 *.log
 # Virtual env
 venv/
+.venv/
+service/.venv/
+
+# Claude Code / Ruflo MCP sandbox artifacts
+.claude/worktrees/
+.claude/agents/prompt-engineer.md
+.claude/memory/PROJECT_STATE.LOCAL_BACKUP.md
 .env
 # OS
 .DS_Store

@@ -84,15 +84,8 @@ For every file writing to the audit system:
 
 ## Production data protection rules
 
-These paths must NEVER appear in any diff:
-
-- `C:\PZ\storage\` contents
-- `C:\PZ\logs\` contents
-- `C:\PZ\.env`
-- Any `*.db` file
-- `C:\PZ\outputs\` contents
-
-If any of these appear as changed files: **immediate block, notify Lead Coordinator**.
+See `.claude/contracts/forbidden-paths.md` for the authoritative blocklist.
+If any pattern from that list appears as a changed file: **immediate block, notify Lead Coordinator**.
 
 ---
 

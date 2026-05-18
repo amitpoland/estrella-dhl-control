@@ -34,7 +34,10 @@ git rev-parse origin/main   # SHA to deploy
 2. Current branch must be `main`. Any other branch: **block**.
 3. Pull must be fast-forward only. A merge commit would be required: **block**.
 4. `origin/main` must be reachable (fetch succeeded). If not: **block**.
-5. **LOCAL-COMMIT-ONLY check**: run `git branch -r --contains $(git rev-parse HEAD)`. If `origin/main` is not listed, the deploy SHA never landed via PR. Gate report MUST include: (a) commit SHA being deployed, (b) reason PR flow was bypassed, (c) reconciliation plan (when will this be PR'd). Label the gate output `LOCAL-COMMIT-ONLY`. **If the disclosure header is absent**, release manager reports `BLOCKER — LOCAL-COMMIT-ONLY without disclosure (Lesson D Rule 1)`, and `deploy_lead_coordinator` will block on this finding. If header is present, release manager reports `CLEAR — LOCAL-COMMIT-ONLY disclosed` and lead coordinator handles the acknowledgment gate. (Lesson D — Wave 1 closure 2026-05-13, backstop added 2026-05-13.)
+5. **LOCAL-COMMIT-ONLY check**: Policy at `.claude/contracts/local-commit-policy.md`.
+   Run `git branch -r --contains $(git rev-parse HEAD)`. If `origin/main` not listed → LOCAL-COMMIT-ONLY.
+   Disclosure absent → `BLOCKER — LOCAL-COMMIT-ONLY without disclosure (Lesson D)`.
+   Disclosure present → `CLEAR — LOCAL-COMMIT-ONLY disclosed`. Lead Coordinator handles acknowledgment gate.
 
 ### Commit log review
 
@@ -80,7 +83,7 @@ robocopy "C:\Users\Super Fashion\PZ APP\service\app" "C:\PZ\app" /E /XO `
 Verify:
 - Source path exists in this repo
 - No `/MIR` flag
-- No `C:\PZ\.env`, `C:\PZ\storage\`, `C:\PZ\logs\`, `C:\PZ\cloudflared\` in scope
+- No paths from `.claude/contracts/forbidden-paths.md` in scope
 - Exit codes 0, 1, 2, 3 are all success; 4+ is error
 
 ### Service restart sequence

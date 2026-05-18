@@ -26,12 +26,14 @@ git diff --name-status HEAD..origin/main
 
 ## Required pass criteria
 
-| Suite | Required | Failure action |
-|-------|----------|----------------|
-| PZ regression (`test_pz_regression.py`) | 160/160 | **Block** |
-| Carrier suite (`tests/test_carrier_*.py`) | 366/366 | **Block** |
+Required counts: `.claude/contracts/test-baseline.md` (single source of truth — read at gate time).
 
-Any count below the required threshold is an unconditional deploy blocker.  
+| Suite | File / pattern | Failure action |
+|-------|---------------|----------------|
+| PZ regression | `test_pz_regression.py` | **Block** |
+| Carrier suite | `tests/test_carrier_*.py` | **Block** |
+
+Any count below the required threshold is an unconditional deploy blocker.
 Any test error (not just failure) is also a blocker.
 
 ---
@@ -40,8 +42,8 @@ Any test error (not just failure) is also a blocker.
 
 ### Test result validation
 
-1. Parse PZ regression output — extract `X passed` count. Must equal 160.
-2. Parse carrier suite output — extract `X passed` count. Must equal 366.
+1. Parse PZ regression output — extract `X passed` count. Must equal PZ required count in `.claude/contracts/test-baseline.md`.
+2. Parse carrier suite output — extract `X passed` count. Must equal Carrier required count in `.claude/contracts/test-baseline.md`.
 3. Check for any `ERROR` lines (import errors, fixture errors) — these are blockers even if they don't reduce the pass count.
 4. Check for any `FAILED` lines — list them explicitly.
 5. Check for `warnings` that indicate skipped tests or deprecated fixtures — flag but don't block.
@@ -79,8 +81,8 @@ If test failures are present in the diff but were also present on `origin/main` 
 
 | Finding | Class | Action |
 |---------|-------|--------|
-| PZ regression < 160 | REGRESSION_FAIL | **Block** |
-| Carrier suite < 366 | CARRIER_FAIL | **Block** |
+| PZ regression below required | REGRESSION_FAIL | **Block** (required count: `test-baseline.md`) |
+| Carrier suite below required | CARRIER_FAIL | **Block** (required count: `test-baseline.md`) |
 | Any test ERROR | TEST_ERROR | **Block** |
 | New write route with no test | UNCOVERED_ROUTE | Flag |
 | New carrier route, no 503 test | CARRIER_GATE_UNCOVERED | Flag |
