@@ -18,7 +18,7 @@ The 7 required agents (run in parallel before any sync):
 3. `deploy_backend_impact_reviewer.md` — routes, auth, imports
 4. `deploy_persistence_storage_reviewer.md` — schema, storage writes
 5. `deploy_security_reviewer.md` — credentials, auth removal, injection
-6. `deploy_qa_reviewer.md` — test pass/fail (160/160 PZ, 366/366 carrier)
+6. `deploy_qa_reviewer.md` — test pass/fail (counts: `.claude/contracts/test-baseline.md`)
 7. `deploy_release_manager.md` — branch hygiene, rollback command
 
 Production: `C:\PZ` | Service: `PZService` (NSSM, port 47213) | Public: `https://pz.estrellajewels.eu`
@@ -120,15 +120,11 @@ substitutes.
 
 ### Subordinate-language note
 
-The "Production deployment rule (PERMANENT)" section above (the
-7-agent gate) is a **specialisation of GATE 1** for production
-deploys: it adds named-agent + named-test requirements but does not
-relax any GATE-1 condition. Where the two could be read in tension,
-GATE 1 controls.
+Rule hierarchy and all resolved conflicts: `.claude/contracts/governance-precedence.md`.
 
-The "Operating rules" and "When asked to run a shipment" sections
-below are operational guidance — subordinate to GATES 1–6. If a
-shipment-run step would skip a GATE check, the GATE wins.
+Summary: GATES 1–6 supersede operating guidance. The 7-agent deploy gate specialises GATE 1 for
+production syncs. Engineering Lessons bind at the specific gate named in each lesson header.
+Operating rules and workflow sequences are subordinate to all gates.
 
 ---
 

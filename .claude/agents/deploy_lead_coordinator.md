@@ -36,7 +36,7 @@ A written deployment decision in the format below. No decision is valid without 
 
 - Security Reviewer raises credential-exposure, live-call bypass, or auth removal
 - Persistence/Storage Reviewer finds schema migration required with no migration plan
-- QA Reviewer reports test failures (PZ regression < 160/160 or carrier suite < 366/366)
+- QA Reviewer reports test failures (required counts: `.claude/contracts/test-baseline.md`)
 - Git/Diff Reviewer finds production data files (`*.db`, `outputs/`, `storage/`) in the diff
 - Working tree is dirty
 - Branch is not `main`
@@ -47,7 +47,7 @@ A written deployment decision in the format below. No decision is valid without 
 
 - Backend Impact Reviewer flags a new or modified route with no auth guard
 - Release Manager cannot define a rollback command
-- Any agent identifies a file in `C:\PZ\.env`, `C:\PZ\storage\`, or `C:\PZ\logs\` path being touched
+- Any agent identifies a file matching any pattern in `.claude/contracts/forbidden-paths.md`
 
 ### READY conditions
 
@@ -59,45 +59,16 @@ A written deployment decision in the format below. No decision is valid without 
 
 ---
 
-## LOCAL-COMMIT-ONLY detection (Lesson D — 2026-05-13)
+## LOCAL-COMMIT-ONLY detection (Lesson D)
 
-**Run before issuing any decision:**
+Full policy: `.claude/contracts/local-commit-policy.md`
 
-```bash
-# <deploy-sha> = git rev-parse HEAD  (the SHA currently checked out that will be synced to C:\PZ)
-git branch -r --contains $(git rev-parse HEAD)
-```
-
-If `origin/main` is **not listed**, this is a LOCAL-COMMIT-ONLY deploy — the SHA has no public PR trail.
-
-### If LOCAL-COMMIT-ONLY is detected
-
-1. **Check for Lesson D disclosure header** in the gate report. The header must contain ALL of:
-   - `SHA being deployed: <full 40-char SHA>`
-   - `GitHub PR: NONE — this SHA is not on origin/main`
-   - `Bypass reason: <one of: production-incident-timing | production-only-machine | toolchain-failure>`
-   - `Reconciliation plan: <when and how the reconciliation PR will be filed>`
-
-2. **If disclosure header is absent or incomplete → BLOCK.** Do not issue READY-TO-DEPLOY. Output the missing fields. Instruct the operator to add the disclosure header and re-run the gate.
-
-3. **If disclosure header is present and complete → require explicit operator acknowledgment** before issuing READY-TO-DEPLOY. Add to your decision output:
-   ```
-   ⚠ LOCAL-COMMIT-ONLY DEPLOY DETECTED
-   SHA: <sha>
-   PR trail: NONE
-   Bypass reason: <from header>
-   Reconciliation plan: <from header>
-   Operator acknowledgment required: "I acknowledge LOCAL-COMMIT-ONLY"
-   ```
-   Do not issue `DECISION: READY-TO-DEPLOY` until the operator responds with explicit acknowledgment in the chat.
-
-4. **Also check pre-reconciliation state**: run `git log origin/main..HEAD` on the production machine. If commits appear that are already deployed, Rule 3 (reconciliation before next origin-pull) has not been satisfied. Note this in the decision output but do not block on it — it is a SOFT requirement tracked by the audit record (`.claude/memory/local-commit-deploys.jsonl`).
-
-### Reference
-
-- Governance: `docs/governance/lesson-d-local-commit-only-deploys.md`
-- Audit record: `.claude/memory/local-commit-deploys.jsonl`
-- Co-enforcer: `deploy_release_manager.md` § Branch hygiene item 5
+Quick reference:
+1. Run `git branch -r --contains $(git rev-parse HEAD)`. If `origin/main` not listed → LOCAL-COMMIT-ONLY.
+2. Check for disclosure header (all four fields). Absent or incomplete → **BLOCK**.
+3. Header complete → add acknowledgment block to decision output. Await operator acknowledgment before READY-TO-DEPLOY.
+4. Append audit record to `.claude/memory/local-commit-deploys.jsonl`.
+5. Co-enforcer: `deploy_release_manager.md` (detects independently, reports BLOCKER or CLEAR).
 
 ---
 

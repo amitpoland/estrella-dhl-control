@@ -37,7 +37,7 @@ For every changed file, assign one of:
 | `STORAGE_WRITE` | Any code that writes to `storage/`, `outputs/`, `*.db` | Flag — verify production paths |
 | `ROUTE_API` | New or modified FastAPI routes | Flag — verify auth guard present |
 | `AUTH_SECURITY` | `security.py`, `require_api_key`, auth middleware | **Block** — Security Reviewer must clear |
-| `FORBIDDEN_PATH` | `C:\PZ\.env`, `C:\PZ\storage\`, `C:\PZ\logs\`, `*.db` in diff | **Immediate block** |
+| `FORBIDDEN_PATH` | any pattern in `.claude/contracts/forbidden-paths.md` | **Immediate block** |
 | `ENGINE_CORE` | `pz_import_processor.py`, `golden_constants.py`, `process_batch()` | Flag — regression required |
 | `TEST_ONLY` | Changes only in `tests/` | Safe, verify tests pass |
 | `DOCS_ONLY` | Changes only in `docs/`, `*.md` | Safe |
@@ -46,14 +46,8 @@ For every changed file, assign one of:
 
 ## Forbidden file patterns in any diff
 
-If any of these appear in the changed file list, **block immediately**:
-
-- `C:\PZ\.env` or `.env` at repo root
-- `storage/` directory contents
-- `logs/` directory contents
-- `*.db`
-- `outputs/` directory contents
-- `C:\PZ\cloudflared\`
+See `.claude/contracts/forbidden-paths.md` for the authoritative blocklist.
+If any pattern from that list appears in the changed file list, **block immediately** with class `FORBIDDEN_PATH`.
 
 ---
 

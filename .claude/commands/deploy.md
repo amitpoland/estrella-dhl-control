@@ -64,7 +64,7 @@ cd "C:\Users\Super Fashion\PZ APP\service"
 python -m pytest tests/test_carrier_*.py -q
 ```
 
-Required: 160/160 PZ regression, 366/366 carrier suite. Stop if any test fails.
+Required: counts per `.claude/contracts/test-baseline.md`. Stop if any test fails.
 
 ---
 

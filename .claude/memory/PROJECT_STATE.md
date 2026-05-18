@@ -4,18 +4,18 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-13T16:00:00Z (RULE 2 + RULE 3 auto-fire: Lesson D closure — reconcile 4c797e4 + lead coordinator backstop. PR #77 merged (SHA `1ee83e52`). Reconciliation: CLOSED. All 5 Lesson D rules enforced. Prior run: 2026-05-13T14:30:00Z (Lesson D governance codification PR #76). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
+**Last-run-at:** 2026-05-18T(post-219-merge)Z (RULE 3 auto-fire: PR #219 merged SHA `9230a6e`. Wave 2 patch #3 complete. 4 governance contracts extracted to `.claude/contracts/`. 7 governance-normalization files modified (unstaged, governance PR pending). Prior run: 2026-05-13T16:00:00Z (Lesson D closure PR #77). Naive orchestrators should check this timestamp before re-firing `flow-context-keeper` within the same chat turn.
 
 ---
 
 # FACTS
 
 ## Current origin/main HEAD
-- **2026-05-18** — `4083d84` chore(kernel): Wave 2 patch #1 — condense CLAUDE.md shipment sections (PR #216 merge)
-  - Prior: `150b2c9` chore: fix skill discovery — move Wave 1A skills to .claude/commands/ (PR #215 merge)
-  - Prior: `e294160` chore: skill-system Wave 1A — pz-shipment, cowork-integration, engineering-lessons (PR #214 merge)
-  - Prior: `67a1af8` fix(p1): SyntheticEvent onChange repair + learning_traces flag writer (PR #213 merge)
-  - Prior: `1ee83e52` Merge PR #77: chore(reconcile): backfill 4c797e4 and add Lesson D lead coordinator backstop
+- **2026-05-18** — `9230a6e` chore(kernel): Wave 2 patch #3 — condense Engineering Lessons A–D into retrieval module (PR #219 merge)
+  - Prior: `4f95ed3` Merge PR #211: feat(dhl-followup): delivered-shipment suppression guards
+  - Prior: `ba8cf24` feat(dhl-followup): enqueue-time guard + idempotency key (PR #211 extension)
+  - Prior: `572e2d0` chore: Wave 2 patch #2 — condense Section 9 Cowork into retrieval module
+  - Prior: `4083d84` chore(kernel): Wave 2 patch #1 — condense CLAUDE.md shipment sections (PR #216 merge)
 
 ## Windows production local HEAD (NOT on origin/main)
 - **2026-05-13** — `4c797e4` fix(email): prevent outbound customs emails sending without attachments ← **DEPLOYED TO PRODUCTION 2026-05-13T10:43Z**
@@ -42,6 +42,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **SHA lineage verified (STEP 4):** `git log 0b4e381..4c797e4` → 1 commit (`4c797e4` only). `git merge-base 0b4e381 4c797e4` → `1b38ea0`. Conclusion: `4d595ca`, `80e3469`, `1b38ea0` are already on origin/main (reachable from `0b4e381`). Only `4c797e4` is unique to Windows local chain. PROJECT_STATE.md "4 local hotfix commits" description was partially incorrect — 3 of 4 were already on origin/main. **Governance note:** `4c797e4` was deployed without a GitHub PR (local-commit-only deploy). 7-agent gate was run inline; CLAUDE.md gate spirit was observed. See Lesson D candidate in Scorecard § 4.
 
 ## Merged PRs (this session window, latest first)
+- **#219** 2026-05-18 — chore(kernel): Wave 2 patch #3 — condense Engineering Lessons A–D into retrieval module — merge SHA `9230a6e` — governance/kernel only. Squash-merged via GitHub REST API (local checkout blocked by unstaged governance normalization files). CLAUDE.md Engineering Lessons section condensed + Lesson E (background email automation 5 safety properties) added. Zero production code, zero test changes. Post-merge governance normalization (7 modified files + 4 contracts) committed as stabilization PR (see governance-contracts fact below).
 - **#216** 2026-05-18T18:28Z — chore(kernel): Wave 2 patch #1 — condense CLAUDE.md shipment sections (pz-shipment retrieval) — merge SHA `4083d84` — governance/kernel only. Condensed 8 shipment-processing sections in CLAUDE.md from 329 to 143 lines (−186 lines). 18 enforcement invariants preserved verbatim (machine-verified 29/29 fragments). Removed content is explanatory/reference, present verbatim in `.claude/commands/pz-shipment.md`. Post-patch observation audit 2026-05-18: STABLE — no enforcement regression, no sequencing drift, three LOW-risk items all mitigated by L1 triggers.
 - **#215** 2026-05-18T18:09Z — chore: fix skill discovery — move Wave 1A skills to .claude/commands/ — merge SHA `150b2c9` — rename-only, zero content changes, zero blast radius. Corrects `.claude/skills/` → `.claude/commands/` after runtime discovery.
 - **#214** 2026-05-18T18:01Z — chore: skill-system Wave 1A — pz-shipment, cowork-integration, engineering-lessons — merge SHA `e294160` — governance/tooling only. Creates `.claude/commands/` retrieval modules. No CLAUDE.md changes. No production code.
@@ -184,6 +185,21 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
   - `cowork-integration` — Cowork→PZ→SMTP architecture, result processor, action runner, email drafting rules
   - `engineering-lessons` — Lessons A–D (test stubs, agent registry refresh, scorecard writes, LOCAL-COMMIT-ONLY deploys)
   - All 3 confirmed invocable via `Skill()` tool in session post-commit. Runtime discovery: `.claude/skills/` is inert; `.claude/commands/` is the active project retrieval surface.
+
+## Governance contracts extracted (appended 2026-05-18, post-PR-219)
+
+4 governance contracts created in `.claude/contracts/` as single-source-of-truth for volatile shared rules. These replace inline duplicated content across 7 deploy-governance files:
+
+| Contract | What it owns | Files that now reference it |
+|---|---|---|
+| `forbidden-paths.md` | 10 blocked path patterns (merged from 6 in git_diff + 5 in persistence) | `deploy_git_diff_reviewer.md`, `deploy_persistence_storage_reviewer.md`, `deploy_release_manager.md` |
+| `test-baseline.md` | PZ regression = 160, Carrier suite = 366 + update protocol | `deploy_qa_reviewer.md`, `deploy_lead_coordinator.md`, `deploy.md` |
+| `local-commit-policy.md` | LOCAL-COMMIT-ONLY detection, disclosure header (4 fields), acknowledgment, audit record format | `deploy_lead_coordinator.md`, `deploy_release_manager.md` |
+| `governance-precedence.md` | Explicit precedence ladder: GATES 1–6 > 7-agent deploy gate > Engineering Lessons A–E > Operating rules. 3 documented conflicts resolved. | `CLAUDE.md` (subordinate-language note → pointer) |
+
+**Stabilization PR status:** 7 modified files + 4 new contract files staged for `chore/governance-post-219-contract-extraction` PR. In-progress this session.
+
+**Files NOT committed:** `.claude/agents/prompt-engineer.md` (npx-installed template, not production governance), `.claude/memory/PROJECT_STATE.LOCAL_BACKUP.md` (local only), `.claude/worktrees/confident-margulis-fce564/` (Ruflo MCP sandbox artifact, large, not project code).
 
 ## Wave 2 kernel condensation facts (appended 2026-05-18)
 
