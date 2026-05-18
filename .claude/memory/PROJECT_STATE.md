@@ -11,7 +11,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 # FACTS
 
 ## Current origin/main HEAD
-- **2026-05-18** — `150b2c9` chore: fix skill discovery — move Wave 1A skills to .claude/commands/ (PR #215 merge)
+- **2026-05-18** — `4083d84` chore(kernel): Wave 2 patch #1 — condense CLAUDE.md shipment sections (PR #216 merge)
+  - Prior: `150b2c9` chore: fix skill discovery — move Wave 1A skills to .claude/commands/ (PR #215 merge)
   - Prior: `e294160` chore: skill-system Wave 1A — pz-shipment, cowork-integration, engineering-lessons (PR #214 merge)
   - Prior: `67a1af8` fix(p1): SyntheticEvent onChange repair + learning_traces flag writer (PR #213 merge)
   - Prior: `1ee83e52` Merge PR #77: chore(reconcile): backfill 4c797e4 and add Lesson D lead coordinator backstop
@@ -41,6 +42,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **SHA lineage verified (STEP 4):** `git log 0b4e381..4c797e4` → 1 commit (`4c797e4` only). `git merge-base 0b4e381 4c797e4` → `1b38ea0`. Conclusion: `4d595ca`, `80e3469`, `1b38ea0` are already on origin/main (reachable from `0b4e381`). Only `4c797e4` is unique to Windows local chain. PROJECT_STATE.md "4 local hotfix commits" description was partially incorrect — 3 of 4 were already on origin/main. **Governance note:** `4c797e4` was deployed without a GitHub PR (local-commit-only deploy). 7-agent gate was run inline; CLAUDE.md gate spirit was observed. See Lesson D candidate in Scorecard § 4.
 
 ## Merged PRs (this session window, latest first)
+- **#216** 2026-05-18T18:28Z — chore(kernel): Wave 2 patch #1 — condense CLAUDE.md shipment sections (pz-shipment retrieval) — merge SHA `4083d84` — governance/kernel only. Condensed 8 shipment-processing sections in CLAUDE.md from 329 to 143 lines (−186 lines). 18 enforcement invariants preserved verbatim (machine-verified 29/29 fragments). Removed content is explanatory/reference, present verbatim in `.claude/commands/pz-shipment.md`. Post-patch observation audit 2026-05-18: STABLE — no enforcement regression, no sequencing drift, three LOW-risk items all mitigated by L1 triggers.
 - **#215** 2026-05-18T18:09Z — chore: fix skill discovery — move Wave 1A skills to .claude/commands/ — merge SHA `150b2c9` — rename-only, zero content changes, zero blast radius. Corrects `.claude/skills/` → `.claude/commands/` after runtime discovery.
 - **#214** 2026-05-18T18:01Z — chore: skill-system Wave 1A — pz-shipment, cowork-integration, engineering-lessons — merge SHA `e294160` — governance/tooling only. Creates `.claude/commands/` retrieval modules. No CLAUDE.md changes. No production code.
 - **#213** 2026-05-18T17:58Z — fix(p1): SyntheticEvent onChange repair + learning_traces flag writer — merge SHA `67a1af8` — P1 production defect batch. 6 Inp/Sel onChange sites fixed. learn_from_parse both return paths emit `flag`. 19 regression tests (test_p1_defect_batch.py).
@@ -183,6 +185,14 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
   - `engineering-lessons` — Lessons A–D (test stubs, agent registry refresh, scorecard writes, LOCAL-COMMIT-ONLY deploys)
   - All 3 confirmed invocable via `Skill()` tool in session post-commit. Runtime discovery: `.claude/skills/` is inert; `.claude/commands/` is the active project retrieval surface.
 
+## Wave 2 kernel condensation facts (appended 2026-05-18)
+
+- **Wave 2 patch #1 MERGED** — SHA `4083d84`, PR #216, 2026-05-18T18:28Z. Governance/kernel change only. CLAUDE.md shipment-processing sections condensed. Zero production code, zero test changes, zero agent changes.
+- **Shipment condensation stable** — post-patch observation audit 2026-05-18: no enforcement regression (all 7 `Never` imperatives intact), no sequencing drift (all invariant triples intact), no observer-trigger drift (Rules 2–3 at lines 155–178, outside condensed section). Three LOW-risk items identified (blocked format, Cliq field names, WorkDrive format variants), all mitigated by correctly-placed L1 triggers.
+- **`.claude/commands/` confirmed active retrieval surface** — runtime-validated 2026-05-18 across PRs #214, #215. All three modules (`pz-shipment`, `cowork-integration`, `engineering-lessons`) invocable via `Skill()` tool in session.
+- **`.claude/skills/` confirmed inert** — not scanned by skill loader in current Claude Code runtime. Validated by empirical failure + resolution cycle (PR #215).
+- **Wave 2 patch #2 pending operator start signal** — next candidate section: `## 9. Action execution after Cowork result`, backed by `.claude/commands/cowork-integration.md`. Protocol: operator names section explicitly → extract invariant triples → condense → PR → observe one session before patch #3.
+
 ## RULE 6 visibility entries (scorecards on disk + expected)
 - **2026-05-13** — Scorecard recorded: `.claude/memory/scorecards/2026-05-13-w5-p0-adr018-p2-deployment-campaign.md` — observer: `agent-performance-observer` post PR #41 registry-refresh validation — 14 verdicts scored, all EXEMPLARY, zero NEEDS-TUNING / UNRELIABLE.
 - **2026-05-13** — Scorecard recorded: `.claude/memory/scorecards/2026-05-13-w5-validator-hardening-3pr-sequence.md` — observer: `agent-performance-observer` covering the PR #52 / #57 / #61 sequence. Confirmed on disk in worktree.
@@ -194,6 +204,21 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **2026-05-13T14:30Z (Lesson D codification)** — Scorecard written: `.claude/memory/scorecards/2026-05-13-lesson-d-governance-codification.md` — RULE 2 auto-fire for PR #76 governance session. 3 agents scored (1 EXEMPLARY, 2 ACCEPTABLE). Enforcement gap finding: `deploy_lead_coordinator.md` has no LOCAL-COMMIT-ONLY backstop (fixed by PR #77).
 - **2026-05-13T16:00Z (Lesson D closure)** — Scorecard written: `.claude/memory/scorecards/2026-05-13-lesson-d-closure.md` — RULE 2 auto-fire for PR #77. 3 agents scored (system-architect, final-consistency-review, deploy_release_manager). All issues resolved pre-commit. **Total scorecards on disk: 8**.
 - **2026-05-13** — Engineering lessons file: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch), Lesson B (mid-session registry refresh non-determinism), Lesson C (orchestrator scorecard verification), **Lesson D (LOCAL-COMMIT-ONLY deploy disclosure + reconciliation — CODIFIED 2026-05-13 via PR #76)** are all binding rules.
+- **2026-05-13** — Scorecard ON DISK but previously uncited (retroactive RULE 6 registration 2026-05-18): `.claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` — P2 ignition switch model C analysis. File confirmed on disk. GATE 4 disposition: **ACCEPTED GAP** — file is valid; omission from prior RULE 6 citations was an oversight (not a Lesson C silent-loss event). No retroactive action required beyond this citation.
+
+## RULE 6 GATE 4 disposition — missing scorecard references (appended 2026-05-18)
+
+Three scorecard files cited in RULE 6 visibility entries above were confirmed MISSING from disk during the Wave 2 post-patch observation audit (2026-05-18). All three follow the Lesson C silent-loss pattern: observer reported successful write at session time, but file never landed on disk.
+
+| Scorecard | Status | GATE 4 Disposition |
+|---|---|---|
+| `2026-05-13-wave1-deploy-closure.md` | MISSING — Lesson C silent-loss (reported written 2026-05-13T12:30Z) | **ACCEPTED GAP** |
+| `2026-05-13-lesson-d-governance-codification.md` | MISSING — Lesson C silent-loss (reported written 2026-05-13T14:30Z) | **ACCEPTED GAP** |
+| `2026-05-13-lesson-d-closure.md` | MISSING — Lesson C silent-loss (reported written 2026-05-13T16:00Z) | **ACCEPTED GAP** |
+
+Rationale: retroactive fabrication of missing scorecards is prohibited by governance rules (fabricated files would misrepresent past campaign quality). RULE 6 citations are retained as historical record. ACCEPTED GAP acknowledges the gap without requiring remediation. The Lesson C binding rule (CLAUDE.md § Engineering Lessons) addresses recurrence prevention: orchestrator must verify scorecard file exists on disk after observer auto-fire before composing final report.
+
+Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-adr018-p2-deployment-campaign.md`, (2) `2026-05-13-w5-validator-hardening-3pr-sequence.md`, (3) `2026-05-13-w5-pd-admin-runtime-flags-validator-RETROACTIVE.md`, (4) `2026-05-13-observation-audit-closure.md`, (5) `self-eval-2026-05-13.md`, (6) `2026-05-13-w5-p2-ignition-switch-model-c.md` (retroactively cited this session).
 
 ## Observation-layer audit closure (appended 2026-05-13T08:30Z)
 - **Validator hardening cycle: COMPLETE.** Closure now also includes the retroactively-produced PR #50 scorecard, satisfying RULE 6 visibility. The 3-PR validator-hardening sequence (#52 → #57 → #61) plus the originating PR #50 all have observability artifacts on disk.
@@ -307,7 +332,7 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 5. PR for that section only
 6. Merge and observe one session before touching the next section
 
-**Current boundary:** Wave 1A complete. Wave 2 not started. First Wave 2 target must be named explicitly by operator.
+**Current boundary:** Wave 1A complete. Wave 2 patch #1 complete (`4083d84`, PR #216, 2026-05-18). Shipment-processing condensation stable per post-patch observation audit. Wave 2 patch #2 pending explicit operator start signal. Next candidate: `## 9. Action execution after Cowork result` using `.claude/commands/cowork-integration.md`.
 
 ## Next 3 actions in queue
 
