@@ -103,10 +103,10 @@ const GOLD = 'var(--accent)';
 
 const NAV_TREE = [
   { id: 'dashboard',  label: 'Dashboard',  icon: '▦' },
-  { id: 'inbox',      label: 'Inbox',      icon: '✉', badge: 'NEW' },
+  { id: 'inbox',      label: 'Inbox',      icon: '✉' },
   { id: 'shipments',  label: 'Shipments',  icon: '⬡' },
   { id: 'documents',  label: 'Documents',  icon: '📄' },
-  { id: 'accounting', label: 'Accounting', icon: '⊞', badge: 'NEW' },
+  { id: 'accounting', label: 'Accounting', icon: '⊞' },
   { id: 'inventory',  label: 'Inventory',  icon: '◫' },
   { id: 'reports',    label: 'Reports',    icon: '≡' },
   { id: 'g_setup', label: 'Setup', icon: '⚙', defaultId: 'admin', children: [
@@ -793,15 +793,13 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
                   <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{_inboxAge(row.timestamp) || '—'}</td>
                   <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--text-2)', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.reason}>{row.reason}</td>
                   <td style={{ padding: '10px 12px', textAlign: 'right' }}>
-                    {row.open_target
-                      ? <button data-testid="inbox-open-btn" onClick={() => {
-                          if (row.open_target.type === 'batch') {
-                            const t = row.open_target.id;
-                            if (t && typeof t === 'object') onViewShipment && onViewShipment(t);
-                            else if (t) onViewShipment && onViewShipment({ batch_id: t });
-                          }
+                    {row.open_target && row.open_target.type === 'batch'
+                      ? <button data-testid="inbox-open-btn" data-nav-target="batch" onClick={() => {
+                          const t = row.open_target.id;
+                          if (t && typeof t === 'object') onViewShipment && onViewShipment(t);
+                          else if (t) onViewShipment && onViewShipment({ batch_id: t });
                         }} style={{ padding: '3px 10px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 5, background: 'var(--card)', color: 'var(--text-2)', cursor: 'pointer', fontFamily: 'inherit' }}>Open</button>
-                      : <span style={{ fontSize: 10, color: 'var(--text-3)' }}>—</span>}
+                      : <span data-testid="inbox-open-disabled" title="No navigation target for this row type" style={{ fontSize: 10, color: 'var(--text-3)' }}>—</span>}
                   </td>
                 </tr>
               );
