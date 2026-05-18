@@ -1321,3 +1321,182 @@ def delete_design(db_path: Path, design_code: str) -> bool:
             return cur.rowcount > 0
         except sqlite3.OperationalError:
             return False
+
+
+# ── CompanyProfile (Phase 7 — commercial document platform) ──────────────────
+
+@dataclass
+class CompanyProfile:
+    # Identity
+    legal_name:        str
+    short_name:        Optional[str] = None
+    street:            Optional[str] = None
+    postal_city:       Optional[str] = None
+    country:           str           = "PL"
+    nip:               Optional[str] = None
+    vat_eu:            Optional[str] = None
+    regon:             Optional[str] = None
+    # Contact
+    email:             Optional[str] = None
+    phone:             Optional[str] = None
+    # Bank — Estrella as payee
+    iban_eur:          Optional[str] = None
+    iban_usd:          Optional[str] = None
+    iban_pln:          Optional[str] = None
+    swift:             Optional[str] = None
+    bank_name:         Optional[str] = None
+    # Legal boilerplate
+    place_of_issue:    Optional[str] = None
+    signatory_name:    Optional[str] = None
+    signatory_title:   Optional[str] = None
+    returns_policy_pl: Optional[str] = None
+    gdpr_text_pl:      Optional[str] = None
+    # Meta
+    updated_at:        Optional[str] = None
+
+
+def _row_to_company_profile(row: sqlite3.Row) -> "CompanyProfile":
+    return CompanyProfile(
+        legal_name        = row["legal_name"],
+        short_name        = row["short_name"],
+        street            = row["street"],
+        postal_city       = row["postal_city"],
+        country           = row["country"] or "PL",
+        nip               = row["nip"],
+        vat_eu            = row["vat_eu"],
+        regon             = row["regon"],
+        email             = row["email"],
+        phone             = row["phone"],
+        iban_eur          = row["iban_eur"],
+        iban_usd          = row["iban_usd"],
+        iban_pln          = row["iban_pln"],
+        swift             = row["swift"],
+        bank_name         = row["bank_name"],
+        place_of_issue    = row["place_of_issue"],
+        signatory_name    = row["signatory_name"],
+        signatory_title   = row["signatory_title"],
+        returns_policy_pl = row["returns_policy_pl"],
+        gdpr_text_pl      = row["gdpr_text_pl"],
+        updated_at        = row["updated_at"],
+    )
+
+
+_COMPANY_PROFILE_COLUMNS = [
+    "legal_name", "short_name", "street", "postal_city", "country",
+    "nip", "vat_eu", "regon", "email", "phone",
+    "iban_eur", "iban_usd", "iban_pln", "swift", "bank_name",
+    "place_of_issue", "signatory_name", "signatory_title",
+    "returns_policy_pl", "gdpr_text_pl", "updated_at",
+]
+
+
+def _ensure_company_profile_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS company_profile (
+            id                INTEGER PRIMARY KEY,
+            legal_name        TEXT NOT NULL DEFAULT '',
+            short_name        TEXT,
+            street            TEXT,
+            postal_city       TEXT,
+            country           TEXT NOT NULL DEFAULT 'PL',
+            nip               TEXT,
+            vat_eu            TEXT,
+            regon             TEXT,
+            email             TEXT,
+            phone             TEXT,
+            iban_eur          TEXT,
+            iban_usd          TEXT,
+            iban_pln          TEXT,
+            swift             TEXT,
+            bank_name         TEXT,
+            place_of_issue    TEXT,
+            signatory_name    TEXT,
+            signatory_title   TEXT,
+            returns_policy_pl TEXT,
+            gdpr_text_pl      TEXT,
+            updated_at        TEXT
+        )
+    """)
+    # Additive ALTER for future columns — same pattern as the rest of the file
+    for col, col_type in [
+        ("short_name",        "TEXT"),
+        ("street",            "TEXT"),
+        ("postal_city",       "TEXT"),
+        ("country",           "TEXT NOT NULL DEFAULT 'PL'"),
+        ("nip",               "TEXT"),
+        ("vat_eu",            "TEXT"),
+        ("regon",             "TEXT"),
+        ("email",             "TEXT"),
+        ("phone",             "TEXT"),
+        ("iban_eur",          "TEXT"),
+        ("iban_usd",          "TEXT"),
+        ("iban_pln",          "TEXT"),
+        ("swift",             "TEXT"),
+        ("bank_name",         "TEXT"),
+        ("place_of_issue",    "TEXT"),
+        ("signatory_name",    "TEXT"),
+        ("signatory_title",   "TEXT"),
+        ("returns_policy_pl", "TEXT"),
+        ("gdpr_text_pl",      "TEXT"),
+        ("updated_at",        "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE company_profile ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    conn.commit()
+
+
+def get_company_profile(db_path: Path) -> Optional[CompanyProfile]:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            _ensure_company_profile_table(conn)
+            row = conn.execute(
+                "SELECT * FROM company_profile WHERE id=1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return _row_to_company_profile(row) if row else None
+
+
+def upsert_company_profile(db_path: Path, **fields) -> CompanyProfile:
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Filter to only known fields (exclude id and updated_at — we set updated_at ourselves)
+    allowed = set(_COMPANY_PROFILE_COLUMNS) - {"updated_at"}
+    payload = {k: v for k, v in fields.items() if k in allowed}
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_company_profile_table(conn)
+        existing = conn.execute(
+            "SELECT * FROM company_profile WHERE id=1"
+        ).fetchone()
+        if existing:
+            # Merge: start from existing values, overlay with supplied fields
+            merged: Dict[str, Any] = {col: existing[col] for col in _COMPANY_PROFILE_COLUMNS}
+            merged.update(payload)
+        else:
+            merged = {col: None for col in _COMPANY_PROFILE_COLUMNS}
+            merged["legal_name"] = ""
+            merged["country"]    = "PL"
+            merged.update(payload)
+
+        cols   = ["id"] + _COMPANY_PROFILE_COLUMNS
+        values = [1]    + [merged[c] for c in _COMPANY_PROFILE_COLUMNS]
+        placeholders = ", ".join(["?"] * len(cols))
+        col_list     = ", ".join(cols)
+        conn.execute(
+            f"INSERT OR REPLACE INTO company_profile ({col_list}) VALUES ({placeholders})",
+            values,
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM company_profile WHERE id=1"
+        ).fetchone()
+    return _row_to_company_profile(row)

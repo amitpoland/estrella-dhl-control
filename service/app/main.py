@@ -33,6 +33,7 @@ from .api.routes_dhl_documents import router as dhl_documents_router
 from .api.routes_lifecycle import router as lifecycle_router
 from .api.routes_intake import router as intake_router
 from .api.routes_execute import router as execute_router
+from .api.routes_settings import router as settings_router
 from .api.routes_system import router as system_router
 from .api.routes_agents import router as agents_router
 from .api.routes_packing import router as packing_router, dev_router as packing_dev_router
@@ -301,6 +302,7 @@ app.include_router(md_fx_router)                    # MasterData-B8: FX rates (R
 app.include_router(md_carriers_config_router)       # MasterData-B9: Carrier config (LOCAL, NON-SECRET; runtime untouched)
 app.include_router(md_designs_router)                # B-MD2 (MDOC): Designs master (LOCAL, additive; product_identity_engine read-only consumer)
 app.include_router(finance_postings_router)         # Phase 6F.3: read-only breakdown endpoint (no writes, no posting/settlement/FX/wFirma coupling; init_db lazy-on-call)
+app.include_router(settings_router)                # Phase 7: company profile (seller identity + bank details)
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
