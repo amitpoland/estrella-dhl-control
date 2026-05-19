@@ -181,6 +181,15 @@ _OPTIONAL_STR_FIELDS = frozenset({
     "bill_to_street", "bill_to_city", "bill_to_postal_code",
     "bill_to_email", "bill_to_phone", "bill_to_mobile",
     "bank_account",
+    # Ship-to alternate-address fields — must be '' → None coerced so that
+    # clearing a previously-set alternate address persists as NULL rather
+    # than empty string (operator complaint 2026-05-19: ship-to clears
+    # round-trip as ""). ship_to_use_alternate is boolean (covered in
+    # _BOOL_FIELDS). ship_to_contractor_id is the wFirma receiver id and
+    # is allowed to be cleared by the operator.
+    "ship_to_name", "ship_to_person", "ship_to_street",
+    "ship_to_city", "ship_to_zip", "ship_to_country",
+    "ship_to_phone", "ship_to_email", "ship_to_contractor_id",
     "regon", "short_code", "client_type", "industry", "eori",
     # default_currency was already accepted via the dataclass field but had
     # no '' → None coercion; route it through here so an operator clearing
