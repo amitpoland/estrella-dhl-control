@@ -19470,6 +19470,70 @@ window.EstrellaRoutes = window.EstrellaRoutes || {};
 window.EstrellaRoutes.buildShipmentDetailUrl = buildShipmentDetailUrl;
 
 // ══════════════════════════════════════════════════════════
+// ERROR BOUNDARY — narrow render-crash guard for DHL/Customs tabs
+// ══════════════════════════════════════════════════════════
+// Narrow scope: catches uncaught render exceptions in the subtree
+// it wraps and displays a static fallback panel.  Reads no batch
+// data, calls no API, runs no auto-retry — so a crash here cannot
+// cascade into the rest of the dashboard.  Wrap ONLY DHL/Customs
+// surfaces; Sales / PZ / Warehouse / Dashboard / Overview tabs
+// remain unwrapped so unrelated runtime is unchanged.
+class TabErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+  static getDerivedStateFromError(error) {
+    return {
+      hasError: true,
+      message: (error && (error.message || String(error))) || 'unknown error',
+    };
+  }
+  componentDidCatch(error, info) {
+    // Surface to browser console only.  No remote logging, no
+    // mutation, no fetch.  Operator captures the message via F12.
+    try {
+      console.error('[TabErrorBoundary] caught render error:', error, info);
+    } catch (_e) { /* never let logging itself throw */ }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          data-testid="tab-error-boundary-fallback"
+          style={{
+            padding: '40px 32px', maxWidth: 720, margin: '24px auto',
+            background: 'var(--card)', border: '1px solid var(--badge-red-border)',
+            borderRadius: 8, color: 'var(--text)', fontFamily: 'inherit',
+          }}>
+          <div style={{
+            fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text)',
+            letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8,
+          }}>
+            Render error
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            DHL / Customs tab failed to render
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 14, lineHeight: 1.5 }}>
+            Refresh the page or contact support with the browser console error.
+          </div>
+          <div style={{
+            fontSize: 11, fontFamily: 'monospace', color: 'var(--text-3)',
+            background: 'var(--bg-subtle)', padding: '8px 10px', borderRadius: 4,
+            wordBreak: 'break-all',
+          }}
+            data-testid="tab-error-boundary-message">
+            {this.state.message}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
 // APP ROOT
 // ══════════════════════════════════════════════════════════
 
@@ -19647,8 +19711,14 @@ function App() {
         )}
 
         {/* Module pages */}
-        {page === 'dhl'         && <DhlClearancePage batches={batches} onViewShipment={viewShipment} />}
-        {page === 'documents'   && <CustomsDocumentsPage batches={batches} onViewShipment={viewShipment} />}
+        {/* DHL + Customs tabs are wrapped in TabErrorBoundary so any
+            render exception inside their subtree shows a static
+            fallback instead of black-screening the whole dashboard.
+            Other tabs (accounting / wfirma_setup / reports / etc.)
+            stay unwrapped — they have not exhibited the failure and
+            adding wrappers there would be scope creep. */}
+        {page === 'dhl'         && <TabErrorBoundary><DhlClearancePage batches={batches} onViewShipment={viewShipment} /></TabErrorBoundary>}
+        {page === 'documents'   && <TabErrorBoundary><CustomsDocumentsPage batches={batches} onViewShipment={viewShipment} /></TabErrorBoundary>}
         {page === 'accounting'  && <PzAccountingPage batches={batches} onViewShipment={viewShipment} />}
         {page === 'wfirma_setup'&& <WfirmaExportPage batches={batches} onViewShipment={viewShipment} />}
         {page === 'reports'         && <ReportsPage />}
