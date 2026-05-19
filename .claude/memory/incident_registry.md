@@ -57,7 +57,7 @@
 - Operator must `git log --oneline origin/main..HEAD` on Windows and push the diff as a PR
 - `local-commit-deploys.jsonl` entry: `reconciliation_status: "PENDING"` until PR merged
 
-**Status**: PENDING — reconciliation PR not yet filed.
+**Status**: RESOLVED — PR #226 (`integ/merge-windows-local-7392be1`) merged 2026-05-19T12:22:28Z. Commit `7392be1` (`feat(ui): commercial state visibility V1+V2+V3`) is now on origin/main. `local-commit-deploys.jsonl` entry should be updated: `reconciliation_status: "RESOLVED"`. Note: Windows production is still at `7392be1`; when next `git pull --ff-only origin main` is run on Windows, it will be a safe fast-forward since `7392be1` is an ancestor of current origin/main HEAD.
 
 ---
 
