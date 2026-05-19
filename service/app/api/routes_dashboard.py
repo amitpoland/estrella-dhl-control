@@ -2371,6 +2371,7 @@ def proforma_readiness(batch_id: str) -> Dict[str, Any]:
         "pz": {
             "sad_received":          False,
             "wfirma_pz_doc_id":      None,
+            "wfirma_pz_fullnumber":  None,
             "pz_rows_json_present":  False,
             "ready_for_pz_create":   False,
         },
@@ -2534,7 +2535,8 @@ def proforma_readiness(batch_id: str) -> Dict[str, Any]:
                 cd.get("mrn") or cd.get("invoice_cif_usd")
             )
             wfx = audit.get("wfirma_export") or {}
-            out["pz"]["wfirma_pz_doc_id"] = (wfx.get("wfirma_pz_doc_id") or "").strip() or None
+            out["pz"]["wfirma_pz_doc_id"]     = (wfx.get("wfirma_pz_doc_id")     or "").strip() or None
+            out["pz"]["wfirma_pz_fullnumber"] = (wfx.get("wfirma_pz_fullnumber") or "").strip() or None
         out["pz"]["pz_rows_json_present"] = (outputs_dir / "pz_rows.json").exists()
         out["pz"]["ready_for_pz_create"] = (
             out["pz"]["sad_received"]

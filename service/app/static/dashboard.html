@@ -16169,6 +16169,10 @@ function ProformaReadinessCard({ batchId, onToast }) {
   const bridge    = data.bridge || {};
   const pz        = data.pz || {};
   const proforma  = data.proforma || {};
+  // Canonical: pz.wfirma_pz_fullnumber wins over manual pz number.
+  // a.doc_no remains as fallback when canonical absent (pre-mapping batches).
+  const canonName = (pz.wfirma_pz_fullnumber || '').trim();
+  const canonId   = (pz.wfirma_pz_doc_id   || '').trim();
 
   return (
     <Card style={{ marginBottom: 16 }}>
@@ -16362,10 +16366,26 @@ function ProformaReadinessCard({ batchId, onToast }) {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 8 }}>
             <InfoRow label="SAD received"           value={pz.sad_received ? 'YES' : 'NO'} />
-            <InfoRow label="wFirma PZ doc id"       value={pz.wfirma_pz_doc_id || '—'} mono />
+            <InfoRow label="wFirma PZ doc id"       value={canonId || '—'} mono />
+            <InfoRow label="wFirma PZ full number"  value={canonName || '—'} mono />
             <InfoRow label="pz_rows.json on disk"   value={pz.pz_rows_json_present ? 'YES' : 'NO'} />
             <InfoRow label="Ready for PZ create"    value={pz.ready_for_pz_create ? 'YES' : 'NO'} />
           </div>
+          {(canonId && canonName) && (
+            <div style={{ marginTop: 8 }}>
+              <button
+                disabled={!!busy}
+                onClick={() => runAction('↻ Refresh Mapping', () =>
+                  apiFetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz/refresh-mapping`,
+                    { method: 'POST' })
+                )}
+                style={{ padding: '3px 10px', fontSize: 11, border: '1px solid var(--border)',
+                         borderRadius: 5, background: 'var(--card)', color: 'var(--text-2)',
+                         cursor: 'pointer', fontFamily: 'inherit', opacity: busy ? 0.5 : 1 }}>
+                ↻ Refresh Mapping
+              </button>
+            </div>
+          )}
         </section>
 
         {/* ── Section 5: Proforma verdict + blockers ───── */}
