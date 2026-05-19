@@ -9,8 +9,10 @@ Covers:
   PM02 — unrecognised and empty payment_method values omit <paymentmethod> element
   PM03 — preferred_payment_method round-trip through CustomerMaster DB (write + read)
   PM04 — preferred_payment_method = None clears the field
+  PM05 — PUT route rejects unknown payment method with 422 (server-side enum guard)
   S01 — ship_to_name blank-to-null coercion in _parse_body
   S02 — preferred_payment_method blank-to-null coercion in _parse_body
+  S03 — UI source-grep: dashboard has 4 payment options, no 'other', testid present
   SER01 — pick_proforma_series_id returns preferred_proforma_series_id or default
   GATE01 — WFIRMA_CREATE_INVOICE_ALLOWED guard text present in routes_proforma source
   DESC01 — build_description_line produces Polish / English slash format
@@ -211,3 +213,67 @@ def test_build_description_line_no_english():
     result = build_description_line("pierścionek", "")
     assert result == "pierścionek"
     assert " / " not in result
+
+
+# ── PM05: Route PUT rejects invalid payment method ───────────────────────────
+
+def test_route_put_rejects_invalid_payment_method():
+    """PUT /customer-master/{id} must return 422 for unrecognised payment methods.
+
+    This is the server-side enum guard: only transfer|cash|card|compensation allowed.
+    The check runs in _parse_body after blank→None normalisation.
+    """
+    from app.api.routes_customer_master import _ALLOWED_PAYMENT_METHODS, _parse_body
+    from fastapi import HTTPException
+    import pytest
+
+    # Valid values must not raise
+    for valid in _ALLOWED_PAYMENT_METHODS:
+        result = _parse_body("99999", {"bill_to_name": "Test", "country": "DE",
+                                        "preferred_payment_method": valid})
+        assert result.preferred_payment_method == valid
+
+    # None (blank already normalised) must not raise
+    result = _parse_body("99999", {"bill_to_name": "Test", "country": "DE",
+                                    "preferred_payment_method": None})
+    assert result.preferred_payment_method is None
+
+    # Unknown values must raise 422
+    for bad in ("other", "bank_transfer", "wire", "TRANSFER", "przelew"):
+        with pytest.raises(HTTPException) as exc_info:
+            _parse_body("99999", {"bill_to_name": "Test", "country": "DE",
+                                   "preferred_payment_method": bad})
+        assert exc_info.value.status_code == 422
+        assert bad in str(exc_info.value.detail)
+
+
+# ── S03: UI source-grep — dashboard payment method options ──────────────────
+
+def test_dashboard_payment_method_options_source_grep():
+    """dashboard.html must have exactly the 4 whitelisted payment options
+    and must NOT contain 'other' in the payment-method select block.
+    """
+    dashboard = (
+        pathlib.Path(__file__).parent.parent / "app" / "static" / "dashboard.html"
+    )
+    assert dashboard.exists(), "dashboard.html not found"
+    source = dashboard.read_text(encoding="utf-8")
+
+    # testid anchor must exist
+    assert 'data-testid="kyc-payment-method"' in source, \
+        "kyc-payment-method select not found in dashboard.html"
+
+    # Whitelisted values must appear as option values
+    for expected_value in ("transfer", "cash", "card", "compensation"):
+        assert f"value='{expected_value}'" in source or f'value="{expected_value}"' in source, \
+            f"Option '{expected_value}' not found in dashboard.html"
+
+    # 'other' must NOT appear as an option in the payment-method block.
+    # We check the block between the kyc-payment-method testid and the next </select>.
+    start = source.find('data-testid="kyc-payment-method"')
+    assert start != -1
+    end = source.find("</select>", start)
+    assert end != -1
+    block = source[start:end]
+    assert "other" not in block.lower(), \
+        f"'other' found in payment-method select block:\n{block}"

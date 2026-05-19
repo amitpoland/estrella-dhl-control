@@ -72,7 +72,7 @@ class CustomerMaster:
     default_language_id:           Optional[str] = None      # wFirma translation_language_id
     preferred_proforma_series_id:  Optional[str] = None      # wFirma series id for proformas
     preferred_invoice_series_id:   Optional[str] = None      # wFirma series id for final invoices
-    preferred_payment_method:      Optional[str] = None      # wFirma payment method: transfer|cash|card|compensation|other
+    preferred_payment_method:      Optional[str] = None      # wFirma payment method: transfer|cash|card|compensation
     vat_mode:                      Optional[int] = None      # 222 | 228 | 229
 
     # Freight defaults
