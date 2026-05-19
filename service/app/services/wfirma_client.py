@@ -15,6 +15,7 @@ Auth:
 from __future__ import annotations
 
 
+import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
@@ -206,6 +207,11 @@ class ProformaRequest:
     # ``wfdb.set_customer_ship_to(...)`` and threaded through by
     # ``routes_proforma._build_proforma_request``.
     wfirma_contractor_receiver_id: str = ""
+    # Optional series id — when set and not "0", emits
+    # ``<series><id>...</id></series>`` in the invoice XML.
+    # Resolved from customer_master.preferred_proforma_series_id by
+    # ``routes_proforma._build_proforma_request``. Empty = wFirma default.
+    series_id: str = ""
 
 
 @dataclass
@@ -1729,7 +1735,12 @@ def find_vat_code_id_by_code(code: str) -> Optional[str]:
     cached = _VAT_CODE_ID_CACHE.get(code_norm)
     if cached:
         return cached
-    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+    with _vat_code_cache_lock:
+        # Double-check under lock.
+        cached = _VAT_CODE_ID_CACHE.get(code_norm)
+        if cached:
+            return cached
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <api>
   <vat_codes>
     <parameters>
@@ -1739,19 +1750,19 @@ def find_vat_code_id_by_code(code: str) -> Optional[str]:
     </parameters>
   </vat_codes>
 </api>"""
-    http_status, response_text = _http_request("GET", "vat_codes", "find", body)
-    if http_status >= 400:
-        raise RuntimeError(f"vat_codes/find HTTP {http_status}")
-    status, desc = _parse_status(response_text)
-    if status != "OK":
-        raise RuntimeError(f"vat_codes/find wFirma status={status}: {desc}")
-    root = ET.fromstring(response_text)
-    node = root.find(".//vat_code")
-    if node is None:
-        return None
-    vid = (_find_text(node, "id") or "").strip() or None
-    if vid:
-        _VAT_CODE_ID_CACHE[code_norm] = vid
+        http_status, response_text = _http_request("GET", "vat_codes", "find", body)
+        if http_status >= 400:
+            raise RuntimeError(f"vat_codes/find HTTP {http_status}")
+        status, desc = _parse_status(response_text)
+        if status != "OK":
+            raise RuntimeError(f"vat_codes/find wFirma status={status}: {desc}")
+        root = ET.fromstring(response_text)
+        node = root.find(".//vat_code")
+        if node is None:
+            return None
+        vid = (_find_text(node, "id") or "").strip() or None
+        if vid:
+            _VAT_CODE_ID_CACHE[code_norm] = vid
     return vid
 
 
@@ -1771,6 +1782,10 @@ def resolve_vat_code_id_for_context(vat_code: str) -> str:
 
 
 _VAT_CODE_ID_CACHE: Dict[Any, str] = {}
+# Lock prevents double-fetch under concurrent first calls (benign but wastes a
+# wFirma API round-trip). No TTL needed — vat_codes are stable read-only data.
+# No disk persistence needed — process-lifetime cache is sufficient.
+_vat_code_cache_lock = _threading.Lock()
 
 
 def _resolve_vat_code_id(rate: int = 23) -> str:
@@ -1786,13 +1801,18 @@ def _resolve_vat_code_id(rate: int = 23) -> str:
     cached = _VAT_CODE_ID_CACHE.get(int(rate))
     if cached:
         return cached
-    vid = find_vat_code_id_live(rate)
-    if not vid:
-        raise RuntimeError(
-            f"_resolve_vat_code_id: wFirma returned no vat_code for rate={rate} "
-            "— cannot build proforma payload without per-line VAT id"
-        )
-    _VAT_CODE_ID_CACHE[int(rate)] = vid
+    with _vat_code_cache_lock:
+        # Double-check under lock in case another thread populated it.
+        cached = _VAT_CODE_ID_CACHE.get(int(rate))
+        if cached:
+            return cached
+        vid = find_vat_code_id_live(rate)
+        if not vid:
+            raise RuntimeError(
+                f"_resolve_vat_code_id: wFirma returned no vat_code for rate={rate} "
+                "— cannot build proforma payload without per-line VAT id"
+            )
+        _VAT_CODE_ID_CACHE[int(rate)] = vid
     return vid
 
 
@@ -1888,6 +1908,15 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
             f"</contractor_receiver>"
         )
 
+    # Emit <series><id>…</id></series> only when a non-empty, non-zero
+    # series id was resolved from customer_master.preferred_proforma_series_id.
+    # Empty string or "0" → omit so wFirma uses its own default series.
+    _sid = (req.series_id or "").strip()
+    series_xml = (
+        f"<series><id>{_esc(_sid)}</id></series>"
+        if _sid and _sid != "0" else ""
+    )
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <api>
   <invoices>
@@ -1896,6 +1925,7 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
       {receiver_xml}
       <type>proforma</type>
       {currency_xml}
+      {series_xml}
       <invoicecontents>{lines_xml}
       </invoicecontents>
     </invoice>

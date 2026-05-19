@@ -330,9 +330,18 @@ def _validate_args(batch_id: str, client_name: str) -> str:
 
 def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     """
-    Pure read-only resolution. Returns the canonical preview dict.
+    Canonical preview resolution. Returns the canonical preview dict.
     Identical body shape to what /preview emits over HTTP — used directly
     by the /create endpoint to share the exact same gating logic.
+
+    ⚠  KNOWN WRITE-ON-READ (GOVERNANCE NOTE 2026-05-19):
+    The populate_from_packing() call below writes to design_product_mapping
+    (bridge table, not financial data) as a side-effect of preview.
+    This is intentional: the bridge must be populated before the operator
+    sees ambiguity warnings in the preview panel. The write is idempotent
+    and safe. Do NOT remove without ensuring the bridge is populated via an
+    alternative explicit trigger before both preview and create paths.
+    See: design_product_bridge.populate_from_packing().
     """
     blocking_reasons: List[str] = []
 
