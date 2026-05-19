@@ -7678,7 +7678,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         </Btn>
                       ) : (
                         <Btn variant="outline" disabled={!!busy.buildPkg}
-                          onClick={() => doAction('buildPkg', 'Build Reply Package', () => apiFetch('/api/v1/dsk/email-package', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId }) }))}>
+                          onClick={() => doAction('buildPkg', 'Build Reply Package', () => apiFetch('/api/v1/dsk/email-package', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId, awb: trackingNo || batchId }) }))}>
                           {busy.buildPkg ? '⟳ Building…' : '⊡ Build DHL Reply Package'}
                         </Btn>
                       )}
