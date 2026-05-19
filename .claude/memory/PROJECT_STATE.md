@@ -28,6 +28,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
   - `.claude/contracts/gate_output_contract.md` — structured agent output schema
   - `.claude/memory/incident_registry.md` — INC-001 through INC-004
   - `.claude/manifests/deploy_delta_pr228.md` — 7-file deploy manifest
+- **Scorecard**: `.claude/memory/scorecards/2026-05-19-campaign9-commercial-completion.md` — 194/245 (79.2%) ACCEPTABLE. EXEMPLARY: deploy_qa_reviewer (33/35), deploy_lead_coordinator (30/35).
 - **Windows deploy PENDING** — 7 files + `pip install tzdata>=2024.1` + nssm restart; see `deploy_delta_pr228.md`
 - **Lesson D INC-003 status: PENDING** — V1/V2/V3 reconciliation PR not yet filed; `local-commit-deploys.jsonl` entry `reconciliation_status: "PENDING"`
 - **GATE 2: 0 open PRs** as of Campaign 9 close
