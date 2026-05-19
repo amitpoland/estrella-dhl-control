@@ -75,16 +75,16 @@ def _scan_codes_per_product(batch_id: str) -> Dict[str, List[str]]:
 
 
 def _state_codes(batch_id: str) -> Dict[str, List[str]]:
-    """{ inventory_state: [scan_code, ...] } for this batch."""
-    out: Dict[str, List[str]] = {}
-    for s in ise.STATES:
-        try:
-            for row in ise.list_by_state(s, batch_id=batch_id):
-                out.setdefault(s, []).append(row["scan_code"])
-        except Exception:
-            # Engine unavailable — leave empty; downstream stock_ok=False.
-            pass
-    return out
+    """{ inventory_state: [scan_code, ...] } for this batch.
+
+    Uses a single SQL query via list_all_states_for_batch() instead of N
+    separate calls (one per state).  Falls back to an empty dict on any error
+    so downstream stock_ok=False logic degrades gracefully.
+    """
+    try:
+        return ise.list_all_states_for_batch(batch_id)
+    except Exception:
+        return {}
 
 
 # ── Warehouse readiness gate ─────────────────────────────────────────────────

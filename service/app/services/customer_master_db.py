@@ -593,6 +593,25 @@ def upsert_customer(db_path: Path, c: CustomerMaster) -> int:
         "pep_check_result":             c.pep_check_result,
         "compliance_notes":             c.compliance_notes,
         "notes":                        c.notes,
+        # ── B0 operator-entered enrichment fields (added 2026-05-19) ──────────
+        # These were present in the CustomerMaster dataclass, returned by GET,
+        # loaded into the dashboard form, and editable by the operator — but
+        # were NOT in the original upsert_customer payload.  Any Save from the
+        # dashboard silently discarded operator edits.  Fixed here.
+        # upsert_identity_only() (wFirma sync path) handles these with COALESCE
+        # semantics; upsert_customer() (operator Save path) now writes them
+        # directly — operator value wins on explicit Save.
+        "bill_to_email":               c.bill_to_email,
+        "bill_to_phone":               c.bill_to_phone,
+        "bill_to_mobile":              c.bill_to_mobile,
+        "bill_to_street":              c.bill_to_street,
+        "bill_to_city":                c.bill_to_city,
+        "bill_to_postal_code":         c.bill_to_postal_code,
+        "regon":                       c.regon,
+        "short_code":                  c.short_code,
+        "client_type":                 c.client_type,
+        "industry":                    c.industry,
+        "eori":                        c.eori,
         "updated_at":              now,
     }
 

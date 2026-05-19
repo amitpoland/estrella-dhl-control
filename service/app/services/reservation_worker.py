@@ -486,6 +486,25 @@ def worker_tick(db_path: Path, wfirma_client: Any) -> Dict[str, Any]:
     3. process_ready_reservations (live only if AUTO_CREATE_WFIRMA_RESERVATIONS=true)
 
     Returns combined summary dict.
+
+    ⚠️  DEAD CODE — GOVERNANCE LOCK (2026-05-19)
+    ─────────────────────────────────────────────
+    This function has ZERO callers in the codebase.  It is NOT wired to any
+    HTTP route, lifespan hook, scheduler, or background task.
+
+    It MUST NOT be wired up without ALL of the following:
+      1. A dedicated WFIRMA_AUTO_RESERVE_ENABLED feature flag (default=False),
+         separate from AUTO_CREATE_WFIRMA_RESERVATIONS.
+      2. Operator acknowledgment in the deployment runbook.
+      3. A regression test proving the kill-switch fires.
+      4. A governance PR reviewed by Amit.
+
+    Rationale: when mode='live' and AUTO_CREATE_WFIRMA_RESERVATIONS=True, this
+    function calls process_ready_reservations() which creates wFirma warehouse
+    reservations autonomously.  Reservations are an intermediate state between
+    a proforma draft and a final invoice — they are NOT human-approved actions
+    in the current governance schema.  Autonomous wiring without a kill-switch
+    would violate the ERP governance contract.
     """
     try:
         from ..core.config import settings

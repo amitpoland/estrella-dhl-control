@@ -1657,6 +1657,23 @@ async def wfirma_pz_adopt(
     pz_doc_id_raw = (body.pz_doc_id or "").strip()
     pz_number_raw = (body.pz_number or "").strip()
 
+    # ── Guard 0: WFIRMA_CREATE_PZ_ALLOWED kill-switch ────────────────────────
+    # pz_adopt writes wfirma_pz_doc_id to audit.json (permanent state change).
+    # It must respect the same global kill-switch as pz_create so that
+    # disabling the flag truly prevents all PZ state mutations.
+    if not getattr(settings, "wfirma_create_pz_allowed", False):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "ok":              False,
+                "status":          "blocked",
+                "blocking_reasons": [
+                    "WFIRMA_CREATE_PZ_ALLOWED is not enabled. "
+                    "Set WFIRMA_CREATE_PZ_ALLOWED=true in .env to allow PZ adoption."
+                ],
+            },
+        )
+
     # ── Guard 1: at least one identifier ─────────────────────────────────────
     if not pz_doc_id_raw and not pz_number_raw:
         return JSONResponse({

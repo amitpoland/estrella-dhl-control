@@ -73,12 +73,19 @@ def _run_adopt(batch_id=_BATCH, body=None):
     from app.api.routes_wfirma import wfirma_pz_adopt
     if body is None:
         body = _adopt_body()
-    return asyncio.get_event_loop().run_until_complete(wfirma_pz_adopt(batch_id, body))
+    # Pass x_operator=None explicitly so FastAPI's Header sentinel is not used
+    # as the default when the coroutine is invoked directly (outside DI machinery).
+    return asyncio.get_event_loop().run_until_complete(
+        wfirma_pz_adopt(batch_id, body, x_operator=None)
+    )
 
 
 def _run_create(batch_id=_BATCH):
     from app.api.routes_wfirma import wfirma_pz_create
-    return asyncio.get_event_loop().run_until_complete(wfirma_pz_create(batch_id))
+    # Same: pass x_operator=None to avoid FastAPI Header sentinel being the default.
+    return asyncio.get_event_loop().run_until_complete(
+        wfirma_pz_create(batch_id, x_operator=None)
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -171,6 +178,7 @@ def test_adopt_blocked_after_create(tmp_path):
     with (
         patch("app.api.routes_wfirma.get_output_dir", return_value=tmp_path),
         patch("app.api.routes_wfirma._read_audit", return_value=audit),
+        patch("app.api.routes_wfirma.settings.wfirma_create_pz_allowed", True),
         patch("app.api.routes_wfirma.wfirma_client.fetch_warehouse_pz",
               return_value=fetch_ok_other),
         patch("app.api.routes_wfirma._find_pz_owner_batch", return_value=None),
@@ -240,6 +248,7 @@ def test_adopt_after_adopt_same_id_is_idempotent(tmp_path):
     with (
         patch("app.api.routes_wfirma.get_output_dir", return_value=tmp_path),
         patch("app.api.routes_wfirma._read_audit", return_value=audit),
+        patch("app.api.routes_wfirma.settings.wfirma_create_pz_allowed", True),
         patch("app.api.routes_wfirma.wfirma_client.fetch_warehouse_pz",
               return_value=fetch_ok),
         patch("app.api.routes_wfirma._find_pz_owner_batch", return_value=None),
@@ -265,6 +274,7 @@ def test_adopt_after_adopt_different_id_is_blocked(tmp_path):
     with (
         patch("app.api.routes_wfirma.get_output_dir", return_value=tmp_path),
         patch("app.api.routes_wfirma._read_audit", return_value=audit),
+        patch("app.api.routes_wfirma.settings.wfirma_create_pz_allowed", True),
         patch("app.api.routes_wfirma.wfirma_client.fetch_warehouse_pz",
               return_value=fetch_ok_other),
         patch("app.api.routes_wfirma._find_pz_owner_batch", return_value=None),
@@ -354,6 +364,7 @@ def test_audit_lock_respected_when_doc_id_manually_removed(tmp_path):
     with (
         patch("app.api.routes_wfirma.get_output_dir", return_value=tmp_path),
         patch("app.api.routes_wfirma._read_audit", return_value=audit),
+        patch("app.api.routes_wfirma.settings.wfirma_create_pz_allowed", True),
         patch("app.api.routes_wfirma.wfirma_client.fetch_warehouse_pz",
               return_value=fetch_ok),
         patch("app.api.routes_wfirma._find_pz_owner_batch", return_value=None),

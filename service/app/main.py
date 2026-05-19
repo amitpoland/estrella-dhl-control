@@ -166,6 +166,28 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # pragma: no cover — never block startup
         log.warning("p2_sweep_startup_marker_failed reason=%s", exc)
 
+    # ── Governance flag audit at startup ────────────────────────────────────
+    # wfirma_create_* flags are env-var-only — they do NOT persist to the
+    # runtime flag store and silently revert on NSSM restart.  Emit their
+    # live values so operators can detect an accidental revert (e.g. a .env
+    # edit that was not applied, or a restart that cleared a prior setting).
+    _dangerous_flags = {
+        "wfirma_create_invoice_allowed":  getattr(settings, "wfirma_create_invoice_allowed", False),
+        "wfirma_create_pz_allowed":       getattr(settings, "wfirma_create_pz_allowed", False),
+        "wfirma_create_proforma_allowed": getattr(settings, "wfirma_create_proforma_allowed", False),
+        "wfirma_create_product_allowed":  getattr(settings, "wfirma_create_product_allowed", False),
+        "wfirma_create_customer_allowed": getattr(settings, "wfirma_create_customer_allowed", False),
+    }
+    _true_flags = [k for k, v in _dangerous_flags.items() if v]
+    if _true_flags:
+        log.warning(
+            "STARTUP_GOVERNANCE_AUDIT: the following wFirma write flags are TRUE "
+            "(env-var-only, not persisted to runtime store — verify .env is intentional): %s",
+            _true_flags,
+        )
+    else:
+        log.info("STARTUP_GOVERNANCE_AUDIT: all wFirma write flags are FALSE (safe defaults).")
+
     log.info("Starting Estrella PZ Service  [env=%s]", settings.environment)
     log.info("Engine dir: %s", settings.engine_dir)
 

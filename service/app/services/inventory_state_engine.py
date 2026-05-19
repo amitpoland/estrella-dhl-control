@@ -258,6 +258,31 @@ def list_by_state(state: str, batch_id: Optional[str] = None) -> List[Dict[str, 
     return [dict(r) for r in rows]
 
 
+def list_all_states_for_batch(batch_id: str) -> Dict[str, List[str]]:
+    """Return {state: [scan_code, ...]} for all states in a single SQL query.
+
+    Replaces the previous pattern of calling list_by_state() once per state
+    (9 round-trips → 1 round-trip).  Returns an empty dict on any error so
+    callers degrade gracefully rather than failing a preview.
+    """
+    if not batch_id:
+        return {}
+    try:
+        with _connect() as con:
+            rows = con.execute(
+                "SELECT state, scan_code FROM inventory_state WHERE batch_id=?",
+                (batch_id,),
+            ).fetchall()
+    except Exception:
+        return {}
+    out: Dict[str, List[str]] = {}
+    for r in rows:
+        s = r["state"]
+        if s in STATES:
+            out.setdefault(s, []).append(r["scan_code"])
+    return out
+
+
 def count_by_state(batch_id: Optional[str] = None) -> Dict[str, int]:
     """Disjoint counts per state. Sum equals total tracked items."""
     counts = {s: 0 for s in STATES}

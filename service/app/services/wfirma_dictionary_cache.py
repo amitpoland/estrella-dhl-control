@@ -102,7 +102,10 @@ def _persist_cache_to_disk() -> None:
         _cache_file_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = _cache_file_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
-        tmp.rename(_cache_file_path)
+        # os.replace is atomic on POSIX and overwrites on Windows (unlike
+        # Path.rename which raises FileExistsError on Windows if dest exists).
+        import os as _os
+        _os.replace(str(tmp), str(_cache_file_path))
         log.debug("series_cache persisted to %s", _cache_file_path)
     except Exception as exc:
         log.warning("series_cache persist failed: %s", exc)
@@ -311,11 +314,16 @@ def refresh_from_wfirma() -> Dict[str, Any]:
         invoice_state  = "error"
         proforma_state = "error"
 
-    _LIVE_CACHE["invoice_series"]  = invoice_live  or None
-    _LIVE_CACHE["proforma_series"] = proforma_live or None
-    _LIVE_CACHE["source_state"]["invoice_series"]  = invoice_state
-    _LIVE_CACHE["source_state"]["proforma_series"] = proforma_state
-    _LIVE_CACHE["fetched_at"] = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Acquire _cache_lock before mutating _LIVE_CACHE so concurrent refresh
+    # calls (e.g. startup + operator dashboard request racing) cannot produce
+    # a half-written cache state.  load_cache_from_disk() already holds the
+    # lock on its writes; this makes refresh_from_wfirma() consistent with it.
+    with _cache_lock:
+        _LIVE_CACHE["invoice_series"]  = invoice_live  or None
+        _LIVE_CACHE["proforma_series"] = proforma_live or None
+        _LIVE_CACHE["source_state"]["invoice_series"]  = invoice_state
+        _LIVE_CACHE["source_state"]["proforma_series"] = proforma_state
+        _LIVE_CACHE["fetched_at"] = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Persist to disk so NSSM restart can serve last-known-good data.
     # Non-fatal: in-memory cache is authoritative even if disk write fails.

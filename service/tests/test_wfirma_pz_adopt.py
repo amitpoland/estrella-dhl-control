@@ -81,7 +81,11 @@ def storage(tmp_path):
 def client(storage):
     from app.core.config import settings
     from app.main import app
-    with patch.object(settings, "storage_root", storage):
+    # pz_adopt now checks wfirma_create_pz_allowed (same kill-switch as pz_create).
+    # Tests explicitly enable the flag so they exercise the adopt-specific logic
+    # rather than the governance gate (the gate itself is covered in test_wfirma_pz_guard_normalization.py).
+    with patch.object(settings, "storage_root", storage), \
+         patch.object(settings, "wfirma_create_pz_allowed", True):
         with TestClient(app, raise_server_exceptions=True) as c:
             yield c
 
