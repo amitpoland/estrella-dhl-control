@@ -4,11 +4,20 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-19T(master-convergence-campaign10)Z. GATE 2: 0 open implementation PRs. Origin/main HEAD: 236094a. All prior GATE 4 deferred items resolved: test fix (f2884c7), PR #232 SSOT (6657fbc), issue #229 canonical PZ (236094a). Deploy manifest updated to 10-file delta. DHL: SHADOW-OBSERVING-REAL-TRAFFIC, zero corpus, P2 blocked. Windows deploy READY (operator action). Lapis: Windows-only, not inspectable from Mac dev.
+**Last-run-at:** 2026-05-19T(deploy-convergence-campaign11)Z. Origin/main HEAD: cac4f84. Windows deploy script generated and verified (windows_deploy_a20e5a2.ps1). 475/475 tests pass. All 10 deploy files syntax-clean. Deploy READY for operator execution. DHL P2: BLOCKED (corpus-dependent). Post-deploy: check orchestrator_decisions.jsonl count for P2 eligibility.
 
 ---
 
 # FACTS
+
+## Deploy Convergence Campaign 11 — Windows Deploy Script + Final Readiness (2026-05-19)
+
+- **origin/main HEAD**: `cac4f84` — deploy script committed
+- **Windows deploy script**: `.claude/manifests/windows_deploy_a20e5a2.ps1` — 11-step PowerShell, 10-file robocopy, backup+rollback, health checks, DHL corpus check
+- **Script verified**: 10/10 profile checks PASS (port, service, python, paths, rollback, no /MIR, 10 files, tzdata, SHA, smoke checks)
+- **Pre-deploy gate**: 475/475 tests pass, 7/7 Python files syntax-clean
+- **Windows deploy**: OPERATOR MUST EXECUTE — no remote access from Mac dev
+- **Post-deploy DHL**: script auto-checks `orchestrator_decisions.jsonl` count; if ≥50 lines + ≥10 distinct AWBs, P2 promotion threshold met (still requires Tejal sign-off)
 
 ## Master Convergence Campaign 10 — Full Deploy Readiness (2026-05-19)
 
