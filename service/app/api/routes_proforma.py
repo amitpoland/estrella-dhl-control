@@ -752,6 +752,13 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
             "mode":                       ship_to_mode or "same_as_bill_to",
             "ship_to_wfirma_customer_id": ship_to_receiver_id,
         },
+        # Product registration readiness (Phase 2 — safe autonomous dry-run).
+        # Reports which invoice-line product_codes are NOT yet registered in
+        # wFirma without creating anything. Operator must call
+        # POST /api/v1/wfirma/goods/auto-register/{batch_id} (write=true)
+        # before issuing the proforma if any codes are missing.
+        # GOVERNANCE: product.auto_register_dry_run → SAFE_AUTONOMOUS.
+        "product_registration": _build_product_registration_scan(batch_id),
     }
 
 
@@ -772,6 +779,62 @@ def _proforma_db_path():
 
 def _customer_master_db_path():
     return settings.storage_root / "customer_master.sqlite"
+
+
+def _build_product_registration_scan(batch_id: str) -> Dict[str, Any]:
+    """Dry-run scan: which invoice-line product_codes are not yet in wFirma?
+
+    Called from _build_preview so the operator sees registration gaps BEFORE
+    hitting Create.  Never creates anything (dry_run=True always).
+    Failures are isolated — a broken scan returns an error stub, never raises.
+
+    Returns::
+
+        {
+          "scanned":          int,  # distinct product_codes in this batch
+          "registered":       int,  # already mapped in wFirma
+          "missing":          int,  # not in wFirma (need manual auto-register)
+          "missing_codes":    [str],
+          "status":           "all_registered" | "missing_codes" | "scan_failed" | "skipped",
+          "error":            str,  # non-empty on scan_failed
+        }
+    """
+    if not batch_id:
+        return {"scanned": 0, "registered": 0, "missing": 0,
+                "missing_codes": [], "status": "skipped", "error": ""}
+    try:
+        from ..services.wfirma_product_auto_register import ensure_products_for_batch
+        scan = ensure_products_for_batch(batch_id, dry_run=True)
+        scanned   = scan.get("scanned", 0)
+        missing_n = scan.get("missing", 0)
+        existing  = scan.get("existing_mapped", 0)
+        missing_codes = [
+            r["product_code"]
+            for r in (scan.get("results") or [])
+            if r.get("status") == "missing"
+        ]
+        status = "all_registered" if missing_n == 0 else "missing_codes"
+        return {
+            "scanned":       scanned,
+            "registered":    existing,
+            "missing":       missing_n,
+            "missing_codes": missing_codes,
+            "status":        status,
+            "error":         "",
+        }
+    except Exception as exc:
+        log.warning(
+            "[%s] product_registration_scan failed: %s",
+            batch_id, exc,
+        )
+        return {
+            "scanned":       0,
+            "registered":    0,
+            "missing":       0,
+            "missing_codes": [],
+            "status":        "scan_failed",
+            "error":         f"{type(exc).__name__}: {exc}",
+        }
 
 
 def _build_service_charge_lines(

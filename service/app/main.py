@@ -194,6 +194,29 @@ async def lifespan(app: FastAPI):
         else:
             log.error("Engine health check FAILED:\n%s", detail)
 
+    # ── Master Bootstrap: series catalog from wFirma (Phase 4) ─────────────
+    # Read-only background refresh of the wFirma series catalog.
+    # Populates INVOICE_SERIES and PROFORMA_SERIES in the in-memory cache so
+    # the customer-master UI shows real series names (not just the empty
+    # baseline placeholder) without requiring a manual operator refresh.
+    # Non-fatal: if wFirma is unreachable, baseline serves and the operator
+    # can trigger POST /api/v1/customer-master/dictionaries/refresh later.
+    # GOVERNANCE: classified as series.refresh_from_wfirma → SAFE_AUTONOMOUS.
+    try:
+        from .services import wfirma_dictionary_cache as _wdc
+        _series_result = _wdc.refresh_from_wfirma()
+        _src = _series_result.get("source_state", {})
+        log.info(
+            "startup_series_bootstrap: invoice_series_source=%s proforma_series_source=%s "
+            "invoice_count=%d proforma_count=%d",
+            _src.get("invoice_series", "unknown"),
+            _src.get("proforma_series", "unknown"),
+            len(_series_result.get("invoice_series", [])),
+            len(_series_result.get("proforma_series", [])),
+        )
+    except Exception as _series_exc:  # pragma: no cover — never block startup
+        log.warning("startup_series_bootstrap_failed reason=%s", _series_exc)
+
     # ── Dashboard Action V2 — route contract validator (warning-only) ──────
     try:
         from .services.dashboard_action_types import NormalizedState
