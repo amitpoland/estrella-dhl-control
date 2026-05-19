@@ -113,6 +113,12 @@ DECISION_SKIP_DELIVERED    = "skip_delivered"
 DECISION_SKIP_NOT_ACTIVE   = "skip_not_active"
 DECISION_COOLDOWN          = "cooldown"
 DECISION_ERROR             = "error"
+# Phase B2 — agency advance pack (pre-arrival side-channel)
+DECISION_AGENCY_ADVANCE_PACK = "agency_advance_pack_ready"
+# Phase B3 — DHL follow-up SLA (post-arrival)
+DECISION_DHL_FOLLOWUP_PROPOSAL = "dhl_followup_proposal_ready"
+# Phase B5 — orphan recovery (dhl_email.received=True but no proposals)
+DECISION_RECOVER_ORPHAN_PROPOSALS = "recover_orphan_proposals"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -171,7 +177,61 @@ def _flags_snapshot() -> Dict[str, Any]:
         "auto_build_packages":      bool(settings.dhl_orch_auto_build_packages),
         "auto_send_agency":         bool(settings.dhl_orch_auto_send_agency),
         "auto_send_dhl_reply":      bool(settings.dhl_orch_auto_send_dhl_reply),
+        "auto_send_agency_advance": bool(settings.dhl_orch_auto_send_agency_advance),
+        "auto_send_dhl_followup":   bool(settings.dhl_orch_auto_send_dhl_followup),
     }
+
+
+# ── Agency advance pack eligibility (Phase B2) ───────────────────────────────
+
+def is_agency_advance_pack_eligible(audit: Dict[str, Any]) -> Tuple[bool, str]:
+    """True when an agency advance pack can be PROPOSED pre-arrival.
+
+    Conditions (ALL must hold):
+      - clearance_path is one of agency_clearance / external_agency_clearance
+      - DSK PDF path exists in audit
+      - Polish description PDF path exists in audit
+      - SAD-ready JSON path exists in audit
+      - at least one input invoice exists
+      - agency recipient (clearance_decision.agency_email) is non-empty
+      - shipment is not delivered
+      - no agency_reply_package already built AND no advance pack already
+        recorded (idempotency)
+
+    Stage gate: explicitly does NOT require ARRIVED_DESTINATION_COUNTRY.
+    This is the WHOLE POINT of the advance pack — to brief the agency
+    BEFORE the shipment lands.  Stages allowed: any pre-arrival stage
+    including DEPARTED_ORIGIN, IN_TRANSIT, transit_asia_hub.
+    """
+    cd = audit.get("clearance_decision") or {}
+    cp = (cd.get("clearance_path") or "").lower()
+    if cp not in ("agency_clearance", "external_agency_clearance"):
+        return False, "clearance_path_not_agency"
+    if not (audit.get("dsk_path") or "").strip():
+        return False, "dsk_missing"
+    if not (audit.get("polish_desc_path") or "").strip():
+        return False, "polish_desc_missing"
+    if not (audit.get("sad_ready_path") or "").strip():
+        return False, "sad_ready_missing"
+    inputs = audit.get("inputs") or {}
+    invs = inputs.get("invoices") if isinstance(inputs, dict) else None
+    if not (isinstance(invs, list) and len(invs) >= 1):
+        return False, "no_input_invoices"
+    if not (cd.get("agency_email") or "").strip():
+        return False, "agency_email_missing"
+    # Already-built / already-sent guard.
+    if (audit.get("agency_reply_package") or {}).get("status"):
+        return False, "agency_reply_package_already_built"
+    adv = audit.get("agency_advance_pack") or {}
+    if adv.get("status") in ("built", "queued", "sent"):
+        return False, "agency_advance_pack_already_present"
+    try:
+        from .shipment_delivered_guard import is_audit_delivered as _is_delivered
+        if _is_delivered(audit):
+            return False, "delivered"
+    except Exception:
+        pass
+    return True, "eligible"
 
 
 # ── Active-shipment selection ────────────────────────────────────────────────
@@ -386,6 +446,50 @@ def _build_idempotency_key(batch_id: str, action: str, at: datetime) -> str:
     return f"{batch_id}|{action}|{bucket}"
 
 
+# ── Phase B3: DHL follow-up SLA timer ────────────────────────────────────────
+
+def _followup_proposal_due(audit: Dict[str, Any], now: datetime) -> bool:
+    """True when the shipment is at destination and the follow-up SLA
+    has elapsed.
+
+    Spec rules (Phase B3):
+      - default arrival path: arrival + 4h → propose
+      - on_hold-at-destination: on_hold + 2h → propose
+
+    Reads ONLY tracking_events[*].event_time and tracking.status.  Never
+    consults ``carrier_arrived_at_poland_at`` (unreliable provenance).
+    Returns False on any parse error — safer than firing on bad data.
+    """
+    try:
+        from .tracking_normalizer import stage_rank
+        min_rank = stage_rank(_MIN_DESTINATION_STAGE)
+        events = audit.get("tracking_events") or []
+        if not isinstance(events, list):
+            return False
+        # Find earliest event at-or-past destination
+        arrival_ts: Optional[datetime] = None
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            st = ev.get("normalized_stage") or ""
+            if stage_rank(st) >= min_rank:
+                t = _parse_iso(ev.get("event_time"))
+                if t and (arrival_ts is None or t < arrival_ts):
+                    arrival_ts = t
+        if arrival_ts is None:
+            return False  # not actually at destination
+        tr = audit.get("tracking") or {}
+        on_hold = (tr.get("status") or "").lower() == "on_hold"
+        hours_since = (now - arrival_ts).total_seconds() / 3600.0
+        if on_hold and hours_since >= 2.0:
+            return True
+        if hours_since >= 4.0:
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def decide_for_audit(audit: Dict[str, Any], *, now: Optional[datetime] = None,
                      flags: Optional[Dict[str, Any]] = None,
                      stamp_cooldown: bool = True) -> Decision:
@@ -415,6 +519,8 @@ def decide_for_audit(audit: Dict[str, Any], *, now: Optional[datetime] = None,
         DECISION_REFRESH_TRACKING, DECISION_MONITOR_SWEEP,
         DECISION_INGEST_EMAIL, DECISION_REFRESH_PROPOSALS,
         DECISION_BUILD_PACKAGE,
+        DECISION_AGENCY_ADVANCE_PACK, DECISION_DHL_FOLLOWUP_PROPOSAL,
+        DECISION_RECOVER_ORPHAN_PROPOSALS,
     })
 
     def dec(action: str, *, blocked: str = "") -> Decision:
@@ -443,12 +549,38 @@ def decide_for_audit(audit: Dict[str, Any], *, now: Optional[datetime] = None,
     # the in-memory registry so a single tick never picks two actions for
     # the same AWB.
     if state in (_ORCH_STATE_DOCS_READY, _ORCH_STATE_CLASSIFIED, _ORCH_STATE_IN_TRANSIT):
+        # Phase B2 — agency advance pack proposal takes priority over a
+        # plain tracking refresh when the shipment is mid-transit and the
+        # full agency document set is already on disk.  This is the
+        # WHOLE POINT: brief the agency BEFORE landing.  The decision is
+        # a proposal/build hint only; actual send remains gated by
+        # DHL_ORCH_AUTO_SEND_AGENCY_ADVANCE (default False).
+        adv_ok, adv_why = is_agency_advance_pack_eligible(audit)
+        if adv_ok and not _COOLDOWNS.is_in_cooldown(
+                DECISION_AGENCY_ADVANCE_PACK, awb,
+                settings.dhl_orch_proposals_cooldown_min):
+            return dec(DECISION_AGENCY_ADVANCE_PACK)
         if _COOLDOWNS.is_in_cooldown(DECISION_REFRESH_TRACKING, awb,
                                      settings.dhl_orch_tracking_cooldown_min):
             return dec(DECISION_COOLDOWN, blocked="tracking_cooldown")
         return dec(DECISION_REFRESH_TRACKING)
 
     if state == _ORCH_STATE_AT_DESTINATION or state == _ORCH_STATE_CUSTOMS_AWAITING:
+        # Phase B3 — DHL follow-up SLA proposal (POST-arrival only).
+        # Hard gate: must have actually crossed ARRIVED_DESTINATION_COUNTRY.
+        # The state resolver enforces this — by the time we are in
+        # customs_awaiting, the stage gate has already passed.
+        # We emit a follow-up proposal hint when:
+        #   - hours elapsed since arrival > 4h, or
+        #   - tracking.status == "on_hold" and on_hold for > 2h
+        # Phase 1: proposal hint only; actual scheduling lives in
+        # active_shipment_monitor; the AUTO_SEND_DHL_FOLLOWUP flag gates
+        # any real outbound activity.
+        if state == _ORCH_STATE_CUSTOMS_AWAITING and _followup_proposal_due(audit, now):
+            if not _COOLDOWNS.is_in_cooldown(
+                    DECISION_DHL_FOLLOWUP_PROPOSAL, awb,
+                    settings.dhl_orch_proposals_cooldown_min):
+                return dec(DECISION_DHL_FOLLOWUP_PROPOSAL)
         # Sequence: tracking refresh, then monitor sweep, then email
         # ingest, then proposal refresh.  Each respects its own cooldown.
         for action, cd in (
@@ -462,6 +594,16 @@ def decide_for_audit(audit: Dict[str, Any], *, now: Optional[datetime] = None,
         return dec(DECISION_COOLDOWN, blocked="all_actions_cooled")
 
     if state == _ORCH_STATE_CUSTOMS_RECEIVED:
+        # Phase B5 — orphan recovery: dhl_email.received=True but
+        # action_proposals=None (5 historical shipments fall into this
+        # bucket, see design report § G4).  Refresh proposals first so
+        # the orphan state is cleaned up; only then queue a package
+        # build proposal.
+        if not audit.get("action_proposals"):
+            if not _COOLDOWNS.is_in_cooldown(
+                    DECISION_RECOVER_ORPHAN_PROPOSALS, awb,
+                    settings.dhl_orch_proposals_cooldown_min):
+                return dec(DECISION_RECOVER_ORPHAN_PROPOSALS)
         # DHL email arrived but reply/agency package not built yet.
         if not _COOLDOWNS.is_in_cooldown(DECISION_BUILD_PACKAGE, awb,
                                           settings.dhl_orch_proposals_cooldown_min):
@@ -608,6 +750,28 @@ def _execute_action(decision: Decision, audit_path: Path,
 
         if action == DECISION_BUILD_PACKAGE:
             if not flags["auto_build_packages"]:
+                return False
+            _COOLDOWNS.stamp(action, decision.awb)
+            return False
+
+        if action == DECISION_AGENCY_ADVANCE_PACK:
+            # Phase 1: proposal/build hint only.  Real build runs only
+            # when AUTO_BUILD_PACKAGES is on; real send only when
+            # AUTO_SEND_AGENCY_ADVANCE is on (and never bypasses the
+            # guarded queue_email pipeline).
+            if not (flags["auto_build_packages"] and flags.get("auto_send_agency_advance")):
+                return False
+            _COOLDOWNS.stamp(action, decision.awb)
+            return False
+
+        if action == DECISION_DHL_FOLLOWUP_PROPOSAL:
+            if not flags.get("auto_send_dhl_followup"):
+                return False
+            _COOLDOWNS.stamp(action, decision.awb)
+            return False
+
+        if action == DECISION_RECOVER_ORPHAN_PROPOSALS:
+            if not flags["auto_refresh_proposals"]:
                 return False
             _COOLDOWNS.stamp(action, decision.awb)
             return False
