@@ -11149,6 +11149,9 @@ function _draftStateChipColors(state) {
     post_failed:  { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
     cancelled:    { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
     superseded:   { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
+    // V1 — adopted-from-audit draft represents a wFirma proforma that
+    // already exists; informational (blue), not action-needed.
+    adopted_from_audit: { bg: 'var(--badge-blue-bg)', tx: 'var(--badge-blue-text)' },
   };
   return map[state] || { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)' };
 }
@@ -11162,6 +11165,7 @@ const _DRAFT_STATE_LABELS = {
   post_failed: 'Send failed',
   cancelled:   'Cancelled',
   superseded:  'Replaced',
+  adopted_from_audit: 'Adopted from wFirma',
 };
 
 function ProformaDraftStateChip({ state }) {
@@ -12184,6 +12188,38 @@ function ProformaDraftPanel({ batchId, onToast }) {
                               justifyContent: 'space-between', marginBottom: 12 }}>
                 <div>
                   <ProformaDraftStateChip state={openDraft.draft_state} />
+                  {(() => {
+                    // V2 — read-only invoice-eligibility badge.
+                    // Pure derived render; no API call, no mutation,
+                    // no workflow action.  Reflects existing backend
+                    // gate at routes_proforma._gather_conversion_inputs
+                    // and proforma_invoice_links UNIQUE constraint.
+                    const linkExists = !!(openDraft.invoice_link_id ||
+                                          openDraft.has_invoice_link);
+                    const eligible   = openDraft.status === 'issued' &&
+                                       openDraft.draft_state === 'posted' &&
+                                       !linkExists;
+                    const blockers = [];
+                    if (openDraft.status !== 'issued')
+                      blockers.push("draft.status must be 'issued'");
+                    if (openDraft.draft_state !== 'posted')
+                      blockers.push("draft_state must be 'posted'");
+                    if (linkExists)
+                      blockers.push("invoice link already exists");
+                    return (
+                      <span data-testid="draft-invoice-eligibility-badge"
+                            title={eligible ? 'Invoice conversion eligible' : blockers.join('; ')}
+                            style={{
+                              marginLeft: 8, padding: '2px 8px',
+                              borderRadius: 10, fontSize: 11, fontWeight: 700,
+                              textTransform: 'uppercase', letterSpacing: '0.04em',
+                              background: eligible ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                              color:      eligible ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+                            }}>
+                        {eligible ? 'Invoice eligible' : 'Invoice blocked'}
+                      </span>
+                    );
+                  })()}
                   <strong style={{ marginLeft: 10, fontSize: 14 }}>
                     {openDraft.client_name}
                   </strong>
@@ -12219,8 +12255,11 @@ function ProformaDraftPanel({ batchId, onToast }) {
 
               {/* Posted-state panel — branded "Total due" treatment from
                   the Estrella Document Suite (emerald block + gold accent).
-                  Same single wired endpoint, no fake buttons. */}
-              {isPosted && (
+                  Same single wired endpoint, no fake buttons.
+                  V3 — also renders for adopted_from_audit drafts so the
+                  wFirma proforma id/fullnumber is operator-visible on
+                  drafts adopted from existing wFirma records. */}
+              {(isPosted || openDraft.draft_state === 'adopted_from_audit') && (
                 <div data-testid="draft-posted-banner"
                      className="ej-doc-toolbar"
                      style={{ borderRadius: 4, marginBottom: 12, overflow: 'hidden',
