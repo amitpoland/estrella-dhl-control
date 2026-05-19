@@ -203,11 +203,7 @@ _OPTIONAL_STR_FIELDS = frozenset({
     # no '' → None coercion; route it through here so an operator clearing
     # the field saves NULL rather than the empty string.
     "default_currency",
-    # Ship-to address fields — blank UI input must become NULL, not "".
-    "ship_to_name", "ship_to_person", "ship_to_street",
-    "ship_to_city", "ship_to_zip", "ship_to_country",
-    "ship_to_phone", "ship_to_email",
-    # Invoice/payment defaults
+    # Invoice/payment defaults (Campaign 9)
     "preferred_payment_method",
 })
 
