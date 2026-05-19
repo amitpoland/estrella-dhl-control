@@ -4,13 +4,36 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-19T(campaign8-production-deploy)Z (RULE 3 auto-fire: Campaign 8 production deploy complete. Windows HEAD = 7392be1 (32d6a8f + V1/V2/V3 local commits). Deploy validated: health✓ carrier/status✓ designs/✓ hs-codes/✓ carriers-config/✓ customer-master/✓ wfirma/capabilities✓ invoice-gate BLOCKED✓. GATE 2: 2 open PRs. Prior: 2026-05-19T(campaign6-push)Z.
+**Last-run-at:** 2026-05-19T(campaign9-commercial-completion)Z (RULE 3 auto-fire: Campaign 9 complete. PR #228 merged SHA 24382c3. origin/main updated. Windows deploy pending (7 files + pip tzdata). Governance hardening: deploy profile + orchestration router + gate output contract + incident registry + deploy delta manifest created. GATE 2: 0 open PRs. Prior: 2026-05-19T(campaign8-production-deploy)Z.
 
 ---
 
 # FACTS
 
+## Campaign 9 — Commercial Completion (2026-05-19)
+
+- **PR #228 merged** — SHA `24382c3` — Campaign 9: Warsaw date + payment method
+  - `timezone_utils.py` created — `warsaw_today()` via `ZoneInfo("Europe/Warsaw")` + system-local fallback (NOT UTC)
+  - `customer_master_db.py` — `preferred_payment_method TEXT` column added (additive migration)
+  - `routes_customer_master.py` — `_ALLOWED_PAYMENT_METHODS` enum guard (422), blank→NULL coercion
+  - `wfirma_client.py` — `ProformaRequest.date` + `ProformaRequest.payment_method` fields + XML emission
+  - `routes_proforma.py` — `_date.today()` → `warsaw_today()`; payment method threaded
+  - `dashboard.html` — payment method select (transfer/cash/card/compensation, no "other")
+  - `requirements.txt` — `tzdata>=2024.1` added
+  - 26 tests in `test_commercial_completion.py` — 26/26 PASS
+- **GitHub issue #229** — pre-existing `test_pz_canonical_mapping` ×2 failures — GATE 4 SCHEDULED
+- **Governance artifacts added**:
+  - `.claude/deploy/windows_prod_v2.json` — reusable Windows deploy profile
+  - `.claude/contracts/orchestration_router.md` — routing matrix + token rules
+  - `.claude/contracts/gate_output_contract.md` — structured agent output schema
+  - `.claude/memory/incident_registry.md` — INC-001 through INC-004
+  - `.claude/manifests/deploy_delta_pr228.md` — 7-file deploy manifest
+- **Windows deploy PENDING** — 7 files + `pip install tzdata>=2024.1` + nssm restart; see `deploy_delta_pr228.md`
+- **Lesson D INC-003 status: PENDING** — V1/V2/V3 reconciliation PR not yet filed; `local-commit-deploys.jsonl` entry `reconciliation_status: "PENDING"`
+- **GATE 2: 0 open PRs** as of Campaign 9 close
+
 ## Current origin/main HEAD
+- **2026-05-19** — `24382c3` PR #228 merged — Campaign 9 commercial completion — **origin/main HEAD**
 - **2026-05-19** — `97672c1` Campaign 6 T2 — series bootstrap kill-switch + config flag — **origin/main HEAD (pushed 2026-05-19, Campaigns 4+5+6 now on origin/main)**
 - **2026-05-19** — `820bd9a` Campaign 6 T3/T5/T6/T8/T9 — threading, atomicity, performance, governance
 - **2026-05-19** — `62cb391` Campaign 6 T4 — commercial ownership: ProformaDraftPanel only in Sales tab
