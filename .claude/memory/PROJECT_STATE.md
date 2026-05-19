@@ -4,14 +4,17 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-19T(master-campaign)Z (RULE 3 auto-fire: Phases A-E complete. PR #209 merged c9175e6. PR #88 closed (fix on main). PRs #4-#8 closed (superseded). GATE 2: 0 active impl PRs. Windows delta: 293 commits, 91 feat/fix. Contracts verified. Tree clean. Prior: 2026-05-19T(wave2-closure)Z.
+**Last-run-at:** 2026-05-19T(campaign6-push)Z (RULE 3 auto-fire: Campaign 6 pushed to origin/main. 12 commits (f6ba91b..97672c1) now on origin/main HEAD=97672c1. GATE 2: 2 open PRs. Prior: 2026-05-19T(campaign6-convergence)Z.
 
 ---
 
 # FACTS
 
 ## Current origin/main HEAD
-- **2026-05-19** — `ecbe8bd` fix: ZC429 tab-mount tests read shipment-detail.html (31/31 pass, pre-existing failures resolved) — **CAMPAIGN V6 COMPLETE**
+- **2026-05-19** — `97672c1` Campaign 6 T2 — series bootstrap kill-switch + config flag — **origin/main HEAD (pushed 2026-05-19, Campaigns 4+5+6 now on origin/main)**
+- **2026-05-19** — `820bd9a` Campaign 6 T3/T5/T6/T8/T9 — threading, atomicity, performance, governance
+- **2026-05-19** — `62cb391` Campaign 6 T4 — commercial ownership: ProformaDraftPanel only in Sales tab
+- ~~Local main is **12 commits ahead** of origin/main (`af80818`). Campaigns 4+5+6 not yet pushed.~~ — **RESOLVED 2026-05-19**: all 12 commits pushed directly to origin/main (repo uses direct-to-main flow, no feature branch). Full 7-agent deploy gate required before Windows pull.
 - **2026-05-19** — `6023f8c` fix(governance): P2 flag correction — live=shadow=True+live_enabled=True; shadow=False+live=True is FORBIDDEN (ADR-018) — **prior**
 - **2026-05-19** — `49da2f6` fix(config): Pydantic V2 deprecation cleanup — 82 warnings eliminated — **prior**
 - **2026-05-19** — `302848f` fix(security): Lesson E ENV isolation + path traversal (#223, #224 closed) — **prior**
@@ -223,6 +226,21 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
   - 6 retrieval pointers added to `pz-shipment` L1.
   - Rollback: `git revert 033e200 --no-edit`.
 
+## Campaign 6 — Final Operational Convergence Mode (appended 2026-05-19)
+
+Campaign 6 executed on 2026-05-19. Branch: `chore/wave2-patch4-batch-condensation` (local main, not yet pushed). 3 commits on local main.
+
+| Commit | SHA | Description |
+|---|---|---|
+| T2 | `97672c1` | SERIES_BOOTSTRAP_ENABLED config flag added (default=True); set False to skip wFirma fetch on stale cache at startup |
+| T3/T5/T6/T8/T9 | `820bd9a` | Threading locks: `description_engine._cache_lock`, `intelligence_engine._master_cache_lock`; `tracking_service._save_cache()` atomic via `os.replace()`; `wfirma_db.get_products_batch()` O(1) batch fetch; routes_wfirma + routes_proforma use batch fetch; `wfirma_db.init_wfirma_db()` runs PRAGMA quick_check on startup; `governance_constants` imported at module level in `main.py` with `assert_no_overlap()` at service startup |
+| T4 | `62cb391` | ProformaDraftPanel removed from OperatorWorkflowCard (PZ/Accounting tab); Sales tab is ONLY commercial surface; ProformaDraftPanel remains in Sales tab |
+
+- **T5 upsert semantics clarified (2026-05-19):** `master_data_db.upsert_design()` uses partial-update semantics — absent keys are NOT wiped to NULL. `customer_master_db.upsert_customer()` uses full-SET semantics — caller must send all fields (governance note added in code).
+- **make verify 2026-05-19:** 160/160 golden checks PASS
+- **test suite 2026-05-19:** 340+ tests PASS in focused Campaign 6 regression; 22 new tests in `test_campaign6_hardening.py`
+- **Open PR #221 reference:** branch `chore/wave2-patch4-batch-condensation` is the current local working branch (Wave 2 patch 4 already merged to origin/main as `a64d295`; Campaign 6 commits are additional local work on the same branch not yet opened as a PR)
+
 ## RULE 6 visibility entries (scorecards on disk + expected)
 - **2026-05-13** — Scorecard recorded: `.claude/memory/scorecards/2026-05-13-w5-p0-adr018-p2-deployment-campaign.md` — observer: `agent-performance-observer` post PR #41 registry-refresh validation — 14 verdicts scored, all EXEMPLARY, zero NEEDS-TUNING / UNRELIABLE.
 - **2026-05-13** — Scorecard recorded: `.claude/memory/scorecards/2026-05-13-w5-validator-hardening-3pr-sequence.md` — observer: `agent-performance-observer` covering the PR #52 / #57 / #61 sequence. Confirmed on disk in worktree.
@@ -373,15 +391,25 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 **Current boundary:** Wave 1A complete. Wave 2 patch #1 complete (`4083d84`, PR #216, 2026-05-18). Shipment-processing condensation stable per post-patch observation audit. Wave 2 patch #2 pending explicit operator start signal. Next candidate: `## 9. Action execution after Cowork result` using `.claude/commands/cowork-integration.md`.
 
+## Campaign 6 convergence decisions (appended 2026-05-19)
+
+- **ProformaDraftPanel = Sales tab ONLY (2026-05-19)** — OperatorWorkflowCard (PZ/Accounting tab) is PZ/Customs/Accounting only. Any proforma creation surface belongs exclusively in the Sales tab. Commit `62cb391` enforces this at render level.
+- **upsert_design = partial-update (2026-05-19)** — `master_data_db.upsert_design()` uses partial-update semantics: absent keys preserve existing DB values (not wiped to NULL). Callers may send partial payloads safely.
+- **upsert_customer = full-SET (2026-05-19)** — `customer_master_db.upsert_customer()` uses full-SET semantics: caller MUST send all fields. Governance note added in code. These two upsert contracts are intentionally different and must not be conflated.
+
 ## Next 3 actions in queue
 
-1. **Windows deploy** — 7-AGENT GATE: READY-TO-DEPLOY (Campaign V4 Phase 2 complete). Run: `nssm stop PZService && git pull --ff-only origin main && nssm start PZService` on Windows. Current HEAD: `ecbe8bd` (additive test fixes only since gate run; no new gate required). Rollback: `git reset --hard 4c797e4`. Verify health after start.
-2. **P2 live promotion** — after Tejal reviews shadow corpus: set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` in Windows .env ONLY. **DO NOT** set `P2_SHADOW_MODE=false` — that combination (shadow=False, live=True) is FORBIDDEN by ADR-018 and raises ForbiddenFlagCombination. Live state = shadow=True + live_enabled=True. No code changes needed.
-3. **All known issues resolved on main** — #223/#224 CLOSED. Pydantic: 0 warnings. ZC429 tab-mount tests: FIXED (31/31 pass). P2 flag correction: LIVE = `P2_LIVE_ENABLED=true` (shadow_mode stays true). No outstanding code issues.
+1. **Windows deploy** — origin/main is now `97672c1` (Campaigns 4+5+6 fully pushed). Run on Windows: `nssm stop PZService && git pull --ff-only origin main && nssm start PZService`. Run deploy smoke (health, PZ regression 160/160, test suite 9,496+). Rollback: `git reset --hard 4c797e4`. Note: Windows prod is at `4c797e4` (Wave 1); this is a catch-up of 12+ commits. Gating: 7-agent deploy gate must run before pulling (CLAUDE.md "Production deployment rule"). Reconciliation of `4c797e4` local-commit: closed by PR #77 (see FACTS).
+2. **P2 live promotion** — after Tejal reviews shadow corpus: set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` in Windows .env ONLY. **DO NOT** set `P2_SHADOW_MODE=false` — FORBIDDEN by ADR-018. Live state = shadow=True + live_enabled=True. No code changes needed. Gating: Windows deploy complete + Tejal shadow corpus sign-off.
+3. **Fracht + Ubezpieczenie wFirma service IDs** — create goods in wFirma UI to get real numeric service IDs. Current IDs in code are hardcoded placeholders. Gating: operator action (wFirma UI).
+
+## Completed actions (Campaign 6, 2026-05-19)
+- ~~**Push Campaign 6 local main and open PR**~~ — **DONE 2026-05-19**: all 12 commits (f6ba91b..97672c1) pushed directly to origin/main. origin/main HEAD = `97672c1`. Direct-to-main flow (no feature branch PR). Test baseline: 160/160 golden PASS, 9,496 tests collected (3 network test files excluded + 1 pre-existing stale assertion deselected), exit code 0.
 
 ## Completed actions (previously "next")
 
 - ~~**Reconcile `4c797e4` with origin/main**~~ — **DONE 2026-05-13T16:00Z** via PR #77 (SHA `1ee83e52`). `4c797e4` confirmed as ancestor of origin/main (swept in via PR #76 branch). JSONL updated: `PENDING_RETROACTIVE` → reconciliation-close record appended. `local-commit-deploys.jsonl` + `lesson-d-local-commit-only-deploys.md` both updated. Lead coordinator backstop added.
+- ~~**All known issues resolved on main**~~ — **DONE 2026-05-19** (Campaign V6). #223/#224 CLOSED. Pydantic: 0 warnings. ZC429 tab-mount tests: FIXED (31/31 pass). P2 flag correction: `P2_LIVE_ENABLED=true` + `shadow_mode=true`. 160/160 golden, 340+ tests PASS. No outstanding code issues on local main.
 
 ---
 
@@ -395,6 +423,12 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## Campaign 6 open questions (added 2026-05-19)
+
+- **P2 live promotion: when does operator set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` in Windows .env?** Answerer: operator (after Tejal shadow corpus review). Impact: gates P2 live promotion from shadow-only to live dispatch. No code change required — config only.
+- **Windows deploy: 12 local-only commits need to be pushed to origin/main first.** Sequence required: open PR from local main → 7-agent gate → merge → `nssm stop PZService && git pull --ff-only origin main && nssm start PZService`. Answerer: operator (timing). Impact: production is running `4c797e4`; all Campaign 4/5/6 hardening is local-only.
+- **Fracht + Ubezpieczenie wFirma service IDs must be created in wFirma UI.** Current IDs in code are hardcoded placeholders. Answerer: operator (wFirma UI action required). Impact: proforma service charge line items will fail if IDs are wrong when live invoices are created.
 
 ## Wave 2 open questions (added 2026-05-13T12:30Z)
 
