@@ -38,6 +38,68 @@ from ..core.logging import get_logger
 log = get_logger(__name__)
 
 
+# Anomaly A1 (Phase 2 shadow observation): normalized stages that mean
+# "still active" if they appear AFTER a DELIVERED / CLOSED event.  These
+# represent legitimate transport / customs reactivation (e.g. shipment
+# returned to depot, customs re-opened the case).  Any one such event
+# after the last DELIVERED/CLOSED means the shipment is NOT closed.
+_REACTIVE_AFTER_DELIVERED: frozenset[str] = frozenset({
+    "SHIPMENT_CREATED", "LABEL_CREATED", "PICKED_UP",
+    "DEPARTED_ORIGIN", "ARRIVED_ORIGIN_HUB", "DEPARTED_ORIGIN_HUB",
+    "IN_TRANSIT", "ARRIVED_DESTINATION_COUNTRY",
+    "CUSTOMS_PENDING", "CUSTOMS_DOCUMENTS_REQUESTED",
+    "CUSTOMS_DOCUMENTS_SENT", "CUSTOMS_UNDER_REVIEW",
+    "CUSTOMS_CLEARED",  # post-DELIVERED clearance flip means re-opened
+    "HANDED_TO_BROKER", "OUT_FOR_DELIVERY",
+})
+
+# Terminal/closure stages that signal the shipment IS closed.  EXCEPTION
+# is included here because DHL routinely emits an EXCEPTION event
+# immediately after DELIVERED with descriptions like "Shipment closed"
+# or "Status update completed" — this is a closure marker, not a
+# reactivation.  See AWBs 2519243856 / 3483447564 / 8523214840 in the
+# 2026-05-19 Phase 2 telemetry where DELIVERED → EXCEPTION pairs
+# represent normal closure, not a real exception.
+_TERMINAL_AFTER_DELIVERED: frozenset[str] = frozenset({
+    "DELIVERED", "CLOSED", "EXCEPTION",
+})
+
+
+def _is_delivered_by_tracking_events(audit: Dict[str, Any]) -> bool:
+    """Walk ``audit.tracking_events`` and return True iff the latest
+    DELIVERED/CLOSED event is not followed by any reactive stage.
+
+    Conservative: returns False on any malformed input or empty event
+    list.  An ambiguous event (unknown normalized_stage) after DELIVERED
+    is treated as neither reactive nor terminal — it preserves whatever
+    classification the LAST clear event implied.
+    """
+    if not isinstance(audit, dict):
+        return False
+    events = audit.get("tracking_events") or []
+    if not isinstance(events, list) or not events:
+        return False
+    # Walk events; track last clear delivered/closed and any reactive
+    # event after it.  Linear pass; O(n).
+    last_delivered_idx: Optional[int] = None
+    for i, ev in enumerate(events):
+        if not isinstance(ev, dict):
+            continue
+        stage = str(ev.get("normalized_stage") or "").strip().upper()
+        if stage in ("DELIVERED", "CLOSED"):
+            last_delivered_idx = i
+    if last_delivered_idx is None:
+        return False
+    # Any reactive stage after the last DELIVERED/CLOSED?
+    for ev in events[last_delivered_idx + 1:]:
+        if not isinstance(ev, dict):
+            continue
+        stage = str(ev.get("normalized_stage") or "").strip().upper()
+        if stage in _REACTIVE_AFTER_DELIVERED:
+            return False
+    return True
+
+
 def is_audit_delivered(audit: Dict[str, Any]) -> bool:
     """Return True iff the audit represents a shipment whose status is
     `delivered` (= closed).
@@ -56,6 +118,10 @@ def is_audit_delivered(audit: Dict[str, Any]) -> bool:
       3. ``audit["proactive_dispatch_delivered_at"]`` is non-empty —
          legacy slot set by active_shipment_monitor at proactive-
          dispatch time.
+      4. ``audit["tracking_events"]`` contains a DELIVERED or CLOSED
+         normalized_stage and no reactive stage appears after it
+         (anomaly A1 fix; covers older audits whose top-level
+         ``tracking.status`` was never written to "delivered").
 
     Pure / side-effect free.  Never raises on malformed input.
     """
@@ -71,6 +137,9 @@ def is_audit_delivered(audit: Dict[str, Any]) -> bool:
         return True
     # (3) Proactive-dispatch delivered_at (legacy slot)
     if str(audit.get("proactive_dispatch_delivered_at") or "").strip():
+        return True
+    # (4) Tracking-events fallback (anomaly A1, Phase 2 finding)
+    if _is_delivered_by_tracking_events(audit):
         return True
     return False
 

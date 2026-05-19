@@ -7328,6 +7328,55 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         );
                       })()}
 
+                      {/* ── DHL Orchestrator (Phase 1) ── */}
+                      {(() => {
+                        const [orchState, setOrchState] = React.useState(null);
+                        React.useEffect(() => {
+                          if (!batchId) return;
+                          let cancelled = false;
+                          (async () => {
+                            try {
+                              const r = await apiFetch(`/api/v1/orchestrator/state/${encodeURIComponent(batchId)}`);
+                              const j = await r.json();
+                              if (!cancelled) setOrchState(j);
+                            } catch (e) { /* read-only card; ignore */ }
+                          })();
+                          return () => { cancelled = true; };
+                        }, [batchId]);
+                        const s = orchState || {};
+                        const attach = s.attachment_readiness || {};
+                        const email  = s.email_readiness || {};
+                        const flags  = s.safety_flags || {};
+                        const pendingCount = (Array.isArray(s.decisions) ? s.decisions.length : 0);
+                        return (
+                          <div data-testid="orchestrator-state-card" style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>
+                              DHL Orchestrator
+                              {flags.shadow_mode ? (
+                                <span data-testid="orchestrator-shadow-marker" style={{ marginLeft: 8, padding: '1px 6px', fontSize: 9, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', borderRadius: 3 }}>SHADOW</span>
+                              ) : null}
+                            </div>
+                            <InfoRow label="Lifecycle State"
+                              value={<span data-testid="orchestrator-lifecycle-state" style={{ fontWeight: 600 }}>{s.lifecycle_state || '—'}</span>} />
+                            <InfoRow label="Next Action"
+                              value={<span data-testid="orchestrator-next-action">{s.next_action || '—'}</span>} />
+                            <InfoRow label="Blocked Reason"
+                              value={<span data-testid="orchestrator-blocked-reason" style={{ fontSize: 11, color: 'var(--text-2)' }}>{s.blocked_reason || '—'}</span>} />
+                            <InfoRow label="Last Tick"
+                              value={<span data-testid="orchestrator-last-tick-at" style={{ fontFamily: 'monospace', fontSize: 11 }}>{(s.last_recorded || {}).last_tick_at || '—'}</span>} />
+                            <InfoRow label="Attachment Readiness"
+                              value={<span data-testid="orchestrator-attachment-preview" style={{ fontSize: 11 }}>
+                                DSK={attach.dsk_present ? 'Y' : 'N'} · Polish={attach.polish_desc_present ? 'Y' : 'N'} · SAD={attach.sad_ready_present ? 'Y' : 'N'} · invoices={attach.invoice_count || 0}
+                              </span>} />
+                            <InfoRow label="Email Readiness"
+                              value={<span style={{ fontSize: 11 }}>
+                                DHL email received={email.dhl_email_received ? 'Y' : 'N'} · agency pkg={email.agency_package_built ? 'Y' : 'N'} · path={email.clearance_path || '—'}
+                              </span>} />
+                            <span data-testid="orchestrator-pending-count" style={{ display: 'none' }}>{pendingCount}</span>
+                          </div>
+                        );
+                      })()}
+
                       {/* ── Clearance Decision ── */}
                       <div data-testid="clearance-routing-card" style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Clearance Routing</div>
@@ -11064,6 +11113,9 @@ function _draftStateChipColors(state) {
     post_failed:  { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
     cancelled:    { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
     superseded:   { bg: 'var(--badge-red-bg)',   tx: 'var(--badge-red-text)'   },
+    // V1 — adopted-from-audit draft represents a wFirma proforma that
+    // already exists; informational (blue), not action-needed.
+    adopted_from_audit: { bg: 'var(--badge-blue-bg)', tx: 'var(--badge-blue-text)' },
   };
   return map[state] || { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)' };
 }
@@ -11077,6 +11129,7 @@ const _DRAFT_STATE_LABELS = {
   post_failed: 'Send failed',
   cancelled:   'Cancelled',
   superseded:  'Replaced',
+  adopted_from_audit: 'Adopted from wFirma',
 };
 
 function ProformaDraftStateChip({ state }) {
@@ -12106,6 +12159,38 @@ function ProformaDraftPanel({ batchId, onToast }) {
                               justifyContent: 'space-between', marginBottom: 12 }}>
                 <div>
                   <ProformaDraftStateChip state={openDraft.draft_state} />
+                  {(() => {
+                    // V2 — read-only invoice-eligibility badge.
+                    // Pure derived render; no API call, no mutation,
+                    // no workflow action.  Reflects existing backend
+                    // gate at routes_proforma._gather_conversion_inputs
+                    // and proforma_invoice_links UNIQUE constraint.
+                    const linkExists = !!(openDraft.invoice_link_id ||
+                                          openDraft.has_invoice_link);
+                    const eligible   = openDraft.status === 'issued' &&
+                                       openDraft.draft_state === 'posted' &&
+                                       !linkExists;
+                    const blockers = [];
+                    if (openDraft.status !== 'issued')
+                      blockers.push("draft.status must be 'issued'");
+                    if (openDraft.draft_state !== 'posted')
+                      blockers.push("draft_state must be 'posted'");
+                    if (linkExists)
+                      blockers.push("invoice link already exists");
+                    return (
+                      <span data-testid="draft-invoice-eligibility-badge"
+                            title={eligible ? 'Invoice conversion eligible' : blockers.join('; ')}
+                            style={{
+                              marginLeft: 8, padding: '2px 8px',
+                              borderRadius: 10, fontSize: 11, fontWeight: 700,
+                              textTransform: 'uppercase', letterSpacing: '0.04em',
+                              background: eligible ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                              color:      eligible ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+                            }}>
+                        {eligible ? 'Invoice eligible' : 'Invoice blocked'}
+                      </span>
+                    );
+                  })()}
                   <strong style={{ marginLeft: 10, fontSize: 14 }}>
                     {openDraft.client_name}
                   </strong>
@@ -12141,8 +12226,11 @@ function ProformaDraftPanel({ batchId, onToast }) {
 
               {/* Posted-state panel — branded "Total due" treatment from
                   the Estrella Document Suite (emerald block + gold accent).
-                  Same single wired endpoint, no fake buttons. */}
-              {isPosted && (
+                  Same single wired endpoint, no fake buttons.
+                  V3 — also renders for adopted_from_audit drafts so the
+                  wFirma proforma id/fullnumber is operator-visible on
+                  drafts adopted from existing wFirma records. */}
+              {(isPosted || openDraft.draft_state === 'adopted_from_audit') && (
                 <div data-testid="draft-posted-banner"
                      className="ej-doc-toolbar"
                      style={{ borderRadius: 4, marginBottom: 12, overflow: 'hidden',

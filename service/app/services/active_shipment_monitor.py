@@ -113,6 +113,11 @@ _STATUS_ORDER = {
     "awaiting_dhl_customs_email":    1,
     "dhl_email_received":            2,
     "polish_description_generated":  3,
+    # dsk_generated indicates DSK PDF has been produced.  In the agency
+    # path it is reached after polish description generation; rank it
+    # alongside polish_description_generated so rank-guarded advances
+    # treat it as docs-ready rather than draft-zero.
+    "dsk_generated":                 3,
     "agency_email_queued":           4,
     "agency_email_sent":             4,
     "delivered":                     5,
