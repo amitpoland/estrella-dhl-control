@@ -28,6 +28,7 @@ from .api.routes_intelligence import router as intelligence_router
 from .api.routes_action_proposals import router as action_proposals_router
 from .api.routes_ai_bridge import router as ai_bridge_router
 from .api.routes_monitor import router as monitor_router
+from .api.routes_orchestrator import router as orchestrator_router
 from .api.routes_dhl_followup import router as dhl_followup_router
 from .api.routes_dhl_documents import router as dhl_documents_router
 from .api.routes_lifecycle import router as lifecycle_router
@@ -174,6 +175,16 @@ async def lifespan(app: FastAPI):
     batch_manager.set_auto_submit_callback(on_auto_submit)
     batch_manager.set_expiry_callback(on_session_expiry)
     batch_manager.start_sweep()
+
+    # ── DHL orchestrator (Phase 1) — gated by DHL_ORCH_ENABLED ─────────────
+    # Default OFF.  Even when ON, the loop honours DHL_ORCH_SHADOW_MODE
+    # (default True) and every AUTO_* sub-flag (all default False).
+    try:
+        from .services import dhl_orchestrator as _orch
+        _orch.start_loop()
+    except Exception as _orch_exc:  # never block startup
+        log.warning("dhl_orchestrator startup failed (non-fatal): %s", _orch_exc)
+
     log.info(
         "Batch session manager started "
         "(session_timeout=%dmin, auto_submit=%dmin, auto_submit_if_ready=%s)",
@@ -222,6 +233,13 @@ async def lifespan(app: FastAPI):
     yield
     log.info("Estrella PZ Service shutting down.")
 
+    # ── DHL orchestrator clean shutdown ────────────────────────────────────
+    try:
+        from .services import dhl_orchestrator as _orch
+        await _orch.stop_loop()
+    except Exception as _orch_exc:
+        log.warning("dhl_orchestrator stop_loop failed (non-fatal): %s", _orch_exc)
+
 
 app = FastAPI(
     title       = "Estrella PZ Service",
@@ -258,6 +276,7 @@ app.include_router(intelligence_router)
 app.include_router(action_proposals_router)
 app.include_router(ai_bridge_router)
 app.include_router(monitor_router)
+app.include_router(orchestrator_router)
 app.include_router(dhl_followup_router)
 app.include_router(dhl_documents_router)
 app.include_router(lifecycle_router)

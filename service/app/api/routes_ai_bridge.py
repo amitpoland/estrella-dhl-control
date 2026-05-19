@@ -366,6 +366,7 @@ def import_bridge_result(
                 "awaiting_dhl_customs_email":    1,
                 "dhl_email_received":            2,
                 "polish_description_generated":  3,
+                "dsk_generated":                 3,
                 "agency_email_sent":             4,
                 "delivered":                     5,
             }

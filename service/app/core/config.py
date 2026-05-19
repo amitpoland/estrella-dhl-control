@@ -281,6 +281,26 @@ class Settings(BaseSettings):
     dhl_selfclearance_p5_shadow_mode:         bool = Field(default=True)
     dhl_selfclearance_p5_pz_trigger_enabled:  bool = Field(default=False)
 
+    # ── DHL orchestrator (Phase 1) ─────────────────────────────────────────
+    # Controlled DHL shipment orchestration engine.  Default state: OFF +
+    # shadow.  Even with master enabled, individual action flags must be
+    # explicitly turned on; AUTO_SEND_* flags remain false until a separate
+    # operator decision.  See services/dhl_orchestrator.py for semantics.
+    dhl_orch_enabled:                  bool = Field(default=False)
+    dhl_orch_shadow_mode:              bool = Field(default=True)
+    dhl_orch_tick_interval_sec:        int  = Field(default=600)
+    dhl_orch_auto_refresh_tracking:    bool = Field(default=False)
+    dhl_orch_auto_monitor_sweep:       bool = Field(default=False)
+    dhl_orch_auto_email_ingest:        bool = Field(default=False)
+    dhl_orch_auto_refresh_proposals:   bool = Field(default=False)
+    dhl_orch_auto_build_packages:      bool = Field(default=False)
+    dhl_orch_auto_send_agency:         bool = Field(default=False)
+    dhl_orch_auto_send_dhl_reply:      bool = Field(default=False)
+    dhl_orch_tracking_cooldown_min:    int  = Field(default=30)
+    dhl_orch_monitor_cooldown_min:     int  = Field(default=30)
+    dhl_orch_email_ingest_cooldown_min: int = Field(default=60)
+    dhl_orch_proposals_cooldown_min:   int  = Field(default=10)
+
     # Classifier confidence thresholds (literal identifiers — phases quote verbatim)
     dhl_selfclearance_p4_classifier_min_confidence:  float = Field(default=0.85)
     dhl_selfclearance_p5_classifier_min_confidence:  float = Field(default=0.95)
