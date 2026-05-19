@@ -19,6 +19,7 @@ Pure deterministic. No AI, no live API calls, no proforma side-effects.
 from __future__ import annotations
 
 import sys
+import threading as _threading
 from typing import Any, Dict, Optional
 
 from ..core.config import settings
@@ -71,6 +72,9 @@ def build_description_block(*,
 _TRANSLATIONS_CACHE: Optional[Dict[str, Dict[str, str]]] = None
 _DEFAULT_CACHE:       Optional[Dict[str, str]]            = None
 _CUSTOMS_ENGINE_CACHE = None  # lazy-imported customs_description_engine
+# Threading lock — protects all three module-level caches above.
+# NSSM/Windows multi-threaded FastAPI workers can race on first load without this.
+_cache_lock = _threading.Lock()
 
 
 # ── PR-208: explicit cache-reset helper ────────────────────────────────────
@@ -123,9 +127,10 @@ def reset_caches() -> Dict[str, bool]:
     (the caller is the operator; log noise would be unhelpful).
     """
     global _TRANSLATIONS_CACHE, _DEFAULT_CACHE, _CUSTOMS_ENGINE_CACHE
-    _CUSTOMS_ENGINE_CACHE = None
-    _TRANSLATIONS_CACHE   = None
-    _DEFAULT_CACHE        = None
+    with _cache_lock:
+        _CUSTOMS_ENGINE_CACHE = None
+        _TRANSLATIONS_CACHE   = None
+        _DEFAULT_CACHE        = None
     return {
         "customs_engine_cache_reset": True,
         "translations_cache_reset":   True,
@@ -142,21 +147,27 @@ def _load_customs_engine():
     importable — caller falls back to ITEM_TRANSLATIONS.
     """
     global _CUSTOMS_ENGINE_CACHE
+    # Fast path (no lock) — cache already set.
     if _CUSTOMS_ENGINE_CACHE is not None:
         return _CUSTOMS_ENGINE_CACHE if _CUSTOMS_ENGINE_CACHE is not False else None
 
-    engine = str(settings.engine_dir)
-    if engine not in sys.path:
-        sys.path.insert(0, engine)
-    try:
-        import customs_description_engine as _cde  # type: ignore
-        _CUSTOMS_ENGINE_CACHE = _cde
-        return _cde
-    except Exception as exc:
-        log.warning("description_engine: customs_description_engine import "
-                    "failed (%s) — falling back to ITEM_TRANSLATIONS", exc)
-        _CUSTOMS_ENGINE_CACHE = False
-        return None
+    with _cache_lock:
+        # Re-check under lock in case a concurrent thread populated while we waited.
+        if _CUSTOMS_ENGINE_CACHE is not None:
+            return _CUSTOMS_ENGINE_CACHE if _CUSTOMS_ENGINE_CACHE is not False else None
+
+        engine = str(settings.engine_dir)
+        if engine not in sys.path:
+            sys.path.insert(0, engine)
+        try:
+            import customs_description_engine as _cde  # type: ignore
+            _CUSTOMS_ENGINE_CACHE = _cde
+            return _cde
+        except Exception as exc:
+            log.warning("description_engine: customs_description_engine import "
+                        "failed (%s) — falling back to ITEM_TRANSLATIONS", exc)
+            _CUSTOMS_ENGINE_CACHE = False
+            return None
 
 
 def _customs_grade_translation(item_type: str,
@@ -208,27 +219,33 @@ def _load_translations() -> tuple:
     routes_dhl_clearance.py:50-52 and others.
     """
     global _TRANSLATIONS_CACHE, _DEFAULT_CACHE
+    # Fast path (no lock) — cache already set.
     if _TRANSLATIONS_CACHE is not None:
         return _TRANSLATIONS_CACHE, _DEFAULT_CACHE
 
-    engine = str(settings.engine_dir)
-    if engine not in sys.path:
-        sys.path.insert(0, engine)
+    with _cache_lock:
+        # Re-check under lock in case a concurrent thread populated while we waited.
+        if _TRANSLATIONS_CACHE is not None:
+            return _TRANSLATIONS_CACHE, _DEFAULT_CACHE
 
-    try:
-        import polish_description_generator as _pdg  # type: ignore
-        _TRANSLATIONS_CACHE = dict(_pdg.ITEM_TRANSLATIONS)
-        _DEFAULT_CACHE      = dict(_pdg.DEFAULT_TRANSLATION)
-    except Exception as exc:
-        log.warning("description_engine: ITEM_TRANSLATIONS import failed (%s) "
-                    "— using minimal in-module fallback", exc)
-        _TRANSLATIONS_CACHE = {}
-        _DEFAULT_CACHE = {
-            "name_pl":        "Biżuteria",
-            "description_pl": "Wyrób jubilerski",
-            "material_pl":    "Metal z kamieniami ozdobnymi",
-            "purpose_pl":     "Ozdoba",
-        }
+        engine = str(settings.engine_dir)
+        if engine not in sys.path:
+            sys.path.insert(0, engine)
+
+        try:
+            import polish_description_generator as _pdg  # type: ignore
+            _TRANSLATIONS_CACHE = dict(_pdg.ITEM_TRANSLATIONS)
+            _DEFAULT_CACHE      = dict(_pdg.DEFAULT_TRANSLATION)
+        except Exception as exc:
+            log.warning("description_engine: ITEM_TRANSLATIONS import failed (%s) "
+                        "— using minimal in-module fallback", exc)
+            _TRANSLATIONS_CACHE = {}
+            _DEFAULT_CACHE = {
+                "name_pl":        "Biżuteria",
+                "description_pl": "Wyrób jubilerski",
+                "material_pl":    "Metal z kamieniami ozdobnymi",
+                "purpose_pl":     "Ozdoba",
+            }
     return _TRANSLATIONS_CACHE, _DEFAULT_CACHE
 
 

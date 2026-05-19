@@ -522,7 +522,22 @@ def _row_to_customer(row: sqlite3.Row) -> CustomerMaster:
 # ── CRUD ─────────────────────────────────────────────────────────────────────
 
 def upsert_customer(db_path: Path, c: CustomerMaster) -> int:
-    """Insert or update by bill_to_contractor_id. Returns row id."""
+    """Insert or update by bill_to_contractor_id. Returns row id.
+
+    ⚠  FULL-SET SEMANTICS (CAMPAIGN 6 T5 NOTE):
+    This function performs a full UPDATE — every payload field is written,
+    including None/NULL values.  The caller MUST supply ALL fields, either
+    from the operator form (which shows all fields) or from a prior GET.
+
+    Requirement: the API route that calls this function must read the stored
+    record first (GET), merge with the operator edits, and PUT the complete
+    merged object — never a partial payload.  A partial PUT silently wipes
+    unincluded optional fields (kuke_limit, credit_limit, freight_service_id,
+    etc.) to NULL.
+
+    For wFirma-initiated writes, use upsert_identity_only() which uses
+    COALESCE semantics (fill-when-empty, never wipe).
+    """
     blockers = validate(c)
     if blockers:
         raise ValueError("customer_master validation failed: " + "; ".join(blockers))

@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading as _threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -714,6 +715,9 @@ def build_knowledge_base(
 # ── Loader (cached) ───────────────────────────────────────────────────────────
 
 _master_cache: Optional[Dict[str, Any]] = None
+# Threading lock — protects _master_cache against concurrent first-load races
+# on NSSM/Windows multi-threaded FastAPI workers.
+_master_cache_lock = _threading.Lock()
 
 
 def load_master(force_reload: bool = False) -> Optional[Dict[str, Any]]:
@@ -725,20 +729,26 @@ def load_master(force_reload: bool = False) -> Optional[Dict[str, Any]]:
     """
     global _master_cache
 
+    # Fast path — no lock needed if cache is already populated.
     if _master_cache is not None and not force_reload:
         return _master_cache
 
-    if not MASTER_PATH.exists():
-        log.debug("[intelligence_engine] intelligence_master.json not found — run build_knowledge_base()")
-        return None
+    with _master_cache_lock:
+        # Re-check under lock.
+        if _master_cache is not None and not force_reload:
+            return _master_cache
 
-    try:
-        raw = json.loads(MASTER_PATH.read_text(encoding="utf-8"))
-        _master_cache = raw
-        return raw
-    except Exception as exc:
-        log.error("[intelligence_engine] Failed to load intelligence_master.json: %s", exc)
-        return None
+        if not MASTER_PATH.exists():
+            log.debug("[intelligence_engine] intelligence_master.json not found — run build_knowledge_base()")
+            return None
+
+        try:
+            raw = json.loads(MASTER_PATH.read_text(encoding="utf-8"))
+            _master_cache = raw
+            return raw
+        except Exception as exc:
+            log.error("[intelligence_engine] Failed to load intelligence_master.json: %s", exc)
+            return None
 
 
 def get_sla_thresholds_from_master() -> Dict[str, Any]:

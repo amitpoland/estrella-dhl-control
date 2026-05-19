@@ -39,6 +39,21 @@ def init_wfirma_db(db_path: Path) -> None:
     _db_path = db_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect() as con:
+        # C6 T8 — lightweight corruption check on every startup.
+        # PRAGMA quick_check is fast (seconds on a <100 MB DB) and catches
+        # most corruption. Logs a WARNING rather than crashing the service —
+        # a corrupt wfirma.db is a recoverable error; operator should restore
+        # from backup and restart.
+        try:
+            qc_result = con.execute("PRAGMA quick_check").fetchone()
+            if qc_result and qc_result[0] != "ok":
+                import logging as _logging
+                _logging.getLogger(__name__).error(
+                    "wfirma.db PRAGMA quick_check FAILED: %s — consider restoring from backup",
+                    qc_result[0],
+                )
+        except Exception:
+            pass  # never block startup
         con.executescript("""
             PRAGMA journal_mode=WAL;
             PRAGMA foreign_keys=ON;
@@ -503,6 +518,23 @@ def get_product(product_code: str) -> Optional[Dict[str, Any]]:
             (product_code,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def get_products_batch(product_codes: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Fetch multiple products in a single query. Returns {product_code: row_dict}.
+
+    Performance: O(1) round-trips vs O(N) individual get_product() calls.
+    Use in ensure_products_for_batch() loops instead of per-code get_product().
+    """
+    if _db_path is None or not product_codes:
+        return {}
+    placeholders = ",".join("?" for _ in product_codes)
+    with _connect() as con:
+        rows = con.execute(
+            f"SELECT * FROM wfirma_products WHERE product_code IN ({placeholders})",
+            product_codes,
+        ).fetchall()
+    return {row["product_code"]: dict(row) for row in rows}
 
 
 def list_products(sync_status: Optional[str] = None) -> List[Dict[str, Any]]:

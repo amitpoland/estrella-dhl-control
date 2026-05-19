@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os as _os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -219,12 +220,15 @@ def _load_cache(cache_dir: Path) -> Dict[str, Any]:
 
 
 def _save_cache(cache_dir: Path, cache: Dict[str, Any]) -> None:
+    """Atomic write via tmp-then-rename to prevent corrupt cache on crash/kill."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / "tracking_cache.json"
-    cache_file.write_text(
+    tmp_file   = cache_dir / "tracking_cache.json.tmp"
+    tmp_file.write_text(
         json.dumps(cache, indent=2, ensure_ascii=False, default=str),
         encoding="utf-8",
     )
+    _os.replace(str(tmp_file), str(cache_file))
 
 
 def _now_utc_iso() -> str:

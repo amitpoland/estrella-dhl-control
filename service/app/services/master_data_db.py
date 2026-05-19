@@ -1232,11 +1232,22 @@ def _row_to_design(row: sqlite3.Row) -> Design:
 
 
 def upsert_design(db_path: Path, data: Dict[str, Any]) -> Design:
+    """Insert or update a design record by design_code.
+
+    ⚠  PARTIAL-UPDATE SEMANTICS (CAMPAIGN 6 T5):
+    On UPDATE, only fields explicitly present in `data` are written.
+    Fields absent from `data` are left unchanged in the DB (no NULL-wipe).
+    This is safe for partial dashboard edits (e.g., editing only hs_code
+    without resetting stone_summary).
+
+    On INSERT, all fields default to None for missing keys.
+    """
     errs = validate_design(data)
     if errs:
         raise ValueError("; ".join(errs))
     init_db(db_path)
     now = _now()
+    # Build INSERT payload with all fields (None for missing = correct for new rows).
     p = {
         "design_code":   _clean(data.get("design_code")),
         "display_name":  _clean(data.get("display_name")),
@@ -1252,6 +1263,13 @@ def upsert_design(db_path: Path, data: Dict[str, Any]) -> Design:
                                not in ("false", "0", "no")) else 0,
         "notes":         _clean(data.get("notes")),
     }
+    # Build UPDATE payload — only fields present in `data` to avoid NULL-wipe.
+    _UPDATABLE = {"display_name", "product_ref", "design_family", "collection",
+                  "metal", "stone_summary", "hs_code", "unit", "active", "notes"}
+    update_p: Dict[str, Any] = {}
+    for k in _UPDATABLE:
+        if k in data:
+            update_p[k] = p[k]
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         existing = conn.execute(
@@ -1259,17 +1277,12 @@ def upsert_design(db_path: Path, data: Dict[str, Any]) -> Design:
             (p["design_code"],),
         ).fetchone()
         if existing:
-            conn.execute(
-                """UPDATE designs SET display_name=?, product_ref=?, design_family=?,
-                                       collection=?, metal=?, stone_summary=?,
-                                       hs_code=?, unit=?, active=?, notes=?,
-                                       updated_at=?
-                                  WHERE design_code=?""",
-                (p["display_name"], p["product_ref"], p["design_family"],
-                 p["collection"], p["metal"], p["stone_summary"],
-                 p["hs_code"], p["unit"], p["active"], p["notes"],
-                 now, p["design_code"]),
-            )
+            if update_p:
+                set_clause = ", ".join(f"{k}=?" for k in update_p)
+                conn.execute(
+                    f"UPDATE designs SET {set_clause}, updated_at=? WHERE design_code=?",
+                    (*update_p.values(), now, p["design_code"]),
+                )
         else:
             conn.execute(
                 """INSERT INTO designs (design_code, display_name, product_ref,

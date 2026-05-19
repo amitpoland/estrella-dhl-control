@@ -1187,9 +1187,13 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
     missing_codes: List[str]  = []
     failed_details: List[dict] = []
 
+    # Performance: batch-fetch all known local products in one SQL round-trip
+    # instead of O(N) individual get_product() calls (C6 T6 hardening).
+    _local_cache: Dict[str, Any] = wfirma_db.get_products_batch(list(seen.keys()))
+
     for pc, meta in seen.items():
         # ── 1. Check local table first ────────────────────────────────────────
-        local = wfirma_db.get_product(pc)
+        local = _local_cache.get(pc)
         if local and (local.get("wfirma_product_id") or "").strip():
             already_mapped += 1
             continue

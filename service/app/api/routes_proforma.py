@@ -137,16 +137,17 @@ def _check_warehouse_readiness(batch_id: str) -> List[str]:
         reasons.append("warehouse readiness check failed: could not read pz_rows.json")
         return reasons
 
-    # 2. Unresolved product_codes
+    # 2. Unresolved product_codes — batch fetch (C6 T6: O(1) vs O(N) per-code)
     if wfdb._db_path is not None:
         all_codes = sorted({
             (r.get("product_code") or "").strip()
             for r in pz_rows
             if (r.get("product_code") or "").strip()
         })
+        _prods_map = wfdb.get_products_batch(all_codes) if all_codes else {}
         unresolved = []
         for code in all_codes:
-            prod = wfdb.get_product(code)
+            prod = _prods_map.get(code)
             if not (prod and prod.get("wfirma_product_id") and prod.get("sync_status") == "matched"):
                 unresolved.append(code)
         if unresolved:

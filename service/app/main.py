@@ -85,6 +85,15 @@ from .services.wfirma_db    import init_wfirma_db
 from .services.correction_registry import init_correction_registry
 from .services.intake_lineage     import init_intake_lineage
 from .services.proforma_service_charges_db import init as init_proforma_service_charges
+# Governance constants — import at module level so assert_no_overlap() runs at startup.
+# If any action appears in both SAFE_AUTONOMOUS and HUMAN_APPROVAL_REQUIRED sets, this
+# raises AssertionError immediately, preventing the service from starting with a
+# governance violation.
+from .services.governance_constants import (  # noqa: F401
+    SAFE_AUTONOMOUS_ACTIONS,
+    HUMAN_APPROVAL_REQUIRED_ACTIONS,
+    assert_no_overlap,
+)
 from .auth.database import init_db
 from .auth.dependencies import check_session_or_redirect
 
