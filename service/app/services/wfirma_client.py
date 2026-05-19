@@ -212,6 +212,14 @@ class ProformaRequest:
     # Resolved from customer_master.preferred_proforma_series_id by
     # ``routes_proforma._build_proforma_request``. Empty = wFirma default.
     series_id: str = ""
+    # Optional issue date. When set to a valid YYYY-MM-DD string, emitted
+    # as <date> in the proforma XML so wFirma records the operator-supplied
+    # date instead of its own server date. Empty = wFirma default (today).
+    date: str = ""
+    # Optional payment method. Mapped from CustomerMaster.preferred_payment_method
+    # to a wFirma-accepted string (przelew/gotowka/karta/kompensata).
+    # "other" or empty = omit the XML element so wFirma uses its own default.
+    payment_method: str = ""
 
 
 @dataclass
@@ -1917,6 +1925,29 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
         if _sid and _sid != "0" else ""
     )
 
+    # Emit <date> only when a well-formed YYYY-MM-DD date is supplied.
+    import re as _re
+    _d = (req.date or "").strip()
+    date_xml = (
+        f"<date>{_esc(_d)}</date>"
+        if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", _d) else ""
+    )
+
+    # Map preferred_payment_method to wFirma XML values.
+    # "other" and empty both mean "omit the element".
+    _PM_MAP = {
+        "transfer":     "przelew",
+        "cash":         "gotowka",
+        "card":         "karta",
+        "compensation": "kompensata",
+    }
+    _pm_key = (req.payment_method or "").strip().lower()
+    _pm_val = _PM_MAP.get(_pm_key, "")
+    paymentmethod_xml = (
+        f"<paymentmethod>{_esc(_pm_val)}</paymentmethod>"
+        if _pm_val else ""
+    )
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <api>
   <invoices>
@@ -1926,6 +1957,8 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
       <type>proforma</type>
       {currency_xml}
       {series_xml}
+      {date_xml}
+      {paymentmethod_xml}
       <invoicecontents>{lines_xml}
       </invoicecontents>
     </invoice>

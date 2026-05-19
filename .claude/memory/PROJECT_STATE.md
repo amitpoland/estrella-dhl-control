@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-19T(campaign6-push)Z (RULE 3 auto-fire: Campaign 6 pushed to origin/main. 12 commits (f6ba91b..97672c1) now on origin/main HEAD=97672c1. GATE 2: 2 open PRs. Prior: 2026-05-19T(campaign6-convergence)Z.
+**Last-run-at:** 2026-05-19T(campaign8-production-deploy)Z (RULE 3 auto-fire: Campaign 8 production deploy complete. Windows HEAD = 7392be1 (32d6a8f + V1/V2/V3 local commits). Deploy validated: health✓ carrier/status✓ designs/✓ hs-codes/✓ carriers-config/✓ customer-master/✓ wfirma/capabilities✓ invoice-gate BLOCKED✓. GATE 2: 2 open PRs. Prior: 2026-05-19T(campaign6-push)Z.
 
 ---
 
@@ -32,14 +32,11 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
   - Prior: `4083d84` chore(kernel): Wave 2 patch #1 — condense CLAUDE.md shipment sections (PR #216 merge)
 
 ## Windows production local HEAD (NOT on origin/main)
-- **2026-05-13** — `4c797e4` fix(email): prevent outbound customs emails sending without attachments ← **DEPLOYED TO PRODUCTION 2026-05-13T10:43Z**
-  - Local hotfix chain (not pushed to GitHub, Windows-staging only):
-    - `4c797e4` Attachment integrity guard (this deploy)
-    - `1b38ea0` Polish PDF font fix (DejaVuSans.ttf)
-    - `80e3469` DHL email search fix (AWB 1196338404)
-    - `4d595ca` SMTP immediate-send after queue_email()
-    - Base: `69309a5` Merge PR #66 (forgot-password)
-  - **Reconciliation required** before next standard 7-agent-gate deploy from origin/main.
+- **2026-05-19** — `7392be1` [V1+V2+V3 Windows-local commits] ← **DEPLOYED TO PRODUCTION 2026-05-19T(campaign8)Z**
+  - Base: `32d6a8f` (Campaign 6 origin/main HEAD, target of Campaign 8 7-agent gate)
+  - V1/V2/V3 content: unknown from Mac side — operator applied 3 additional local commits on Windows during Campaign 8 session. Full SHA for 7392be1 not captured (7-char abbreviation only).
+  - **Lesson D: PENDING RECONCILIATION** — V1/V2/V3 are Windows-local commits not on GitHub. JSONL audit entry appended to `local-commit-deploys.jsonl`. Reconciliation PR required before next `git pull --ff-only origin main`.
+  - **Prior local HEAD (reconciled):** `4c797e4` — reconciled 2026-05-13T16:00Z via PR #77.
 
 ## Wave 1 closure facts (appended 2026-05-13T12:30Z)
 
@@ -180,17 +177,40 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Attachment integrity guard shadow observation** — guard is LIVE on Windows prod as of `4c797e4`. Status: `AWAITING-FIRST-REAL-AWB`. Shadow-observing-real-traffic flag must NOT be set until `active_shipment_monitor` fires its first real sweep and an AWB enters eligibility filter. No customs emails queued since restart. Operator must confirm first AWB timestamp to upgrade status.
 
 ## Deployment status per machine
-- **Mac (dev)** — current origin/main head `76bf526`; admin runtime-flags combined-state validator (ADR-018) + per-phase lock + predecessor-live override + P2 ignition switch (PR #72) + observation RULE 6 visibility (PR #73) now on main.
-- **Windows (prod, NSSM `PZService` at `C:\PZ`, `https://pz.estrellajewels.eu`)** — **WAVE-1-COMPLETE-WAVE-2-AWAITING-FIRST-DISPATCH**
-  - Wave 1 deploy SHA: `4c797e4` (local Windows-staging chain; not on origin/main — see "Windows production local HEAD")
-  - Wave 1 hotfix SHA: `5ee390b` (PR #74, on origin/main) — `timeline.py` synced to `C:\PZ\app\core\timeline.py` via robocopy 2026-05-13T12:23Z. Restart completed 2026-05-13T10:34Z (operator elevated shell).
-  - PZService: RUNNING (STATE 2→RUNNING, PID 14164) — PR #74 fully live
-  - Local health: 200 OK `{"status":"ok","engine":"ok","environment":"prod","detail":{"engine_dir":"C:\\PZ\\engine"}}`
-  - Public health: 200 OK `https://pz.estrellajewels.eu/api/v1/health`
-  - Carrier gate: `{"carrier_api_status":"pending","carrier_plt_status":"pending"}`
-  - Smoke tests: ALL PASS (see § "Deploy smoke results 2026-05-13")
-  - Shadow status: `SHADOW-OBSERVING-REAL-TRAFFIC` — all infrastructure verified end-to-end, PZService healthy on PID 14164, awaiting first real outbound customs email through attachment integrity guard
-  - Drift note: `4c797e4` is the only Windows-local commit (SHA lineage verified). Windows prod is behind origin/main by PRs #67–#73 + #74. Full 7-agent gate + `4c797e4` reconciliation PR required before next origin-pull deploy.
+- **Mac (dev)** — current origin/main head `97672c1` (Campaign 6, pushed 2026-05-19).
+- **Windows (prod, NSSM `PZService` at `C:\PZ`, `https://pz.estrellajewels.eu`)** — **CAMPAIGN-8-DEPLOY-COMPLETE**
+  - **Campaign 8 deploy SHA: `7392be1`** (32d6a8f + V1/V2/V3 Windows-local, 2026-05-19). 321-commit catch-up from `4c797e4` → `32d6a8f` (origin/main Campaign 6 HEAD) + 3 additional Windows-local commits.
+  - PZService: RUNNING (operator confirmed post-restart)
+  - Public health: 200 OK `https://pz.estrellajewels.eu/api/v1/health` — body contains `"ok"` and `"prod"`
+  - Carrier gate: `{"carrier_api_status":"pending","carrier_plt_status":"pending"}` — PENDING (no live flags touched)
+  - Invoice gate: BLOCKED — `WFIRMA_CREATE_INVOICE_ALLOWED=false` confirmed live on `POST /api/v1/proforma/to-invoice/test-batch/test-client`
+  - New routes from Campaign 6 delta: MOUNTED — `/api/v1/designs/` 200✓, `/api/v1/hs-codes/` 200✓, `/api/v1/carriers-config/` 200✓, `/api/v1/vat-config/` 200✓
+  - Shadow status: `SHADOW-OBSERVING-REAL-TRAFFIC` — infrastructure verified; awaiting first real outbound customs email
+  - Lesson D: V1/V2/V3 local commits pending reconciliation PR (JSONL entry appended 2026-05-19)
+
+## Campaign 8 deploy smoke results (2026-05-19, SHA 7392be1 base 32d6a8f)
+
+| Check | Result | Detail |
+|---|---|---|
+| Public health | PASS | 200 OK `https://pz.estrellajewels.eu/api/v1/health`, body contains `"ok"` and `"prod"` |
+| Carrier gate | PASS | `carrier_api_status: pending` — unchanged |
+| `/api/v1/designs/` | PASS | 200 OK — new route from Campaign 6 delta, confirms 32d6a8f deployed |
+| `/api/v1/hs-codes/` | PASS | 200 OK — new route confirmed |
+| `/api/v1/carriers-config/` | PASS | 200 OK — new route confirmed |
+| `/api/v1/vat-config/` | PASS | 200 OK — new route confirmed |
+| `/api/v1/customer-master/` | PASS | 200 OK |
+| `/api/v1/wfirma/capabilities` | PASS | 200 OK |
+| Invoice gate (POST) | PASS | `{"ok":false,"status":"blocked","blocking_reasons":["WFIRMA_CREATE_INVOICE_ALLOWED=false"]}` |
+| PZ regression (Mac) | PASS | 244/244 (baseline 160) |
+| Carrier suite (Mac) | PASS | 381 passed (baseline 366) |
+| Cloudflare cache | PASS | `cf-cache-status: DYNAMIC` — no stale cache |
+
+## Post-deploy runtime probes (locked 2026-05-19, all future deploys)
+
+Operator locked these 3 additional probes for every future deploy validation phase:
+1. `Invoke-WebRequest http://127.0.0.1:47213/api/v1/proforma/service-products` — confirms router mount + import graph health
+2. `pip show xlrd` (post-install, pre-restart) — dependency presence check
+3. `Get-Process python | Select Id,CPU,WS,StartTime` (post-restart) — orphan / restart-loop check
 
 ## Registry
 - **2026-05-13** — Project registry healthy with 15 project agents at `.claude/agents/` (includes `gap-hunter`, `adr-historian`, `agent-performance-observer`, `flow-context-keeper`). Global registry at `~/.claude/agents/` has 54 agents. Total reachable agents in session: 79 (incl. plugin + built-in). No naming collisions.
@@ -253,6 +273,10 @@ Campaign 6 executed on 2026-05-19. Branch: `chore/wave2-patch4-batch-condensatio
 - **2026-05-13T16:00Z (Lesson D closure)** — Scorecard written: `.claude/memory/scorecards/2026-05-13-lesson-d-closure.md` — RULE 2 auto-fire for PR #77. 3 agents scored (system-architect, final-consistency-review, deploy_release_manager). All issues resolved pre-commit. **Total scorecards on disk: 8**.
 - **2026-05-13** — Engineering lessons file: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch), Lesson B (mid-session registry refresh non-determinism), Lesson C (orchestrator scorecard verification), **Lesson D (LOCAL-COMMIT-ONLY deploy disclosure + reconciliation — CODIFIED 2026-05-13 via PR #76)** are all binding rules.
 - **2026-05-13** — Scorecard ON DISK but previously uncited (retroactive RULE 6 registration 2026-05-18): `.claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` — P2 ignition switch model C analysis. File confirmed on disk. GATE 4 disposition: **ACCEPTED GAP** — file is valid; omission from prior RULE 6 citations was an oversight (not a Lesson C silent-loss event). No retroactive action required beyond this citation.
+
+## Campaign 8 scorecard (appended 2026-05-19, RULE 2 auto-fire)
+
+- **2026-05-19** — Scorecard written: `.claude/memory/scorecards/2026-05-19-campaign8-production-deploy.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). 7 inline deploy agents scored. EXEMPLARY: deploy_persistence_storage_reviewer (29/35), deploy_qa_reviewer (30/35). ACCEPTABLE: deploy_lead_coordinator (23/35), deploy_git_diff_reviewer (24/35), deploy_backend_impact_reviewer (22/35), deploy_security_reviewer (22/35), deploy_release_manager (21/35). Campaign aggregate: 171/245 (69.8%) ACCEPTABLE. File confirmed on disk: 11,321 bytes (Lesson C verified). **Total confirmed scorecards on disk: 11.** GATE 4 dispositions: (1) validation script route path error → SCHEDULED (update script), (2) V1/V2/V3 Windows-local commits → SCHEDULED (Lesson D reconciliation PR), (3) inline gate mode → ISSUE (structural limitation, known, disclosed).
 
 ## Campaign 6 scorecard (appended 2026-05-19, RULE 2 auto-fire)
 
@@ -407,9 +431,12 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Windows deploy** — origin/main is now `97672c1` (Campaigns 4+5+6 fully pushed). Run on Windows: `nssm stop PZService && git pull --ff-only origin main && nssm start PZService`. Run deploy smoke (health, PZ regression 160/160, test suite 9,496+). Rollback: `git reset --hard 4c797e4`. Note: Windows prod is at `4c797e4` (Wave 1); this is a catch-up of 12+ commits. Gating: 7-agent deploy gate must run before pulling (CLAUDE.md "Production deployment rule"). Reconciliation of `4c797e4` local-commit: closed by PR #77 (see FACTS).
-2. **P2 live promotion** — after Tejal reviews shadow corpus: set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` in Windows .env ONLY. **DO NOT** set `P2_SHADOW_MODE=false` — FORBIDDEN by ADR-018. Live state = shadow=True + live_enabled=True. No code changes needed. Gating: Windows deploy complete + Tejal shadow corpus sign-off.
-3. **Fracht + Ubezpieczenie wFirma service IDs** — create goods in wFirma UI to get real numeric service IDs. Current IDs in code are hardcoded placeholders. Gating: operator action (wFirma UI).
+1. **V1/V2/V3 reconciliation PR** — Windows production HEAD is `7392be1` (3 local commits above `32d6a8f` not on GitHub). Per Lesson D: operator must push V1/V2/V3 to GitHub or confirm content, then open reconciliation PR before next `git pull --ff-only origin main`. Gating: operator action (Windows → GitHub push).
+2. **P2 live promotion** — after Tejal reviews shadow corpus: set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` in Windows .env ONLY. **DO NOT** set `P2_SHADOW_MODE=false` — FORBIDDEN by ADR-018. Live state = shadow=True + live_enabled=True. No code changes needed. Gating: Windows deploy healthy (done) + Tejal shadow corpus sign-off.
+3. **Fracht + Ubezpieczenie wFirma service IDs** — verify IDs 13002743 (freight/FedEx Courier) and 13102217 (insurance) exist in production wFirma account. Gating: operator action (wFirma UI → Towary → search each ID).
+
+## Completed actions (Campaign 8, 2026-05-19)
+- ~~**Windows deploy**~~ — **DONE 2026-05-19**: Campaign 8 deploy complete. Windows HEAD = `7392be1` (32d6a8f + V1/V2/V3). All smoke checks PASS. See "Campaign 8 deploy smoke results" above. Deployment maturity: standard sequence — future static/UI changes are routine, not campaigns. Operational stance: ops/perf/UX only.
 
 ## Completed actions (Campaign 6, 2026-05-19)
 - ~~**Push Campaign 6 local main and open PR**~~ — **DONE 2026-05-19**: all 12 commits (f6ba91b..97672c1) pushed directly to origin/main. origin/main HEAD = `97672c1`. Direct-to-main flow (no feature branch PR). Test baseline: 160/160 golden PASS, 9,496 tests collected (3 network test files excluded + 1 pre-existing stale assertion deselected), exit code 0.
@@ -432,11 +459,12 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 # OPEN QUESTIONS
 
-## Campaign 6 open questions (added 2026-05-19)
+## Campaign 8 / post-deploy open questions (added 2026-05-19)
 
-- **P2 live promotion: when does operator set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` in Windows .env?** Answerer: operator (after Tejal shadow corpus review). Impact: gates P2 live promotion from shadow-only to live dispatch. No code change required — config only.
-- **Windows deploy: 12 local-only commits need to be pushed to origin/main first.** Sequence required: open PR from local main → 7-agent gate → merge → `nssm stop PZService && git pull --ff-only origin main && nssm start PZService`. Answerer: operator (timing). Impact: production is running `4c797e4`; all Campaign 4/5/6 hardening is local-only.
-- **Fracht + Ubezpieczenie wFirma service IDs must be created in wFirma UI.** Current IDs in code are hardcoded placeholders. Answerer: operator (wFirma UI action required). Impact: proforma service charge line items will fail if IDs are wrong when live invoices are created.
+- **V1/V2/V3 content unknown from Mac:** What are the 3 Windows-local commits (V1/V2/V3) that make up `7392be1`? Answerer: operator (must push to GitHub or describe content). Impact: until known, cannot assess whether any V1/V2/V3 code needs review or whether they carry governance risk. Lesson D JSONL entry records this obligation.
+- **P2 live promotion: when does operator set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` in Windows .env?** Answerer: operator (after Tejal shadow corpus review). Impact: gates P2 live promotion from shadow-only to live dispatch. No code change required — config only. Gating: deploy now healthy (7392be1).
+- **Fracht + Ubezpieczenie wFirma service IDs must be verified in wFirma UI.** IDs in question: 13002743 (freight/FedEx Courier), 13102217 (insurance). Answerer: operator (wFirma UI → Towary). Impact: proforma service charge line items will fail if IDs are wrong when live invoices are created.
+- ~~**Windows deploy: 12 local-only commits need to be pushed to origin/main first.**~~ — **RESOLVED 2026-05-19**: Campaign 8 deploy complete. Windows HEAD = `7392be1`.
 
 ## Wave 2 open questions (added 2026-05-13T12:30Z)
 

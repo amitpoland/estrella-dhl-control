@@ -2207,6 +2207,7 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
       insurance_min_amount:       cm.insurance_min_amount       != null ? String(cm.insurance_min_amount)       : '',
       insurance_min_override:     cm.insurance_min_override     != null ? String(cm.insurance_min_override)     : '',
       preferred_proforma_series_id: cm.preferred_proforma_series_id || '',
+      preferred_payment_method: cm.preferred_payment_method || '',
       preferred_invoice_series_id:  cm.preferred_invoice_series_id  || '',
       vat_mode:                   cm.vat_mode != null ? String(cm.vat_mode) : '',
     };
@@ -2383,6 +2384,7 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                           // Phase MasterData-2 fix: these were missing from CM_OPT_STR,
                           // causing empty-string values to reach the backend un-nullified.
                           'preferred_proforma_series_id','preferred_invoice_series_id',
+                          'preferred_payment_method',
                           'default_language_id','default_currency',
                           // System round-trip fields — not operator-editable, sent back unchanged
                           // so upsert_customer's direct SET doesn't wipe them.
@@ -3362,6 +3364,20 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                     value={form.payment_terms_days || ''}
                     onChange={e => setField('payment_terms_days', e.target.value)}
                     placeholder="e.g. 30" style={inputStyle} />
+                </label>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Preferred payment method</span>
+                  <select data-testid="kyc-payment-method"
+                    value={form.preferred_payment_method || ''}
+                    onChange={e => setField('preferred_payment_method', e.target.value)}
+                    style={inputStyle}>
+                    <option value=''>wFirma default</option>
+                    <option value='transfer'>Transfer (przelew)</option>
+                    <option value='cash'>Cash (gotówka)</option>
+                    <option value='card'>Card (karta)</option>
+                    <option value='compensation'>Compensation (kompensata)</option>
+                    <option value='other'>Other (omit from XML)</option>
+                  </select>
                 </label>
                 <label style={labelStyle}>
                   <span style={labelTextStyle}>Default currency</span>

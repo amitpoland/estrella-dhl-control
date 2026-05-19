@@ -76,6 +76,7 @@ def _customer_to_dict(c: CustomerMaster) -> Dict[str, Any]:
         "default_language_id":           c.default_language_id,
         "preferred_proforma_series_id":  c.preferred_proforma_series_id,
         "preferred_invoice_series_id":   c.preferred_invoice_series_id,
+        "preferred_payment_method":      c.preferred_payment_method,
         "vat_mode":                      c.vat_mode,
         # Freight
         "freight_service_id":            c.freight_service_id,
@@ -195,6 +196,12 @@ _OPTIONAL_STR_FIELDS = frozenset({
     # no '' → None coercion; route it through here so an operator clearing
     # the field saves NULL rather than the empty string.
     "default_currency",
+    # Ship-to address fields — blank UI input must become NULL, not "".
+    "ship_to_name", "ship_to_person", "ship_to_street",
+    "ship_to_city", "ship_to_zip", "ship_to_country",
+    "ship_to_phone", "ship_to_email",
+    # Invoice/payment defaults
+    "preferred_payment_method",
 })
 
 

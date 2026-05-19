@@ -72,6 +72,7 @@ class CustomerMaster:
     default_language_id:           Optional[str] = None      # wFirma translation_language_id
     preferred_proforma_series_id:  Optional[str] = None      # wFirma series id for proformas
     preferred_invoice_series_id:   Optional[str] = None      # wFirma series id for final invoices
+    preferred_payment_method:      Optional[str] = None      # wFirma payment method: transfer|cash|card|compensation|other
     vat_mode:                      Optional[int] = None      # 222 | 228 | 229
 
     # Freight defaults
@@ -286,6 +287,7 @@ def init_db(db_path: Path) -> None:
                 default_language_id            TEXT,
                 preferred_proforma_series_id   TEXT,
                 preferred_invoice_series_id    TEXT,
+                preferred_payment_method       TEXT,
                 vat_mode                       INTEGER,
 
                 freight_service_id        TEXT DEFAULT '13002743',
@@ -386,6 +388,8 @@ def init_db(db_path: Path) -> None:
             ("client_type",               "TEXT"),
             ("industry",                  "TEXT"),
             ("eori",                      "TEXT"),
+            # B2a — wFirma payment method default
+            ("preferred_payment_method",  "TEXT"),
         ])
 
 
@@ -456,6 +460,7 @@ def _row_to_customer(row: sqlite3.Row) -> CustomerMaster:
         default_language_id           = row["default_language_id"],
         preferred_proforma_series_id  = _row_get(row, "preferred_proforma_series_id"),
         preferred_invoice_series_id   = _row_get(row, "preferred_invoice_series_id"),
+        preferred_payment_method      = _row_get(row, "preferred_payment_method"),
         vat_mode                      = _row_get(row, "vat_mode"),
         freight_service_id            = _row_get(row, "freight_service_id", "13002743"),
         freight_last_amount           = _str_to_dec(_row_get(row, "freight_last_amount")),
@@ -566,6 +571,7 @@ def upsert_customer(db_path: Path, c: CustomerMaster) -> int:
         "default_language_id":          c.default_language_id,
         "preferred_proforma_series_id": c.preferred_proforma_series_id,
         "preferred_invoice_series_id":  c.preferred_invoice_series_id,
+        "preferred_payment_method":     c.preferred_payment_method,
         "vat_mode":                     int(c.vat_mode) if c.vat_mode is not None else None,
         "freight_service_id":           c.freight_service_id,
         "freight_last_amount":          _dec_to_str(c.freight_last_amount),
