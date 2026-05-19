@@ -214,62 +214,43 @@ def test_no_redundant_branch_between_documents_and_timeline(html):
     )
 
 
-# ── No backend reference for boundary class itself ──────────────────────────
+# ── Temporary diagnostics removed (post-fix cleanup) ────────────────────────
+# All build markers and activeTab banners that were added during the
+# DHL/Customs white-screen investigation have been removed now that the
+# root cause (Rules of Hooks violation in branch #1's orchestrator IIFE)
+# is fixed.  These tests assert the cleanup is complete and guard against
+# re-introduction.
 
-def test_diagnostic_v2_build_marker_present(html):
-    """Top-of-page build marker rendered as first child of BatchDetailPage
-    render output.  Visible immediately on page load, regardless of tab
-    state or scroll position."""
-    assert 'data-testid="shipment-detail-build-marker"' in html
-    assert "SHIPMENT DETAIL BUILD diagnostic-v2" in html
+DIAGNOSTIC_MARKERS_REMOVED = (
+    "shipment-detail-build-marker",
+    "SHIPMENT DETAIL BUILD diagnostic-v2",
+    "active-tab-diagnostic-v2",
+    "active-tab-diagnostic-v2-raw",
+    "active-tab-diagnostic-v2-json",
+    "active-tab-diagnostic-v2-match",
+    "active-tab-diagnostic",
+    "active-tab-diagnostic-raw",
+    "active-tab-diagnostic-json",
+    "active-tab-diagnostic-match",
+    "diagnostic-v2",
+    "diagnostic·activeTab",
+    "DIAGNOSTIC v1",
+    "DIAGNOSTIC v2",
+    "dhl-customs-render-mounted",
+    "dhl-customs-render-mounted-v2",
+    "detail-tab-dhl-customs-minimal",
+    "DHL TAB LIVE",
+    "binary-isolation",
+)
 
 
-def test_diagnostic_v2_active_tab_banner_outside_tab_branches(html):
-    """Always-visible activeTab diagnostic must be OUTSIDE every
-    `activeTab === '…'` conditional — i.e. it renders regardless of
-    which tab is active."""
-    assert 'data-testid="active-tab-diagnostic-v2"' in html
-    assert 'data-testid="active-tab-diagnostic-v2-raw"' in html
-    assert 'data-testid="active-tab-diagnostic-v2-json"' in html
-    assert 'data-testid="active-tab-diagnostic-v2-match"' in html
-
-    # Verify the v2 banner is OUTSIDE every tab branch (not contained
-    # inside any `{activeTab === '…' && …}` block).
-    v2_pos = html.find('data-testid="active-tab-diagnostic-v2"')
-    assert v2_pos > 0
-    # Walk back from v2_pos and find the most recent `activeTab === '`.
-    # If it appears AFTER the most recent unmatched `&&` opener that
-    # contains v2, the banner would be inside that branch.  Simpler
-    # invariant: confirm v2 sits BEFORE the first `{activeTab === '` in
-    # the file (so it precedes ALL tab branches).
-    first_branch = html.find("{activeTab === '")
-    assert 0 < v2_pos < first_branch, (
-        "active-tab-diagnostic-v2 must appear BEFORE any tab branch "
-        f"(v2_pos={v2_pos}, first_branch={first_branch})"
+@pytest.mark.parametrize("marker", DIAGNOSTIC_MARKERS_REMOVED)
+def test_diagnostic_marker_removed(html, marker):
+    """Every temporary diagnostic marker added during the DHL/Customs
+    investigation must be absent from the cleaned production file."""
+    assert marker not in html, (
+        f"diagnostic marker {marker!r} still present in shipment-detail.html"
     )
-
-
-def test_v2_mount_marker_no_longer_present(html):
-    """The dhl-customs-render-mounted-v2 marker was inside the
-    redundant branch that has now been removed.  It is no longer
-    expected anywhere in the file."""
-    assert 'dhl-customs-render-mounted-v2' not in html
-
-
-def test_diagnostic_v1_active_tab_banner_present(html):
-    """Temporary diagnostic — operator-visible activeTab banner under
-    the tab strip.  Remove on next deploy unless operator approves
-    keeping it."""
-    assert 'data-testid="active-tab-diagnostic"' in html
-    assert 'data-testid="active-tab-diagnostic-raw"' in html
-    assert 'data-testid="active-tab-diagnostic-json"' in html
-    assert 'data-testid="active-tab-diagnostic-match"' in html
-
-
-def test_v1_mount_marker_no_longer_present(html):
-    """The redundant branch carrying the v1 marker has been removed."""
-    assert 'data-testid="dhl-customs-render-mounted"' not in html
-    assert 'data-testid="detail-tab-dhl-customs-minimal"' not in html
 
 
 def test_tab_label_and_render_branch_strings_identical():
