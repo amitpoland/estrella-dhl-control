@@ -948,28 +948,42 @@ def proforma_create(
             "exchange_rate":     preview.get("exchange_rate"),
         })
 
-    # ── 3a. Service-charge inclusion gate ───────────────────────────────
-    # Service charges (freight/insurance) need a wFirma service product
-    # to ride into the invoicecontent payload. Until that mapping is
-    # registered, block the create with an explicit reason — never
-    # silently drop them or auto-derive from import cost.
-    if (preview.get("service_charges") or []):
-        return JSONResponse({
-            "ok":               False,
-            "status":           "blocked",
-            "batch_id":         batch_id,
-            "client_name":      cn,
-            "blocking_reasons": [
-                "service charges present but wFirma service product mapping "
-                "not configured — register a freight/insurance service "
-                "product in wfirma_products and wire it into "
-                "_build_proforma_request before creating Proformas with "
-                "service charges",
-            ],
-            "currency":          preview.get("currency"),
-            "exchange_rate":     preview.get("exchange_rate"),
-            "service_charges":   preview.get("service_charges"),
-        })
+    # ── 3a. Service-charge snapshot (Phase 6D) ──────────────────────────
+    # Service charges are snapshotted into the draft at create time so
+    # the finance dual-write hook always sees the charges that were live
+    # when the operator confirmed the proforma.
+    #
+    # wFirma proforma CONTENT: charges are only included as line items
+    # when a wFirma service product mapping exists in wfirma_products.
+    # If no mapping is present the proforma is created without those
+    # lines (warn, don't block) — the snapshot still powers accounting.
+    _raw_service_charges: List[Dict[str, Any]] = preview.get("service_charges") or []
+    _service_charges_json_snapshot = json.dumps(
+        [{"charge_type": c.get("charge_type"), "amount": c.get("amount"),
+          "currency": c.get("currency"), "note": c.get("note") or ""}
+         for c in _raw_service_charges],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    _service_charges_wfirma_warning: Optional[str] = None
+    if _raw_service_charges:
+        # Check whether a service product mapping exists for any charge type.
+        # If not, note it in the response but do not block.
+        from ..services import wfirma_products_db as _wfdb
+        _sc_types = {(c.get("charge_type") or "").lower() for c in _raw_service_charges}
+        _unmapped = [
+            ct for ct in _sc_types
+            if _wfdb._db_path is None or not _wfdb.get_product(ct)
+        ]
+        if _unmapped:
+            _service_charges_wfirma_warning = (
+                f"service charges ({', '.join(sorted(_unmapped))}) snapshotted for "
+                "accounting but NOT included in wFirma proforma content — "
+                "register a service product mapping to include them as line items"
+            )
+            log.warning(
+                "[%s/%s] %s", batch_id, cn, _service_charges_wfirma_warning
+            )
 
     # ── 3. Settings gate — no live call when disabled ──────────────────────
     if not settings.wfirma_create_proforma_allowed:
@@ -998,16 +1012,35 @@ def proforma_create(
     source_lines_json = json.dumps(source_lines, ensure_ascii=False)
 
     if existing is not None and existing.status == "failed":
-        # Retry path — keep the same row, just record fresh source_lines.
+        # Retry path — keep the same row; refresh service_charges_json
+        # so a retry after charges were added picks up the current snapshot.
         draft = existing
+        if _raw_service_charges:
+            try:
+                pildb._commit_draft_update(
+                    _proforma_db_path(), draft.id,
+                    new_state           = draft.draft_state or "post_failed",
+                    new_service_charges = [
+                        {"charge_type": c.get("charge_type"),
+                         "amount":      c.get("amount"),
+                         "currency":    c.get("currency"),
+                         "note":        c.get("note") or ""}
+                        for c in _raw_service_charges
+                    ],
+                )
+                draft = pildb.get_draft_by_id(_proforma_db_path(), draft.id) or draft
+            except Exception as _sc_upd_exc:
+                log.warning("[%s/%s] retry service_charges update failed: %s",
+                            batch_id, cn, _sc_upd_exc)
     else:
         draft, _ = pildb.upsert_pending_draft(
             _proforma_db_path(),
-            batch_id          = batch_id,
-            client_name       = cn,
-            currency          = preview.get("currency", ""),
-            exchange_rate     = preview.get("exchange_rate"),
-            source_lines_json = source_lines_json,
+            batch_id              = batch_id,
+            client_name           = cn,
+            currency              = preview.get("currency", ""),
+            exchange_rate         = preview.get("exchange_rate"),
+            source_lines_json     = source_lines_json,
+            service_charges_json  = _service_charges_json_snapshot,
         )
 
     # ── 5. Live wFirma call (only path with external write) ────────────────
@@ -1154,16 +1187,21 @@ def proforma_create(
         log.warning("[%s] proforma_create audit append skipped: %s",
                     batch_id, _exc)
 
-    return JSONResponse({
+    _resp: Dict[str, Any] = {
         "ok":                  True,
         "status":              "issued",
         "batch_id":            batch_id,
         "client_name":         cn,
         "draft_id":            final.id if final else draft.id,
         "wfirma_proforma_id":  result.wfirma_invoice_id,
+        "wfirma_proforma_fullnumber": (final or draft).wfirma_proforma_fullnumber or "",
         "currency":            (final or draft).currency,
         "exchange_rate":       (final or draft).exchange_rate,
-    })
+        "service_charges_snapshotted": len(_raw_service_charges),
+    }
+    if _service_charges_wfirma_warning:
+        _resp["service_charges_note"] = _service_charges_wfirma_warning
+    return JSONResponse(_resp)
 
 
 # ── Cancel-issued-for-reissue ───────────────────────────────────────────────

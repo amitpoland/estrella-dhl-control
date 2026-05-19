@@ -716,13 +716,14 @@ def get_draft(
 
 
 def upsert_pending_draft(
-    db_path:           Path,
+    db_path:               Path,
     *,
-    batch_id:          str,
-    client_name:       str,
-    currency:          str,
-    exchange_rate:     Optional[float],
-    source_lines_json: str,
+    batch_id:              str,
+    client_name:           str,
+    currency:              str,
+    exchange_rate:         Optional[float],
+    source_lines_json:     str,
+    service_charges_json:  str = "[]",
 ) -> tuple:
     """
     Return (ProformaDraft, was_created).
@@ -735,7 +736,21 @@ def upsert_pending_draft(
     Two concurrent callers cannot both observe was_created=True; the loser
     re-fetches the winning row and returns was_created=False. Caller logic
     is symmetric — no IntegrityError ever escapes the helper.
+
+    Phase 6D: ``service_charges_json`` is snapshotted at create time so
+    that the finance dual-write hook (and any downstream renderer) always
+    reads the charges that were live when the operator confirmed the
+    proforma — not a later state.  Defaults to ``"[]"`` (backward-compat).
     """
+    # Validate / normalise the snapshot: must be a JSON-serialisable list.
+    try:
+        parsed = json.loads(service_charges_json or "[]")
+        if not isinstance(parsed, list):
+            parsed = []
+    except Exception:
+        parsed = []
+    sc_json = json.dumps(parsed, ensure_ascii=False, sort_keys=True)
+
     init_db(db_path)
     with sqlite3.connect(str(db_path), isolation_level="DEFERRED") as conn:
         conn.row_factory = sqlite3.Row
@@ -748,13 +763,14 @@ def upsert_pending_draft(
             """
             INSERT INTO proforma_drafts
                 (batch_id, client_name, status, currency, exchange_rate,
-                 source_lines_json, wfirma_proforma_id, notes,
+                 source_lines_json, service_charges_json,
+                 wfirma_proforma_id, notes,
                  created_at, updated_at)
-            VALUES (?, ?, 'pending_local', ?, ?, ?, NULL, NULL, ?, ?)
+            VALUES (?, ?, 'pending_local', ?, ?, ?, ?, NULL, NULL, ?, ?)
             ON CONFLICT(batch_id, client_name) DO NOTHING
             """,
             (str(batch_id), str(client_name), str(currency or ""),
-             exchange_rate, source_lines_json, now, now),
+             exchange_rate, source_lines_json, sc_json, now, now),
         )
         # changes() reports the number of rows modified by the LAST statement
         # on this connection — survives the race because each connection has
