@@ -1,7 +1,7 @@
 # Incident Registry
 # Compact entries for known production/governance incidents.
 # Append-only. Never rewrite historical entries.
-# Updated: 2026-05-19
+# Updated: 2026-05-19 (INC-005 added)
 
 ---
 
@@ -80,3 +80,24 @@
 5. Environment isolation (explicit `ENV=production` guard — never inferred)
 
 **Status**: CONTAINED — plist disabled at `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabled`.
+
+---
+
+## INC-005 — Build Reply Package HTTP 422 missing awb (2026-05-19)
+
+**Root cause**: `shipment-detail.html` Build DHL Reply Package button sent `{ batch_id }` only. `EmailPackageRequest` requires `awb` as required field. `batch.html` callers already sent both fields. Incomplete migration.
+
+**Forbidden patterns**:
+- Calling `POST /api/v1/dsk/email-package` without `awb` field
+- Making `awb` optional in `EmailPackageRequest` as a "compatibility" patch
+- Inconsistent payload between `batch.html` and `shipment-detail.html` callers
+
+**Detection**: HTTP 422 "Missing required field: awb". Payload: `{ "batch_id": "SHIPMENT_..." }` without `awb`.
+
+**Prevention**:
+- Use `awb: trackingNo || batchId` (matches Generate DSK / Repair DSK button pattern)
+- `trackingNo = audit.tracking_no` is always in scope in `BatchDetailPage`
+- Source-grep test `test_shipment_detail_html_build_reply_passes_awb` (C08) guards regression
+
+**Fix**: PR #231 — 1-line `shipment-detail.html` change + 11 contract tests.
+**Status**: RESOLVED — merged 2026-05-19T20:32Z.
