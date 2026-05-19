@@ -47,15 +47,19 @@ def test_dhl_customs_tab_has_render_branch(html):
     )
 
 
-def test_dhl_customs_render_branch_wrapped_in_boundary(html):
-    """The new DHL/Customs branch must be wrapped in TabErrorBoundary
-    so any future render crash inside it stays contained."""
+def test_dhl_customs_render_branch_not_wrapped_during_minimization(html):
+    """During structural minimization the TabErrorBoundary wrap is
+    INTENTIONALLY removed so we can determine whether the boundary
+    itself was the issue (it failed to catch the original crash).
+    Once the offending block is identified, the boundary returns and
+    this test flips back to the wrap-required form."""
     pattern = re.compile(
         r"activeTab\s*===\s*['\"]DHL / Customs['\"]\s*&&\s*\(\s*<TabErrorBoundary>",
         re.DOTALL,
     )
-    assert pattern.search(html), (
-        "DHL / Customs render branch must open with <TabErrorBoundary>"
+    assert not pattern.search(html), (
+        "DHL / Customs branch must NOT be wrapped in TabErrorBoundary "
+        "during the structural minimization diagnostic"
     )
 
 
@@ -98,29 +102,39 @@ def test_fallback_instruction_text(html):
     assert "Refresh the page or contact support with the browser console error." in html
 
 
-# ── New DHL/Customs panel content + test-ids ────────────────────────────────
+# ── DHL/Customs panel — STRUCTURAL MINIMIZATION (active diagnosis) ──────────
+# The full DHL/Customs panel was reduced to a single inert <div> while we
+# isolate why the original content white-screened the React subtree
+# without firing the TabErrorBoundary fallback.  These tests document
+# the current minimal contract; once the binary-search reintroduction
+# finds the offending block, the full panel returns and these tests
+# are restored to the richer state-set version.
 
-def test_dhl_customs_panel_test_id_present(html):
-    assert 'data-testid="detail-tab-dhl-customs"' in html
-
-
-def test_dhl_customs_panel_states_present(html):
-    """Loading / error / empty / data states each carry a distinct test-id
-    so smoke tests can assert which branch rendered."""
-    for tid in (
-        "detail-dhl-customs-loading",
-        "detail-dhl-customs-error",
-        "detail-dhl-customs-empty",
-        "detail-dhl-customs-readiness",
-    ):
-        assert f'data-testid="{tid}"' in html, f"missing test-id {tid!r}"
+def test_dhl_customs_minimal_panel_test_id_present(html):
+    assert 'data-testid="detail-tab-dhl-customs-minimal"' in html
 
 
-def test_dhl_customs_panel_has_navigation_hint(html):
-    """Operator should be told where the actionable surfaces live (the
-    main dashboard's DHL/Customs and Documents pages) — this panel is
-    read-only."""
-    assert 'data-testid="detail-dhl-customs-nav-hint"' in html
+def test_dhl_customs_minimal_panel_renders_inert_marker(html):
+    assert "DHL TAB LIVE" in html
+
+
+def test_dhl_customs_minimal_panel_uses_no_external_components(html):
+    """During minimization the branch must reference NO external React
+    components — no <Card>, no <SectionHeader>, no <TabErrorBoundary>,
+    no IIFE.  This guarantees that if the white screen still happens
+    with the minimized branch, the cause is the conditional / parent /
+    ancestor — NOT the panel content."""
+    # Slice between the conditional opener and its closer
+    start = html.find("{activeTab === 'DHL / Customs' && (")
+    assert start > 0
+    next_branch = html.find("{activeTab === 'Timeline' &&", start)
+    assert next_branch > start
+    block = html[start:next_branch]
+    forbidden = ("<Card", "<SectionHeader", "<TabErrorBoundary", "(() =>", ".map(")
+    leaked = [token for token in forbidden if token in block]
+    assert not leaked, (
+        f"minimal DHL/Customs branch contains external refs: {leaked}"
+    )
 
 
 # ── Scope discipline: other tabs NOT wrapped ────────────────────────────────
@@ -201,19 +215,19 @@ def test_diagnostic_v2_active_tab_banner_outside_tab_branches(html):
     )
 
 
-def test_diagnostic_v2_dhl_customs_branch_marker_present(html):
-    """Inside the DHL/Customs render branch, an always-rendered marker
-    (not gated by loading/error/data state) confirms the conditional
-    fired and the subtree mounted."""
-    assert 'data-testid="dhl-customs-render-mounted-v2"' in html
-    assert "DHL CUSTOMS BRANCH IS ACTIVE — diagnostic-v2" in html
-    # Marker must sit inside the DHL/Customs && ( ... ) block.
+def test_diagnostic_v2_dhl_customs_branch_marker_replaced_by_minimization(html):
+    """The dhl-customs-render-mounted-v2 marker (and the boundary it
+    was inside) were removed as part of the structural-minimization
+    diagnostic.  The minimal `<div>DHL TAB LIVE</div>` replaces the
+    entire subtree.  When the offending block is found, the boundary
+    + this marker return and this test flips back."""
     branch_start = html.find("{activeTab === 'DHL / Customs' && (")
-    marker_pos = html.find('data-testid="dhl-customs-render-mounted-v2"')
     next_branch = html.find("{activeTab === '", branch_start + 5)
-    assert branch_start > 0 < marker_pos
-    assert branch_start < marker_pos < next_branch, (
-        "DHL/Customs marker must be INSIDE the DHL/Customs render branch"
+    assert 0 < branch_start < next_branch
+    block = html[branch_start:next_branch]
+    assert 'dhl-customs-render-mounted-v2' not in block, (
+        "during minimization the v2 mount marker must not be inside "
+        "the DHL/Customs branch (it lived inside the removed full panel)"
     )
 
 
@@ -227,12 +241,13 @@ def test_diagnostic_v1_active_tab_banner_present(html):
     assert 'data-testid="active-tab-diagnostic-match"' in html
 
 
-def test_diagnostic_v1_dhl_customs_mount_marker_present(html):
-    """Temporary diagnostic — always-rendered marker inside the
-    DHL/Customs render branch (not gated by data states) so operator
-    can confirm the conditional fires.  Upgraded to v2 wording —
-    same test-id family, new label."""
-    assert 'data-testid="dhl-customs-render-mounted-v2"' in html
+def test_diagnostic_v1_dhl_customs_mount_marker_replaced_by_minimization(html):
+    """The v1/v2 mount marker was inside the now-removed full panel.
+    Structural minimization replaces it with the inert
+    'DHL TAB LIVE' div.  Same intent (prove branch fired) — different
+    test-id family."""
+    assert "DHL TAB LIVE" in html
+    assert 'data-testid="detail-tab-dhl-customs-minimal"' in html
 
 
 def test_tab_label_and_render_branch_strings_identical():

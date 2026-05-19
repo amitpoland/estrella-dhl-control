@@ -4589,86 +4589,31 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
             already loads — no new fetches, no new endpoints, no new
             backend dependency.  Wrapped in TabErrorBoundary as the
             safety-net layer mirroring dashboard.html. */}
+        {/* STRUCTURAL MINIMIZATION (operator request).
+            The full DHL/Customs panel previously whitescreened the entire
+            React subtree without firing the TabErrorBoundary fallback —
+            indicating the crash happened during render BEFORE the
+            boundary's children mounted (a class likely came up undefined,
+            an IIFE evaluated against a non-array, or a similar
+            commit-phase failure that boundaries cannot catch).
+
+            This branch is now reduced to a single inert <div> with no
+            external component references (no <Card>, no <SectionHeader>,
+            no IIFE, no .map, no useEffect interaction).  If the white
+            screen clears with this minimal version, the original
+            content was the cause and the binary-search reintroduction
+            begins.  If the white screen persists even with this trivial
+            content, the conditional itself or an ancestor branch is
+            the culprit. */}
         {activeTab === 'DHL / Customs' && (
-          <TabErrorBoundary>
-            <div data-testid="detail-tab-dhl-customs" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {/* DIAGNOSTIC v2 — proves render-branch was entered.
-                  Always rendered when activeTab === 'DHL / Customs'
-                  (not gated by loading/error/data states). */}
-              <div data-testid="dhl-customs-render-mounted-v2"
-                   style={{ padding: '6px 12px', background: 'var(--badge-green-bg)',
-                            color: 'var(--badge-green-text)',
-                            border: '1px solid var(--badge-green-border)',
-                            borderRadius: 4,
-                            fontSize: 11, fontFamily: 'monospace', fontWeight: 700,
-                            letterSpacing: '0.04em' }}>
-                DHL CUSTOMS BRANCH IS ACTIVE — diagnostic-v2
-              </div>
-              <Card style={{ padding: 16 }}>
-                <SectionHeader icon="📨" title="DHL / Customs"
-                  subtitle="Clearance readiness snapshot — derived from existing batch audit and dhlReadiness fetch (read-only)" />
-                {dhlReadinessLoading && (
-                  <div data-testid="detail-dhl-customs-loading"
-                       style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}>
-                    ⟳ Loading DHL readiness…
-                  </div>
-                )}
-                {!!dhlReadinessError && (
-                  <div data-testid="detail-dhl-customs-error"
-                       style={{ fontSize: 12, color: '#991b1b', padding: '8px 0' }}>
-                    ⚠ {String(dhlReadinessError)}
-                  </div>
-                )}
-                {!dhlReadinessLoading && !dhlReadinessError && !dhlReadiness && (
-                  <div data-testid="detail-dhl-customs-empty"
-                       style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}>
-                    No DHL readiness data available for this shipment.
-                  </div>
-                )}
-                {dhlReadiness && (
-                  <div data-testid="detail-dhl-customs-readiness" style={{ marginTop: 8 }}>
-                    {(() => {
-                      // Pure-render summary.  Walks only known scalar
-                      // fields with defensive defaults.  No .map/.filter
-                      // on possibly-undefined arrays; no destructure
-                      // without guards.
-                      const dr = dhlReadiness || {};
-                      const rows = [
-                        ['DHL Status',            dr.dhl_status || '—'],
-                        ['DHL Email Received',    dr.dhl_email_received ? 'yes' : 'no'],
-                        ['Reply Package Status',  dr.reply_package_status || '—'],
-                        ['DSK Docs Received',     dr.dsk_docs_received ? 'yes' : 'no'],
-                        ['Agency Forwarded',      dr.agency_forwarded ? 'yes' : 'no'],
-                        ['SAD Received',          dr.sad_received ? 'yes' : 'no'],
-                        ['Customs Cleared',       (dr.dhl_status === 'customs_cleared') ? 'yes' : 'no'],
-                      ];
-                      return (
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                          <tbody>
-                            {rows.map(([label, value]) => (
-                              <tr key={label} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                                <td style={{ padding: '6px 10px', color: 'var(--text-2)', width: '40%' }}>{label}</td>
-                                <td style={{ padding: '6px 10px', color: 'var(--text)', fontFamily: 'monospace' }}>{value}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      );
-                    })()}
-                  </div>
-                )}
-              </Card>
-              <Card style={{ padding: 16 }}>
-                <SectionHeader icon="ℹ" title="Where to take action"
-                  subtitle="Full DHL/Customs workflow surfaces live on the dashboard DHL/Customs and Documents pages." />
-                <div data-testid="detail-dhl-customs-nav-hint" style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6 }}>
-                  Operator actions (scan inbox, build reply package, upload SAD/ZC429) are reached from the cross-batch
-                  <strong> DHL Clearance</strong> and <strong> Customs Documents</strong> pages on the main dashboard.
-                  This panel shows only the read-only readiness snapshot for the current shipment.
-                </div>
-              </Card>
-            </div>
-          </TabErrorBoundary>
+          <div data-testid="detail-tab-dhl-customs-minimal"
+               style={{ padding: 16, background: 'var(--badge-green-bg)',
+                        color: 'var(--badge-green-text)',
+                        border: '1px solid var(--badge-green-border)',
+                        borderRadius: 4,
+                        fontSize: 14, fontFamily: 'monospace', fontWeight: 700 }}>
+            DHL TAB LIVE
+          </div>
         )}
 
         {/* ── TIMELINE TAB ── */}
