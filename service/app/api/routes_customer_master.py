@@ -181,6 +181,15 @@ _OPTIONAL_STR_FIELDS = frozenset({
     "bill_to_street", "bill_to_city", "bill_to_postal_code",
     "bill_to_email", "bill_to_phone", "bill_to_mobile",
     "bank_account",
+    # Ship-to alternate-address fields — must be '' → None coerced so that
+    # clearing a previously-set alternate address persists as NULL rather
+    # than empty string (operator complaint 2026-05-19: ship-to clears
+    # round-trip as ""). ship_to_use_alternate is boolean (covered in
+    # _BOOL_FIELDS). ship_to_contractor_id is the wFirma receiver id and
+    # is allowed to be cleared by the operator.
+    "ship_to_name", "ship_to_person", "ship_to_street",
+    "ship_to_city", "ship_to_zip", "ship_to_country",
+    "ship_to_phone", "ship_to_email", "ship_to_contractor_id",
     "regon", "short_code", "client_type", "industry", "eori",
     # default_currency was already accepted via the dataclass field but had
     # no '' → None coercion; route it through here so an operator clearing
@@ -189,16 +198,48 @@ _OPTIONAL_STR_FIELDS = frozenset({
 })
 
 
-def _parse_body(contractor_id: str, body: Dict[str, Any]) -> CustomerMaster:
+def _parse_body(
+    contractor_id: str,
+    body: Dict[str, Any],
+    existing: Optional[CustomerMaster] = None,
+) -> CustomerMaster:
     """Coerce raw JSON body → CustomerMaster dataclass.
 
     - bill_to_contractor_id is always injected from the URL path (body value ignored).
     - audit fields (id, created_at, updated_at) are stripped.
     - insurance_enabled defaults to True if absent.
+    - Backward-compatibility hydration: when `existing` is supplied (partial
+      update of an already-stored customer), required identity fields
+      (bill_to_name, country) and any other field absent from the body are
+      hydrated from the existing record before construction.  This restores
+      legacy partial-PUT behaviour (e.g. the dashboard "Edit freight &
+      insurance" modal which only sends freight/insurance keys) without
+      relaxing the dataclass contract introduced by Campaign 5/6.
     Raises HTTPException 422 on type conversion failures.
     """
     body = dict(body)
     body["bill_to_contractor_id"] = contractor_id
+
+    # ── Compatibility hydration ──────────────────────────────────────────────
+    # If the customer already exists, fill in any field the caller did not
+    # send from the stored record.  This makes PUT behave as PATCH for
+    # already-known customers, which is what every legacy edit modal expects.
+    if existing is not None:
+        from dataclasses import fields as _dc_fields
+        for f in _dc_fields(CustomerMaster):
+            if f.name in ("id",):
+                continue
+            if f.name not in body or body[f.name] is None:
+                # Only hydrate when caller omitted the key or sent null.
+                # Never overwrite an explicit value the caller supplied.
+                if f.name not in body:
+                    body[f.name] = getattr(existing, f.name)
+                else:
+                    # body[f.name] is None — keep caller's intent for
+                    # optional fields, but for the two REQUIRED identity
+                    # fields fall back to existing so construction succeeds.
+                    if f.name in ("bill_to_name", "country"):
+                        body[f.name] = getattr(existing, f.name)
 
     # Decimal coercions — empty string is treated as None (not set) before parsing.
     for fname in _DECIMAL_FIELDS:
@@ -691,7 +732,19 @@ async def upsert_customer_endpoint(contractor_id: str, request: Request) -> JSON
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="Request body must be a JSON object")
 
-    customer = _parse_body(contractor_id, body)
+    # Fetch existing record (if any) so partial PUT payloads can be hydrated
+    # from stored state for required identity fields (bill_to_name, country).
+    # On first-create the lookup returns None and the dataclass contract is
+    # enforced unchanged — caller MUST supply bill_to_name + country.
+    try:
+        init_db(_DB_PATH)
+        existing = get_customer(_DB_PATH, contractor_id)
+    except Exception as exc:
+        log.error("get_customer pre-upsert failed contractor_id=%s: %s",
+                  contractor_id, exc, exc_info=True)
+        existing = None
+
+    customer = _parse_body(contractor_id, body, existing=existing)
 
     errs = validate(customer)
     if errs:

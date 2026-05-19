@@ -639,6 +639,64 @@ def test_api_put_payment_terms_empty_string_becomes_null(cm_api_client):
     assert data["payment_terms_days"] is None
 
 
+def test_api_put_ship_to_blank_strings_coerce_to_null(cm_api_client):
+    """Operator complaint 2026-05-19: clearing a previously-set ship_to_*
+    string field round-tripped as '' instead of NULL because ship_to_* keys
+    were missing from _OPTIONAL_STR_FIELDS.  This test pins the contract:
+    a PUT that sends '' for every ship_to_* string must yield JSON-null on
+    reload, not the empty string."""
+    # Seed with a populated alternate address.  Use the alternate-address
+    # shape (ship_to_use_alternate=True) WITHOUT a separate receiver id —
+    # validate() blocks setting both shapes simultaneously.
+    seed = cm_api_client.put(
+        "/api/v1/customer-master/SHIP_NULL_TEST",
+        json={
+            "bill_to_name":         "Ship Null Corp",
+            "country":              "PL",
+            "ship_to_use_alternate": True,
+            "ship_to_name":          "Alt Receiver Sp z o.o.",
+            "ship_to_person":        "Jan Kowalski",
+            "ship_to_street":        "ul. Testowa 1",
+            "ship_to_city":          "Warszawa",
+            "ship_to_zip":           "00-001",
+            "ship_to_country":       "PL",
+            "ship_to_phone":         "+48 22 000 0000",
+            "ship_to_email":         "alt@example.com",
+        },
+        headers=_cm_hdr(),
+    )
+    assert seed.status_code == 200, seed.text
+
+    # Operator clears every ship_to_* string via the modal.  These reach the
+    # backend as the empty string from the UI form inputs.  Backend MUST
+    # coerce them to NULL so the stored record matches the operator intent.
+    clear = cm_api_client.put(
+        "/api/v1/customer-master/SHIP_NULL_TEST",
+        json={
+            "ship_to_use_alternate": False,
+            "ship_to_name":          "",
+            "ship_to_person":        "",
+            "ship_to_street":        "",
+            "ship_to_city":          "",
+            "ship_to_zip":           "",
+            "ship_to_country":       "",
+            "ship_to_phone":         "",
+            "ship_to_email":         "",
+        },
+        headers=_cm_hdr(),
+    )
+    assert clear.status_code == 200, clear.text
+    data = clear.json()
+    for k in ("ship_to_name", "ship_to_person", "ship_to_street",
+              "ship_to_city", "ship_to_zip", "ship_to_country",
+              "ship_to_phone", "ship_to_email"):
+        assert data[k] is None, f"{k} must be null, got {data[k]!r}"
+    assert data["ship_to_use_alternate"] is False
+    # Identity fields preserved by Campaign 5/6 hydration (PR #227).
+    assert data["bill_to_name"] == "Ship Null Corp"
+    assert data["country"]      == "PL"
+
+
 def test_api_kyc_enum_validation_422(cm_api_client):
     """Invalid enum values must be rejected with 422."""
     r = cm_api_client.put(
