@@ -4,11 +4,39 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-19T(campaign9-commercial-completion)Z (RULE 3 auto-fire: Campaign 9 complete. PR #228 merged SHA 24382c3. origin/main updated. Windows deploy pending (7 files + pip tzdata). Governance hardening: deploy profile + orchestration router + gate output contract + incident registry + deploy delta manifest created. GATE 2: 0 open PRs. Prior: 2026-05-19T(campaign8-production-deploy)Z.
+**Last-run-at:** 2026-05-19T(master-campaign-unified-convergence)Z. Master campaign complete: PR #232 rebased onto origin/main (84f7064), ready to merge. INC-003 RESOLVED — PR #226 reconciled V1/V2/V3 onto origin/main; safe `git pull --ff-only` on Windows. Deploy manifest updated: 9-file delta for PR #228+#231+#232. DHL pipeline: SHADOW-OBSERVING-REAL-TRAFFIC, zero shadow corpus, P2 live promotion blocked (Tejal sign-off required). Origin/main HEAD: 5d8319d (PR #231). GATE 2: 1 open PR (#232). Prior: 2026-05-19T(campaign9-commercial-completion)Z.
 
 ---
 
 # FACTS
+
+## Master Campaign — Unified Operational Convergence (2026-05-19)
+
+- **Discovery**: Full system audit completed. DHL pipeline, commercial authority, contract normalization, deploy state, and Lapis shipment readiness all inspected.
+- **INC-003 RESOLVED** — V1/V2/V3 Windows-local commits reconciled via PR #226 (`integ/merge-windows-local-7392be1`, merged 2026-05-19T12:22:28Z). `7392be1` is on origin/main. `local-commit-deploys.jsonl` reconciliation entry appended. `incident_registry.md` status updated to RESOLVED. Windows `git pull --ff-only origin main` is now safe.
+- **PR #232 rebased** — `feat/commercial-draft-authority-ssot` cleanly rebased onto origin/main `5d8319d`. 2 commits, 5 files, 0 conflicts. Pushed and ready to merge. Test results: 232/232 pass.
+- **Deploy manifest updated** — `.claude/manifests/deploy_delta_pr228.md` now covers 9-file delta for PR #228 + #231 + #232 combined. Pre-deploy step changed to `git pull --ff-only origin main` (safe per INC-003 resolution).
+- **DHL pipeline state confirmed** (SHADOW-OBSERVING-REAL-TRAFFIC):
+  - `dhl_orch_enabled=False` (default) — orchestrator NOT running on dev. Production state unknown without Windows access.
+  - P2: `p2_shadow_mode=True`, `p2_live_enabled=False` — shadow infrastructure deployed, zero real dispatches observed on dev.
+  - No `orchestrator_decisions.jsonl` exists on dev — all test data only.
+  - **P2 live promotion: BLOCKED** — requires: 48h + 50 real dispatches + 10 distinct AWBs + Tejal sign-off. Zero corpus accumulated on dev.
+- **Commercial authority confirmed** — 6 authority layers mapped, 3 conflicts documented in `authority-graph-commercial-draft.md`. All canonical paths pinned by 10 AG contract tests. No duplicate authority.
+- **AWB contract normalization confirmed** — INC-005 RESOLVED (PR #231 merged). `shipment-detail.html` Build Reply Package now sends `awb` field. 11/11 contract tests pass.
+- **"Lapis" shipment**: No trace in local codebase or dev storage. This is a real production shipment on Windows. Cannot inspect from Mac dev. Windows deploy (see manifest) is the prerequisite for operational readiness on live shipments.
+- **GATE 2**: 1 open PR (#232). 2 deferred stubs (#10, #1) = implementation slot count 3/3.
+- **Scorecards**: 3 outstanding scorecards added to repo (Campaign 4, Campaign 6, Campaign 9).
+
+## Campaign 4 — Commercial Draft SSOT Refactor (2026-05-19)
+
+- **PR #232 open** — `feat/commercial-draft-authority-ssot` — GATE 2: currently 1 open PR
+- **Authority graph document created**: `service/docs/authority-graph-commercial-draft.md` — maps 6 authority layers (wfirma_customers, CustomerMaster, service_charges_db, commercial_profile, freight_resolver, shipping_addresses); documents 3 conflicts; defines hydration flow and future development rules
+- **`freight_resolver.py` — PRODUCTION ROUTE EXCLUSION comment added** — no production API route imports this module; canonical production path is `pick_freight(cm, draft_currency)` from `customer_master.py`
+- **`routes_proforma.py` — `_build_preview()` cross-validation** — `ship_to.cm_conflict` (non-blocking string, never in `blocking_reasons`) surfaces when `CustomerMaster.ship_to_contractor_id` ≠ `wfirma_customers.ship_to_wfirma_customer_id`; `cm_conflict` field NOT consumed by any UI (GATE 6 N/A — additive API field, zero UI blast radius)
+- **10 authority-graph contract tests (AG-01..AG-10)** — `test_authority_graph_commercial_draft.py` — all 10 pass; guard canonical freight/insurance/ship_to authority paths in CI
+- **Scorecard**: `.claude/memory/scorecards/2026-05-19-campaign4-commercial-draft-ssot.md` — EXEMPLARY: system-architect, testing-verification, git-workflow; ACCEPTABLE: all others; NEEDS-TUNING: none
+- **GATE 4 item (GATE 6 N/A ruling)**: Observer flagged `cm_conflict` UI consumption check. Confirmed: zero references in `shipment-detail.html` / `dashboard.html`. Frontend ignores unknown API keys. GATE 6 N/A documented here — no display behavior to verify.
+- **NOT done in this campaign** (intentional scope limits): sync `CustomerMaster.ship_to_contractor_id` → `wfirma_customers` (migration risk); remove CustomerMaster ship_to fields from UI (tests assert they exist for `onApplyCustomerDefaults`); fix test tool ship_to divergence (tool-only, not in CI)
 
 ## Campaign 9 — Commercial Completion (2026-05-19)
 

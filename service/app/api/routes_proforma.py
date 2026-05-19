@@ -652,6 +652,7 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     # the validation in _build_proforma_request).
     ship_to_mode = ""
     ship_to_receiver_id = ""
+    ship_to_cm_conflict: Optional[str] = None  # non-blocking warning
     if customer_match:
         cust_row = customer_resolution.get("customer") or {}
         ship_to_mode        = (cust_row.get("ship_to_mode")
@@ -673,6 +674,28 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
                     f"for {client_name!r} — separate_contractor requires a "
                     "DIFFERENT receiver"
                 )
+
+        # ── Cross-validation: CustomerMaster.ship_to_contractor_id vs
+        # wfirma_customers.ship_to_wfirma_customer_id (NON-BLOCKING).
+        # If CustomerMaster has a ship_to_contractor_id set AND it differs
+        # from what wfirma_customers records as the receiver, surface a
+        # warning so the operator knows which value actually drives the proforma.
+        # See: service/docs/authority-graph-commercial-draft.md — Conflict 1.
+        if bill_to_id:
+            try:
+                _cm_ship = get_customer_master(_customer_master_db_path(), bill_to_id)
+                if _cm_ship is not None:
+                    _cm_rcv = (_cm_ship.ship_to_contractor_id or "").strip()
+                    if _cm_rcv and _cm_rcv != ship_to_receiver_id:
+                        ship_to_cm_conflict = (
+                            f"CustomerMaster.ship_to_contractor_id={_cm_rcv!r} "
+                            f"differs from wfirma_customers.ship_to_wfirma_customer_id="
+                            f"{ship_to_receiver_id!r}. "
+                            "Proforma uses wfirma_customers value. "
+                            "Update via PATCH /api/v1/wfirma/customers/{name}/ship-to."
+                        )
+            except Exception:
+                pass  # never let cross-validation break the preview
 
     # ── Service charges (operator-entered freight / insurance) ─────────────
     # Loaded read-only here so the preview surfaces them before create.
@@ -758,9 +781,13 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         },
         # Ship-to (Odbiorca) state per Step 1 mapping. Surfaced read-only
         # so the operator UI can show the receiver routing before Create.
+        # cm_conflict is a non-blocking warning when CustomerMaster and
+        # wfirma_customers hold different ship-to contractor IDs. The proforma
+        # always uses wfirma_customers. See authority-graph-commercial-draft.md.
         "ship_to": {
             "mode":                       ship_to_mode or "same_as_bill_to",
             "ship_to_wfirma_customer_id": ship_to_receiver_id,
+            "cm_conflict":                ship_to_cm_conflict,
         },
         # Product registration readiness (Phase 2 — safe autonomous dry-run).
         # Reports which invoice-line product_codes are NOT yet registered in
