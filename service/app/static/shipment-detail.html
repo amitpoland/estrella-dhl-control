@@ -2970,6 +2970,27 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
       <div style={{ padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
+        {/* ── DIAGNOSTIC v1 — activeTab visibility (temporary) ──────────
+             Shows the current activeTab string verbatim + JSON to surface
+             any invisible-character / strict-equality bug that would
+             cause `activeTab === 'DHL / Customs'` to fail.  Always
+             visible.  No data fetch, no mutation.  Operator pastes the
+             contents back if a render-branch mismatch is suspected.
+             Remove on the next deploy unless operator approves keeping. */}
+        <div data-testid="active-tab-diagnostic"
+             style={{ padding: '6px 10px', background: 'var(--bg-subtle)',
+                      border: '1px dashed var(--border)', borderRadius: 4,
+                      fontSize: 11, fontFamily: 'monospace', color: 'var(--text-3)' }}>
+          <span style={{ fontWeight: 700, marginRight: 8 }}>diagnostic·activeTab:</span>
+          <span data-testid="active-tab-diagnostic-raw">{String(activeTab)}</span>
+          <span style={{ marginLeft: 12 }} data-testid="active-tab-diagnostic-json">
+            json={JSON.stringify(activeTab)} len={(activeTab || '').length}
+          </span>
+          <span style={{ marginLeft: 12 }} data-testid="active-tab-diagnostic-match">
+            === 'DHL / Customs' → {String(activeTab === 'DHL / Customs')}
+          </span>
+        </div>
+
         {/* ── Stale-cache banner — single source of truth for cache state.
              Download buttons live in the existing "Actions V2 → PZ /
              Accounting" section below; do not duplicate them here. ── */}
@@ -4531,6 +4552,13 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         {activeTab === 'DHL / Customs' && (
           <TabErrorBoundary>
             <div data-testid="detail-tab-dhl-customs" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {/* DIAGNOSTIC v1 — proves render-branch was entered. */}
+              <div data-testid="dhl-customs-render-mounted"
+                   style={{ padding: '4px 10px', background: 'var(--badge-green-bg)',
+                            color: 'var(--badge-green-text)', borderRadius: 4,
+                            fontSize: 10, fontFamily: 'monospace' }}>
+                diagnostic · DHL/Customs render branch mounted · build=v1
+              </div>
               <Card style={{ padding: 16 }}>
                 <SectionHeader icon="📨" title="DHL / Customs"
                   subtitle="Clearance readiness snapshot — derived from existing batch audit and dhlReadiness fetch (read-only)" />

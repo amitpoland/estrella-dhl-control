@@ -168,6 +168,47 @@ def test_no_new_apifetch_in_dhl_customs_render_branch(html):
 
 # ── No backend reference for boundary class itself ──────────────────────────
 
+def test_diagnostic_v1_active_tab_banner_present(html):
+    """Temporary diagnostic — operator-visible activeTab banner under
+    the tab strip.  Remove on next deploy unless operator approves
+    keeping it."""
+    assert 'data-testid="active-tab-diagnostic"' in html
+    assert 'data-testid="active-tab-diagnostic-raw"' in html
+    assert 'data-testid="active-tab-diagnostic-json"' in html
+    assert 'data-testid="active-tab-diagnostic-match"' in html
+
+
+def test_diagnostic_v1_dhl_customs_mount_marker_present(html):
+    """Temporary diagnostic — always-rendered marker inside the
+    DHL/Customs render branch (not gated by data states) so operator
+    can confirm the conditional fires."""
+    assert 'data-testid="dhl-customs-render-mounted"' in html
+
+
+def test_tab_label_and_render_branch_strings_identical():
+    """The exact tab label in DETAIL_TABS and the exact string in the
+    render branch conditional MUST be byte-identical.  Strict equality
+    fails on any whitespace or unicode variance."""
+    src = _DETAIL.read_text(encoding="utf-8")
+    # Pull tab label from DETAIL_TABS array
+    m1 = re.search(r"DETAIL_TABS\s*=\s*\[(.+?)\];", src, re.DOTALL)
+    assert m1, "DETAIL_TABS array not found"
+    assert "'DHL / Customs'" in m1.group(1), (
+        "DETAIL_TABS label changed; render branch may now mismatch"
+    )
+    # Pull render branch string
+    m2 = re.search(
+        r"\{activeTab\s*===\s*'(DHL / Customs)'\s*&&", src
+    )
+    assert m2, "render branch missing"
+    # Strict equality check (no Unicode lookalikes, no extra whitespace)
+    label_from_array = "DHL / Customs"
+    label_from_branch = m2.group(1)
+    assert label_from_array == label_from_branch, (
+        f"label mismatch: array={label_from_array!r} vs branch={label_from_branch!r}"
+    )
+
+
 def test_tab_error_boundary_isolated_to_frontend():
     """TabErrorBoundary must remain frontend-only — never appear in a
     backend .py module."""
