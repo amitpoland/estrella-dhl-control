@@ -4589,32 +4589,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
             already loads — no new fetches, no new endpoints, no new
             backend dependency.  Wrapped in TabErrorBoundary as the
             safety-net layer mirroring dashboard.html. */}
-        {/* STRUCTURAL MINIMIZATION (operator request).
-            The full DHL/Customs panel previously whitescreened the entire
-            React subtree without firing the TabErrorBoundary fallback —
-            indicating the crash happened during render BEFORE the
-            boundary's children mounted (a class likely came up undefined,
-            an IIFE evaluated against a non-array, or a similar
-            commit-phase failure that boundaries cannot catch).
-
-            This branch is now reduced to a single inert <div> with no
-            external component references (no <Card>, no <SectionHeader>,
-            no IIFE, no .map, no useEffect interaction).  If the white
-            screen clears with this minimal version, the original
-            content was the cause and the binary-search reintroduction
-            begins.  If the white screen persists even with this trivial
-            content, the conditional itself or an ancestor branch is
-            the culprit. */}
-        {activeTab === 'DHL / Customs' && (
-          <div data-testid="detail-tab-dhl-customs-minimal"
-               style={{ padding: 16, background: 'var(--badge-green-bg)',
-                        color: 'var(--badge-green-text)',
-                        border: '1px solid var(--badge-green-border)',
-                        borderRadius: 4,
-                        fontSize: 14, fontFamily: 'monospace', fontWeight: 700 }}>
-            DHL TAB LIVE
-          </div>
-        )}
+        {/* DHL / Customs render is OWNED by the two pre-existing
+            branches further down this file at:
+              - line ~6913 (Section 1 — Shipment & DHL Clearance)
+              - line ~8408 (DHL Customs Pipeline / readiness panel)
+            The earlier campaign that ADDED a render branch here did so
+            under the false premise that no branch existed — in fact
+            two did.  That redundant branch has been removed.  The
+            white-screen bug originates inside one of the two
+            pre-existing branches; locating which is the next
+            campaign's job. */}
 
         {/* ── TIMELINE TAB ── */}
         {activeTab === 'Timeline' && (

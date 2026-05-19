@@ -33,34 +33,34 @@ def test_detail_tabs_still_includes_dhl_customs(html):
     assert "'DHL / Customs'" in html, "DHL / Customs button removed from DETAIL_TABS"
 
 
-# ── Missing-render-block bug FIXED ──────────────────────────────────────────
+# ── Multi-branch DHL/Customs render — corrected understanding ──────────────
+# shipment-detail.html already contains two pre-existing render branches
+# for `activeTab === 'DHL / Customs'`: one at ~line 6913 ("Section 1 —
+# Shipment & DHL Clearance"), one at ~line 8408 ("DHL Customs Pipeline").
+# An earlier campaign added a third branch under the false premise that
+# no branch existed; that redundant branch has been removed.  The actual
+# white-screen bug originates inside one of the two pre-existing branches.
 
-def test_dhl_customs_tab_has_render_branch(html):
-    """The exact root cause of the black screen: a render branch must
-    now exist for activeTab === 'DHL / Customs'."""
-    pattern = re.compile(
-        r"activeTab\s*===\s*['\"]DHL / Customs['\"]\s*&&"
+def test_dhl_customs_render_branches_count_unchanged(html):
+    """Exactly two `activeTab === 'DHL / Customs' && ` render branches
+    must exist in shipment-detail.html — the pre-existing pair owned
+    by the original implementation.  Adding a third (as an earlier
+    campaign did) duplicates rendering and obscures the real bug."""
+    branches = re.findall(
+        r"\{\s*activeTab\s*===\s*['\"]DHL / Customs['\"]\s*&&", html
     )
-    assert pattern.search(html), (
-        "shipment-detail.html still lacks `{activeTab === 'DHL / Customs' && …}` "
-        "render block — that absence is the black-screen root cause"
+    assert len(branches) == 2, (
+        f"expected exactly 2 DHL/Customs render branches (pre-existing), "
+        f"found {len(branches)} — a redundant branch was reintroduced"
     )
 
 
-def test_dhl_customs_render_branch_not_wrapped_during_minimization(html):
-    """During structural minimization the TabErrorBoundary wrap is
-    INTENTIONALLY removed so we can determine whether the boundary
-    itself was the issue (it failed to catch the original crash).
-    Once the offending block is identified, the boundary returns and
-    this test flips back to the wrap-required form."""
-    pattern = re.compile(
-        r"activeTab\s*===\s*['\"]DHL / Customs['\"]\s*&&\s*\(\s*<TabErrorBoundary>",
-        re.DOTALL,
-    )
-    assert not pattern.search(html), (
-        "DHL / Customs branch must NOT be wrapped in TabErrorBoundary "
-        "during the structural minimization diagnostic"
-    )
+def test_redundant_minimal_branch_removed(html):
+    """The minimal `<div>DHL TAB LIVE</div>` placeholder branch must
+    be removed.  It was added under a false-premise diagnosis and is
+    no longer needed."""
+    assert "DHL TAB LIVE" not in html
+    assert 'data-testid="detail-tab-dhl-customs-minimal"' not in html
 
 
 # ── TabErrorBoundary class present + contract ───────────────────────────────
@@ -102,39 +102,22 @@ def test_fallback_instruction_text(html):
     assert "Refresh the page or contact support with the browser console error." in html
 
 
-# ── DHL/Customs panel — STRUCTURAL MINIMIZATION (active diagnosis) ──────────
-# The full DHL/Customs panel was reduced to a single inert <div> while we
-# isolate why the original content white-screened the React subtree
-# without firing the TabErrorBoundary fallback.  These tests document
-# the current minimal contract; once the binary-search reintroduction
-# finds the offending block, the full panel returns and these tests
-# are restored to the richer state-set version.
+# ── DHL/Customs panel — corrected understanding ────────────────────────────
+# The two pre-existing render branches at ~lines 6913 and 8408 contain
+# the real DHL/Customs UI (Section 1 Shipment & DHL Clearance + DHL
+# Customs Pipeline readiness).  No new branch is needed.  The next
+# campaign focuses on identifying which of those two branches crashes.
 
-def test_dhl_customs_minimal_panel_test_id_present(html):
-    assert 'data-testid="detail-tab-dhl-customs-minimal"' in html
-
-
-def test_dhl_customs_minimal_panel_renders_inert_marker(html):
-    assert "DHL TAB LIVE" in html
+def test_dhl_customs_first_branch_renders_section1(html):
+    """First pre-existing branch renders 'Section 1 — Shipment & DHL
+    Clearance'.  Locating this string proves the branch is intact."""
+    assert "Section 1 — Shipment & DHL Clearance" in html
 
 
-def test_dhl_customs_minimal_panel_uses_no_external_components(html):
-    """During minimization the branch must reference NO external React
-    components — no <Card>, no <SectionHeader>, no <TabErrorBoundary>,
-    no IIFE.  This guarantees that if the white screen still happens
-    with the minimized branch, the cause is the conditional / parent /
-    ancestor — NOT the panel content."""
-    # Slice between the conditional opener and its closer
-    start = html.find("{activeTab === 'DHL / Customs' && (")
-    assert start > 0
-    next_branch = html.find("{activeTab === 'Timeline' &&", start)
-    assert next_branch > start
-    block = html[start:next_branch]
-    forbidden = ("<Card", "<SectionHeader", "<TabErrorBoundary", "(() =>", ".map(")
-    leaked = [token for token in forbidden if token in block]
-    assert not leaked, (
-        f"minimal DHL/Customs branch contains external refs: {leaked}"
-    )
+def test_dhl_customs_second_branch_renders_pipeline_panel(html):
+    """Second pre-existing branch renders the readiness pipeline panel
+    via `data-testid='dhl-readiness-panel'`."""
+    assert 'data-testid="dhl-readiness-panel"' in html
 
 
 # ── Scope discipline: other tabs NOT wrapped ────────────────────────────────
@@ -160,24 +143,22 @@ def test_unrelated_tab_not_wrapped_in_boundary(html, tab):
 
 # ── No new fetches / backend coupling ───────────────────────────────────────
 
-def test_no_new_apifetch_in_dhl_customs_render_branch(html):
-    """The new render branch must NOT add any apiFetch / fetch — it
-    surfaces dhlReadiness which is already loaded by an existing
-    useEffect."""
-    # Slice between the opening marker and the next sibling tab branch.
-    start_marker = "{activeTab === 'DHL / Customs' && ("
-    start = html.find(start_marker)
-    assert start > 0
-    end_marker = "{activeTab === 'Timeline' &&"
-    end = html.find(end_marker, start)
-    assert end > start
-    segment = html[start:end]
-    assert "apiFetch(" not in segment
-    assert "fetch('" not in segment
-    assert 'fetch("' not in segment
-    # Also no AUTO_* references, no SMTP, no token leaks
-    assert "YES_" not in segment
-    assert "AUTO_" not in segment
+def test_no_redundant_branch_between_documents_and_timeline(html):
+    """After removing the redundant DHL/Customs branch, the file
+    flows directly from the Documents branch closing to the Timeline
+    branch opening — no third DHL/Customs branch should appear in
+    between."""
+    docs_branch_open = html.find("{activeTab === 'Documents' && (() =>")
+    timeline_branch_open = html.find("{activeTab === 'Timeline' &&")
+    assert 0 < docs_branch_open < timeline_branch_open
+    middle = html[docs_branch_open:timeline_branch_open]
+    # There must be NO `activeTab === 'DHL / Customs'` render branch
+    # in the Documents-to-Timeline span.  The pre-existing DHL branches
+    # live FURTHER DOWN the file (~lines 6913 and 8408).
+    assert "{activeTab === 'DHL / Customs' &&" not in middle, (
+        "redundant DHL/Customs branch between Documents and Timeline "
+        "must remain removed"
+    )
 
 
 # ── No backend reference for boundary class itself ──────────────────────────
@@ -215,20 +196,11 @@ def test_diagnostic_v2_active_tab_banner_outside_tab_branches(html):
     )
 
 
-def test_diagnostic_v2_dhl_customs_branch_marker_replaced_by_minimization(html):
-    """The dhl-customs-render-mounted-v2 marker (and the boundary it
-    was inside) were removed as part of the structural-minimization
-    diagnostic.  The minimal `<div>DHL TAB LIVE</div>` replaces the
-    entire subtree.  When the offending block is found, the boundary
-    + this marker return and this test flips back."""
-    branch_start = html.find("{activeTab === 'DHL / Customs' && (")
-    next_branch = html.find("{activeTab === '", branch_start + 5)
-    assert 0 < branch_start < next_branch
-    block = html[branch_start:next_branch]
-    assert 'dhl-customs-render-mounted-v2' not in block, (
-        "during minimization the v2 mount marker must not be inside "
-        "the DHL/Customs branch (it lived inside the removed full panel)"
-    )
+def test_v2_mount_marker_no_longer_present(html):
+    """The dhl-customs-render-mounted-v2 marker was inside the
+    redundant branch that has now been removed.  It is no longer
+    expected anywhere in the file."""
+    assert 'dhl-customs-render-mounted-v2' not in html
 
 
 def test_diagnostic_v1_active_tab_banner_present(html):
@@ -241,13 +213,10 @@ def test_diagnostic_v1_active_tab_banner_present(html):
     assert 'data-testid="active-tab-diagnostic-match"' in html
 
 
-def test_diagnostic_v1_dhl_customs_mount_marker_replaced_by_minimization(html):
-    """The v1/v2 mount marker was inside the now-removed full panel.
-    Structural minimization replaces it with the inert
-    'DHL TAB LIVE' div.  Same intent (prove branch fired) — different
-    test-id family."""
-    assert "DHL TAB LIVE" in html
-    assert 'data-testid="detail-tab-dhl-customs-minimal"' in html
+def test_v1_mount_marker_no_longer_present(html):
+    """The redundant branch carrying the v1 marker has been removed."""
+    assert 'data-testid="dhl-customs-render-mounted"' not in html
+    assert 'data-testid="detail-tab-dhl-customs-minimal"' not in html
 
 
 def test_tab_label_and_render_branch_strings_identical():
