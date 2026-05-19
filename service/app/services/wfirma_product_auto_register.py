@@ -174,6 +174,26 @@ def _register_one(
         "warnings":           [],
     }
 
+    # 0. Dry-run fast path: if the product is already confirmed in the local
+    #    wfirma_products DB (sync_status='matched' with a valid wfirma_product_id),
+    #    skip the wFirma API round-trip entirely — no new information can come
+    #    from re-querying a product the local mirror already resolved.
+    #    Write mode (dry_run=False) always goes to wFirma for fresh state.
+    if dry_run:
+        try:
+            local_row = wfdb.get_product(product_code)
+            if (
+                local_row
+                and (local_row.get("sync_status") or "") == "matched"
+                and (local_row.get("wfirma_product_id") or "").strip()
+            ):
+                out["status"]            = "existing_mapped"
+                out["wfirma_product_id"] = local_row["wfirma_product_id"]
+                return out
+        except Exception:
+            # Local-DB check failure is non-fatal — fall through to wFirma.
+            pass
+
     # 1. Search wFirma first (read-only)
     try:
         existing = wfirma_client.get_product_by_code(product_code)

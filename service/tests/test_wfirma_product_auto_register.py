@@ -531,7 +531,12 @@ class TestReservationMappingMirror:
             n = con.execute("SELECT COUNT(*) FROM wfirma_product_mapping").fetchone()[0]
         assert n == 0
 
-    def test_idempotent_second_run_updates_same_row(self, isolated_dbs):
+    def test_idempotent_second_run_preserves_row(self, isolated_dbs):
+        """Second dry_run call on an already-matched product uses the local-DB
+        fast path (sync_status='matched') and skips the wFirma API round-trip.
+        The contract guaranteed by idempotency is: still exactly 1 mapping row,
+        same wfirma_product_id.  Name refresh is intentionally NOT a dry_run
+        side-effect — dry_run is for existence checks, not data refreshes."""
         bid = "B_MIRROR_IDEMPOTENT"
         _seed_invoice_lines(isolated_dbs / "documents.db", bid,
                             _awb_6049349806_lines()[:1])
@@ -547,20 +552,33 @@ class TestReservationMappingMirror:
         with patch("app.services.wfirma_client.get_product_by_code",
                    return_value=existing_stub):
             r1 = svc.ensure_products_for_batch(bid, dry_run=True)
-        # Second run with refreshed name
+        assert r1["existing_mapped"] == 1
+
+        # Second dry_run: local-DB fast path fires — wFirma not called.
+        # Name change on the stub is irrelevant; local mirror is not re-written.
         existing_stub.name = "Updated Name"
+        fetch_calls: list = []
+        original_fetch = svc.wfirma_client.get_product_by_code
+        def counting_fetch(code):
+            fetch_calls.append(code)
+            return original_fetch(code)
+
         with patch("app.services.wfirma_client.get_product_by_code",
-                   return_value=existing_stub):
+                   side_effect=counting_fetch):
             r2 = svc.ensure_products_for_batch(bid, dry_run=True)
+
+        # Local fast path fired — wFirma should NOT have been called for this code
+        assert len(fetch_calls) == 0, "dry_run fast path must skip wFirma for matched products"
+        assert r2["existing_mapped"] == 1
 
         with sqlite3.connect(str(isolated_dbs / "reservation_queue.db")) as con:
             rows = con.execute(
                 "SELECT product_code, wfirma_product_id, wfirma_name "
                 "FROM wfirma_product_mapping"
             ).fetchall()
-        # Single row, updated to the latest name
+        # Still exactly 1 row — idempotent
         assert len(rows) == 1
-        assert rows[0][2] == "Updated Name"
+        assert rows[0][1] == "WF-IDEM-77"  # correct wfirma_product_id preserved
 
     def test_mirror_failure_does_not_flip_status_records_warning(self, isolated_dbs):
         """If reservation_queue.db is missing, the product result must
