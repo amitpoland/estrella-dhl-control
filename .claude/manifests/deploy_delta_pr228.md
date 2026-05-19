@@ -1,6 +1,6 @@
-# Deploy Delta Manifest — PR #228 + PR #231 + PR #232
-# Campaign 9 (Warsaw date + payment method) + INC-005 fix (AWB) + Campaign 4 (SSOT)
-# Base target: origin/main HEAD (after PR #232 merge)
+# Deploy Delta Manifest — PR #228 + PR #231 + PR #232 + issue #229 fix
+# Campaign 9 (Warsaw date + payment method) + INC-005 fix (AWB) + Campaign 4 (SSOT) + #229 canonical PZ fix
+# Base target: origin/main HEAD (236094a)
 # Windows current: 7392be1 — INC-003 RESOLVED (PR #226 merged V1/V2/V3 onto origin/main)
 # Profile: windows_prod_v2 (see .claude/deploy/windows_prod_v2.json)
 
@@ -38,9 +38,10 @@ mkdir "C:\PZ\app\core"
 | 4 | `service\app\services` | `freight_resolver.py` | `C:\PZ\app\services` | #232 | comment only — safe |
 | 5 | `service\app\api` | `routes_customer_master.py` | `C:\PZ\app\api` | #228 | update |
 | 6 | `service\app\api` | `routes_proforma.py` | `C:\PZ\app\api` | #228+#232 | update |
-| 7 | `service\app\static` | `dashboard.html` | `C:\PZ\app\static` | #228 | update |
+| 7 | `service\app\static` | `dashboard.html` | `C:\PZ\app\static` | #228+#229 | update (payment method + canonical PZ) |
 | 8 | `service\app\static` | `shipment-detail.html` | `C:\PZ\app\static` | #231 | AWB fix |
 | 9 | `service` | `requirements.txt` | `C:\PZ` | #228 | update |
+| 10 | `service\app\api` | `routes_dashboard.py` | `C:\PZ\app\api` | #229 | wfirma_pz_fullnumber in readiness endpoint |
 
 New docs (no deploy needed — docs only):
 - `service\docs\authority-graph-commercial-draft.md` — reference doc, no Python runtime impact
@@ -66,6 +67,8 @@ Get-Process python | Select Id,CPU,WS,StartTime
 ## Smoke checks
 
 - Dashboard loads, payment method dropdown shows: Transfer / Cash / Card / Compensation (no "other")
+- ProformaReadinessCard Section 4 shows "wFirma PZ full number" row (value "—" until PZ exported)
+- For batches with wFirma PZ exported: canonName shows PZ number; ↻ Refresh Mapping button appears
 - Create proforma → verify `<date>` in wFirma matches today's Warsaw date (not UTC)
 - Customer master PUT with payment method value saves and round-trips
 - Build DHL Reply Package button in shipment-detail.html → no 422 (AWB now included in payload)
@@ -89,4 +92,4 @@ INC-003 is RESOLVED — V1/V2/V3 are on origin/main via PR #226. After `git pull
 | #228 | deploy_lead_coordinator | GO |
 | #231 | All 7 agents | CLEAR (1-file change — shipment-detail.html only) |
 | #232 | AG tests 10/10 | PASS — additive only (comment + non-blocking field + new doc) |
-| Pre-existing failures | test_pz_canonical_mapping ×2 | SCHEDULED → issue #229 |
+| Pre-existing failures | test_pz_canonical_mapping ×2 | RESOLVED → commit 236094a (issue #229 closed) |

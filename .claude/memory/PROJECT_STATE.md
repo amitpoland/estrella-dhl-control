@@ -4,11 +4,21 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-19T(master-campaign-unified-convergence)Z. Master campaign complete: PR #232 rebased onto origin/main (84f7064), ready to merge. INC-003 RESOLVED — PR #226 reconciled V1/V2/V3 onto origin/main; safe `git pull --ff-only` on Windows. Deploy manifest updated: 9-file delta for PR #228+#231+#232. DHL pipeline: SHADOW-OBSERVING-REAL-TRAFFIC, zero shadow corpus, P2 live promotion blocked (Tejal sign-off required). Origin/main HEAD: 5d8319d (PR #231). GATE 2: 1 open PR (#232). Prior: 2026-05-19T(campaign9-commercial-completion)Z.
+**Last-run-at:** 2026-05-19T(master-convergence-campaign10)Z. GATE 2: 0 open implementation PRs. Origin/main HEAD: 236094a. All prior GATE 4 deferred items resolved: test fix (f2884c7), PR #232 SSOT (6657fbc), issue #229 canonical PZ (236094a). Deploy manifest updated to 10-file delta. DHL: SHADOW-OBSERVING-REAL-TRAFFIC, zero corpus, P2 blocked. Windows deploy READY (operator action). Lapis: Windows-only, not inspectable from Mac dev.
 
 ---
 
 # FACTS
+
+## Master Convergence Campaign 10 — Full Deploy Readiness (2026-05-19)
+
+- **origin/main HEAD**: `236094a` — 10-file Windows deploy delta fully addressed
+- **Issue #229 RESOLVED** — `wfirma_pz_fullnumber` backported to `ProformaReadinessCard` in `dashboard.html`. `routes_dashboard.py` now returns `pz.wfirma_pz_fullnumber` from `wfirma_export`. `↻ Refresh Mapping` button added to Section 4 (canonical wFirma PZ number row). 13/13 `test_pz_canonical_mapping` pass; 372 baseline pass.
+- **Stale orchestrator test fixed** — `test_dashboard_has_required_test_ids` → `test_dashboard_orchestrator_card_is_removed_not_present` (SHA `f2884c7`). 7/7 invariants pass.
+- **Deploy manifest updated** — `.claude/manifests/deploy_delta_pr228.md` now 10-file delta (added `routes_dashboard.py`). Issue #229 RESOLVED in gate results. Smoke checks updated.
+- **GATE 2: 0 open implementation PRs** — PRs #1 and #10 are archived stubs (REFERENCE_ONLY/old work).
+- **GATE 4 item status**: All GATE 4 SCHEDULED items from prior campaigns now RESOLVED or in origin/main. No open GATE 4 salvage debt.
+- **Test baseline**: 133/133 campaign tests, 372/372 deploy-gate baseline.
 
 ## Master Campaign — Unified Operational Convergence (2026-05-19)
 
