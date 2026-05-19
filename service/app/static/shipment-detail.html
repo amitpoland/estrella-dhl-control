@@ -6896,19 +6896,8 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
         {/* ── DHL TAB — Phase 2 read-only DHL pipeline panel ── */}
 
-        {/* BINARY-ISOLATION STEP 1 — branch #1 DISABLED.
-            Prefix `false &&` short-circuits the conditional so this
-            branch (Section 1 — Shipment & DHL Clearance) renders
-            nothing.  Branch #2 (line ~8394, readiness panel) stays
-            intact.  If clicking DHL/Customs now renders normally,
-            the white-screen bug lives inside branch #1.  If white
-            screen persists, branch #2 is the culprit.  Smallest
-            possible edit: one prepended token; original literal
-            string preserved so invariant tests still count 2
-            branches in the file. */}
-
         {/* ── DHL / CUSTOMS — Sections moved from Overview ── */}
-        {false /* binary-isolation-step-1 */ && activeTab === 'DHL / Customs' && (
+        {activeTab === 'DHL / Customs' && (
           <>
             {/* Section 1: DHL */}
             <Card>
@@ -7420,54 +7409,19 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         );
                       })()}
 
-                      {/* ── DHL Orchestrator (Phase 1) ── */}
-                      {(() => {
-                        const [orchState, setOrchState] = React.useState(null);
-                        React.useEffect(() => {
-                          if (!batchId) return;
-                          let cancelled = false;
-                          (async () => {
-                            try {
-                              const r = await apiFetch(`/api/v1/orchestrator/state/${encodeURIComponent(batchId)}`);
-                              const j = await r.json();
-                              if (!cancelled) setOrchState(j);
-                            } catch (e) { /* read-only card; ignore */ }
-                          })();
-                          return () => { cancelled = true; };
-                        }, [batchId]);
-                        const s = orchState || {};
-                        const attach = s.attachment_readiness || {};
-                        const email  = s.email_readiness || {};
-                        const flags  = s.safety_flags || {};
-                        const pendingCount = (Array.isArray(s.decisions) ? s.decisions.length : 0);
-                        return (
-                          <div data-testid="orchestrator-state-card" style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-                            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>
-                              DHL Orchestrator
-                              {flags.shadow_mode ? (
-                                <span data-testid="orchestrator-shadow-marker" style={{ marginLeft: 8, padding: '1px 6px', fontSize: 9, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', borderRadius: 3 }}>SHADOW</span>
-                              ) : null}
-                            </div>
-                            <InfoRow label="Lifecycle State"
-                              value={<span data-testid="orchestrator-lifecycle-state" style={{ fontWeight: 600 }}>{s.lifecycle_state || '—'}</span>} />
-                            <InfoRow label="Next Action"
-                              value={<span data-testid="orchestrator-next-action">{s.next_action || '—'}</span>} />
-                            <InfoRow label="Blocked Reason"
-                              value={<span data-testid="orchestrator-blocked-reason" style={{ fontSize: 11, color: 'var(--text-2)' }}>{s.blocked_reason || '—'}</span>} />
-                            <InfoRow label="Last Tick"
-                              value={<span data-testid="orchestrator-last-tick-at" style={{ fontFamily: 'monospace', fontSize: 11 }}>{(s.last_recorded || {}).last_tick_at || '—'}</span>} />
-                            <InfoRow label="Attachment Readiness"
-                              value={<span data-testid="orchestrator-attachment-preview" style={{ fontSize: 11 }}>
-                                DSK={attach.dsk_present ? 'Y' : 'N'} · Polish={attach.polish_desc_present ? 'Y' : 'N'} · SAD={attach.sad_ready_present ? 'Y' : 'N'} · invoices={attach.invoice_count || 0}
-                              </span>} />
-                            <InfoRow label="Email Readiness"
-                              value={<span style={{ fontSize: 11 }}>
-                                DHL email received={email.dhl_email_received ? 'Y' : 'N'} · agency pkg={email.agency_package_built ? 'Y' : 'N'} · path={email.clearance_path || '—'}
-                              </span>} />
-                            <span data-testid="orchestrator-pending-count" style={{ display: 'none' }}>{pendingCount}</span>
-                          </div>
-                        );
-                      })()}
+                      {/* ── DHL Orchestrator card REMOVED ──
+                          The card previously rendered here called
+                          React.useState + React.useEffect inside an
+                          IIFE that ran only when the DHL/Customs tab
+                          was active.  That violated React's Rules of
+                          Hooks (hook call count differed between
+                          renders depending on activeTab) and caused
+                          the entire BatchDetailPage subtree to
+                          unmount during commit, producing the
+                          white-screen on DHL/Customs click.  The
+                          identical orchestrator card on dashboard.html
+                          is unaffected and remains the canonical
+                          surface for orchestrator state. */}
 
                       {/* ── Clearance Decision ── */}
                       <div data-testid="clearance-routing-card" style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>

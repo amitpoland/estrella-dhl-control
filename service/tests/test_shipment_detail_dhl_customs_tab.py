@@ -45,14 +45,9 @@ def test_dhl_customs_render_branches_count_unchanged(html):
     """Exactly two `activeTab === 'DHL / Customs' && ` render branches
     must exist in shipment-detail.html — the pre-existing pair owned
     by the original implementation.  Adding a third (as an earlier
-    campaign did) duplicates rendering and obscures the real bug.
-
-    Note: during binary-isolation step 1, branch #1 may be prefixed
-    with `false &&` to short-circuit; that does NOT remove the
-    `activeTab === 'DHL / Customs'` literal, so this count stays at 2.
-    """
+    campaign did) duplicates rendering and obscures the real bug."""
     branches = re.findall(
-        r"\{\s*(?:false\s*/\*[^*]*\*/\s*&&\s*)?activeTab\s*===\s*['\"]DHL / Customs['\"]\s*&&", html
+        r"\{\s*activeTab\s*===\s*['\"]DHL / Customs['\"]\s*&&", html
     )
     assert len(branches) == 2, (
         f"expected exactly 2 DHL/Customs render branches (pre-existing), "
@@ -60,36 +55,56 @@ def test_dhl_customs_render_branches_count_unchanged(html):
     )
 
 
-def test_branch1_binary_isolation_step1_active(html):
-    """BINARY-ISOLATION STEP 1: branch #1 is intentionally disabled by
-    a `false &&` prefix.  This test verifies the disabled state is
-    in effect.  When the culprit is identified the prefix is removed
-    and this test is deleted."""
-    assert (
-        "{false /* binary-isolation-step-1 */ && activeTab === 'DHL / Customs' && ("
-        in html
-    ), (
-        "branch #1 must carry the binary-isolation step-1 disable prefix "
-        "so it does not render during this diagnostic"
+def test_binary_isolation_step1_prefix_removed(html):
+    """Binary-isolation step 1 (`false &&` disable prefix on branch #1)
+    has been removed.  The crashing component inside branch #1 was
+    identified via static inspection — a Rules-of-Hooks violation in
+    the DHL Orchestrator card IIFE — and surgically removed.  Branch
+    #1 now renders again without the white-screen."""
+    assert "binary-isolation-step-1" not in html
+    assert "false /* binary-isolation" not in html
+
+
+def test_orchestrator_card_iife_removed_from_branch1(html):
+    """The IIFE at lines 7424-7470 (DHL Orchestrator card in branch #1)
+    called React.useState + React.useEffect from inside a conditional
+    render path.  That violates Rules of Hooks (call count changes
+    between renders depending on activeTab) and unmounts the entire
+    BatchDetailPage subtree on activeTab transition into 'DHL / Customs'.
+    The card has been removed from this location; the identical card
+    on dashboard.html remains the canonical surface for orchestrator
+    state.
+
+    This test guards against re-introduction of the same anti-pattern:
+    no React.useState / React.useEffect may appear inside any
+    `(() => { ... })()` IIFE that itself sits inside a tab-conditional
+    render branch."""
+    # Slice branch #1 from open to close
+    branch1_start = html.find("{activeTab === 'DHL / Customs' && (\n          <>")
+    if branch1_start < 0:
+        # Tolerate whitespace variance — fallback to first DHL/Customs branch
+        branch1_start = html.find("{activeTab === 'DHL / Customs' && (")
+    assert branch1_start > 0
+    # Find the branch #2 opener as the close marker for branch #1
+    branch2_start = html.find("{activeTab === 'DHL / Customs' && (() =>", branch1_start + 5)
+    assert branch2_start > branch1_start, "branch #2 marker not found"
+    branch1_body = html[branch1_start:branch2_start]
+    # No React.useState / React.useEffect inside branch #1 body
+    assert "React.useState(" not in branch1_body, (
+        "branch #1 contains React.useState() inside its render path — "
+        "this is a Rules-of-Hooks violation that will white-screen on "
+        "tab activation"
     )
-
-
-def test_branch2_remains_active(html):
-    """Branch #2 (readiness panel) must NOT carry the binary-isolation
-    prefix — it stays live so operator can observe whether the
-    white-screen comes from it."""
-    # Slice forward past branch #1's marker, then look for branch #2's
-    # opener; it must not have the disable prefix.
-    step1_marker = "binary-isolation-step-1"
-    after_step1 = html.find(step1_marker)
-    assert after_step1 > 0
-    branch2 = html.find("{activeTab === 'DHL / Customs' && (() =>", after_step1)
-    assert branch2 > after_step1, "branch #2 opener not found after branch #1"
-    # No other `false &&` short-circuit between marker and branch #2
-    between = html[after_step1:branch2]
-    assert "false /* binary-isolation" not in between[100:], (
-        "second binary-isolation prefix found — only branch #1 should "
-        "be disabled in step 1"
+    assert "React.useEffect(" not in branch1_body, (
+        "branch #1 contains React.useEffect() inside its render path — "
+        "this is a Rules-of-Hooks violation that will white-screen on "
+        "tab activation"
+    )
+    # Specific marker confirming the orchestrator card was removed
+    assert 'data-testid="orchestrator-state-card"' not in branch1_body, (
+        "the DHL Orchestrator card must not be re-introduced inside "
+        "shipment-detail.html branch #1 — it called hooks from inside "
+        "an IIFE, violating Rules of Hooks"
     )
 
 
