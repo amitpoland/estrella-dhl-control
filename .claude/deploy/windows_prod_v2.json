@@ -1,0 +1,43 @@
+{
+  "profile": "windows_prod_v2",
+  "service": "PZService",
+  "port": 47213,
+  "runtime_root": "C:\\PZ\\app",
+  "source_root": "C:\\Users\\Super Fashion\\PZ APP\\service\\app",
+  "requirements_src": "C:\\Users\\Super Fashion\\PZ APP\\service\\requirements.txt",
+  "requirements_dst": "C:\\PZ\\requirements.txt",
+  "python": "C:\\Users\\Super Fashion\\AppData\\Local\\Programs\\Python\\Python39\\python.exe",
+  "health_urls": [
+    "http://localhost:47213/health",
+    "http://localhost:47213/api/v1/health",
+    "https://pz.estrellajewels.eu/api/v1/health"
+  ],
+  "smoke_endpoints": [
+    "/api/v1/carrier/status",
+    "/api/v1/designs/",
+    "/api/v1/hs-codes/",
+    "/api/v1/customer-master/"
+  ],
+  "service_cmds": {
+    "stop":    "nssm stop PZService",
+    "start":   "nssm start PZService",
+    "restart": "nssm restart PZService",
+    "status":  "nssm status PZService"
+  },
+  "robocopy_pattern": "robocopy \"{src_dir}\" \"{dst_dir}\" {filename} /COPY:DAT",
+  "forbidden_paths": [
+    "C:\\PZ\\.env",
+    "C:\\PZ\\storage\\",
+    "C:\\PZ\\logs\\",
+    "C:\\PZ\\cloudflared\\"
+  ],
+  "forbidden_flags": ["/MIR"],
+  "rollback": "robocopy C:\\PZ\\app\\bak C:\\PZ\\app /COPY:DAT /E — restore from pre-deploy backup",
+  "pip_extra": "tzdata>=2024.1",
+  "notes": [
+    "runtime_root is C:\\PZ\\app — NOT C:\\PZ\\service\\app",
+    "robocopy /MIR is PERMANENTLY FORBIDDEN",
+    "never overwrite .env / storage / logs / cloudflared",
+    "Lesson D: reconcile Windows-local commits before git pull --ff-only"
+  ]
+}
