@@ -4519,6 +4519,85 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           </>);
         })()}
 
+        {/* ── DHL / CUSTOMS TAB ──────────────────────────────────────────
+            Root cause of the prior black-screen bug: the 'DHL / Customs'
+            tab button existed and triggered loadDhlReadiness() at click
+            time, but NO render branch matched activeTab='DHL / Customs',
+            so the content area rendered nothing.  This branch surfaces
+            the dhlReadiness data that the useEffect at line ~2790
+            already loads — no new fetches, no new endpoints, no new
+            backend dependency.  Wrapped in TabErrorBoundary as the
+            safety-net layer mirroring dashboard.html. */}
+        {activeTab === 'DHL / Customs' && (
+          <TabErrorBoundary>
+            <div data-testid="detail-tab-dhl-customs" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <Card style={{ padding: 16 }}>
+                <SectionHeader icon="📨" title="DHL / Customs"
+                  subtitle="Clearance readiness snapshot — derived from existing batch audit and dhlReadiness fetch (read-only)" />
+                {dhlReadinessLoading && (
+                  <div data-testid="detail-dhl-customs-loading"
+                       style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}>
+                    ⟳ Loading DHL readiness…
+                  </div>
+                )}
+                {!!dhlReadinessError && (
+                  <div data-testid="detail-dhl-customs-error"
+                       style={{ fontSize: 12, color: '#991b1b', padding: '8px 0' }}>
+                    ⚠ {String(dhlReadinessError)}
+                  </div>
+                )}
+                {!dhlReadinessLoading && !dhlReadinessError && !dhlReadiness && (
+                  <div data-testid="detail-dhl-customs-empty"
+                       style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}>
+                    No DHL readiness data available for this shipment.
+                  </div>
+                )}
+                {dhlReadiness && (
+                  <div data-testid="detail-dhl-customs-readiness" style={{ marginTop: 8 }}>
+                    {(() => {
+                      // Pure-render summary.  Walks only known scalar
+                      // fields with defensive defaults.  No .map/.filter
+                      // on possibly-undefined arrays; no destructure
+                      // without guards.
+                      const dr = dhlReadiness || {};
+                      const rows = [
+                        ['DHL Status',            dr.dhl_status || '—'],
+                        ['DHL Email Received',    dr.dhl_email_received ? 'yes' : 'no'],
+                        ['Reply Package Status',  dr.reply_package_status || '—'],
+                        ['DSK Docs Received',     dr.dsk_docs_received ? 'yes' : 'no'],
+                        ['Agency Forwarded',      dr.agency_forwarded ? 'yes' : 'no'],
+                        ['SAD Received',          dr.sad_received ? 'yes' : 'no'],
+                        ['Customs Cleared',       (dr.dhl_status === 'customs_cleared') ? 'yes' : 'no'],
+                      ];
+                      return (
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                          <tbody>
+                            {rows.map(([label, value]) => (
+                              <tr key={label} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                                <td style={{ padding: '6px 10px', color: 'var(--text-2)', width: '40%' }}>{label}</td>
+                                <td style={{ padding: '6px 10px', color: 'var(--text)', fontFamily: 'monospace' }}>{value}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      );
+                    })()}
+                  </div>
+                )}
+              </Card>
+              <Card style={{ padding: 16 }}>
+                <SectionHeader icon="ℹ" title="Where to take action"
+                  subtitle="Full DHL/Customs workflow surfaces live on the dashboard DHL/Customs and Documents pages." />
+                <div data-testid="detail-dhl-customs-nav-hint" style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6 }}>
+                  Operator actions (scan inbox, build reply package, upload SAD/ZC429) are reached from the cross-batch
+                  <strong> DHL Clearance</strong> and <strong> Customs Documents</strong> pages on the main dashboard.
+                  This panel shows only the read-only readiness snapshot for the current shipment.
+                </div>
+              </Card>
+            </div>
+          </TabErrorBoundary>
+        )}
+
         {/* ── TIMELINE TAB ── */}
         {activeTab === 'Timeline' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -14037,6 +14116,67 @@ function SeverityBadge({ severity }) {
 }
 
 const NAV_TREE_INLINE = NAV_TREE;
+
+// ══════════════════════════════════════════════════════════
+// ERROR BOUNDARY — narrow render-crash guard for DHL/Customs tab
+// ══════════════════════════════════════════════════════════
+// Catches uncaught render exceptions in the wrapped subtree and
+// displays a static fallback panel.  No remote logging, no fetch,
+// no auto-retry, no mutation.  Wrap ONLY the DHL/Customs tab
+// render branch; other tabs stay unwrapped so unrelated runtime
+// is unchanged.  Mirrors dashboard.html TabErrorBoundary exactly.
+class TabErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+  static getDerivedStateFromError(error) {
+    return {
+      hasError: true,
+      message: (error && (error.message || String(error))) || 'unknown error',
+    };
+  }
+  componentDidCatch(error, info) {
+    try {
+      console.error('[TabErrorBoundary] caught render error:', error, info);
+    } catch (_e) { /* never let logging itself throw */ }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          data-testid="tab-error-boundary-fallback"
+          style={{
+            padding: '40px 32px', maxWidth: 720, margin: '24px auto',
+            background: 'var(--card)', border: '1px solid var(--badge-red-border)',
+            borderRadius: 8, color: 'var(--text)', fontFamily: 'inherit',
+          }}>
+          <div style={{
+            fontSize: 11, fontWeight: 700, color: 'var(--badge-red-text)',
+            letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8,
+          }}>
+            Render error
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            DHL / Customs tab failed to render
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 14, lineHeight: 1.5 }}>
+            Refresh the page or contact support with the browser console error.
+          </div>
+          <div style={{
+            fontSize: 11, fontFamily: 'monospace', color: 'var(--text-3)',
+            background: 'var(--bg-subtle)', padding: '8px 10px', borderRadius: 4,
+            wordBreak: 'break-all',
+          }}
+            data-testid="tab-error-boundary-message">
+            {this.state.message}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function ShipmentDetailApp() {
   const [user, setUser]                       = React.useState(null);
