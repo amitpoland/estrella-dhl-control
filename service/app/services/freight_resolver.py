@@ -1,6 +1,15 @@
 """
 freight_resolver.py — customer-specific freight resolution.
 
+PRODUCTION ROUTE EXCLUSION (2026-05-19):
+    This module is used ONLY by app/tools/send_wfirma_proforma_live_test.py.
+    No production API route should import resolve_freight() or FreightUnresolved.
+    For production freight suggestions use:
+        pick_freight(cm, draft_currency)  from app.services.customer_master
+    CustomerMaster fields freight_fixed_amount_eur / freight_fixed_amount_usd
+    are the canonical production source of freight defaults.
+    See: service/docs/authority-graph-commercial-draft.md — Layer E.
+
 Decision flow (locked):
     1. Local DB (customer_freight_history) — fastest, fully offline
     2. wFirma final invoices (type=normal) for same contractor + currency
