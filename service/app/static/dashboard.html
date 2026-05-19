@@ -2124,6 +2124,15 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
       country:              cm.country             || rec?.country || '',
       nip:                  cm.nip                 || rec?.vat_id  || '',
       vat_eu_number:        cm.vat_eu_number       || '',
+      // Round-trip system fields so upsert_customer's direct SET doesn't wipe them.
+      // These are NOT operator-editable; they're populated by wFirma sync / VAT validation.
+      vat_eu_valid:         cm.vat_eu_valid != null ? cm.vat_eu_valid : null,
+      vat_eu_validated_at:  cm.vat_eu_validated_at  || '',
+      ship_to_contractor_id: cm.ship_to_contractor_id || '',
+      freight_last_amount:  cm.freight_last_amount != null ? String(cm.freight_last_amount) : '',
+      freight_avg_amount:   cm.freight_avg_amount  != null ? String(cm.freight_avg_amount)  : '',
+      last_wfirma_sync_at:  cm.last_wfirma_sync_at  || '',
+      wfirma_sync_source:   cm.wfirma_sync_source   || '',
       default_currency:     cm.default_currency    || 'EUR',
       default_language_id:  cm.default_language_id || '',
       notes:                cm.notes               || '',
@@ -2187,6 +2196,19 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
       insurance_label_pl:        cm.insurance_label_pl        || '',
       insurance_label_en:        cm.insurance_label_en        || '',
       insurance_enabled:         cm.insurance_enabled !== false,
+      // Phase MasterData-2 fix: fields present in dataclass but missing from
+      // form state caused upsert_customer's direct SET to overwrite with NULL
+      // on every save. These must be round-tripped from the loaded CM record.
+      freight_mode:               cm.freight_mode              || '',
+      freight_currency:           cm.freight_currency          || '',
+      insurance_mode:             cm.insurance_mode            || '',
+      insurance_fixed_amount_eur: cm.insurance_fixed_amount_eur != null ? String(cm.insurance_fixed_amount_eur) : '',
+      insurance_fixed_amount_usd: cm.insurance_fixed_amount_usd != null ? String(cm.insurance_fixed_amount_usd) : '',
+      insurance_min_amount:       cm.insurance_min_amount       != null ? String(cm.insurance_min_amount)       : '',
+      insurance_min_override:     cm.insurance_min_override     != null ? String(cm.insurance_min_override)     : '',
+      preferred_proforma_series_id: cm.preferred_proforma_series_id || '',
+      preferred_invoice_series_id:  cm.preferred_invoice_series_id  || '',
+      vat_mode:                   cm.vat_mode != null ? String(cm.vat_mode) : '',
     };
   });
   const [saving, setSaving] = React.useState(false);
@@ -2335,7 +2357,10 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
     setSaving(true); setSaveError(null);
     try {
       const CM_DECIMAL = ['freight_fixed_amount_eur','freight_fixed_amount_usd',
+                          'freight_last_amount','freight_avg_amount',
                           'insurance_rate','insurance_min_eur','insurance_min_usd',
+                          'insurance_fixed_amount_eur','insurance_fixed_amount_usd',
+                          'insurance_min_amount','insurance_min_override',
                           'kuke_limit','credit_limit','kuke_self_retention_pct'];
       // Optional string fields: empty string → null so the backend does not
       // receive "" for fields that should be absent (null) in the DB.
@@ -2354,7 +2379,15 @@ function ClientKycModal({ rec, custMasterRec, onClose, onSaved, onToast }) {
                           'bill_to_street','bill_to_city','bill_to_postal_code',
                           'bill_to_email','bill_to_phone','bill_to_mobile',
                           'bank_account',
-                          'regon','short_code','client_type','industry','eori'];
+                          'regon','short_code','client_type','industry','eori',
+                          // Phase MasterData-2 fix: these were missing from CM_OPT_STR,
+                          // causing empty-string values to reach the backend un-nullified.
+                          'preferred_proforma_series_id','preferred_invoice_series_id',
+                          'default_language_id','default_currency',
+                          // System round-trip fields — not operator-editable, sent back unchanged
+                          // so upsert_customer's direct SET doesn't wipe them.
+                          'vat_eu_validated_at','ship_to_contractor_id',
+                          'last_wfirma_sync_at','wfirma_sync_source'];
       const payload = { ...form };
       for (const f of CM_DECIMAL) {
         if (payload[f] === '' || payload[f] == null) payload[f] = null;
