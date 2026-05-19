@@ -60,9 +60,35 @@ def test_two_feature_flags_exist_with_default_false():
 
 
 def test_flag_env_var_names_are_canonical():
+    """In Pydantic-settings v2 the env var name is auto-derived by uppercasing
+    the field name — no explicit ``env=`` kwarg is needed or expected.
+
+    finance_dual_write_enabled  →  FINANCE_DUAL_WRITE_ENABLED
+    finance_dual_write_shadow   →  FINANCE_DUAL_WRITE_SHADOW
+
+    Verify the field names are present and that SettingsConfigDict is wired
+    (it activates the auto-mapping).  The old ``env="FINANCE_DUAL_WRITE_*"``
+    syntax was removed in the Campaign V5 Pydantic V2 cleanup.
+    """
     text = _CONFIG.read_text(encoding="utf-8")
-    assert 'env="FINANCE_DUAL_WRITE_ENABLED"' in text
-    assert 'env="FINANCE_DUAL_WRITE_SHADOW"' in text
+    # Field names must be present (pydantic-settings auto-maps to uppercase env vars)
+    assert "finance_dual_write_enabled" in text, (
+        "finance_dual_write_enabled field missing from config.py"
+    )
+    assert "finance_dual_write_shadow" in text, (
+        "finance_dual_write_shadow field missing from config.py"
+    )
+    # SettingsConfigDict must be present (it enables the auto env-var mapping)
+    assert "SettingsConfigDict" in text, (
+        "SettingsConfigDict missing from config.py — required for auto env-var mapping"
+    )
+    # The old Pydantic V1 env= kwarg must NOT be present (was removed in V5)
+    assert 'env="FINANCE_DUAL_WRITE_ENABLED"' not in text, (
+        "Old Pydantic V1 env= kwarg found — should have been removed in V5 cleanup"
+    )
+    assert 'env="FINANCE_DUAL_WRITE_SHADOW"' not in text, (
+        "Old Pydantic V1 env= kwarg found — should have been removed in V5 cleanup"
+    )
 
 
 # ── Hook site contracts ──────────────────────────────────────────────────────
