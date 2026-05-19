@@ -975,6 +975,10 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
     # we can look up directly. Returns None if no record or field unset.
     _cm_for_series = get_customer_master(_customer_master_db_path(), contractor_id)
     cm_proforma_series = pick_proforma_series_id(_cm_for_series) if _cm_for_series else ""
+    cm_payment_method = (
+        (_cm_for_series.preferred_payment_method or "").strip().lower()
+        if _cm_for_series else ""
+    )
 
     # ── Decide VAT context per customer (domestic / WDT / export) ──────────
     customer_country = ((cust or {}).get("country") or "").strip()
@@ -1080,6 +1084,7 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
         vat_code_id                   = vat_code_id,
         wfirma_contractor_receiver_id = receiver_id,
         series_id                     = cm_proforma_series or "",
+        payment_method                = cm_payment_method,
     )
 
 
@@ -2486,7 +2491,7 @@ def _build_conversion_plan(proforma_id: str, *, operator: str
     ``{"snap": ProformaSnapshot, "plan": FinalInvoicePlan,
        "plan_xml": str}`` or raises ``RuntimeError`` / ``ValueError``."""
     from ..services import proforma_to_invoice as p2i
-    from datetime import date as _date
+    from ..core.timezone_utils import warsaw_today as _warsaw_today
 
     xml = wfirma_client.fetch_invoice_xml(proforma_id)
     snap = p2i.parse_proforma_xml(xml)
@@ -2501,7 +2506,7 @@ def _build_conversion_plan(proforma_id: str, *, operator: str
     plan = p2i.build_final_invoice_plan(
         snap,
         final_series_id      = series_id or "0",   # validated below if "0"
-        invoice_date         = _date.today(),
+        invoice_date         = _warsaw_today(),
         operator_description = "",
     )
     if not plan.series_id or plan.series_id == "0":
@@ -2709,7 +2714,7 @@ def proforma_to_invoice(
     try:
         from ..services import proforma_to_invoice as p2i
         from ..services import proforma_invoice_link_db as plink
-        from datetime import date as _date
+        from ..core.timezone_utils import warsaw_today as _warsaw_today
 
         proforma_xml = wfirma_client.fetch_invoice_xml(pid)
         snap = p2i.parse_proforma_xml(proforma_xml)
@@ -2736,7 +2741,7 @@ def proforma_to_invoice(
         plan = p2i.build_final_invoice_plan(
             snap,
             final_series_id      = series_id,
-            invoice_date         = _date.today(),
+            invoice_date         = _warsaw_today(),
             operator_description = (body.operator_description or "").strip(),
         )
     except Exception as exc:

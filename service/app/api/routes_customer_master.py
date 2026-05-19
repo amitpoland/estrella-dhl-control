@@ -76,6 +76,7 @@ def _customer_to_dict(c: CustomerMaster) -> Dict[str, Any]:
         "default_language_id":           c.default_language_id,
         "preferred_proforma_series_id":  c.preferred_proforma_series_id,
         "preferred_invoice_series_id":   c.preferred_invoice_series_id,
+        "preferred_payment_method":      c.preferred_payment_method,
         "vat_mode":                      c.vat_mode,
         # Freight
         "freight_service_id":            c.freight_service_id,
@@ -161,6 +162,13 @@ _BOOL_FIELDS = frozenset({
 
 _INT_FIELDS = frozenset({"vat_mode", "payment_terms_days"})
 
+# Allowed values for preferred_payment_method.  Any other non-empty value is
+# rejected with 422 at the route layer before it reaches the DB.
+# Empty string and None are normalised to NULL (wFirma default).
+_ALLOWED_PAYMENT_METHODS: frozenset[str] = frozenset({
+    "transfer", "cash", "card", "compensation",
+})
+
 # Optional string fields where an empty string from the UI must become None.
 # These fields are nullable in the DB; "" is never a valid stored value.
 _OPTIONAL_STR_FIELDS = frozenset({
@@ -195,6 +203,8 @@ _OPTIONAL_STR_FIELDS = frozenset({
     # no '' → None coercion; route it through here so an operator clearing
     # the field saves NULL rather than the empty string.
     "default_currency",
+    # Invoice/payment defaults (Campaign 9)
+    "preferred_payment_method",
 })
 
 
@@ -285,6 +295,20 @@ def _parse_body(
     for fname in _OPTIONAL_STR_FIELDS:
         if fname in body and body[fname] == "":
             body[fname] = None
+
+    # Enum validation for preferred_payment_method.
+    # After the blank→None pass above, None means "not set" (OK).
+    # Any other value must be in the whitelist; unknown values are rejected
+    # to keep the wFirma XML mapping deterministic.
+    pm = body.get("preferred_payment_method")
+    if pm is not None and pm not in _ALLOWED_PAYMENT_METHODS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"preferred_payment_method {pm!r} is not allowed. "
+                f"Allowed values: {sorted(_ALLOWED_PAYMENT_METHODS)}"
+            ),
+        )
 
     # Default insurance_enabled to True
     body.setdefault("insurance_enabled", True)
