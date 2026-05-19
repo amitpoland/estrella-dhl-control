@@ -254,6 +254,14 @@ Campaign 6 executed on 2026-05-19. Branch: `chore/wave2-patch4-batch-condensatio
 - **2026-05-13** — Engineering lessons file: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch), Lesson B (mid-session registry refresh non-determinism), Lesson C (orchestrator scorecard verification), **Lesson D (LOCAL-COMMIT-ONLY deploy disclosure + reconciliation — CODIFIED 2026-05-13 via PR #76)** are all binding rules.
 - **2026-05-13** — Scorecard ON DISK but previously uncited (retroactive RULE 6 registration 2026-05-18): `.claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` — P2 ignition switch model C analysis. File confirmed on disk. GATE 4 disposition: **ACCEPTED GAP** — file is valid; omission from prior RULE 6 citations was an oversight (not a Lesson C silent-loss event). No retroactive action required beyond this citation.
 
+## Campaign 6 scorecard (appended 2026-05-19, RULE 2 auto-fire)
+
+- **2026-05-19** — Scorecard written: `.claude/memory/scorecards/2026-05-19-campaign6-convergence.md` — observer: `agent-performance-observer`. 8 agents scored: testing-verification EXEMPLARY (32/35); system-architect, backend-api, database-storage, frontend-ui, security-permissions ACCEPTABLE; deployment-readiness NEEDS-TUNING (18/35) — second consecutive; flow-context-keeper NEEDS-TUNING (16/35) — second consecutive. File confirmed on disk: 30,020 bytes (Lesson C verified).
+- **GATE 4 dispositions from 2026-05-19-campaign6-convergence.md (2 required):**
+  1. **deployment-readiness NEEDS-TUNING (repeated)** → SCHEDULED: file governance issue tagged `agent-tuning` blocking the "deployment-readiness" surrogate pattern. Target: pre-next-campaign.
+  2. **flow-context-keeper NEEDS-TUNING (repeated)** → SCHEDULED: future campaigns must dispatch flow-context-keeper as formal Task invocation with RULE 6 compliance confirmation (scorecard path in PROJECT_STATE.md FACTS). Binding from next campaign.
+- **GATE 6 gap noted:** T4 (frontend-ui, ProformaDraftPanel commercial ownership) is a UI change but browser verification (Sales tab / PZ tab routing confirmation) was not performed — static DOM assertions only. Disposition: SCHEDULED for next Windows deploy smoke (operator can verify tab routing visually during deploy validation).
+
 ## Campaign V2 scorecard + RULE 5 self-eval (appended 2026-05-19)
 
 - **2026-05-19** — Scorecard written: `.claude/memory/scorecards/2026-05-19-campaign-v2.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). 5 agents scored. NEEDS-TUNING: deployment-readiness, gap-detection, system-architect. UNRELIABLE: backend-safety-reviewer, flow-context-keeper. Root cause: all 5 attributed implicitly — no Task tool dispatch, no canonical verdict blocks collected. File confirmed on disk: 20,825 bytes, 363 lines (Lesson C verified). **Total confirmed scorecards on disk: 7.**
