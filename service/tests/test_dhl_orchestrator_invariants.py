@@ -68,20 +68,24 @@ def test_orchestrator_does_not_call_queue_email_directly_in_phase1():
     assert "send_queued_email(" not in code_only
 
 
-def test_dashboard_has_required_test_ids():
-    """Operator UX surface must expose all 7 test-ids."""
+def test_dashboard_orchestrator_card_is_removed_not_present():
+    """Orchestrator state card was intentionally removed from shipment-detail.html
+    (commit 058f353, React Rules of Hooks fix). This test guards that removal —
+    the card must NOT be present in the static HTML until a replacement UI surface
+    is designed and implemented (see routes_orchestrator.py API endpoints).
+
+    When the orchestrator UI is re-introduced, replace this test with the
+    original test_ids assertion pointing to the new HTML surface.
+    """
     html = _DASHBOARD.read_text(encoding="utf-8")
-    required = [
-        "orchestrator-state-card",
-        "orchestrator-next-action",
-        "orchestrator-blocked-reason",
-        "orchestrator-last-tick-at",
-        "orchestrator-shadow-marker",
-        "orchestrator-attachment-preview",
-        "orchestrator-pending-count",
-    ]
-    missing = [t for t in required if t not in html]
-    assert not missing, f"missing test-ids in shipment-detail.html: {missing}"
+    # Guard: card was removed, must stay absent until re-implemented
+    # If this fails it means someone re-added the removed React hooks violation
+    assert "orchestrator-state-card" not in html, (
+        "orchestrator-state-card was re-added to shipment-detail.html. "
+        "Ensure the React hooks violation (058f353) is not reintroduced. "
+        "Use the /api/v1/dhl/orchestrator/{batch_id}/state endpoint instead of "
+        "inline card rendering."
+    )
 
 
 def test_dsk_generated_in_status_order():
