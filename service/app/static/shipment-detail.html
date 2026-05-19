@@ -9942,45 +9942,9 @@ function OperatorWorkflowCard({ batchId, onToast }) {
         </div>
       )}
 
-      {/* Independence note — two workflows run in parallel */}
-      <div data-testid="workflow-independence-note"
-           style={{ fontSize: 11, color: '#374151', marginBottom: 12,
-                    padding: '6px 10px', background: '#f9fafb',
-                    border: '1px solid #e5e7eb', borderRadius: 6 }}>
-        ℹ Two parallel workflows — complete either in any order. Posting the
-        proforma does <strong>not</strong> unblock PZ, and PZ does not
-        require the proforma to be posted first.
-      </div>
-
       {/* ═══════════════════════════════════════════════════════════════ */}
-      {/* SECTION A — Sales & Proforma Invoices (commercial)             */}
-      {/* ═══════════════════════════════════════════════════════════════ */}
-      <div data-testid="workflow-section-a">
-        {sectionGroupHeader('A — Proforma Invoices (commercial)', 'a')}
-
-        {/* Phase 6 — local editable Proforma Draft panel. Always visible
-            when drafts exist; auto-created from sales packing intake.
-            Posting from this panel is the ONLY UI path that reaches wFirma
-            for Proforma issuance — legacy /proforma/create has no button
-            surface in the dashboard. */}
-        <ProformaDraftPanel batchId={batchId} onToast={onToast} />
-
-        {/* Detail panel — per-row write surfaces for product / customer
-            mapping used by the proforma flow. */}
-        <details data-testid="workflow-details-toggle" style={{ marginTop: 8, marginBottom: 4 }}>
-          <summary style={{ fontSize: 11, color: '#6b7280', cursor: 'pointer',
-                            padding: '6px 0' }}>
-            Show full Proforma Readiness panel (per-row product &amp; customer actions)
-          </summary>
-          <ProformaReadinessCard batchId={batchId} onToast={onToast} />
-        </details>
-      </div>
-
-      {/* Divider between workflows */}
-      <div style={{ height: 1, background: '#e5e7eb', margin: '12px 0' }} />
-
-      {/* ═══════════════════════════════════════════════════════════════ */}
-      {/* SECTION B — PZ Generation & Customs (independent)              */}
+      {/* SECTION B — PZ Generation & Customs                            */}
+      {/* Proforma Invoices (commercial) are managed in the Sales tab.   */}
       {/* ═══════════════════════════════════════════════════════════════ */}
       <div data-testid="workflow-section-b">
         {sectionGroupHeader('B — PZ Generation & Customs', 'b')}
@@ -11799,6 +11763,13 @@ function ProformaDraftPanel({ batchId, onToast }) {
         expected_updated_at: openDraft.updated_at,
         confirm_token: PROFORMA_DRAFT_TOKENS.post,
       }),
+    }).then(result => {
+      if (result && result.service_charges_note) {
+        onToast && onToast(
+          '⚠ ' + result.service_charges_note, 'warning'
+        );
+      }
+      return result;
     });
   };
 
