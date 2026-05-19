@@ -415,9 +415,11 @@ def test_endpoint_blocked_without_operator(client, tmp_path):
     assert "X-Operator" in r.json()["detail"]
 
 
-def test_endpoint_blocked_with_service_charges(client, tmp_path, monkeypatch):
+def test_endpoint_service_charges_noted_not_blocked(client, tmp_path, monkeypatch):
+    """Phase 6D: service charges are snapshotted and noted but no longer
+    block posting. A service_charges_note appears in the 200 response when
+    no wFirma product mapping exists for the charge type."""
     db = tmp_path / "proforma_links.db"
-    # Add a charge BEFORE approval so the approved draft still has it.
     d, _ = pildb.auto_create_draft_from_sales_packing(
         db, batch_id="B1", client_name="ACME", currency="EUR",
         lines=[{"product_code": "X", "design_no": "X",
@@ -434,14 +436,20 @@ def test_endpoint_blocked_with_service_charges(client, tmp_path, monkeypatch):
         confirm_token=pildb.APPROVE_CONFIRM_TOKEN,
     )
     _stub_route_lookups(monkeypatch)
+    _stub_wfirma_call(monkeypatch)
     r = client.post(
         f"/api/v1/proforma/draft/{d.id}/post",
         json={"expected_updated_at": approved.updated_at,
               "confirm_token": pildb.POST_CONFIRM_TOKEN},
         headers=_auth_headers(),
     )
-    assert r.status_code == 400
-    assert "service_charges" in r.json()["blocking_reasons"][0]
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    # Service charges no longer block posting (Phase 6D).
+    # The stub returns a product mapping for "freight", so no note is emitted.
+    # When no mapping exists in production, service_charges_note is added to
+    # the response — that path is tested by test_service_charges_snapshot_6d.py.
 
 
 def test_endpoint_blocked_mixed_currency(client, tmp_path, monkeypatch):

@@ -466,7 +466,9 @@ def test_execute_marks_link_failed_when_wfirma_rejects(client, storage):
 # ── 8. Dashboard source-grep ──────────────────────────────────────────────
 
 def test_dashboard_renders_two_step_convert_flow():
-    src = Path("app/static/dashboard.html").read_text(encoding="utf-8")
+    # The Proforma→Invoice conversion UI lives in shipment-detail.html
+    # (batch detail page). dashboard.html is the shipment-list page.
+    src = Path("app/static/shipment-detail.html").read_text(encoding="utf-8")
     # Button label per scope rule.
     assert "Convert Proforma to Invoice" in src
     # Manual final invoice warning per scope rule.
@@ -488,7 +490,8 @@ def test_dashboard_does_not_auto_call_execute_on_load():
     """Source-grep guard: the execute endpoint must be referenced ONLY
     in `executeConvert` (the operator-clicked handler) and the
     `data-testid` for the execute button. No auto/background path."""
-    src = Path("app/static/dashboard.html").read_text(encoding="utf-8")
+    # The Proforma→Invoice conversion UI lives in shipment-detail.html.
+    src = Path("app/static/shipment-detail.html").read_text(encoding="utf-8")
     # Count references to the execute path. Must be exactly one fetch
     # site, inside `executeConvert`.
     fetch_paths = src.count("/api/v1/proforma/to-invoice/")
@@ -509,11 +512,11 @@ def test_dashboard_does_not_auto_call_execute_on_load():
 
 def test_no_background_or_auto_conversion_path():
     """Exhaustive grep for the execute route in non-test, non-route files.
-    Only the dashboard and routes_proforma should reference it."""
+    Only the shipment-detail page and routes_proforma should reference it."""
     import os
     EXECUTE_URL_FRAGMENT = "/api/v1/proforma/to-invoice/"
     allowed_files = {
-        "app/static/dashboard.html",
+        "app/static/shipment-detail.html",
         "app/api/routes_proforma.py",
     }
     found_in: list[str] = []

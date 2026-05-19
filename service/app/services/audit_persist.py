@@ -47,6 +47,7 @@ log = logging.getLogger(__name__)
 EV_PROFORMA_ISSUED                  = "proforma_issued"
 EV_PROFORMA_CANCELLED               = "proforma_cancelled"
 EV_PROFORMA_CONVERTED_TO_INVOICE    = "proforma_converted_to_invoice"
+EV_INVOICE_APPROVAL_ATTEMPT         = "invoice_approval_attempt"
 EV_INVENTORY_DIRECT_DISPATCH_MARKED = "inventory_direct_dispatch_marked"
 EV_WFIRMA_PZ_MAPPING_REFRESHED      = "wfirma_pz_mapping_refreshed"
 
@@ -385,6 +386,69 @@ def record_proforma_converted_to_invoice(
             "wfirma_proforma_id": pid,
             "wfirma_invoice_id":  iid,
             "reason": "appended"}
+
+
+# ── Human invoice approval boundary ──────────────────────────────────────────
+
+def record_invoice_approval_attempt(
+    audit_path: Path,
+    *,
+    batch_id:           str,
+    client_name:        str,
+    wfirma_proforma_id: str,
+    operator:           str,
+    outcome:            str,   # "approved" | "blocked" | "failed"
+    blocking_reason:    str = "",
+) -> Dict[str, Any]:
+    """
+    Append an ``invoice_approval_attempt`` timeline event capturing every
+    human attempt to convert a proforma to a final invoice.
+
+    Records both successful approvals and blocked/failed attempts so the
+    audit trail is complete regardless of outcome.
+
+    Append-only (never modifies existing entries). Best-effort — callers
+    must wrap with try/except.
+
+    Returns ``{"appended": bool, "reason": str}``.
+    """
+    pid = (wfirma_proforma_id or "").strip()
+    op  = (operator or "").strip()
+    out = (outcome or "").strip()
+    # pid is required for "approved" (we have a real proforma id at that point)
+    # but may be empty for "blocked" / "failed" (blocked before draft lookup).
+    if not pid and out == "approved":
+        return {"appended": False, "reason": "wfirma_proforma_id is empty for approved outcome"}
+    if out not in ("approved", "blocked", "failed"):
+        out = "unknown"
+
+    audit = _load(audit_path)
+    if audit is None:
+        # audit.json absent is normal for new batches — still try to write.
+        audit = {}
+
+    try:
+        tl.log_event(
+            audit_path, EV_INVOICE_APPROVAL_ATTEMPT, "system",
+            op or "operator",
+            detail={
+                "batch_id":           batch_id,
+                "client_name":        client_name,
+                "wfirma_proforma_id": pid,
+                "operator":           op,
+                "outcome":            out,
+                "blocking_reason":    blocking_reason or "",
+                "human_approval_required": True,
+            },
+        )
+    except Exception as exc:
+        log.warning(
+            "audit_persist.record_invoice_approval_attempt timeline "
+            "emit failed (non-fatal): %s", exc,
+        )
+        return {"appended": False, "reason": f"timeline emit failed: {exc}"}
+
+    return {"appended": True, "reason": "appended"}
 
 
 # ── Direct-dispatch transition ───────────────────────────────────────────────
