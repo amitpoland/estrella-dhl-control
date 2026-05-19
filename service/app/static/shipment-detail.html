@@ -2851,6 +2851,22 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+      {/* DIAGNOSTIC v2 — top-of-page build marker (TEMPORARY).
+           Rendered as the first child of BatchDetailPage so it is
+           visible immediately on page load, regardless of tab state,
+           regardless of scroll position, regardless of any conditional.
+           Confirms which build of shipment-detail.html the browser is
+           actually executing.  Remove on the next deploy unless
+           operator approves keeping it. */}
+      <div data-testid="shipment-detail-build-marker"
+           style={{ padding: '6px 14px', background: 'var(--badge-amber-bg)',
+                    color: 'var(--badge-amber-text)',
+                    borderBottom: '1px solid var(--badge-amber-border)',
+                    fontSize: 11, fontFamily: 'monospace', fontWeight: 700,
+                    letterSpacing: '0.04em' }}>
+        SHIPMENT DETAIL BUILD diagnostic-v2
+      </div>
+
       {/* Sub-header — design-faithful 3 info-block layout
            AWB / Importer / Pieces overlines + values, separated by dividers.
            Real audit data only; missing fields fall back to muted em-dash. */}
@@ -2910,6 +2926,30 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           }}>
           {recheckBusy ? '⟳ Rechecking…' : '⟳ Recheck'}
         </Btn>
+      </div>
+
+      {/* DIAGNOSTIC v2 — always-visible activeTab banner immediately
+           under the tab strip, OUTSIDE every tab branch.  Renders
+           regardless of activeTab value.  Prints raw activeTab,
+           JSON.stringify, length, and explicit `=== 'DHL / Customs'`
+           evaluation so the operator can see whether the click
+           handler is setting the expected string.  Remove on the
+           next deploy unless operator approves keeping it. */}
+      <div data-testid="active-tab-diagnostic-v2"
+           style={{ padding: '6px 14px', background: 'var(--bg-subtle)',
+                    borderBottom: '1px solid var(--border)',
+                    fontSize: 11, fontFamily: 'monospace',
+                    color: 'var(--text)' }}>
+        <span style={{ fontWeight: 700, marginRight: 8, color: 'var(--badge-amber-text)' }}>
+          diagnostic-v2 · activeTab:
+        </span>
+        <span data-testid="active-tab-diagnostic-v2-raw">{String(activeTab)}</span>
+        <span style={{ marginLeft: 12 }} data-testid="active-tab-diagnostic-v2-json">
+          json={JSON.stringify(activeTab)} len={(activeTab || '').length}
+        </span>
+        <span style={{ marginLeft: 12 }} data-testid="active-tab-diagnostic-v2-match">
+          === 'DHL / Customs' → {String(activeTab === 'DHL / Customs')}
+        </span>
       </div>
 
       {/* Workflow strip */}
@@ -4552,12 +4592,17 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
         {activeTab === 'DHL / Customs' && (
           <TabErrorBoundary>
             <div data-testid="detail-tab-dhl-customs" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {/* DIAGNOSTIC v1 — proves render-branch was entered. */}
-              <div data-testid="dhl-customs-render-mounted"
-                   style={{ padding: '4px 10px', background: 'var(--badge-green-bg)',
-                            color: 'var(--badge-green-text)', borderRadius: 4,
-                            fontSize: 10, fontFamily: 'monospace' }}>
-                diagnostic · DHL/Customs render branch mounted · build=v1
+              {/* DIAGNOSTIC v2 — proves render-branch was entered.
+                  Always rendered when activeTab === 'DHL / Customs'
+                  (not gated by loading/error/data states). */}
+              <div data-testid="dhl-customs-render-mounted-v2"
+                   style={{ padding: '6px 12px', background: 'var(--badge-green-bg)',
+                            color: 'var(--badge-green-text)',
+                            border: '1px solid var(--badge-green-border)',
+                            borderRadius: 4,
+                            fontSize: 11, fontFamily: 'monospace', fontWeight: 700,
+                            letterSpacing: '0.04em' }}>
+                DHL CUSTOMS BRANCH IS ACTIVE — diagnostic-v2
               </div>
               <Card style={{ padding: 16 }}>
                 <SectionHeader icon="📨" title="DHL / Customs"

@@ -168,6 +168,55 @@ def test_no_new_apifetch_in_dhl_customs_render_branch(html):
 
 # ── No backend reference for boundary class itself ──────────────────────────
 
+def test_diagnostic_v2_build_marker_present(html):
+    """Top-of-page build marker rendered as first child of BatchDetailPage
+    render output.  Visible immediately on page load, regardless of tab
+    state or scroll position."""
+    assert 'data-testid="shipment-detail-build-marker"' in html
+    assert "SHIPMENT DETAIL BUILD diagnostic-v2" in html
+
+
+def test_diagnostic_v2_active_tab_banner_outside_tab_branches(html):
+    """Always-visible activeTab diagnostic must be OUTSIDE every
+    `activeTab === '…'` conditional — i.e. it renders regardless of
+    which tab is active."""
+    assert 'data-testid="active-tab-diagnostic-v2"' in html
+    assert 'data-testid="active-tab-diagnostic-v2-raw"' in html
+    assert 'data-testid="active-tab-diagnostic-v2-json"' in html
+    assert 'data-testid="active-tab-diagnostic-v2-match"' in html
+
+    # Verify the v2 banner is OUTSIDE every tab branch (not contained
+    # inside any `{activeTab === '…' && …}` block).
+    v2_pos = html.find('data-testid="active-tab-diagnostic-v2"')
+    assert v2_pos > 0
+    # Walk back from v2_pos and find the most recent `activeTab === '`.
+    # If it appears AFTER the most recent unmatched `&&` opener that
+    # contains v2, the banner would be inside that branch.  Simpler
+    # invariant: confirm v2 sits BEFORE the first `{activeTab === '` in
+    # the file (so it precedes ALL tab branches).
+    first_branch = html.find("{activeTab === '")
+    assert 0 < v2_pos < first_branch, (
+        "active-tab-diagnostic-v2 must appear BEFORE any tab branch "
+        f"(v2_pos={v2_pos}, first_branch={first_branch})"
+    )
+
+
+def test_diagnostic_v2_dhl_customs_branch_marker_present(html):
+    """Inside the DHL/Customs render branch, an always-rendered marker
+    (not gated by loading/error/data state) confirms the conditional
+    fired and the subtree mounted."""
+    assert 'data-testid="dhl-customs-render-mounted-v2"' in html
+    assert "DHL CUSTOMS BRANCH IS ACTIVE — diagnostic-v2" in html
+    # Marker must sit inside the DHL/Customs && ( ... ) block.
+    branch_start = html.find("{activeTab === 'DHL / Customs' && (")
+    marker_pos = html.find('data-testid="dhl-customs-render-mounted-v2"')
+    next_branch = html.find("{activeTab === '", branch_start + 5)
+    assert branch_start > 0 < marker_pos
+    assert branch_start < marker_pos < next_branch, (
+        "DHL/Customs marker must be INSIDE the DHL/Customs render branch"
+    )
+
+
 def test_diagnostic_v1_active_tab_banner_present(html):
     """Temporary diagnostic — operator-visible activeTab banner under
     the tab strip.  Remove on next deploy unless operator approves
@@ -181,8 +230,9 @@ def test_diagnostic_v1_active_tab_banner_present(html):
 def test_diagnostic_v1_dhl_customs_mount_marker_present(html):
     """Temporary diagnostic — always-rendered marker inside the
     DHL/Customs render branch (not gated by data states) so operator
-    can confirm the conditional fires."""
-    assert 'data-testid="dhl-customs-render-mounted"' in html
+    can confirm the conditional fires.  Upgraded to v2 wording —
+    same test-id family, new label."""
+    assert 'data-testid="dhl-customs-render-mounted-v2"' in html
 
 
 def test_tab_label_and_render_branch_strings_identical():
