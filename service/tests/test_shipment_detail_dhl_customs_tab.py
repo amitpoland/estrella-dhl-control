@@ -45,13 +45,51 @@ def test_dhl_customs_render_branches_count_unchanged(html):
     """Exactly two `activeTab === 'DHL / Customs' && ` render branches
     must exist in shipment-detail.html — the pre-existing pair owned
     by the original implementation.  Adding a third (as an earlier
-    campaign did) duplicates rendering and obscures the real bug."""
+    campaign did) duplicates rendering and obscures the real bug.
+
+    Note: during binary-isolation step 1, branch #1 may be prefixed
+    with `false &&` to short-circuit; that does NOT remove the
+    `activeTab === 'DHL / Customs'` literal, so this count stays at 2.
+    """
     branches = re.findall(
-        r"\{\s*activeTab\s*===\s*['\"]DHL / Customs['\"]\s*&&", html
+        r"\{\s*(?:false\s*/\*[^*]*\*/\s*&&\s*)?activeTab\s*===\s*['\"]DHL / Customs['\"]\s*&&", html
     )
     assert len(branches) == 2, (
         f"expected exactly 2 DHL/Customs render branches (pre-existing), "
         f"found {len(branches)} — a redundant branch was reintroduced"
+    )
+
+
+def test_branch1_binary_isolation_step1_active(html):
+    """BINARY-ISOLATION STEP 1: branch #1 is intentionally disabled by
+    a `false &&` prefix.  This test verifies the disabled state is
+    in effect.  When the culprit is identified the prefix is removed
+    and this test is deleted."""
+    assert (
+        "{false /* binary-isolation-step-1 */ && activeTab === 'DHL / Customs' && ("
+        in html
+    ), (
+        "branch #1 must carry the binary-isolation step-1 disable prefix "
+        "so it does not render during this diagnostic"
+    )
+
+
+def test_branch2_remains_active(html):
+    """Branch #2 (readiness panel) must NOT carry the binary-isolation
+    prefix — it stays live so operator can observe whether the
+    white-screen comes from it."""
+    # Slice forward past branch #1's marker, then look for branch #2's
+    # opener; it must not have the disable prefix.
+    step1_marker = "binary-isolation-step-1"
+    after_step1 = html.find(step1_marker)
+    assert after_step1 > 0
+    branch2 = html.find("{activeTab === 'DHL / Customs' && (() =>", after_step1)
+    assert branch2 > after_step1, "branch #2 opener not found after branch #1"
+    # No other `false &&` short-circuit between marker and branch #2
+    between = html[after_step1:branch2]
+    assert "false /* binary-isolation" not in between[100:], (
+        "second binary-isolation prefix found — only branch #1 should "
+        "be disabled in step 1"
     )
 
 

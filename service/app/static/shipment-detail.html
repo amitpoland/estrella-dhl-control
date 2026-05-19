@@ -6896,8 +6896,19 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
         {/* ── DHL TAB — Phase 2 read-only DHL pipeline panel ── */}
 
+        {/* BINARY-ISOLATION STEP 1 — branch #1 DISABLED.
+            Prefix `false &&` short-circuits the conditional so this
+            branch (Section 1 — Shipment & DHL Clearance) renders
+            nothing.  Branch #2 (line ~8394, readiness panel) stays
+            intact.  If clicking DHL/Customs now renders normally,
+            the white-screen bug lives inside branch #1.  If white
+            screen persists, branch #2 is the culprit.  Smallest
+            possible edit: one prepended token; original literal
+            string preserved so invariant tests still count 2
+            branches in the file. */}
+
         {/* ── DHL / CUSTOMS — Sections moved from Overview ── */}
-        {activeTab === 'DHL / Customs' && (
+        {false /* binary-isolation-step-1 */ && activeTab === 'DHL / Customs' && (
           <>
             {/* Section 1: DHL */}
             <Card>
