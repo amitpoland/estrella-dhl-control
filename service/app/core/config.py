@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     engine_dir: Path = Path(__file__).parent.parent.parent.parent.resolve()  # …/CLI/
     run_verify_on_startup: bool = False
     strict_match: bool = False          # global gate: block on any False verification
+    # ── Bootstrap flags ───────────────────────────────────────────────────────
+    # series_bootstrap_enabled: env SERIES_BOOTSTRAP_ENABLED=false disables the
+    # startup live series refresh from wFirma. Useful when wFirma credentials
+    # are not available in a given environment (e.g. CI, staging sandbox).
+    # Default True (live refresh on stale cache) — set False to skip live fetch.
+    series_bootstrap_enabled: bool = True
 
     # ── Audit hardening (feature-flagged) ─────────────────────────────────────
     # When True (env: AUDIT_HARDENING_ENABLED=1), audit_scoring.score_batch

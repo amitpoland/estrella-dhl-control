@@ -243,8 +243,17 @@ async def lifespan(app: FastAPI):
                 _wdc.is_cache_stale(),
                 _wdc.get_dictionaries().get("cache_age_hours"),
             )
-        if _wdc.is_cache_stale():
+        if _wdc.is_cache_stale() and settings.series_bootstrap_enabled:
             _series_result = _wdc.refresh_from_wfirma()
+        elif _wdc.is_cache_stale() and not settings.series_bootstrap_enabled:
+            log.info(
+                "startup_series_bootstrap: cache is stale but "
+                "SERIES_BOOTSTRAP_ENABLED=false — skipping live wFirma fetch"
+            )
+            _series_result = None
+        else:
+            _series_result = None  # fresh cache path handled in else below
+        if _series_result is not None:
             _src = _series_result.get("source_state", {})
             log.info(
                 "startup_series_bootstrap: live refresh completed; "
@@ -255,7 +264,7 @@ async def lifespan(app: FastAPI):
                 len(_series_result.get("invoice_series", [])),
                 len(_series_result.get("proforma_series", [])),
             )
-        else:
+        elif not _wdc.is_cache_stale():
             log.info(
                 "startup_series_bootstrap: disk cache is fresh, skipping live fetch"
             )
