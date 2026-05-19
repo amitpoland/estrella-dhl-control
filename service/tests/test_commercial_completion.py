@@ -6,7 +6,7 @@ Covers:
   W02 — ProformaRequest.date field exists; _build_proforma_xml emits <date> when set
   W03 — _build_proforma_xml omits <date> when date is empty/invalid
   PM01 — ProformaRequest.payment_method exists; _build_proforma_xml emits <paymentmethod> for known values
-  PM02 — "other" and empty payment_method omit <paymentmethod> element
+  PM02 — unrecognised and empty payment_method values omit <paymentmethod> element
   PM03 — preferred_payment_method round-trip through CustomerMaster DB (write + read)
   PM04 — preferred_payment_method = None clears the field
   S01 — ship_to_name blank-to-null coercion in _parse_body

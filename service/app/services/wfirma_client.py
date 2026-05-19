@@ -1934,7 +1934,7 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
     )
 
     # Map preferred_payment_method to wFirma XML values.
-    # "other" and empty both mean "omit the element".
+    # Any unrecognised or empty value omits the element (wFirma uses its own default).
     _PM_MAP = {
         "transfer":     "przelew",
         "cash":         "gotowka",
