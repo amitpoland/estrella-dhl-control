@@ -281,6 +281,9 @@ class TestReadinessCompatibility:
 
 DASHBOARD_HTML = (Path(__file__).resolve().parents[1]
                   / "app" / "static" / "dashboard.html")
+# Shipment detail UI lives in its own file (Phase 2 split from dashboard.html)
+SHIPMENT_DETAIL_HTML = (Path(__file__).resolve().parents[1]
+                        / "app" / "static" / "shipment-detail.html")
 
 def _html() -> str:
     return DASHBOARD_HTML.read_text(encoding="utf-8")
@@ -292,9 +295,15 @@ class TestDashboardSurface:
 
     def test_execute_pz_gate_mounted_in_pz_wfirma_tab(self):
         """ExecutePZGate is embedded inside OperatorWorkflowCard's
-        Execute section — reachable from the PZ/wFirma tab via the
-        unified workflow."""
-        h = _html()
+        Execute section — reachable from the PZ/Accounting tab via the
+        unified workflow.
+
+        Note: detail-panel tab logic lives in shipment-detail.html
+        (Phase 2 split).  The ordering check reads that file; the
+        component-defined check uses dashboard.html (shared component
+        library that both files include).
+        """
+        h = SHIPMENT_DETAIL_HTML.read_text(encoding="utf-8")
         idx_tab      = h.index("activeTab === 'PZ / Accounting'")
         idx_workflow = h.index("<OperatorWorkflowCard ", idx_tab)
         idx_close    = h.index("Section 3 — PZ / Accounting", idx_tab)
