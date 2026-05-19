@@ -24,7 +24,121 @@ dictionaries are always present.
 """
 from __future__ import annotations
 
+import json
+import logging
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+log = logging.getLogger(__name__)
+
+
+# ── Series cache persistence ──────────────────────────────────────────────────
+# After a successful wFirma fetch the live series catalog is written to a JSON
+# file. On the NEXT process restart the file is read back before a new fetch is
+# attempted so the series dropdowns are immediately populated even when wFirma
+# is temporarily unreachable.
+
+#: Maximum age (hours) before the persisted cache is considered stale and a new
+#: live fetch is triggered during startup.  24 hours = once per day on average.
+SERIES_CACHE_TTL_HOURS: int = 24
+
+_cache_file_path: Optional[Path] = None
+_cache_lock = threading.Lock()
+
+
+def init_series_cache(path: Path) -> None:
+    """Set the file path for persistent series cache storage.
+
+    Must be called once at startup (before ``refresh_from_wfirma``).
+    Idempotent: subsequent calls update the path.
+    """
+    global _cache_file_path
+    _cache_file_path = Path(path)
+
+
+def is_cache_stale(max_age_hours: int = SERIES_CACHE_TTL_HOURS) -> bool:
+    """Return True when the live cache is absent, errored, or older than
+    *max_age_hours*.  Baseline source state always counts as stale."""
+    fetched_at = _LIVE_CACHE.get("fetched_at")
+    source_states = _LIVE_CACHE.get("source_state", {})
+    if not fetched_at:
+        return True
+    inv_state = source_states.get("invoice_series", "baseline")
+    pro_state = source_states.get("proforma_series", "baseline")
+    if inv_state in ("baseline", "error") and pro_state in ("baseline", "error"):
+        return True
+    try:
+        fetched = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+        age_hours = (
+            datetime.now(timezone.utc) - fetched
+        ).total_seconds() / 3600
+        return age_hours >= max_age_hours
+    except Exception:
+        return True
+
+
+def _persist_cache_to_disk() -> None:
+    """Write the current live cache to disk as JSON (atomic rename).
+
+    Non-fatal: any failure is logged as a warning and silently swallowed —
+    the in-memory cache remains the authoritative source.
+    """
+    if _cache_file_path is None:
+        return
+    inv_live = _LIVE_CACHE.get("invoice_series") or []
+    pro_live = _LIVE_CACHE.get("proforma_series") or []
+    if not inv_live and not pro_live:
+        return  # nothing worth persisting — don't overwrite a good cache with empty
+    snapshot = {
+        "invoice_series":  inv_live,
+        "proforma_series": pro_live,
+        "fetched_at":      _LIVE_CACHE.get("fetched_at"),
+        "source_state":    dict(_LIVE_CACHE["source_state"]),
+        "schema_version":  1,
+    }
+    try:
+        _cache_file_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _cache_file_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+        tmp.rename(_cache_file_path)
+        log.debug("series_cache persisted to %s", _cache_file_path)
+    except Exception as exc:
+        log.warning("series_cache persist failed: %s", exc)
+
+
+def load_cache_from_disk() -> bool:
+    """Load a previously-persisted series cache from disk into ``_LIVE_CACHE``.
+
+    Returns True if a valid cache was loaded, False otherwise.
+    Non-fatal: any read/parse error returns False; caller can then
+    trigger a fresh wFirma fetch.
+    """
+    if _cache_file_path is None or not _cache_file_path.exists():
+        return False
+    try:
+        data = json.loads(_cache_file_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("series_cache disk-load failed: %s", exc)
+        return False
+    inv  = data.get("invoice_series")
+    pro  = data.get("proforma_series")
+    fat  = data.get("fetched_at")
+    sts  = data.get("source_state", {})
+    if not isinstance(inv, list) or not isinstance(pro, list):
+        log.warning("series_cache disk-load: unexpected shape, ignoring")
+        return False
+    with _cache_lock:
+        _LIVE_CACHE["invoice_series"]  = inv  or None
+        _LIVE_CACHE["proforma_series"] = pro  or None
+        _LIVE_CACHE["fetched_at"]      = fat
+        _LIVE_CACHE["source_state"].update(sts)
+    log.info(
+        "series_cache loaded from disk: inv=%d pro=%d fetched_at=%s",
+        len(inv), len(pro), fat,
+    )
+    return True
 
 
 # ── VAT modes ────────────────────────────────────────────────────────────────
@@ -203,6 +317,11 @@ def refresh_from_wfirma() -> Dict[str, Any]:
     _LIVE_CACHE["source_state"]["proforma_series"] = proforma_state
     _LIVE_CACHE["fetched_at"] = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # Persist to disk so NSSM restart can serve last-known-good data.
+    # Non-fatal: in-memory cache is authoritative even if disk write fails.
+    if invoice_state == "live" or proforma_state == "live":
+        _persist_cache_to_disk()
+
     return get_dictionaries()
 
 
@@ -222,14 +341,30 @@ def get_dictionaries() -> Dict[str, Any]:
     invoice_series  = list(INVOICE_SERIES) + [e for e in inv_live  if e["id"] not in {b["id"] for b in INVOICE_SERIES}]
     proforma_series = list(PROFORMA_SERIES) + [e for e in pro_live if e["id"] not in {b["id"] for b in PROFORMA_SERIES}]
 
+    # Cache age / stale detection — exposed so the operator UI can show
+    # how fresh the series catalog is and offer a manual refresh.
+    fetched_at = _LIVE_CACHE.get("fetched_at")
+    cache_age_hours: Optional[float] = None
+    if fetched_at:
+        try:
+            fetched = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+            cache_age_hours = round(
+                (datetime.now(timezone.utc) - fetched).total_seconds() / 3600, 2
+            )
+        except Exception:
+            pass
+
     return {
-        "vat_modes":       list(VAT_MODES),
-        "currencies":      list(CURRENCIES),
-        "languages":       list(LANGUAGES),
-        "invoice_series":  invoice_series,
-        "proforma_series": proforma_series,
-        "source":          "baseline" if not (inv_live or pro_live) else "merged",
-        "source_state":    dict(_LIVE_CACHE["source_state"]),
-        "fetched_at":      _LIVE_CACHE.get("fetched_at"),
-        "version":         "2026-05-17",
+        "vat_modes":        list(VAT_MODES),
+        "currencies":       list(CURRENCIES),
+        "languages":        list(LANGUAGES),
+        "invoice_series":   invoice_series,
+        "proforma_series":  proforma_series,
+        "source":           "baseline" if not (inv_live or pro_live) else "merged",
+        "source_state":     dict(_LIVE_CACHE["source_state"]),
+        "fetched_at":       fetched_at,
+        "cache_age_hours":  cache_age_hours,
+        "is_stale":         is_cache_stale(),
+        "cache_ttl_hours":  SERIES_CACHE_TTL_HOURS,
+        "version":          "2026-05-17",
     }

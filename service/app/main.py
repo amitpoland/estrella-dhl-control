@@ -194,26 +194,40 @@ async def lifespan(app: FastAPI):
         else:
             log.error("Engine health check FAILED:\n%s", detail)
 
-    # ── Master Bootstrap: series catalog from wFirma (Phase 4) ─────────────
-    # Read-only background refresh of the wFirma series catalog.
-    # Populates INVOICE_SERIES and PROFORMA_SERIES in the in-memory cache so
-    # the customer-master UI shows real series names (not just the empty
-    # baseline placeholder) without requiring a manual operator refresh.
-    # Non-fatal: if wFirma is unreachable, baseline serves and the operator
-    # can trigger POST /api/v1/customer-master/dictionaries/refresh later.
-    # GOVERNANCE: classified as series.refresh_from_wfirma → SAFE_AUTONOMOUS.
+    # ── Master Bootstrap: series catalog (disk-first, stale-refresh) ────────
+    # 1. init_series_cache — set the disk persistence path.
+    # 2. load_cache_from_disk — populate in-memory cache from last-saved file
+    #    so series dropdowns work immediately even when wFirma is unreachable.
+    # 3. If cache is absent or stale (>24 h), trigger a live wFirma refresh.
+    # All steps are non-fatal: failures are warned, never block startup.
+    # GOVERNANCE: series.refresh_from_wfirma → SAFE_AUTONOMOUS.
     try:
         from .services import wfirma_dictionary_cache as _wdc
-        _series_result = _wdc.refresh_from_wfirma()
-        _src = _series_result.get("source_state", {})
-        log.info(
-            "startup_series_bootstrap: invoice_series_source=%s proforma_series_source=%s "
-            "invoice_count=%d proforma_count=%d",
-            _src.get("invoice_series", "unknown"),
-            _src.get("proforma_series", "unknown"),
-            len(_series_result.get("invoice_series", [])),
-            len(_series_result.get("proforma_series", [])),
-        )
+        _wdc.init_series_cache(_root / "series_cache.json")
+        _disk_hit = _wdc.load_cache_from_disk()
+        if _disk_hit:
+            log.info(
+                "startup_series_bootstrap: loaded from disk cache; "
+                "is_stale=%s cache_age_hours=%s",
+                _wdc.is_cache_stale(),
+                _wdc.get_dictionaries().get("cache_age_hours"),
+            )
+        if _wdc.is_cache_stale():
+            _series_result = _wdc.refresh_from_wfirma()
+            _src = _series_result.get("source_state", {})
+            log.info(
+                "startup_series_bootstrap: live refresh completed; "
+                "invoice_series_source=%s proforma_series_source=%s "
+                "invoice_count=%d proforma_count=%d",
+                _src.get("invoice_series", "unknown"),
+                _src.get("proforma_series", "unknown"),
+                len(_series_result.get("invoice_series", [])),
+                len(_series_result.get("proforma_series", [])),
+            )
+        else:
+            log.info(
+                "startup_series_bootstrap: disk cache is fresh, skipping live fetch"
+            )
     except Exception as _series_exc:  # pragma: no cover — never block startup
         log.warning("startup_series_bootstrap_failed reason=%s", _series_exc)
 
