@@ -11,7 +11,9 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 # FACTS
 
 ## Current origin/main HEAD
-- **2026-05-19** — `49da2f6` fix(config): Pydantic V2 deprecation cleanup — 82 warnings eliminated, 0 env= kwargs remaining — **CAMPAIGN V5 IN PROGRESS**
+- **2026-05-19** — `ecbe8bd` fix: ZC429 tab-mount tests read shipment-detail.html (31/31 pass, pre-existing failures resolved) — **CAMPAIGN V6 COMPLETE**
+- **2026-05-19** — `6023f8c` fix(governance): P2 flag correction — live=shadow=True+live_enabled=True; shadow=False+live=True is FORBIDDEN (ADR-018) — **prior**
+- **2026-05-19** — `49da2f6` fix(config): Pydantic V2 deprecation cleanup — 82 warnings eliminated — **prior**
 - **2026-05-19** — `302848f` fix(security): Lesson E ENV isolation + path traversal (#223, #224 closed) — **prior**
 - **2026-05-19** — `6f57e2c` chore(deploy-prep): Windows reconciliation #222 merged — **prior**
 - **2026-05-19** — `119e0fe` fix(safety): GATE 4 BLOCKER-1+ADV-1 (#225 merged) — routes_settings 422 guard + write_json_atomic
@@ -373,9 +375,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Windows deploy** — 7-AGENT GATE: READY-TO-DEPLOY (Campaign V4 Phase 2 complete). Run: `nssm stop PZService && git pull --ff-only origin main && nssm start PZService` on Windows. Current HEAD: `302848f` (1 commit ahead of gate run on `989f4b1` — additive security fix only; no new gate required). Rollback: `git reset --hard 4c797e4`. Verify health after start.
+1. **Windows deploy** — 7-AGENT GATE: READY-TO-DEPLOY (Campaign V4 Phase 2 complete). Run: `nssm stop PZService && git pull --ff-only origin main && nssm start PZService` on Windows. Current HEAD: `ecbe8bd` (additive test fixes only since gate run; no new gate required). Rollback: `git reset --hard 4c797e4`. Verify health after start.
 2. **P2 live promotion** — after Tejal reviews shadow corpus: set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` in Windows .env ONLY. **DO NOT** set `P2_SHADOW_MODE=false` — that combination (shadow=False, live=True) is FORBIDDEN by ADR-018 and raises ForbiddenFlagCombination. Live state = shadow=True + live_enabled=True. No code changes needed.
-3. **Issues + warnings closed** — #223/#224 CLOSED. Pydantic: 0 warnings. **P2 flag correction**: LIVE = `P2_LIVE_ENABLED=true` (shadow_mode stays true). Campaign V2-V5 instructions to set shadow_mode=false were WRONG. Corrected in V6.
+3. **All known issues resolved on main** — #223/#224 CLOSED. Pydantic: 0 warnings. ZC429 tab-mount tests: FIXED (31/31 pass). P2 flag correction: LIVE = `P2_LIVE_ENABLED=true` (shadow_mode stays true). No outstanding code issues.
 
 ## Completed actions (previously "next")
 
