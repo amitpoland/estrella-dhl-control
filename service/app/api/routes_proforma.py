@@ -97,11 +97,14 @@ def _check_warehouse_readiness(batch_id: str) -> List[str]:
     environments that don't seed a processed batch).
 
     Checks (in order):
-      1. wfirma_export.wfirma_pz_doc_id is present in audit.json
-      2. All product_codes in pz_rows.json are resolved in wfirma_products
+      1. All product_codes in pz_rows.json are resolved in wfirma_products
          (wfirma_product_id set + sync_status == "matched")
-      3. No price conflicts — same product_code must not carry two different
+      2. No price conflicts — same product_code must not carry two different
          unit_netto_pln values in pz_rows.json
+
+    NOTE: The wfirma_pz_doc_id check was intentionally moved to
+    _check_proforma_export_prerequisites(), which is an export/create gate —
+    NOT a preview gate.  Preview must work before the wFirma PZ is created.
     """
     output_dir = settings.storage_root / "outputs" / batch_id
     audit_path = output_dir / "audit.json"
@@ -109,23 +112,9 @@ def _check_warehouse_readiness(batch_id: str) -> List[str]:
     if not audit_path.exists():
         return []
 
-    try:
-        with audit_path.open() as f:
-            audit = json.load(f)
-    except Exception:
-        return ["warehouse readiness check failed: could not read audit.json"]
-
     reasons: List[str] = []
 
-    # 1. wfirma_pz_doc_id must exist
-    wfirma_export = audit.get("wfirma_export") or {}
-    pz_doc_id = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
-    if not pz_doc_id:
-        reasons.append(
-            "warehouse PZ not yet created — run wFirma PZ create before issuing a proforma"
-        )
-
-    # 2+3. Inspect pz_rows.json for unresolved codes and price conflicts
+    # 1+2. Inspect pz_rows.json for unresolved codes and price conflicts
     pz_rows_path = output_dir / "pz_rows.json"
     if not pz_rows_path.exists():
         return reasons
@@ -171,6 +160,79 @@ def _check_warehouse_readiness(batch_id: str) -> List[str]:
         )
 
     return reasons
+
+
+# ── Export prerequisites gate ────────────────────────────────────────────────
+
+def _check_proforma_export_prerequisites(batch_id: str) -> List[str]:
+    """Gates specific to wFirma proforma export/create — NOT required for preview.
+
+    A commercial preview can be shown before the wFirma PZ is created.
+    Actual proforma issuance (write to wFirma) requires a PZ to exist.
+
+    Returns [] when audit.json is absent (graceful pass-through).
+    """
+    output_dir = settings.storage_root / "outputs" / batch_id
+    audit_path = output_dir / "audit.json"
+    if not audit_path.exists():
+        return []
+    try:
+        with audit_path.open() as f:
+            audit = json.load(f)
+    except Exception:
+        return ["export prerequisites check failed: could not read audit.json"]
+
+    reasons: List[str] = []
+    wfirma_export = audit.get("wfirma_export") or {}
+    pz_doc_id = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
+    if not pz_doc_id:
+        reasons.append(
+            "proforma export requires wFirma PZ — "
+            "run wFirma PZ create before issuing a proforma"
+        )
+    return reasons
+
+
+# ── Batch lifecycle derivation ───────────────────────────────────────────────
+
+_LIFECYCLE_TRANSIT_STATUSES: frozenset = frozenset({
+    "dsk_generated", "dsk_transfer_queued", "agency_email_queued",
+    "dsk_sent", "reply_sent", "reply_queued", "dsk_transfer_sent",
+})
+
+
+def _derive_batch_lifecycle(batch_id: str) -> str:
+    """Derive the batch lifecycle from inventory rows + audit clearance status.
+
+    Returns:
+        "POST_IMPORT"  — inventory_state rows exist (goods at warehouse or dispatched)
+        "DHL_TRANSIT"  — no inventory rows but clearance_status indicates active transit
+                         (DSK sent to agency, reply queued, etc.)
+        "PRE_IMPORT"   — no inventory rows and no transit indicator
+        "UNKNOWN"      — audit unreadable or batch not found
+    """
+    try:
+        all_states = ise.list_all_states_for_batch(batch_id)
+        has_inventory = bool(any(all_states.values()))
+    except Exception:
+        has_inventory = False
+
+    if has_inventory:
+        return "POST_IMPORT"
+
+    output_dir = settings.storage_root / "outputs" / batch_id
+    audit_path = output_dir / "audit.json"
+    if not audit_path.exists():
+        return "UNKNOWN"
+    try:
+        with audit_path.open() as f:
+            audit = json.load(f)
+        cs = (audit.get("clearance_status") or "").lower().strip()
+        if cs in _LIFECYCLE_TRANSIT_STATUSES:
+            return "DHL_TRANSIT"
+        return "PRE_IMPORT"
+    except Exception:
+        return "UNKNOWN"
 
 
 # ── Customer resolver (single source of truth — used by preview, payload   ──
@@ -345,9 +407,20 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     See: design_product_bridge.populate_from_packing().
     """
     blocking_reasons: List[str] = []
+    warehouse_blockers: List[str] = []
+    export_blockers:   List[str] = []
 
-    # ── 0a. Warehouse readiness gate ──────────────────────────────────────────
-    blocking_reasons.extend(_check_warehouse_readiness(batch_id))
+    # ── 0a. Export prerequisites (wFirma PZ required for create — NOT preview) ─
+    # Preview is intentionally allowed before the PZ exists so operators can
+    # verify commercial data, customer mapping, and line items before customs.
+    export_blockers.extend(_check_proforma_export_prerequisites(batch_id))
+
+    # ── 0b. Warehouse readiness (product resolution + price conflicts) ─────────
+    warehouse_blockers.extend(_check_warehouse_readiness(batch_id))
+    blocking_reasons.extend(warehouse_blockers)
+
+    # ── 0c. Batch lifecycle (TRANSIT derivation from clearance_status) ─────────
+    batch_lifecycle = _derive_batch_lifecycle(batch_id)
 
     # ── 0b. Populate design_product_mapping from packing_lines (idempotent) ──
     # The bridge data lives on every packing_lines row (product_code +
@@ -403,8 +476,12 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
             "client_name":      client_name,
             "currency":         "unknown",
             "exchange_rate":    None,
+            "can_preview":      False,
             "ready":            False,
             "blocking_reasons": early_blockers,
+            "export_blockers":  export_blockers,
+            "warehouse_blockers": warehouse_blockers,
+            "batch_lifecycle":  batch_lifecycle,
             "lines":            [],
             "customer_resolution": {
                 "normalized_customer_name":   customer_resolution["normalized_name"],
@@ -451,6 +528,8 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         "client_dispatched":      in_dispatched,
     }
 
+    _is_dhl_transit = (batch_lifecycle == "DHL_TRANSIT")
+
     def _stock_status(pc: str) -> str:
         scs = sc_per_product.get(pc, [])
         if not scs:
@@ -473,11 +552,20 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
             return "sales_transit"
         if any(sc in in_closed for sc in scs):
             return "closed"
+        # No inventory_state rows exist yet — check batch lifecycle.
+        # When DHL_TRANSIT: goods are en-route/at customs agency; preview is
+        # allowed (operator can verify commercial data before goods arrive).
+        # Create is still gated by export_blockers (wFirma PZ required).
+        if _is_dhl_transit:
+            return "dhl_transit"
         return "missing_state"
 
     _ELIGIBLE_LABELS = {
         "warehouse_stock", "direct_dispatch_ready",
         "client_dispatched", "mixed_eligible",
+        # dhl_transit: goods not yet at warehouse but actively in transit;
+        # preview-eligible so operators can prepare commercial documents early.
+        "dhl_transit",
     }
 
     def _stock_ok(pc: str) -> bool:
@@ -724,7 +812,13 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     product_total = sum((ln.get("line_value") or 0) for ln in lines)
     final_total   = product_total + service_charge_total
 
-    ready = not blocking_reasons
+    # can_preview: True when sales rows exist and lines can be shown.
+    # Does NOT require wFirma PZ — that's an export gate, not a preview gate.
+    # (The early-exit path above sets can_preview=False when no sales rows exist.)
+    can_preview = True
+
+    # ready: full gate for proforma create/export — all blockers must be clear.
+    ready = not blocking_reasons and not export_blockers
 
     return {
         "ok":               True,
@@ -732,8 +826,12 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         "client_name":      client_name,
         "currency":         currency,
         "exchange_rate":    exchange_rate,
+        "can_preview":      can_preview,
         "ready":            ready,
         "blocking_reasons": blocking_reasons,
+        "export_blockers":  export_blockers,
+        "warehouse_blockers": warehouse_blockers,
+        "batch_lifecycle":  batch_lifecycle,
         "lines":            lines,
         # Operator-entered freight / insurance (not derived from import cost).
         # insurance entries include the canonical wording that will appear on
@@ -1155,6 +1253,9 @@ def proforma_create(
         })
 
     # ── 2. Preview must be ready (independent of settings gate) ─────────────
+    # ready = not blocking_reasons AND not export_blockers.
+    # Export blockers (wFirma PZ required) are separated from warehouse/customer
+    # blockers so preview can show data before PZ exists; create requires both.
     if not preview.get("ready"):
         return JSONResponse({
             "ok":               False,
@@ -1162,6 +1263,7 @@ def proforma_create(
             "batch_id":          batch_id,
             "client_name":       cn,
             "blocking_reasons":  preview.get("blocking_reasons", []),
+            "export_blockers":   preview.get("export_blockers", []),
             "currency":          preview.get("currency"),
             "exchange_rate":     preview.get("exchange_rate"),
         })

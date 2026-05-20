@@ -1,13 +1,15 @@
 """
 test_proforma_warehouse_gate.py — Warehouse readiness gate for proforma preview.
 
-Verifies that _build_preview (and therefore both /preview and /create) correctly
-blocks a proforma when the batch has not yet been committed to wFirma PZ, has
-unresolved product_codes, or has price conflicts in pz_rows.json — and that it
-is allowed once all three conditions are satisfied.
+Gate separation (Campaign 12 — 2026-05-20):
+  wfirma_pz_doc_id check moved to _check_proforma_export_prerequisites()
+  which populates export_blockers — NOT blocking_reasons.  Preview can now
+  show commercial data before the PZ is created.  Create/export is still gated.
 
 Tests:
-  1. blocked_without_pz_doc_id          — audit.json present but no PZ doc ID
+  1. blocked_without_pz_doc_id          — audit present, no PZ doc ID →
+                                          export_blockers carries the reason;
+                                          can_preview=True; preview HTTP 200
   2. blocked_with_unresolved_goods       — PZ created but a product_code unresolved
   3. blocked_with_price_conflicts        — PZ created, all resolved, but price conflict
   4. allowed_after_pz_exists_all_resolved — all green: no warehouse blocking reason
@@ -183,20 +185,40 @@ def _seed_happy_path(storage):
 def test_blocked_without_pz_doc_id(client, storage):
     """
     audit.json exists but wfirma_pz_doc_id is empty →
-    blocking_reasons must mention 'warehouse PZ not yet created'.
+    Campaign 12 (2026-05-20): the PZ requirement is an EXPORT gate, not a preview gate.
+    - export_blockers must carry the 'proforma export requires wFirma PZ' reason
+    - blocking_reasons must NOT contain the PZ reason (it no longer blocks preview)
+    - can_preview must be True (lines exist — preview is allowed)
+    - ready must be False (export_blockers causes ready=False)
     """
     _seed_happy_path(storage)
     _write_audit(storage, pz_doc_id="")          # no PZ yet
     _write_pz_rows(storage, [_pz_row("EJL/T-1")])
 
     r = client.post(f"/api/v1/proforma/preview/{BATCH}/{CLIENT}", headers=_auth())
+    assert r.status_code == 200, f"Preview must return HTTP 200, got {r.status_code}"
     body = r.json()
 
-    assert body["ready"] is False
-    reasons = body.get("blocking_reasons", [])
-    assert any("warehouse PZ not yet created" in reason for reason in reasons), (
-        f"Expected 'warehouse PZ not yet created' in blocking_reasons, got: {reasons}"
+    # Export blocker: PZ required for create, but not for preview
+    export_blockers = body.get("export_blockers", [])
+    assert any("proforma export requires wFirma PZ" in b for b in export_blockers), (
+        f"Expected 'proforma export requires wFirma PZ' in export_blockers, got: {export_blockers}"
     )
+
+    # blocking_reasons must NOT contain the PZ reason (it's not a preview blocker)
+    reasons = body.get("blocking_reasons", [])
+    assert not any("warehouse PZ not yet created" in r for r in reasons), (
+        f"'warehouse PZ not yet created' must not appear in blocking_reasons after "
+        f"Campaign 12 gate separation, got: {reasons}"
+    )
+
+    # can_preview=True when lines exist, even without PZ
+    assert body.get("can_preview") is True, (
+        f"can_preview should be True when sales rows exist (PZ is an export gate), got: {body.get('can_preview')}"
+    )
+
+    # ready=False because export_blockers is non-empty
+    assert body["ready"] is False, "ready must be False when export_blockers non-empty"
 
 
 def test_blocked_with_unresolved_goods(client, storage):
