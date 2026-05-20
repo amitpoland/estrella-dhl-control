@@ -5153,7 +5153,11 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           const invalid = wa && !isErr ? (wa.invalid_flows || []) : [];
           const orphans = wa && !isErr ? (wa.orphan_inventory || []) : [];
           // C13D: synthetic PURCHASE_TRANSIT batches have no warehouse scans yet — not a gap.
-          const isTransit      = !!(invState && invState.synthetic === true &&
+          // C18A: also recognise non-synthetic batches where ALL pieces are in PURCHASE_TRANSIT.
+          const isTransit      = !!(invState &&
+                                    ((invState.synthetic === true) ||
+                                     (invState.total > 0 &&
+                                      invState.total === ((invState.counts || {}).PURCHASE_TRANSIT || 0))) &&
                                     ((invState.counts || {}).PURCHASE_TRANSIT || 0) > 0);
           const displayMissing  = isTransit ? [] : missing;
           const cleanGate = !isErr && displayMissing.length === 0 && stuck.length === 0 && invalid.length === 0 && orphans.length === 0;
@@ -5442,7 +5446,11 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           // C14A: transit detection — used for context banner and summary counter label only.
           // Per-line sales status badge is NOT remapped: "missing_scan" reflects the real
           // sales-linkage state (warehouse scan pending). The transit banner explains why.
-          const isTransit = !!(invState && invState.synthetic === true &&
+          // C18A: handle non-synthetic batches where ALL pieces are PURCHASE_TRANSIT.
+          const isTransit = !!(invState &&
+                               ((invState.synthetic === true) ||
+                                (invState.total > 0 &&
+                                 invState.total === ((invState.counts || {}).PURCHASE_TRANSIT || 0))) &&
                                ((invState.counts || {}).PURCHASE_TRANSIT || 0) > 0);
           const STATUS_BADGE = {
             ready:            { bg: 'var(--badge-green-bg)',  text: 'var(--badge-green-text)',  label: 'Ready' },
@@ -11840,7 +11848,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
     _put(ship, 'name',    c.ship_to_name    || c.bill_to_name || c.client_name);
     _put(ship, 'street',  c.ship_to_street  || c.bill_to_street);
     _put(ship, 'city',    c.ship_to_city    || c.bill_to_city);
-    _put(ship, 'zip',     c.ship_to_zip     || c.bill_to_postal_code);
+    _put(ship, 'zip',     c.ship_to_postal_code || c.bill_to_postal_code); // C18A: was c.ship_to_zip (wrong field name)
     _put(ship, 'country', c.ship_to_country || c.country);
     _put(ship, 'email',   c.ship_to_email   || c.bill_to_email);
     _put(ship, 'phone',   c.ship_to_phone   || c.bill_to_phone || c.bill_to_mobile);
@@ -12634,10 +12642,11 @@ function ProformaDraftPanel({ batchId, onToast }) {
                        data-testid="btn-draft-visibility">
                     {visOpen ? '▲ Visibility' : '▼ Visibility'}
                   </Btn>
-                  <Btn small onClick={() => { if (intelOpen) { setIntelOpen(false); } else { loadIntelligence(); } }}
+                  {/* C18A: AI intelligence panel hidden from operator view — developer tool */}
+                  {false && <Btn small onClick={() => { if (intelOpen) { setIntelOpen(false); } else { loadIntelligence(); } }}
                        data-testid="btn-draft-intelligence">
                     {intelOpen ? '▲ AI' : '▼ AI'}
-                  </Btn>
+                  </Btn>}
                   <Btn small onClick={closeOne}>Close</Btn>
                 </div>
               </div>
@@ -13265,8 +13274,21 @@ function ProformaDraftPanel({ batchId, onToast }) {
                   </tbody>
                 </table>
                 {!(openDraft.editable_lines || []).length && (
-                  <div style={{ padding: 8, fontSize: 12, color: 'var(--text-3)' }}>
-                    (no lines)
+                  <div data-testid="draft-lines-empty-hint"
+                       style={{ padding: '10px 12px', fontSize: 12,
+                                borderRadius: 4, marginTop: 4,
+                                background: 'var(--badge-amber-bg, #fffbeb)',
+                                border: '1px solid var(--badge-amber-border, #fbbf24)',
+                                color: 'var(--badge-amber-text, #92400e)' }}>
+                    {/* C18A: actionable hint replaces the silent placeholder */}
+                    <strong>No product lines yet.</strong>
+                    {isEditable && (
+                      <span>
+                        {' '}Click <strong>Reload items from warehouse data</strong> to populate from the uploaded packing list.
+                        If no packing list has been linked yet, use <strong>Link packing as sales</strong> above first.
+                      </span>
+                    )}
+                    {!isEditable && ' This draft has no lines.'}
                   </div>
                 )}
                 {isEditable && (
@@ -13427,11 +13449,12 @@ function ProformaDraftPanel({ batchId, onToast }) {
                          title="Open a human-readable proforma draft preview in a new tab. Browser-printable to PDF. Read-only — does not post.">
                       Preview / print draft
                     </Btn>
-                    <Btn small onClick={onPreviewJsonDebug}
+                    {/* C18A: JSON debug button hidden from operator view */}
+                    {false && <Btn small onClick={onPreviewJsonDebug}
                          data-testid="btn-draft-preview-json"
                          title="Developer-only: show the raw JSON payload that would be sent to wFirma. Read-only.">
                       JSON (debug)
-                    </Btn>
+                    </Btn>}
                     {(openDraft.editable_lines || []).length > 0 && (
                       <Btn small variant="outline" onClick={onEnrichProductNames}
                            data-testid="btn-enrich-product-names"
@@ -13452,11 +13475,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
                          title="Open a human-readable proforma draft preview in a new tab. Read-only — does not post.">
                       Preview / print draft
                     </Btn>
-                    <Btn small onClick={onPreviewJsonDebug}
-                         data-testid="btn-draft-preview-json-approved"
-                         title="Developer-only: raw JSON payload. Read-only.">
-                      JSON (debug)
-                    </Btn>
+                    {/* C18A: JSON debug hidden from operator view */}
                   </React.Fragment>
                 )}
                 {openDraft.draft_state === 'approved' && (
@@ -14151,7 +14170,7 @@ function ProformaJsonObjectEditor({ label, fields, value, editable, onSave,
       set_if_blank('name',    c.ship_to_name    || c.bill_to_name || c.client_name);
       set_if_blank('street',  c.ship_to_street  || c.bill_to_street);
       set_if_blank('city',    c.ship_to_city    || c.bill_to_city);
-      set_if_blank('zip',     c.ship_to_zip     || c.bill_to_postal_code);
+      set_if_blank('zip',     c.ship_to_postal_code || c.bill_to_postal_code); // C18A: fix — CM field is ship_to_postal_code
       set_if_blank('country', c.ship_to_country || c.country);
       set_if_blank('email',   c.ship_to_email   || c.bill_to_email);
       set_if_blank('phone',   c.ship_to_phone   || c.bill_to_phone || c.bill_to_mobile);

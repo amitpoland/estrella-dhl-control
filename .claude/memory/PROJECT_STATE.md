@@ -4,11 +4,31 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign17a-MERGED)Z. Origin/main HEAD: 7e39344 (C17A SHA). C13E + C14A + C15A + C16A + C17A all on main. PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A+C15A+C16A+C17A -- `windows_deploy_c17a_static.ps1` -- no restart, one robocopy pass. Deploy order: C13E first (restart), then C14A+C15A+C16A+C17A together (no restart).
+**Last-run-at:** 2026-05-20T(campaign18a-PR#242)Z. Origin/main HEAD: 7e39344 (C17A SHA). C13E + C14A + C15A + C16A + C17A all on main. C18A: PR #242 OPEN on `feat/c18a-unified-proforma-truth`. PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A+C15A+C16A+C17A+C18A -- `windows_deploy_c18a_static.ps1` -- no restart, one robocopy pass. Deploy order: C13E first (restart), then C14A–C18A together (no restart).
 
 ---
 
 # FACTS
+
+## Campaign 18A — Unified Proforma Builder Truth (2026-05-20)
+
+- **PR**: #242 — OPEN on `feat/c18a-unified-proforma-truth` — SHA `1bc5b76`
+- **Files changed**: `service/app/static/shipment-detail.html`, `service/tests/test_c18a_unified_proforma_truth.py` (24 tests), `.claude/manifests/windows_deploy_c18a_static.ps1`
+- **No backend files touched** — frontend+governance only
+- **No wFirma write flags enabled** — no DB schema change
+- **Test results**: 24/24 C18A tests PASS; 145/145 C14A–C18A regression suite PASS
+- **Deploy delta**: 1 static file — `shipment-detail.html`; **NO PZService restart required**
+- **Windows deploy**: `windows_deploy_c18a_static.ps1` ready at `.claude/manifests/`
+- **Scorecard**: `.claude/memory/scorecards/` — pending (auto-fires after FINAL REPORT)
+
+### Changes
+- **ship_to_postal_code fix (×2)**: Both `onApplyCustomerDefaults` call sites now use `c.ship_to_postal_code` (was `c.ship_to_zip` — wrong CM field name)
+- **isTransit detection fix (×2)**: Non-synthetic PURCHASE_TRANSIT batches now detected via `invState.total === ((invState.counts || {}).PURCHASE_TRANSIT || 0)` at both render locations (warehouse card + sales tab); `synthetic === true` path preserved
+- **AI intelligence button hidden**: `btn-draft-intelligence` wrapped in `{false && ...}`; panel remains in DOM but unreachable by operator
+- **JSON (debug) button hidden**: `btn-draft-preview-json` (editable) and `btn-draft-preview-json-approved` removed from operator-visible flow
+- **Empty-lines hint**: replaces silent `(no lines)` with actionable amber hint directing operator to Reload or Link packing first
+
+---
 
 ## Campaign 17A — Proforma Builder Customer Master Mirror (2026-05-20)
 
