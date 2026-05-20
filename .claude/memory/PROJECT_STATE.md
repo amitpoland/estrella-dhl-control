@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign12-preview-gate-separation)Z. Origin/main HEAD: 6b022cd (chore). C12 branch `feat/c12-preview-gate-separation` at `3f61fd0` — PR #233 OPEN + MERGEABLE. 244/244 tests pass. Deploy delta for PR #233: 1 file (routes_proforma.py). Deploy manifest: `.claude/manifests/deploy_delta_pr233.md`.
+**Last-run-at:** 2026-05-20T(campaign12-merge)Z. Origin/main HEAD: 0f0d85c — PR #233 MERGED 2026-05-20T00:34:07Z. 244/244 tests pass on merged main. Windows deploy pending (1-file: routes_proforma.py). Deploy manifest: `.claude/manifests/deploy_delta_pr233.md`.
 
 ---
 
@@ -207,8 +207,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Sequencing model** — three-PR cascade (Option B) chosen over single atomic PR for clean per-step rollback + GATE 2 compliance (max 3 open). Each PR in/out before next opened.
 
 ## Open PRs
-(Implementation slot: 3/3 used. #225 merged, #222 merged, #114/#116/#137/#138/#140 closed.)
-- **#233** feat(C12): Proforma preview gate separation — OPEN + MERGEABLE — 1-file change (routes_proforma.py) — **IMPL SLOT 3/3.** Deploy manifest at `.claude/manifests/deploy_delta_pr233.md`.
+(Implementation slot: 2/3 used. #233 MERGED 2026-05-20T00:34:07Z, merge SHA 0f0d85c.)
+- **#233** MERGED 2026-05-20 — merge SHA `0f0d85c` — `routes_proforma.py` on origin/main. Windows deploy pending (1-file robocopy). Manifest: `.claude/manifests/deploy_delta_pr233.md`.
 - **#10** feat(inventory): Risk-3/4 button stubs — deferred per operator instruction; do not touch. **IMPL SLOT 1/3.**
 - **#1** ui: align sidebar IA with Estrella Atlas design — historical Atlas branch (REFERENCE_ONLY pending). **IMPL SLOT 2/3.**
 
