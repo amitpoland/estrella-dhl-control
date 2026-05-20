@@ -61,6 +61,7 @@ def packing_lines() -> List[Dict[str, Any]]:
 # ── Pure-function tests (engine projector) ──────────────────────────────────
 
 def test_transit_signal_with_packing_lines_yields_projection(packing_lines):
+    # C13E: fixture line[2] has quantity=2 → expands to 2 rows → total 4.
     audit = {
         "clearance_status": "dsk_generated",
         "tracking": {"last_update": "2026-05-19T22:00:00Z"},
@@ -68,14 +69,18 @@ def test_transit_signal_with_packing_lines_yields_projection(packing_lines):
     rows = ise.derive_purchase_transit_projection(
         "B-T1", audit, packing_lines,
     )
-    assert len(rows) == 3
+    assert len(rows) == 4
     for r in rows:
         assert r["state"] == ise.PURCHASE_TRANSIT
         assert r["synthetic"] is True
         assert r["source"] == "audit.tracking"
         assert r["updated_at"] == "2026-05-19T22:00:00Z"
+    # qty=1 lines keep original scan_code; qty=2 line emits scan#1 + scan#2.
     scan_codes = {r["scan_code"] for r in rows}
-    assert scan_codes == {ln["scan_code"] for ln in packing_lines}
+    assert "EJL/C13A/01-1|sr1|D-A"   in scan_codes
+    assert "EJL/C13A/01-2|sr2|D-B"   in scan_codes
+    assert "EJL/C13A/01-3|sr3|D-C#1" in scan_codes
+    assert "EJL/C13A/01-3|sr3|D-C#2" in scan_codes
 
 
 def test_terminal_status_suppresses_projection(packing_lines):
@@ -126,21 +131,24 @@ def test_malformed_audit_returns_empty(packing_lines):
 
 
 def test_duplicate_scan_codes_deduplicated(packing_lines):
-    """If packing returns duplicate scan_codes, projection deduplicates."""
+    """If packing returns duplicate scan_codes, projection deduplicates.
+    C13E: fixture line[2] qty=2 → 2 expanded rows; duplicate of line[0] (qty=1)
+    is skipped by seen-set; total remains 4 unique expanded scan_codes."""
     lines = list(packing_lines) + [dict(packing_lines[0])]
     rows = ise.derive_purchase_transit_projection(
         "B-T7", {"clearance_status": "dsk_generated"}, lines,
     )
-    assert len(rows) == 3
-    assert len({r["scan_code"] for r in rows}) == 3
+    assert len(rows) == 4
+    assert len({r["scan_code"] for r in rows}) == 4
 
 
 def test_lines_missing_scan_code_skipped(packing_lines):
+    # C13E: fixture qty expansion yields 4 rows; empty scan_code line skipped.
     lines = list(packing_lines) + [{"scan_code": "", "design_no": "ghost"}]
     rows = ise.derive_purchase_transit_projection(
         "B-T8", {"clearance_status": "in_transit"}, lines,
     )
-    assert len(rows) == 3
+    assert len(rows) == 4
     assert all(r["scan_code"] for r in rows)
 
 
@@ -241,8 +249,9 @@ def test_get_batch_state_zero_rows_with_transit_audit_emits_synthetic(
     out = ibs.get_batch_state(batch_id)
     assert out["synthetic"] is True
     assert out["source"] == "audit.tracking"
-    assert out["total"] == 3
-    assert out["counts"][ise.PURCHASE_TRANSIT] == 3
+    # C13E: fixture line[2] qty=2 → total expanded to 4 logical units.
+    assert out["total"] == 4
+    assert out["counts"][ise.PURCHASE_TRANSIT] == 4
     assert all(p["synthetic"] is True for p in out["pieces"])
     assert all(p["state"] == ise.PURCHASE_TRANSIT for p in out["pieces"])
 
