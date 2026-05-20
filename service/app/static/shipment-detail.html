@@ -2514,8 +2514,20 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
       const d = await apiFetch(`/api/v1/proforma/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}/document`);
       setProformaDocState(prev => ({ ...prev, [clientName]: { data: d, loading: false, open: true } }));
     } catch (e) {
-      setProformaDocState(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), loading: false } }));
-      onToast(`Proforma fetch failed for ${clientName}: ` + e.message, 'error');
+      // C14A: PROFORMA_NOT_LINKED is a normal empty state (draft exists, not yet posted).
+      // Store structured error so the panel can show a helpful message instead of silence.
+      const isNotLinked = e && (e.code === 'PROFORMA_NOT_LINKED' ||
+                                 (e.message && e.message.includes('PROFORMA_NOT_LINKED')));
+      setProformaDocState(prev => ({
+        ...prev,
+        [clientName]: {
+          ...(prev[clientName] || {}),
+          loading: false,
+          open: true,
+          error: isNotLinked ? 'not_linked' : (e.message || 'fetch_failed'),
+        },
+      }));
+      if (!isNotLinked) onToast(`Proforma fetch failed for ${clientName}: ` + e.message, 'error');
     }
   }, [batchId, onToast]);
 
@@ -5427,19 +5439,20 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           const thStyle  = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' };
           const tdStyle  = { padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' };
 
-          // C13D: same transit detection used in Warehouse tab to remap missing_scan badges.
+          // C14A: transit detection — used for context banner and summary counter label only.
+          // Per-line sales status badge is NOT remapped: "missing_scan" reflects the real
+          // sales-linkage state (warehouse scan pending). The transit banner explains why.
           const isTransit = !!(invState && invState.synthetic === true &&
                                ((invState.counts || {}).PURCHASE_TRANSIT || 0) > 0);
           const STATUS_BADGE = {
             ready:            { bg: 'var(--badge-green-bg)',  text: 'var(--badge-green-text)',  label: 'Ready' },
             pending_dispatch: { bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   label: 'Pending dispatch' },
             not_ready:        { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  label: 'Not ready' },
-            missing_scan:     { bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    label: 'Missing scan' },
-            in_transit:       { bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   label: 'In transit' },  // C13D
+            missing_scan:     { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  label: 'Pending arrival' },  // C14A: amber not red; "pending arrival" while in transit
+            in_transit:       { bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   label: 'In transit' },
           };
           const statusBadge = (s) => {
-            const key = isTransit && s === 'missing_scan' ? 'in_transit' : s;  // C13D
-            const c = STATUS_BADGE[key] || { bg: 'var(--bg-2)', text: 'var(--text-3)', label: key || '—' };
+            const c = STATUS_BADGE[s] || { bg: 'var(--bg-2)', text: 'var(--text-3)', label: s || '—' };
             return <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: c.bg, color: c.text }}>{c.label}</span>;
           };
 
@@ -5524,10 +5537,51 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     )}
                   </Card>
 
+                  {/* C14A: Transit context banner — inventory location, not sales state */}
+                  {isTransit && (
+                    <Card data-testid="sales-transit-context-banner"
+                          style={{ ...sectionStyle, background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)' }}>
+                      <div style={{ fontSize: 11, color: 'var(--badge-blue-text)', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                        <span style={{ fontSize: 14, lineHeight: 1 }}>ℹ</span>
+                        <div>
+                          <b>Inventory location: In transit (PURCHASE_TRANSIT)</b>
+                          {' — '}goods are en route to the warehouse, not yet physically received.
+                          Per-line status below shows <b>Pending arrival</b> because warehouse scans are not yet possible.
+                          {' '}Sales documents (proforma drafts) can be prepared now and posted once goods arrive.
+                          {(() => {
+                            const transitPieces = (invState && invState.counts && invState.counts.PURCHASE_TRANSIT) || 0;
+                            const invoiceUnits  = (audit && audit.inputs && audit.inputs.invoice_total_qty)
+                                                  || (audit && audit.invoice_totals && audit.invoice_totals.total_qty)
+                                                  || null;
+                            if (!transitPieces) return null;
+                            return (
+                              <div data-testid="sales-qty-reconciliation" style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--badge-blue-border)' }}>
+                                <b>Qty note:</b>{' '}
+                                Transit pieces (packing scan codes): <b>{transitPieces}</b>
+                                {invoiceUnits != null && invoiceUnits !== transitPieces && (
+                                  <span>{' | '}Invoice units: <b>{invoiceUnits}</b>{' | '}Difference: <b>{Math.abs(invoiceUnits - transitPieces)}</b>
+                                    {' — '}may reflect PRS earring pairs counted as 1 unit each in the invoice.
+                                  </span>
+                                )}
+                                {invoiceUnits == null && (
+                                  <span>{' — '}invoice unit total not parsed (check invoice files).</span>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    </Card>
+                  )}
+
                   {/* Per-client groups */}
                   {groupList.length === 0 ? (
                     <Card style={{ padding: 24, textAlign: 'center' }}>
                       <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No sales packing lines found for this batch.</div>
+                      {/* C14A: orphan hint when no lines linked yet */}
+                      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
+                        If purchase packing files were uploaded, use <b>⟳ Link packing files as client sales</b> in the Proforma Drafts panel above to assign client names.
+                      </div>
                     </Card>
                   ) : groupList.map((g, gi) => (
                     <Card key={gi} style={sectionStyle}>
@@ -6783,7 +6837,25 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           {/* Proforma document inline panel */}
                           {(() => {
                             const proDoc = proformaDocState[d.client_name] || {};
-                            if (!proDoc.open || !proDoc.data) return null;
+                            if (!proDoc.open) return null;
+                            // C14A: PROFORMA_NOT_LINKED — show informational panel instead of silence
+                            if (proDoc.error === 'not_linked') {
+                              return (
+                                <div data-testid={`proforma-not-linked-panel-${d.client_name}`}
+                                     style={{ marginTop: 10, padding: '10px 14px', borderRadius: 6,
+                                              background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)',
+                                              fontSize: 11, color: 'var(--badge-blue-text)', display: 'flex',
+                                              justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                                  <div>
+                                    <div style={{ fontWeight: 700, marginBottom: 4 }}>No linked proforma yet</div>
+                                    <div>A draft exists but hasn't been posted to wFirma. Use <b>Preview draft ↑</b> in the Proforma Drafts panel above to review before posting.</div>
+                                  </div>
+                                  <Btn small variant="ghost"
+                                       onClick={() => setProformaDocState(prev => ({ ...prev, [d.client_name]: { ...proDoc, open: false } }))}>✕</Btn>
+                                </div>
+                              );
+                            }
+                            if (!proDoc.data) return null;
                             const pd = proDoc.data;
                             return (
                               <div data-testid={`proforma-document-panel-${d.client_name}`} style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', fontSize: 11 }}>
@@ -6836,11 +6908,18 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                   ))}
 
                   {/* Bottom info — Phase 3.B "Create All" lives here later */}
-                  <Card style={{ ...sectionStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                  <Card style={{ ...sectionStyle, display: 'flex', flexDirection: 'column', gap: 8 }}>
                     <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
                       {ready
                         ? 'All gates open. Submit one client at a time using the per-row Create Reservation buttons above.'
                         : `Master gate blocked — ${blockingReasons[0] || 'see reasons above'}`}
+                    </div>
+                    {/* C14A: Orphan line CTA — shown whenever any groups exist, so operator
+                        can assign any unlinked invoice lines (e.g. invoice 178 JR08007). */}
+                    <div data-testid="orphan-assignment-cta"
+                         style={{ fontSize: 11, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}>
+                      Missing a packing line from this view?{' '}
+                      Use <b>⟳ Link packing files as client sales</b> in the Proforma Drafts panel above to assign a client name to any unlinked packing document (e.g. an invoice with no client yet).
                     </div>
                   </Card>
                 </>

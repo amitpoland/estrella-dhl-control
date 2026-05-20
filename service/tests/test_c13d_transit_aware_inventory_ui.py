@@ -198,28 +198,36 @@ class TestC13DMissingScanSection:
 
 class TestC13DSalesTabRemap:
     def test_sales_tab_has_is_transit(self):
-        """Sales tab IIFE must compute isTransit for badge remapping.
-        Verified via the C13D comment anchor unique to the Sales IIFE."""
+        """Sales tab must compute isTransit for context banner and summary counter.
+        C14A superseded per-line remap with a banner; isTransit detection remains.
+        Verified via C14A comment anchor unique to the Sales tab isTransit block."""
         src = _detail()
-        # The C13D comment is unique to the Sales tab isTransit block.
-        assert "C13D: same transit detection used in Warehouse tab to remap missing_scan" in src, (
-            "Sales tab must have isTransit detection (C13D comment anchor missing)"
+        # C14A comment anchor replaces the old C13D anchor.
+        assert "C14A: transit detection" in src, (
+            "Sales tab must have isTransit detection (C14A comment anchor missing)"
         )
 
     def test_status_badge_has_in_transit_entry(self):
-        """STATUS_BADGE must have an 'in_transit' entry for remapped items."""
+        """STATUS_BADGE must have an 'in_transit' entry for in_transit-state items."""
         src = _detail()
         assert "in_transit:" in src, (
             "STATUS_BADGE must include in_transit entry"
         )
 
-    def test_status_badge_remaps_missing_scan_when_transit(self):
-        """statusBadge must remap missing_scan → in_transit when isTransit."""
+    def test_status_badge_uses_pending_arrival_for_missing_scan(self):
+        """C14A: statusBadge no longer remaps missing_scan → in_transit per line.
+        Instead, missing_scan shows 'Pending arrival' (amber) and the transit
+        context banner above the groups explains the inventory location."""
         src = _detail()
-        # The remap logic: isTransit && s === 'missing_scan' ? 'in_transit' : s
-        assert "isTransit && s === 'missing_scan'" in src or \
-               "isTransit && s==='missing_scan'" in src, (
-            "statusBadge must remap missing_scan to in_transit when isTransit"
+        # C14A deliberate change: per-line remap removed; banner added instead.
+        assert "Pending arrival" in src, (
+            "missing_scan status must show 'Pending arrival' label (C14A)"
+        )
+        # Confirm the old inline remap is gone (it was confusing Sales status
+        # with inventory location).
+        assert "isTransit && s === 'missing_scan'" not in src and \
+               "isTransit && s==='missing_scan'" not in src, (
+            "per-line missing_scan→in_transit remap must be absent (C14A removed it)"
         )
 
     def test_sales_summary_counter_switches_label_when_transit(self):
