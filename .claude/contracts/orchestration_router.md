@@ -6,7 +6,7 @@
 
 | Route | Trigger keywords | Governance depth | Max agents | Topology | Required reviewers |
 |-------|-----------------|-----------------|------------|----------|-------------------|
-| `ui_only` | dashboard, HTML, CSS, button, modal | GATE 6 only | 5 | sequential | frontend-ui, button-functionality, browser-verifier (invoke `frontend-design` skill first) |
+| `ui_only` | dashboard, HTML, CSS, button, modal | GATE 6 only | 5 | sequential | frontend-ui, button-functionality, browser-verifier (invoke `frontend-design` skill first; run `ui-ux-pro-max` search for a11y/UX rules; read `EJ_OVERRIDES.md` before applying output) |
 | `backend_logic` | route, service, endpoint, FastAPI | GATES 1+6 | 7 | sequential | backend-api, testing-verification, security-permissions |
 | `schema_change` | migration, ALTER TABLE, new column, DB schema | GATES 1+3+6 | 8 | sequential | database-storage, backend-api, testing-verification, integration-boundary |
 | `deploy` | deploy, robocopy, nssm, Windows prod | 7-AGENT GATE | 7 | parallel then sequential | all 7 deploy_* agents |

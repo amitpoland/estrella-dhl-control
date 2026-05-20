@@ -312,6 +312,8 @@ Key rules (full detail in skill file):
 
 Invoke skill: before any UI implementation, before any `frontend-flow-reviewer` run.
 
+**Design intelligence layer**: `.claude/skills/ui-ux-pro-max` is installed as a supplemental search tool for accessibility, UX guidelines, and layout best practices. It is subordinate to `frontend-design.md`. Use via `python3 .claude/skills/ui-ux-pro-max/scripts/search.py`. Read `EJ_OVERRIDES.md` inside the skill directory before applying any output — stack defaults (Tailwind, TypeScript) do not apply here.
+
 ---
 
 ## Available integration
