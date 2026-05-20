@@ -94,8 +94,11 @@
   });
 
   // ── Base components ────────────────────────────────────────────────
-  function Badge({ status, small, title }) {
-    const s = STATUS_MAP[status] || { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
+  // C20A: support both status (STATUS_MAP lookup) and label (freeform text, neutral fallback).
+  // label prop added so Badge label="Complete" works alongside Badge status="Customs Verified".
+  function Badge({ status, label, small, title }) {
+    const displayText = label || status || 'Unknown';
+    const s = STATUS_MAP[displayText] || STATUS_MAP[status] || { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
     return (
       <span title={title || undefined} style={{
         display: 'inline-flex', alignItems: 'center',
@@ -103,7 +106,7 @@
         borderRadius: 4, padding: small ? '1px 6px' : '2px 8px',
         fontSize: small ? 10 : 11, fontWeight: 600, letterSpacing: '0.03em', whiteSpace: 'nowrap',
         cursor: title ? 'help' : undefined,
-      }}>{status || 'Unknown'}</span>
+      }}>{displayText}</span>
     );
   }
 
@@ -117,9 +120,14 @@
     );
   }
 
-  function Btn({ children, onClick, variant = 'default', small, disabled, style: xs }) {
+  // C20A: added `primary` variant (alias for gold/accent — the intended CTA style).
+  // `variant="primary"` was used in 27 places but missing from variants map, causing
+  // fallback to `default` (dark navy). Now renders gold/accent as intended.
+  // Also forwarded `...rest` so data-testid reaches the <button> element.
+  function Btn({ children, onClick, variant = 'default', small, disabled, style: xs, ...rest }) {
     const variants = {
       default: { background: 'var(--text)', color: 'var(--card)', border: '1px solid var(--text)' },
+      primary: { background: 'var(--accent)', color: 'var(--accent-text)', border: '1px solid var(--accent)' },
       gold:    { background: 'var(--accent)', color: 'var(--accent-text)', border: '1px solid var(--accent)' },
       outline: { background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)' },
       ghost:   { background: 'transparent', color: 'var(--text-2)', border: '1px solid transparent' },
@@ -128,7 +136,7 @@
     };
     const v = variants[variant] || variants.default;
     return (
-      <button onClick={onClick} disabled={disabled} style={{
+      <button onClick={onClick} disabled={disabled} {...rest} style={{
         ...v, borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
         padding: small ? '4px 10px' : '7px 14px',
         fontSize: small ? 11 : 12, fontWeight: 600,

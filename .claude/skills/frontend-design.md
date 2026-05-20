@@ -39,35 +39,59 @@ New pages: follow `dashboard.html` structure. New shared components: add to `das
 
 Defined in both `shipment-detail.html` `:root` and `dashboard.html` `:root`. Use these exclusively — no hardcoded hex values in components.
 
-### Light mode tokens (`:root`)
+### Core tokens (`:root` light mode)
 
 ```css
---bg: #F4F1EA;          /* page background */
---bg-subtle: #FAF8F2;   /* inset / well backgrounds */
---card: #FFFFFF;         /* card surface */
---text: #1B2538;         /* primary text */
---text-2: #4E5A72;       /* secondary text */
---text-3: #8B97AE;       /* muted / placeholder */
---accent: #B89968;       /* primary accent (gold) */
---accent-light: #D4B884; /* hover / lighter accent */
---sidebar-bg: #131C2E;   /* sidebar / nav background */
---sidebar-text: #F2EBD9; /* sidebar text */
+--bg: #F4F1EA;             /* page background */
+--bg-subtle: #FAF8F2;      /* inset / well backgrounds */
+--card: #FFFFFF;            /* card surface */
+--row-hover: #F6F2EA;       /* table row hover */
+--border: #E5DECF;          /* standard border */
+--border-subtle: #EFE9DA;   /* subtle border */
+--text: #1B2538;            /* primary text */
+--text-2: #4E5A72;          /* secondary text */
+--text-3: #8B97AE;          /* muted / placeholder */
+--shadow: rgba(27,37,56,0.06);
+--shadow-heavy: rgba(27,37,56,0.16);
+--overlay: rgba(19,28,46,0.6);
+--accent: #B89968;          /* primary accent (gold) */
+--accent-light: #D4B884;    /* hover accent */
+--accent-text: #1B2538;     /* text on accent backgrounds */
+--accent-subtle: #F8EFD8;   /* accent tint */
+--accent-border: #CFB178;
+/* Surface aliases (C20A) */
+--surface-1: var(--bg-subtle);  /* inputs, code, form fields */
+--surface-2: var(--bg-subtle);  /* inset containers, alt rows */
+```
+
+### Sidebar tokens
+
+```css
+--sidebar-bg: #131C2E;
+--sidebar-border: #25334C;
+--sidebar-active: #1F2A42;
+--sidebar-hover: #1A2438;
+--sidebar-text: #F2EBD9;
+--sidebar-text-muted: #7C89A3;
+--sidebar-icon: #B89968;
 ```
 
 ### Badge tokens
 
 ```css
---badge-neutral-bg: #EEF0F4;  --badge-neutral-text: #4E5A72;
---badge-blue-bg:    #E8EFF8;  --badge-blue-text:    #2563EB;
---badge-amber-bg:   #FBF5E0;  --badge-amber-text:   #92600A;
---badge-green-bg:   #E8F5EE;  --badge-green-text:   #166534;
---badge-red-bg:     #FBE8E6;  --badge-red-text:     #991B1B;
---badge-purple-bg:  #EEE8F8;  --badge-purple-text:  #5B21B6;
+--badge-neutral-bg / -text / -border
+--badge-blue-bg / -text / -border
+--badge-amber-bg / -text / -border
+--badge-orange-bg / -text / -border   /* Awaiting DHL Email, Awaiting SAD */
+--badge-green-bg / -text / -border
+--badge-red-bg / -text / -border
+--badge-purple-bg / -text / -border
+--badge-accent-bg / -text / -border   /* Exported — dark navy bg with gold text */
 ```
 
 ### Dark mode tokens (`[data-theme="dark"]`)
 
-All `--bg*`, `--card`, `--text*`, `--sidebar-*`, `--badge-*` tokens have dark overrides. **Never hardcode a color that changes between themes** — always use a token.
+All tokens above have dark overrides in `[data-theme="dark"]`. **Never hardcode a color that changes between themes** — always use a token.
 
 ---
 
@@ -75,17 +99,34 @@ All `--bg*`, `--card`, `--text*`, `--sidebar-*`, `--badge-*` tokens have dark ov
 
 | Component | Props | Usage |
 |-----------|-------|-------|
-| `Badge` | `color` (neutral/blue/amber/green/red/purple), `children` | Status chips, state labels |
-| `Card` | `title`, `children`, optional `actions` | Section wrappers |
-| `Btn` | `variant` (primary/secondary/danger/ghost), `small`, `disabled`, `onClick`, `data-testid` | All buttons |
-| `Sel` | `value`, `onChange`, `options` | Dropdowns |
-| `Toast` | `message`, `type` (info/success/error/warning), `onClose` | Transient feedback |
-| `SessionBanner` | — | Top-of-page session/connection status |
+| `Badge` | `status` (STATUS_MAP key) OR `label` (freeform text), `small`, `title` | Status chips, coverage indicators |
+| `Card` | `children`, `style`, `onClick` | Section wrappers |
+| `Btn` | `variant`, `small`, `disabled`, `onClick`, `...rest` (forwarded to `<button>`) | All buttons |
+| `Sel` | `value`, `onChange`, `children`, `...rest` | Dropdowns |
+| `Toast` | `msg`, `type` (success/info/error/warn) | Transient feedback |
+| `SessionBanner` | `type` (auth/network), `onDismiss` | Top-of-page session error banner |
+
+**Btn variants** (all available):
+
+| Variant | Style | Use for |
+|---------|-------|---------|
+| `primary` | Gold/accent fill | Primary CTA — approve, save, dispatch |
+| `gold` | Gold/accent fill | Alias for primary |
+| `default` | Dark fill (`--text` bg) | Default actions |
+| `outline` | Transparent, `--border` border | Secondary actions |
+| `ghost` | Transparent, no border | Tertiary / minor actions |
+| `danger` | Red badge style | Destructive actions |
+| `success` | Green badge style | Confirmation actions |
+
+**Badge usage**:
+- `<Badge status="Customs Verified" />` — looks up STATUS_MAP, renders with semantic color
+- `<Badge label="Complete" />` — freeform text, renders with neutral color fallback
+- STATUS_MAP keys: Draft, In Transit, Pre-check Pending/Completed, Awaiting DHL Email, DHL Email Received, Reply Sent/Queued, SAD Pending/Uploaded, Customs Parsed/Verified, Verification Needed, Locked, Ready for PZ, Generated, Ready for Booking, Exported, Awaiting DHL/SAD, Action Required, In Preparation, Completed, Pending, Live, Awaiting Clearance, Processing, Reply Package Prepared
 
 Rules:
 - Use `Btn` not `<button>`. Use `Badge` not `<span className="badge...">`.
-- Every `Btn` must have a `data-testid` attribute.
-- `Btn disabled={true}` is valid; the reason why must appear as a tooltip or adjacent text.
+- Every `Btn` must have a `data-testid` (forwarded via `...rest` to `<button>`).
+- `Btn disabled={true}` is valid; the reason why must appear as tooltip or adjacent text.
 - Never add app-specific backend URLs or config to `dashboard-shared.js`.
 
 ---
