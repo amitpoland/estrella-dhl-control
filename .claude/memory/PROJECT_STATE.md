@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign19a-PR#243)Z. Origin/main HEAD: 7e39344 (C17A SHA). C13E + C14A + C15A + C16A + C17A all on main. C18A: PR #242 OPEN. C19A: PR #243 OPEN (depends on C18A). PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A+C15A+C16A+C17A+C18A+C19A -- `windows_deploy_c19a_static.ps1` -- no restart, one robocopy pass. Deploy order: C13E first (restart), then C14A-C19A together (no restart).
+**Last-run-at:** 2026-05-20T(campaign19a-MERGED)Z. Origin/main HEAD: 64d0799 (C19A SHA). C13E + C14A + C15A + C16A + C17A + C18A + C19A all on main. PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A-C19A static -- `windows_deploy_c19a_static.ps1` -- no restart, one robocopy pass. Deploy order: C13E first (restart), then C14A-C19A together (no restart). Browser smoke: SHIPMENT_4218922912_2026-05_9040dd39 — pending Windows execution.
 
 ---
 
@@ -12,8 +12,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 ## Campaign 19A — Single Authority Renderer (2026-05-20)
 
-- **PR**: #243 — OPEN on `feat/c19a-single-authority-renderer` — SHA `9208623`
-- **Depends on**: PR #242 (C18A) — merge C18A first
+- **PR**: #244 — MERGED to main SHA `64d0799` on 2026-05-20
+- **Predecessor PR #243 auto-closed** when C18A branch deleted; replaced by #244 targeting main directly
 - **Files changed**: `service/app/static/shipment-detail.html` (-115 lines), `service/tests/test_c19a_single_authority_renderer.py` (25 tests), `service/tests/test_c18a_unified_proforma_truth.py` (1 test updated), `.claude/manifests/windows_deploy_c19a_static.ps1`
 - **No backend files touched** — frontend only
 - **No wFirma write flags** — no DB schema change
@@ -34,7 +34,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 ## Campaign 18A — Unified Proforma Builder Truth (2026-05-20)
 
-- **PR**: #242 — OPEN on `feat/c18a-unified-proforma-truth` — SHA `1bc5b76`
+- **PR**: #242 — MERGED to main SHA `b00f0e4` on 2026-05-20
 - **Files changed**: `service/app/static/shipment-detail.html`, `service/tests/test_c18a_unified_proforma_truth.py` (24 tests), `.claude/manifests/windows_deploy_c18a_static.ps1`
 - **No backend files touched** — frontend+governance only
 - **No wFirma write flags enabled** — no DB schema change
