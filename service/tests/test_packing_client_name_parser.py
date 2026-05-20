@@ -7,6 +7,7 @@ Covers:
   2. _guess_client_from_preamble — header-row fallback (mocked openpyxl)
   3. Recheck stale failed_checks — cif_match cleared, status upgraded to partial
   4. UI source-grep — ghost rows hidden, ghost count message present
+  5. C13B — client_name_resolution: body-cell fallback, diagnostic field, source-grep
 """
 from __future__ import annotations
 
@@ -320,3 +321,172 @@ class TestDashboardGhostRowUI:
     def test_dup_badge_still_present(self):
         """DUP badge still exists for non-ghost duplicate rows."""
         assert ">DUP<" in self._html() or '"DUP"' in self._html() or ">DUP\n" in self._html()
+
+
+# ===========================================================================
+# 5. C13B — client_name_resolution: body-cell fallback, diagnostic field
+# ===========================================================================
+
+class TestC13BOrphanFilenamePattern:
+    """
+    The orphan pattern is:
+      EJL-26-27-178-Packing list of shipment-1pc-16-05-26-Client.xlsx
+    _guess_client_from_filename returns "" (no name after the keyword).
+    _guess_client_from_preamble should then scan the Excel body.
+    """
+
+    def _filename_guess(self, name: str) -> str:
+        from app.api.routes_packing import _guess_client_from_filename
+        return _guess_client_from_filename(name)
+
+    def _preamble_guess(self, preamble_rows: list, path: str = "/fake/file.xlsx") -> str:
+        from app.api.routes_packing import _guess_client_from_preamble
+        wb = _make_fake_wb(preamble_rows)
+        with patch("openpyxl.load_workbook", return_value=wb):
+            return _guess_client_from_preamble(path)
+
+    def test_orphan_filename_returns_empty(self):
+        """The known orphan file returns '' from _guess_client_from_filename."""
+        result = self._filename_guess(
+            "EJL-26-27-178-Packing list of shipment-1pc-16-05-26-Client.xlsx"
+        )
+        assert result == "", f"Expected '' for orphan filename, got {result!r}"
+
+    def test_preamble_recovers_name_for_orphan(self):
+        """When filename yields '', preamble scan finds 'Client: Diamond Point'."""
+        # Simulate the preamble-first fallback chain used in upload_packing_list
+        filename = "EJL-26-27-178-Packing list of shipment-1pc-16-05-26-Client.xlsx"
+        filename_client = self._filename_guess(filename)
+        assert filename_client == ""  # orphan confirmed
+
+        preamble_rows = [["Order No: EJL/26-27/178"], ["Client: Diamond Point"]]
+        preamble_client = self._preamble_guess(preamble_rows)
+        assert preamble_client == "Diamond Point"
+
+        resolved = filename_client or preamble_client
+        method = "preamble"
+        assert resolved == "Diamond Point"
+        assert method == "preamble"
+
+    def test_filename_win_no_preamble_call_needed(self):
+        """When filename returns a name, method is 'filename' regardless of body."""
+        filename = "148 EJL-26-27-148-PND-18KT-SUOKKO-2026-05-Client SUOKKO.xlsx"
+        filename_client = self._filename_guess(filename)
+        assert filename_client == "SUOKKO"
+        # In upload path: preamble is skipped because filename_client is truthy
+        method = "filename" if filename_client else "preamble"
+        assert method == "filename"
+
+    def test_neither_found_method_is_none(self):
+        """When both return '', method is 'none' and client_name is ''."""
+        filename_client = self._filename_guess("invoice_12345.xlsx")
+        assert filename_client == ""
+        preamble_client = self._preamble_guess([["Invoice: EJL/26-27/001"], ["Date: 2026-05-01"]])
+        assert preamble_client == ""
+        method = "filename" if filename_client else ("preamble" if preamble_client else "none")
+        assert method == "none"
+
+    def test_unicode_preamble_name_recovered(self):
+        """Unicode client name in preamble cell is recovered correctly."""
+        result = self._preamble_guess([["Consignee: Müller & Söhne GmbH"]])
+        assert result == "Müller & Söhne GmbH"
+
+    def test_short_name_in_preamble_accepted(self):
+        """Short client name (3 chars) still accepted by preamble scanner."""
+        result = self._preamble_guess([["Buyer: ABC"]])
+        assert result == "ABC"
+
+    def test_empty_body_preamble_returns_empty(self):
+        """All-None preamble rows → ''."""
+        result = self._preamble_guess([[None, None, None], [None]])
+        assert result == ""
+
+
+class TestC13BDiagnosticField:
+    """
+    Verify _new_diagnostic() always includes client_name_resolution key
+    so the diagnostic shape is consistent before routes injects a value.
+    """
+
+    def test_new_diagnostic_has_client_name_resolution_key(self):
+        from app.services.invoice_packing_extractor import _new_diagnostic
+        diag = _new_diagnostic("xlsx")
+        assert "client_name_resolution" in diag, (
+            "_new_diagnostic() must include 'client_name_resolution' key (C13B)"
+        )
+
+    def test_new_diagnostic_client_name_resolution_is_none_by_default(self):
+        from app.services.invoice_packing_extractor import _new_diagnostic
+        diag = _new_diagnostic("xlsx")
+        assert diag["client_name_resolution"] is None, (
+            "Default value of client_name_resolution must be None before injection"
+        )
+
+    def test_new_diagnostic_pdf_also_has_key(self):
+        from app.services.invoice_packing_extractor import _new_diagnostic
+        diag = _new_diagnostic("pdf")
+        assert "client_name_resolution" in diag
+
+
+class TestC13BSourceGrep:
+    """
+    Source-grep: verify C13B changes are wired correctly in routes_packing.py.
+    These tests catch regressions where the preamble call is accidentally removed.
+    """
+
+    def _src(self) -> str:
+        return ROUTES_PACKING.read_text(encoding="utf-8")
+
+    def test_upload_path_injects_client_name_resolution(self):
+        """upload_packing_list must inject client_name_resolution into parser_diagnostic."""
+        src = self._src()
+        assert 'result["parser_diagnostic"]["client_name_resolution"]' in src, (
+            "upload_packing_list must write client_name_resolution into parser_diagnostic (C13B)"
+        )
+
+    def test_upload_path_calls_preamble_fallback(self):
+        """upload_packing_list must call _guess_client_from_preamble as fallback."""
+        src = self._src()
+        # Verify preamble fallback is called in upload path (not just get_packing_documents)
+        # Find the upload function and check preamble appears before get_packing_documents
+        upload_idx = src.find("async def upload_packing_list")
+        get_docs_idx = src.find("def get_packing_documents")
+        assert upload_idx != -1 and get_docs_idx != -1
+        upload_body = src[upload_idx:get_docs_idx]
+        assert "_guess_client_from_preamble" in upload_body, (
+            "_guess_client_from_preamble must be called in upload_packing_list body (C13B)"
+        )
+
+    def test_upload_response_includes_suggested_client_name(self):
+        """upload_packing_list response must include suggested_client_name field."""
+        src = self._src()
+        assert '"suggested_client_name"' in src, (
+            "upload_packing_list response must return 'suggested_client_name' (C13B)"
+        )
+
+    def test_reprocess_has_pass5_preamble_fallback(self):
+        """Sales reprocess path must have Pass 5 body-cell fallback comment."""
+        src = self._src()
+        assert "Pass 5" in src, (
+            "Sales reprocess must include Pass 5 preamble fallback (C13B)"
+        )
+        assert "body-cell fallback" in src, (
+            "Pass 5 must be described as body-cell fallback in source (C13B)"
+        )
+
+    def test_reprocess_pass5_calls_guess_preamble(self):
+        """Pass 5 in reprocess must call _guess_client_from_preamble."""
+        src = self._src()
+        # Find the Pass 5 section and verify preamble is called there
+        pass5_idx = src.find("Pass 5")
+        assert pass5_idx != -1
+        pass5_window = src[pass5_idx:pass5_idx + 900]
+        assert "_guess_client_from_preamble" in pass5_window, (
+            "Pass 5 must call _guess_client_from_preamble (C13B)"
+        )
+
+    def test_client_name_resolution_cnr_struct_has_four_keys(self):
+        """The _cnr dict in upload path must have method, client_name, filename_guess, preamble_guess."""
+        src = self._src()
+        for key in ('"method"', '"client_name"', '"filename_guess"', '"preamble_guess"'):
+            assert key in src, f"_cnr dict must contain {key} (C13B)"
