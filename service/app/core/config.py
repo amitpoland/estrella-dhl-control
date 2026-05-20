@@ -268,6 +268,14 @@ class Settings(BaseSettings):
     # Set DEBUG_ALLOW_OLD_BATCH_FLOW=true in .env only for backward-compat testing.
     debug_allow_old_batch_flow: bool = False
 
+    # Developer workflow bypass (EJ_DEV_WORKFLOW_BYPASS).
+    # When True: proforma PREVIEW routes downgrade missing-customer-authority
+    # from a hard blocker to a non-blocking warning, so developers can inspect
+    # draft line structures before all wFirma customer mappings are established.
+    # NEVER bypasses: wFirma create (proforma, invoice, PZ), fiscal gates,
+    # ZC429/export gates, or any write operation.  Default False = production-safe.
+    ej_dev_workflow_bypass: bool = False
+
     # ── DHL self-clearance program (W-5 / P0 scaffolding — ADR-010, ADR-012..016) ──
     # Phase-scoped live flags (default OFF — ADR-010). Restartless-flippable
     # via POST /api/v1/admin/runtime-flags/self-clearance once P0 ships.
