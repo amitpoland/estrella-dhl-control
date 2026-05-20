@@ -11627,11 +11627,9 @@ function ProformaDraftPanel({ batchId, onToast }) {
     setBulkPriceText('');
     setBulkPriceResult(null);
     setBulkPriceNeedsConfirm(null);
-    // Reset visibility/intelligence panels on open (Phase 5.5A)
+    // Reset visibility panel on open (Phase 5.5A)
     setVisibility(null);
-    setIntelligence(null);
     setVisOpen(false);
-    setIntelOpen(false);
     try {
       const d = await apiFetch(`/api/v1/proforma/draft/${draftId}`);
       setOpenDraft(d.draft);
@@ -11646,10 +11644,10 @@ function ProformaDraftPanel({ batchId, onToast }) {
 
   const closeOne = () => {
     setOpenId(null); setOpenDraft(null); setEvents(null); setEventsOpen(false);
-    setVisibility(null); setIntelligence(null); setVisOpen(false); setIntelOpen(false);
+    setVisibility(null); setVisOpen(false);
   };
 
-  // Phase 5.5A — lazy-load visibility and intelligence on demand
+  // Phase 5.5A — lazy-load visibility on demand
   const loadVisibility = React.useCallback(async () => {
     if (!openId) return;
     try {
@@ -11658,17 +11656,6 @@ function ProformaDraftPanel({ batchId, onToast }) {
       setVisOpen(true);
     } catch (e) {
       onToast && onToast('Visibility load failed: ' + e.message, 'error');
-    }
-  }, [openId, onToast]);
-
-  const loadIntelligence = React.useCallback(async () => {
-    if (!openId) return;
-    try {
-      const d = await apiFetch(`/api/v1/proforma/draft/${openId}/intelligence`);
-      setIntelligence(d);
-      setIntelOpen(true);
-    } catch (e) {
-      onToast && onToast('Intelligence load failed: ' + e.message, 'error');
     }
   }, [openId, onToast]);
 
@@ -11939,11 +11926,9 @@ function ProformaDraftPanel({ batchId, onToast }) {
   const [bulkPriceResult,       setBulkPriceResult]       = React.useState(null);
   const [bulkPriceNeedsConfirm, setBulkPriceNeedsConfirm] = React.useState(null);
 
-  // ── Phase 5.5A — visibility + intelligence state ──────────────────────────
+  // ── Phase 5.5A — visibility state ────────────────────────────────────────
   const [visibility,      setVisibility]      = React.useState(null);
-  const [intelligence,    setIntelligence]    = React.useState(null);
   const [visOpen,         setVisOpen]         = React.useState(false);
-  const [intelOpen,       setIntelOpen]       = React.useState(false);
 
   const onApplyBulkPrices = React.useCallback(async (withConfirm) => {
     const parsed = parseBulkPriceText(bulkPriceText);
@@ -12642,11 +12627,6 @@ function ProformaDraftPanel({ batchId, onToast }) {
                        data-testid="btn-draft-visibility">
                     {visOpen ? '▲ Visibility' : '▼ Visibility'}
                   </Btn>
-                  {/* C18A: AI intelligence panel hidden from operator view — developer tool */}
-                  {false && <Btn small onClick={() => { if (intelOpen) { setIntelOpen(false); } else { loadIntelligence(); } }}
-                       data-testid="btn-draft-intelligence">
-                    {intelOpen ? '▲ AI' : '▼ AI'}
-                  </Btn>}
                   <Btn small onClick={closeOne}>Close</Btn>
                 </div>
               </div>
@@ -13138,102 +13118,6 @@ function ProformaDraftPanel({ batchId, onToast }) {
                           ))}
                         </tbody>
                       </table>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ── Phase 6 — AI Intelligence panel ─────────────────────────────── */}
-              {intelOpen && intelligence && (
-                <div data-testid="draft-intelligence-panel"
-                     style={{ marginBottom: 14, borderRadius: 6, overflow: 'hidden',
-                                border: '1px solid var(--card-border)',
-                                fontSize: 12 }}>
-                  {/* Confidence scores */}
-                  <div style={{ padding: '8px 12px', background: '#f8fafc',
-                                  borderBottom: '1px solid var(--card-border)',
-                                  display: 'flex', gap: 16, flexWrap: 'wrap',
-                                  alignItems: 'center' }}>
-                    <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
-                                    letterSpacing: '0.06em', color: 'var(--text-3)' }}>
-                      AI Confidence
-                    </div>
-                    {intelligence.confidence && Object.entries(intelligence.confidence).map(([k, v]) => (
-                      <div key={k} data-testid={`draft-confidence-${k}`}
-                           style={{ fontSize: 11 }}>
-                        <span style={{ color: 'var(--text-3)' }}>{k} </span>
-                        <strong style={{ color: v >= 0.8 ? '#166534' : v >= 0.5 ? '#92400e' : '#991b1b' }}>
-                          {Math.round(v * 100)}%
-                        </strong>
-                      </div>
-                    ))}
-                    {intelligence.corpus_size > 0 && (
-                      <div style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 'auto' }}>
-                        corpus: {intelligence.corpus_size} posted drafts
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Anomalies */}
-                  {(intelligence.anomalies || []).length > 0 && (
-                    <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--card-border)' }}>
-                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
-                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
-                        Anomalies ({intelligence.anomalies.length})
-                      </div>
-                      {intelligence.anomalies.map((a, i) => (
-                        <div key={i} data-testid="draft-anomaly-row"
-                             style={{ marginBottom: 3, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                          <span style={{ fontFamily: 'monospace', color: 'var(--text-3)', minWidth: 80,
-                                           fontSize: 10 }}>
-                            {a.product_code || '?'}
-                          </span>
-                          <span style={{ color: a.severity === 'high' ? '#991b1b'
-                                                : a.severity === 'medium' ? '#92400e' : 'var(--text-2)',
-                                           flex: 1 }}>
-                            {a.message}
-                          </span>
-                          <span style={{ fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
-                            {a.severity}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {(intelligence.anomalies || []).length === 0 && (
-                    <div style={{ padding: '8px 12px', color: '#166534', fontSize: 11,
-                                    borderBottom: '1px solid var(--card-border)' }}>
-                      ✓ No anomalies detected
-                    </div>
-                  )}
-
-                  {/* Suggestions */}
-                  {(intelligence.suggestions || []).length > 0 && (
-                    <div style={{ padding: '8px 12px' }}>
-                      <div style={{ fontWeight: 700, fontSize: 10, textTransform: 'uppercase',
-                                      letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 4 }}>
-                        Suggested fills ({intelligence.suggestions.length}) · review before applying
-                      </div>
-                      {intelligence.suggestions.map((s, i) => (
-                        <div key={i} data-testid="draft-suggestion-row"
-                             style={{ marginBottom: 3, display: 'flex', gap: 8,
-                                        alignItems: 'flex-start', fontSize: 11 }}>
-                          <span style={{ fontFamily: 'monospace', color: 'var(--text-3)', minWidth: 80,
-                                           fontSize: 10 }}>
-                            {s.product_code}
-                          </span>
-                          <span style={{ color: 'var(--text-3)', minWidth: 70 }}>{s.field}</span>
-                          <span style={{ flex: 1, fontWeight: 600 }}>{s.suggested_value}</span>
-                          <span style={{ fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
-                            {Math.round(s.confidence * 100)}% · {s.source}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {(intelligence.suggestions || []).length === 0 && (
-                    <div style={{ padding: '8px 12px', color: 'var(--text-3)', fontSize: 11 }}>
-                      No field suggestions — all visible fields are populated.
                     </div>
                   )}
                 </div>
