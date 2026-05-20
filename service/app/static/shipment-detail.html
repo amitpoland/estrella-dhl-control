@@ -2313,6 +2313,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
   const [proformaPipeline,        setProformaPipeline]        = React.useState(null);
   const [proformaPipelineLoading, setProformaPipelineLoading] = React.useState(false);
 
+  // C25A — Setup-detail panel state.  Read-only fetch from
+  // GET /api/v1/wfirma/shipment/{batch}/setup-detail.  Surfaces per-product
+  // missing detail + per-customer action_needed classifier + readiness split
+  // (can prepare vs can post).  Refresh whenever proforma data changes.
+  const [setupDetail,        setSetupDetail]        = React.useState(null);
+  const [setupDetailLoading, setSetupDetailLoading] = React.useState(false);
+  const [setupDetailErr,     setSetupDetailErr]     = React.useState('');
+
   const setBusyKey = (k, v) => setBusy(p => ({ ...p, [k]: v }));
 
   const load = React.useCallback(async () => {
@@ -2335,6 +2343,21 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
       const tl = await apiFetch(`/api/v1/tracking/shipment/${encodeURIComponent(batchId)}/timeline`);
       setTimeline(Array.isArray(tl) ? tl : (tl.timeline || tl.events || []));
     } catch (e) {}
+  }, [batchId]);
+
+  // C25A — Setup-detail fetch (read-only).
+  const refreshSetupDetail = React.useCallback(async () => {
+    setSetupDetailLoading(true); setSetupDetailErr('');
+    try {
+      const d = await apiFetch(
+        `/api/v1/wfirma/shipment/${encodeURIComponent(batchId)}/setup-detail`,
+      );
+      setSetupDetail(d);
+    } catch (e) {
+      setSetupDetailErr((e && e.message) || 'setup-detail fetch failed');
+      setSetupDetail(null);
+    }
+    setSetupDetailLoading(false);
   }, [batchId]);
 
   // Proforma pipeline fetch — lightweight (read-only, no side effects).
@@ -2765,7 +2788,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
     setProposalsBusy(p => ({ ...p, [proposalId]: false }));
   };
 
-  React.useEffect(() => { load(); loadTimeline(); loadDbEvents(); refreshProformaPipeline(); }, [batchId]);
+  React.useEffect(() => { load(); loadTimeline(); loadDbEvents(); refreshProformaPipeline(); refreshSetupDetail(); }, [batchId]);
   // Fetch tracking once the audit loads (audit is needed for tracking_no)
   React.useEffect(() => { if (audit) fetchTracking(); }, [audit?.tracking_no]);
   // Fetch intelligence when tab is activated
@@ -9942,6 +9965,10 @@ function OperatorWorkflowCard({ batchId, onToast }) {
   const productsBody = (() => {
     if (!proforma) return <div style={{ fontSize: 11, color: '#6b7280' }}>—</div>;
     const p = proforma.products || {};
+    // C25A — per-product setup detail from /wfirma/shipment/{batch}/setup-detail
+    const sdProducts  = (setupDetail && setupDetail.products) || null;
+    const flagOn      = !!(sdProducts && sdProducts.create_flag_on);
+    const missingRows = (sdProducts && sdProducts.missing) || [];
     return (
       <div data-testid="workflow-products-body" style={{ fontSize: 12 }}>
         <div>{p.mapped || 0} of {p.total || 0} product codes mapped to wFirma.</div>
@@ -9951,6 +9978,65 @@ function OperatorWorkflowCard({ batchId, onToast }) {
             {p.create_flag_on
               ? 'Operator may run Auto-register from the Proforma Readiness panel below.'
               : 'Auto-register is not enabled (contact your admin).'}
+          </div>
+        )}
+        {/* C25A — read-only per-product detail table.  Always lists what's
+            missing; write buttons are gated by WFIRMA_CREATE_PRODUCT_ALLOWED. */}
+        {missingRows.length > 0 && (
+          <div data-testid="setup-products-detail-table" style={{ marginTop: 10, border: '1px solid var(--border-subtle)', borderRadius: 4 }}>
+            <div style={{ padding: '6px 8px', background: 'var(--bg-subtle)', fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>
+              Missing wFirma product registrations — {missingRows.length}
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-subtle)' }}>
+                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>product_code</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>design</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>type</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'right' }}>qty</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'right' }}>value</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>client</th>
+                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {missingRows.map((row, idx) => (
+                  <tr key={row.product_code || idx}
+                      data-testid={`setup-products-row-${row.product_code}`}
+                      style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{row.product_code}</td>
+                    <td style={{ padding: '4px 6px' }}>{row.design_no || '—'}</td>
+                    <td style={{ padding: '4px 6px' }}>{row.item_type || '—'}</td>
+                    <td style={{ padding: '4px 6px', textAlign: 'right' }}>{row.qty != null ? Number(row.qty) : '—'}</td>
+                    <td style={{ padding: '4px 6px', textAlign: 'right' }}>{row.total_value != null ? Number(row.total_value).toFixed(2) : '—'}{row.currency ? ' ' + row.currency : ''}</td>
+                    <td style={{ padding: '4px 6px' }}>{row.client_name || '—'}</td>
+                    <td style={{ padding: '4px 6px' }}>
+                      <Btn small
+                           data-testid={`btn-setup-product-preview-${row.product_code}`}
+                           title="Read-only preview of wFirma product registration. No write fires."
+                           disabled>
+                        Preview
+                      </Btn>
+                      {flagOn && (
+                        <Btn small primary
+                             data-testid={`btn-setup-product-register-${row.product_code}`}
+                             title="Register product in wFirma. Requires WFIRMA_CREATE_PRODUCT_ALLOWED=true."
+                             disabled
+                             style={{ marginLeft: 6 }}>
+                          Register
+                        </Btn>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!flagOn && (
+              <div data-testid="setup-products-write-disabled-note"
+                   style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)' }}>
+                ⓘ Register buttons hidden — WFIRMA_CREATE_PRODUCT_ALLOWED=false. Preview is always available (dry-run).
+              </div>
+            )}
           </div>
         )}
         <div style={{ marginTop: 6, color: '#6b7280' }}>
@@ -10483,6 +10569,137 @@ function OperatorWorkflowCard({ batchId, onToast }) {
         {sectionShell('classification', '2. Tariff classification',                   classificationBody)}
         {sectionShell('products',       '3. Products registered in accounting',       productsBody)}
         {sectionShell('customers',      '4. Customers matched to orders',             customersBody)}
+
+        {/* C25A — Setup-detail panel: per-customer action_needed + readiness
+            split (can prepare vs can post).  Read-only; write buttons hidden
+            unless WFIRMA_CREATE_CUSTOMER_ALLOWED=true. */}
+        {setupDetail && (
+          <div data-testid="setup-detail-panel" style={{
+            margin: '8px 0', padding: '10px 12px',
+            border: '1px solid var(--border-subtle)', borderRadius: 4,
+            background: 'var(--bg-subtle)', fontSize: 12,
+          }}>
+            {/* Readiness banner — split prepare vs post */}
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+              <div data-testid="setup-readiness-prepare" style={{
+                padding: '4px 8px', borderRadius: 3, fontSize: 11, fontWeight: 600,
+                background: setupDetail.readiness.can_prepare_proforma ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+                color:      setupDetail.readiness.can_prepare_proforma ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+              }}>
+                Can prepare proforma: {setupDetail.readiness.can_prepare_proforma ? '✓' : '✗'}
+              </div>
+              <div data-testid="setup-readiness-post" style={{
+                padding: '4px 8px', borderRadius: 3, fontSize: 11, fontWeight: 600,
+                background: setupDetail.readiness.can_post_to_wfirma ? 'var(--badge-green-bg)' : 'var(--badge-red-bg)',
+                color:      setupDetail.readiness.can_post_to_wfirma ? 'var(--badge-green-text)' : 'var(--badge-red-text)',
+              }}>
+                Can post to wFirma: {setupDetail.readiness.can_post_to_wfirma ? '✓' : '✗'}
+              </div>
+              <div data-testid="setup-transit-truth" style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                Transit truth: {setupDetail.readiness.purchase_transit_count} pcs PURCHASE_TRANSIT
+                ({setupDetail.readiness.batch_lifecycle})
+              </div>
+            </div>
+
+            {/* Blocker reasons — separated */}
+            {setupDetail.readiness.blockers_for_preparation.length > 0 && (
+              <div data-testid="setup-blockers-prepare" style={{ marginBottom: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-amber-text)' }}>Preparation blockers:</span>
+                <ul style={{ margin: '2px 0 0 18px', padding: 0, fontSize: 11 }}>
+                  {setupDetail.readiness.blockers_for_preparation.map((b, i) => (
+                    <li key={i}>{b}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {setupDetail.readiness.blockers_for_posting.length > 0 && (
+              <div data-testid="setup-blockers-post" style={{ marginBottom: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--badge-red-text)' }}>Posting blockers (preserves fiscal/customs gates):</span>
+                <ul style={{ margin: '2px 0 0 18px', padding: 0, fontSize: 11 }}>
+                  {setupDetail.readiness.blockers_for_posting.map((b, i) => (
+                    <li key={i}>{b}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Per-customer action table */}
+            {(setupDetail.customers.details || []).length > 0 && (
+              <div data-testid="setup-customers-detail-table" style={{ marginTop: 8, border: '1px solid var(--border-subtle)', borderRadius: 3, background: 'var(--bg)' }}>
+                <div style={{ padding: '6px 8px', background: 'var(--bg-subtle)', fontSize: 11, fontWeight: 600 }}>
+                  Customer setup — per-client action
+                </div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-subtle)' }}>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>client_name</th>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>status</th>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>wfirma_id</th>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>CM row</th>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>action_needed</th>
+                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>operator actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {setupDetail.customers.details.map((row, idx) => {
+                      const cFlagOn = !!setupDetail.customers.create_flag_on;
+                      const slug = String(row.client_name || '').replace(/[^A-Za-z0-9]+/g, '-').toLowerCase();
+                      const needCreate = row.action_needed === 'create_in_wfirma';
+                      return (
+                        <tr key={row.client_name || idx}
+                            data-testid={`setup-customers-row-${slug}`}
+                            style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                          <td style={{ padding: '4px 6px' }}>{row.client_name || '—'}</td>
+                          <td style={{ padding: '4px 6px' }}>{row.status}</td>
+                          <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{row.wfirma_customer_id || '—'}</td>
+                          <td style={{ padding: '4px 6px' }}>{row.cm_record_present ? (row.cm_bill_to_name || 'present') : '—'}</td>
+                          <td style={{ padding: '4px 6px' }}>{row.action_needed}</td>
+                          <td style={{ padding: '4px 6px' }}>
+                            <Btn small
+                                 data-testid={`btn-setup-customer-save-cm-${slug}`}
+                                 title="Save Customer Master defaults. Writes only to local Customer Master; no wFirma call."
+                                 disabled>
+                              Save CM
+                            </Btn>
+                            <Btn small
+                                 data-testid={`btn-setup-customer-resolve-${slug}`}
+                                 title="Re-run customer auto-resolve against wFirma cache. Dry-run preview only."
+                                 disabled
+                                 style={{ marginLeft: 6 }}>
+                              Resolve
+                            </Btn>
+                            {cFlagOn && needCreate && (
+                              <Btn small primary
+                                   data-testid={`btn-setup-customer-create-wfirma-${slug}`}
+                                   title="Create contractor in wFirma. Requires WFIRMA_CREATE_CUSTOMER_ALLOWED=true."
+                                   disabled
+                                   style={{ marginLeft: 6 }}>
+                                Create in wFirma
+                              </Btn>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {!setupDetail.customers.create_flag_on && (
+                  <div data-testid="setup-customers-write-disabled-note"
+                       style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)' }}>
+                    ⓘ Create-in-wFirma buttons hidden — WFIRMA_CREATE_CUSTOMER_ALLOWED=false. Save CM and Resolve are dry-run safe.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {setupDetailErr && (
+              <div data-testid="setup-detail-error" style={{ marginTop: 6, fontSize: 11, color: 'var(--badge-red-text)' }}>
+                setup-detail fetch error: {setupDetailErr}
+              </div>
+            )}
+          </div>
+        )}
+
         {sectionShell('warehouse',      '5. Packing list / Sales linkage',            warehouseBody)}
         {sectionShell('preview',        '6. Goods receipt ready to post',             previewBody)}
         {sectionShell('execute',        '7. Create goods receipt in wFirma',          executeBody)}
