@@ -4,11 +4,99 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign13d-merge)Z. Origin/main HEAD: 92acdc2. C12+C13A VERIFIED ACTIVE in production. C13B deploy script ready: `.claude/manifests/windows_deploy_pr235.ps1`. Windows operator must run script (no remote access from Mac). C13D merged 2026-05-20 (PR #236, SHA 92acdc2) — shipment-detail.html + dashboard.html updated; add to Windows static-file deploy. Cumulative pending deploy: #233 (routes_proforma.py) + #234 (inventory_*.py) + #235 (routes_packing.py + invoice_packing_extractor.py) + #236 (dashboard.html + shipment-detail.html).
+**Last-run-at:** 2026-05-20T(campaign15a)Z. Origin/main HEAD: 06ec8ea (C14A merged). C13E + C14A on main. C15A PR #239 OPEN. PENDING Windows deploys: (1) C13E — `.claude/manifests/windows_deploy_c13e_backend.ps1` — PZService restart required; (2) C14A — `.claude/manifests/windows_deploy_c14a_static.ps1` — no restart; (3) C15A — `.claude/manifests/windows_deploy_c15a_static.ps1` — no restart. Deploy order: C13E first (restart), then C14A + C15A together (no restart, single copy).
 
 ---
 
 # FACTS
+
+## Campaign 15A — Post-C13 operator friction reduction (2026-05-20)
+
+- **PR**: #239 — `feat/c15a-post-c13-closure` SHA `5e25e82` — OPEN, awaiting merge
+- **Files changed**: `service/app/static/shipment-detail.html`, `.gitignore`, `service/tests/test_c15a_post_c13_closure.py`, `.claude/manifests/windows_deploy_c15a_static.ps1`
+- **No backend files touched** — frontend+governance only
+- **No DB schema change** — no write paths added
+- **Test results**: 20/20 C15A tests PASS; 107/107 combined C13D+C14A+C13E+C15A PASS
+- **Deploy delta**: 1 static file — `shipment-detail.html`; **NO PZService restart required**
+
+### Changes
+- `customer-flag-off`: actionable wFirma Contractors instruction (Dream Ring / Panakas)
+- `contractor-create-new-btn`: label + tooltip tell operator to create in wFirma first
+- `link-packing panels`: amber "Needs client" highlight for unassigned rows (e.g. INV-178)
+- `ProformaDraftPanel`: accurate empty subtitle mentioning link-as-sales path
+- `.gitignore`: `validate_deploy_*.sh` pattern added
+
+---
+
+## Campaign 14A — Lapis Commercial Workflow Truth Correction (2026-05-20)
+
+- **PR**: #237 — MERGED to main SHA `06ec8ea` on 2026-05-20
+- **Deploy delta**: 1 static file — `shipment-detail.html`; **NO PZService restart required**
+- **Deploy pending**: run `.claude/manifests/windows_deploy_c14a_static.ps1`
+
+---
+
+## Campaign 13E — Projection-by-Quantity correction (2026-05-20)
+
+- **PR**: #238 — MERGED to main SHA `358f215` on 2026-05-20 — **awaiting Windows deploy**
+- **Files changed**: `service/app/services/inventory_state_engine.py` only (+ 2 test files)
+- **No frontend files touched** — backend-only
+- **No DB schema change** — zero-write guarantee preserved
+- **Test results**: 15 new C13E tests PASS; 30/30 projection suite; 80/80 inventory suite
+- **Deploy delta**: 1 backend file — `inventory_state_engine.py`; **PZService restart required**
+
+### Root cause
+`derive_purchase_transit_projection` emitted 1 synthetic row per packing_line (COUNT semantics).
+Lapis has 30 packing lines with SUM(quantity)=46 → projection showed 30, not 46.
+
+### Fix
+- Added `_coerce_qty()` helper: None/invalid/≤0 → 1; float strings → int(float())
+- Loop now emits N rows per packing line where N = coerce(quantity)
+- qty=1: original scan_code unchanged; qty>1: scan_code#1 … scan_code#N
+
+### Expected Lapis result after deploy
+`GET /api/v1/inventory/state/SHIPMENT_4218922912_2026-05_9040dd39`
+→ `total=46, counts.PURCHASE_TRANSIT=46, synthetic=true, source="audit.tracking"`
+
+### Supersession of C13A test assertions
+4 C13A projection tests updated: fixture line[2] had qty=2, so C13E correctly expands to 4 rows.
+All original C13A behaviours (terminal suppression, real rows win, zero-write) unchanged.
+
+---
+
+## Campaign 14A — Lapis Commercial Workflow Truth Correction (2026-05-20)
+
+- **PR**: #237 — `feat/c14a-lapis-workflow-truth` SHA `acf7be8` — OPEN, awaiting merge
+- **Branch**: `feat/c14a-lapis-workflow-truth`
+- **Files changed**: `service/app/static/shipment-detail.html` (only) + 2 test files
+- **No backend files touched** — frontend-only
+- **Test results**: 28/28 C14A tests PASS; 57/57 combined C13D+C14A PASS
+- **Deploy delta**: 1 static file — `shipment-detail.html` (C14A supersedes C13D version)
+- **Production deploy**: PENDING — run `.claude/manifests/windows_deploy_c14a_static.ps1` after merge
+
+### Behaviour added / corrected
+
+- `loadProformaDocument`: detects `PROFORMA_NOT_LINKED` error code → stores `error:'not_linked'` in state; suppresses toast; renders informational blue panel "No linked proforma yet"
+- `STATUS_BADGE`: `missing_scan` → amber "Pending arrival" label (replaces C13D per-line remap to 'in_transit')
+- `sales-transit-context-banner`: blue banner above per-client groups when `isTransit` — explicitly "Inventory location: In transit" (not a sales status)
+- `sales-qty-reconciliation`: inside transit banner — transit pieces vs invoice units with PRS/pair note
+- `orphan-assignment-cta`: informational note at bottom of Sales section pointing to "Link packing files" panel
+
+### C13D supersession note
+C14A intentionally removes C13D's per-line `missing_scan → in_transit` Sales tab remap.
+C13D Sales tab anchor comment updated: `"C13D: same transit detection..."` → `"C14A: transit detection"`.
+All C13D Warehouse tab and Dashboard behaviour is UNCHANGED.
+
+### Target batch
+`SHIPMENT_4218922912_2026-05_9040dd39` (Lapis, DHL transit, 30 PURCHASE_TRANSIT, 46 invoice units)
+
+### Safety invariants UNCHANGED
+- `WFIRMA_CREATE_PZ_ALLOWED` — untouched
+- `cleanGate` still checks `stuck.length`, `invalid.length`, `orphans.length`
+- No backend routes, services, DB schema, DHL/wFirma flags touched
+- All new panels read-only (no API calls, no buttons, no onClick in CTA)
+
+---
 
 ## Campaign 13D — Transit-Aware Inventory Semantics (2026-05-20)
 
