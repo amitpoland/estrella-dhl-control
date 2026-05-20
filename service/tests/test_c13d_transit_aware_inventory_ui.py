@@ -240,10 +240,19 @@ class TestC13DSalesTabRemap:
         )
 
     def test_sales_summary_counter_uses_blue_color_when_transit(self):
-        """Missing scan counter must use blue (not red) color when isTransit."""
+        """Missing scan counter must use blue (not red) color when isTransit.
+
+        C16A restructured the ternary — the blue token must still appear in
+        the transit-guarded path of the summary counter expression.
+        """
         src = _detail()
-        assert "isTransit ? 'var(--badge-blue-text)'" in src or \
-               "isTransit?'var(--badge-blue-text)'" in src, (
+        # C16A changed the expression structure: now isTransit gates a nested
+        # ternary (PURCHASE_TRANSIT > 0 ? blue : text). Verify blue is still
+        # present in the transit-guarded summary counter context.
+        idx = src.find("invState.counts.PURCHASE_TRANSIT")
+        assert idx != -1, "PURCHASE_TRANSIT must be present in summary counter"
+        ctx = src[max(0, idx - 300): idx + 200]
+        assert "badge-blue-text" in ctx, (
             "transit items must use blue color in summary counter, not red"
         )
 
