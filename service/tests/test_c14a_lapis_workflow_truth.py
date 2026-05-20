@@ -35,6 +35,14 @@ def _detail() -> str:
 # ══════════════════════════════════════════════════════════
 
 class TestC14AViewProformaGraceful:
+    # NOTE: C27.1 deleted the legacy reservation IIFE that hosted the
+    # "No linked proforma yet" panel and the `proDoc.data` document
+    # renderer. State-layer handlers (loadProformaDocument,
+    # PROFORMA_NOT_LINKED detection at lines ~2530-2540) remain intact;
+    # the JSX surface that consumed them was inside the deleted block.
+    # Individual JSX-surface tests are skipped below; state-layer tests
+    # remain active.
+
     def test_proforma_not_linked_error_stored_in_state(self):
         """loadProformaDocument must detect PROFORMA_NOT_LINKED and store
         error:'not_linked' in state instead of a silent toast-only failure."""
@@ -51,6 +59,7 @@ class TestC14AViewProformaGraceful:
             "PROFORMA_NOT_LINKED must not trigger an error toast"
         )
 
+    @pytest.mark.skip(reason="C27.1 deleted the JSX surface — see class docstring")
     def test_proforma_not_linked_panel_testid(self):
         """A panel with data-testid must render when proDoc.error==='not_linked'."""
         src = _detail()
@@ -59,6 +68,7 @@ class TestC14AViewProformaGraceful:
             "proforma-not-linked-panel testid must exist"
         )
 
+    @pytest.mark.skip(reason="C27.1 deleted the JSX surface — see class docstring")
     def test_proforma_not_linked_panel_shown_when_error_not_linked(self):
         """The panel must be conditional on proDoc.error === 'not_linked'."""
         src = _detail()
@@ -66,6 +76,7 @@ class TestC14AViewProformaGraceful:
             "panel must be conditional on proDoc.error === 'not_linked'"
         )
 
+    @pytest.mark.skip(reason="C27.1 deleted the JSX surface — see class docstring")
     def test_proforma_not_linked_panel_mentions_draft_preview(self):
         """The not-linked panel must tell operator to use draft preview above."""
         src = _detail()
@@ -76,6 +87,7 @@ class TestC14AViewProformaGraceful:
             "not-linked panel must reference draft preview as next step"
         )
 
+    @pytest.mark.skip(reason="C27.1 deleted the JSX surface — see class docstring")
     def test_proforma_not_linked_panel_is_read_only(self):
         """Not-linked panel must be informational only — no submit, no onClick action."""
         src = _detail()
@@ -85,6 +97,7 @@ class TestC14AViewProformaGraceful:
         assert "apiFetch" not in snippet, "not-linked panel must not make API calls"
         assert "method: 'POST'" not in snippet, "not-linked panel must not POST"
 
+    @pytest.mark.skip(reason="C27.1 deleted the JSX surface — see class docstring")
     def test_proforma_document_panel_still_renders_for_linked(self):
         """When proDoc.data is present (proforma IS linked), the full document
         panel must still render — graceful 404 path must not break the happy path."""
@@ -99,6 +112,12 @@ class TestC14AViewProformaGraceful:
 # CLASS 2: Transit as inventory location, not Sales status
 # ══════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason=(
+    "C27.1 deleted the Sales Linkage block including the "
+    "sales-transit-context-banner surface. Transit lifecycle is now a "
+    "Warehouse-tab concern; equivalent surface will be pinned by a "
+    "Warehouse-tab test when C27.3 relocates the transit tables."
+))
 class TestC14ATransitLocationSemantics:
     def test_transit_context_banner_testid(self):
         """A transit context banner with testid must exist in the Sales tab."""
@@ -171,6 +190,13 @@ class TestC14ATransitLocationSemantics:
 # CLASS 3: Quantity reconciliation display
 # ══════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason=(
+    "C27.1 superseded C14A: Sales Linkage block (including the transit "
+    "context banner and sales-qty-reconciliation note) was removed from "
+    "the Pro Forma surface. The data still exists at the backend; future "
+    "Warehouse-tab relocation will pin equivalent surfaces. Test class "
+    "preserved as history marker — see test_c27_1_proforma_surface_deletions.py."
+))
 class TestC14AQtyReconciliation:
     def test_qty_reconciliation_testid(self):
         """Quantity reconciliation note must have a stable data-testid."""
@@ -231,6 +257,12 @@ class TestC14AQtyReconciliation:
 # CLASS 4: Orphan assignment CTA
 # ══════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason=(
+    "C27.1 superseded C14A: orphan-assignment-cta was inside the deleted "
+    "Sales Linkage block. The empty-state link-packing flow (when no "
+    "drafts exist) still surfaces the action — see "
+    "test_c27_1_proforma_surface_deletions.py::test_link_packing_button_preserved_in_empty_state."
+))
 class TestC14AOrphanAssignmentCta:
     def test_orphan_cta_testid(self):
         """Orphan assignment CTA must have a stable data-testid."""
@@ -292,6 +324,12 @@ class TestC14ASafetyInvariants:
         assert "invalid.length" in snippet
         assert "orphans.length" in snippet
 
+    @pytest.mark.skip(reason=(
+        "C27.1 superseded C14A: sales-linkage-blocking-reasons was inside "
+        "the deleted Sales Linkage block. Invoice-gate blocker visibility "
+        "is now owned by /proforma-readiness blockers_for_posting (C26 "
+        "canonical reader)."
+    ))
     def test_gate_blockers_preserved(self):
         """Sales linkage blocking reasons display must still be present —
         C14A must not remove existing blocker visibility."""
