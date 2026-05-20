@@ -4,11 +4,43 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign13b-deploy-prep)Z. Origin/main HEAD: f1b5bf4. C12+C13A VERIFIED ACTIVE in production. C13B deploy script ready: `.claude/manifests/windows_deploy_pr235.ps1`. Windows operator must run script (no remote access from Mac). All 5 files cumulative pending deploy (#233+#234+#235).
+**Last-run-at:** 2026-05-20T(campaign13d-merge)Z. Origin/main HEAD: 92acdc2. C12+C13A VERIFIED ACTIVE in production. C13B deploy script ready: `.claude/manifests/windows_deploy_pr235.ps1`. Windows operator must run script (no remote access from Mac). C13D merged 2026-05-20 (PR #236, SHA 92acdc2) — shipment-detail.html + dashboard.html updated; add to Windows static-file deploy. Cumulative pending deploy: #233 (routes_proforma.py) + #234 (inventory_*.py) + #235 (routes_packing.py + invoice_packing_extractor.py) + #236 (dashboard.html + shipment-detail.html).
 
 ---
 
 # FACTS
+
+## Campaign 13D — Transit-Aware Inventory Semantics (2026-05-20)
+
+- **Merge commit**: `92acdc2` — PR #236 merged 2026-05-20 via squash
+- **Branch**: `feat/c13d-transit-aware-inventory-ui`
+- **Files changed**: `service/app/static/shipment-detail.html` + `service/app/static/dashboard.html` + `service/tests/test_c13d_transit_aware_inventory_ui.py`
+- **No backend files touched** — frontend-only
+- **Test results**: 29/29 C13D tests PASS
+- **Deploy delta**: 2 static files — `shipment-detail.html` + `dashboard.html` (copy to `C:\PZ\app\static\`, no service restart)
+- **Production deploy**: PENDING — must be included in next Windows static-file deploy (alongside C13B backend files)
+
+### Behaviour added
+
+- `isTransit = invState.synthetic === true && PURCHASE_TRANSIT count > 0` — Warehouse tab
+- `displayMissing = isTransit ? [] : missing` — transit items not counted as gaps; `cleanGate` uses `displayMissing.length`
+- `lifecycleState` returns `'in_transit'` (blue) before `'awaiting'` for synthetic transit batches
+- Missing scans section shows blue informational note instead of red table when `isTransit`
+- Sales tab: `statusBadge` remaps `'missing_scan' → 'in_transit'` when `isTransit`; summary counter shows `'In transit:'` (blue)
+- Dashboard piece drawer: `PURCHASE_TRANSIT → 'In transit'` via `stLabel`; `WAREHOUSE_LIFECYCLE_LABEL` + `xbatchLifecycleTone` include `in_transit` (blue)
+
+### Safety invariants UNCHANGED
+- `WFIRMA_CREATE_PZ_ALLOWED=False` — untouched
+- `cleanGate` still checks `stuck.length`, `invalid.length`, `orphans.length` — no fake ready state
+- No backend routes, services, DB schema, DHL/wFirma flags touched
+- Transit note is read-only (no Btn, no button, no onClick)
+
+### Pre-existing failures (NOT caused by C13D — SCHEDULED)
+- `test_dashboard_warehouse_lifecycle_badge.py`: 20/40 fail — tests look for `loadWarehouseAudit`/`warehouseAudit` in dashboard.html (those are in shipment-detail.html); test file targets wrong HTML file
+- `test_dashboard_inventory_piece_drawer.py`: stale POST/PUT/testid expectations — pre-existing
+
+### Scorecard
+- `.claude/memory/scorecards/2026-05-20-c13d-transit-aware-inventory.md` (pending write)
 
 ## Campaign 13B — Parser body-cell fallback for client name extraction (2026-05-20)
 
