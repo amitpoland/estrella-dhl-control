@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign13b-pr235)Z. Origin/main HEAD: aaa898b. PR #235 OPEN (feat/c13b-parser-body-fallback, SHA a4a438e). Windows deploy pending (3 files from #233+#234, merge #235 then 5 files total). Manifests: deploy_delta_pr233.md + deploy_delta_pr234.md + deploy_delta_pr235.md.
+**Last-run-at:** 2026-05-20T(campaign13b-merge)Z. Origin/main HEAD: ca7de3c — PR #235 MERGED 2026-05-20. Windows deploy pending (5 files: routes_proforma.py + 2×inventory services + routes_packing.py + invoice_packing_extractor.py). Manifests: deploy_delta_pr233.md + deploy_delta_pr234.md + deploy_delta_pr235.md.
 
 ---
 
@@ -12,12 +12,11 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 ## Campaign 13B — Parser body-cell fallback for client name extraction (2026-05-20)
 
+- **Merge commit**: `ca7de3c` — PR #235 merged 2026-05-20
 - **Branch**: `feat/c13b-parser-body-fallback` — commit `a4a438e`
-- **PR #235**: OPEN — "C13B: Parser body-cell fallback for orphan client names"
-- **Test results**: 50/50 C13B tests PASS; 122/126 combined (4 pre-existing failures in test_proforma_pricing_source.py — SCHEDULED)
+- **Test results**: 50/50 C13B tests PASS; 73/73 C12+C13A+C13B combined; 4 pre-existing failures in test_proforma_pricing_source.py — SCHEDULED
 - **Deploy delta**: 2 runtime files — `routes_packing.py` + `invoice_packing_extractor.py`
 - **Deploy manifest**: `.claude/manifests/deploy_delta_pr235.md`
-- **Scorecard**: PENDING (observer to fire after merge)
 
 ### Architecture
 
