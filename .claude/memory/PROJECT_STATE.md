@@ -4,11 +4,51 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-19T(deploy-convergence-campaign11)Z. Origin/main HEAD: cac4f84. Windows deploy script generated and verified (windows_deploy_a20e5a2.ps1). 475/475 tests pass. All 10 deploy files syntax-clean. Deploy READY for operator execution. DHL P2: BLOCKED (corpus-dependent). Post-deploy: check orchestrator_decisions.jsonl count for P2 eligibility.
+**Last-run-at:** 2026-05-20T(campaign12-preview-gate-separation)Z. Origin/main HEAD: 6b022cd (chore). C12 branch `feat/c12-preview-gate-separation` at `3f61fd0` — PR #233 OPEN + MERGEABLE. 244/244 tests pass. Deploy delta for PR #233: 1 file (routes_proforma.py). Deploy manifest: `.claude/manifests/deploy_delta_pr233.md`.
 
 ---
 
 # FACTS
+
+## Campaign 12 — Proforma Preview Gate Separation (2026-05-20)
+
+- **Feature commit**: `3f61fd0` on `feat/c12-preview-gate-separation`
+- **PR #233**: OPEN + MERGEABLE — `feat(C12): Proforma preview gate separation — export gate != preview gate`
+- **Test results**: 8/8 C12 tests PASS; 244/244 make verify PASS (branch)
+- **Deploy delta**: 1 runtime file — `service/app/api/routes_proforma.py`
+- **Deploy manifest**: `.claude/manifests/deploy_delta_pr233.md` (1-file deploy, smoke checks included)
+- **Scorecard**: `.claude/memory/scorecards/2026-05-20-preview-gate-separation-campaign12.md`
+
+### Architecture changes in `3f61fd0`
+
+- `_check_proforma_export_prerequisites()` — NEW function; carries `wfirma_pz_doc_id` check that was incorrectly inside the preview path; called ONLY for create/export
+- `_derive_batch_lifecycle()` — NEW function; returns `DHL_TRANSIT` when `inventory_state` rows=0 AND `clearance_status` in `_LIFECYCLE_TRANSIT_STATUSES` frozenset
+- `_check_warehouse_readiness()` — MODIFIED; removed check #1 (`wfirma_pz_doc_id`); now only checks product resolution + price conflicts in pz_rows.json
+- `_build_preview()` response extended: `can_preview`, `export_blockers`, `warehouse_blockers`, `batch_lifecycle` fields; `ready = not blocking_reasons and not export_blockers`
+- `_stock_status()` closure: returns `"dhl_transit"` for DHL_TRANSIT batches; `"dhl_transit"` added to `_ELIGIBLE_LABELS` → `stock_ok=True`, no blocking reason
+- **Safety invariants UNCHANGED**: `_guard_wfirma_export` (routes_wfirma.py:137-156), `WFIRMA_CREATE_PZ_ALLOWED=False`
+
+### Target batch enabled by C12
+
+- `SHIPMENT_4218922912_2026-05_9040dd39` (AWB 4218922912, `clearance_status=dsk_generated`)
+- 4 invoices (177/178/179/180), 0 inventory_state rows, 30 scan_codes from parser
+- Diamond Point + Verhoeven previews NOW UNBLOCKED (DHL_TRANSIT lifecycle derived)
+- Dream Ring + Panakas: STILL BLOCKED for their own clients only (no wFirma contractor mapping)
+- Invoice 178 orphan (JR08007 1pc): provenance retained; operator must assign client
+
+### Operator-dependent items for Lapis batch (not code-blocked — require human action)
+
+1. ZC429 upload: waiting on customs agency `roman@acspedycja.pl` — required for wFirma PZ export
+2. Dream Ring wFirma contractor: operator must create in wFirma + add to Customer Master
+3. Panakas wFirma contractor: operator must create in wFirma + add to Customer Master
+4. Invoice 178 client assignment: operator decision (1 orphan packing line JR08007)
+5. Warehouse scan-in 30 pieces: after goods arrive in Poland
+6. Fracht + Ubezpieczenie wFirma service IDs: verify 13002743 + 13102217
+
+### Pre-existing test failures (NOT caused by C12 — verified on main before C12)
+
+- `service/tests/test_proforma_pricing_source.py`: 4 tests failing (parser unit tests)
+- GATE 4 disposition: SCHEDULED (pre-existing, not C12 regression)
 
 ## Deploy Convergence Campaign 11 — Windows Deploy Script + Final Readiness (2026-05-19)
 
@@ -167,7 +207,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Sequencing model** — three-PR cascade (Option B) chosen over single atomic PR for clean per-step rollback + GATE 2 compliance (max 3 open). Each PR in/out before next opened.
 
 ## Open PRs
-(Implementation slot: 2/3 used. #225 merged, #222 merged, #114/#116/#137/#138/#140 closed.)
+(Implementation slot: 3/3 used. #225 merged, #222 merged, #114/#116/#137/#138/#140 closed.)
+- **#233** feat(C12): Proforma preview gate separation — OPEN + MERGEABLE — 1-file change (routes_proforma.py) — **IMPL SLOT 3/3.** Deploy manifest at `.claude/manifests/deploy_delta_pr233.md`.
 - **#10** feat(inventory): Risk-3/4 button stubs — deferred per operator instruction; do not touch. **IMPL SLOT 1/3.**
 - **#1** ui: align sidebar IA with Estrella Atlas design — historical Atlas branch (REFERENCE_ONLY pending). **IMPL SLOT 2/3.**
 
