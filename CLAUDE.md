@@ -294,13 +294,51 @@ email-capable service is being restarted.
 2026-05-18 containment: `launchctl unload ~/Library/LaunchAgents/eu.estrellajewels.pz-service.plist`,
 plist moved to `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabled`.
 
+### Lesson F — V2 frontend migration requires frozen V1 and strict authority isolation (2026-05-20)
+
+**GATE 1 + V1-FREEZE.** Origin: MASTER-CLOSE-AND-START-V2 architectural directive.
+
+**Binding rules — enforced on every V2 PR and every `shipment-detail.html` PR:**
+
+1. **V1 is frozen.** `shipment-detail.html` and `dashboard.html` accept critical fixes only (production broken or data at risk). No new features, tabs, rendering surfaces, or refactors while V2 is being built. Any PR touching these files triggers reviewer-challenge automatically.
+
+2. **Do not evolve V1 and V2 simultaneously.** Enterprise migrations fail precisely because teams keep both generations moving. The freeze is what makes the migration work.
+
+3. **ONE PAGE = ONE DOMAIN AUTHORITY.** Every V2 page owns exactly one business domain. If a proposed V2 change requires touching another domain's APIs or state, it belongs on a different page.
+
+4. **NO PAGE MAY OWN ANOTHER PAGE'S BUSINESS LOGIC.** Proforma logic stays in proforma-v2. PZ logic stays in pz-v2. Cross-page logic goes into the shared layer (transport → normalization → primitives), never into a page component.
+
+5. **Shared layer responsibility is bounded:**
+   - `pz-api.js` — transport only (fetch + error shape). No business logic.
+   - `pz-state.js` — normalization + workflow state. No rendering, no fetching.
+   - `pz-components.js` — reusable rendering primitives. No fetching, no workflow decisions.
+   - `dashboard-shared.js` — visual primitives only. No domain knowledge.
+   Blurring these boundaries recreates the `render + fetch + state + workflow + transformation` inside one component problem that made V1 unmaintainable.
+
+6. **Authority-clean before visual polish.** Build in order: deterministic → inspectable → authority-clean → workflow-safe → cache-safe → deployment-safe → visually polished. Do not skip ahead to polish.
+
+7. **Dashboard-v2 is built last.** It aggregates domain pages; those domain pages must be stable authority surfaces first. Building dashboard-v2 early means depending on unstable contracts — exactly how V1 fragmentation started.
+
+**Forbidden patterns (reviewer-challenge must reject these in V2 PRs):**
+- Reusing a V1 renderer directly in a V2 page
+- Duplicating state transforms from V1 "temporarily"
+- Adding a section to `shipment-detail.html` instead of building the V2 page
+- Mixing two domain authorities in a single V2 page component
+- Auto-saving, auto-fetching on mount without explicit operator action
+
+**Where it binds**: every V2 page PR; every `shipment-detail.html` PR; every `dashboard-shared.js` PR; every new file in `app/static/` that touches proforma/PZ/customs/warehouse domains.
+
+**Reference**: `docs/v2-architecture-plan.md` (full spec, authority map, phase plan, discipline rules).
+
 ---
 
 ## Frontend Design Standard
 
-All UI work on `shipment-detail.html`, `dashboard.html`, and any new dashboard pages is governed by `.claude/skills/frontend-design.md`.
+**V1 pages** (`shipment-detail.html`, `dashboard.html`) — frozen except critical fixes (Lesson F). Work governed by `.claude/skills/frontend-design.md`.
 
-**Stack**: Vanilla HTML + Babel JSX (no bundler, no TypeScript, no Tailwind). Generic frontend-ui agent defaults to TypeScript + Tailwind — those do not apply here.
+**V2 pages** (`proforma-v2.html` and later) — governed by `docs/v2-architecture-plan.md` + Lesson F discipline rules. Authority-clean first, visual polish last.
+
+**Stack (both V1 and V2)**: Vanilla HTML + Babel JSX (no bundler, no TypeScript, no Tailwind). Generic frontend-ui agent defaults to TypeScript + Tailwind — those do not apply here.
 
 Key rules (full detail in skill file):
 - Use CSS custom properties (`--bg`, `--text`, `--badge-*`, `--accent`) — never hardcoded hex
