@@ -3798,7 +3798,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       {doc.url && <a href={doc.url} download style={{ textDecoration: 'none' }}><Btn small variant="outline">↓</Btn></a>}
                       <button onClick={() => deleteSourceFile(doc.cat, doc.name)} title="Delete file"
-                        style={{ background: 'none', border: '1px solid #e8a0a0', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: '#c44', lineHeight: 1 }}>✕</button>
+                        style={{ background: 'none', border: '1px solid var(--badge-red-border)', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: 'var(--badge-red-text)', lineHeight: 1 }}>✕</button>
                     </div>
                   </div>
                 ))}
@@ -3834,7 +3834,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         {exists ? <span style={{ fontSize: 10, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Generated</span> : <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Not generated</span>}
                         {exists && url && <a href={url} download style={{ textDecoration: 'none' }}><Btn small variant="outline">↓</Btn></a>}
                         {exists && fname && <button onClick={() => deleteOutputFile(fname)} title="Delete file"
-                          style={{ background: 'none', border: '1px solid #e8a0a0', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: '#c44', lineHeight: 1 }}>✕</button>}
+                          style={{ background: 'none', border: '1px solid var(--badge-red-border)', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: 'var(--badge-red-text)', lineHeight: 1 }}>✕</button>}
                       </div>
                     </div>
                   );
@@ -3853,7 +3853,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         {fn ? <span style={{ fontSize: 10, color: 'var(--badge-green-text)', fontWeight: 600 }}>✓ Generated</span> : <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Not generated</span>}
                         {fn && <a href={`/api/v1/dhl/download/${encodeURIComponent(fn)}`} download style={{ textDecoration: 'none' }}><Btn small variant="outline">↓</Btn></a>}
                         {fn && <button onClick={() => deleteOutputFile(fn)} title="Delete file"
-                          style={{ background: 'none', border: '1px solid #e8a0a0', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: '#c44', lineHeight: 1 }}>✕</button>}
+                          style={{ background: 'none', border: '1px solid var(--badge-red-border)', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: 'var(--badge-red-text)', lineHeight: 1 }}>✕</button>}
                       </div>
                     </div>
                   );
@@ -3876,7 +3876,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           : <span data-testid="generated-output-dsk-status" style={{ fontSize: 10, color: 'var(--text-3)' }}>Not generated</span>}
                         {fn && <a data-testid="generated-output-dsk-download" href={`/api/v1/dhl/download/${encodeURIComponent(fn)}`} download style={{ textDecoration: 'none' }}><Btn small variant="outline">↓</Btn></a>}
                         {fn && <button onClick={() => deleteOutputFile(fn)} title="Delete file"
-                          style={{ background: 'none', border: '1px solid #e8a0a0', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: '#c44', lineHeight: 1 }}>✕</button>}
+                          style={{ background: 'none', border: '1px solid var(--badge-red-border)', borderRadius: 4, cursor: 'pointer', padding: '3px 7px', fontSize: 11, color: 'var(--badge-red-text)', lineHeight: 1 }}>✕</button>}
                       </div>
                     </div>
                   );
@@ -10394,13 +10394,13 @@ function OperatorWorkflowCard({ batchId, onToast }) {
         <div style={{ fontSize: 14, fontWeight: 700 }}>
           🛠 Operator Workflow
         </div>
-        <button data-testid="workflow-refresh"
-                onClick={refresh}
-                style={{ marginLeft: 'auto', padding: '4px 10px',
-                         fontSize: 11, borderRadius: 6,
-                         border: '1px solid #d1d5db', background: '#fff' }}>
+        <Btn data-testid="workflow-refresh"
+             onClick={refresh}
+             variant="outline"
+             small
+             style={{ marginLeft: 'auto' }}>
           Refresh
-        </button>
+        </Btn>
       </div>
       {error && (
         <div data-testid="workflow-error"
@@ -10622,40 +10622,34 @@ function CNHSNDecisionPanel({ batchId, onToast }) {
       {!decided && level === 'chapter_match' && (
         <div data-testid="cn-hsn-buttons"
              style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
-          <button data-testid="cn-accept-sad"
-                  disabled={!!busy}
-                  onClick={() => postDecision(
-                    'accept-sad',
-                    'Accept SAD CN as authoritative for this shipment',
-                    `SAD CN ${data.sad_cn_code} accepted — invoice HSNs share HS chapter; aggregation acceptable for jewelry classification`)}
-                  style={{ padding: '6px 12px', fontSize: 12,
-                           background: '#15803d', color: '#fff',
-                           border: 'none', borderRadius: 6,
-                           cursor: busy ? 'wait' : 'pointer' }}>
+          {/* C21A: converted from bare <button> with hardcoded hex → <Btn> with CSS tokens */}
+          <Btn data-testid="cn-accept-sad"
+               disabled={!!busy}
+               variant="primary"
+               onClick={() => postDecision(
+                 'accept-sad',
+                 'Accept SAD CN as authoritative for this shipment',
+                 `SAD CN ${data.sad_cn_code} accepted — invoice HSNs share HS chapter; aggregation acceptable for jewelry classification`)}>
             ✓ Accept SAD CN
-          </button>
-          <button data-testid="cn-correct-internal"
-                  disabled={!!busy}
-                  onClick={() => postDecision(
-                    'correct-internal',
-                    'Record an internal CN/HSN correction (does NOT mutate SAD source)',
-                    `Internal correction: invoice HSN to be reclassified at next intake; SAD CN ${data.sad_cn_code} retained as filed`)}
-                  style={{ padding: '6px 12px', fontSize: 12,
-                           background: '#fff', color: '#374151',
-                           border: '1px solid #9ca3af', borderRadius: 6 }}>
+          </Btn>
+          <Btn data-testid="cn-correct-internal"
+               disabled={!!busy}
+               variant="outline"
+               onClick={() => postDecision(
+                 'correct-internal',
+                 'Record an internal CN/HSN correction (does NOT mutate SAD source)',
+                 `Internal correction: invoice HSN to be reclassified at next intake; SAD CN ${data.sad_cn_code} retained as filed`)}>
             ✎ Correct internally
-          </button>
-          <button data-testid="cn-escalate-agent"
-                  disabled={!!busy}
-                  onClick={() => postDecision(
-                    'escalate-agent',
-                    'Escalate CN/HSN mismatch to the customs agent',
-                    `Escalation: SAD CN ${data.sad_cn_code} vs invoice HSN ${(data.invoice_hsns || []).join(', ')} — request clarification from customs agent`)}
-                  style={{ padding: '6px 12px', fontSize: 12,
-                           background: '#fff', color: '#991b1b',
-                           border: '1px solid #fca5a5', borderRadius: 6 }}>
+          </Btn>
+          <Btn data-testid="cn-escalate-agent"
+               disabled={!!busy}
+               variant="danger"
+               onClick={() => postDecision(
+                 'escalate-agent',
+                 'Escalate CN/HSN mismatch to the customs agent',
+                 `Escalation: SAD CN ${data.sad_cn_code} vs invoice HSN ${(data.invoice_hsns || []).join(', ')} — request clarification from customs agent`)}>
             ✉ Send back to agent
-          </button>
+          </Btn>
         </div>
       )}
 
@@ -10835,26 +10829,25 @@ function ExecutePZGate({ batchId, onToast }) {
         </div>
       </details>
 
+      {/* C21A: converted from bare <button> with hardcoded hex → <Btn> with CSS tokens */}
       <div style={{ display: 'flex', gap: 8 }}>
-        <button data-testid="execute-pz-refresh"
-                onClick={refresh}
-                style={{ padding: '6px 12px', fontSize: 12 }}>
+        <Btn data-testid="execute-pz-refresh"
+             onClick={refresh}
+             variant="outline"
+             small>
           Refresh
-        </button>
-        <button data-testid="execute-pz-button"
-                onClick={onExecute}
-                disabled={!enabled}
-                title={enabled ? '' : reasons.join('; ')}
-                style={{ padding: '6px 12px', fontSize: 12,
-                         background: enabled ? '#15803d' : '#9ca3af',
-                         color: '#fff', border: 'none', borderRadius: 6,
-                         cursor: enabled ? 'pointer' : 'not-allowed' }}>
+        </Btn>
+        <Btn data-testid="execute-pz-button"
+             onClick={onExecute}
+             disabled={!enabled}
+             title={enabled ? '' : reasons.join('; ')}
+             variant="primary">
           {busy ? '⟳ Creating…' : 'Create goods receipt in wFirma'}
-        </button>
+        </Btn>
       </div>
 
       {error && (
-        <div style={{ marginTop: 8, fontSize: 11, color: '#991b1b' }}>
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--badge-red-text)' }}>
           {error}
         </div>
       )}
