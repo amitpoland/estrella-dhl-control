@@ -4,11 +4,29 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign15a)Z. Origin/main HEAD: 06ec8ea (C14A merged). C13E + C14A on main. C15A PR #239 OPEN. PENDING Windows deploys: (1) C13E — `.claude/manifests/windows_deploy_c13e_backend.ps1` — PZService restart required; (2) C14A — `.claude/manifests/windows_deploy_c14a_static.ps1` — no restart; (3) C15A — `.claude/manifests/windows_deploy_c15a_static.ps1` — no restart. Deploy order: C13E first (restart), then C14A + C15A together (no restart, single copy).
+**Last-run-at:** 2026-05-20T(campaign16a-MERGED)Z. Origin/main HEAD: 399363b (C16A squash-merge SHA). C13E + C14A + C15A + C16A all on main. PENDING Windows deploys: (1) C13E — `windows_deploy_c13e_backend.ps1` — PZService restart required; (2) C14A+C15A+C16A — `windows_deploy_c16a_static.ps1` — no restart, one robocopy pass. Deploy order: C13E first (restart), then C14A+C15A+C16A together (no restart).
 
 ---
 
 # FACTS
+
+## Campaign 16A — Lapis UX Truth Redesign (2026-05-20)
+
+- **PR**: #240 — MERGED 2026-05-20 — squash SHA `399363b` on main
+- **Files changed**: `service/app/static/shipment-detail.html`, `service/tests/test_c16a_lapis_ux_truth.py`, `service/tests/test_c13d_transit_aware_inventory_ui.py` (test updated to match C16A expression), `.claude/manifests/windows_deploy_c16a_static.ps1`
+- **No backend files touched** — frontend+governance only
+- **Test results**: 124/124 PASS (C16A 32 + C15A 20 + C14A 28 + C13D 34 + C13E 10)
+- **Deploy delta**: 1 static file — `shipment-detail.html`; **NO PZService restart required**
+- **Windows deploy**: `windows_deploy_c16a_static.ps1` ready at `.claude/manifests/`
+
+### Changes
+- **Location column**: transit rows now show `In transit` instead of blank `—`
+- **Qty counter**: summary uses `invState.counts.PURCHASE_TRANSIT` (46) for transit, not packing-line count (30)
+- **CM datalist**: both link-packing panels wire `<datalist>` from `clientList` (Customer Master) to client name inputs
+- **OperatorWorkflowCard**: loads `/api/v1/customer-master/` in parallel; section 4 shows pay method, PF/INV series, terms, ship-to for resolved customers
+- **Stale text**: "contact your admin" removed from customersBody → wFirma Contractors instruction
+
+---
 
 ## Campaign 15A — Post-C13 operator friction reduction (2026-05-20)
 
