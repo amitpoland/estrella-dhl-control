@@ -10,8 +10,9 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 # FACTS
 
-## C26 — Canonical Proforma Setup Reader Contract (2026-05-21)
+## C26 — Canonical Proforma Setup Reader Contract (2026-05-21, ACTIVE on main)
 
+- **PR #252 merged** to main (SHA: `8ccc457`) — 2026-05-21. No deploy required (documentation + tests only; no runtime file touched).
 - **Contract document**: `.claude/contracts/proforma-setup-reader-contract.md` — defines one canonical reader per domain (product codes, product mapping, packing enrichment, customer set pre-draft, customer set post-draft, customer mapping, customer master, draft list, PZ prerequisite, posting-readiness verdict).
 - **Enforcement test**: `service/tests/test_c26_reader_contract_enforcement.py` — 12 source-grep tests pin: canonical readers ARE called by named endpoints; forbidden readers (`query_sales_to_wfirma`) NOT called; `packing_lines` is enrichment only (called after invoice_lines); no inline `v_sales_to_wfirma`-shaped JOIN; no independent `ready` verdict in `/setup-detail`; both endpoints use `wfdb.get_product`/`get_products_batch` for mapping (not raw `wfirma_products` SELECT); no other route file invents a new product reader for `setup`/`readiness`/`proforma_*` endpoints.
 - **Key clarification — customers are split by lifecycle stage, by design**:
