@@ -908,7 +908,10 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Backend**: do not rewrite. Do not remove APIs. Backend accretes (additive only).
 - **Rationale**: Six campaigns stabilized backend truths (C13E: inventory, C18/C19: renderer authority, C22: ingestion, C24: Customer Master save). V2 is now realistic instead of dangerous.
 - **Reference**: `docs/v2-architecture-plan.md` — full spec including component tree, API calls, acceptance criteria, phase plan.
-- **Engineering Lesson F recorded** (2026-05-20) — V2 frontend migration requires frozen V1 and strict authority isolation. 7 binding rules added to `CLAUDE.md` and `docs/v2-architecture-plan.md`. Forbidden patterns enumerated. Binds at GATE 1 + V1-FREEZE.
+- **Engineering Lesson F recorded** (2026-05-20) — V2 frontend migration requires frozen V1 and strict authority isolation. 8 binding rules added to `CLAUDE.md` and `docs/v2-architecture-plan.md`. Forbidden patterns and danger phrases enumerated. First V2 PR review gate documented. Binds at GATE 1 + V1-FREEZE.
+- **Backend-first timing principle confirmed** (2026-05-20) — V2 is viable NOW because C13E (inventory) + C18/C19A (renderer) + C22 (parser) + C24 (Customer Master) each stabilized a backend authority truth. Starting V2 before these stabilizations would have migrated unstable authority into a new shell and permanently duplicated chaos. The rule: backend stabilized first, migration second.
+- **`dashboard-shared.js` absolute prohibition** — MUST NEVER gain domain knowledge (shipment states, customs rules, PZ readiness, wFirma semantics). Once visual primitives gain domain knowledge, every importing page becomes coupled and V2 collapses back into V1. This is the rule whose survival determines V2 maintainability.
+- **`pz-state.js` authority boundary** — normalize/cache/derive/coordinate only. MUST NOT: silently decide workflow legality, redefine accounting readiness, reinterpret customs truth, bypass backend authority. Business legality stays backend-authoritative.
 
 ## Campaign 6 convergence decisions (appended 2026-05-19)
 

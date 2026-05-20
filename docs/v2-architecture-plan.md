@@ -142,14 +142,24 @@ Four files. Each has a single, bounded responsibility. Load order per page:
 
 **Layer responsibility matrix (hard — do not blur):**
 
-| File | Responsibility | Forbidden from |
+| File | Allowed | Forbidden — absolute |
 |---|---|---|
-| `pz-api.js` | Transport only — fetch wrapper, error normalization | Business logic, state, rendering |
-| `pz-state.js` | Normalization + workflow state — data shaping, loading/error/data hooks | Transport, rendering, domain rules |
-| `pz-components.js` | Reusable rendering primitives — domain-aware but stateless | Fetching, workflow decisions, multi-domain logic |
-| `dashboard-shared.js` | Visual primitives only — Badge, Card, Btn, layout atoms | Domain knowledge of any kind |
+| `pz-api.js` | Transport: fetch, error normalization, HTTP shape | Business logic, state management, rendering |
+| `pz-state.js` | Normalize, cache, derive UI-friendly structure, coordinate view state | Silently decide workflow legality; redefine accounting readiness; reinterpret customs truth; bypass backend authority |
+| `pz-components.js` | Rendering primitives — domain-aware, stateless | Fetching, workflow decisions, multi-domain logic |
+| `dashboard-shared.js` | Visual atoms: Badge, Card, Btn, layout | **Domain knowledge of any kind** — shipment states, customs rules, PZ readiness, wFirma semantics |
 
-The right now problem is `render + fetch + state + workflow + transformation` inside one component. These four layers separate those concerns permanently.
+**The two rules that determine whether V2 survives:**
+
+**Rule 1 — `dashboard-shared.js` MUST NEVER gain domain knowledge.**  
+The moment visual primitives start knowing shipment states, customs rules, PZ readiness, or wFirma semantics, every page that imports them becomes coupled again. V2 collapses back into V1 under a new filename. This rule has no exceptions.
+
+**Rule 2 — `pz-state.js` may normalize but MUST NOT own business rules.**  
+Good state layer: normalize API responses, cache, derive UI-friendly structure, coordinate view state.  
+Bad state layer: silently decide workflow legality, redefine accounting readiness, reinterpret customs truth, bypass backend authority.  
+Business legality stays backend-authoritative. The frontend reflects truth; it does not produce it.
+
+The V1 problem was `render + fetch + state + workflow + transformation` fused inside one component. These four layers permanently separate those concerns.
 
 ### 4.1 `dashboard-shared.js` (existing + additions)
 
@@ -419,15 +429,53 @@ PHASE 5 — Keep backend stable throughout
 
 ---
 
-## 9. Risks
+## 9. First V2 PR Review Gate
+
+**The first Proforma V2 implementation PR is the critical moment.** That is where delivery pressure first appears to shortcut the layer rules. That PR review determines whether V2 succeeds or becomes V1.5.
+
+Reviewer-challenge MUST block a V2 PR that contains any of:
+
+| Signal | What it means |
+|---|---|
+| Import of any function from `shipment-detail.html` inline components | V1 logic imported into V2 |
+| `pz-state.js` returning `ready: true/false` computed locally | State layer overstepping into business rules |
+| `dashboard-shared.js` receiving a `shipmentStatus` or `clearancePath` prop | Visual primitive gaining domain knowledge |
+| Component in `proforma-v2.html` calling `/api/v1/dhl/` or `/api/v1/warehouse/` | Authority boundary violation |
+| Any `// TODO: refactor later` on a layer-blurring line | Temporary violations do not stay temporary |
+| State hook that calls `preview` and returns `blocking_reasons` without passing them to backend | Frontend reinterpreting customs/accounting truth |
+
+**The danger phrases in PR descriptions** — treat as review flags requiring explicit justification:
+> "temporarily" / "quick fix" / "reuse this renderer" / "one more section" / "copy this state logic"
+
+If the PR description contains these phrases, the PR must justify why the exception does not violate a layer rule before it can merge.
+
+---
+
+## 10. Why V2 Is Viable Now (and was not six campaigns ago)
+
+V2 migration is safe today because backend authority truths are stable:
+
+| Campaign | What stabilized |
+|---|---|
+| C13E | Inventory projection (deterministic) |
+| C18A / C19A | Renderer authority (duplication removed) |
+| C22-PERMANENT | Parser/ingestion truth (deterministic) |
+| C24-FINALIZE | Customer Master save path (deterministic) |
+
+If V2 had started before these stabilizations, it would have migrated unstable authority into a new shell and permanently duplicated the chaos. The order — backend stabilized first, migration second — is what makes this migration viable rather than dangerous.
+
+---
+
+## 11. Risks
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| `previewProforma` POST is slow | Medium | Loading state + debounce on client change |
+| `previewProforma` POST slow | Medium | Loading state + debounce on client change |
 | Draft state stale after approve (other session) | Low | Refetch on action completion; conflict modal |
 | `dashboard-shared.js` regression in V1 | Low | Additions only; existing exports unchanged; test in V1 before V2 deploy |
-| Pre-existing test failures mask V2 regressions | Medium | V2 tests are new files; run separately; 9 known pre-existing failures documented |
-| V1 "frozen" rule violated under pressure | Medium | Document rule in CLAUDE.md Engineering Lessons; flag any `shipment-detail.html` PR for reviewer-challenge |
+| Pre-existing test failures mask V2 regressions | Medium | V2 tests in new files; run separately; 9 known pre-existing failures documented |
+| V1 freeze violated under pressure | Medium | Lesson F in CLAUDE.md; any `shipment-detail.html` PR triggers reviewer-challenge |
+| Layer rules blurred in first V2 PR | HIGH | First V2 PR review gate (§9 above); reviewer-challenge fires automatically |
 
 ---
 
