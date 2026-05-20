@@ -92,12 +92,11 @@ def test_ai_intelligence_button_hidden():
 
 
 def test_ai_intelligence_panel_not_prominent():
-    """C18A: draft-intelligence-panel must remain in DOM but never visible (button hidden)."""
-    # The panel itself can remain (no test should fail just because it's still in DOM),
-    # but the toggle button must be hidden. Confirmed by test above.
-    # Just check panel testid still exists so C18A didn't accidentally break HTML structure.
-    assert 'data-testid="draft-intelligence-panel"' in _HTML, \
-        "draft-intelligence-panel testid must remain in HTML"
+    """C18A → C19A: draft-intelligence-panel fully deleted in C19A (C18A hid button, C19A deletes panel)."""
+    # C19A deleted the panel entirely — absence is the correct final state.
+    # This test is updated to reflect C19A progression.
+    assert 'data-testid="draft-intelligence-panel"' not in _HTML, \
+        "draft-intelligence-panel must be fully deleted (C19A)"
 
 
 # ── 4. JSON (debug) button hidden ────────────────────────────────────────────
