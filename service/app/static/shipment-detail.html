@@ -5505,7 +5505,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         <div><span style={{ color: 'var(--text-3)' }}>Ready:</span> <b style={{ color: (summary.ready || 0) > 0 ? 'var(--badge-green-text)' : 'var(--text)' }}>{summary.ready ?? 0}</b></div>
                         <div><span style={{ color: 'var(--text-3)' }}>Pending dispatch:</span> <b>{summary.pending_dispatch ?? 0}</b></div>
                         <div><span style={{ color: 'var(--text-3)' }}>Not ready:</span> <b style={{ color: (summary.not_ready || 0) > 0 ? 'var(--badge-amber-text)' : 'var(--text)' }}>{summary.not_ready ?? 0}</b></div>
-                        <div><span style={{ color: 'var(--text-3)' }}>{isTransit ? 'In transit:' : 'Missing scan:'}</span> <b style={{ color: (summary.missing_scan || 0) > 0 ? (isTransit ? 'var(--badge-blue-text)' : 'var(--badge-red-text)') : 'var(--text)' }}>{summary.missing_scan ?? 0}</b></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>{isTransit ? 'In transit:' : 'Missing scan:'}</span> <b style={{ color: (isTransit ? (((invState && invState.counts && invState.counts.PURCHASE_TRANSIT) || 0) > 0 ? 'var(--badge-blue-text)' : 'var(--text)') : ((summary.missing_scan || 0) > 0 ? 'var(--badge-red-text)' : 'var(--text)')) }}>{isTransit ? ((invState && invState.counts && invState.counts.PURCHASE_TRANSIT) || summary.missing_scan || 0) : (summary.missing_scan ?? 0)}</b></div>
                       </div>
                     </div>
                   </Card>
@@ -5610,7 +5610,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                               <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace', fontSize: 10 }}>
                                 {(r.matched_scan_codes || []).length === 0 ? '—' : (r.matched_scan_codes || []).slice(0, 4).join(', ') + ((r.matched_scan_codes || []).length > 4 ? ` +${r.matched_scan_codes.length - 4}` : '')}
                               </td>
-                              <td style={tdStyle}>{r.current_location || '—'}</td>
+                              <td style={tdStyle}>{isTransit ? 'In transit' : (r.current_location || '—')}</td>
                               <td style={tdStyle}>{statusBadge(r.warehouse_status)}</td>
                             </tr>
                           ))}
@@ -9553,6 +9553,7 @@ function OperatorWorkflowCard({ batchId, onToast }) {
   const [caps, setCaps]           = React.useState(null);
   const [batchReady, setBatchReady] = React.useState(null); // warehouse + sales blocker source
   const [batchDet, setBatchDet]     = React.useState(null); // for files (PZ exists)
+  const [cm, setCm]               = React.useState([]);     // C16A: customer master records
   const [expanded, setExpanded]   = React.useState({
     evidence: true, classification: false,
     products: false, customers: false, warehouse: false,
@@ -9573,7 +9574,7 @@ function OperatorWorkflowCard({ batchId, onToast }) {
         return r.ok ? await r.json() : null;
       } catch { return null; }
     };
-    const [pf, zc, cn, pv, cp, br, bd] = await Promise.all([
+    const [pf, zc, cn, pv, cp, br, bd, cmResp] = await Promise.all([
       safe(`/dashboard/batches/${encodeURIComponent(batchId)}/proforma-readiness`),
       safe(`/dashboard/batches/${encodeURIComponent(batchId)}/zc429-lineage`),
       safe(`/dashboard/batches/${encodeURIComponent(batchId)}/cn-hsn-classification`),
@@ -9581,9 +9582,11 @@ function OperatorWorkflowCard({ batchId, onToast }) {
       safe(`/api/v1/wfirma/capabilities`),
       safe(`/api/v1/batch/${encodeURIComponent(batchId)}/readiness`),
       safe(`/dashboard/batches/${encodeURIComponent(batchId)}`),
+      safe('/api/v1/customer-master/'),
     ]);
     setProforma(pf); setZc429(zc); setCnhsn(cn); setPreview(pv); setCaps(cp);
     setBatchReady(br); setBatchDet(bd);
+    setCm((cmResp && (cmResp.customers || [])) || []);
     if (!pf && !zc && !cn) setError('All read-only endpoints failed');
     setLoading(false);
   }, [batchId]);
@@ -9920,17 +9923,51 @@ function OperatorWorkflowCard({ batchId, onToast }) {
   const customersBody = (() => {
     if (!proforma) return <div style={{ fontSize: 11, color: '#6b7280' }}>—</div>;
     const c = proforma.customers || {};
+    // C16A: build lookup bill_to_name → CM record for resolved customers
+    const cmByName = {};
+    (cm || []).forEach(r => { if (r.bill_to_name) cmByName[r.bill_to_name.toLowerCase().trim()] = r; });
+    const resolvedDetails = (c.details || []).filter(d =>
+      ['exact_match','normalized_match','prefix_match','reverse_prefix_match'].includes(d.status));
     return (
       <div data-testid="workflow-customers-body" style={{ fontSize: 12 }}>
         <div>{c.resolved || 0} of {c.total || 0} customers mapped (
           {c.missing || 0} missing, {c.ambiguous || 0} ambiguous).</div>
         {(c.missing > 0 || c.ambiguous > 0) && (
           <div style={{ color: '#b45309', marginTop: 4 }}>
-            ⚠ Operator must clear remaining customer rows from the detail
-            panel.{' '}
+            ⚠ Operator must clear remaining customer rows.{' '}
             {c.create_flag_on
               ? ''
-              : '(Auto-create is not enabled — contact your admin.)'}
+              : 'Create contractor in wFirma → Contractors → New contractor, then click Preview customer auto-resolve.'}
+          </div>
+        )}
+        {resolvedDetails.length > 0 && cm.length > 0 && (
+          <div style={{ marginTop: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}>
+            {resolvedDetails.map((d, i) => {
+              const rec = cmByName[(d.matched_name || d.client_name || '').toLowerCase().trim()];
+              if (!rec) return null;
+              return (
+                <div key={i} data-testid={`workflow-cm-row-${i}`}
+                     style={{ fontSize: 10, color: 'var(--text-2)', marginTop: i > 0 ? 4 : 0,
+                               display: 'flex', flexWrap: 'wrap', gap: '4px 12px', alignItems: 'baseline' }}>
+                  <span style={{ fontWeight: 700, color: 'var(--text)', minWidth: 0 }}>{d.client_name}</span>
+                  {rec.preferred_payment_method && (
+                    <span><span style={{ color: 'var(--text-3)' }}>Pay:</span> {rec.preferred_payment_method}</span>
+                  )}
+                  {rec.preferred_proforma_series_id && (
+                    <span><span style={{ color: 'var(--text-3)' }}>PF series:</span> {rec.preferred_proforma_series_id}</span>
+                  )}
+                  {rec.preferred_invoice_series_id && (
+                    <span><span style={{ color: 'var(--text-3)' }}>INV series:</span> {rec.preferred_invoice_series_id}</span>
+                  )}
+                  {rec.payment_terms_days != null && (
+                    <span><span style={{ color: 'var(--text-3)' }}>Terms:</span> {rec.payment_terms_days}d</span>
+                  )}
+                  {rec.ship_to_name && rec.ship_to_name !== rec.bill_to_name && (
+                    <span><span style={{ color: 'var(--text-3)' }}>Ship-to:</span> {rec.ship_to_name}</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -12019,15 +12056,21 @@ function ProformaDraftPanel({ batchId, onToast }) {
                         </span>
                       </td>
                       <td style={{ padding: '4px 8px' }}>
+                        {clientList.length > 0 && (
+                          <datalist id={`cm-clients-${doc.id}`}>
+                            {clientList.map((c, ci) => <option key={ci} value={c.name} />)}
+                          </datalist>
+                        )}
                         <input
                           data-testid={`link-packing-client-input-${doc.id}`}
                           type="text"
-                          placeholder="Client name"
+                          list={clientList.length > 0 ? `cm-clients-${doc.id}` : undefined}
+                          placeholder="Client name (type or pick from Customer Master)"
                           value={clientNames[doc.id] || ''}
                           onChange={e => setClientNames(prev => ({ ...prev, [doc.id]: e.target.value }))}
                           disabled={isIgnored}
                           style={{
-                            fontSize: 12, padding: '3px 8px', borderRadius: 4, width: 180,
+                            fontSize: 12, padding: '3px 8px', borderRadius: 4, width: 220,
                             border: '1px solid var(--border-1)', background: 'var(--bg-1)',
                             color: 'var(--text-1)',
                           }}
@@ -13320,11 +13363,18 @@ function ProformaDraftPanel({ batchId, onToast }) {
                         {doc.line_count != null ? doc.line_count : '—'}
                       </td>
                       <td style={{ padding: '4px 8px' }}>
-                        <input type="text" placeholder="Client name"
+                        {clientList.length > 0 && (
+                          <datalist id={`cm-clients-main-${doc.id}`}>
+                            {clientList.map((c, ci) => <option key={ci} value={c.name} />)}
+                          </datalist>
+                        )}
+                        <input type="text"
+                          list={clientList.length > 0 ? `cm-clients-main-${doc.id}` : undefined}
+                          placeholder="Client name (type or pick from Customer Master)"
                           value={clientNames[doc.id] || ''}
                           onChange={e => setClientNames(prev => ({ ...prev, [doc.id]: e.target.value }))}
                           disabled={isIgnored}
-                          style={{ fontSize: 12, padding: '3px 8px', borderRadius: 4, width: 180,
+                          style={{ fontSize: 12, padding: '3px 8px', borderRadius: 4, width: 220,
                                    border: '1px solid var(--border-1)', background: 'var(--bg-1)',
                                    color: 'var(--text-1)' }} />
                       </td>
