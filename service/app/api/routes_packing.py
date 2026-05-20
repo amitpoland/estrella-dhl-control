@@ -342,6 +342,30 @@ async def upload_packing_list(
             detail=f"Packing list extraction failed: {exc}",
         )
 
+    # C13B — client name resolution: filename pattern → body-cell preamble fallback.
+    # Priority: (1) filename suffix e.g. "148 Client SUOKKO.xlsx" → "SUOKKO"
+    #           (2) preamble cell  e.g. "Client: SUOKKO" in top-12 rows of Excel
+    #           (3) "" (neither found — operator assigns manually)
+    # Result is injected into parser_diagnostic so the dashboard and diagnostics
+    # can show HOW the name was resolved without re-scanning the file.
+    _filename_client = _guess_client_from_filename(safe_name)
+    _preamble_client = ""
+    if not _filename_client:
+        _preamble_client = _guess_client_from_preamble(str(dest_path))
+    _resolved_client  = _filename_client or _preamble_client
+    _resolution_method = (
+        "filename" if _filename_client
+        else ("preamble" if _preamble_client else "none")
+    )
+    _cnr = {
+        "method":          _resolution_method,
+        "client_name":     _resolved_client,
+        "filename_guess":  _filename_client,
+        "preamble_guess":  _preamble_client,
+    }
+    result["parser_diagnostic"]["client_name_resolution"] = _cnr
+    result["document"]["parser_diagnostic"]["client_name_resolution"] = _cnr
+
     # Store packing document record
     doc_id = pdb.upsert_packing_document(**result["document"])
 
@@ -451,12 +475,14 @@ async def upload_packing_list(
     )
 
     return {
-        "ok":               True,
-        "batch_id":         batch_id,
-        "document_id":      doc_id,
-        "file":             safe_name,
-        "total_rows":       result["total_rows"],
-        "matched_count":    result["matched_count"],
+        "ok":                   True,
+        "batch_id":             batch_id,
+        "document_id":          doc_id,
+        "file":                 safe_name,
+        "suggested_client_name": _resolved_client,         # C13B
+        "client_name_resolution": _resolution_method,      # C13B
+        "total_rows":           result["total_rows"],
+        "matched_count":        result["matched_count"],
         "unmatched_count":  result["unmatched_count"],
         "inserted_count":   inserted,
         "force_reextract":  force_reextract,
@@ -1157,6 +1183,27 @@ async def reprocess_packing_documents(
                                 "[%s] sales reprocess: client_name "
                                 "recovered from filename %r -> %r "
                                 "(Pass 4 — best-effort)",
+                                batch_id, file_name, preserved_client_name,
+                            )
+                    except Exception:
+                        pass
+
+                # Pass 5 — body-cell preamble fallback (C13B).
+                # Handles the orphan pattern where the filename ends with
+                # "-Client.xlsx" (no actual name after the keyword), so
+                # _guess_client_from_filename returns "".  Opens the saved
+                # Excel file and scans top-12 rows for "Client:" /
+                # "Consignee:" / "Buyer:" / "Ship To:" labels.
+                # Returns "" on any failure — never blocks the reprocess.
+                if not preserved_client_name and file_path and file_path.exists():
+                    try:
+                        from_preamble = _guess_client_from_preamble(str(file_path))
+                        if from_preamble:
+                            preserved_client_name = from_preamble
+                            log.info(
+                                "[%s] sales reprocess: client_name "
+                                "recovered from body preamble file=%r -> %r "
+                                "(Pass 5 — body-cell fallback)",
                                 batch_id, file_name, preserved_client_name,
                             )
                     except Exception:

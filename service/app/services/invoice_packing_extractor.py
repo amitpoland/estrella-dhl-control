@@ -151,6 +151,9 @@ def _new_diagnostic(file_type: str) -> Dict[str, Any]:
         "failure_reason":       None,
         "exception_class":      None,
         "exception_message":    None,
+        # C13B — client identity resolution (injected by routes_packing after extraction)
+        # method: "filename" | "preamble" | "none"
+        "client_name_resolution": None,
     }
 
 

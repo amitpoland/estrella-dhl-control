@@ -4,11 +4,42 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign13a-merge)Z. Origin/main HEAD: aaa898b — PR #234 MERGED 2026-05-20T01:02:01Z. 244/244 tests pass on merged main. Windows deploy pending (3 files: routes_proforma.py + 2×inventory services). Manifests: deploy_delta_pr233.md + deploy_delta_pr234.md.
+**Last-run-at:** 2026-05-20T(campaign13b-pr235)Z. Origin/main HEAD: aaa898b. PR #235 OPEN (feat/c13b-parser-body-fallback, SHA a4a438e). Windows deploy pending (3 files from #233+#234, merge #235 then 5 files total). Manifests: deploy_delta_pr233.md + deploy_delta_pr234.md + deploy_delta_pr235.md.
 
 ---
 
 # FACTS
+
+## Campaign 13B — Parser body-cell fallback for client name extraction (2026-05-20)
+
+- **Branch**: `feat/c13b-parser-body-fallback` — commit `a4a438e`
+- **PR #235**: OPEN — "C13B: Parser body-cell fallback for orphan client names"
+- **Test results**: 50/50 C13B tests PASS; 122/126 combined (4 pre-existing failures in test_proforma_pricing_source.py — SCHEDULED)
+- **Deploy delta**: 2 runtime files — `routes_packing.py` + `invoice_packing_extractor.py`
+- **Deploy manifest**: `.claude/manifests/deploy_delta_pr235.md`
+- **Scorecard**: PENDING (observer to fire after merge)
+
+### Architecture
+
+- **Upload path** (`upload_packing_list`): After `process_packing_upload()`, new C13B block runs `_guess_client_from_filename(safe_name)` → if empty, `_guess_client_from_preamble(str(dest_path))`; result injected into `parser_diagnostic["client_name_resolution"]` dict and returned in response as `suggested_client_name` + `client_name_resolution`
+- **Reprocess path**: Pass 5 added (after existing Pass 4 filename hint) — calls `_guess_client_from_preamble(str(file_path))` when `preserved_client_name` still empty; swallows all errors
+- **`_new_diagnostic()`** in `invoice_packing_extractor.py`: new key `"client_name_resolution": None` as schema placeholder
+- **Priority chain**: `"filename"` > `"preamble"` > `"none"` — preamble is ONLY called when filename returns ""
+
+### Key orphan case handled
+
+- `EJL-26-27-178-Packing list of shipment-1pc-16-05-26-Client.xlsx` — ends with `-Client.xlsx` (no name after keyword)
+- `_guess_client_from_filename` → `""` (confirmed by test)
+- `_guess_client_from_preamble` scans top-12 rows for `Client:` / `Consignee:` / `Buyer:` / `Ship To:` label
+- If Excel body contains `Client: Diamond Point` → resolved client = "Diamond Point", method = "preamble"
+
+### Safety invariants UNCHANGED
+
+- No DB writes added; read-only parser change only
+- No inventory lifecycle touched
+- No orphan Assign Client UI touched
+- No PZ creation or wFirma write flags
+- `_guard_wfirma_export`, `WFIRMA_CREATE_PZ_ALLOWED=False`, `transition()` — all untouched
 
 ## Campaign 13A — Read-only PURCHASE_TRANSIT projection (2026-05-20)
 
