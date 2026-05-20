@@ -296,6 +296,24 @@ plist moved to `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabl
 
 ---
 
+## Frontend Design Standard
+
+All UI work on `shipment-detail.html`, `dashboard.html`, and any new dashboard pages is governed by `.claude/skills/frontend-design.md`.
+
+**Stack**: Vanilla HTML + Babel JSX (no bundler, no TypeScript, no Tailwind). Generic frontend-ui agent defaults to TypeScript + Tailwind — those do not apply here.
+
+Key rules (full detail in skill file):
+- Use CSS custom properties (`--bg`, `--text`, `--badge-*`, `--accent`) — never hardcoded hex
+- Use shared components from `dashboard-shared.js` (`Btn`, `Badge`, `Card`, `Sel`, `Toast`)
+- Every write button must label exactly what it writes; no auto-save
+- No fake readiness, no hidden blockers, no duplicate renderers
+- Legacy sections in `<details>` — collapsed by default
+- Every interactive element needs a `data-testid`
+
+Invoke skill: before any UI implementation, before any `frontend-flow-reviewer` run.
+
+---
+
 ## Available integration
 
 Zoho Cliq MCP connector (use for all Cliq operations):
