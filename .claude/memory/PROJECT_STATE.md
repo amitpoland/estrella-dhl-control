@@ -4,11 +4,20 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(C24-FINALIZE + C22-PERMANENT)Z. Origin/main HEAD: 37da7c6 (C22-PERMANENT squash merged). PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A-C21A+C22+C24 static -- `windows_deploy_c21a_static.ps1` -- no restart. OPEN PRs (3/3 limit): #246 C24-FINALIZE (bill_to_nip fix + bypass flag), #10 inventory stubs, #1 UI sidebar. OPERATOR ACTIONS NEEDED: customer authority (5 clients) + product authority (12 products) for shipment 4218922912 — done in browser UI against Windows prod after PR #246 merges.
+**Last-run-at:** 2026-05-20T(MASTER-CLOSE-AND-START-V2)Z. Origin/main HEAD: 42afbba (C24-FINALIZE squash merged — PR #246). C22+C24 fully closed. PENDING Windows deploys: `windows_deploy_c22_c24_backend.ps1` (PZService restart) → `windows_deploy_c22_c24_static.ps1` (no restart) — both in `.claude/manifests/`. OPEN PRs (2/3 limit): #10 inventory stubs (REFERENCE_ONLY), #1 UI sidebar (REFERENCE_ONLY). V1 FROZEN: no new features in shipment-detail.html / dashboard.html. NEXT CAMPAIGN: Proforma V2 (`proforma-v2.html`) — full spec in `docs/v2-architecture-plan.md`. OPERATOR ACTIONS NEEDED: customer authority (5 clients) + product authority (12 products) for shipment 4218922912.
 
 ---
 
 # FACTS
+
+## MASTER-CLOSE-AND-START-V2 (2026-05-20)
+
+- **PR #246 MERGED** via squash to main (SHA: 42afbba) — C24-FINALIZE fully closed
+- **C22+C24 backend deploy manifest**: `.claude/manifests/windows_deploy_c22_c24_backend.ps1` — deploys 4 backend files with PZService restart
+- **C22+C24 static deploy manifest**: `.claude/manifests/windows_deploy_c22_c24_static.ps1` — deploys 3 static files, no restart
+- **V2 architecture plan locked**: `docs/v2-architecture-plan.md` — proforma-v2 first, 6-page set, 4-file shared layer, 5-phase migration
+- **Authority model consistent**: packing parser (C22) + renderer duplication removed (C19A) + Customer Master save path (C24) + bypass isolated from fiscal gates (C24) + production runtime confirmed after C22+C24 restart — first genuinely stable authority state since orphan-client chain started
+- **9 pre-existing test failures documented** (not regressions): 4× `test_proforma_policy_phase7` (stale testids), 4× `test_proforma_pricing_source` (3-tuple vs 4-tuple), 1× `test_proforma_draft_editor_contract` (whitespace)
 
 ## C22-PERMANENT — Header Client Extraction (2026-05-20)
 
@@ -888,6 +897,18 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 **Current boundary:** Wave 1A complete. Wave 2 patch #1 complete (`4083d84`, PR #216, 2026-05-18). Shipment-processing condensation stable per post-patch observation audit. Wave 2 patch #2 pending explicit operator start signal. Next candidate: `## 9. Action execution after Cowork result` using `.claude/commands/cowork-integration.md`.
 
+## STABLE BACKEND + NEW FRONTEND SHELL — V2 architectural direction (locked 2026-05-20)
+
+- **V1 frozen (effective 2026-05-20)** — `shipment-detail.html` and `dashboard.html` receive critical fixes only. No new features, tabs, rendering surfaces, or refactors. Any `shipment-detail.html` PR flagged for reviewer-challenge.
+- **V2 page set (delivery order enforced)**: proforma-v2.html → customer-master-v2.html → products-v2.html → pz-v2.html → shipment-v2.html → dashboard-v2.html (LAST, aggregation only).
+- **Why proforma-v2 first**: narrowest authority boundary, highest operator pain, highest renderer entropy in V1. Dashboard-v2 is LAST — it aggregates from all domain pages, so those must be stable first.
+- **Shared layer (4 files)**: `dashboard-shared.js` (existing + 5 new primitives) + `pz-api.js` (fetch adapter) + `pz-state.js` (React hook patterns) + `pz-components.js` (domain components). All expose via `window.*`.
+- **Authority isolation (hard constraint)**: each page owns exactly one domain. No page touches another page's authority. See `docs/v2-architecture-plan.md` Section 2 for authority map per page.
+- **Migration model**: V1 stays live → V2 built in parallel → feature-by-feature authority migration → retire V1 renderers → backend stable throughout.
+- **Backend**: do not rewrite. Do not remove APIs. Backend accretes (additive only).
+- **Rationale**: Six campaigns stabilized backend truths (C13E: inventory, C18/C19: renderer authority, C22: ingestion, C24: Customer Master save). V2 is now realistic instead of dangerous.
+- **Reference**: `docs/v2-architecture-plan.md` — full spec including component tree, API calls, acceptance criteria, phase plan.
+
 ## Campaign 6 convergence decisions (appended 2026-05-19)
 
 - **ProformaDraftPanel = Sales tab ONLY (2026-05-19)** — OperatorWorkflowCard (PZ/Accounting tab) is PZ/Customs/Accounting only. Any proforma creation surface belongs exclusively in the Sales tab. Commit `62cb391` enforces this at render level.
@@ -896,9 +917,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Windows deploy — C13E backend + C14A–C21A static** — run `windows_deploy_c13e_backend.ps1` (PZService restart) then robocopy `shipment-detail.html` to `C:\PZ\app\static\`. C21A (workflow button token compliance) is the latest change; all C13E–C21A changes are now pending on Windows. Target: next operator Windows session — gating: operator elevated shell on Windows prod.
-2. **V1/V2/V3 reconciliation PR** — Windows production HEAD is `7392be1` (3 local commits above `32d6a8f` not on GitHub). Per Lesson D: operator must push V1/V2/V3 to GitHub or confirm content, then open reconciliation PR before next `git pull --ff-only origin main`. Gating: operator action (Windows → GitHub push).
-3. **gap-detection agent tuning** — enforce pre-implementation-only invocation trigger (GATE 4 SCHEDULED from C21A scorecard: REPEATED-WEAK verdict on gap-detection in 2 of last 5). Target: next agent-tuning session — gating: none (scheduling only).
+1. **Windows deploy — C22+C24** — run `.claude/manifests/windows_deploy_c22_c24_backend.ps1` (PZService restart required) then `windows_deploy_c22_c24_static.ps1` (no restart). Covers: C22 packing parser + C24 bill_to_nip + ej_dev_workflow_bypass + C21A static files. Origin/main SHA: 42afbba. Gating: operator elevated shell on Windows prod.
+2. **Proforma V2 implementation** — `/dashboard/proforma-v2.html` + shared layer (`pz-api.js`, `pz-state.js`, `pz-components.js`). Full spec: `docs/v2-architecture-plan.md`. Zero new backend APIs. Deploy via static manifest, no restart. Signal to start: `/pz-feature Build Proforma V2 per docs/v2-architecture-plan.md`.
+3. **gap-detection agent tuning** — enforce pre-implementation-only invocation trigger (GATE 4 SCHEDULED from C21A scorecard: REPEATED-WEAK verdict on gap-detection in 2 of last 5). Target: next agent-tuning session — gating: none.
 
 ## Completed actions (Campaign 8, 2026-05-19)
 - ~~**Windows deploy**~~ — **DONE 2026-05-19**: Campaign 8 deploy complete. Windows HEAD = `7392be1` (32d6a8f + V1/V2/V3). All smoke checks PASS. See "Campaign 8 deploy smoke results" above. Deployment maturity: standard sequence — future static/UI changes are routine, not campaigns. Operational stance: ops/perf/UX only.
