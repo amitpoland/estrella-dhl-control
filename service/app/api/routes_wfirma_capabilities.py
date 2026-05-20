@@ -1179,14 +1179,66 @@ def shipment_setup_detail(batch_id: str) -> JSONResponse:
         "errors": [],
     }
 
-    # Products: missing rows with line context
+    # Products: missing rows with line context.
+    #
+    # C25A-DATA-FIX (2026-05-20): switched from query_sales_to_wfirma to
+    # get_invoice_lines_for_batch as the authoritative product source.
+    # Reason: query_sales_to_wfirma reads a TEMP VIEW (v_sales_to_wfirma)
+    # whose left-join on packing.packing_lines returns 0 rows for batches
+    # where the sales-side and purchase-side design_no patterns differ.
+    # invoice_lines is the canonical product authority for the batch — it
+    # is what the existing /dashboard/batches/{batch}/proforma-readiness
+    # endpoint uses, and the two endpoints must agree on product counts.
     try:
-        rows = _ddb.query_sales_to_wfirma(batch_id) or []
+        invoice_rows = _ddb.get_invoice_lines_for_batch(batch_id) or []
     except Exception as exc:
-        rows = []
-        out["errors"].append("sales_to_wfirma read failed: " + str(exc))
+        invoice_rows = []
+        out["errors"].append("invoice_lines read failed: " + str(exc))
 
-    all_codes = sorted({(r.get("product_code") or "").strip() for r in rows if (r.get("product_code") or "").strip()})
+    # Best-effort design_no + item_type enrichment from packing_lines
+    # (per-product first-match within the batch).  Same batch_id scope; no
+    # cross-batch leakage.  If packing_db is unavailable, fall back to
+    # invoice-line description as the descriptive label.
+    pl_by_code: dict = {}
+    try:
+        from ..services import packing_db as _pdb
+        if _pdb._db_path is not None:
+            pl_rows = _pdb.get_packing_lines_for_batch(batch_id) or []
+            for pl in pl_rows:
+                pc = (pl.get("product_code") or "").strip()
+                if pc and pc not in pl_by_code:
+                    pl_by_code[pc] = pl
+    except Exception as exc:
+        out["errors"].append("packing_lines enrichment failed: " + str(exc))
+
+    # Best-effort client_name attribution per product_code from
+    # sales_packing_lines (same batch).  Allows the panel to show which
+    # operator-owned client is waiting on each product registration.
+    spl_client_by_code: dict = {}
+    try:
+        if _ddb._db_path is not None:
+            import sqlite3 as _sql
+            with _sql.connect(str(_ddb._db_path)) as con:
+                con.row_factory = _sql.Row
+                spl_rows = con.execute(
+                    "SELECT product_code, client_name FROM sales_packing_lines "
+                    "WHERE batch_id=? AND product_code <> ''",
+                    (batch_id,),
+                ).fetchall()
+                for r in spl_rows:
+                    pc = (r["product_code"] or "").strip()
+                    cn = (r["client_name"] or "").strip()
+                    if pc and cn and pc not in spl_client_by_code:
+                        spl_client_by_code[pc] = cn
+    except Exception as exc:
+        out["errors"].append("sales_packing_lines client lookup failed: " + str(exc))
+
+    # Distinct product_codes from invoice_lines (authoritative).
+    all_codes = sorted({
+        (r.get("product_code") or "").strip()
+        for r in invoice_rows
+        if (r.get("product_code") or "").strip()
+    })
     mapped_map = {}
     try:
         if all_codes:
@@ -1194,35 +1246,44 @@ def shipment_setup_detail(batch_id: str) -> JSONResponse:
     except Exception as exc:
         out["errors"].append("wfirma_products lookup failed: " + str(exc))
 
+    # Aggregate per product_code from invoice_lines (one entry per code).
     missing_acc: dict = {}
     mapped_count = 0
-    for r in rows:
+    seen_codes: set = set()
+    for r in invoice_rows:
         pc = (r.get("product_code") or "").strip()
         if not pc:
             continue
+        if pc in seen_codes:
+            # Aggregate qty/value into existing entry (same code, multiple lines).
+            if pc in missing_acc:
+                try:
+                    missing_acc[pc]["qty"] += float(r.get("quantity") or 0)
+                except Exception:
+                    pass
+                try:
+                    missing_acc[pc]["total_value"] += float(r.get("total_value") or 0)
+                except Exception:
+                    pass
+            continue
+        seen_codes.add(pc)
         prod = mapped_map.get(pc) or {}
         is_mapped = bool(prod.get("wfirma_product_id")) and (prod.get("sync_status") == "matched")
         if is_mapped:
             mapped_count += 1
             continue
-        acc = missing_acc.setdefault(pc, {
+        pl = pl_by_code.get(pc) or {}
+        missing_acc[pc] = {
             "product_code":  pc,
-            "design_no":     (r.get("design_no") or "").strip() or None,
-            "item_type":     (r.get("item_type") or "").strip() or None,
-            "qty":           0.0,
-            "total_value":   0.0,
+            "design_no":     (pl.get("design_no") or "").strip() or None,
+            "item_type":     (pl.get("item_type") or "").strip() or None,
+            "qty":           float(r.get("quantity") or 0),
+            "total_value":   float(r.get("total_value") or 0),
             "currency":      (r.get("currency") or "").strip() or None,
-            "draft_id":      r.get("draft_id"),
-            "client_name":   (r.get("client_name") or "").strip() or None,
-        })
-        try:
-            acc["qty"] += float(r.get("qty") or r.get("quantity") or 0)
-        except Exception:
-            pass
-        try:
-            acc["total_value"] += float(r.get("total_value") or 0)
-        except Exception:
-            pass
+            "draft_id":      None,  # not derivable from invoice_lines
+            "client_name":   spl_client_by_code.get(pc) or None,
+            "description":   (r.get("description") or "").strip() or None,
+        }
 
     out["products"]["mapped_count"]  = mapped_count
     out["products"]["missing_count"] = len(missing_acc)
