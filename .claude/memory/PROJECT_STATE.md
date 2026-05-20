@@ -4,11 +4,38 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign12-merge)Z. Origin/main HEAD: 0f0d85c — PR #233 MERGED 2026-05-20T00:34:07Z. 244/244 tests pass on merged main. Windows deploy pending (1-file: routes_proforma.py). Deploy manifest: `.claude/manifests/deploy_delta_pr233.md`.
+**Last-run-at:** 2026-05-20T(campaign13a-merge)Z. Origin/main HEAD: aaa898b — PR #234 MERGED 2026-05-20T01:02:01Z. 244/244 tests pass on merged main. Windows deploy pending (3 files: routes_proforma.py + 2×inventory services). Manifests: deploy_delta_pr233.md + deploy_delta_pr234.md.
 
 ---
 
 # FACTS
+
+## Campaign 13A — Read-only PURCHASE_TRANSIT projection (2026-05-20)
+
+- **Merge commit**: `aaa898b` — PR #234 merged 2026-05-20T01:02:01Z
+- **Test results**: 15/15 C13A tests PASS; 244/244 make verify PASS on merged main
+- **Deploy delta**: 2 runtime files — `inventory_state_engine.py` + `inventory_batch_state.py`
+- **Deploy manifest**: `.claude/manifests/deploy_delta_pr234.md`
+
+### Architecture
+
+- `derive_purchase_transit_projection(batch_id, audit, packing_lines)` — NEW read-only pure function in `inventory_state_engine.py`; no DB connection; returns synthetic PURCHASE_TRANSIT rows when `clearance_status` ∈ `_LIFECYCLE_TRANSIT_STATUSES` AND not in `_LIFECYCLE_TERMINAL_STATUSES`
+- `inventory_batch_state.get_batch_state()` — extended with `synthetic: bool` + `source: str`; projection called ONLY when `real_total == 0`; real rows always win
+- **Zero DB writes** — confirmed by source-grep test (`test_projector_source_contains_no_write_keywords` PASS)
+- Terminal statuses (`closed`, `pz_generated`, `delivered_and_received`, `archived`, `cancelled`) suppress projection
+
+### Safety invariants UNCHANGED
+- `transition()` in `inventory_state_engine.py` — untouched
+- `_guard_wfirma_export` in `routes_wfirma.py` — untouched
+- `WFIRMA_CREATE_PZ_ALLOWED=False` — untouched
+- DHL orchestrator flags — untouched
+- DB schema — no migrations
+
+### Smoke check (post-Windows-deploy)
+```
+GET /api/v1/inventory/state/SHIPMENT_4218922912_2026-05_9040dd39
+Expected: synthetic=true, source="audit.tracking", total=30, counts.PURCHASE_TRANSIT=30
+```
 
 ## Campaign 12 — Proforma Preview Gate Separation (2026-05-20)
 
