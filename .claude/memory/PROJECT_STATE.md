@@ -4,11 +4,33 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign18a-PR#242)Z. Origin/main HEAD: 7e39344 (C17A SHA). C13E + C14A + C15A + C16A + C17A all on main. C18A: PR #242 OPEN on `feat/c18a-unified-proforma-truth`. PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A+C15A+C16A+C17A+C18A -- `windows_deploy_c18a_static.ps1` -- no restart, one robocopy pass. Deploy order: C13E first (restart), then C14A–C18A together (no restart).
+**Last-run-at:** 2026-05-20T(campaign19a-PR#243)Z. Origin/main HEAD: 7e39344 (C17A SHA). C13E + C14A + C15A + C16A + C17A all on main. C18A: PR #242 OPEN. C19A: PR #243 OPEN (depends on C18A). PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A+C15A+C16A+C17A+C18A+C19A -- `windows_deploy_c19a_static.ps1` -- no restart, one robocopy pass. Deploy order: C13E first (restart), then C14A-C19A together (no restart).
 
 ---
 
 # FACTS
+
+## Campaign 19A — Single Authority Renderer (2026-05-20)
+
+- **PR**: #243 — OPEN on `feat/c19a-single-authority-renderer` — SHA `9208623`
+- **Depends on**: PR #242 (C18A) — merge C18A first
+- **Files changed**: `service/app/static/shipment-detail.html` (-115 lines), `service/tests/test_c19a_single_authority_renderer.py` (25 tests), `service/tests/test_c18a_unified_proforma_truth.py` (1 test updated), `.claude/manifests/windows_deploy_c19a_static.ps1`
+- **No backend files touched** — frontend only
+- **No wFirma write flags** — no DB schema change
+- **Test results**: 25/25 C19A tests PASS; 170/170 C14A–C19A regression suite PASS
+- **Deploy delta**: 1 static file — `shipment-detail.html`; **NO PZService restart required**
+- **Windows deploy**: `windows_deploy_c19a_static.ps1` ready at `.claude/manifests/`
+
+### Changes
+- **Deleted `loadIntelligence()` callback** (10 lines) — was calling `/api/v1/proforma/draft/${openId}/intelligence`
+- **Deleted `intelligence`/`intelOpen` state declarations** (2 lines)
+- **Deleted cleanup calls** `setIntelligence(null)` / `setIntelOpen(false)` in openOne + closeOne (4 lines)
+- **Deleted hidden button** `{false && <Btn btn-draft-intelligence>}` (5 lines)
+- **Deleted Phase 6 AI Intelligence panel render block** (95 lines): confidence scores, anomalies, suggestions sections
+- **Updated C18A test** `test_ai_intelligence_panel_not_prominent` to assert panel is ABSENT (C19A progression)
+- **Preserved**: `loadVisibility`, `visOpen`, `draft-visibility-panel` (live), `legacy-pz-details`, `legacy-reservation-details` (collapsed)
+
+---
 
 ## Campaign 18A — Unified Proforma Builder Truth (2026-05-20)
 
