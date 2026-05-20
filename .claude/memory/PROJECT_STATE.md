@@ -4,11 +4,36 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign16a-MERGED)Z. Origin/main HEAD: 399363b (C16A squash-merge SHA). C13E + C14A + C15A + C16A all on main. PENDING Windows deploys: (1) C13E — `windows_deploy_c13e_backend.ps1` — PZService restart required; (2) C14A+C15A+C16A — `windows_deploy_c16a_static.ps1` — no restart, one robocopy pass. Deploy order: C13E first (restart), then C14A+C15A+C16A together (no restart).
+**Last-run-at:** 2026-05-20T(campaign17a-PR-OPEN)Z. Local main HEAD: 7e39344 (C17A commit, NOT yet on origin/main). PR #241 OPEN. PENDING Windows deploys: (1) C13E — `windows_deploy_c13e_backend.ps1` — PZService restart required; (2) C14A+C15A+C16A — `windows_deploy_c16a_static.ps1` — no restart; (3) C17A — `shipment-detail.html` only — no restart, after PR #241 merges. Deploy order: C13E first (restart), then C14A+C15A+C16A+C17A together (no restart).
 
 ---
 
 # FACTS
+
+## Campaign 17A — Proforma Builder Customer Master Mirror (2026-05-20)
+
+- **PR**: #241 — `feat/c17a-proforma-builder-customer-master-mirror` — OPEN
+- **Local main commit**: `7e39344` — NOT yet pushed to origin/main (branch is ahead by 1)
+- **Files changed**: `service/app/static/shipment-detail.html`, `service/tests/test_c16a_lapis_ux_truth.py` (context windows), `service/tests/test_c17a_proforma_builder_customer_master.py` (41 new tests)
+- **No backend files touched** — frontend only
+- **No new wFirma write flags** — `saveCmFields` writes to `/api/v1/customer-master/` only
+- **Test results**: 165/165 campaign suite PASS; `make verify` 244/244 PASS; broader regression 351/351 PASS
+- **Deploy delta**: 1 static file — `shipment-detail.html`; **NO PZService restart required**
+
+### Changes
+- `customersBody` IIFE: replaced chip row with professional per-client proforma builder cards (`workflow-cm-card-{i}`)
+  - Buyer / Bill-to block: name, VAT/NIP, address
+  - Ship-to block: shows when different from bill-to
+  - Payment block: method, terms, currency
+  - Document settings: proforma series, invoice series
+  - Inline edit form with `btn-cm-edit-`, `btn-cm-save-`, `btn-cm-cancel-` testids
+  - Safety note in form: "Saves to Customer Master only. No PZ, no invoice, no wFirma write, no gate bypass."
+  - wFirma technical mapping in collapsed `<details>`
+- `saveCmFields` callback: `React.useCallback`, PUT to `/api/v1/customer-master/{contractor_id}`, calls `refresh()` on success
+- State additions to `OperatorWorkflowCard`: `cmEdit`, `cmSaving`, `cmSavedMsg`
+- `ProformaCustomerCard` (in draft panel): "Buyer" header prominent, wFirma technical grid moved to collapsed `<details>`, unmatched shown as contextual warning block
+
+---
 
 ## Campaign 16A — Lapis UX Truth Redesign (2026-05-20)
 
