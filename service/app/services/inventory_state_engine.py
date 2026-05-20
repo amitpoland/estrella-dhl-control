@@ -202,16 +202,39 @@ def derive_purchase_transit_projection(
         if not scan or scan in seen:
             continue
         seen.add(scan)
-        out.append({
-            "scan_code":    scan,
-            "state":        PURCHASE_TRANSIT,
-            "product_code": (ln.get("product_code") or "").strip() or None,
-            "design_no":    (ln.get("design_no") or "").strip() or None,
-            "updated_at":   updated_at,
-            "synthetic":    True,
-            "source":       "audit.tracking",
-        })
+        # C13E: expand by quantity so each logical unit gets its own synthetic
+        # row.  packing_lines.quantity already contains normalised units (PRS
+        # earring pairs are already counted correctly by the parser).
+        qty = _coerce_qty(ln.get("quantity"))
+        product_code = (ln.get("product_code") or "").strip() or None
+        design_no    = (ln.get("design_no")    or "").strip() or None
+        for i in range(1, qty + 1):
+            expanded_scan = scan if qty == 1 else f"{scan}#{i}"
+            out.append({
+                "scan_code":    expanded_scan,
+                "state":        PURCHASE_TRANSIT,
+                "product_code": product_code,
+                "design_no":    design_no,
+                "updated_at":   updated_at,
+                "synthetic":    True,
+                "source":       "audit.tracking",
+            })
     return out
+
+
+def _coerce_qty(raw) -> int:
+    """Coerce a packing-line quantity to a positive integer (>= 1).
+
+    Handles: None → 1, float strings → int(float()), <= 0 → 1, non-numeric → 1.
+    packing_db stores quantity as REAL so "2.0" and 2.0 must both work.
+    """
+    if raw is None:
+        return 1
+    try:
+        v = int(float(str(raw)))
+        return v if v > 0 else 1
+    except (ValueError, TypeError):
+        return 1
 
 # Sample-out reason enum (operator-provided per piece).
 SAMPLE_OUT_REASONS: frozenset = frozenset({
