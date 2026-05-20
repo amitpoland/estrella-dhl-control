@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign13b-merge)Z. Origin/main HEAD: ca7de3c — PR #235 MERGED 2026-05-20. Windows deploy pending (5 files: routes_proforma.py + 2×inventory services + routes_packing.py + invoice_packing_extractor.py). Manifests: deploy_delta_pr233.md + deploy_delta_pr234.md + deploy_delta_pr235.md.
+**Last-run-at:** 2026-05-20T(campaign13b-deploy-prep)Z. Origin/main HEAD: f1b5bf4. C12+C13A VERIFIED ACTIVE in production. C13B deploy script ready: `.claude/manifests/windows_deploy_pr235.ps1`. Windows operator must run script (no remote access from Mac). All 5 files cumulative pending deploy (#233+#234+#235).
 
 ---
 
@@ -17,6 +17,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Test results**: 50/50 C13B tests PASS; 73/73 C12+C13A+C13B combined; 4 pre-existing failures in test_proforma_pricing_source.py — SCHEDULED
 - **Deploy delta**: 2 runtime files — `routes_packing.py` + `invoice_packing_extractor.py`
 - **Deploy manifest**: `.claude/manifests/deploy_delta_pr235.md`
+- **Deploy script**: `.claude/manifests/windows_deploy_pr235.ps1` — ready to run on Windows
+- **Production deploy**: PENDING operator execution (no remote Mac→Windows access)
 
 ### Architecture
 
