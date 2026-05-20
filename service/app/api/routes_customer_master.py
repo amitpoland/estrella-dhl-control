@@ -189,6 +189,8 @@ _OPTIONAL_STR_FIELDS = frozenset({
     "bill_to_street", "bill_to_city", "bill_to_postal_code",
     "bill_to_email", "bill_to_phone", "bill_to_mobile",
     "bank_account",
+    # UI alias — frontend form sends bill_to_nip; blank→None before alias pass
+    "bill_to_nip",
     # Ship-to alternate-address fields — must be '' → None coerced so that
     # clearing a previously-set alternate address persists as NULL rather
     # than empty string (operator complaint 2026-05-19: ship-to clears
@@ -312,6 +314,14 @@ def _parse_body(
 
     # Default insurance_enabled to True
     body.setdefault("insurance_enabled", True)
+
+    # Alias: UI form sends bill_to_nip; CustomerMaster dataclass field is nip.
+    # After the blank→None pass above, bill_to_nip may be None (cleared) or a
+    # VAT string. Map to nip if nip was not explicitly provided.
+    if "bill_to_nip" in body:
+        alias_val = body.pop("bill_to_nip")
+        if "nip" not in body:
+            body["nip"] = alias_val
 
     # Strip server-managed audit fields
     for key in ("id", "created_at", "updated_at"):

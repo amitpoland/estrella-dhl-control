@@ -4,11 +4,87 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign19a-MERGED)Z. Origin/main HEAD: 64d0799 (C19A SHA). C13E + C14A + C15A + C16A + C17A + C18A + C19A all on main. PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A-C19A static -- `windows_deploy_c19a_static.ps1` -- no restart, one robocopy pass. Deploy order: C13E first (restart), then C14A-C19A together (no restart). Browser smoke: SHIPMENT_4218922912_2026-05_9040dd39 — pending Windows execution.
+**Last-run-at:** 2026-05-20T(C24-FINALIZE + C22-PERMANENT)Z. Origin/main HEAD: 37da7c6 (C22-PERMANENT squash merged). PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A-C21A+C22+C24 static -- `windows_deploy_c21a_static.ps1` -- no restart. OPEN PRs (3/3 limit): #246 C24-FINALIZE (bill_to_nip fix + bypass flag), #10 inventory stubs, #1 UI sidebar. OPERATOR ACTIONS NEEDED: customer authority (5 clients) + product authority (12 products) for shipment 4218922912 — done in browser UI against Windows prod after PR #246 merges.
 
 ---
 
 # FACTS
+
+## C22-PERMANENT — Header Client Extraction (2026-05-20)
+
+- **PR #245 merged** via squash to main (SHA: 37da7c6) — 2026-05-20
+- **Files changed**: `service/app/api/routes_packing.py` + `service/tests/test_c22_permanent_header_client_extraction.py`
+- **What it does**: packing-list parser now extracts clients from free-standing company-suffix patterns (GmbH, Sp z o.o., B.V., Ltd, etc.) in preamble rows — not just explicit "Client:" / "Consignee:" labels. Unlocks client detection for shipment 4218922912 (DiamondGroup GmbH extracted from header).
+- **Client-Po denylist**: `_is_table_header_or_data_row()` prevents column header "Client Po" or "Order" data cells from being mistaken as client names
+- **33 tests** — all pass
+
+---
+
+## C24-FINALIZE — Shipment 4218922912 readiness (2026-05-20)
+
+- **PR #246 OPEN** — `feat/c24-finalize-shipment-readiness` — awaiting merge + Windows deploy
+- **Files changed** (3 backend, 1 frontend, 1 test):
+  - `service/app/api/routes_customer_master.py` — `bill_to_nip → nip` alias mapping in `_parse_body()`
+  - `service/app/api/routes_proforma.py` — bypass mode check (missing customer demoted to export_blocker when `ej_dev_workflow_bypass=True`)
+  - `service/app/core/config.py` — `ej_dev_workflow_bypass: bool = False` flag added
+  - `service/app/static/shipment-detail.html` — CM edit form reads `rec.nip` (not `rec.bill_to_nip`)
+  - `service/tests/test_c24_bill_to_nip_alias.py` — 5 alias tests, all pass
+- **PZService restart REQUIRED** after deploy (backend py files changed)
+- **Deploy**: run `windows_deploy_c13e_backend.ps1` variant (or new c24 manifest) + `windows_deploy_c21a_static.ps1`
+
+### Remaining operator-only actions (not in code, must be done in browser)
+1. Customer authority: 5 clients for shipment 4218922912 — DiamondGroup GmbH, Diamond Point, Verhoeven Joaillier, Dream Ring, Panakas — must be added to `wfirma_customers` mapping via Cliq B0 sync or manual Customer Master entry
+2. Product authority: 12 product codes need `wfirma_product_id` mapping in product bridge
+3. Enable `EJ_DEV_WORKFLOW_BYPASS=true` in `.env` on Windows for preview-while-mapping workflow; flip back to `false` before issuing live proformas
+
+---
+
+## Campaign 21A — Workflow Button Token Compliance (2026-05-20)
+
+- **Commits**: `384e55a` (C21A) + `3dd5243` (C21A follow-up) — both MERGED to main 2026-05-20
+- **Files changed**: `service/app/static/shipment-detail.html` only
+- **No backend files touched** — frontend only
+- **No wFirma write flags** — no DB schema change
+- **Deploy delta**: 1 static file — `shipment-detail.html`; **NO PZService restart required**
+- **Scorecard**: `.claude/memory/scorecards/2026-05-20-c21a-workflow-button-token-compliance.md`
+
+### Changes (384e55a — C21A)
+- **10 hardcoded hex colors replaced** in workflow buttons of `shipment-detail.html`:
+  - `workflow-refresh` button — hex → CSS custom property token
+  - `cn-accept-sad` button — hex → CSS token
+  - `cn-correct-internal` button — hex → CSS token
+  - `cn-escalate-agent` button — hex → CSS token
+  - `execute-pz-refresh` button — hex → CSS token
+  - `execute-pz-button` button — hex → CSS token / `<Btn>` component
+  - 4× file-delete `✕` buttons — hex → CSS tokens
+- All converted to CSS custom property tokens (`--bg`, `--text`, `--badge-*`, `--accent`) or `<Btn>` component per frontend-design.md standard
+
+### Changes (3dd5243 — C21A follow-up)
+- **3 observer-identified error divs fixed** in WorkflowCard/CN section:
+  - `workflow-error` — hardcoded color replaced with CSS token
+  - `cn-hsn-panel` — hardcoded color replaced with CSS token
+  - `cn-hsn-hard-block` — hardcoded color replaced with CSS token
+- These 3 were surfaced by observer scorecard after C21A initial commit; follow-up closed the gap same session
+
+### Scorecard verdicts
+- **testing-verification**: EXEMPLARY
+- **frontend-ui**: ACCEPTABLE
+- **gap-detection**: NEEDS-TUNING — REPEATED-WEAK: 2 of last 5 scorecards
+
+### GATE 4 dispositions from C21A scorecard (2 required)
+1. **gap-detection NEEDS-TUNING (repeated)** → SCHEDULED: enforce pre-implementation-only invocation trigger for gap-detection; gap must not re-fire post-implementation to catch its own misses. Target: next agent-tuning session.
+2. **827 pre-existing test failures** → SCHEDULED: categorize and register all 827 pre-existing test failures by suite (determine which suites, which root causes, whether any are regressions). Target: next available engineering session.
+
+---
+
+## Campaign 20A — Component API Truth (2026-05-20)
+
+- **Commit**: `500472e` — fix(C20A): component API truth — Btn primary variant, Badge label prop, --surface tokens — MERGED to main 2026-05-20
+- **Files changed**: `service/app/static/shipment-detail.html` only
+- **No backend files touched** — frontend only
+- **Deploy delta**: 1 static file; **NO PZService restart required**
+
+---
 
 ## Campaign 19A — Single Authority Renderer (2026-05-20)
 
@@ -385,7 +461,13 @@ Expected: synthetic=true, source="audit.tracking", total=30, counts.PURCHASE_TRA
 - **GATE 2: 0 open PRs** as of Campaign 9 close
 
 ## Current origin/main HEAD
-- **2026-05-19** — `24382c3` PR #228 merged — Campaign 9 commercial completion — **origin/main HEAD**
+- **2026-05-20** — `3dd5243` C21A follow-up — fix: 3 observer-identified error divs in WorkflowCard/CN panel — **origin/main HEAD (2026-05-20)**
+- **2026-05-20** — `384e55a` C21A — fix: workflow button token compliance, 10 hardcoded hex → CSS vars
+- **2026-05-20** — `500472e` C20A — fix: component API truth — Btn primary variant, Badge label prop, --surface tokens
+- **2026-05-20** — `64d0799` C19A — delete dead intelligence renderer — single authority ProformaDraftPanel
+- **2026-05-20** — `b00f0e4` C18A — Unified Proforma Builder Truth — 5 root-cause fixes
+- ~~**origin/main HEAD: `24382c3` PR #228 merged — Campaign 9 commercial completion**~~ — superseded 2026-05-20 by C13A–C21A sequence
+- **2026-05-19** — `24382c3` PR #228 merged — Campaign 9 commercial completion — **prior**
 - **2026-05-19** — `97672c1` Campaign 6 T2 — series bootstrap kill-switch + config flag — **origin/main HEAD (pushed 2026-05-19, Campaigns 4+5+6 now on origin/main)**
 - **2026-05-19** — `820bd9a` Campaign 6 T3/T5/T6/T8/T9 — threading, atomicity, performance, governance
 - **2026-05-19** — `62cb391` Campaign 6 T4 — commercial ownership: ProformaDraftPanel only in Sales tab
@@ -471,7 +553,7 @@ Expected: synthetic=true, source="audit.tracking", total=30, counts.PURCHASE_TRA
 - **Sequencing model** — three-PR cascade (Option B) chosen over single atomic PR for clean per-step rollback + GATE 2 compliance (max 3 open). Each PR in/out before next opened.
 
 ## Open PRs
-(Implementation slot: 2/3 used. #233 MERGED 2026-05-20T00:34:07Z, merge SHA 0f0d85c.)
+(Implementation slot: 2/3 used. C20A `500472e` + C21A `384e55a`+`3dd5243` merged directly to main 2026-05-20; no open implementation PRs beyond legacy stubs below.)
 - **#233** MERGED 2026-05-20 — merge SHA `0f0d85c` — `routes_proforma.py` on origin/main. Windows deploy pending (1-file robocopy). Manifest: `.claude/manifests/deploy_delta_pr233.md`.
 - **#10** feat(inventory): Risk-3/4 button stubs — deferred per operator instruction; do not touch. **IMPL SLOT 1/3.**
 - **#1** ui: align sidebar IA with Estrella Atlas design — historical Atlas branch (REFERENCE_ONLY pending). **IMPL SLOT 2/3.**
@@ -553,8 +635,11 @@ Expected: synthetic=true, source="audit.tracking", total=30, counts.PURCHASE_TRA
 - **Attachment integrity guard shadow observation** — guard is LIVE on Windows prod as of `4c797e4`. Status: `AWAITING-FIRST-REAL-AWB`. Shadow-observing-real-traffic flag must NOT be set until `active_shipment_monitor` fires its first real sweep and an AWB enters eligibility filter. No customs emails queued since restart. Operator must confirm first AWB timestamp to upgrade status.
 
 ## Deployment status per machine
-- **Mac (dev)** — current origin/main head `97672c1` (Campaign 6, pushed 2026-05-19).
-- **Windows (prod, NSSM `PZService` at `C:\PZ`, `https://pz.estrellajewels.eu`)** — **CAMPAIGN-8-DEPLOY-COMPLETE**
+- **Mac (dev)** — current origin/main head `3dd5243` (C21A follow-up, 2026-05-20). C13E + C14A–C21A all on origin/main.
+- **Windows (prod, NSSM `PZService` at `C:\PZ`, `https://pz.estrellajewels.eu`)** — **CAMPAIGN-8-DEPLOY-COMPLETE; C13E + C14A–C21A PENDING WINDOWS DEPLOY**
+  - Static pending: `shipment-detail.html` (C14A–C21A cumulative changes) — NO restart required
+  - Backend pending: `inventory_state_engine.py` (C13E) — PZService restart required
+  - C21A-specific: workflow button token compliance (10 hex colors + 3 error divs) in `shipment-detail.html` included in static deploy above
   - **Campaign 8 deploy SHA: `7392be1`** (32d6a8f + V1/V2/V3 Windows-local, 2026-05-19). 321-commit catch-up from `4c797e4` → `32d6a8f` (origin/main Campaign 6 HEAD) + 3 additional Windows-local commits.
   - PZService: RUNNING (operator confirmed post-restart)
   - Public health: 200 OK `https://pz.estrellajewels.eu/api/v1/health` — body contains `"ok"` and `"prod"`
@@ -649,6 +734,10 @@ Campaign 6 executed on 2026-05-19. Branch: `chore/wave2-patch4-batch-condensatio
 - **2026-05-13T16:00Z (Lesson D closure)** — Scorecard written: `.claude/memory/scorecards/2026-05-13-lesson-d-closure.md` — RULE 2 auto-fire for PR #77. 3 agents scored (system-architect, final-consistency-review, deploy_release_manager). All issues resolved pre-commit. **Total scorecards on disk: 8**.
 - **2026-05-13** — Engineering lessons file: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch), Lesson B (mid-session registry refresh non-determinism), Lesson C (orchestrator scorecard verification), **Lesson D (LOCAL-COMMIT-ONLY deploy disclosure + reconciliation — CODIFIED 2026-05-13 via PR #76)** are all binding rules.
 - **2026-05-13** — Scorecard ON DISK but previously uncited (retroactive RULE 6 registration 2026-05-18): `.claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` — P2 ignition switch model C analysis. File confirmed on disk. GATE 4 disposition: **ACCEPTED GAP** — file is valid; omission from prior RULE 6 citations was an oversight (not a Lesson C silent-loss event). No retroactive action required beyond this citation.
+
+## Campaign 21A scorecard (appended 2026-05-20, RULE 2 auto-fire)
+
+- **2026-05-20** — Scorecard written: `.claude/memory/scorecards/2026-05-20-c21a-workflow-button-token-compliance.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). 3 agents scored: testing-verification EXEMPLARY, frontend-ui ACCEPTABLE, gap-detection NEEDS-TUNING (REPEATED-WEAK: 2 of last 5). GATE 4 dispositions: (1) gap-detection invocation pattern → SCHEDULED, (2) 827 pre-existing test failures → SCHEDULED. **Running total confirmed scorecards: 12+.**
 
 ## Campaign 8 scorecard (appended 2026-05-19, RULE 2 auto-fire)
 
@@ -807,9 +896,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **V1/V2/V3 reconciliation PR** — Windows production HEAD is `7392be1` (3 local commits above `32d6a8f` not on GitHub). Per Lesson D: operator must push V1/V2/V3 to GitHub or confirm content, then open reconciliation PR before next `git pull --ff-only origin main`. Gating: operator action (Windows → GitHub push).
-2. **P2 live promotion** — after Tejal reviews shadow corpus: set `DHL_SELFCLEARANCE_P2_LIVE_ENABLED=true` in Windows .env ONLY. **DO NOT** set `P2_SHADOW_MODE=false` — FORBIDDEN by ADR-018. Live state = shadow=True + live_enabled=True. No code changes needed. Gating: Windows deploy healthy (done) + Tejal shadow corpus sign-off.
-3. **Fracht + Ubezpieczenie wFirma service IDs** — verify IDs 13002743 (freight/FedEx Courier) and 13102217 (insurance) exist in production wFirma account. Gating: operator action (wFirma UI → Towary → search each ID).
+1. **Windows deploy — C13E backend + C14A–C21A static** — run `windows_deploy_c13e_backend.ps1` (PZService restart) then robocopy `shipment-detail.html` to `C:\PZ\app\static\`. C21A (workflow button token compliance) is the latest change; all C13E–C21A changes are now pending on Windows. Target: next operator Windows session — gating: operator elevated shell on Windows prod.
+2. **V1/V2/V3 reconciliation PR** — Windows production HEAD is `7392be1` (3 local commits above `32d6a8f` not on GitHub). Per Lesson D: operator must push V1/V2/V3 to GitHub or confirm content, then open reconciliation PR before next `git pull --ff-only origin main`. Gating: operator action (Windows → GitHub push).
+3. **gap-detection agent tuning** — enforce pre-implementation-only invocation trigger (GATE 4 SCHEDULED from C21A scorecard: REPEATED-WEAK verdict on gap-detection in 2 of last 5). Target: next agent-tuning session — gating: none (scheduling only).
 
 ## Completed actions (Campaign 8, 2026-05-19)
 - ~~**Windows deploy**~~ — **DONE 2026-05-19**: Campaign 8 deploy complete. Windows HEAD = `7392be1` (32d6a8f + V1/V2/V3). All smoke checks PASS. See "Campaign 8 deploy smoke results" above. Deployment maturity: standard sequence — future static/UI changes are routine, not campaigns. Operational stance: ops/perf/UX only.

@@ -722,6 +722,7 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     # Same resolver used by _build_proforma_request so a passing preview
     # implies a successful payload build at the customer-resolution step.
     customer_match = customer_resolution["found"]
+    _dev_bypass = getattr(settings, "ej_dev_workflow_bypass", False)
     if customer_resolution["ambiguous"]:
         blocking_reasons.append(
             f"multiple wfirma customer candidates for {client_name!r}: "
@@ -729,9 +730,17 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
             "to use before issuing a proforma"
         )
     elif not customer_match:
-        blocking_reasons.append(
-            f"customer {client_name!r} not matched in wfirma_customers"
-        )
+        if _dev_bypass:
+            # Bypass mode: demote to warning so preview renders. wFirma write
+            # gates are NOT relaxed — only preview blocking is softened.
+            export_blockers.append(
+                f"[DEV-BYPASS] customer {client_name!r} not matched in "
+                "wfirma_customers — preview allowed but wFirma issue blocked"
+            )
+        else:
+            blocking_reasons.append(
+                f"customer {client_name!r} not matched in wfirma_customers"
+            )
 
     # ── Ship-to (Odbiorca) readiness ──────────────────────────────────────
     # When the customer is mapped, surface the mode + receiver state so
