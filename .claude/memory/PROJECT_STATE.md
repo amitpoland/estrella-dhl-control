@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(campaign17a-PR-OPEN)Z. Local main HEAD: 7e39344 (C17A commit, NOT yet on origin/main). PR #241 OPEN. PENDING Windows deploys: (1) C13E — `windows_deploy_c13e_backend.ps1` — PZService restart required; (2) C14A+C15A+C16A — `windows_deploy_c16a_static.ps1` — no restart; (3) C17A — `shipment-detail.html` only — no restart, after PR #241 merges. Deploy order: C13E first (restart), then C14A+C15A+C16A+C17A together (no restart).
+**Last-run-at:** 2026-05-20T(campaign17a-MERGED)Z. Origin/main HEAD: 7e39344 (C17A SHA). C13E + C14A + C15A + C16A + C17A all on main. PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A+C15A+C16A+C17A -- `windows_deploy_c17a_static.ps1` -- no restart, one robocopy pass. Deploy order: C13E first (restart), then C14A+C15A+C16A+C17A together (no restart).
 
 ---
 
@@ -12,8 +12,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 ## Campaign 17A — Proforma Builder Customer Master Mirror (2026-05-20)
 
-- **PR**: #241 — `feat/c17a-proforma-builder-customer-master-mirror` — OPEN
-- **Local main commit**: `7e39344` — NOT yet pushed to origin/main (branch is ahead by 1)
+- **PR**: #241 — MERGED 2026-05-20 — SHA `7e39344` on origin/main
+- **Merge SHA**: `7e39344` (merged at 2026-05-20T11:05:43Z)
 - **Files changed**: `service/app/static/shipment-detail.html`, `service/tests/test_c16a_lapis_ux_truth.py` (context windows), `service/tests/test_c17a_proforma_builder_customer_master.py` (41 new tests)
 - **No backend files touched** — frontend only
 - **No new wFirma write flags** — `saveCmFields` writes to `/api/v1/customer-master/` only
