@@ -2138,11 +2138,11 @@ function ContractorResolutionRoleCard({
         )}
         <button data-testid={`contractor-resolution-${role}-create-new-btn`}
           disabled
-          title="Create-new path is disabled in R3. The operator must create the master row via the existing Client/Supplier Master CRUD endpoints first, then re-Resolve."
+          title={`To add a new ${role === 'client' ? 'client' : 'supplier'}: create the contractor record in wFirma (Contractors menu → New contractor), then click Resolve above to find it by name.`}
           style={{ padding: '5px 10px', fontSize: 11, background: 'var(--card)',
             color: 'var(--text-3)', border: '1px dashed var(--border)', borderRadius: 6,
             cursor: 'not-allowed', fontFamily: 'inherit', opacity: 0.6 }}>
-          + Create new (disabled)
+          + Create new (disabled — create in wFirma first)
         </button>
       </div>
 
@@ -10988,8 +10988,10 @@ function ProformaReadinessCard({ batchId, onToast }) {
             <InfoRow label="Ambiguous" value={customers.ambiguous ?? 0} />
           </div>
           {!customers.create_flag_on && customers.missing > 0 && (
-            <div data-testid="customer-flag-off" style={{ fontSize: 11, color: 'var(--badge-red-text)', background: 'var(--badge-red-bg)', padding: '6px 10px', borderRadius: 4, marginBottom: 8 }}>
-              Auto-create is not available (contact your admin)
+            <div data-testid="customer-flag-off" style={{ fontSize: 11, color: 'var(--badge-amber-text)', background: 'var(--badge-amber-bg)', padding: '8px 10px', borderRadius: 4, marginBottom: 8, lineHeight: 1.5 }}>
+              <b>Action required:</b> The clients listed as "missing" below have no wFirma contractor record.
+              {' '}You must create them manually in <b>wFirma → Contractors → New contractor</b> (using the same name and VAT number as shown),
+              then click <b>Preview customer auto-resolve</b> above to retry the match.
             </div>
           )}
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
@@ -11921,7 +11923,7 @@ function ProformaDraftPanel({ batchId, onToast }) {
     return (
       <Card data-testid="proforma-draft-panel-empty" style={{ marginBottom: 16 }}>
         <SectionHeader icon="◇" title="Local Proforma Drafts"
-                       subtitle="No proforma drafts yet — they'll appear once packing data is uploaded." />
+                       subtitle="No proforma drafts yet. Upload a client sales file, or use the link button below if purchase packing files are already uploaded." />
 
         {/* Link-packing-as-sales panel — shown when purchase packing files are
             already uploaded but were never routed through the sales intake path */}
@@ -11974,10 +11976,14 @@ function ProformaDraftPanel({ batchId, onToast }) {
                 <tbody>
                   {packDocs.filter(doc => !(doc.is_duplicate && doc.line_count === 0)).map(doc => {
                     const isIgnored = ignoredDocs.has(doc.id);
+                    // C15A: highlight rows with no client name yet — these need operator attention
+                    const isUnassigned = !isIgnored && !(clientNames[doc.id] || '').trim();
                     return (
-                    <tr key={doc.id} data-testid={isIgnored ? `link-packing-doc-ignored-${doc.id}` : undefined}
+                    <tr key={doc.id}
+                        data-testid={isIgnored ? `link-packing-doc-ignored-${doc.id}` : (isUnassigned ? `link-packing-doc-unassigned-${doc.id}` : undefined)}
                         style={{ borderBottom: '1px solid var(--border-0)',
                                  opacity: isIgnored ? 0.38 : 1,
+                                 background: isUnassigned ? 'var(--badge-amber-bg)' : 'transparent',
                                  transition: 'opacity 0.15s' }}>
                       <td style={{ padding: '4px 8px' }}>
                         {doc.is_duplicate && (
@@ -11987,6 +11993,16 @@ function ProformaDraftPanel({ batchId, onToast }) {
                                          borderRadius: 3, padding: '1px 4px',
                                          marginRight: 4, verticalAlign: 'middle' }}>
                             DUP
+                          </span>
+                        )}
+                        {isUnassigned && (
+                          <span data-testid={`link-packing-doc-needs-client-${doc.id}`}
+                                style={{ fontSize: 9, fontWeight: 700,
+                                         background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+                                         border: '1px solid var(--badge-amber-border)',
+                                         borderRadius: 3, padding: '1px 4px',
+                                         marginRight: 4, verticalAlign: 'middle' }}>
+                            Needs client
                           </span>
                         )}
                         <span data-testid={`link-packing-doc-invoice-${doc.id}`}>
@@ -13268,17 +13284,31 @@ function ProformaDraftPanel({ batchId, onToast }) {
                 <tbody>
                   {packDocs.filter(doc => !(doc.is_duplicate && doc.line_count === 0)).map(doc => {
                     const isIgnored = ignoredDocs.has(doc.id);
+                    // C15A: highlight rows with no client name yet
+                    const isUnassigned = !isIgnored && !(clientNames[doc.id] || '').trim();
                     return (
                     <tr key={doc.id}
-                        data-testid={isIgnored ? `link-packing-doc-ignored-main-${doc.id}` : undefined}
+                        data-testid={isIgnored ? `link-packing-doc-ignored-main-${doc.id}` : (isUnassigned ? `link-packing-doc-unassigned-main-${doc.id}` : undefined)}
                         style={{ borderBottom: '1px solid var(--border-0)',
-                                 opacity: isIgnored ? 0.38 : 1, transition: 'opacity 0.15s' }}>
+                                 opacity: isIgnored ? 0.38 : 1,
+                                 background: isUnassigned ? 'var(--badge-amber-bg)' : 'transparent',
+                                 transition: 'opacity 0.15s' }}>
                       <td style={{ padding: '4px 8px' }}>
                         {doc.is_duplicate && (
                           <span style={{ fontSize: 9, fontWeight: 700,
                                          background: '#7c3aed22', color: '#7c3aed',
                                          borderRadius: 3, padding: '1px 4px',
                                          marginRight: 4, verticalAlign: 'middle' }}>DUP</span>
+                        )}
+                        {isUnassigned && (
+                          <span data-testid={`link-packing-doc-needs-client-main-${doc.id}`}
+                                style={{ fontSize: 9, fontWeight: 700,
+                                         background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
+                                         border: '1px solid var(--badge-amber-border)',
+                                         borderRadius: 3, padding: '1px 4px',
+                                         marginRight: 4, verticalAlign: 'middle' }}>
+                            Needs client
+                          </span>
                         )}
                         <span>{doc.invoice_no || '—'}</span>
                         <div style={{ color: 'var(--text-3)', fontSize: 10, maxWidth: 200,
