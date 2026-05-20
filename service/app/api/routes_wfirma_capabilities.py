@@ -1124,3 +1124,214 @@ async def customer_master_sync_apply(request: Request) -> JSONResponse:
         "rejected_blank": apply_result["rejected_blank"],
         "proposals":      filtered_proposals,
     })
+
+
+# ── C25A — Setup-detail endpoint (read-only) ─────────────────────────────────
+#
+# Operator-facing setup detail for a shipment batch.  Combines:
+#   * Per-product detail of missing wFirma product registrations.
+#   * Per-customer detail of mapping status against wFirma + Customer Master.
+#   * Readiness split: "can prepare proforma" vs "can post to wFirma".
+#
+# Authority rules:
+#   * READ-ONLY.  Calls no wFirma write paths.  Never inserts/updates DB rows.
+#   * Mirrors the existing dashboard `proforma-readiness` payload but adds
+#     per-row detail so the operator can see exactly which products and
+#     customers need setup before posting.
+#   * `create_flag_on` fields reflect WFIRMA_CREATE_PRODUCT_ALLOWED /
+#     WFIRMA_CREATE_CUSTOMER_ALLOWED config defaults (both False by default).
+#     The frontend MUST hide write buttons when these flags are False.
+
+
+@router.get("/shipment/{batch_id:path}/setup-detail", dependencies=[_auth])
+def shipment_setup_detail(batch_id: str) -> JSONResponse:
+    """READ-ONLY operator setup detail for products + customers + readiness."""
+    if ".." in batch_id or batch_id.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    from ..core.config import settings as _s
+    from ..services import wfirma_db as _wfdb
+    from ..services import document_db as _ddb
+    from ..services import customer_master_db as _cmdb
+    from ..services import proforma_invoice_link_db as _pildb
+    from pathlib import Path as _Path
+
+    out: dict = {
+        "batch_id": batch_id,
+        "products": {
+            "missing":        [],
+            "mapped_count":   0,
+            "missing_count":  0,
+            "create_flag_on": bool(getattr(_s, "wfirma_create_product_allowed", False)),
+        },
+        "customers": {
+            "details":        [],
+            "create_flag_on": bool(getattr(_s, "wfirma_create_customer_allowed", False)),
+        },
+        "readiness": {
+            "can_prepare_proforma":       False,
+            "can_post_to_wfirma":         False,
+            "blockers_for_preparation":   [],
+            "blockers_for_posting":       [],
+            "purchase_transit_count":     0,
+            "batch_lifecycle":            "UNKNOWN",
+        },
+        "errors": [],
+    }
+
+    # Products: missing rows with line context
+    try:
+        rows = _ddb.query_sales_to_wfirma(batch_id) or []
+    except Exception as exc:
+        rows = []
+        out["errors"].append("sales_to_wfirma read failed: " + str(exc))
+
+    all_codes = sorted({(r.get("product_code") or "").strip() for r in rows if (r.get("product_code") or "").strip()})
+    mapped_map = {}
+    try:
+        if all_codes:
+            mapped_map = _wfdb.get_products_batch(all_codes) or {}
+    except Exception as exc:
+        out["errors"].append("wfirma_products lookup failed: " + str(exc))
+
+    missing_acc: dict = {}
+    mapped_count = 0
+    for r in rows:
+        pc = (r.get("product_code") or "").strip()
+        if not pc:
+            continue
+        prod = mapped_map.get(pc) or {}
+        is_mapped = bool(prod.get("wfirma_product_id")) and (prod.get("sync_status") == "matched")
+        if is_mapped:
+            mapped_count += 1
+            continue
+        acc = missing_acc.setdefault(pc, {
+            "product_code":  pc,
+            "design_no":     (r.get("design_no") or "").strip() or None,
+            "item_type":     (r.get("item_type") or "").strip() or None,
+            "qty":           0.0,
+            "total_value":   0.0,
+            "currency":      (r.get("currency") or "").strip() or None,
+            "draft_id":      r.get("draft_id"),
+            "client_name":   (r.get("client_name") or "").strip() or None,
+        })
+        try:
+            acc["qty"] += float(r.get("qty") or r.get("quantity") or 0)
+        except Exception:
+            pass
+        try:
+            acc["total_value"] += float(r.get("total_value") or 0)
+        except Exception:
+            pass
+
+    out["products"]["mapped_count"]  = mapped_count
+    out["products"]["missing_count"] = len(missing_acc)
+    out["products"]["missing"]       = sorted(missing_acc.values(), key=lambda x: x["product_code"])
+
+    # Customers: per-client status + action_needed
+    try:
+        cm_db_path = _Path(_s.storage_root) / "customer_master.sqlite"
+        cm_rows = _cmdb.list_customers(cm_db_path, limit=10000)
+    except Exception as exc:
+        cm_rows = []
+        out["errors"].append("customer_master read failed: " + str(exc))
+    cm_by_name_lower = {(c.bill_to_name or "").strip().lower(): c for c in cm_rows if c.bill_to_name}
+
+    client_names: list = []
+    try:
+        pildb_path = _Path(_s.storage_root) / "proforma_links.db"
+        drafts = _pildb.list_drafts_for_batch(pildb_path, batch_id) or []
+        seen = set()
+        for d in drafts:
+            cn = getattr(d, "client_name", None) or (d.get("client_name") if isinstance(d, dict) else None)
+            if cn and cn not in seen:
+                client_names.append(cn)
+                seen.add(cn)
+    except Exception as exc:
+        out["errors"].append("proforma_drafts read failed: " + str(exc))
+
+    for cn in client_names:
+        try:
+            wf = _wfdb.get_customer_by_name(cn) if hasattr(_wfdb, "get_customer_by_name") else None
+        except Exception:
+            wf = None
+        wfirma_id = (wf or {}).get("wfirma_customer_id") if isinstance(wf, dict) else None
+
+        cm_rec = cm_by_name_lower.get(cn.lower())
+        cm_present = bool(cm_rec)
+        cm_bill_to_name = cm_rec.bill_to_name if cm_rec else None
+
+        if wfirma_id:
+            status = "matched"
+            action = "none"
+        elif cm_present and getattr(cm_rec, "bill_to_contractor_id", None):
+            status = "matched"
+            action = "refresh_resolver_cache"
+        elif not cm_present:
+            status = "unmapped"
+            action = "add_to_cm"
+        else:
+            cm_has_wfid = bool(getattr(cm_rec, "bill_to_contractor_id", None))
+            if cm_has_wfid:
+                status = "matched"
+                action = "fix_name_alias"
+            else:
+                status = "unmapped"
+                action = "create_in_wfirma"
+
+        out["customers"]["details"].append({
+            "client_name":          cn,
+            "status":               status,
+            "wfirma_customer_id":   wfirma_id or (getattr(cm_rec, "bill_to_contractor_id", None) if cm_rec else None),
+            "cm_record_present":    cm_present,
+            "cm_bill_to_name":      cm_bill_to_name,
+            "action_needed":        action,
+        })
+
+    # Readiness split
+    try:
+        from ..services import inventory_batch_state as _ibs
+        inv = _ibs.get_batch_state(batch_id) or {}
+        out["readiness"]["purchase_transit_count"] = int(
+            (inv.get("counts") or {}).get("PURCHASE_TRANSIT", 0)
+        )
+        if inv.get("synthetic"):
+            out["readiness"]["batch_lifecycle"] = "DHL_TRANSIT"
+        elif out["readiness"]["purchase_transit_count"] > 0:
+            out["readiness"]["batch_lifecycle"] = "PRE_IMPORT"
+        else:
+            wh = sum(v for k, v in (inv.get("counts") or {}).items() if k == "WAREHOUSE_STOCK")
+            if wh > 0:
+                out["readiness"]["batch_lifecycle"] = "WAREHOUSE_STOCK"
+    except Exception as exc:
+        out["errors"].append("inventory_batch_state read failed: " + str(exc))
+
+    prep_blockers: list = []
+    post_blockers: list = []
+
+    if not client_names:
+        prep_blockers.append("no proforma drafts exist for this batch")
+    unresolved_customers = [d for d in out["customers"]["details"] if d["status"] == "unmapped"]
+    if unresolved_customers:
+        prep_blockers.append(
+            "{0} customer(s) unmapped: ".format(len(unresolved_customers))
+            + ", ".join(d["client_name"] for d in unresolved_customers[:3])
+            + ("..." if len(unresolved_customers) > 3 else "")
+        )
+
+    post_blockers.extend(prep_blockers)
+    if out["products"]["missing_count"] > 0:
+        post_blockers.append(
+            "{0} product code(s) unmapped in wFirma".format(out["products"]["missing_count"])
+        )
+    if not bool(getattr(_s, "wfirma_create_pz_allowed", False)):
+        post_blockers.append("WFIRMA_CREATE_PZ_ALLOWED is False (admin flag)")
+    if out["readiness"]["batch_lifecycle"] in ("DHL_TRANSIT", "PRE_IMPORT"):
+        post_blockers.append("warehouse scan-in not yet performed (transit)")
+
+    out["readiness"]["blockers_for_preparation"] = prep_blockers
+    out["readiness"]["blockers_for_posting"]     = post_blockers
+    out["readiness"]["can_prepare_proforma"]     = not prep_blockers
+    out["readiness"]["can_post_to_wfirma"]       = not post_blockers
+
+    return JSONResponse(out)
