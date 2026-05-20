@@ -80,7 +80,47 @@ dashboard-v2.html
   NEVER: any editing surface, any write operation
 ```
 
-**The separation is the real fix.** `shipment-detail.html` crossed every one of these boundaries. V2 does not.
+**The separation is the real fix.** `shipment-detail.html` was not the problem — mixed authorities were. A 15k-line file can survive if authority is clean. A 2k-line file becomes chaos if 6 domains own overlapping truth.
+
+---
+
+## 2b. V2 Migration Discipline Rules (binding — treat as invariants)
+
+### Two absolute rules
+
+```
+ONE PAGE = ONE DOMAIN AUTHORITY
+NO PAGE MAY OWN ANOTHER PAGE'S BUSINESS LOGIC
+```
+
+These two rules, if kept, prevent V2 from becoming the next `shipment-detail.html`.
+
+### Forbidden patterns (resist these during implementation)
+
+| Temptation | Why it fails |
+|---|---|
+| "quickly reuse some V1 renderer" | Imports V1 authority confusion into V2 |
+| "temporarily duplicate logic" | Temporaries become permanent; duplication = split authority |
+| "just add one more section into shipment-detail.html" | V1 freeze violation — breaks migration |
+| "copy state transforms from V1" | State transforms in V1 often embed multiple domain assumptions |
+| "mix preview + accounting + customs in same page" | Recreates the fragmentation on a new filename |
+| "make it beautiful first" | Visual polish before authority stabilization = building on sand |
+
+### Priority ordering for V2 work
+
+Build in this order per page. Do not skip ahead:
+
+1. **Deterministic** — given inputs, always same output. No implicit global state.
+2. **Inspectable** — every API call visible in DevTools. Every state change traceable.
+3. **Authority-clean** — page touches only its own domain APIs.
+4. **Workflow-safe** — no action fires without explicit operator click. No auto-saves.
+5. **Cache-safe** — no stale state survives across page loads. No `window.*` state singletons.
+6. **Deployment-safe** — removing the file from production is the complete rollback.
+7. **Visually polished** — last. Only after steps 1–6 verified.
+
+### The critical single decision
+
+Dashboard-v2 is LAST. This alone prevents months of instability. If dashboard-v2 came first, it would depend on unstable renderer contracts, temporary state adapters, and duplicated logic — recreating the V1 problem under a new filename.
 
 ---
 
@@ -92,13 +132,24 @@ The existing `/dashboard/{path:path}` handler (`main.py` line 505) serves any fi
 
 ## 4. Shared Layer Architecture
 
-Four files. Load order per page:
+Four files. Each has a single, bounded responsibility. Load order per page:
 ```html
 <script src="/dashboard/pz-api.js"></script>
 <script src="/dashboard/pz-state.js"></script>
 <script src="/dashboard/pz-components.js"></script>
 <script src="/dashboard/dashboard-shared.js"></script>
 ```
+
+**Layer responsibility matrix (hard — do not blur):**
+
+| File | Responsibility | Forbidden from |
+|---|---|---|
+| `pz-api.js` | Transport only — fetch wrapper, error normalization | Business logic, state, rendering |
+| `pz-state.js` | Normalization + workflow state — data shaping, loading/error/data hooks | Transport, rendering, domain rules |
+| `pz-components.js` | Reusable rendering primitives — domain-aware but stateless | Fetching, workflow decisions, multi-domain logic |
+| `dashboard-shared.js` | Visual primitives only — Badge, Card, Btn, layout atoms | Domain knowledge of any kind |
+
+The right now problem is `render + fetch + state + workflow + transformation` inside one component. These four layers separate those concerns permanently.
 
 ### 4.1 `dashboard-shared.js` (existing + additions)
 
