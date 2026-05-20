@@ -99,6 +99,120 @@ STATES: frozenset = frozenset({
     RETURNED_FROM_CLIENT, RETURNED_TO_PRODUCER,
 })
 
+# ── C13A — Read-only PURCHASE_TRANSIT projection ────────────────────────────
+#
+# A batch with goods in DHL/customs flight but not yet warehouse-scanned has
+# zero rows in `inventory_state`.  Without a projection the dashboard reports
+# the shipment as "missing inventory" — operationally misleading, since the
+# goods are tracked, declared, and on their way.  C13A adds a READ-ONLY
+# synthetic projection that surfaces these scan_codes with state
+# PURCHASE_TRANSIT, derived from audit.clearance_status + packing lines.
+#
+# Invariants enforced by this design:
+#   1.  Never writes to `inventory_state`.  The write path remains the
+#       transition() engine alone; synthetic rows live only in API responses.
+#   2.  Real rows always win.  Callers consult the projection only when
+#       inventory_state has zero rows for the batch.
+#   3.  Closed / delivered-and-received / archived shipments never produce
+#       a synthetic projection, even with zero scan rows — the operator
+#       must investigate, not be told the goods are "in transit".
+#   4.  Synthetic rows carry `"synthetic": True` and
+#       `"source": "audit.tracking"` so downstream consumers can distinguish
+#       provenance.
+
+# clearance_status values that mean "DHL/customs flight is active".
+# Mirrors routes_proforma._LIFECYCLE_TRANSIT_STATUSES (C12).
+_LIFECYCLE_TRANSIT_STATUSES: frozenset = frozenset({
+    "classified",
+    "in_transit",
+    "dsk_generated",
+    "dsk_transfer_queued",
+    "dsk_transfer_sent",
+    "agency_email_queued",
+    "dsk_sent",
+    "reply_queued",
+    "reply_sent",
+})
+
+# clearance_status values that mean "the shipment is no longer in transit".
+# Synthetic projection is suppressed for these — the operator must explain
+# why scans are missing if the batch is closed.
+_LIFECYCLE_TERMINAL_STATUSES: frozenset = frozenset({
+    "pz_generated",
+    "closed",
+    "delivered_and_received",
+    "archived",
+    "cancelled",
+})
+
+
+def derive_purchase_transit_projection(
+    batch_id: str,
+    audit: Optional[Dict[str, Any]],
+    packing_lines: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """READ-ONLY synthetic PURCHASE_TRANSIT projection.
+
+    Returns a list of synthetic per-scan_code rows when:
+      - ``audit`` is present and ``clearance_status`` is in the
+        transit set (and NOT in the terminal set), AND
+      - at least one packing line exists for the batch.
+
+    Returns an empty list otherwise.
+
+    DOES NOT WRITE anything to `inventory_state`.  The synthetic rows are
+    produced from the packing list (the only honest evidence we have about
+    what is on the shipment) and tagged so callers can never confuse them
+    with real scan-in records.
+
+    Each returned row has the same shape as
+    ``inventory_batch_state._list_pieces_for_batch`` (scan_code, state,
+    product_code, design_no, updated_at) plus two extra keys:
+
+        ``synthetic`` = True
+        ``source``    = "audit.tracking"
+    """
+    if not batch_id or not isinstance(audit, dict):
+        return []
+    if not isinstance(packing_lines, list) or not packing_lines:
+        return []
+
+    status = (audit.get("clearance_status") or "").strip().lower()
+    if not status:
+        return []
+    if status in _LIFECYCLE_TERMINAL_STATUSES:
+        return []
+    if status not in _LIFECYCLE_TRANSIT_STATUSES:
+        return []
+
+    # Updated-at timestamp: prefer audit.tracking.last_update, else now.
+    updated_at = ""
+    trk = audit.get("tracking")
+    if isinstance(trk, dict):
+        updated_at = (trk.get("last_update") or "").strip() or ""
+    if not updated_at:
+        updated_at = _now()
+
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for ln in packing_lines:
+        if not isinstance(ln, dict):
+            continue
+        scan = (ln.get("scan_code") or "").strip()
+        if not scan or scan in seen:
+            continue
+        seen.add(scan)
+        out.append({
+            "scan_code":    scan,
+            "state":        PURCHASE_TRANSIT,
+            "product_code": (ln.get("product_code") or "").strip() or None,
+            "design_no":    (ln.get("design_no") or "").strip() or None,
+            "updated_at":   updated_at,
+            "synthetic":    True,
+            "source":       "audit.tracking",
+        })
+    return out
+
 # Sample-out reason enum (operator-provided per piece).
 SAMPLE_OUT_REASONS: frozenset = frozenset({
     "customer_review",
