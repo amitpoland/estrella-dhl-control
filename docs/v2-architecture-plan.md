@@ -433,11 +433,22 @@ PHASE 5 — Keep backend stable throughout
 
 **The first Proforma V2 implementation PR is the critical moment.** That is where delivery pressure first appears to shortcut the layer rules. That PR review determines whether V2 succeeds or becomes V1.5.
 
-Reviewer-challenge MUST block a V2 PR that contains any of:
+**The first Proforma V2 PR must prove six things. If any one fails, reject the PR entire — do not merge with a plan to fix later:**
+
+| Proof required | What to check |
+|---|---|
+| **Isolated hydration** | Single `ReactDOM.render()` for the page. No `window.currentBatch`, no shared state with any V1 page. URL params are the only input. |
+| **No full shipment mega-state** | Page does not load the entire shipment object and pick fields from it. It calls only the proforma-specific APIs it needs. |
+| **No backend rule duplication** | No `ready = blocking_reasons.length === 0` computed in JS. No local currency validation. No local wFirma gate simulation. |
+| **No visual-domain leakage** | `dashboard-shared.js` receives no new domain props. No new domain-aware functions added to `dashboard-shared.js` for this PR. |
+| **No write gate relaxation** | Every write action requires explicit operator click. No flags relaxed. `wfirma_create_proforma_allowed` check not bypassed. |
+| **No copied legacy renderer** | `ProformaDraftPanel` from `shipment-detail.html` is not imported, duplicated, or refactored-in-place into V2. V2 builds its rendering fresh against the layer spec. |
+
+Reviewer-challenge MUST also block a V2 PR that contains any of:
 
 | Signal | What it means |
 |---|---|
-| Import of any function from `shipment-detail.html` inline components | V1 logic imported into V2 |
+| Copy of `ProformaDraftPanel` or any inline component from `shipment-detail.html` | V1 renderer duplicated into V2 — turns V2 into V1.5 |
 | `pz-state.js` returning `ready: true/false` computed locally | State layer overstepping into business rules |
 | `dashboard-shared.js` receiving a `shipmentStatus` or `clearancePath` prop | Visual primitive gaining domain knowledge |
 | Component in `proforma-v2.html` calling `/api/v1/dhl/` or `/api/v1/warehouse/` | Authority boundary violation |
