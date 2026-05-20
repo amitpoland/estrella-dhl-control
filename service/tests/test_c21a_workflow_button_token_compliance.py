@@ -177,3 +177,36 @@ def test_cn_buttons_preserve_onclick_logic():
     assert "'accept-sad'" in _DETAIL, "cn-accept-sad must still call postDecision with 'accept-sad'"
     assert "'correct-internal'" in _DETAIL, "cn-correct-internal must still call postDecision"
     assert "'escalate-agent'" in _DETAIL, "cn-escalate-agent must still call postDecision"
+
+
+# ── C21A follow-up: observer-identified missed items ─────────────────────────
+
+def test_workflow_error_div_uses_token():
+    """C21A+: workflow-error div must use CSS token, not hardcoded #991b1b."""
+    idx = _DETAIL.index('data-testid="workflow-error"')
+    ctx = _DETAIL[idx: idx + 150]
+    assert '#991b1b' not in ctx, \
+        "workflow-error div must use var(--badge-red-text), not #991b1b"
+    assert 'var(--badge-red-text)' in ctx, \
+        "workflow-error div must use var(--badge-red-text)"
+
+
+def test_cn_hsn_panel_error_uses_token():
+    """C21A+: cn-hsn-panel load-fail error must use CSS tokens, not hardcoded hex."""
+    idx = _DETAIL.index('data-testid="cn-hsn-panel"')
+    # Find the error state render (border + color)
+    ctx = _DETAIL[idx: idx + 300]
+    assert '#fca5a5' not in ctx, \
+        "cn-hsn-panel error must use var(--badge-red-border), not #fca5a5"
+    assert '#991b1b' not in ctx, \
+        "cn-hsn-panel error must use var(--badge-red-text), not #991b1b"
+
+
+def test_cn_hsn_hard_block_uses_token():
+    """C21A+: cn-hsn-hard-block must use CSS token, not hardcoded #991b1b."""
+    idx = _DETAIL.index('data-testid="cn-hsn-hard-block"')
+    ctx = _DETAIL[idx: idx + 150]
+    assert '#991b1b' not in ctx, \
+        "cn-hsn-hard-block must use var(--badge-red-text), not #991b1b"
+    assert 'var(--badge-red-text)' in ctx, \
+        "cn-hsn-hard-block must use var(--badge-red-text)"

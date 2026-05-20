@@ -10404,7 +10404,7 @@ function OperatorWorkflowCard({ batchId, onToast }) {
       </div>
       {error && (
         <div data-testid="workflow-error"
-             style={{ fontSize: 11, color: '#991b1b', marginBottom: 8 }}>
+             style={{ fontSize: 11, color: 'var(--badge-red-text)', marginBottom: 8 }}>
           {error}
         </div>
       )}
@@ -10553,7 +10553,7 @@ function CNHSNDecisionPanel({ batchId, onToast }) {
   if (error || !data) {
     return (
       <div data-testid="cn-hsn-panel"
-           style={{ marginBottom: 16, padding: 12, border: '1px solid #fca5a5', borderRadius: 6, fontSize: 12, color: '#991b1b' }}>
+           style={{ marginBottom: 16, padding: 12, border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)' }}>
         CN/HSN classification load failed: {error || 'no data'}
       </div>
     );
@@ -10655,7 +10655,7 @@ function CNHSNDecisionPanel({ batchId, onToast }) {
 
       {!decided && level === 'different_chapter' && (
         <div data-testid="cn-hsn-hard-block"
-             style={{ fontSize: 12, color: '#991b1b', marginTop: 6 }}>
+             style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 6 }}>
           ⛔ Different HS chapters. Contact the clearing agent for a corrected SAD before proceeding. PZ remains blocked.
         </div>
       )}
