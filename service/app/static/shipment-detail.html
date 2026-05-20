@@ -9554,6 +9554,9 @@ function OperatorWorkflowCard({ batchId, onToast }) {
   const [batchReady, setBatchReady] = React.useState(null); // warehouse + sales blocker source
   const [batchDet, setBatchDet]     = React.useState(null); // for files (PZ exists)
   const [cm, setCm]               = React.useState([]);     // C16A: customer master records
+  const [cmEdit, setCmEdit]       = React.useState(null);   // C17A: {contractorId, fields} | null
+  const [cmSaving, setCmSaving]   = React.useState(false);  // C17A
+  const [cmSavedMsg, setCmSavedMsg] = React.useState(null); // C17A: {contractorId, msg} | null
   const [expanded, setExpanded]   = React.useState({
     evidence: true, classification: false,
     products: false, customers: false, warehouse: false,
@@ -9590,6 +9593,31 @@ function OperatorWorkflowCard({ batchId, onToast }) {
     if (!pf && !zc && !cn) setError('All read-only endpoints failed');
     setLoading(false);
   }, [batchId]);
+
+  // C17A: save partial CM fields via PUT (explicit operator action only)
+  const saveCmFields = React.useCallback(async (contractorId, fields) => {
+    setCmSaving(true); setCmSavedMsg(null);
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      const r = await fetch(`/api/v1/customer-master/${encodeURIComponent(contractorId)}`, {
+        method: 'PUT',
+        headers: { ...hdrs, 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(fields),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setCmSavedMsg({ contractorId, msg: 'Saved ✓' });
+        setCmEdit(null);
+        refresh();
+      } else {
+        setCmSavedMsg({ contractorId, msg: j.detail || 'Save failed' });
+      }
+    } catch {
+      setCmSavedMsg({ contractorId, msg: 'Network error' });
+    }
+    setCmSaving(false);
+  }, [refresh]);
 
   React.useEffect(() => { refresh(); }, [refresh]);
   // ↑ This is a GET-only effect. There is no POST anywhere in this
@@ -9920,55 +9948,315 @@ function OperatorWorkflowCard({ batchId, onToast }) {
     );
   })();
 
+  // C17A: professional proforma builder customer cards
+  // CM is the source of truth for reusable client document defaults.
+  // wFirma mapping (contractor ID, match strategy) is technical detail — collapsed.
   const customersBody = (() => {
     if (!proforma) return <div style={{ fontSize: 11, color: '#6b7280' }}>—</div>;
     const c = proforma.customers || {};
-    // C16A: build lookup bill_to_name → CM record for resolved customers
+    const allDetails = c.details || [];
+    // build lookup: lowercased bill_to_name → CM record
     const cmByName = {};
-    (cm || []).forEach(r => { if (r.bill_to_name) cmByName[r.bill_to_name.toLowerCase().trim()] = r; });
-    const resolvedDetails = (c.details || []).filter(d =>
-      ['exact_match','normalized_match','prefix_match','reverse_prefix_match'].includes(d.status));
+    (cm || []).forEach(r => {
+      if (r.bill_to_name) cmByName[r.bill_to_name.toLowerCase().trim()] = r;
+    });
+    const matchedStatuses = new Set(['exact_match','normalized_match','prefix_match','reverse_prefix_match']);
+
+    const CmField = ({ label, val }) => {
+      if (val == null || val === '') return null;
+      return (
+        <div style={{ display: 'contents' }}>
+          <div style={{ color: 'var(--text-3)', fontSize: 11 }}>{label}</div>
+          <div style={{ fontSize: 11, color: 'var(--text)', fontWeight: 500 }}>{String(val)}</div>
+        </div>
+      );
+    };
+
+    const CmEditForm = ({ rec, onSave, onCancel }) => {
+      const cid = rec.bill_to_contractor_id;
+      const editing = cmEdit && cmEdit.contractorId === cid ? cmEdit.fields : null;
+      const savedMsg = cmSavedMsg && cmSavedMsg.contractorId === cid ? cmSavedMsg.msg : null;
+      const startEdit = () => setCmEdit({ contractorId: cid, fields: {
+        bill_to_name:                  rec.bill_to_name || '',
+        bill_to_nip:                   rec.bill_to_nip || '',
+        bill_to_street:                rec.bill_to_street || '',
+        bill_to_city:                  rec.bill_to_city || '',
+        bill_to_postal_code:           rec.bill_to_postal_code || '',
+        bill_to_country:               rec.bill_to_country || '',
+        ship_to_name:                  rec.ship_to_name || '',
+        ship_to_street:                rec.ship_to_street || '',
+        ship_to_city:                  rec.ship_to_city || '',
+        ship_to_postal_code:           rec.ship_to_postal_code || '',
+        preferred_payment_method:      rec.preferred_payment_method || '',
+        payment_terms_days:            rec.payment_terms_days != null ? String(rec.payment_terms_days) : '',
+        default_currency:              rec.default_currency || '',
+        preferred_proforma_series_id:  rec.preferred_proforma_series_id || '',
+        preferred_invoice_series_id:   rec.preferred_invoice_series_id || '',
+      }});
+      const setF = (k, v) => setCmEdit(e => ({ ...e, fields: { ...e.fields, [k]: v } }));
+      const handleSave = () => {
+        if (!editing) return;
+        const payload = { ...editing };
+        if (payload.payment_terms_days !== '') payload.payment_terms_days = Number(payload.payment_terms_days);
+        else delete payload.payment_terms_days;
+        saveCmFields(cid, payload);
+      };
+      if (!editing) {
+        return (
+          <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Btn small onClick={startEdit} data-testid={`btn-cm-edit-${cid}`}
+                 title="Edit document defaults in Customer Master. No wFirma write fires from here.">
+              Edit
+            </Btn>
+            {savedMsg && (
+              <span style={{ fontSize: 11, color: savedMsg.startsWith('Saved') ? 'var(--badge-green-text)' : 'var(--badge-red-text)' }}>
+                {savedMsg}
+              </span>
+            )}
+          </div>
+        );
+      }
+      const inp = (k, placeholder, type) => (
+        <input value={editing[k]} onChange={e => setF(k, e.target.value)}
+               type={type || 'text'} placeholder={placeholder}
+               style={{ width: '100%', fontSize: 11, padding: '2px 4px',
+                         border: '1px solid var(--border)', borderRadius: 3,
+                         background: 'var(--input-bg, #fff)', color: 'var(--text)' }} />
+      );
+      const fgrp = (label, k, placeholder, type) => (
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 1 }}>{label}</div>
+          {inp(k, placeholder, type)}
+        </div>
+      );
+      return (
+        <div data-testid={`cm-edit-form-${cid}`}
+             style={{ marginTop: 8, padding: 8, background: 'var(--card-hover)',
+                       border: '1px solid var(--border)', borderRadius: 4 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
+                         textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+            Edit Customer Master — {rec.bill_to_name}
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--badge-amber-text)', marginBottom: 8 }}>
+            Saves to Customer Master only. No PZ, no invoice, no wFirma write, no gate bypass.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+            <div style={{ fontWeight: 600, fontSize: 10, color: 'var(--text-3)',
+                           gridColumn: '1/-1', textTransform: 'uppercase', marginTop: 4 }}>Bill-to</div>
+            {fgrp('Name', 'bill_to_name', 'Company name')}
+            {fgrp('VAT / NIP', 'bill_to_nip', 'e.g. PL1234567890')}
+            {fgrp('Street', 'bill_to_street', 'Street and number')}
+            {fgrp('City', 'bill_to_city', 'City')}
+            {fgrp('Postal code', 'bill_to_postal_code', 'e.g. 00-001')}
+            {fgrp('Country', 'bill_to_country', 'e.g. PL')}
+            <div style={{ fontWeight: 600, fontSize: 10, color: 'var(--text-3)',
+                           gridColumn: '1/-1', textTransform: 'uppercase', marginTop: 4 }}>Ship-to (if different)</div>
+            {fgrp('Ship-to name', 'ship_to_name', 'Leave blank to use bill-to')}
+            {fgrp('Ship-to street', 'ship_to_street', 'Street and number')}
+            {fgrp('Ship-to city', 'ship_to_city', 'City')}
+            {fgrp('Ship-to postal', 'ship_to_postal_code', 'e.g. 00-001')}
+            <div style={{ fontWeight: 600, fontSize: 10, color: 'var(--text-3)',
+                           gridColumn: '1/-1', textTransform: 'uppercase', marginTop: 4 }}>Payment &amp; Document</div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 1 }}>Payment method</div>
+              <select value={editing.preferred_payment_method}
+                      onChange={e => setF('preferred_payment_method', e.target.value)}
+                      style={{ width: '100%', fontSize: 11, padding: '2px 4px',
+                                border: '1px solid var(--border)', borderRadius: 3,
+                                background: 'var(--input-bg, #fff)', color: 'var(--text)' }}>
+                <option value="">— not set —</option>
+                <option value="transfer">Transfer</option>
+                <option value="cash">Cash</option>
+                <option value="card">Card</option>
+                <option value="compensation">Compensation</option>
+              </select>
+            </div>
+            {fgrp('Payment terms (days)', 'payment_terms_days', 'e.g. 14', 'number')}
+            {fgrp('Currency', 'default_currency', 'e.g. EUR')}
+            {fgrp('Proforma series ID', 'preferred_proforma_series_id', 'wFirma series ID')}
+            {fgrp('Invoice series ID', 'preferred_invoice_series_id', 'wFirma series ID')}
+          </div>
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Btn small primary onClick={handleSave} disabled={cmSaving}
+                 data-testid={`btn-cm-save-${cid}`}>
+              {cmSaving ? 'Saving…' : 'Save to Customer Master'}
+            </Btn>
+            <Btn small onClick={() => { setCmEdit(null); setCmSavedMsg(null); }}
+                 data-testid={`btn-cm-cancel-${cid}`}>
+              Cancel
+            </Btn>
+            {cmSavedMsg && cmSavedMsg.contractorId === cid && (
+              <span style={{ fontSize: 11,
+                              color: cmSavedMsg.msg.startsWith('Saved') ? 'var(--badge-green-text)' : 'var(--badge-red-text)' }}>
+                {cmSavedMsg.msg}
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    };
+
     return (
       <div data-testid="workflow-customers-body" style={{ fontSize: 12 }}>
-        <div>{c.resolved || 0} of {c.total || 0} customers mapped (
-          {c.missing || 0} missing, {c.ambiguous || 0} ambiguous).</div>
+        {/* Summary line */}
+        <div style={{ marginBottom: 6 }}>
+          {c.resolved || 0} of {c.total || 0} clients mapped
+          {(c.missing > 0 || c.ambiguous > 0) && (
+            <span style={{ color: '#b45309', marginLeft: 8 }}>
+              — {c.missing > 0 ? `${c.missing} missing` : ''}
+              {c.missing > 0 && c.ambiguous > 0 ? ', ' : ''}
+              {c.ambiguous > 0 ? `${c.ambiguous} ambiguous` : ''}
+            </span>
+          )}
+        </div>
         {(c.missing > 0 || c.ambiguous > 0) && (
-          <div style={{ color: '#b45309', marginTop: 4 }}>
-            ⚠ Operator must clear remaining customer rows.{' '}
-            {c.create_flag_on
-              ? ''
+          <div style={{ color: '#b45309', marginBottom: 8, fontSize: 11 }}>
+            ⚠{' '}{c.create_flag_on
+              ? 'Auto-resolve available: click "Preview customer auto-resolve" below.'
               : 'Create contractor in wFirma → Contractors → New contractor, then click Preview customer auto-resolve.'}
           </div>
         )}
-        {resolvedDetails.length > 0 && cm.length > 0 && (
-          <div style={{ marginTop: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}>
-            {resolvedDetails.map((d, i) => {
-              const rec = cmByName[(d.matched_name || d.client_name || '').toLowerCase().trim()];
-              if (!rec) return null;
-              return (
-                <div key={i} data-testid={`workflow-cm-row-${i}`}
-                     style={{ fontSize: 10, color: 'var(--text-2)', marginTop: i > 0 ? 4 : 0,
-                               display: 'flex', flexWrap: 'wrap', gap: '4px 12px', alignItems: 'baseline' }}>
-                  <span style={{ fontWeight: 700, color: 'var(--text)', minWidth: 0 }}>{d.client_name}</span>
-                  {rec.preferred_payment_method && (
-                    <span><span style={{ color: 'var(--text-3)' }}>Pay:</span> {rec.preferred_payment_method}</span>
+        {/* Per-client proforma builder cards */}
+        {allDetails.map((d, i) => {
+          const lookupKey = (d.matched_name || d.client_name || '').toLowerCase().trim();
+          const rec = cmByName[lookupKey];
+          const isResolved = matchedStatuses.has(d.status);
+          const isAmbiguous = d.status === 'ambiguous';
+          const isMissing = d.status === 'missing';
+          const statusColor = isResolved ? 'var(--badge-green-text)' : (isAmbiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)');
+          const statusBg = isResolved ? 'var(--badge-green-bg)' : (isAmbiguous ? 'var(--badge-amber-bg)' : 'var(--badge-red-bg)');
+          const shipDiffers = rec && rec.ship_to_name && rec.ship_to_name !== rec.bill_to_name;
+          return (
+            <div key={i} data-testid={`workflow-cm-card-${i}`}
+                 style={{ marginBottom: 10, padding: 10,
+                           background: 'var(--card-hover)',
+                           border: '1px solid var(--card-border)',
+                           borderRadius: 4 }}>
+              {/* Card header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between',
+                             alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>
+                  {d.client_name}
+                </div>
+                <span style={{ background: statusBg, color: statusColor,
+                                padding: '1px 7px', borderRadius: 4,
+                                fontSize: 10, fontWeight: 700,
+                                textTransform: 'uppercase', whiteSpace: 'nowrap',
+                                flexShrink: 0 }}>
+                  {isResolved ? 'mapped' : d.status}
+                </span>
+              </div>
+              {/* Business document fields (from CM record) */}
+              {rec ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr',
+                               gap: '3px 12px', marginBottom: 4 }}>
+                  {/* Buyer / Bill-to block */}
+                  {(rec.bill_to_name || rec.bill_to_nip) && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                                   textTransform: 'uppercase', letterSpacing: '0.05em',
+                                   gridColumn: '1/-1', marginTop: 4, marginBottom: 2 }}>
+                      Buyer / Bill-to
+                    </div>
                   )}
-                  {rec.preferred_proforma_series_id && (
-                    <span><span style={{ color: 'var(--text-3)' }}>PF series:</span> {rec.preferred_proforma_series_id}</span>
+                  <CmField label="Name" val={rec.bill_to_name} />
+                  <CmField label="VAT / NIP" val={rec.bill_to_nip} />
+                  {(rec.bill_to_street || rec.bill_to_city) && (
+                    <CmField label="Address"
+                      val={[rec.bill_to_street, rec.bill_to_city,
+                             rec.bill_to_postal_code, rec.bill_to_country]
+                            .filter(Boolean).join(', ')} />
                   )}
-                  {rec.preferred_invoice_series_id && (
-                    <span><span style={{ color: 'var(--text-3)' }}>INV series:</span> {rec.preferred_invoice_series_id}</span>
+                  {/* Ship-to block (only if different) */}
+                  {shipDiffers && (
+                    <>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                                     textTransform: 'uppercase', letterSpacing: '0.05em',
+                                     gridColumn: '1/-1', marginTop: 4, marginBottom: 2 }}>
+                        Receiver / Ship-to
+                      </div>
+                      <CmField label="Name" val={rec.ship_to_name} />
+                      {(rec.ship_to_street || rec.ship_to_city) && (
+                        <CmField label="Address"
+                          val={[rec.ship_to_street, rec.ship_to_city,
+                                 rec.ship_to_postal_code]
+                                .filter(Boolean).join(', ')} />
+                      )}
+                    </>
                   )}
-                  {rec.payment_terms_days != null && (
-                    <span><span style={{ color: 'var(--text-3)' }}>Terms:</span> {rec.payment_terms_days}d</span>
+                  {/* Payment block */}
+                  {(rec.preferred_payment_method || rec.payment_terms_days != null || rec.default_currency) && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                                   textTransform: 'uppercase', letterSpacing: '0.05em',
+                                   gridColumn: '1/-1', marginTop: 4, marginBottom: 2 }}>
+                      Payment
+                    </div>
                   )}
-                  {rec.ship_to_name && rec.ship_to_name !== rec.bill_to_name && (
-                    <span><span style={{ color: 'var(--text-3)' }}>Ship-to:</span> {rec.ship_to_name}</span>
+                  <CmField label="Method" val={rec.preferred_payment_method} />
+                  {rec.payment_terms_days != null && <CmField label="Terms" val={`${rec.payment_terms_days} days`} />}
+                  <CmField label="Currency" val={rec.default_currency} />
+                  {/* Document series block */}
+                  {(rec.preferred_proforma_series_id || rec.preferred_invoice_series_id) && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
+                                   textTransform: 'uppercase', letterSpacing: '0.05em',
+                                   gridColumn: '1/-1', marginTop: 4, marginBottom: 2 }}>
+                      Document settings
+                    </div>
+                  )}
+                  <CmField label="Proforma series" val={rec.preferred_proforma_series_id} />
+                  <CmField label="Invoice series" val={rec.preferred_invoice_series_id} />
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4 }}>
+                  No Customer Master record — edit to create defaults.
+                </div>
+              )}
+              {/* Edit form (C17A) */}
+              {rec && rec.bill_to_contractor_id && (
+                <CmEditForm rec={rec}
+                            onSave={saveCmFields}
+                            onCancel={() => { setCmEdit(null); setCmSavedMsg(null); }} />
+              )}
+              {/* Technical mapping — collapsed */}
+              <details style={{ marginTop: 6 }}>
+                <summary style={{ fontSize: 10, color: 'var(--text-3)', cursor: 'pointer',
+                                   userSelect: 'none' }}>
+                  wFirma mapping details
+                </summary>
+                <div style={{ marginTop: 4, display: 'grid',
+                               gridTemplateColumns: '120px 1fr', gap: '2px 8px',
+                               fontSize: 10, color: 'var(--text-2)' }}>
+                  <div style={{ color: 'var(--text-3)' }}>Status</div>
+                  <div>{d.status || '—'}</div>
+                  {d.wfirma_customer_id && (
+                    <>
+                      <div style={{ color: 'var(--text-3)' }}>wFirma ID</div>
+                      <div><code>{d.wfirma_customer_id}</code></div>
+                    </>
+                  )}
+                  {d.matched_name && (
+                    <>
+                      <div style={{ color: 'var(--text-3)' }}>Matched name</div>
+                      <div>{d.matched_name}</div>
+                    </>
+                  )}
+                  {d.candidates && d.candidates.length > 0 && (
+                    <>
+                      <div style={{ color: 'var(--text-3)' }}>Candidates</div>
+                      <div>{d.candidates.slice(0, 4).join(', ')}{d.candidates.length > 4 ? ` (+${d.candidates.length - 4})` : ''}</div>
+                    </>
+                  )}
+                  {isMissing && (
+                    <div style={{ gridColumn: '1/-1', color: '#b45309', marginTop: 2 }}>
+                      Not yet mapped. Create contractor in wFirma, then re-run auto-resolve.
+                    </div>
                   )}
                 </div>
-              );
-            })}
-          </div>
+              </details>
+            </div>
+          );
+        })}
+        {allDetails.length === 0 && (
+          <div style={{ fontSize: 11, color: '#6b7280' }}>No customer details available.</div>
         )}
       </div>
     );
@@ -13600,77 +13888,98 @@ function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }
 }
 
 
-// ── Customer-resolution card (read-only summary; optional re-map link) ──
+// ── Customer-resolution card (C17A: business-first layout;
+//    technical mapping in collapsed details) ──
 function ProformaCustomerCard({ resolution, clientName, onRemapOpen }) {
   if (!resolution) return null;
   const r = resolution;
   const matched = !!r.wfirma_customer_id;
-  const status = r.match_strategy || "none";
+  const status = r.match_strategy || r.status || 'none';
   const badgeBg = matched
     ? 'var(--badge-green-bg)'
     : (r.ambiguous ? 'var(--badge-amber-bg)' : 'var(--badge-red-bg)');
   const badgeFg = matched
     ? 'var(--badge-green-text)'
     : (r.ambiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)');
+  const badgeLabel = matched ? 'mapped' : (r.ambiguous ? 'ambiguous' : 'unmatched');
   return (
     <div data-testid="draft-customer-card"
          style={{ marginBottom: 14, padding: 10,
                     background: 'var(--card-hover)',
                     border: '1px solid var(--card-border)',
                     borderRadius: 4, fontSize: 12 }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
-                      letterSpacing: '0.06em', textTransform: 'uppercase',
-                      marginBottom: 6 }}>
-        Customer mapping
-      </div>
-      <div style={{ display: 'grid',
-                      gridTemplateColumns: '180px 1fr', gap: 4 }}>
-        <div style={{ color: 'var(--text-3)' }}>Sales client name</div>
-        <div><strong>{clientName || '—'}</strong></div>
-        <div style={{ color: 'var(--text-3)' }}>wFirma customer ID</div>
-        <div data-testid="draft-customer-wfirma-id">
-          {matched
-            ? <code>{r.wfirma_customer_id}</code>
-            : <span style={{ color: 'var(--text-3)' }}>— unmatched —</span>}
-        </div>
-        <div style={{ color: 'var(--text-3)' }}>wFirma stored name</div>
-        <div>{r.resolved_wfirma_name || '—'}</div>
-        <div style={{ color: 'var(--text-3)' }}>Match strategy</div>
+      {/* Business header: client name + status badge */}
+      <div style={{ display: 'flex', justifyContent: 'space-between',
+                     alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
         <div>
-          <span style={{ background: badgeBg, color: badgeFg,
-                            padding: '1px 6px', borderRadius: 4,
-                            fontSize: 10, fontWeight: 700,
-                            textTransform: 'uppercase' }}
-                data-testid="draft-customer-match-strategy">
-            {status}
-          </span>
-          {r.ambiguous && r.candidates && r.candidates.length > 0 && (
-            <span style={{ marginLeft: 8, color: 'var(--text-3)',
-                              fontSize: 11 }}>
-              candidates: {r.candidates.slice(0, 4).join(', ')}
-              {r.candidates.length > 4 ? ` (+${r.candidates.length - 4})` : ''}
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Buyer</div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
+            {clientName || '—'}
+          </div>
+        </div>
+        <span style={{ background: badgeBg, color: badgeFg,
+                        padding: '2px 8px', borderRadius: 4,
+                        fontSize: 10, fontWeight: 700,
+                        textTransform: 'uppercase', whiteSpace: 'nowrap',
+                        flexShrink: 0 }}>
+          {badgeLabel}
+        </span>
+      </div>
+      {/* Unmatched action (shown prominently, not as a footnote) */}
+      {!matched && (
+        <div style={{ marginBottom: 8, padding: '6px 8px', borderRadius: 3,
+                        background: r.ambiguous ? 'var(--badge-amber-bg)' : 'var(--badge-red-bg)',
+                        fontSize: 11, color: r.ambiguous ? 'var(--badge-amber-text)' : 'var(--badge-red-text)' }}>
+          {r.ambiguous
+            ? 'Multiple wFirma contractors match this name — use Customer Master to set the correct one.'
+            : 'No wFirma contractor found. Create the contractor in wFirma, then re-run auto-resolve.'}
+          {onRemapOpen && (
+            <span style={{ marginLeft: 8 }}>
+              <Btn small onClick={onRemapOpen}
+                   data-testid="btn-draft-customer-remap"
+                   title="Opens the Customer Master tab — no write fires from this screen.">
+                Open Customer Master
+              </Btn>
             </span>
           )}
         </div>
-      </div>
-      {!matched && (
-        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)',
-                        display: 'flex', alignItems: 'center', gap: 8,
-                        flexWrap: 'wrap' }}>
-          <span>
-            Not auto-resolvable.  Use the Customer Master surface to map
-            this client to a wFirma customer before posting.
-          </span>
-          {onRemapOpen && (
-            <Btn small
-                 onClick={onRemapOpen}
-                 data-testid="btn-draft-customer-remap"
-                 title="Opens the Customer Master tab so the operator can map this client to a wFirma customer. No write fires from this screen.">
-              Open Customer Master
-            </Btn>
-          )}
-        </div>
       )}
+      {/* Technical mapping — collapsed */}
+      <details>
+        <summary style={{ fontSize: 10, color: 'var(--text-3)', cursor: 'pointer', userSelect: 'none' }}>
+          wFirma mapping details
+        </summary>
+        <div style={{ marginTop: 6, display: 'grid',
+                       gridTemplateColumns: '160px 1fr', gap: '3px 8px',
+                       fontSize: 11 }}>
+          <div style={{ color: 'var(--text-3)' }}>wFirma customer ID</div>
+          <div data-testid="draft-customer-wfirma-id">
+            {matched ? <code>{r.wfirma_customer_id}</code>
+                      : <span style={{ color: 'var(--text-3)' }}>— unmatched —</span>}
+          </div>
+          {r.resolved_wfirma_name && (
+            <>
+              <div style={{ color: 'var(--text-3)' }}>wFirma stored name</div>
+              <div>{r.resolved_wfirma_name}</div>
+            </>
+          )}
+          <div style={{ color: 'var(--text-3)' }}>Match strategy</div>
+          <div>
+            <span style={{ background: badgeBg, color: badgeFg,
+                              padding: '1px 6px', borderRadius: 4,
+                              fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}
+                  data-testid="draft-customer-match-strategy">
+              {status}
+            </span>
+            {r.ambiguous && r.candidates && r.candidates.length > 0 && (
+              <span style={{ marginLeft: 8, color: 'var(--text-3)', fontSize: 11 }}>
+                candidates: {r.candidates.slice(0, 4).join(', ')}
+                {r.candidates.length > 4 ? ` (+${r.candidates.length - 4})` : ''}
+              </span>
+            )}
+          </div>
+        </div>
+      </details>
     </div>
   );
 }

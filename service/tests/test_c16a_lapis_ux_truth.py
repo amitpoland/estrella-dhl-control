@@ -131,33 +131,37 @@ def test_operator_workflow_card_has_cm_state():
 # ── 6. customersBody shows CM fields ─────────────────────────────────────────
 
 def test_customers_body_shows_payment_method():
-    """C16A: customersBody must display preferred_payment_method from CM."""
+    """C16A/C17A: customersBody must display preferred_payment_method from CM.
+    C17A expanded the section; context window widened to 7000."""
     idx = _HTML.index("workflow-customers-body")
-    ctx = _HTML[idx: idx + 1500]
+    ctx = _HTML[idx: idx + 7000]
     assert "preferred_payment_method" in ctx, \
         "customersBody must render preferred_payment_method"
 
 
 def test_customers_body_shows_proforma_series():
-    """C16A: customersBody must display preferred_proforma_series_id from CM."""
+    """C16A/C17A: customersBody must display preferred_proforma_series_id from CM.
+    C17A expanded the section; context window widened to 7000."""
     idx = _HTML.index("workflow-customers-body")
-    ctx = _HTML[idx: idx + 3000]
+    ctx = _HTML[idx: idx + 7000]
     assert "preferred_proforma_series_id" in ctx, \
         "customersBody must render preferred_proforma_series_id"
 
 
 def test_customers_body_shows_invoice_series():
-    """C16A: customersBody must display preferred_invoice_series_id from CM."""
+    """C16A/C17A: customersBody must display preferred_invoice_series_id from CM.
+    C17A expanded the section; context window widened to 7000."""
     idx = _HTML.index("workflow-customers-body")
-    ctx = _HTML[idx: idx + 3000]
+    ctx = _HTML[idx: idx + 7000]
     assert "preferred_invoice_series_id" in ctx, \
         "customersBody must render preferred_invoice_series_id"
 
 
 def test_customers_body_shows_payment_terms():
-    """C16A: customersBody must display payment_terms_days from CM."""
+    """C16A/C17A: customersBody must display payment_terms_days from CM.
+    C17A expanded the section; context window widened to 7000."""
     idx = _HTML.index("workflow-customers-body")
-    ctx = _HTML[idx: idx + 3000]
+    ctx = _HTML[idx: idx + 7000]
     assert "payment_terms_days" in ctx, \
         "customersBody must render payment_terms_days"
 
@@ -165,15 +169,16 @@ def test_customers_body_shows_payment_terms():
 def test_customers_body_shows_ship_to():
     """C16A: customersBody must conditionally display ship_to_name from CM."""
     idx = _HTML.index("workflow-customers-body")
-    ctx = _HTML[idx: idx + 3000]
+    ctx = _HTML[idx: idx + 7000]
     assert "ship_to_name" in ctx, \
         "customersBody must render ship_to_name"
 
 
 def test_customers_body_cm_row_has_testid():
-    """C16A: CM data rows must have testid for test targeting."""
-    assert "workflow-cm-row-" in _HTML, \
-        "CM rows must have data-testid='workflow-cm-row-{i}'"
+    """C16A/C17A: CM per-client cards must have testid for test targeting.
+    C17A renamed workflow-cm-row- → workflow-cm-card- (full card redesign)."""
+    assert "workflow-cm-card-" in _HTML, \
+        "CM client cards must have data-testid='workflow-cm-card-{i}'"
 
 
 # ── 7. Stale 'contact your admin' text removed ───────────────────────────────
