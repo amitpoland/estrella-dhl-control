@@ -12,7 +12,7 @@
 #       No DB schema change. No DB migration required.
 # ============================================================
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 # ── Paths ───────────────────────────────────────────────────
 $SVC_SERVICES = "C:\PZ\app\services"
@@ -23,7 +23,9 @@ $BAK_ROOT     = "C:\PZ\app\bak"
 Write-Host "`n=== STEP 0: Verify repo state ===" -ForegroundColor Cyan
 Set-Location "C:\Users\Super Fashion\PZ APP"
 git fetch origin
+if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] git fetch failed" -ForegroundColor Red; exit 1 }
 git pull --ff-only origin main
+if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] git pull failed" -ForegroundColor Red; exit 1 }
 $headSha = git rev-parse --short HEAD
 Write-Host "HEAD after pull: $headSha" -ForegroundColor Green
 
@@ -76,6 +78,10 @@ Write-Host "[OK] PZService stopped" -ForegroundColor Green
 # ── STEP 5: Deploy inventory_state_engine.py ────────────────
 Write-Host "`n=== STEP 5: Deploy C13E backend file ===" -ForegroundColor Cyan
 robocopy "$REPO_SRC" "$SVC_SERVICES" "inventory_state_engine.py" /COPY:DAT
+if ($LASTEXITCODE -ge 8) {
+    Write-Host "[FAIL] robocopy error code $LASTEXITCODE - check copy" -ForegroundColor Red
+    exit 1
+}
 Write-Host " [1/1] inventory_state_engine.py -> $SVC_SERVICES\" -ForegroundColor Green
 
 # ── STEP 6: Start PZService ──────────────────────────────────
