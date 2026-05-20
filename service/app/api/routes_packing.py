@@ -1749,6 +1749,48 @@ _CLIENT_PREAMBLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# C22-PERMANENT: company-suffix detection for label-LESS header blocks where
+# the buyer name sits as a free-standing cell in the preamble (e.g. the
+# 2026-05 DiamondGroup GmbH packing lists where R5 contains the company name
+# with no "Client:" prefix). The cell text must END with one of these
+# suffixes (optionally followed by punctuation).  Authoritative for the
+# header-extraction priority chain documented in
+# `_extract_client_from_preamble` below.
+_COMPANY_SUFFIX_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"GmbH"                 # DE / AT
+    r"|Sp\.?\s*z\s*o\.?\s*o\.?"   # PL
+    r"|s\.?\s*r\.?\s*o\.?"  # SK / CZ
+    r"|B\.?V\.?"            # NL
+    r"|S\.?L\.?"            # ES
+    r"|S\.?p\.?\s*A\.?"     # IT (S.p.A.)  — listed BEFORE S.A. to avoid prefix collision
+    r"|S\.?A\.?"            # FR / CH / ES — generic suffix; lower priority match
+    r"|Ltd"                 # UK / IE / IN
+    r"|LLP|PLC|LLC|Inc"     # UK / US
+    r"|AG"                  # DE / CH / AT
+    r"|OY"                  # FI
+    r")\b\.?\s*$",
+    re.IGNORECASE,
+)
+
+# C22-PERMANENT: deny-list of cell texts that must NOT be treated as a
+# client name.  Excludes table column headers + common preamble labels so a
+# free-standing "Client Po" header row or a "Total" footer row never
+# becomes a client.  Compared against the full stripped cell text,
+# case-insensitive.
+_CLIENT_DENYLIST: frozenset = frozenset({
+    s.lower() for s in (
+        "client po", "client p.o.", "client po.", "po", "po.",
+        "purchase order", "purchase order #", "order", "order #",
+        "invoice", "invoice #", "invoice no", "invoice no.", "invoice number",
+        "shipment", "shipment packing list", "packing list",
+        "sr", "ctg", "category", "qty", "quantity", "value", "total", "total value",
+        "design", "design no", "designno", "kt", "col", "color", "quality",
+        "size", "dated", "date", "remarks", "name", "client", "customer",
+        "buyer", "consignee", "ship to", "bill to",
+    )
+})
+
 
 def _guess_client_from_filename(filename: str) -> str:
     """
@@ -1796,10 +1838,62 @@ def _build_matched_sales_lines(
     return sales_lines, skipped
 
 
+def _is_table_header_or_data_row(cells_text: List[str]) -> bool:
+    """Return True if the row LOOKS like a table header row (multiple
+    short column-name-like cells in the same row) — used to bail out of
+    company-name detection once we've reached the data table.
+
+    Heuristic: 3+ non-empty cells with average length <= 8 chars and at
+    least one cell in the column-header denylist (Sr / Ctg / Qty / etc.).
+    """
+    nonempty = [c for c in cells_text if c]
+    if len(nonempty) < 3:
+        return False
+    avg_len = sum(len(c) for c in nonempty) / len(nonempty)
+    if avg_len > 14:
+        return False
+    if any(c.lower() in _CLIENT_DENYLIST for c in nonempty):
+        return True
+    return False
+
+
+def _looks_like_company_name(text: str) -> bool:
+    """C22-PERMANENT: detect a free-standing buyer/company-name cell in
+    the preamble.  Returns True only when:
+      - text is non-empty, length 3-80
+      - text is NOT in _CLIENT_DENYLIST (excludes column headers)
+      - text ENDS with a recognised company-form suffix
+        (GmbH / Sp z o.o. / s.r.o. / B.V. / Ltd / S.A. / etc.)
+    """
+    if not text:
+        return False
+    t = text.strip()
+    if len(t) < 3 or len(t) > 80:
+        return False
+    if t.lower() in _CLIENT_DENYLIST:
+        return False
+    return bool(_COMPANY_SUFFIX_RE.search(t))
+
+
 def _guess_client_from_preamble(file_path: str) -> str:
     """
-    Fallback: scan the top rows of the Excel packing file for a 'Client:' /
-    'Consignee:' / 'Buyer:' / 'Ship To:' label and return the value.
+    Extract the client name from the top rows of the Excel packing file.
+
+    C22-PERMANENT authority chain (in order):
+      1. Explicit label match — "Client: …" / "Consignee: …" / "Buyer: …" /
+         "Ship To: …"  (C13B behaviour, preserved).
+      2. Free-standing company-suffix match — a cell whose text ends in
+         a recognised legal-form suffix (GmbH / Sp z o.o. / Ltd / B.V. /
+         s.r.o. / etc.), with the cell NOT in the denylist.  This catches
+         label-LESS header blocks such as the DiamondGroup GmbH layout
+         where R5 col 2 is the bare company name.
+
+    NEVER matches:
+      - Any cell whose text is in `_CLIENT_DENYLIST` (column headers
+        like "Client Po" / "Total Value" / "Sr" / "Qty").
+      - Any cell inside or below a detected table-header row (avoids
+        picking up data rows like "Order 50260837").
+
     Returns '' on any failure (missing file, unreadable format, no match).
     """
     if not file_path:
@@ -1808,17 +1902,32 @@ def _guess_client_from_preamble(file_path: str) -> str:
         import openpyxl as _opx  # type: ignore
         wb = _opx.load_workbook(str(file_path), read_only=True, data_only=True)
         ws = wb.active
+        # PASS 1 — explicit-label search (highest priority, C13B behaviour).
         for row in ws.iter_rows(min_row=1, max_row=12, values_only=True):
-            for cell in row:
-                raw = str(cell or "").strip()
+            cells_text = [str(c or "").strip() for c in row]
+            # Stop scanning once we hit the table header — anything below
+            # is data, not preamble.
+            if _is_table_header_or_data_row(cells_text):
+                break
+            for raw in cells_text:
                 if not raw:
                     continue
                 m = _CLIENT_PREAMBLE_RE.match(raw)
                 if m:
                     val = m.group(1).strip().strip(":")
-                    if val and len(val) < 80:
+                    if val and len(val) < 80 and val.lower() not in _CLIENT_DENYLIST:
                         wb.close()
                         return val
+        # PASS 2 — free-standing company-suffix search (C22-PERMANENT).
+        # Re-iterate, stopping at the same table-header boundary.
+        for row in ws.iter_rows(min_row=1, max_row=12, values_only=True):
+            cells_text = [str(c or "").strip() for c in row]
+            if _is_table_header_or_data_row(cells_text):
+                break
+            for raw in cells_text:
+                if _looks_like_company_name(raw):
+                    wb.close()
+                    return raw.strip()
         wb.close()
     except Exception:
         pass
