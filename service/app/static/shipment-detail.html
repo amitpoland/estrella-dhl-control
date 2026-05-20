@@ -5140,7 +5140,11 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           const stuck   = wa && !isErr ? (wa.stuck_inventory || []) : [];
           const invalid = wa && !isErr ? (wa.invalid_flows || []) : [];
           const orphans = wa && !isErr ? (wa.orphan_inventory || []) : [];
-          const cleanGate = !isErr && missing.length === 0 && stuck.length === 0 && invalid.length === 0 && orphans.length === 0;
+          // C13D: synthetic PURCHASE_TRANSIT batches have no warehouse scans yet — not a gap.
+          const isTransit      = !!(invState && invState.synthetic === true &&
+                                    ((invState.counts || {}).PURCHASE_TRANSIT || 0) > 0);
+          const displayMissing  = isTransit ? [] : missing;
+          const cleanGate = !isErr && displayMissing.length === 0 && stuck.length === 0 && invalid.length === 0 && orphans.length === 0;
           const sectionStyle = { padding: 14, marginBottom: 12 };
           const headStyle    = { fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
           const tblStyle     = { width: '100%', borderCollapse: 'collapse', fontSize: 11 };
@@ -5164,6 +5168,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
             if (total === 0) return 'unknown';
             if (dispatched > 0 && dispatched >= total) return 'dispatched';
             if (dispatched > 0)                        return 'partial_dispatch';
+            if (isTransit)                             return 'in_transit';  // C13D
             if (scanned === 0)                         return 'awaiting';
             if (scanned < total)                       return 'partial_received';
             if (hasPzDocId)                            return 'reserved';
@@ -5171,6 +5176,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           })();
           const lifecycleLabel = {
             unknown:          'No packing list',
+            in_transit:       'In transit / Awaiting warehouse receive',  // C13D
             awaiting:         'Awaiting receipt',
             partial_received: 'Partially received',
             in_warehouse:     'In warehouse',
@@ -5180,6 +5186,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           }[lifecycleState] || 'No packing list';
           const lifecycleTone = {
             unknown:          { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+            in_transit:       { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },  // C13D
             awaiting:         { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
             partial_received: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
             in_warehouse:     { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
@@ -5262,13 +5269,18 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     )}
                   </Card>
 
-                  {/* Missing scans */}
+                  {/* Missing scans — C13D: suppressed for pure-transit batches */}
                   <Card style={sectionStyle}>
                     <div style={headStyle}>
-                      <span>Missing scans {badge(missing.length, { bg: 'var(--badge-red-bg)', text: 'var(--badge-red-text)' })}</span>
+                      <span>Missing scans {badge(displayMissing.length, { bg: 'var(--badge-red-bg)', text: 'var(--badge-red-text)' })}</span>
                       <span style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 400 }}>Packing lines not yet scanned into warehouse</span>
                     </div>
-                    {missing.length === 0 ? (
+                    {isTransit && missing.length > 0 ? (
+                      <div style={{ fontSize: 11, color: 'var(--badge-blue-text)', background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)', borderRadius: 4, padding: '6px 10px' }}
+                           data-testid="warehouse-transit-note">
+                        {missing.length} item(s) in transit (PURCHASE_TRANSIT) — goods are en route, not yet received at warehouse. No action required until delivery.
+                      </div>
+                    ) : displayMissing.length === 0 ? (
                       <div style={{ fontSize: 11, color: 'var(--text-3)' }}>No missing scans.</div>
                     ) : (
                       <table style={tblStyle}>
@@ -5279,7 +5291,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           <th style={thStyle}>Pcs</th>
                         </tr></thead>
                         <tbody>
-                          {missing.slice(0, 200).map((m, i) => (
+                          {displayMissing.slice(0, 200).map((m, i) => (
                             <tr key={i}>
                               <td style={{ ...tdStyle, fontFamily: 'ui-monospace,monospace' }}>{m._expected_scan_code || '—'}</td>
                               <td style={tdStyle}>{m.product_code || '—'}</td>
@@ -5290,7 +5302,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         </tbody>
                       </table>
                     )}
-                    {missing.length > 200 && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>Showing first 200 of {missing.length}.</div>}
+                    {displayMissing.length > 200 && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>Showing first 200 of {displayMissing.length}.</div>}
                   </Card>
 
                   {/* Stuck inventory */}
@@ -5415,14 +5427,19 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           const thStyle  = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' };
           const tdStyle  = { padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' };
 
+          // C13D: same transit detection used in Warehouse tab to remap missing_scan badges.
+          const isTransit = !!(invState && invState.synthetic === true &&
+                               ((invState.counts || {}).PURCHASE_TRANSIT || 0) > 0);
           const STATUS_BADGE = {
             ready:            { bg: 'var(--badge-green-bg)',  text: 'var(--badge-green-text)',  label: 'Ready' },
             pending_dispatch: { bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   label: 'Pending dispatch' },
             not_ready:        { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  label: 'Not ready' },
             missing_scan:     { bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    label: 'Missing scan' },
+            in_transit:       { bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   label: 'In transit' },  // C13D
           };
           const statusBadge = (s) => {
-            const c = STATUS_BADGE[s] || { bg: 'var(--bg-2)', text: 'var(--text-3)', label: s || '—' };
+            const key = isTransit && s === 'missing_scan' ? 'in_transit' : s;  // C13D
+            const c = STATUS_BADGE[key] || { bg: 'var(--bg-2)', text: 'var(--text-3)', label: key || '—' };
             return <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: c.bg, color: c.text }}>{c.label}</span>;
           };
 
@@ -5475,7 +5492,7 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         <div><span style={{ color: 'var(--text-3)' }}>Ready:</span> <b style={{ color: (summary.ready || 0) > 0 ? 'var(--badge-green-text)' : 'var(--text)' }}>{summary.ready ?? 0}</b></div>
                         <div><span style={{ color: 'var(--text-3)' }}>Pending dispatch:</span> <b>{summary.pending_dispatch ?? 0}</b></div>
                         <div><span style={{ color: 'var(--text-3)' }}>Not ready:</span> <b style={{ color: (summary.not_ready || 0) > 0 ? 'var(--badge-amber-text)' : 'var(--text)' }}>{summary.not_ready ?? 0}</b></div>
-                        <div><span style={{ color: 'var(--text-3)' }}>Missing scan:</span> <b style={{ color: (summary.missing_scan || 0) > 0 ? 'var(--badge-red-text)' : 'var(--text)' }}>{summary.missing_scan ?? 0}</b></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>{isTransit ? 'In transit:' : 'Missing scan:'}</span> <b style={{ color: (summary.missing_scan || 0) > 0 ? (isTransit ? 'var(--badge-blue-text)' : 'var(--badge-red-text)') : 'var(--text)' }}>{summary.missing_scan ?? 0}</b></div>
                       </div>
                     </div>
                   </Card>

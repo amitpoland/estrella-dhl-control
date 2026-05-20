@@ -1648,6 +1648,15 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
             const st     = pieceDetail.state.state;
             const tone   = _STATE_TONE[st] || _STATE_TONE.CLOSED;
             const days   = st === 'SAMPLE_OUT' ? _daysSinceIso(pieceDetail.state.updated_at) : null;
+            // C13D: human-readable label so PURCHASE_TRANSIT shows "In transit" not raw state code.
+            const _PIECE_STATE_LABEL = {
+              PURCHASE_TRANSIT:     'In transit',
+              WAREHOUSE_STOCK:      'In warehouse',
+              SAMPLE_OUT:           'Sample out',
+              RETURNED_FROM_CLIENT: 'Returned from client',
+              RETURNED_TO_PRODUCER: 'Returned to producer',
+            };
+            const stLabel = _PIECE_STATE_LABEL[st] || st;
             const overdue = days !== null && days >= _SAMPLE_OVERDUE_DAYS;
             return (
             <div data-testid="inventory-piece-drawer-found">
@@ -1662,7 +1671,7 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
                     border: `1px solid ${tone.border}`,
                     borderRadius: 10, fontSize: 10, fontWeight: 700,
                     letterSpacing: '0.06em', fontFamily: 'monospace',
-                  }}>{st}</span>
+                  }}>{stLabel}</span>
                 {st === 'SAMPLE_OUT' && days !== null && (
                   <span data-testid="inventory-piece-sample-aging"
                     data-overdue={overdue ? 'true' : 'false'}
@@ -8790,6 +8799,7 @@ const ATTENTION_PREDICATES = {
 // per-batch (UI-3.4) surfaces use identical operator-readable copy.
 const WAREHOUSE_LIFECYCLE_LABEL = {
   unknown:          'No packing list',
+  in_transit:       'In transit / Awaiting warehouse receive',  // C13D
   awaiting:         'Awaiting receipt',
   partial_received: 'Partially received',
   in_warehouse:     'In warehouse',
@@ -9210,6 +9220,7 @@ function DashboardPage({ onViewShipment, batches, loading, onReload, onToast }) 
         };
         const xbatchLifecycleTone = {
           unknown:          { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+          in_transit:       { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },  // C13D
           awaiting:         { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
           partial_received: { bg: 'var(--badge-amber-bg)',   text: 'var(--badge-amber-text)',   border: 'var(--badge-amber-border)' },
           in_warehouse:     { bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
