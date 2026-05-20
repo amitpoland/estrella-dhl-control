@@ -10,6 +10,39 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 # FACTS
 
+## C26 — Canonical Proforma Setup Reader Contract (2026-05-21)
+
+- **Contract document**: `.claude/contracts/proforma-setup-reader-contract.md` — defines one canonical reader per domain (product codes, product mapping, packing enrichment, customer set pre-draft, customer set post-draft, customer mapping, customer master, draft list, PZ prerequisite, posting-readiness verdict).
+- **Enforcement test**: `service/tests/test_c26_reader_contract_enforcement.py` — 12 source-grep tests pin: canonical readers ARE called by named endpoints; forbidden readers (`query_sales_to_wfirma`) NOT called; `packing_lines` is enrichment only (called after invoice_lines); no inline `v_sales_to_wfirma`-shaped JOIN; no independent `ready` verdict in `/setup-detail`; both endpoints use `wfdb.get_product`/`get_products_batch` for mapping (not raw `wfirma_products` SELECT); no other route file invents a new product reader for `setup`/`readiness`/`proforma_*` endpoints.
+- **Key clarification — customers are split by lifecycle stage, by design**:
+  - `/proforma-readiness` reads `sales_documents` (pre-draft customer set)
+  - `/setup-detail` reads `proforma_drafts` (post-draft customer set)
+  - Both MUST agree on mapping status for any customer present in both; either MAY list customers absent from the other. A future V2 unified panel MUST merge both readers, not introduce a third.
+- **No behavior change**: no UI, no DB schema, no wFirma/PZ/DHL/customs change. Read-authority documentation + source-grep tests only.
+- **Status**: ACTIVE. Future PRs adding setup/readiness/proforma endpoints MUST extend §2 of the contract and add a corresponding test in `test_c26_reader_contract_enforcement.py`, or be blocked at review.
+
+---
+
+## C25A — Setup-Detail Authority Fix (2026-05-20, CLOSED)
+
+- **PR #250 merged** via merge to main (SHA: `d819b24`) — C25A-REGRESSION-FIX (cm scope)
+  - Moved 9 useState + 4 useCallback handlers + `refreshSetupDetail` mount-effect from `BatchDetailPage` to `OperatorWorkflowCard` (where the JSX panel actually lives). Fixes Safari `ReferenceError: Can't find variable: cm` blank-screen on sparse batches.
+  - 12 new regression tests pin BatchDetailPage scope is empty / OperatorWorkflowCard owns all C25A state.
+- **PR #251 merged** via merge to main (SHA: `403fb5c`) — C25A-DATA-FIX (product authority)
+  - `shipment_setup_detail()` switched product source from `_ddb.query_sales_to_wfirma(batch_id)` (TEMP VIEW `v_sales_to_wfirma` — returned 0 rows for Lapis-style batches) to `_ddb.get_invoice_lines_for_batch(batch_id)` — same authority used by `/dashboard/.../proforma-readiness`.
+  - Best-effort enrichment preserved: `design_no`+`item_type` from `packing_lines`, `client_name` from `sales_packing_lines` (batch-scoped), `description` from invoice line.
+  - Aggregation: multi-row same `product_code` collapsed to single entry, qty+total_value summed.
+  - 9 new C25A-DATA-FIX source-grep+structural tests; combined repo total **318 pass**.
+- **Forbidden surfaces UNTOUCHED**: no schema change, no wFirma writes enabled, no PZ creation, no DHL/orchestrator/queue, no fiscal gate relaxed, `_guard_wfirma_export` still 422, `WFIRMA_CREATE_*` flags still False, customer details path unchanged.
+- **Production deploy** (2026-05-20T23:47Z):
+  - `C:\PZ\app\api\routes_wfirma_capabilities.py` (58611 bytes)
+  - `C:\PZ\app\static\shipment-detail.html` (888738 bytes)
+  - PZService restarted by operator (elevated PowerShell) → PID 8168, RUNNING
+- **Verification (live production)**: `/api/v1/wfirma/shipment/SHIPMENT_4218922912_2026-05_9040dd39/setup-detail` returned `products.missing_count=12, mapped_count=0, missing_rows=12` — matches `/proforma-readiness` authority. **0→12 flip confirmed.**
+- **Status**: C25A campaign CLOSED. Both endpoints now agree on product authority.
+
+---
+
 ## C22-PERMANENT — Header Client Extraction (2026-05-20)
 
 - **PR #245 merged** via squash to main (SHA: 37da7c6) — 2026-05-20
