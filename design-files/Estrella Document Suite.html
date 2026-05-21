@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Estrella Document Suite — Pro Forma · CMR · Statement · PZ Workbook</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="estrella-docs/tokens.css"/>
+<meta name="ext-resource-dependency" content="estrella-docs/logo-transparent.png" data-resource-id="logo" />
+<style>
+  html,body{margin:0;padding:0;background:#f0eee9;font-family:Inter,system-ui,sans-serif;color:#0F172A}
+  #root{width:100%;height:100vh}
+</style>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<template id="__bundler_thumbnail" data-bg-color="#0B3D2E">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1200" height="800" fill="#0B3D2E"/>
+    <g transform="translate(600 400)">
+      <path d="M0 -120 L100 0 L0 120 L-100 0 Z" fill="none" stroke="#C9A24B" stroke-width="5"/>
+      <path d="M0 -55 L48 0 L0 55 L-48 0 Z" fill="#C9A24B"/>
+    </g>
+    <text x="600" y="600" text-anchor="middle" font-family="Inter, sans-serif" font-size="32" font-weight="600" fill="#C9A24B" letter-spacing="8">ESTRELLA</text>
+    <text x="600" y="635" text-anchor="middle" font-family="Inter, sans-serif" font-size="14" font-weight="500" fill="#C9A24B" letter-spacing="6" opacity="0.7">DOCUMENT SUITE</text>
+  </svg>
+</template>
+<div id="root"></div>
+
+<script type="text/babel" src="estrella-docs/design-canvas.jsx"></script>
+<script type="text/babel" src="estrella-docs/tweaks-panel.jsx"></script>
+<script type="text/babel" src="estrella-docs/shared.jsx"></script>
+<script type="text/babel" src="estrella-docs/doc-proforma.jsx"></script>
+<script type="text/babel" src="estrella-docs/doc-cmr.jsx"></script>
+<script type="text/babel" src="estrella-docs/doc-statement.jsx"></script>
+<script type="text/babel" src="estrella-docs/doc-xlsx.jsx"></script>
+<script type="text/babel" src="estrella-docs/doc-email-mobile.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "accent": "#C9A24B",
+  "language": "trilingual",
+  "carrier": "DHL",
+  "showPhotos": true,
+  "showCompliance": true
+}/*EDITMODE-END*/;
+
+// Inject runtime accent override
+function AccentVars({ color }) {
+  return <style>{`:root{--ej-gold:${color} !important;--ej-gold-2:${color} !important;}`}</style>;
+}
+
+function App() {
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+
+  return (
+    <>
+      <AccentVars color={t.accent}/>
+      <DesignCanvas>
+        <DCSection id="proforma" title="① Pro Forma Invoice"
+                   subtitle="A4 print-ready · trilingual PL/EN/SK · branded · 3 directions">
+          <DCArtboard id="pf-classic" label="A · Classic — letterhead" width={794} height={1123}>
+            <ProformaClassic/>
+          </DCArtboard>
+          <DCArtboard id="pf-modern" label="B · Modern — KPI tiles" width={794} height={1123}>
+            <ProformaModern/>
+          </DCArtboard>
+          <DCArtboard id="pf-bold" label="C · Bold — gold rail" width={794} height={1123}>
+            <ProformaBold/>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="cmr" title="② Delivery Note · CMR"
+                   subtitle="Carrier strip · piece tally · driver signature box">
+          <DCArtboard id="cmr-classic" label="A · Classic" width={794} height={1123}>
+            <CMRClassic/>
+          </DCArtboard>
+          <DCArtboard id="cmr-modern" label="B · Modern" width={794} height={1123}>
+            <CMRModern/>
+          </DCArtboard>
+          <DCArtboard id="cmr-bold" label="C · Bold" width={794} height={1123}>
+            <CMRBold/>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="statement" title="③ Statement of Account"
+                   subtitle="Aging buckets · multi-currency bank · reconciliation note">
+          <DCArtboard id="st-classic" label="A · Classic" width={794} height={1123}>
+            <StatementClassic/>
+          </DCArtboard>
+          <DCArtboard id="st-modern" label="B · Modern — KPI cards" width={794} height={1123}>
+            <StatementModern/>
+          </DCArtboard>
+          <DCArtboard id="st-bold" label="C · Bold — left rail" width={794} height={1123}>
+            <StatementBold/>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="xlsx" title="④ XLSX — PZ Calculation Workbook"
+                   subtitle="Branded Excel preview · landed-cost waterfall · Verify panel">
+          <DCArtboard id="x-classic" label="A · Calc sheet" width={794} height={1123}>
+            <XlsClassic/>
+          </DCArtboard>
+          <DCArtboard id="x-modern" label="B · Summary dashboard" width={794} height={1123}>
+            <XlsModern/>
+          </DCArtboard>
+          <DCArtboard id="x-bold" label="C · Bold rail" width={794} height={1123}>
+            <XlsBold/>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="delivery" title="⑤ Email & Mobile Delivery"
+                   subtitle="Email-friendly HTML version · buyer-facing mobile preview">
+          <DCArtboard id="email" label="Email HTML" width={680} height={1100}>
+            <EmailHtml/>
+          </DCArtboard>
+          <DCArtboard id="mobile" label="Mobile preview · iPhone" width={340} height={700}>
+            <MobileView/>
+          </DCArtboard>
+          <DCArtboard id="notes" label="Design system notes" width={420} height={700}>
+            <NotesPanel/>
+          </DCArtboard>
+        </DCSection>
+
+        <TweaksPanel>
+          <TweakSection label="Brand"/>
+          <TweakColor label="Accent" value={t.accent}
+            options={["#C9A24B","#B45309","#1F8A5B","#2A6FDB"]}
+            onChange={(v) => setTweak('accent', v)}/>
+
+          <TweakSection label="Document content"/>
+          <TweakRadio label="Language" value={t.language}
+            options={["pl-only","en-only","trilingual"]}
+            onChange={(v) => setTweak('language', v)}/>
+          <TweakSelect label="Carrier" value={t.carrier}
+            options={["DHL","FedEx","UPS"]}
+            onChange={(v) => setTweak('carrier', v)}/>
+
+          <TweakSection label="Display"/>
+          <TweakToggle label="Show item photos" value={t.showPhotos}
+            onChange={(v) => setTweak('showPhotos', v)}/>
+          <TweakToggle label="Show compliance footer" value={t.showCompliance}
+            onChange={(v) => setTweak('showCompliance', v)}/>
+        </TweaksPanel>
+      </DesignCanvas>
+    </>
+  );
+}
+
+function NotesPanel() {
+  return (
+    <div style={{ padding: 28, background: '#FBF8F1', height: '100%', fontFamily: 'Inter, sans-serif', fontSize: 11.5, lineHeight: 1.55, color: '#475569', overflow: 'auto' }}>
+      <div style={{ fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase', color: '#B0892F', fontWeight: 600 }}>Design system</div>
+      <h2 style={{ fontSize: 22, fontWeight: 700, color: '#0B3D2E', margin: '6px 0 14px', letterSpacing: '-0.02em' }}>Estrella Jewels — Document Suite</h2>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8, marginBottom: 18 }}>
+        {[
+          ['#0B3D2E','Emerald — primary'],
+          ['#C9A24B','Gold — accent'],
+          ['#FBF8F1','Cream — paper'],
+          ['#0F172A','Ink — body'],
+        ].map(([c,n]) => (
+          <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 28, height: 28, borderRadius: 4, background: c, border: '1px solid rgba(0,0,0,.08)' }}/>
+            <div>
+              <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, fontWeight: 600, color: '#0F172A' }}>{c}</div>
+              <div style={{ fontSize: 9.5 }}>{n}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <h3 style={{ fontSize: 12, fontWeight: 700, color: '#0B3D2E', margin: '18px 0 6px' }}>Three directions</h3>
+      <ol style={{ paddingLeft: 18, margin: 0 }}>
+        <li><b>Classic</b> — green/gold band header, formal letterhead, conservative table grid. The safe default for accountants and customs.</li>
+        <li><b>Modern</b> — large numerals, KPI tiles, generous white space. Reads like a SaaS receipt; works equally well on screen.</li>
+        <li><b>Bold</b> — full-bleed emerald rail with gold accents, oversized totals. The premium-luxury feel for high-value buyers.</li>
+      </ol>
+
+      <h3 style={{ fontSize: 12, fontWeight: 700, color: '#0B3D2E', margin: '18px 0 6px' }}>Output formats</h3>
+      <ul style={{ paddingLeft: 18, margin: 0 }}>
+        <li><b>PDF</b> — A4 print-ready, 1:1 preview at 794×1123px (210×297mm @ 96dpi)</li>
+        <li><b>Email HTML</b> — table-based, dark-mode-safe, inline styles only</li>
+        <li><b>Mobile</b> — 340px wide, sticky pay button, copy-IBAN</li>
+        <li><b>XLSX</b> — branded header, locked Verify panel, NBP rate cell</li>
+      </ul>
+
+      <h3 style={{ fontSize: 12, fontWeight: 700, color: '#0B3D2E', margin: '18px 0 6px' }}>Tweaks panel</h3>
+      Use the panel (bottom-right) to swap accent colour, language, carrier and toggle photos / compliance footer in real time across all 12 docs.
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
