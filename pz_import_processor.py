@@ -3223,14 +3223,33 @@ def process_batch(inv_paths: list, zc429_path: str, rate: float = None,
 # ── File collection ───────────────────────────────────────────────────────────
 
 def collect_pdfs(paths: list) -> list:
-    result = []
+    """Collect PDF paths from files and directories.
+
+    Dedupes case-insensitively per resolved path. On Windows the filesystem
+    is case-insensitive, so globbing both ``*.pdf`` and ``*.PDF`` returns
+    the same file twice ('foo.pdf' matches both patterns). That doubling
+    silently inflated invoice totals once the Global PZ engine authority
+    bridge (2026-05-21) started returning real items — the legacy regex
+    parser had been returning ``items=[]`` so doubling was invisible.
+    Dedupe at collection time so every caller is safe.
+    """
+    seen: set = set()
+    result: list = []
     for p in paths:
         path = Path(p)
         if path.is_dir():
-            result.extend(sorted(glob.glob(str(path / "*.pdf"))))
-            result.extend(sorted(glob.glob(str(path / "*.PDF"))))
+            for hit in sorted(
+                glob.glob(str(path / "*.pdf")) + glob.glob(str(path / "*.PDF"))
+            ):
+                key = str(Path(hit).resolve()).lower()
+                if key not in seen:
+                    seen.add(key)
+                    result.append(hit)
         elif str(path).lower().endswith(".pdf"):
-            result.append(str(path))
+            key = str(path.resolve()).lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(str(path))
     return result
 
 
