@@ -3350,6 +3350,40 @@ def archive_cleanup() -> Dict[str, Any]:
 
 _DHL_BROKER_THRESHOLD_USD = 2500.0
 
+
+def _is_valid_pdf_file(path: Path) -> bool:
+    """Return True iff the file at *path* has a valid PDF magic header.
+
+    A file claiming `.pdf` extension but starting with anything other than
+    ``%PDF-`` (e.g. an Excel doc renamed during a "Save As Compatibility
+    Mode" workflow) is not a real PDF and will either crash the invoice
+    parser or — worse — produce zero results that poison
+    ``compute_invoice_totals``.
+
+    Read-only header sniff (5 bytes). Never raises; on any IO error the
+    file is treated as invalid so it gets quarantined out of the parse
+    loop rather than crashing the recheck.
+    """
+    try:
+        with path.open("rb") as fh:
+            return fh.read(5) == b"%PDF-"
+    except Exception:
+        return False
+
+
+def _partition_valid_pdfs(pdfs: List[Path]) -> tuple[List[Path], List[Path]]:
+    """Split *pdfs* into (valid, invalid) by PDF magic header check.
+
+    Used by the recheck loops to skip files that masquerade as PDFs
+    (e.g. ``Global-inv-088.xls _Compatibility Mode_.pdf``) so they
+    don't poison invoice totals when a valid sibling exists.
+    """
+    valid:   List[Path] = []
+    invalid: List[Path] = []
+    for p in pdfs:
+        (valid if _is_valid_pdf_file(p) else invalid).append(p)
+    return valid, invalid
+
 class RecheckRequest(BaseModel):
     mode: str = "all"
 
@@ -3383,9 +3417,22 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
     # ── A. Reparse invoices ──────────────────────────────────────────────────
     if mode in ("all", "invoice", "quantity"):
         inv_dir = batch_dir / "source" / "invoices"
-        inv_pdfs = sorted(inv_dir.glob("*.pdf")) if inv_dir.exists() else []
+        inv_pdfs_all = sorted(inv_dir.glob("*.pdf")) if inv_dir.exists() else []
+        # Quarantine files that claim .pdf but lack the %PDF- magic header
+        # (e.g. Excel "Compatibility Mode" .xls renamed to .pdf). They would
+        # otherwise either crash the parser or silently return zero rows that
+        # poison compute_invoice_totals. Skip + name them as warnings, never
+        # block valid siblings.
+        inv_pdfs, _bad_pdfs = _partition_valid_pdfs(inv_pdfs_all)
+        for _bp in _bad_pdfs:
+            warnings.append(
+                f"Skipped non-PDF file in source/invoices (no %PDF- header): {_bp.name}"
+            )
         if not inv_pdfs:
-            warnings.append("No invoice PDFs found in source/invoices — invoice recheck skipped")
+            if not _bad_pdfs:
+                warnings.append("No invoice PDFs found in source/invoices — invoice recheck skipped")
+            else:
+                warnings.append("No valid invoice PDFs to parse — all files failed PDF header validation")
         else:
             try:
                 from pz_import_processor import parse_invoice as _pi, compute_invoice_totals as _ct  # noqa: PLC0415
@@ -3433,7 +3480,15 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
     if mode in ("all", "dhl_precheck"):
         carrier = (audit.get("inputs", {}).get("carrier") or audit.get("carrier") or "DHL").upper()
         inv_dir = batch_dir / "source" / "invoices"
-        inv_pdfs = sorted(inv_dir.glob("*.pdf")) if inv_dir.exists() else []
+        inv_pdfs_all_b = sorted(inv_dir.glob("*.pdf")) if inv_dir.exists() else []
+        # Same quarantine guard as Section A — a non-PDF masquerading as
+        # .pdf cannot be allowed to drive DHL pre-check CIF to zero when
+        # a valid sibling exists.
+        inv_pdfs, _bad_b = _partition_valid_pdfs(inv_pdfs_all_b)
+        for _bp in _bad_b:
+            warnings.append(
+                f"DHL precheck skipped non-PDF in source/invoices: {_bp.name}"
+            )
         cif_usd  = 0.0
         parsed_n = 0
         cif_source = "not_parsed"
