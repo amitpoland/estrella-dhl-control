@@ -1478,12 +1478,376 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
     })
 
 
+# ── Timeline event constants for sync-names + clear-mapping ────────────────
+# Use string literals (no new tl.EV_* constants) to keep the timeline module
+# clean of campaign-specific events; the values become the timeline `event`
+# field verbatim.
+EV_WFIRMA_GOOD_RENAMED    = "wfirma_good_renamed"
+EV_WFIRMA_PZ_MAPPING_CLEARED = "wfirma_pz_mapping_cleared"
+
+
+def _material_from_pl_desc(pl_desc: str) -> str:
+    """Derive a wFirma-friendly "Z jakiego materiału" line from a PL
+    description by stripping the item-type prefix.
+
+    Examples:
+      "Bransoletki ze złota próby 375 z diamentami laboratoryjnymi"
+        → "złoto próby 375 z diamentami laboratoryjnymi"
+      "Kolczyki ze srebra próby 925 z cyrkoniami"
+        → "srebro próby 925 z cyrkoniami"
+      "Pierścionki ze srebra próby 925"
+        → "srebro próby 925"
+
+    The PR #269 PL grammar always uses "ze złota"/"ze srebra"/"z platyny"
+    or simply "ze stali". Strip everything up to and including the
+    leading "ze "/"z " preposition and any item-type-list prefix. If the
+    pattern is unrecognised, return the input unchanged.
+    """
+    if not pl_desc:
+        return ""
+    # PR #269 grammar: "<types>, <types> ze {metal} próby {n} z {stones}"
+    # Find the first " ze " or " z " followed by metal name.
+    import re as _re
+    m = _re.search(r"\s+ze\s+(.+)$", pl_desc)
+    if m:
+        return m.group(1).strip()
+    m = _re.search(r"\s+z\s+(\S+\s+próby\s+\S+.*)$", pl_desc)
+    if m:
+        return m.group(1).strip()
+    return pl_desc.strip()
+
+
 def _operator_from_header(x_operator: Optional[str]) -> str:
     """Extract operator id from the X-Operator header. Falls back to
     'operator' so old clients that don't set the header still produce
     a stable, non-empty operator label in audit/timeline. Backward-
     compatible — never raises, never alters request flow."""
     return (x_operator or "").strip() or "operator"
+
+
+@router.post("/shipment/{batch_id}/wfirma/products/sync-names", dependencies=[_auth])
+async def wfirma_products_sync_names(
+    batch_id:   str,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Edit the name + description of wFirma goods already mapped to this
+    batch's product codes, so they match the current invoice-position
+    authority (`pz_rows.json`).
+
+    Use case
+    --------
+    The `/products/resolve` flow creates wFirma goods using the description
+    block available at THAT moment. If the audit/engine state was stale at
+    create time (e.g. PR #269 bridge had not yet repopulated rows), the
+    resulting wFirma good names are stuck on stale text. This endpoint
+    walks the current authoritative `pz_rows.json`, builds the correct
+    name + description from each row's `pl_desc` / `description_en`, and
+    writes those values to existing wFirma goods via `goods/edit`. Local
+    `wfirma_products` cache is updated atomically.
+
+    Guard order
+    -----------
+    1. `WFIRMA_CREATE_PRODUCT_ALLOWED` must be true (reuses the existing
+       product-write flag; editing is semantically the same write class).
+    2. Batch/audit exists, SAD present, PZ rows on disk
+       (`_guard_wfirma_export`).
+    3. Each row must have a non-empty `pl_desc` and a resolved
+       `wfirma_product_id` in `wfirma_products`. Codes that are not
+       mapped → `unmapped` count, not failures.
+
+    Behaviour
+    ---------
+    For each row:
+      - new_name = "<pl_desc> / <description_en>" (matches the existing
+        wFirma name pattern produced by `/products/resolve`).
+      - new_description = a freshly-built bilingual block using
+        `description_engine.build_description_block` with
+        material_pl derived from pl_desc, purpose_pl fixed to
+        "Ozdoba — biżuteria do noszenia.".
+      - Diff against the cached `wfirma_products.product_name`. If
+        unchanged → counted in `unchanged`. If different → call
+        `wfirma_client.edit_product` and persist locally.
+
+    Never mutates code / price / unit / vat / warehouse_id. Idempotent —
+    re-running after a successful sync reports `renamed=0`.
+
+    Response
+    --------
+    {
+      batch_id, considered, unchanged, renamed, unmapped, failed,
+      failed_details, before_after: [{code, wfirma_id, before, after}],
+    }
+    """
+    if not settings.wfirma_create_product_allowed:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard": "wfirma_create_product_allowed",
+                "error": "wFirma product writes are disabled. Set WFIRMA_CREATE_PRODUCT_ALLOWED=true to enable.",
+                "code":  "WFIRMA_PRODUCT_WRITE_DISABLED",
+            },
+        )
+
+    output_dir = get_output_dir(batch_id)
+    audit      = _read_audit(output_dir)
+    _guard_wfirma_export(audit)
+
+    rows_raw = _build_rows(output_dir, audit)
+    operator = _operator_from_header(x_operator)
+
+    considered      = 0
+    unchanged       = 0
+    renamed         = 0
+    unmapped_codes: List[str] = []
+    failed_details: List[Dict[str, Any]] = []
+    before_after:   List[Dict[str, Any]] = []
+
+    # Deduplicate by product_code — multiple rows may share one code in
+    # principle; only process the first occurrence per code per run.
+    seen_codes: set = set()
+    for r in rows_raw:
+        pc = (r.get("product_code") or "").strip()
+        if not pc or pc in seen_codes:
+            continue
+        seen_codes.add(pc)
+
+        considered += 1
+        pl_desc   = (r.get("pl_desc") or r.get("_pl_desc") or "").strip()
+        desc_en   = (r.get("description_en") or r.get("_description_en") or "").strip()
+        if not pl_desc:
+            failed_details.append({
+                "product_code": pc,
+                "error":        "pz_rows row has empty pl_desc — cannot derive new name",
+            })
+            continue
+
+        existing = wfirma_db.get_product(pc)
+        wfirma_id = (existing or {}).get("wfirma_product_id") or ""
+        wfirma_id = wfirma_id.strip()
+        if not wfirma_id:
+            unmapped_codes.append(pc)
+            continue
+
+        # Build new name: PR #269 PL grammar + slash + English source line.
+        new_name = pl_desc
+        if desc_en:
+            new_name = f"{pl_desc} / {desc_en}"
+
+        # Build new description block matching the existing format.
+        material_pl = _material_from_pl_desc(pl_desc)
+        new_description = deng.build_description_block(
+            description_pl = pl_desc,
+            material_pl    = material_pl or pl_desc,
+            purpose_pl     = "Ozdoba — biżuteria do noszenia.",
+            description_en = desc_en,
+        )
+
+        before_name = (existing or {}).get("product_name") or ""
+        if before_name.strip() == new_name.strip():
+            unchanged += 1
+            before_after.append({
+                "product_code": pc,
+                "wfirma_id":    wfirma_id,
+                "before":       before_name,
+                "after":        new_name,
+                "changed":      False,
+            })
+            continue
+
+        try:
+            edit_result = wfirma_client.edit_product(
+                wfirma_product_id = wfirma_id,
+                name              = new_name,
+                description       = new_description,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "[%s] products/sync-names: goods/edit failed for %r (wfirma_id=%s): %s",
+                batch_id, pc, wfirma_id, exc,
+            )
+            failed_details.append({
+                "product_code": pc,
+                "wfirma_id":    wfirma_id,
+                "error":        f"goods/edit: {exc}",
+            })
+            continue
+
+        # Persist new name + description block locally. `upsert_product`
+        # has never-erase semantics for product_name; passing a non-empty
+        # value overwrites correctly.
+        try:
+            wfirma_db.upsert_product(
+                product_code      = pc,
+                wfirma_product_id = wfirma_id,
+                product_name_pl   = (existing or {}).get("product_name_pl") or pl_desc.split(" ze ")[0].split(",")[0].strip(),
+                product_name      = new_name,
+                description_block = new_description,
+                unit              = (existing or {}).get("unit") or "szt.",
+                sync_status       = "matched",
+            )
+        except Exception as exc:  # noqa: BLE001
+            # wFirma was updated but local DB persistence failed. Surface
+            # this clearly — the operator must re-run to reconcile the
+            # local cache, but wFirma is already correct.
+            log.error(
+                "[%s] products/sync-names: wFirma updated but local DB upsert "
+                "failed for %r: %s — re-run after fix to reconcile local cache",
+                batch_id, pc, exc,
+            )
+            failed_details.append({
+                "product_code":     pc,
+                "wfirma_id":        wfirma_id,
+                "error":            f"local_db_upsert: {exc}",
+                "wfirma_updated":   True,
+                "local_db_synced":  False,
+            })
+            continue
+
+        renamed += 1
+        before_after.append({
+            "product_code": pc,
+            "wfirma_id":    wfirma_id,
+            "before":       before_name,
+            "after":        new_name,
+            "changed":      True,
+        })
+        tl.log_event(
+            output_dir / "audit.json",
+            EV_WFIRMA_GOOD_RENAMED,
+            "dashboard",
+            operator,
+            detail={
+                "product_code": pc,
+                "wfirma_id":    wfirma_id,
+                "before":       before_name,
+                "after":        new_name,
+            },
+        )
+
+    log.info(
+        "[%s] products/sync-names: considered=%d unchanged=%d renamed=%d "
+        "unmapped=%d failed=%d",
+        batch_id, considered, unchanged, renamed,
+        len(unmapped_codes), len(failed_details),
+    )
+
+    return JSONResponse({
+        "batch_id":       batch_id,
+        "considered":     considered,
+        "unchanged":      unchanged,
+        "renamed":        renamed,
+        "unmapped":       len(unmapped_codes),
+        "unmapped_codes": unmapped_codes,
+        "failed":         len(failed_details),
+        "failed_details": failed_details,
+        "before_after":   before_after,
+    })
+
+
+@router.post("/shipment/{batch_id}/wfirma/pz/clear-mapping", dependencies=[_auth])
+async def wfirma_pz_clear_mapping(
+    batch_id:   str,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Clear the `wfirma_pz_doc_id` and related fields from this batch's
+    audit, so a subsequent `/wfirma/pz_create` call will issue a NEW PZ
+    document. The operator must have ALREADY deleted (or otherwise
+    cancelled) the original PZ document in the wFirma admin UI — this
+    endpoint trusts that operator-side action and only clears the local
+    audit linkage.
+
+    Guard
+    -----
+    Operator-explicit only. The X-Operator header MUST be present and
+    non-empty. No write flag controls this — clearing a stale mapping is
+    not a wFirma write; it is a local audit edit. The endpoint does NOT
+    attempt to delete the PZ document in wFirma (no such wrapper exists,
+    by design — accounting documents are not programmatically destroyed
+    from this app).
+
+    What is cleared from `audit.wfirma_export`:
+      - `wfirma_pz_doc_id`
+      - `wfirma_pz_fullnumber`
+      - `pz_source`
+      - `pz_created_at`
+
+    Preserved:
+      - clipboard_generated, json_generated, last_generated_at, mode,
+        row_count, generated_count etc.
+
+    A timeline event `wfirma_pz_mapping_cleared` is appended with the
+    operator id, the prior `wfirma_pz_doc_id`, and a free-text reason
+    passed via the X-Operator header or query string (omitted by default).
+
+    Idempotent: re-calling when no doc id is set returns
+    `status=already_cleared`.
+
+    Response
+    --------
+    { status, batch_id, previous_wfirma_pz_doc_id, previous_pz_source }
+    """
+    if not (x_operator or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard": "operator_explicit",
+                "error": "X-Operator header is required for pz/clear-mapping.",
+                "code":  "OPERATOR_HEADER_MISSING",
+            },
+        )
+    operator = _operator_from_header(x_operator)
+
+    output_dir = get_output_dir(batch_id)
+    audit_path = output_dir / "audit.json"
+    if not audit_path.exists():
+        raise HTTPException(status_code=404, detail=f"Batch {batch_id} not found.")
+    audit = _read_audit(output_dir)
+
+    wfirma_export = audit.get("wfirma_export") or {}
+    prev_doc_id   = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
+    prev_source   = (wfirma_export.get("pz_source") or "").strip()
+
+    if not prev_doc_id:
+        return JSONResponse({
+            "status":   "already_cleared",
+            "batch_id": batch_id,
+            "previous_wfirma_pz_doc_id": None,
+            "previous_pz_source":        None,
+        })
+
+    # Strip the four post-create fields; preserve everything else in
+    # wfirma_export (clipboard_generated, json_generated, etc.).
+    for k in ("wfirma_pz_doc_id", "wfirma_pz_fullnumber",
+              "pz_source", "pz_created_at"):
+        wfirma_export.pop(k, None)
+    audit["wfirma_export"] = wfirma_export
+    write_json_atomic(audit_path, audit)
+
+    tl.log_event(
+        audit_path,
+        EV_WFIRMA_PZ_MAPPING_CLEARED,
+        "dashboard",
+        operator,
+        detail={
+            "previous_wfirma_pz_doc_id": prev_doc_id,
+            "previous_pz_source":        prev_source,
+        },
+    )
+
+    log.info(
+        "[%s] pz/clear-mapping: cleared previous wfirma_pz_doc_id=%s "
+        "(source=%s) by operator=%s",
+        batch_id, prev_doc_id, prev_source, operator,
+    )
+
+    return JSONResponse({
+        "status":   "cleared",
+        "batch_id": batch_id,
+        "previous_wfirma_pz_doc_id": prev_doc_id,
+        "previous_pz_source":        prev_source,
+    })
 
 
 @router.post("/shipment/{batch_id}/wfirma/pz_create", dependencies=[_auth])
