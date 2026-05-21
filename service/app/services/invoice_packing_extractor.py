@@ -317,6 +317,13 @@ def extract_packing(
         _supplier = None
 
     if _supplier == "global_jewellery":
+        # Route on file extension: PDF → text-positioned parser,
+        # Excel → table parser. The Global supplier ships both formats
+        # depending on the export they generate; both must work.
+        suffix = path.suffix.lower()
+        if suffix == ".pdf":
+            from .global_packing_parser import parse_global_packing_pdf
+            return parse_global_packing_pdf(path)
         from .global_packing_parser import parse_global_packing_excel
         return parse_global_packing_excel(path)
 

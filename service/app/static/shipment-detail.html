@@ -3773,7 +3773,23 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           const deleteOutputFile = async (filename) => {
             if (!confirm(`Delete output file "${filename}"?`)) return;
             try {
-              await apiFetch(`/dashboard/batches/${encodeURIComponent(batchId)}/files/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+              // Polish customs description PDFs live under
+              //   storage_root/polish_descriptions/<filename>
+              // NOT under outputs/<batch>/<filename>. Route to the
+              // dedicated endpoint that knows the real location and
+              // clears the audit pointer.
+              const isPolishDesc = /^POLISH_DESC_/i.test(filename);
+              if (isPolishDesc) {
+                await apiFetch(
+                  `/dashboard/batches/${encodeURIComponent(batchId)}/polish-description`,
+                  { method: 'DELETE' },
+                );
+              } else {
+                await apiFetch(
+                  `/dashboard/batches/${encodeURIComponent(batchId)}/files/${encodeURIComponent(filename)}`,
+                  { method: 'DELETE' },
+                );
+              }
               load();
             } catch(e) { alert('Delete failed: ' + e.message); }
           };
