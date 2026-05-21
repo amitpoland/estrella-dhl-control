@@ -702,32 +702,72 @@ def _detect_global_supplier_for_batch(batch_id: str) -> bool:
     return False
 
 
+_STALE_AGGREGATE_MARKERS = (
+    "synthesized_from_invoice_aggregates",
+    "grouped invoice aggregate",
+    "-AGG-PCS",
+    "-AGG-PRS",
+)
+
+
+def _audit_rows_are_stale_aggregate(audit: dict) -> bool:
+    """Detect rows persisted from C27.2's aggregate synthesizer that
+    pre-date the packing-first authority. Must be purged for Global
+    batches so the chain rebuilds from packing_lines."""
+    if audit.get("_rows_source") == "synthesized_from_invoice_aggregates":
+        return True
+    for r in (audit.get("rows") or []):
+        pc = str(r.get("product_code") or "")
+        desc = str(r.get("description") or "")
+        if any(m in pc or m in desc for m in _STALE_AGGREGATE_MARKERS):
+            return True
+    return False
+
+
+def _purge_stale_audit_rows(audit: dict) -> None:
+    """Remove rows + source markers in-place. Used when a Global batch
+    has cached aggregate rows from C27.2."""
+    for k in ("rows", "invoices", "_rows_source", "_rows_row_count",
+              "_global_packing_present_but_empty"):
+        audit.pop(k, None)
+
+
 def _inject_rows_from_packing_lines(batch_id: str, audit: dict) -> dict:
     """Project packing.db packing_lines into ``audit["rows"]`` — first
     authority for Global Jewellery shipments.
 
     Operator spec:
       1. Packing lines are the FIRST authority for customs rows when the
-         supplier is Global Jewellery (their packing list carries the
-         per-item structure; their invoice carries only aggregates).
+         supplier is Global Jewellery.
       2. If packing_lines count > 0 → use them; never fall through to the
          aggregate synthesizer.
       3. If a Global packing file exists on disk but produced 0 rows →
-         raise 422 instead of silently rendering UNKNOWN rows (handled at
-         the route layer using ``audit["_global_packing_present_but_empty"]``
-         that this function sets).
+         flag ``audit["_global_packing_present_but_empty"]`` so the route
+         layer raises 422.
+      4. **Stale-aggregate purge.** When audit carries rows persisted by
+         C27.2's aggregate synthesizer AND the supplier is Global, those
+         rows are evicted before the packing path runs — otherwise the
+         idempotency-on-rows guard would prevent rebuilding from
+         packing_lines.
 
-    Behaviour for non-Global suppliers: no-op. The Estrella EJL path is
+    Behaviour for non-Global suppliers: no-op. Estrella EJL path is
     untouched.
-
-    Idempotent: no-op if ``audit`` already carries rows from a prior
-    injection step.
     """
+    is_global = _detect_global_supplier_for_batch(batch_id)
+    if not is_global:
+        return audit  # non-Global → fall through to existing chain
+
+    # Global path: evict stale aggregate cache before idempotency check.
+    if audit.get("rows") and _audit_rows_are_stale_aggregate(audit):
+        log.info(
+            "[%s] _inject_rows_from_packing_lines: purging %d stale "
+            "aggregate row(s) so packing_lines can become authority",
+            batch_id, len(audit.get("rows") or []),
+        )
+        _purge_stale_audit_rows(audit)
+
     if audit.get("rows") or audit.get("invoices"):
         return audit
-
-    if not _detect_global_supplier_for_batch(batch_id):
-        return audit  # non-Global → fall through to existing chain
 
     # Check whether any Global packing file exists on disk (to support the
     # 422 guard at the route layer when parser produced 0 rows).
@@ -1497,6 +1537,7 @@ async def generate_description(
     batch_id: str,
     awb: str = "",
     date_override: Optional[str] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """
     Manually trigger Polish customs description generation for a batch.
@@ -1507,12 +1548,29 @@ async def generate_description(
     batch_id      : batch ID to generate for
     awb           : AWB number (optional; taken from audit if not provided)
     date_override : date string YYYY-MM-DD (optional; defaults to today)
+    force         : when True, evict cached audit["rows"] before rebuild.
+                    Used by the operator's "force-regenerate" UI path to
+                    purge stale aggregate rows from prior generations and
+                    force the chain to re-read from packing_lines / DB.
+                    The rebuild still goes through the full source chain
+                    + reconciliation guard — no safety bypass.
     """
     from customs_description_engine import generate_customs_description_package
 
     audit = _load_audit(batch_id)
     if audit is None:
         raise HTTPException(status_code=404, detail=f"Batch {batch_id} not found.")
+
+    # Force-regenerate: evict cached rows so the source chain rebuilds.
+    # The chain's stale-aggregate purge runs automatically for Global
+    # supplier; force=true extends the same purge to any batch (e.g. an
+    # operator manually clearing a stuck audit cache).
+    if force:
+        had_rows = bool(audit.get("rows"))
+        _purge_stale_audit_rows(audit)
+        if had_rows:
+            log.info("[%s] generate_description force=True: cleared "
+                     "cached rows so chain rebuilds", batch_id)
 
     # ── Guard: DHL email check — RELAXED for external_agency_clearance ────────
     # For high-value shipments routed through Agencja Celna Spedycja, the
