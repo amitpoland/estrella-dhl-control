@@ -625,19 +625,23 @@ async def process_shipment(
     audit      = _read_audit(output_dir)
 
     current_status = audit.get("status", "")
-    # A blocked batch whose only failures are operator-overridden non-financial
-    # checks is effectively unblocked at read time — allow reprocessing.
-    effectively_unblocked = (
-        current_status == "blocked" and not _compute_effective_blocked(audit)
-    )
     # Allow re-run from:
     #   ready/partial/success  — normal re-run path
     #   failed                 — engine threw an exception on a previous attempt; operator retries
     #   processing             — background task crashed / server restarted mid-run; status stuck
-    if current_status not in ("ready", "partial", "success", "failed", "processing") and not effectively_unblocked:
+    #   blocked                — engine wrote a blocked verdict (e.g. financial mismatch);
+    #                            operator retries after fixing inputs OR engine code. The engine
+    #                            re-evaluates failed_checks on each run and writes status=blocked
+    #                            again if the mismatch persists — no silent override of any
+    #                            financial gate. agency_sad_decision.safe_to_run_pz=False still
+    #                            hard-rejects below (the explicit SAD-block gate).
+    if current_status not in ("ready", "partial", "success", "failed", "processing", "blocked"):
         raise HTTPException(
             status_code=409,
-            detail=f"Shipment must be in 'ready', 'partial', or 'success' state to process. Current: {current_status}",
+            detail=(
+                f"Shipment must be in 'ready', 'partial', 'success', 'failed', "
+                f"'processing', or 'blocked' state to process. Current: {current_status}"
+            ),
         )
 
     # Hard guard: reject if SAD decision engine has already blocked this batch.
