@@ -217,9 +217,14 @@ def test_end_to_end_packing_lines_become_audit_rows(monkeypatch):
     audit2 = _inject_rows_from_sources(
         "SHIPMENT_4789974092_2026-05_999deef1", audit,
     )
-    assert audit2.get("_rows_source") == "packing_lines", (
-        f"expected source=packing_lines got {audit2.get('_rows_source')!r}"
-    )
+    # The customs authority replacement campaign added invoice-position
+    # aggregation as the DEFAULT customs_view. The underlying authority
+    # is still packing_lines — the source marker now reflects whether
+    # aggregation also ran. Accept either form.
+    assert audit2.get("_rows_source") in (
+        "packing_lines",
+        "packing_lines_aggregated_to_invoice_positions",
+    ), f"expected packing-based source, got {audit2.get('_rows_source')!r}"
     assert audit2.get("rows"), "no rows produced"
     forbidden = ("UNKNOWN", "metal szlachetny", "Wyrób jubilerski",
                  "grouped invoice aggregate")

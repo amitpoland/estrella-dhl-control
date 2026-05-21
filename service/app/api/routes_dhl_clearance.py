@@ -960,7 +960,12 @@ def _inject_rows_from_packing_lines(batch_id: str, audit: dict) -> dict:
     return audit
 
 
-def _inject_rows_from_sources(batch_id: str, audit: dict) -> dict:
+def _inject_rows_from_sources(
+    batch_id: str,
+    audit: dict,
+    *,
+    customs_view: str = "invoice_positions",
+) -> dict:
     """Chain row sources in priority order.
 
     Order:
@@ -968,23 +973,64 @@ def _inject_rows_from_sources(batch_id: str, audit: dict) -> dict:
       1. _inject_rows_from_db_invoice_lines        (DB primary, placeholder-filtered)
       2. _inject_rows_from_xlsx                    (legacy XLSX Rows sheet)
       3. _synthesize_rows_from_invoice_aggregates  (engine-aggregate grouped fallback)
+      4. AGGREGATE per-row → invoice-position rows
+         (when customs_view == "invoice_positions" — DEFAULT)
+
+    Operator spec (customs authority replacement):
+      - Customs Description Report uses INVOICE POSITION authority
+        (aggregated; ~8-10 positions; 2-5 pages)
+      - Packing Description Report uses PACKING ROW authority
+        (per-row; 245 lines; 42 pages) — pass
+        ``customs_view="packing_rows"`` to preserve the old behaviour.
 
     Idempotent on subsequent calls. Caller MUST apply the lines-missing
     guard (HTTP 422) when the chain still produces no rows.
-
-    For Global Jewellery supplier:
-      - Step 0 owns the row source. If packing rows exist, the rest of
-        the chain is a no-op (steps 1–3 are idempotent on a populated
-        audit["rows"]).
-      - If a Global packing file exists on disk but Step 0 produced 0
-        rows, audit["_global_packing_present_but_empty"] is set so the
-        route layer blocks with 422 instead of falling through to the
-        aggregate synthesizer (which would emit UNKNOWN / metal szlachetny).
     """
     audit = _inject_rows_from_packing_lines(batch_id, audit)
     audit = _inject_rows_from_db_invoice_lines(batch_id, audit)
     audit = _inject_rows_from_xlsx(batch_id, audit)
     audit = _synthesize_rows_from_invoice_aggregates(batch_id, audit)
+
+    # Step 4 — customs aggregation. Default mode produces one row per
+    # invoice position. Pass customs_view="packing_rows" to preserve
+    # the legacy per-row behaviour (still available for warehouse /
+    # audit reporting).
+    if customs_view == "invoice_positions" and audit.get("rows"):
+        try:
+            from ..services.customs_position_aggregator import (
+                aggregate_packing_rows_to_invoice_positions,
+            )
+            _per_row = list(audit["rows"])
+            _aggregated = aggregate_packing_rows_to_invoice_positions(_per_row)
+            # Aggregation must preserve the FOB sum exactly (sum of
+            # position line_totals == sum of per-row line_totals).
+            _src_sum = round(sum(float(r.get("line_total") or 0)
+                                  for r in _per_row), 2)
+            _agg_sum = round(sum(float(r.get("line_total") or 0)
+                                  for r in _aggregated), 2)
+            if _aggregated and abs(_src_sum - _agg_sum) <= 0.01:
+                audit["rows"]            = _aggregated
+                audit["_rows_source"]    = "packing_lines_aggregated_to_invoice_positions"
+                audit["_rows_row_count"] = len(_aggregated)
+                # Preserve traceability: keep the source per-row count
+                audit["_customs_aggregation"] = {
+                    "source_row_count":   len(_per_row),
+                    "position_count":     len(_aggregated),
+                    "fob_sum_preserved":  _agg_sum,
+                }
+                log.info(
+                    "[%s] customs aggregation: %d packing rows → %d "
+                    "invoice positions (sum=%.2f preserved)",
+                    batch_id, len(_per_row), len(_aggregated), _agg_sum,
+                )
+        except Exception as exc:
+            # Aggregation failure must NOT block generation — caller
+            # falls back to the per-row authority (legacy behaviour).
+            log.warning(
+                "[%s] customs aggregation failed (non-fatal — per-row "
+                "rows preserved): %s", batch_id, exc,
+            )
+
     return audit
 
 
@@ -1641,6 +1687,7 @@ async def generate_description(
     awb: str = "",
     date_override: Optional[str] = None,
     force: bool = False,
+    customs_view: str = "invoice_positions",
 ) -> Dict[str, Any]:
     """
     Manually trigger Polish customs description generation for a batch.
@@ -1749,7 +1796,16 @@ async def generate_description(
     # in the engine is intentionally unreachable: when neither the DB
     # nor the XLSX has rows, the operator gets a clear manual-review
     # error instead of a misleading PDF.
-    audit = _inject_rows_from_sources(batch_id, audit)
+    #
+    # ``customs_view``: "invoice_positions" (default) aggregates the
+    # per-row packing source into invoice-position rows (~8-10 positions,
+    # 2-5 page PDF for customs use). "packing_rows" preserves the legacy
+    # per-row authority (245 rows, 42 pages) for warehouse / audit /
+    # detailed verification.
+    _cv = (customs_view or "invoice_positions").lower()
+    if _cv not in ("invoice_positions", "packing_rows"):
+        _cv = "invoice_positions"
+    audit = _inject_rows_from_sources(batch_id, audit, customs_view=_cv)
 
     # Global supplier-specific guard: packing file exists but extractor
     # produced 0 rows. Operator spec: NEVER silently fall through to the
