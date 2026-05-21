@@ -697,3 +697,85 @@ def regenerate_descriptions_for_invoice_lines(
                                   "detail": f"{type(exc).__name__}: {exc}"})
 
     return out
+
+
+# ── Global Jewellery description path ────────────────────────────────────────
+
+def regenerate_descriptions_for_packing_lines(
+    *,
+    batch_id: str,
+    dry_run:  bool = True,
+) -> Dict[str, Any]:
+    """Generate product descriptions from packing_lines for Global Jewellery.
+
+    Global Jewellery packing lists are the authority for item rows — there
+    are no per-item invoice_lines.  This function reads packing_lines for
+    the batch and calls :func:`get_description_block` per product_code.
+
+    Behaviour is identical to ``regenerate_descriptions_for_invoice_lines``
+    except the source table is ``packing_lines`` (via packing_db) instead
+    of ``invoice_lines`` (via document_db).
+
+    ``dry_run=True``  (default): no writes, returns ``would_write`` count.
+    ``dry_run=False``:           writes descriptions for all product codes.
+
+    Returns::
+
+        {
+            "scanned":   int,
+            "written":   int,
+            "would_write":  int,   # dry-run only
+            "skipped":   int,
+            "errors":    list[dict],
+            "dry_run":   bool,
+            "batch_id":  str,
+        }
+    """
+    from .packing_db import get_packing_lines_for_batch
+
+    out: Dict[str, Any] = {
+        "scanned":    0,
+        "written":    0,
+        "would_write": 0,
+        "skipped":    0,
+        "errors":     [],
+        "dry_run":    bool(dry_run),
+        "batch_id":   batch_id,
+    }
+
+    try:
+        lines = get_packing_lines_for_batch(batch_id)
+    except Exception as exc:
+        out["errors"].append({"stage": "get_packing_lines", "detail": str(exc)})
+        return out
+
+    for ln in lines:
+        out["scanned"] += 1
+
+        pc = ln.get("product_code")
+        if not pc:
+            out["skipped"] += 1
+            continue
+
+        item_type  = str(ln.get("item_type", "") or "").strip()
+        desc_en    = str(ln.get("design_no",  "") or "").strip()
+
+        if dry_run:
+            out["would_write"] += 1
+            continue
+
+        try:
+            get_description_block(
+                product_code   = pc,
+                item_type      = item_type,
+                description_en = desc_en,
+            )
+            out["written"] += 1
+        except Exception as exc:
+            out["errors"].append({
+                "product_code": pc,
+                "stage": "get_description_block",
+                "detail": f"{type(exc).__name__}: {exc}",
+            })
+
+    return out

@@ -304,7 +304,23 @@ def extract_packing(
     Parser LOGIC is unchanged from prior versions — this wrapper only
     adds observability. The internal helpers (_extract_packing_excel,
     _extract_packing_pdf, _find_header_row, _map_headers) are untouched.
+
+    Supplier routing: if the file is identified as a Global Jewellery
+    document (via ``_detect_supplier_from_file``), the call is forwarded
+    to ``global_packing_parser.parse_global_packing_excel`` which returns
+    the same four-tuple.  The EJL path is completely unchanged.
     """
+    # ── Supplier routing (additive gate — EJL path unchanged) ────────────
+    try:
+        _supplier = _detect_supplier_from_file(path)
+    except Exception:
+        _supplier = None
+
+    if _supplier == "global_jewellery":
+        from .global_packing_parser import parse_global_packing_excel
+        return parse_global_packing_excel(path)
+
+    # ── EJL / default path (original code below, unchanged) ──────────────
     suffix = path.suffix.lower()
     diag = _new_diagnostic(file_type=suffix)
     rows: List[Dict[str, Any]] = []
@@ -421,7 +437,70 @@ _FIELD_ALIASES: Dict[str, str] = {
     "remarks": "remarks",  "notes": "remarks",  "comment": "remarks",
     # Per-line currency (sales packing lists may carry one)
     "currency": "currency",  "ccy": "currency",
+    # ── Global Jewellery column aliases (additive — do not rename existing) ──
+    "style_no":   "design_no",   "styleno":   "design_no",
+    "gross_wt":   "gross_weight","grosswt":   "gross_weight",
+    "net_wt":     "net_weight",  "netwt":     "net_weight",
+    "fob_value":  "unit_price",  "fobvalue":  "unit_price",
+    "fob":        "unit_price",
+    "srno":       "line_position",
 }
+
+
+def _safe_float(val: Any) -> float:
+    """Convert any value to float without raising.
+
+    Defensive wrapper used throughout the packing upload pipeline to prevent
+    crashes when an unexpected string (e.g. "ite 1", "Total") reaches a
+    numeric coercion. Returns 0.0 on any error.
+    """
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    try:
+        return float(str(val).replace(",", "").strip())
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _detect_supplier_from_file(path: Path) -> Optional[str]:
+    """Read a short preview of the file and detect the supplier.
+
+    For Excel files: scans the first 20 rows of the active sheet.
+    For PDF files:   reads the first 500 characters of text.
+
+    Returns the canonical supplier code (e.g. ``"global_jewellery"``) or
+    ``None`` for unknown / EJL suppliers.
+    """
+    from .supplier_detect import detect_supplier
+
+    try:
+        suffix = path.suffix.lower()
+        if suffix in (".xlsx", ".xls"):
+            import openpyxl
+            wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+            ws = wb.active
+            fragments = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                if i >= 20:
+                    break
+                for cell in row:
+                    if cell is not None:
+                        fragments.append(str(cell))
+            wb.close()
+            return detect_supplier(" ".join(fragments))
+        elif suffix == ".pdf":
+            try:
+                import pdfplumber
+                with pdfplumber.open(str(path)) as pdf:
+                    first_page_text = (pdf.pages[0].extract_text() or "") if pdf.pages else ""
+                return detect_supplier(first_page_text[:500])
+            except Exception:
+                return None
+    except Exception as exc:
+        log.debug("_detect_supplier_from_file: %s — %s", path.name, exc)
+    return None
 
 
 _CURRENCY_TOKEN_RE = re.compile(
@@ -1062,6 +1141,79 @@ def match_packing_to_invoice(
     return matched
 
 
+# ── Global Jewellery pipeline ─────────────────────────────────────────────────
+
+def _process_global_packing(
+    batch_id: str,
+    batch_output_dir: Path,
+    packing_file_path: Path,
+    raw_rows: List[Dict[str, Any]],
+    parser_name: str,
+    parser_version: str,
+    parser_diagnostic: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Pipeline for Global Jewellery packing lists.
+
+    Global packing lists are the authority for item rows — there are no
+    per-item invoice lines to match against.  Product codes are generated
+    from the invoice_no (read from the batch's existing commercial invoice
+    record) + the serial number from each packing row.
+
+    Returns the same dict shape as ``process_packing_upload`` so the
+    calling route layer (routes_packing.py / routes_intake.py) can handle
+    it identically.  The ``"supplier"`` key in the returned dict signals
+    the route layer to trigger description generation.
+    """
+    from . import document_db as ddb
+
+    # Resolve invoice_no: prefer diag (parser already read preamble), else DB
+    invoice_no: str = parser_diagnostic.get("invoice_no", "")
+    if not invoice_no:
+        # Look for an aggregate invoice_line with the 088/... pattern
+        import re as _re
+        _inv_re = _re.compile(r"\d{3}/\d{4}-\d{4}")
+        for il in (ddb.get_invoice_lines_for_batch(batch_id) or []):
+            cand = il.get("invoice_no", "")
+            if _inv_re.search(str(cand)):
+                invoice_no = cand
+                break
+
+    # Stamp product_code on rows that don't already have one
+    enriched: List[Dict[str, Any]] = []
+    for row in raw_rows:
+        r = dict(row)
+        if not r.get("product_code"):
+            serial = r.get("serial_no") or r.get("invoice_line_position", 0)
+            inv = invoice_no or "GLOBAL"
+            r["product_code"]          = f"{inv}-{serial}"
+            r["invoice_no"]            = inv
+            r["requires_manual_review"] = False
+        enriched.append(r)
+
+    doc_invoice_no = invoice_no or (enriched[0].get("invoice_no") if enriched else "")
+
+    return {
+        "invoice_lines":        [],
+        "invoice_lines_source": "global_packing_authority",
+        "packing_rows":         enriched,
+        "parser_diagnostic":    parser_diagnostic,
+        "supplier":             "global_jewellery",
+        "document": {
+            "batch_id":          batch_id,
+            "invoice_no":        doc_invoice_no,
+            "source_file_path":  str(packing_file_path),
+            "source_file_hash":  file_sha256(packing_file_path),
+            "parser_name":       parser_name,
+            "parser_version":    parser_version,
+            "extraction_status": "complete" if enriched else "empty",
+            "parser_diagnostic": parser_diagnostic,
+        },
+        "matched_count":   len(enriched),
+        "unmatched_count": 0,
+        "total_rows":      len(enriched),
+    }
+
+
 # ── Full pipeline ─────────────────────────────────────────────────────────────
 
 def process_packing_upload(
@@ -1084,10 +1236,19 @@ def process_packing_upload(
         "total_rows": int,
       }
     """
+    raw_rows, parser_name, parser_version, parser_diagnostic = extract_packing(packing_file_path)
+
+    # ── Supplier-specific pipeline (Global Jewellery) ─────────────────────
+    if parser_diagnostic.get("supplier") == "global_jewellery":
+        return _process_global_packing(
+            batch_id, batch_output_dir, packing_file_path,
+            raw_rows, parser_name, parser_version, parser_diagnostic,
+        )
+
+    # ── EJL / default path (unchanged) ────────────────────────────────────
     invoice_lines = load_invoice_lines(batch_output_dir, batch_id=batch_id)
     inv_source = invoice_lines[0].get("_source", "unknown") if invoice_lines else "none"
 
-    raw_rows, parser_name, parser_version, parser_diagnostic = extract_packing(packing_file_path)
     enriched = match_packing_to_invoice(raw_rows, invoice_lines)
 
     # Detect invoice_no from packing rows (majority vote)
