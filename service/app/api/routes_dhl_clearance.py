@@ -466,6 +466,15 @@ def _synthesize_rows_from_invoice_aggregates(batch_id: str, audit: dict) -> dict
         log.warning("[%s] synthesize_rows: engine import failed: %s", batch_id, exc)
         return audit
 
+    # Supplier-profile dispatch: import the Global Jewellery profile
+    # once. The profile module owns the per-line extraction + bilingual
+    # description rendering when the supplier matches; otherwise we fall
+    # through to the generic PCS/PRS aggregate synthesis below.
+    try:
+        from ..services import global_jewellery_supplier_profile as _gjsp  # noqa: PLC0415
+    except Exception as _e:
+        _gjsp = None  # type: ignore[assignment]
+
     line_pos = 0
     for pdf in inv_pdfs:
         try:
@@ -481,6 +490,48 @@ def _synthesize_rows_from_invoice_aggregates(batch_id: str, audit: dict) -> dict
             str(inv.get("invoice_no") or "").strip()
             or pdf.stem
         )
+
+        # ── Supplier-profile path: Global Jewellery ──────────────────
+        # When the invoice is identified as Global Jewellery, the profile
+        # owns the per-row extraction with proper jewellery type / metal /
+        # stone vocabulary + bilingual PL/EN descriptions. The aggregate
+        # PCS/PRS path below is the fallback only.
+        if _gjsp is not None and _gjsp.is_global_jewellery_invoice(inv):
+            _raw = str(inv.get("_raw_text") or "")
+            # Prefer the Global Exporter's Ref (e.g. "088/2026-2027") over
+            # the engine's filename-derived invoice_no for product_code
+            # generation per the operator-locked rule.
+            _real_invoice_no = (
+                _gjsp.extract_invoice_number_from_text(_raw)
+                or invoice_no
+            )
+            try:
+                _profile_rows = _gjsp.build_global_invoice_rows(
+                    invoice_no   = _real_invoice_no,
+                    raw_text     = _raw,
+                    declared_fob = fob,
+                )
+            except Exception as _ge:
+                log.warning(
+                    "[%s] global_jewellery profile row build failed: %s",
+                    batch_id, _ge,
+                )
+                _profile_rows = []
+            if _profile_rows:
+                # Renumber line_position across multiple invoices so each
+                # row has a globally-unique position within the audit.
+                for r in _profile_rows:
+                    line_pos += 1
+                    r["line_position"] = line_pos
+                synthesized.extend(_profile_rows)
+                log.info(
+                    "[%s] global_jewellery profile: %d row(s) from %s "
+                    "summing to USD %.2f (vs declared FOB %.2f)",
+                    batch_id, len(_profile_rows), pdf.name,
+                    sum(r["line_total"] for r in _profile_rows), fob,
+                )
+                continue  # next PDF; profile already handled this one
+
         counts_by_unit = inv.get("product_counts_by_unit") or {}
         # Sum qty across PCS / PRS groups; if engine returned empty dict,
         # fall back to a single PCS group inferred from total_units or
