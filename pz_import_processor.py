@@ -869,6 +869,28 @@ def _build_invoice_from_authority_rows(pdf_path, fname, audit, rows, corrections
     freight_usd   = float(it_totals.get("total_freight_usd") or 0)
     insurance_usd = float(it_totals.get("total_insurance_usd") or 0)
 
+    # Bridge FOB self-compute (2026-05-21): when audit.invoice_totals is
+    # missing or has total_fob_usd == 0 (legitimate scenarios: a fresh
+    # batch before the engine has ever run, or a manually-cleared audit),
+    # derive FOB from the authority row sum so calculate_landed does not
+    # fail at "FOB USD = 0.00 — cannot compute freight share". The meta
+    # sidecar already preserves fob_sum_preserved for traceability; this
+    # mirrors that value into the engine input.
+    if fob_usd <= 0:
+        row_sum_usd = sum(float(r.get("line_total_usd") or 0) for r in rows)
+        meta = audit.get("_pz_engine_authority_meta") or {}
+        meta_fob = float(meta.get("fob_sum_preserved") or 0)
+        if row_sum_usd > 0:
+            fob_usd = row_sum_usd
+        elif meta_fob > 0:
+            fob_usd = meta_fob
+        if fob_usd > 0:
+            corrections_log.append(
+                f"[{fname}] [bridge] FOB derived from authority rows "
+                f"(audit.invoice_totals.total_fob_usd was {it_totals.get('total_fob_usd')!r}); "
+                f"fob_usd=${fob_usd:,.2f}"
+            )
+
     invoice_no = ""
     for r in rows:
         invoice_no = (r.get("invoice_number") or "").strip()
