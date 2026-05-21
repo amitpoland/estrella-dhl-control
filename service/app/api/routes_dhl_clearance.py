@@ -732,6 +732,109 @@ def _purge_stale_audit_rows(audit: dict) -> None:
         audit.pop(k, None)
 
 
+def _force_reparse_global_packing(batch_id: str) -> int:
+    """Re-parse Global packing PDFs against the LIVE parser and refresh
+    packing.db with the result. Used by the `?force=true` regenerate
+    path to heal stale packing_lines rows persisted by an older parser
+    version (e.g. rows with empty `metal` extracted before the lenient
+    style-metal split landed).
+
+    Returns the number of rows upserted. Returns 0 on any failure
+    (logged) — callers treat this as best-effort recovery.
+
+    NEVER touches CIF / customs threshold / wFirma gates / SAD/ZC429.
+    Pure refresh of the per-row product authority for Global supplier.
+    """
+    try:
+        from ..services.global_packing_parser import parse_global_packing_pdf  # noqa: PLC0415
+        from ..services import packing_db as _pdb  # noqa: PLC0415
+    except Exception as exc:
+        log.warning("[%s] force_reparse: import failed: %s", batch_id, exc)
+        return 0
+
+    # Locate packing PDFs in source/packing/
+    pkg_dir: Optional[Path] = None
+    for sub in ("outputs", "working"):
+        d = settings.storage_root / sub / batch_id / "source" / "packing"
+        if d.is_dir():
+            pkg_dir = d
+            break
+    if pkg_dir is None:
+        return 0
+
+    pdfs = sorted(pkg_dir.glob("*.pdf"))
+    if not pdfs:
+        return 0
+
+    # Need the existing packing_document_id to attach reparsed rows to.
+    try:
+        from ..services import document_db as _ddb  # noqa: PLC0415
+        docs = _ddb.get_documents_for_batch(
+            batch_id, document_type="purchase_packing_list",
+        ) or []
+    except Exception as exc:
+        log.warning("[%s] force_reparse: doc lookup failed: %s", batch_id, exc)
+        docs = []
+    if not docs:
+        return 0
+
+    # Use the first matching doc as the packing_document_id parent
+    pkg_doc_id = str(docs[0].get("id") or "")
+    if not pkg_doc_id:
+        return 0
+
+    # Parse all PDFs in source/packing/ — combine rows
+    all_rows: List[dict] = []
+    for pdf in pdfs:
+        try:
+            rows, _, _, _ = parse_global_packing_pdf(pdf)
+        except Exception:
+            rows = []
+        for r in rows:
+            r["batch_id"]            = batch_id
+            r["packing_document_id"] = pkg_doc_id
+            all_rows.append(r)
+
+    if not all_rows:
+        return 0
+
+    # Replace existing packing_lines for this batch atomically. The
+    # delete + upsert pattern matches what the operator's "Reparse
+    # Packing" endpoint does internally; we just call it from the
+    # force-regenerate path so the operator doesn't need two clicks.
+    import sqlite3 as _sql
+    try:
+        # Best-effort delete of stale rows (packing_db doesn't expose a
+        # clear_batch helper; use direct SQL with the same connection
+        # pattern packing_db uses).
+        db_path = getattr(_pdb, "_db_path", None)
+        if db_path:
+            with _sql.connect(str(db_path)) as con:
+                con.execute(
+                    "DELETE FROM packing_lines WHERE batch_id = ?",
+                    (batch_id,),
+                )
+                con.commit()
+    except Exception as exc:
+        log.warning(
+            "[%s] force_reparse: stale row delete failed (proceeding "
+            "with upsert anyway): %s", batch_id, exc,
+        )
+
+    try:
+        n = _pdb.upsert_packing_lines(all_rows, force_reextract=True)
+    except Exception as exc:
+        log.warning("[%s] force_reparse: upsert failed: %s", batch_id, exc)
+        return 0
+
+    log.info(
+        "[%s] force_reparse: refreshed %d packing_lines rows from "
+        "%d PDF(s) using live parser",
+        batch_id, n, len(pdfs),
+    )
+    return n
+
+
 def _inject_rows_from_packing_lines(batch_id: str, audit: dict) -> dict:
     """Project packing.db packing_lines into ``audit["rows"]`` — first
     authority for Global Jewellery shipments.
@@ -1561,16 +1664,32 @@ async def generate_description(
     if audit is None:
         raise HTTPException(status_code=404, detail=f"Batch {batch_id} not found.")
 
-    # Force-regenerate: evict cached rows so the source chain rebuilds.
-    # The chain's stale-aggregate purge runs automatically for Global
-    # supplier; force=true extends the same purge to any batch (e.g. an
-    # operator manually clearing a stuck audit cache).
+    # Force-regenerate:
+    #  1. Evict cached audit rows so the source chain rebuilds
+    #  2. For Global supplier — also re-reparse the packing PDF and
+    #     refresh packing_lines so any rows persisted by an older
+    #     parser version (empty metal, missing stone_type) are healed
+    #     before the chain re-reads them
+    #
+    # Reconciliation guard is unchanged; this is a row-source refresh,
+    # not a safety bypass.
     if force:
         had_rows = bool(audit.get("rows"))
         _purge_stale_audit_rows(audit)
         if had_rows:
             log.info("[%s] generate_description force=True: cleared "
                      "cached rows so chain rebuilds", batch_id)
+        # Reparse packing for Global supplier so any stale packing_lines
+        # rows (e.g. empty-metal rows from a pre-fix parser) are healed.
+        try:
+            if _detect_global_supplier_for_batch(batch_id):
+                _force_reparse_global_packing(batch_id)
+        except Exception as _exc:
+            log.warning(
+                "[%s] generate_description force=True: packing reparse "
+                "failed (non-fatal — chain may still produce stale rows): %s",
+                batch_id, _exc,
+            )
 
     # ── Guard: DHL email check — RELAXED for external_agency_clearance ────────
     # For high-value shipments routed through Agencja Celna Spedycja, the
