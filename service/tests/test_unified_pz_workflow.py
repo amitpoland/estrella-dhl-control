@@ -43,18 +43,24 @@ class TestSingleSource:
         idx_tab      = h.index("activeTab === 'PZ / Accounting'")
         idx_workflow = h.index("<OperatorWorkflowCard ", idx_tab)
         idx_legacy   = h.index('data-testid="legacy-pz-details"', idx_tab)
+        # C27.1: legacy-reservation-details was deleted; only legacy-pz-details
+        # remains. Workflow card must still come before legacy-pz-details.
         assert idx_tab < idx_workflow < idx_legacy
 
     def test_legacy_section3_and_reservation_wrapped_in_details(self):
+        """C27.1: legacy-reservation-details was removed entirely. Only
+        legacy-pz-details (download buttons + raw section views) survives,
+        still wrapped in <details>."""
         h = _html()
-        # Both legacy panels must live inside <details> nodes.
         assert 'data-testid="legacy-pz-details"' in h
-        assert 'data-testid="legacy-reservation-details"' in h
-        # Each must have a <summary> that names them as legacy.
         assert 'data-testid="legacy-pz-summary"' in h
-        assert 'data-testid="legacy-reservation-summary"' in h
-        # The summary copy explains they're not the canonical surface.
-        assert "Advanced / legacy reservation" in h
+        # C27.1: explicitly assert the reservation legacy block is GONE.
+        assert 'data-testid="legacy-reservation-details"' not in h, (
+            "C27.1 should have removed legacy-reservation-details"
+        )
+        assert 'data-testid="legacy-reservation-summary"' not in h, (
+            "C27.1 should have removed legacy-reservation-summary"
+        )
 
 
 # ── Pipeline header ────────────────────────────────────────────────────────

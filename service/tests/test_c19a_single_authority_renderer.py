@@ -151,6 +151,7 @@ def test_legacy_pz_details_collapsed():
     assert '<details' in ctx, "legacy-pz-details must be inside a <details> element"
 
 
+@pytest.mark.skip(reason="C27.1 deleted legacy-reservation-details entirely (superseded by C27.1 surface deletion test)")
 def test_legacy_reservation_details_collapsed():
     """C19A: legacy-reservation-details must be in a <details> element."""
     assert 'data-testid="legacy-reservation-details"' in _HTML
@@ -178,14 +179,17 @@ def test_c17a_saves_to_cm_only_note_present():
     assert "Saves to Customer Master only" in _HTML
 
 
+@pytest.mark.skip(reason="C27.1 deleted Sales Linkage transit rows — guard moved out of Pro Forma surface")
 def test_c16a_location_uses_is_transit_guard():
     assert "isTransit ? 'In transit' : (r.current_location" in _HTML
 
 
+@pytest.mark.skip(reason="C27.1 deleted Sales Linkage transit reconciliation — PURCHASE_TRANSIT reads from invState elsewhere")
 def test_c16a_purchase_transit_count_expression():
     assert "invState.counts.PURCHASE_TRANSIT" in _HTML
 
 
+@pytest.mark.skip(reason="C27.1 deleted sales-transit-context-banner with Sales Linkage block")
 def test_c14a_sales_transit_banner_present():
     assert 'data-testid="sales-transit-context-banner"' in _HTML
 
