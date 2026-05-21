@@ -438,6 +438,17 @@ Architecture: local storage = truth; WorkDrive REST = primary upload; TrueSync =
 
 ---
 
+## Active Campaigns
+
+### Atlas-V2 — Fresh Frontend Shell
+Campaign document: `.claude/campaigns/atlas-v2.md`  
+Sprint files: `.claude/campaigns/atlas-v2/sprint-NN-<name>.md` (13 sprints)  
+Status: PLANNING — fire Sprint 01 after PR #262 merges  
+To start a sprint: copy the `/run` prompt from the sprint file and paste into a fresh Claude Code session.  
+Anti-drift gate: read §1 of `.claude/campaigns/atlas-v2.md` before firing any sprint.
+
+---
+
 ## Operating rules
 
 1. `process_batch()` is the only calculation path
