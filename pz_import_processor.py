@@ -25,6 +25,7 @@ Dependencies:
 
 import argparse
 import glob
+import json
 import os
 import re
 import sys
@@ -712,6 +713,221 @@ def _gj_infer_item_type(desc: str) -> str:
     return "ITEM"
 
 
+# ─── Global PZ Engine Authority Bridge (2026-05-21) ──────────────────────────
+#
+# Bridge between the customs-description chain (PR #269 produces 10 invoice-
+# position rows in audit.json) and the PZ engine which historically re-parsed
+# the source PDF via a regex that does not match the current Global layout.
+# When the bridge fires, the engine consumes the same invoice-position
+# authority used by the description side; when it does not (Estrella, missing
+# audit, validation failure, etc.) the legacy regex parser runs unchanged.
+
+_AUTHORITY_FORBIDDEN_TOKENS = (
+    "UNKNOWN",
+    "metal szlachetny",
+    "Wyrób jubilerski",
+    "grouped invoice aggregate",
+    "wysadzany",
+)
+
+
+def _try_invoice_from_authority_rows(pdf_path, fname, corrections_log):
+    """Return a parser-shaped dict from audit.rows when invoice-position
+    authority is present and valid; return None to mean "fall through to
+    the legacy parser". NEVER raises — every failure is logged and the
+    legacy path runs.
+
+    Audit-row source contract:
+      _rows_source == "invoice_positions_authority"
+      rows is a non-empty list of dicts
+      each row has quantity > 0 and line_total_usd > 0
+      no forbidden placeholders anywhere in the rows blob
+      row line_total_usd sum reconciles to declared FOB within $1
+    """
+    try:
+        audit_path = Path(pdf_path).parent.parent.parent / "audit.json"
+        if not audit_path.is_file():
+            return None
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+
+        if (audit.get("_rows_source") or "") != "invoice_positions_authority":
+            return None
+        rows = audit.get("rows") or []
+        if not isinstance(rows, list) or not rows:
+            return None
+
+        ok, why = _validate_authority_rows(rows, audit)
+        if not ok:
+            corrections_log.append(
+                f"[{fname}] authority bridge declined: {why} — falling back to legacy parser"
+            )
+            return None
+
+        return _build_invoice_from_authority_rows(
+            pdf_path, fname, audit, rows, corrections_log
+        )
+    except Exception as exc:  # noqa: BLE001
+        corrections_log.append(
+            f"[{fname}] authority bridge raised {type(exc).__name__}: {exc} — falling back"
+        )
+        return None
+
+
+def _validate_authority_rows(rows, audit):
+    """Return (ok, reason). Conservative — any failure means fall back."""
+    if not rows:
+        return False, "empty rows"
+    try:
+        blob = json.dumps(rows, ensure_ascii=False)
+    except Exception:
+        return False, "rows not JSON-serialisable"
+    for tok in _AUTHORITY_FORBIDDEN_TOKENS:
+        if tok in blob:
+            return False, f"forbidden token present: {tok!r}"
+
+    qty_sum = 0.0
+    line_sum = 0.0
+    for r in rows:
+        if not isinstance(r, dict):
+            return False, "non-dict row"
+        try:
+            q = float(r.get("quantity") or 0)
+        except (TypeError, ValueError):
+            return False, f"non-numeric quantity at line {r.get('line_position')}"
+        try:
+            v = float(r.get("line_total_usd") or 0)
+        except (TypeError, ValueError):
+            return False, f"non-numeric line_total_usd at line {r.get('line_position')}"
+        if q <= 0:
+            return False, f"row qty <= 0 at line {r.get('line_position')}"
+        if v <= 0:
+            return False, f"row line_total_usd <= 0 at line {r.get('line_position')}"
+        qty_sum  += q
+        line_sum += v
+    if qty_sum <= 0:
+        return False, "qty sum <= 0"
+    if line_sum <= 0:
+        return False, "value sum <= 0"
+
+    declared_fob = 0.0
+    try:
+        declared_fob = float(
+            (audit.get("_customs_aggregation") or {}).get("fob_sum_preserved")
+            or (audit.get("invoice_totals") or {}).get("total_fob_usd")
+            or 0
+        )
+    except (TypeError, ValueError):
+        declared_fob = 0.0
+    if declared_fob > 0 and abs(line_sum - declared_fob) > 1.0:
+        return False, (
+            f"FOB drift: rows sum to ${line_sum:,.2f} vs declared ${declared_fob:,.2f}"
+        )
+    return True, "ok"
+
+
+def _build_invoice_from_authority_rows(pdf_path, fname, audit, rows, corrections_log):
+    """Build the parser-shaped dict from audit.rows. Reuses existing family
+    / karat normalisation so downstream description rendering is identical
+    to the regex path."""
+    it_totals     = audit.get("invoice_totals") or {}
+    fob_usd       = float(it_totals.get("total_fob_usd") or 0)
+    freight_usd   = float(it_totals.get("total_freight_usd") or 0)
+    insurance_usd = float(it_totals.get("total_insurance_usd") or 0)
+
+    invoice_no = ""
+    for r in rows:
+        invoice_no = (r.get("invoice_number") or "").strip()
+        if invoice_no:
+            break
+    if not invoice_no:
+        invoice_no = (audit.get("invoice_no") or "").strip() or Path(pdf_path).stem
+    invoice_date = (audit.get("invoice_date") or "").strip() or ""
+
+    items = []
+    pbu = {"PCS": {}, "PRS": {}}
+    for r in rows:
+        qty       = float(r.get("quantity") or 0)
+        unit      = (r.get("uom") or r.get("unit") or "PCS").upper()
+        if unit not in ("PCS", "PRS"):
+            unit = "PCS"
+        amount    = float(r.get("line_total_usd") or 0)
+        unit_p    = float(r.get("unit_price") or (amount / qty if qty else 0))
+        desc_en   = (r.get("description_en") or r.get("description") or "").strip()
+        item_type = (r.get("item_type") or "").strip().upper()
+        hsn       = (r.get("hsn_code") or "").strip()
+        pl_desc   = (
+            r.get("description_pl")
+            or r.get("polish_customs_description")
+            or ""
+        ).strip()
+
+        family = normalize_family(desc_en) if desc_en else ""
+        karat  = get_karat(desc_en) if desc_en else ""
+
+        item = {
+            "description_en": desc_en,
+            "item_type":      item_type,
+            "family":         family,
+            "karat":          karat,
+            "hsn":            hsn,
+            "quantity":       int(qty) if qty == int(qty) else qty,
+            "unit":           unit,
+            "unit_price_usd": unit_p,
+            "total_usd":      amount,
+            "gross_weight":   0.0,
+            "net_weight":     0.0,
+            "pl_desc":        pl_desc,
+        }
+        items.append(item)
+
+        cat = classify_product_type(item_type)
+        uk  = "PRS" if unit == "PRS" else "PCS"
+        pbu[uk][cat] = pbu[uk].get(cat, 0) + item["quantity"]
+
+    cif_validation = _validate_cif(
+        fob_usd, freight_usd, insurance_usd,
+        fob_usd + freight_usd + insurance_usd,
+    )
+
+    qty_sum = sum(it["quantity"] for it in items)
+    corrections_log.append(
+        f"[{fname}] [AUTHORITY-BRIDGE] Using PR #269 invoice-position rows from "
+        f"audit.json: {len(items)} positions, qty {qty_sum}, FOB ${fob_usd:,.2f}"
+    )
+
+    return {
+        "filename":              fname,
+        "invoice_format":        "global_jewellery",
+        "invoice_no":            invoice_no,
+        "invoice_date":          invoice_date,
+        "exporter_name":         "Global Jewellery",
+        "exporter_address":      "",
+        "exporter_tax_id":       "",
+        "consignee_name":        "",
+        "consignee_address":     "",
+        "buyer_name":            "",
+        "buyer_address":         "",
+        "importer_vat":          "",
+        "seller_name":           "Global Jewellery",
+        "buyer_nip":             "",
+        "transport":             "",
+        "country_origin":        "IN",
+        "country_destination":   "PL",
+        "fob_usd":               fob_usd,
+        "freight_usd":           freight_usd,
+        "insurance_usd":         insurance_usd,
+        "cif_usd":               fob_usd + freight_usd + insurance_usd,
+        "cif_validation":        cif_validation,
+        "conversion_rate_invoice": 0.0,
+        "value_inr":             0.0,
+        "items":                 items,
+        "product_counts_by_unit": pbu,
+        "_format":               "global_jewellery",
+        "_raw_text":             "",
+        "_authority_source":     "invoice_positions_authority",
+    }
+
+
 def parse_invoice_global_jewellery(pdf_path: str, text: str, lines: list,
                                    corrections_log: list) -> dict:
     """
@@ -722,6 +938,23 @@ def parse_invoice_global_jewellery(pdf_path: str, text: str, lines: list,
     Columns: Sr. No., Description, HSN, Unit, Qty, Rate, Amount.
     """
     fname = os.path.basename(pdf_path)
+
+    # ── Authority bridge — PR #269 invoice-position rows from audit.json ──────
+    # When the customs-description chain has already populated audit.rows
+    # under the invoice-position authority, consume those rows directly.
+    # This is a narrow opt-in: the audit.json must be sibling to
+    # outputs/{batch}/ and carry _rows_source == "invoice_positions_authority"
+    # with non-empty rows that pass validation. On any failure → fall through
+    # to the legacy regex parser (existing behaviour preserved verbatim).
+    #
+    # Why: the legacy _GJ_LOOSE_RE regex does not match the current Global
+    # PCS/PRS category-header layout, so item lines are silently dropped and
+    # the engine fails with "Total before-duty PLN is zero". PR #269 already
+    # produces the correct 10-position structure for the description side;
+    # this bridge makes the engine consume the same authority.
+    _bridge = _try_invoice_from_authority_rows(pdf_path, fname, corrections_log)
+    if _bridge is not None:
+        return _bridge
 
     # ── Invoice no & date ──────────────────────────────────────────────────────
     invoice_no = ""
