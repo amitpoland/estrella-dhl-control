@@ -577,17 +577,268 @@ def _synthesize_rows_from_invoice_aggregates(batch_id: str, audit: dict) -> dict
     return audit
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Supplier-detect + Global Jewellery PL/EN render (locked vocabulary)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_GLOBAL_TYPE_TABLE: Dict[str, Dict[str, str]] = {
+    "RING":     {"en": "RING",      "pl": "Pierścionek",          "label": "RING"},
+    "PENDANT":  {"en": "PENDANT",   "pl": "Wisiorek",             "label": "PENDANT"},
+    "EARRING":  {"en": "EARRINGS",  "pl": "Kolczyki",             "label": "EARRINGS"},
+    "EARRINGS": {"en": "EARRINGS",  "pl": "Kolczyki",             "label": "EARRINGS"},
+    "BRACELET": {"en": "BRACELET",  "pl": "Bransoletka",          "label": "BRACELET"},
+    "BANGLE":   {"en": "BANGLE",    "pl": "Bransoletka sztywna",  "label": "BANGLE"},
+    "NECKLACE": {"en": "NECKLACE",  "pl": "Naszyjnik",            "label": "NECKLACE"},
+    "CHAIN":    {"en": "NECKLACE",  "pl": "Łańcuszek",            "label": "CHAIN"},
+    "CUFFLINK": {"en": "CUFFLINKS", "pl": "Spinki do mankietów",  "label": "CUFFLINKS"},
+    "CUFFLINKS":{"en": "CUFFLINKS", "pl": "Spinki do mankietów",  "label": "CUFFLINKS"},
+}
+
+_GLOBAL_METAL_TABLE: Dict[str, Dict[str, str]] = {
+    # canonical key (as stored in packing_lines.metal) → PL phrase + EN form
+    "925 SILVER":   {"pl": "ze srebra próby 925", "en": "925 Silver"},
+    "9KT GOLD":     {"pl": "ze złota próby 375",  "en": "09KT Gold"},
+    "9 GOLD":       {"pl": "ze złota próby 375",  "en": "09KT Gold"},
+    "14KT GOLD":    {"pl": "ze złota próby 585",  "en": "14KT Gold"},
+    "18KT GOLD":    {"pl": "ze złota próby 750",  "en": "18KT Gold"},
+    "22KT GOLD":    {"pl": "ze złota próby 916",  "en": "22KT Gold"},
+    "PT950":        {"pl": "z platyny próby 950", "en": "PT950 Platinum"},
+    "PT900":        {"pl": "z platyny próby 900", "en": "PT900 Platinum"},
+}
+
+
+def _global_render_pl_en(item_type: str, metal: str, stone_text: str
+                         ) -> Dict[str, str]:
+    """Render operator-locked PL/EN description for a Global packing row.
+
+    Inputs come straight from packing_lines columns. Rules:
+      - Type token (Ring/Bracelet/...) → Pierścionek/Bransoletka/...
+      - Metal canonical (925 SILVER/9KT GOLD/...) → ze srebra próby 925/ze złota próby 375/...
+      - Stone text (free-text from packing parser) is scanned for vocabulary
+        markers: LGD → diamenty laboratoryjne; CZ → cyrkonie; combinations.
+      - Unknown type or metal → returns empty strings; caller must NOT emit
+        the row (operator spec: never produce UNKNOWN / metal szlachetny
+        rows for Global supplier).
+    """
+    import re as _re_g
+    t_key = (item_type or "").strip().upper()
+    if t_key.endswith("S") and t_key[:-1] in _GLOBAL_TYPE_TABLE:
+        t_key = t_key[:-1]
+    type_info = _GLOBAL_TYPE_TABLE.get(t_key)
+    metal_info = _GLOBAL_METAL_TABLE.get((metal or "").strip().upper())
+    if not type_info or not metal_info:
+        return {"pl": "", "en": "", "item_type": "", "item_type_pl": ""}
+
+    # Stone vocabulary scan
+    stone_up = (stone_text or "").upper()
+    stone_pl, stone_en = "", "Plain Jewellery"
+    if _re_g.search(r"\bLGD\b|\bLAB\s*ROUND\s*DIA\b|\bLAB\s*GROWN\b", stone_up):
+        stone_pl, stone_en = ("z diamentami laboratoryjnymi", "Lab Grown Diamond Jewellery")
+    elif _re_g.search(r"\bDIA\b.*\bCZ\b|\bCZ\b.*\bDIA\b", stone_up):
+        stone_pl, stone_en = (
+            "wysadzany diamentami i cyrkoniami",
+            "Diamond & CZ Stud Jewellery",
+        )
+    elif _re_g.search(r"\bCZ\b", stone_up) and _re_g.search(
+            r"\bCLS\b|\b(COLOUR|COLOR)\s+STONE\b|\bSAPPHIRE\b|\bRUBY\b|\bEMERALD\b|\bAMETHYST\b|\bTOPAZ\b|\bTANZANITE\b",
+            stone_up):
+        stone_pl, stone_en = (
+            "wysadzany cyrkoniami i kamieniami kolorowymi",
+            "CZ & Colour Stone Jewellery",
+        )
+    elif _re_g.search(r"\bCZ\b", stone_up):
+        stone_pl, stone_en = ("wysadzany cyrkoniami", "CZ Stud Jewellery")
+    elif _re_g.search(r"\bDIA\b|\bDIAMOND\b", stone_up):
+        stone_pl, stone_en = ("z diamentami", "Diamond Jewellery")
+    elif _re_g.search(
+            r"\bCLS\b|\b(COLOUR|COLOR)\s+STONE\b|\bSAPPHIRE\b|\bRUBY\b|\bEMERALD\b|\bAMETHYST\b|\bTOPAZ\b|\bTANZANITE\b",
+            stone_up):
+        stone_pl, stone_en = (
+            "wysadzany kamieniami kolorowymi",
+            "Colour Stone Jewellery",
+        )
+
+    pl = (type_info["pl"] + " " + metal_info["pl"]
+          + (" " + stone_pl if stone_pl else "")).strip()
+    en = (metal_info["en"] + " " + stone_en + " " + type_info["label"]).strip()
+    return {
+        "pl":           pl,
+        "en":           en,
+        "item_type":    type_info["en"],
+        "item_type_pl": type_info["pl"],
+    }
+
+
+def _detect_global_supplier_for_batch(batch_id: str) -> bool:
+    """Detect Global Jewellery supplier from any uploaded source file.
+
+    Scans first 1k chars of any PDF in source/invoices/ or source/packing/
+    via supplier_detect.detect_supplier. Pure read; no DB writes.
+    """
+    try:
+        from ..services.supplier_detect import detect_supplier  # noqa: PLC0415
+        import pdfplumber  # noqa: PLC0415
+    except Exception:
+        return False
+    for sub in ("outputs", "working"):
+        base = settings.storage_root / sub / batch_id / "source"
+        if not base.is_dir():
+            continue
+        for cat in ("invoices", "packing"):
+            d = base / cat
+            if not d.is_dir():
+                continue
+            for pdf in d.glob("*.pdf"):
+                try:
+                    with pdfplumber.open(str(pdf)) as p:
+                        if not p.pages:
+                            continue
+                        head = (p.pages[0].extract_text() or "")[:1000]
+                    if detect_supplier(head) == "global_jewellery":
+                        return True
+                except Exception:
+                    continue
+        break
+    return False
+
+
+def _inject_rows_from_packing_lines(batch_id: str, audit: dict) -> dict:
+    """Project packing.db packing_lines into ``audit["rows"]`` — first
+    authority for Global Jewellery shipments.
+
+    Operator spec:
+      1. Packing lines are the FIRST authority for customs rows when the
+         supplier is Global Jewellery (their packing list carries the
+         per-item structure; their invoice carries only aggregates).
+      2. If packing_lines count > 0 → use them; never fall through to the
+         aggregate synthesizer.
+      3. If a Global packing file exists on disk but produced 0 rows →
+         raise 422 instead of silently rendering UNKNOWN rows (handled at
+         the route layer using ``audit["_global_packing_present_but_empty"]``
+         that this function sets).
+
+    Behaviour for non-Global suppliers: no-op. The Estrella EJL path is
+    untouched.
+
+    Idempotent: no-op if ``audit`` already carries rows from a prior
+    injection step.
+    """
+    if audit.get("rows") or audit.get("invoices"):
+        return audit
+
+    if not _detect_global_supplier_for_batch(batch_id):
+        return audit  # non-Global → fall through to existing chain
+
+    # Check whether any Global packing file exists on disk (to support the
+    # 422 guard at the route layer when parser produced 0 rows).
+    packing_files_exist = False
+    for sub in ("outputs", "working"):
+        d = settings.storage_root / sub / batch_id / "source" / "packing"
+        if d.is_dir():
+            packing_files_exist = bool(list(d.glob("*.pdf")) or list(d.glob("*.xlsx"))
+                                       or list(d.glob("*.xls")))
+            break
+
+    try:
+        from ..services.packing_db import get_packing_lines_for_batch  # noqa: PLC0415
+        pkg_rows = get_packing_lines_for_batch(batch_id) or []
+    except Exception as exc:
+        log.warning("[%s] packing_lines read failed: %s", batch_id, exc)
+        pkg_rows = []
+
+    if not pkg_rows:
+        if packing_files_exist:
+            # Signal the route layer to block with 422 instead of falling
+            # through to the aggregate synthesizer that would emit UNKNOWN.
+            audit["_global_packing_present_but_empty"] = True
+        return audit
+
+    # Build audit rows from packing_lines with operator-locked PL/EN render.
+    out_rows: List[dict] = []
+    skipped: int = 0
+    for ln in pkg_rows:
+        item_type = str(ln.get("item_type") or "").strip()
+        metal     = str(ln.get("metal") or "").strip()
+        stone     = str(ln.get("stone_type") or ln.get("remarks") or "").strip()
+        product_code = str(ln.get("product_code") or "").strip()
+        if not product_code or not item_type or not metal:
+            skipped += 1
+            continue
+
+        desc = _global_render_pl_en(item_type, metal, stone)
+        if not desc.get("pl") or not desc.get("en"):
+            # Unmapped type/metal — skip rather than emit UNKNOWN. The
+            # 422 guard at the route fires if NO rows survive.
+            skipped += 1
+            continue
+
+        qty       = float(ln.get("quantity") or 0)
+        unit_p    = float(ln.get("unit_price") or 0)
+        line_tot  = float(ln.get("total_value") or unit_p * qty)
+        out_rows.append({
+            "invoice_number":             str(ln.get("invoice_no") or ""),
+            "line_position":              int(ln.get("invoice_line_position") or 0),
+            "product_code":               product_code,
+            "description":                desc["en"],
+            "description_pl":             desc["pl"],
+            "description_en":             desc["en"],
+            "polish_customs_description": desc["pl"],
+            "item_type":                  desc["item_type"],
+            "item_type_pl":               desc["item_type_pl"],
+            "material":                   "",   # engine derives from desc text
+            "quantity":                   qty,
+            "unit_price":                 unit_p,
+            "line_total":                 line_tot,
+            "line_total_usd":             line_tot,
+            "hsn_code":                   "",
+            "currency":                   "USD",
+            "uom":                        str(ln.get("uom") or "PCS"),
+            "net_weight":                 float(ln.get("net_weight") or 0),
+            "gross_weight":               float(ln.get("gross_weight") or 0),
+            "design_no":                  str(ln.get("design_no") or ""),
+            "_supplier_profile":          "global_jewellery",
+            "_rows_source":               "packing_lines",
+        })
+
+    if not out_rows:
+        if packing_files_exist:
+            audit["_global_packing_present_but_empty"] = True
+        return audit
+
+    audit["rows"]            = out_rows
+    audit["_rows_source"]    = "packing_lines"
+    audit["_rows_row_count"] = len(out_rows)
+    log.info(
+        "[%s] _inject_rows_from_packing_lines: %d Global packing rows "
+        "(skipped=%d, fob_sum=%.2f)",
+        batch_id, len(out_rows), skipped,
+        sum(r["line_total"] for r in out_rows),
+    )
+    return audit
+
+
 def _inject_rows_from_sources(batch_id: str, audit: dict) -> dict:
     """Chain row sources in priority order.
 
     Order:
+      0. _inject_rows_from_packing_lines           (Global Jewellery first authority)
       1. _inject_rows_from_db_invoice_lines        (DB primary, placeholder-filtered)
       2. _inject_rows_from_xlsx                    (legacy XLSX Rows sheet)
       3. _synthesize_rows_from_invoice_aggregates  (engine-aggregate grouped fallback)
 
     Idempotent on subsequent calls. Caller MUST apply the lines-missing
     guard (HTTP 422) when the chain still produces no rows.
+
+    For Global Jewellery supplier:
+      - Step 0 owns the row source. If packing rows exist, the rest of
+        the chain is a no-op (steps 1–3 are idempotent on a populated
+        audit["rows"]).
+      - If a Global packing file exists on disk but Step 0 produced 0
+        rows, audit["_global_packing_present_but_empty"] is set so the
+        route layer blocks with 422 instead of falling through to the
+        aggregate synthesizer (which would emit UNKNOWN / metal szlachetny).
     """
+    audit = _inject_rows_from_packing_lines(batch_id, audit)
     audit = _inject_rows_from_db_invoice_lines(batch_id, audit)
     audit = _inject_rows_from_xlsx(batch_id, audit)
     audit = _synthesize_rows_from_invoice_aggregates(batch_id, audit)
@@ -1322,6 +1573,29 @@ async def generate_description(
     # nor the XLSX has rows, the operator gets a clear manual-review
     # error instead of a misleading PDF.
     audit = _inject_rows_from_sources(batch_id, audit)
+
+    # Global supplier-specific guard: packing file exists but extractor
+    # produced 0 rows. Operator spec: NEVER silently fall through to the
+    # aggregate synthesizer (which produces UNKNOWN / metal szlachetny /
+    # grouped invoice aggregate). Block with a clear 422 instead so the
+    # operator re-uploads or fixes the file.
+    if audit.get("_global_packing_present_but_empty"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "guard":  "global_packing_present_but_empty",
+                "error":  "Global Jewellery packing file is on disk for this "
+                          "batch but produced 0 parsed rows. Generating "
+                          "from aggregate invoice totals would produce "
+                          "'UNKNOWN' / 'metal szlachetny' placeholder rows "
+                          "and lose per-line product authority.",
+                "code":   "global_packing_present_but_empty",
+                "hint":   "Re-run Reparse Packing against the Global packing "
+                          "list, or re-upload the file. Aggregate fallback "
+                          "is intentionally disabled for Global supplier "
+                          "when a packing file is present.",
+            },
+        )
 
     if not audit.get("rows") and not audit.get("invoices"):
         raise HTTPException(

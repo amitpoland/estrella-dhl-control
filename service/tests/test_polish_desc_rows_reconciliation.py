@@ -80,7 +80,10 @@ def test_synthesizer_wired_into_inject_chain():
     """_inject_rows_from_sources must call the synthesizer AFTER DB+XLSX."""
     src = _ROUTES_DHL.read_text(encoding="utf-8")
     idx_chain = src.find("def _inject_rows_from_sources(")
-    chain_body = src[idx_chain : idx_chain + 1200]
+    # Slice until the next top-level def so the entire function body is
+    # captured regardless of docstring length.
+    next_def = src.find("\ndef ", idx_chain + 5)
+    chain_body = src[idx_chain : next_def if next_def > 0 else idx_chain + 3000]
     i_db   = chain_body.find("_inject_rows_from_db_invoice_lines(")
     i_xlsx = chain_body.find("_inject_rows_from_xlsx(")
     i_syn  = chain_body.find("_synthesize_rows_from_invoice_aggregates(")
