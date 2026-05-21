@@ -960,6 +960,128 @@ def _inject_rows_from_packing_lines(batch_id: str, audit: dict) -> dict:
     return audit
 
 
+def _try_inject_invoice_positions_for_global(batch_id: str, audit: dict) -> bool:
+    """For Global Jewellery supplier, parse the commercial invoice PDF
+    directly into per-position customs rows.
+
+    This is the authority for the Customs Description Report when
+    supplier is Global: ONE row per invoice commercial line. Replaces
+    the packing-row aggregation path that was collapsing distinct
+    invoice lines into artificial groups (e.g. positions with
+    "CZ + Colour Stone" vs "CZ alone" both being merged because both
+    text-matched on CZ).
+
+    Returns True on success (audit["rows"] populated with invoice
+    positions). Returns False on any failure — caller continues with
+    the existing packing-row chain.
+
+    Pure read of files in source/invoices/. Never touches CIF,
+    customs threshold, wFirma, PZ, DB schema, or engine arithmetic.
+    """
+    try:
+        from ..services.global_invoice_position_parser import (
+            parse_invoice_positions_from_pdf, positions_to_audit_rows,
+        )
+    except Exception as exc:
+        log.warning("[%s] invoice-position parser import failed: %s",
+                    batch_id, exc)
+        return False
+
+    # Locate the invoice PDF — Global ships ONE commercial invoice per
+    # batch in source/invoices/. Use first valid PDF.
+    inv_dir: Optional[Path] = None
+    for sub in ("outputs", "working"):
+        candidate = settings.storage_root / sub / batch_id / "source" / "invoices"
+        if candidate.is_dir():
+            inv_dir = candidate
+            break
+    if inv_dir is None:
+        return False
+
+    pdfs = sorted(inv_dir.glob("*.pdf"))
+    if not pdfs:
+        return False
+
+    # Re-use the C27.1 quarantine helper so we don't feed a non-PDF
+    # (XLS-renamed-to-PDF) to the parser.
+    try:
+        from .routes_dashboard import _partition_valid_pdfs as _ppvp
+        valid_pdfs, _ = _ppvp(pdfs)
+    except Exception:
+        valid_pdfs = pdfs
+
+    if not valid_pdfs:
+        return False
+
+    # Use the first valid invoice PDF for parsing. Multi-invoice
+    # batches are out of scope for this PR (Global ships one
+    # commercial invoice per batch per the spec).
+    inv_pdf = valid_pdfs[0]
+    positions = parse_invoice_positions_from_pdf(inv_pdf)
+    if not positions:
+        return False
+
+    # Resolve invoice_no from the engine's parse_invoice (it knows the
+    # Global format) — fallback to the file stem.
+    invoice_no = ""
+    try:
+        engine_dir = str(settings.engine_dir)
+        if engine_dir not in sys.path:
+            sys.path.insert(0, engine_dir)
+        from pz_import_processor import parse_invoice as _pi  # noqa: PLC0415
+        inv = _pi(str(inv_pdf), [])
+        if isinstance(inv, dict):
+            # Prefer the Global Exporter's Ref pattern (088/2026-2027)
+            # from raw_text; fall back to engine's invoice_no field.
+            import re as _re_local
+            raw = str(inv.get("_raw_text") or "")
+            m = _re_local.search(r"\b(\d{1,4}/\d{4}-\d{4})\b", raw)
+            if m:
+                invoice_no = m.group(1)
+            else:
+                invoice_no = str(inv.get("invoice_no") or "").strip()
+    except Exception:
+        pass
+    if not invoice_no:
+        invoice_no = inv_pdf.stem
+
+    rows = positions_to_audit_rows(positions, invoice_no)
+    if not rows:
+        return False
+
+    # Reconciliation: row sum must match the engine's parsed FOB
+    # (or declared invoice_totals.total_fob_usd) within $1.
+    declared_fob = 0.0
+    try:
+        declared_fob = float((audit.get("invoice_totals") or {})
+                             .get("total_fob_usd") or 0.0)
+    except Exception:
+        declared_fob = 0.0
+    row_sum = round(sum(float(r.get("line_total") or 0) for r in rows), 2)
+    if declared_fob > 0 and abs(row_sum - declared_fob) > 1.00:
+        log.warning(
+            "[%s] invoice-position rows reject: sum %.2f differs from "
+            "declared FOB %.2f by %.2f — falling back to packing path",
+            batch_id, row_sum, declared_fob, row_sum - declared_fob,
+        )
+        return False
+
+    audit["rows"]            = rows
+    audit["_rows_source"]    = "invoice_positions_authority"
+    audit["_rows_row_count"] = len(rows)
+    audit["_customs_aggregation"] = {
+        "source": "commercial_invoice_lines",
+        "position_count": len(rows),
+        "fob_sum_preserved": row_sum,
+    }
+    log.info(
+        "[%s] customs authority = invoice positions: %d positions "
+        "from %s (sum USD %.2f)",
+        batch_id, len(rows), inv_pdf.name, row_sum,
+    )
+    return True
+
+
 def _inject_rows_from_sources(
     batch_id: str,
     audit: dict,
@@ -969,67 +1091,46 @@ def _inject_rows_from_sources(
     """Chain row sources in priority order.
 
     Order:
-      0. _inject_rows_from_packing_lines           (Global Jewellery first authority)
+      -1. Global supplier invoice-position parser (NEW; authoritative
+          customs row source — one row per commercial invoice line)
+      0. _inject_rows_from_packing_lines           (Global per-row, used for packing_rows view)
       1. _inject_rows_from_db_invoice_lines        (DB primary, placeholder-filtered)
       2. _inject_rows_from_xlsx                    (legacy XLSX Rows sheet)
       3. _synthesize_rows_from_invoice_aggregates  (engine-aggregate grouped fallback)
-      4. AGGREGATE per-row → invoice-position rows
-         (when customs_view == "invoice_positions" — DEFAULT)
 
-    Operator spec (customs authority replacement):
-      - Customs Description Report uses INVOICE POSITION authority
-        (aggregated; ~8-10 positions; 2-5 pages)
-      - Packing Description Report uses PACKING ROW authority
-        (per-row; 245 lines; 42 pages) — pass
-        ``customs_view="packing_rows"`` to preserve the old behaviour.
+    Operator spec (invoice-line authority):
+      - Customs Description Report uses INVOICE COMMERCIAL LINE
+        authority — ONE row per invoice position. The previous packing-
+        row-aggregation approach (PR #267) collapsed distinct invoice
+        lines into artificial groups; this is corrected here.
+      - Packing Description Report still available via
+        ``customs_view="packing_rows"`` — falls through to per-row chain.
 
     Idempotent on subsequent calls. Caller MUST apply the lines-missing
     guard (HTTP 422) when the chain still produces no rows.
     """
+    # Step -1: Global supplier invoice-position authority (DEFAULT
+    # customs_view). When the supplier is Global Jewellery and the
+    # caller wants the customs view (not warehouse-detail), parse the
+    # commercial invoice directly. On success, the rest of the chain
+    # no-ops because audit["rows"] is populated.
+    if customs_view == "invoice_positions":
+        try:
+            if _detect_global_supplier_for_batch(batch_id):
+                # Purge any stale aggregate cache first (PR #260 helper)
+                if audit.get("rows") and _audit_rows_are_stale_aggregate(audit):
+                    _purge_stale_audit_rows(audit)
+                _try_inject_invoice_positions_for_global(batch_id, audit)
+        except Exception as exc:
+            log.warning(
+                "[%s] invoice-position injection failed (non-fatal): %s",
+                batch_id, exc,
+            )
+
     audit = _inject_rows_from_packing_lines(batch_id, audit)
     audit = _inject_rows_from_db_invoice_lines(batch_id, audit)
     audit = _inject_rows_from_xlsx(batch_id, audit)
     audit = _synthesize_rows_from_invoice_aggregates(batch_id, audit)
-
-    # Step 4 — customs aggregation. Default mode produces one row per
-    # invoice position. Pass customs_view="packing_rows" to preserve
-    # the legacy per-row behaviour (still available for warehouse /
-    # audit reporting).
-    if customs_view == "invoice_positions" and audit.get("rows"):
-        try:
-            from ..services.customs_position_aggregator import (
-                aggregate_packing_rows_to_invoice_positions,
-            )
-            _per_row = list(audit["rows"])
-            _aggregated = aggregate_packing_rows_to_invoice_positions(_per_row)
-            # Aggregation must preserve the FOB sum exactly (sum of
-            # position line_totals == sum of per-row line_totals).
-            _src_sum = round(sum(float(r.get("line_total") or 0)
-                                  for r in _per_row), 2)
-            _agg_sum = round(sum(float(r.get("line_total") or 0)
-                                  for r in _aggregated), 2)
-            if _aggregated and abs(_src_sum - _agg_sum) <= 0.01:
-                audit["rows"]            = _aggregated
-                audit["_rows_source"]    = "packing_lines_aggregated_to_invoice_positions"
-                audit["_rows_row_count"] = len(_aggregated)
-                # Preserve traceability: keep the source per-row count
-                audit["_customs_aggregation"] = {
-                    "source_row_count":   len(_per_row),
-                    "position_count":     len(_aggregated),
-                    "fob_sum_preserved":  _agg_sum,
-                }
-                log.info(
-                    "[%s] customs aggregation: %d packing rows → %d "
-                    "invoice positions (sum=%.2f preserved)",
-                    batch_id, len(_per_row), len(_aggregated), _agg_sum,
-                )
-        except Exception as exc:
-            # Aggregation failure must NOT block generation — caller
-            # falls back to the per-row authority (legacy behaviour).
-            log.warning(
-                "[%s] customs aggregation failed (non-fatal — per-row "
-                "rows preserved): %s", batch_id, exc,
-            )
 
     return audit
 
