@@ -1074,6 +1074,21 @@ def _try_inject_invoice_positions_for_global(batch_id: str, audit: dict) -> bool
         "position_count": len(rows),
         "fob_sum_preserved": row_sum,
     }
+    # ── PZ engine authority sidecar (Bridge Persistence, 2026-05-21) ──────
+    # `audit.rows` is legitimately overwritten by the PZ engine on every
+    # /process run (it carries the engine's per-row pipeline output). The
+    # invoice-position authority must therefore live in a dedicated key the
+    # engine never touches. The engine bridge (pz_import_processor.
+    # _try_invoice_from_authority_rows) prefers this key; audit_merge.
+    # PRESERVED_KEYS grants it safe passage across regenerations.
+    audit["_pz_engine_authority_rows"] = rows
+    audit["_pz_engine_authority_meta"] = {
+        "source":            "invoice_positions_authority",
+        "captured_at":       datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "fob_sum_preserved": row_sum,
+        "row_count":         len(rows),
+        "invoice_pdf":       inv_pdf.name,
+    }
     log.info(
         "[%s] customs authority = invoice positions: %d positions "
         "from %s (sum USD %.2f)",

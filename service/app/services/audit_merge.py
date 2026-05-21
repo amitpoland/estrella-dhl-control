@@ -88,6 +88,15 @@ PRESERVED_KEYS: tuple = (
     "workdrive_upload",
     "workdrive_direct_upload",
     "workdrive_upload_status",
+    # ── PZ engine authority sidecar (Bridge Persistence, 2026-05-21) ──
+    # PR #269 invoice-position authority feeds the Global PZ engine bridge
+    # in pz_import_processor._try_invoice_from_authority_rows. The engine
+    # legitimately overwrites `audit.rows` on every /process run with its
+    # own per-row pipeline output, but the bridge needs the original
+    # invoice-position rows to survive — they're written to dedicated keys
+    # here so REGENERATED_KEYS does not erase them.
+    "_pz_engine_authority_rows",
+    "_pz_engine_authority_meta",
 )
 
 # Engine outputs — always replaced by the fresh regeneration.

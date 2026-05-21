@@ -732,13 +732,21 @@ _AUTHORITY_FORBIDDEN_TOKENS = (
 
 
 def _try_invoice_from_authority_rows(pdf_path, fname, corrections_log):
-    """Return a parser-shaped dict from audit.rows when invoice-position
-    authority is present and valid; return None to mean "fall through to
-    the legacy parser". NEVER raises — every failure is logged and the
-    legacy path runs.
+    """Return a parser-shaped dict from PR #269 invoice-position authority
+    when it is present and valid; return None to mean "fall through to the
+    legacy parser". NEVER raises — every failure is logged with an explicit
+    `[bridge_miss] reason=…` entry so future diagnosis is one grep.
 
-    Audit-row source contract:
-      _rows_source == "invoice_positions_authority"
+    Authority source priority (Bridge Persistence, 2026-05-21):
+      1. ``audit["_pz_engine_authority_rows"]`` — preserved sidecar key
+         that survives engine audit-writes (PRESERVED_KEYS in audit_merge).
+         Preferred because subsequent /process retries can still see the
+         authority after the engine rewrites audit.rows.
+      2. ``audit["rows"]`` when ``audit["_rows_source"] == "invoice_positions_authority"``
+         — fresh-regenerate case (description chain just wrote audit.rows
+         and the engine hasn't run yet).
+
+    Validation (unchanged from PR #271):
       rows is a non-empty list of dicts
       each row has quantity > 0 and line_total_usd > 0
       no forbidden placeholders anywhere in the rows blob
@@ -747,28 +755,55 @@ def _try_invoice_from_authority_rows(pdf_path, fname, corrections_log):
     try:
         audit_path = Path(pdf_path).parent.parent.parent / "audit.json"
         if not audit_path.is_file():
+            corrections_log.append(
+                f"[{fname}] [bridge_miss] audit_path={audit_path} reason=audit_file_absent"
+            )
             return None
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
 
-        if (audit.get("_rows_source") or "") != "invoice_positions_authority":
-            return None
-        rows = audit.get("rows") or []
-        if not isinstance(rows, list) or not rows:
-            return None
+        # Priority 1: preserved sidecar key.
+        rows = audit.get("_pz_engine_authority_rows")
+        if isinstance(rows, list) and rows:
+            source_label = "sidecar:_pz_engine_authority_rows"
+        else:
+            # Priority 2: fresh-regenerate audit.rows under invoice authority.
+            if (audit.get("_rows_source") or "") != "invoice_positions_authority":
+                corrections_log.append(
+                    f"[{fname}] [bridge_miss] audit_path={audit_path} "
+                    f"reason=no_authority_source "
+                    f"got_rows_source={audit.get('_rows_source')!r} "
+                    f"sidecar_rows={type(audit.get('_pz_engine_authority_rows')).__name__}"
+                )
+                return None
+            rows_candidate = audit.get("rows")
+            if not isinstance(rows_candidate, list) or not rows_candidate:
+                corrections_log.append(
+                    f"[{fname}] [bridge_miss] audit_path={audit_path} "
+                    f"reason=rows_empty_or_not_list "
+                    f"rows_type={type(rows_candidate).__name__}"
+                )
+                return None
+            rows = rows_candidate
+            source_label = "audit.rows (fresh regen)"
 
         ok, why = _validate_authority_rows(rows, audit)
         if not ok:
             corrections_log.append(
-                f"[{fname}] authority bridge declined: {why} — falling back to legacy parser"
+                f"[{fname}] [bridge_miss] audit_path={audit_path} "
+                f"reason=validation_failed why={why}"
             )
             return None
 
+        corrections_log.append(
+            f"[{fname}] [bridge_hit] source={source_label} rows={len(rows)}"
+        )
         return _build_invoice_from_authority_rows(
             pdf_path, fname, audit, rows, corrections_log
         )
     except Exception as exc:  # noqa: BLE001
         corrections_log.append(
-            f"[{fname}] authority bridge raised {type(exc).__name__}: {exc} — falling back"
+            f"[{fname}] [bridge_miss] reason=raised "
+            f"exception={type(exc).__name__} message={exc}"
         )
         return None
 
