@@ -22,6 +22,23 @@
     return window.EstrellaShared.apiFetch(url, opts);
   }
 
+  // Resolve operator name — mirrors the mechanism in dashboard.html.
+  // Reads from localStorage key 'pz_operator_name'; prompts once if absent.
+  function _resolveOperator() {
+    try {
+      const cached = (window.localStorage.getItem('pz_operator_name') || '').trim();
+      if (cached) return cached;
+    } catch (_) {}
+    let name = '';
+    try {
+      name = (window.prompt('Operator name (recorded in audit timeline):', 'admin') || '').trim();
+    } catch (_) { name = ''; }
+    if (name) {
+      try { window.localStorage.setItem('pz_operator_name', name); } catch (_) {}
+    }
+    return name;
+  }
+
   // Normalize any outcome (success or thrown error) to a uniform shape.
   async function _call(method, url, body) {
     try {
@@ -42,11 +59,34 @@
     }
   }
 
+  // Mutation-aware call — injects X-Operator header required by draft mutation endpoints.
+  async function _callM(method, url, body) {
+    const op = _resolveOperator();
+    try {
+      const opts = { method };
+      if (body !== undefined) {
+        opts.headers = { 'Content-Type': 'application/json' };
+        opts.body = JSON.stringify(body);
+      }
+      opts.headers = { ...(opts.headers || {}), ...(op ? { 'X-Operator': op } : {}) };
+      const data = await _apiFetch(url, opts);
+      return { ok: true, data };
+    } catch (err) {
+      return {
+        ok:     false,
+        status: err.status || 0,
+        error:  err.message || String(err),
+        type:   err.type,
+      };
+    }
+  }
+
   const _get   = (url)        => _call('GET',    url);
-  const _post  = (url, body)  => _call('POST',   url, body);
-  const _patch = (url, body)  => _call('PATCH',  url, body);
-  const _put   = (url, body)  => _call('PUT',    url, body);
-  const _del   = (url)        => _call('DELETE', url);
+  const _post  = (url, body)  => _call('POST',   url, body);   // read-like POSTs (no X-Operator)
+  const _postM = (url, body)  => _callM('POST',  url, body);   // mutation POSTs (X-Operator)
+  const _patch = (url, body)  => _callM('PATCH', url, body);
+  const _put   = (url, body)  => _callM('PUT',   url, body);
+  const _del   = (url)        => _callM('DELETE', url);
 
   const BASE = '/api/v1';
 
@@ -100,7 +140,7 @@
 
     // POST /api/v1/proforma/draft/{draft_id}/lines
     addDraftLine: (draftId, lineBody) =>
-      _post(`${BASE}/proforma/draft/${draftId}/lines`, lineBody),
+      _postM(`${BASE}/proforma/draft/${draftId}/lines`, lineBody),
 
     // DELETE /api/v1/proforma/draft/{draft_id}/lines/{line_id}
     deleteDraftLine: (draftId, lineId) =>
@@ -109,7 +149,7 @@
     // POST /api/v1/proforma/draft/{draft_id}/service-charges
     // charge: { charge_type, amount, currency, label? }
     addServiceCharge: (draftId, charge, updatedAt) =>
-      _post(`${BASE}/proforma/draft/${draftId}/service-charges`, {
+      _postM(`${BASE}/proforma/draft/${draftId}/service-charges`, {
         expected_updated_at: updatedAt || '',
         charge,
       }),
@@ -123,14 +163,14 @@
     // POST /api/v1/proforma/draft/{draft_id}/approve
     // updatedAt: draft.updated_at for optimistic concurrency
     approveDraft: (draftId, updatedAt) =>
-      _post(`${BASE}/proforma/draft/${draftId}/approve`, {
+      _postM(`${BASE}/proforma/draft/${draftId}/approve`, {
         expected_updated_at: updatedAt || '',
         confirm_token:       'YES_APPROVE_LOCAL_PROFORMA_DRAFT',
       }),
 
     // POST /api/v1/proforma/draft/{draft_id}/re-open
     reopenDraft: (draftId, updatedAt) =>
-      _post(`${BASE}/proforma/draft/${draftId}/re-open`, {
+      _postM(`${BASE}/proforma/draft/${draftId}/re-open`, {
         expected_updated_at: updatedAt || '',
         confirm_token:       'YES_REOPEN_LOCAL_PROFORMA_DRAFT',
       }),
@@ -138,14 +178,14 @@
     // POST /api/v1/proforma/draft/{draft_id}/cancel
     // reason: operator-provided cancellation reason (required by backend — must be non-empty)
     cancelDraft: (draftId, updatedAt, reason) =>
-      _post(`${BASE}/proforma/draft/${draftId}/cancel`, {
+      _postM(`${BASE}/proforma/draft/${draftId}/cancel`, {
         expected_updated_at: updatedAt || '',
         reason:              reason || '',
       }),
 
     // POST /api/v1/proforma/draft/{draft_id}/reset-from-sales-packing
     resetDraftFromSalesPacking: (draftId, updatedAt) =>
-      _post(`${BASE}/proforma/draft/${draftId}/reset-from-sales-packing`, {
+      _postM(`${BASE}/proforma/draft/${draftId}/reset-from-sales-packing`, {
         expected_updated_at: updatedAt || '',
         reset_all:           false,
       }),
