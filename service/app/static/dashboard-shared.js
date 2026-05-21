@@ -364,10 +364,154 @@
     );
   }
 
+  // ── V2 visual atoms ────────────────────────────────────────────────
+  // Added for V2 pages. Zero domain knowledge — pure layout/display.
+  // Rule: MUST NEVER gain shipment state, customs, PZ, or wFirma semantics.
+
+  // StatusDot — inline colored circle for row-level status
+  // status: 'ok' | 'warn' | 'error' | 'pending'
+  function StatusDot({ status, title }) {
+    const colors = {
+      ok:      'var(--badge-green-text)',
+      warn:    'var(--badge-amber-text)',
+      error:   'var(--badge-red-text)',
+      pending: 'var(--badge-blue-text)',
+    };
+    const c = colors[status] || colors.pending;
+    return (
+      <span title={title} style={{
+        display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
+        background: c, flexShrink: 0, verticalAlign: 'middle',
+      }} />
+    );
+  }
+
+  // GateBlock — renders a list of reason strings as a styled block
+  // variant: 'error' | 'warn'
+  function GateBlock({ reasons = [], variant = 'error', title }) {
+    if (!reasons || reasons.length === 0) return null;
+    const isError = variant === 'error';
+    return (
+      <div data-testid={`gate-block-${variant}`} style={{
+        background: isError ? 'var(--badge-red-bg)' : 'var(--badge-amber-bg)',
+        border: `1px solid ${isError ? 'var(--badge-red-border)' : 'var(--badge-amber-border)'}`,
+        borderRadius: 6, padding: '8px 12px', marginBottom: 6,
+      }}>
+        {title && (
+          <div style={{
+            fontSize: 11, fontWeight: 700, marginBottom: 4,
+            color: isError ? 'var(--badge-red-text)' : 'var(--badge-amber-text)',
+          }}>{title}</div>
+        )}
+        <ul style={{ margin: 0, paddingLeft: 16 }}>
+          {reasons.map((r, i) => (
+            <li key={i} style={{
+              fontSize: 11,
+              color: isError ? 'var(--badge-red-text)' : 'var(--badge-amber-text)',
+              marginBottom: i < reasons.length - 1 ? 2 : 0,
+            }}>{r}</li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  // SectionHeader — 13px bold section divider with optional action slot
+  function SectionHeader({ label, action, style: xs }) {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '6px 0 4px', marginBottom: 6, borderBottom: '1px solid var(--border)',
+        ...xs,
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-2)' }}>
+          {label}
+        </span>
+        {action && <div style={{ fontSize: 11 }}>{action}</div>}
+      </div>
+    );
+  }
+
+  // CompactTable — standard table with consistent th/td styling
+  // cols: [{ key, label, style? }]
+  // rows: any[] (caller provides rowKey + renders cells via col.render(row) or row[col.key])
+  function CompactTable({ cols = [], rows = [], onRowClick, emptyLabel = 'No data', style: xs }) {
+    if (!rows || rows.length === 0) {
+      return (
+        <div style={{ padding: '12px 0', fontSize: 11, color: 'var(--text-3)', textAlign: 'center', ...xs }}>
+          {emptyLabel}
+        </div>
+      );
+    }
+    return (
+      <div style={{ overflowX: 'auto', ...xs }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr>
+              {cols.map(c => (
+                <th key={c.key} style={{
+                  padding: '5px 8px', textAlign: 'left', fontWeight: 600,
+                  fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em',
+                  color: 'var(--text-2)', borderBottom: '1px solid var(--border)',
+                  whiteSpace: 'nowrap', background: 'var(--bg-subtle)', ...c.thStyle,
+                }}>{c.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={row._key || ri}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+                style={{ cursor: onRowClick ? 'pointer' : undefined }}
+                onMouseEnter={onRowClick ? e => { e.currentTarget.style.background = 'var(--row-hover)'; } : undefined}
+                onMouseLeave={onRowClick ? e => { e.currentTarget.style.background = ''; } : undefined}
+              >
+                {cols.map(c => (
+                  <td key={c.key} style={{
+                    padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)',
+                    ...c.tdStyle,
+                  }}>
+                    {c.render ? c.render(row) : (row[c.key] ?? '—')}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // EmptyState — consistent loading / empty / error container
+  // state: 'loading' | 'empty' | 'error'
+  function EmptyState({ state, message, onRetry }) {
+    const icons    = { loading: '⏳', empty: '—', error: '⚠️' };
+    const defaults = { loading: 'Loading…', empty: 'Nothing here', error: 'Failed to load' };
+    return (
+      <div data-testid={`empty-state-${state}`} style={{
+        padding: '32px 16px', textAlign: 'center',
+        color: state === 'error' ? 'var(--badge-red-text)' : 'var(--text-3)',
+        fontSize: 12,
+      }}>
+        <div style={{ fontSize: 24, marginBottom: 8 }}>{icons[state] || '—'}</div>
+        <div>{message || defaults[state] || state}</div>
+        {state === 'error' && onRetry && (
+          <button onClick={onRetry} style={{
+            marginTop: 10, background: 'none', border: '1px solid var(--border)',
+            borderRadius: 4, cursor: 'pointer', padding: '4px 10px', fontSize: 11,
+            color: 'var(--text-2)', fontFamily: 'inherit',
+          }}>Retry</button>
+        )}
+      </div>
+    );
+  }
+
   // ── Export ─────────────────────────────────────────────────────────
   window.EstrellaShared = Object.freeze({
     apiFetch, fmtPLN,
     Badge, Card, Btn, Sel, Toast, SessionBanner,
     EstrellaMark, SubTabStrip, Sidebar,
+    // V2 visual atoms (no domain knowledge)
+    StatusDot, GateBlock, SectionHeader, CompactTable, EmptyState,
   });
 })();

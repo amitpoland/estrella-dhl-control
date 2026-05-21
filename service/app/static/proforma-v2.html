@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Proforma Draft — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    :root {
+      --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+      --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+      --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+      --shadow: rgba(27,37,56,0.06); --shadow-heavy: rgba(27,37,56,0.16);
+      --accent: #B89968; --accent-light: #D4B884; --accent-text: #1B2538;
+      --accent-subtle: #F8EFD8; --accent-border: #CFB178;
+      --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+      --badge-blue-bg: #E8EFF8;   --badge-blue-text: #1A4A90;   --badge-blue-border: #AABEE0;
+      --badge-amber-bg: #FBF5E0;  --badge-amber-text: #805A00;  --badge-amber-border: #DEC870;
+      --badge-orange-bg: #FBF0E4; --badge-orange-text: #804000; --badge-orange-border: #DEB870;
+      --badge-green-bg: #E8F5EE;  --badge-green-text: #186838;  --badge-green-border: #96CCA8;
+      --badge-red-bg: #FBE8E6;    --badge-red-text: #902018;    --badge-red-border: #E0A8A0;
+      --badge-purple-bg: #EEE8F8; --badge-purple-text: #481898; --badge-purple-border: #BEA4E8;
+      --badge-accent-bg: #1E2D4A; --badge-accent-text: #C9A456; --badge-accent-border: #C9A456;
+      --sidebar-bg: #131C2E; --sidebar-border: #25334C;
+      --sidebar-active: #1F2A42; --sidebar-hover: #1A2438;
+      --sidebar-text: #F2EBD9; --sidebar-text-muted: #7C89A3; --sidebar-icon: #B89968;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+        --row-hover: #223040; --border: #2C3C54; --border-subtle: #243050;
+        --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+        --shadow: rgba(0,0,0,0.3); --shadow-heavy: rgba(0,0,0,0.5);
+        --accent: #D4AA5C; --accent-light: #ECC870; --accent-text: #111928;
+        --accent-subtle: #1E2808; --accent-border: #5A4A18;
+        --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+        --badge-blue-bg: #0E1E38;   --badge-blue-text: #80AAEE;   --badge-blue-border: #1E3A64;
+        --badge-amber-bg: #20180A;  --badge-amber-text: #E8C040;  --badge-amber-border: #584010;
+        --badge-orange-bg: #201008; --badge-orange-text: #E89860; --badge-orange-border: #582010;
+        --badge-green-bg: #0E2018;  --badge-green-text: #68CC88;  --badge-green-border: #1A4830;
+        --badge-red-bg: #200E10;    --badge-red-text: #EE8880;    --badge-red-border: #581018;
+        --badge-purple-bg: #160E28; --badge-purple-text: #AA88EE; --badge-purple-border: #341860;
+        --badge-accent-bg: #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border: #5A4A18;
+        --sidebar-bg: #0E1A30; --sidebar-border: #1A2840;
+        --sidebar-active: #1A2E48; --sidebar-hover: #162438;
+        --sidebar-text: #EEE8DC; --sidebar-text-muted: #566478; --sidebar-icon: #6A7A96;
+      }
+    }
+
+    body {
+      margin: 0; padding: 0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; font-size: 13px;
+    }
+
+    #root { display: flex; flex-direction: column; min-height: 100vh; }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+    }
+
+    /* Modal backdrop */
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 8000; animation: fadeIn 0.15s;
+    }
+    .modal-box {
+      background: var(--card); border-radius: 10px;
+      border: 1px solid var(--border); padding: 24px 28px;
+      max-width: 420px; width: 90%;
+      box-shadow: 0 8px 32px var(--shadow-heavy);
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React + Babel CDN -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- Shared layer — load order is the dependency order -->
+<script type="text/babel" data-presets="env,react" src="/dashboard/dashboard-shared.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-components.js"></script>
+
+<!-- Proforma V2 page -->
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+
+  // ── URL params ─────────────────────────────────────────────────────────────
+  // All page state comes from URL. No window.currentBatch. No global singletons.
+  const _sp = new URLSearchParams(window.location.search);
+  const URL_BATCH_ID      = (_sp.get('batch_id') || '').trim();
+  const URL_INITIAL_CLIENT = (_sp.get('client')   || '').trim();
+
+  // ── Destructure shared atoms ───────────────────────────────────────────────
+  const {
+    Badge, Card, Btn, Sel, Toast, SessionBanner,
+    EstrellaMark, GateBlock, SectionHeader, CompactTable, StatusDot, EmptyState,
+  } = window.EstrellaShared;
+
+  const {
+    useProformaDrafts, useProformaPreview, useDraft,
+  } = window.PzState;
+
+  const {
+    DraftStateChip, ProformaReadinessGate, DevBypassBanner,
+    DraftLineRow, CustomerAuthorityCard, ProductAuthorityRow,
+  } = window.PzComponents;
+
+  const Api = window.PzApi;
+
+  // ── CancelModal ─────────────────────────────────────────────────────────────
+  function CancelModal({ draftId, onConfirm, onDismiss }) {
+    const [busy,   setBusy]   = React.useState(false);
+    const [reason, setReason] = React.useState('');
+
+    const handleConfirm = async () => {
+      if (!reason.trim()) return;   // guard: reason is required
+      setBusy(true);
+      await onConfirm(reason.trim());
+      setBusy(false);
+    };
+
+    return (
+      <div className="modal-backdrop" data-testid="cancel-modal">
+        <div className="modal-box">
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8, color: 'var(--badge-red-text)' }}>
+            Cancel Draft #{draftId}?
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 12, lineHeight: 1.5 }}>
+            This will cancel the proforma draft. The draft cannot be re-opened once cancelled.
+            This does <strong>not</strong> affect wFirma — no document is changed or deleted.
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>
+              Reason for cancellation <span style={{ color: 'var(--badge-red-text)' }}>*</span>
+            </label>
+            <textarea
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              placeholder="e.g. Client withdrew order"
+              rows={2}
+              data-testid="cancel-modal-reason"
+              style={{
+                width: '100%', resize: 'vertical', fontSize: 12,
+                padding: '6px 8px', border: '1px solid var(--border)',
+                borderRadius: 4, fontFamily: 'inherit', color: 'var(--text)',
+                background: 'var(--bg-subtle)',
+              }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <Btn variant="outline" small onClick={onDismiss} disabled={busy}
+                 data-testid="cancel-modal-dismiss">
+              Keep Draft
+            </Btn>
+            <Btn variant="danger" small onClick={handleConfirm}
+                 disabled={busy || !reason.trim()}
+                 data-testid="cancel-modal-confirm">
+              {busy ? '…' : 'Cancel Draft'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── DraftActionBar ──────────────────────────────────────────────────────────
+  // All write buttons in one place. Each is labelled exactly what it writes.
+  // No action fires without explicit click. Cancel requires modal confirmation.
+  function DraftActionBar({ draft, onApprove, onReopen, onCancelRequest, onReset, busy }) {
+    const state = draft.draft_state;
+    const isEditable = state === 'draft' || state === 'pending_local';
+    const isApproved = state === 'approved';
+    const isCancellable = state !== 'cancelled' && state !== 'issued' && state !== 'posted';
+    const isResettable = isEditable;
+
+    return (
+      <div data-testid="draft-action-bar" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
+        {isEditable && (
+          <Btn
+            variant="primary" small
+            onClick={onApprove}
+            disabled={busy}
+            data-testid="approve-draft-btn"
+            title="Approve this proforma draft. Draft must have no blocking reasons."
+          >
+            {busy === 'approve' ? '…' : 'Approve Proforma'}
+          </Btn>
+        )}
+        {isApproved && (
+          <Btn
+            variant="outline" small
+            onClick={onReopen}
+            disabled={busy}
+            data-testid="reopen-draft-btn"
+          >
+            {busy === 'reopen' ? '…' : 'Re-open Draft'}
+          </Btn>
+        )}
+        {isCancellable && (
+          <Btn
+            variant="danger" small
+            onClick={onCancelRequest}
+            disabled={busy}
+            data-testid="cancel-draft-btn"
+          >
+            Cancel Draft
+          </Btn>
+        )}
+        {isResettable && (
+          <Btn
+            variant="ghost" small
+            onClick={onReset}
+            disabled={busy}
+            data-testid="reset-draft-btn"
+            title="Reset lines from the current sales packing upload"
+          >
+            {busy === 'reset' ? '…' : 'Reset from Sales Packing'}
+          </Btn>
+        )}
+      </div>
+    );
+  }
+
+  // ── DraftPanel ──────────────────────────────────────────────────────────────
+  // Renders a full draft: header, lines table, service charges, remarks, action bar.
+  function DraftPanel({ draft, onAction, onToast }) {
+    const [showCancelModal, setShowCancelModal] = React.useState(false);
+    const [busy, setBusy] = React.useState(null);  // null | 'approve' | 'reopen' | 'reset'
+
+    const state = draft.draft_state;
+    const isEditable = state === 'draft' || state === 'pending_local';
+
+    // Line save handler — calls PzApi; page handles reload via onAction
+    const handleLineSave = async (lineId, patch, updatedAt) => {
+      const res = await Api.patchDraftLine(draft.id, lineId, patch, updatedAt);
+      if (res.ok) {
+        onToast('Line saved.', 'success');
+        onAction();
+      } else {
+        onToast(res.error || 'Save failed.', 'error');
+      }
+    };
+
+    // Line delete handler
+    const handleLineDelete = async (lineId) => {
+      const res = await Api.deleteDraftLine(draft.id, lineId);
+      if (res.ok) {
+        onToast('Line removed.', 'success');
+        onAction();
+      } else {
+        onToast(res.error || 'Delete failed.', 'error');
+      }
+    };
+
+    // Approve
+    const handleApprove = async () => {
+      setBusy('approve');
+      const res = await Api.approveDraft(draft.id, draft.updated_at);
+      setBusy(null);
+      if (res.ok) {
+        onToast('Draft approved.', 'success');
+        onAction();
+      } else {
+        onToast(res.error || 'Approve failed.', 'error');
+      }
+    };
+
+    // Re-open
+    const handleReopen = async () => {
+      setBusy('reopen');
+      const res = await Api.reopenDraft(draft.id, draft.updated_at);
+      setBusy(null);
+      if (res.ok) {
+        onToast('Draft re-opened.', 'success');
+        onAction();
+      } else {
+        onToast(res.error || 'Re-open failed.', 'error');
+      }
+    };
+
+    // Cancel (confirmed) — reason entered by operator in CancelModal
+    const handleCancelConfirm = async (reason) => {
+      const res = await Api.cancelDraft(draft.id, draft.updated_at, reason);
+      setShowCancelModal(false);
+      if (res.ok) {
+        onToast('Draft cancelled.', 'success');
+        onAction();
+      } else {
+        onToast(res.error || 'Cancel failed.', 'error');
+      }
+    };
+
+    // Reset from sales packing
+    const handleReset = async () => {
+      setBusy('reset');
+      const res = await Api.resetDraftFromSalesPacking(draft.id, draft.updated_at);
+      setBusy(null);
+      if (res.ok) {
+        onToast('Draft reset from sales packing.', 'success');
+        onAction();
+      } else {
+        onToast(res.error || 'Reset failed.', 'error');
+      }
+    };
+
+    const lines = draft.editable_lines || [];
+    const charges = draft.service_charges || [];
+    const currency = draft.currency || '';
+    const prodTotal = lines.reduce((s, l) => s + (l.line_value || 0), 0);
+    const scTotal   = charges.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const finalTotal = prodTotal + scTotal;
+
+    return (
+      <div data-testid="draft-panel">
+        {showCancelModal && (
+          <CancelModal
+            draftId={draft.id}
+            onConfirm={handleCancelConfirm}
+            onDismiss={() => setShowCancelModal(false)}
+          />
+        )}
+
+        {/* Draft header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+          <DraftStateChip state={state} />
+          <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
+            Draft #{draft.id}
+            {draft.draft_version > 1 ? ` · v${draft.draft_version}` : ''}
+            {' · '}{currency}
+          </span>
+          {draft.wfirma_proforma_fullnumber && (
+            <Badge label={draft.wfirma_proforma_fullnumber} status="Completed" small />
+          )}
+          {draft.needs_pricing_refresh && (
+            <span style={{ fontSize: 10, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+              ⚠ Pricing refresh needed
+            </span>
+          )}
+        </div>
+
+        {/* Lines table */}
+        <SectionHeader label="Proforma Lines" />
+        {lines.length === 0 ? (
+          <div style={{ fontSize: 11, color: 'var(--text-3)', padding: '8px 0' }}>No lines in draft.</div>
+        ) : (
+          <div style={{ overflowX: 'auto', marginBottom: 8 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)' }}>
+                  {['Product', 'Design', 'Qty', 'Unit Price', 'Line Value', 'Stock', ''].map((h, i) => (
+                    <th key={i} style={{ padding: '5px 8px', fontSize: 10, textAlign: 'left', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-2)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map(line => (
+                  <DraftLineRow
+                    key={line.line_id}
+                    line={line}
+                    editable={isEditable}
+                    draftUpdatedAt={draft.updated_at}
+                    onSave={handleLineSave}
+                    onDelete={isEditable ? handleLineDelete : null}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Service charges */}
+        {charges.length > 0 && (
+          <>
+            <SectionHeader label="Service Charges" style={{ marginTop: 10 }} />
+            <CompactTable
+              cols={[
+                { key: 'charge_type', label: 'Type' },
+                { key: 'amount',      label: 'Amount', render: r => `${r.amount} ${r.currency || ''}` },
+                { key: 'note',        label: 'Note' },
+              ]}
+              rows={charges.map((c, i) => ({ ...c, _key: i }))}
+              emptyLabel="No service charges."
+              style={{ marginBottom: 8 }}
+            />
+          </>
+        )}
+
+        {/* Totals */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8, marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-2)' }}>
+            Products: <strong style={{ color: 'var(--text)' }}>{prodTotal.toFixed(2)} {currency}</strong>
+            {scTotal > 0 && (
+              <> &nbsp;+&nbsp; Charges: <strong style={{ color: 'var(--text)' }}>{scTotal.toFixed(2)} {currency}</strong></>
+            )}
+            &nbsp;=&nbsp; <strong style={{ color: 'var(--accent)', fontSize: 12 }}>{finalTotal.toFixed(2)} {currency}</strong>
+          </div>
+        </div>
+
+        {/* Remarks */}
+        {(draft.remarks != null && draft.remarks !== '') && (
+          <>
+            <SectionHeader label="Remarks" />
+            <div style={{ fontSize: 11, color: 'var(--text-2)', padding: '6px 0 10px', lineHeight: 1.5 }}>
+              {draft.remarks}
+            </div>
+          </>
+        )}
+
+        {/* Action bar */}
+        <DraftActionBar
+          draft={draft}
+          busy={busy}
+          onApprove={handleApprove}
+          onReopen={handleReopen}
+          onCancelRequest={() => setShowCancelModal(true)}
+          onReset={handleReset}
+        />
+      </div>
+    );
+  }
+
+  // ── ProformaV2Root ──────────────────────────────────────────────────────────
+  // Single root component. URL params are the only input.
+  // Isolated hydration — no shared state with V1 pages.
+  function ProformaV2Root() {
+    const [batchId]       = React.useState(URL_BATCH_ID);
+    const [sessionError,  setSessionError]  = React.useState(null);
+    const [toast,         setToast]         = React.useState(null);
+    const [selectedClient, setSelectedClient] = React.useState(URL_INITIAL_CLIENT || null);
+    const [selectedDraftId, setSelectedDraftId] = React.useState(null);
+
+    // Drafts list
+    const draftsHook = useProformaDrafts(batchId);
+    const drafts = draftsHook.data?.drafts || [];
+
+    // Derive client list from drafts
+    const clientList = React.useMemo(() => {
+      const seen = new Set();
+      const out = [];
+      drafts.forEach(d => {
+        if (d.client_name && !seen.has(d.client_name)) {
+          seen.add(d.client_name);
+          out.push(d.client_name);
+        }
+      });
+      return out;
+    }, [drafts]);
+
+    // Auto-select first client if none set
+    React.useEffect(() => {
+      if (!selectedClient && clientList.length > 0) {
+        setSelectedClient(clientList[0]);
+      }
+    }, [clientList, selectedClient]);
+
+    // Auto-select latest draft for selected client
+    React.useEffect(() => {
+      if (!selectedClient) return;
+      const clientDrafts = drafts.filter(d => d.client_name === selectedClient);
+      const latest = clientDrafts[clientDrafts.length - 1];
+      setSelectedDraftId(latest ? latest.id : null);
+    }, [selectedClient, drafts]);
+
+    // Preview for selected client
+    const previewHook = useProformaPreview(batchId, selectedClient);
+    const preview = previewHook.data;
+
+    // Full draft for selected draft id
+    const draftHook = useDraft(selectedDraftId);
+    const draft = draftHook.data?.draft || null;
+
+    // Detect session/auth errors
+    React.useEffect(() => {
+      const err = draftsHook.errorType || previewHook.errorType || draftHook.errorType;
+      if (err === 'auth') setSessionError('auth');
+      else if (err === 'network') setSessionError('network');
+    }, [draftsHook.errorType, previewHook.errorType, draftHook.errorType]);
+
+    // Toast helper
+    const showToast = (msg, type = 'info') => {
+      setToast({ msg, type });
+      setTimeout(() => setToast(null), 3500);
+    };
+
+    // Action: reload draft + preview after any mutation
+    const handleAction = () => {
+      draftHook.reload();
+      previewHook.reload();
+      draftsHook.reload();
+    };
+
+    // Detect dev bypass from export_blockers
+    const bypassActive = Array.isArray(preview?.export_blockers) &&
+      preview.export_blockers.some(r => r.includes('[DEV-BYPASS]'));
+
+    // Guard: no batch_id
+    if (!batchId) {
+      return (
+        <div style={{ padding: 40, textAlign: 'center' }}>
+          <EmptyState state="error" message="Missing batch_id in URL. Use ?batch_id=SHIPMENT_..." />
+        </div>
+      );
+    }
+
+    return (
+      <div data-testid="proforma-v2-root" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+        {/* Session banner */}
+        {sessionError && (
+          <SessionBanner type={sessionError} onDismiss={() => setSessionError(null)} />
+        )}
+
+        {/* Toast */}
+        {toast && <Toast msg={toast.msg} type={toast.type} />}
+
+        {/* Top nav */}
+        <header style={{
+          background: 'var(--sidebar-bg)', borderBottom: '1px solid var(--sidebar-border)',
+          padding: '0 20px', height: 52, display: 'flex', alignItems: 'center', gap: 12,
+          flexShrink: 0,
+        }}>
+          <EstrellaMark size={28} />
+          <span style={{ color: 'var(--sidebar-text)', fontWeight: 700, fontSize: 13, letterSpacing: '0.04em' }}>
+            Estrella Atlas
+          </span>
+          <span style={{ color: 'var(--sidebar-text-muted)', fontSize: 11, marginLeft: 4 }}>
+            / Proforma
+          </span>
+          <div style={{ flex: 1 }} />
+          <a
+            href={`/dashboard/dashboard.html#batch-${batchId}`}
+            style={{ fontSize: 11, color: 'var(--sidebar-text-muted)', textDecoration: 'none' }}
+            data-testid="back-to-dashboard-link"
+          >
+            ← Dashboard
+          </a>
+        </header>
+
+        {/* Main content */}
+        <main style={{ flex: 1, padding: '20px 24px', maxWidth: 1100, width: '100%', margin: '0 auto' }}>
+
+          {/* Batch crumb */}
+          <div data-testid="batch-crumb" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-2)' }}>Batch:</span>
+            <span style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+              {batchId}
+            </span>
+            {preview?.batch_lifecycle && (
+              <Badge label={preview.batch_lifecycle} status="In Transit" small />
+            )}
+          </div>
+
+          {/* Client selector */}
+          {draftsHook.loading ? (
+            <div style={{ marginBottom: 14 }}>
+              <span className="spinner" /> <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Loading drafts…</span>
+            </div>
+          ) : draftsHook.error ? (
+            <EmptyState state="error" message={`Failed to load drafts: ${draftsHook.error}`} onRetry={draftsHook.reload} />
+          ) : clientList.length === 0 ? (
+            <EmptyState state="empty" message="No proforma drafts found for this batch." />
+          ) : (
+            <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>Client:</span>
+              <div style={{ minWidth: 220, maxWidth: 340 }}>
+                <Sel
+                  value={selectedClient || ''}
+                  onChange={e => setSelectedClient(e.target.value)}
+                  data-testid="client-selector"
+                >
+                  {clientList.map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </Sel>
+              </div>
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                {drafts.filter(d => d.client_name === selectedClient).length} draft(s)
+              </span>
+            </div>
+          )}
+
+          {/* 2-column layout: left = readiness + draft, right = customer + product */}
+          {selectedClient && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
+
+              {/* ── LEFT COLUMN ──────────────────────────────────────────── */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+                {/* Readiness gate */}
+                <Card style={{ padding: '14px 16px' }}>
+                  <SectionHeader label="Readiness" action={
+                    <Btn variant="ghost" small onClick={previewHook.reload} data-testid="preview-refresh-btn">↻</Btn>
+                  } />
+
+                  <DevBypassBanner active={bypassActive} />
+
+                  {previewHook.loading ? (
+                    <div><span className="spinner" /> <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Checking readiness…</span></div>
+                  ) : previewHook.error ? (
+                    <EmptyState state="error" message={previewHook.error} onRetry={previewHook.reload} />
+                  ) : (
+                    <ProformaReadinessGate
+                      preview={preview}
+                      onReload={previewHook.reload}
+                    />
+                  )}
+                </Card>
+
+                {/* Draft panel */}
+                <Card style={{ padding: '14px 16px' }}>
+                  <SectionHeader label="Draft" />
+
+                  {draftHook.loading && selectedDraftId ? (
+                    <div><span className="spinner" /> <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Loading draft…</span></div>
+                  ) : draftHook.error ? (
+                    <EmptyState state="error" message={draftHook.error} onRetry={draftHook.reload} />
+                  ) : !draft ? (
+                    <EmptyState state="empty" message="No draft selected." />
+                  ) : (
+                    <DraftPanel
+                      draft={draft}
+                      onAction={handleAction}
+                      onToast={showToast}
+                    />
+                  )}
+                </Card>
+
+                {/* Draft history (compact) */}
+                {drafts.filter(d => d.client_name === selectedClient).length > 1 && (
+                  <Card style={{ padding: '14px 16px' }}>
+                    <SectionHeader label="Draft History" />
+                    <CompactTable
+                      cols={[
+                        { key: 'id',          label: '#',       render: r => <a href="#" onClick={e => { e.preventDefault(); setSelectedDraftId(r.id); }} style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: 11 }}>#{r.id}</a> },
+                        { key: 'draft_state', label: 'State',   render: r => <DraftStateChip state={r.draft_state} /> },
+                        { key: 'currency',    label: 'Currency' },
+                        { key: 'wfirma_proforma_fullnumber', label: 'Proforma #' },
+                        { key: 'created_at',  label: 'Created',  render: r => r.created_at ? r.created_at.slice(0, 16).replace('T', ' ') : '—' },
+                      ]}
+                      rows={drafts
+                        .filter(d => d.client_name === selectedClient)
+                        .map(d => ({ ...d, _key: d.id }))
+                      }
+                      emptyLabel="No drafts."
+                    />
+                  </Card>
+                )}
+              </div>
+
+              {/* ── RIGHT COLUMN ─────────────────────────────────────────── */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+                {/* Customer authority */}
+                <Card style={{ padding: '14px 16px' }}>
+                  <SectionHeader label="Customer Authority" />
+                  {draft ? (
+                    <CustomerAuthorityCard
+                      resolution={draft.customer_resolution}
+                      clientName={selectedClient}
+                    />
+                  ) : preview?.customer_resolution ? (
+                    <CustomerAuthorityCard
+                      resolution={preview.customer_resolution}
+                      clientName={selectedClient}
+                    />
+                  ) : (
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Load a draft to see customer mapping.</div>
+                  )}
+                </Card>
+
+                {/* Ship-to */}
+                {(draft?.customer_resolution?.found || preview?.ship_to?.mode) && (
+                  <Card style={{ padding: '14px 16px' }}>
+                    <SectionHeader label="Ship-to (Odbiorca)" />
+                    {(() => {
+                      const shipTo = preview?.ship_to || {};
+                      return (
+                        <div style={{ fontSize: 11 }}>
+                          <div style={{ marginBottom: 4 }}>
+                            <span style={{ color: 'var(--text-2)' }}>Mode: </span>
+                            <strong>{shipTo.mode || 'same_as_bill_to'}</strong>
+                          </div>
+                          {shipTo.ship_to_wfirma_customer_id && (
+                            <div style={{ color: 'var(--text-2)' }}>
+                              Receiver ID: <strong style={{ color: 'var(--text)' }}>{shipTo.ship_to_wfirma_customer_id}</strong>
+                            </div>
+                          )}
+                          {shipTo.cm_conflict && (
+                            <GateBlock variant="warn" reasons={[shipTo.cm_conflict]} />
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </Card>
+                )}
+
+                {/* Product authority */}
+                {preview?.lines && preview.lines.length > 0 && (
+                  <Card style={{ padding: '14px 16px' }}>
+                    <SectionHeader label="Product Authority" />
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ background: 'var(--bg-subtle)' }}>
+                            {['Code', 'Design', 'Match', 'Stock', 'Price Src', 'Price'].map((h, i) => (
+                              <th key={i} style={{ padding: '5px 8px', fontSize: 10, textAlign: 'left', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-2)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                                {h}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {preview.lines.map((line, i) => (
+                            <ProductAuthorityRow
+                              key={line.product_code || line.design_no || i}
+                              line={line}
+                            />
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Product registration scan */}
+                    {preview.product_registration && preview.product_registration.status === 'missing_codes' && (
+                      <GateBlock
+                        variant="warn"
+                        title={`${preview.product_registration.missing} product(s) not registered in wFirma`}
+                        reasons={preview.product_registration.missing_codes.map(c => `Missing: ${c}`)}
+                        style={{ marginTop: 8 }}
+                      />
+                    )}
+                  </Card>
+                )}
+
+                {/* Design–product bridge diagnostic */}
+                {preview?.design_product_bridge && Object.keys(preview.design_product_bridge.ambiguous_design_codes || {}).length > 0 && (
+                  <Card style={{ padding: '14px 16px' }}>
+                    <SectionHeader label="Design Bridge — Ambiguous" />
+                    <GateBlock
+                      variant="warn"
+                      reasons={Object.entries(preview.design_product_bridge.ambiguous_design_codes).map(
+                        ([code, matches]) => `${code} → ${matches.join(', ')}`
+                      )}
+                    />
+                  </Card>
+                )}
+              </div>
+            </div>
+          )}
+        </main>
+
+        {/* Footer */}
+        <footer style={{ borderTop: '1px solid var(--border)', padding: '8px 24px', fontSize: 10, color: 'var(--text-3)', display: 'flex', justifyContent: 'space-between' }}>
+          <span>Estrella Atlas · Proforma V2</span>
+          <span>Batch: {batchId}</span>
+        </footer>
+      </div>
+    );
+  }
+
+  // ── Mount ───────────────────────────────────────────────────────────────────
+  // Single ReactDOM.render — isolated hydration, no shared state with V1 pages.
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<ProformaV2Root />);
+})();
+</script>
+</body>
+</html>
