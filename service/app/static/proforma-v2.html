@@ -568,6 +568,15 @@
             {preview?.batch_lifecycle && (
               <Badge label={preview.batch_lifecycle} status="In Transit" small />
             )}
+            {selectedClient && (
+              <>
+                <span style={{ color: 'var(--text-3)', fontSize: 11 }}>·</span>
+                <span style={{ fontSize: 11, color: 'var(--text-2)' }}>Client:</span>
+                <span data-testid="batch-crumb-client" style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+                  {selectedClient}
+                </span>
+              </>
+            )}
           </div>
 
           {/* Client selector */}
