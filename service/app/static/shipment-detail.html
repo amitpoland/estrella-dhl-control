@@ -519,8 +519,8 @@ const _NS_DOC_TYPES = [
   { id: 'purchase_invoice', label: 'Purchase Invoice',       icon: '📄', hint: 'Commercial invoice from supplier (purchase price)',                multi: true,  needsClient: false, needsSupplier: true,  accept: '.pdf',                          allowedExts: ['.pdf'] },
   { id: 'sales_proforma',   label: 'Sales Proforma Invoice', icon: '📑', hint: 'Proforma issued to client — sales price · pre-acceptance',         multi: true,  needsClient: true,  needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
   { id: 'sales_invoice',    label: 'Sales Invoice (Final)',  icon: '🧾', hint: 'Final commercial invoice issued to client',                         multi: true,  needsClient: true,  needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
-  { id: 'purchase_packing', label: 'Purchase Packing List',  icon: '📋', hint: 'Items + purchase prices — flows to customs (CIF / SAD)',           multi: true,  needsClient: false, needsSupplier: true,  accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
-  { id: 'sales_packing',    label: 'Sales Packing List',     icon: '📋', hint: 'Same items + sales prices — flows to warehouse stock valuation',   multi: true,  needsClient: true,  needsSupplier: false, accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
+  { id: 'purchase_packing_list', label: 'Purchase Packing List',  icon: '📋', hint: 'Items + purchase prices — flows to customs (CIF / SAD)',           multi: true,  needsClient: false, needsSupplier: true,  accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
+  { id: 'sales_packing_list',    label: 'Sales Packing List',     icon: '📋', hint: 'Same items + sales prices — flows to warehouse stock valuation',   multi: true,  needsClient: true,  needsSupplier: false, accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
   { id: 'awb',              label: 'AWB / Tracking PDF',     icon: '📎', hint: 'Air-waybill / tracking document',                                   multi: false, needsClient: false, needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
   { id: 'service_invoice',  label: 'Service Invoice',        icon: '💼', hint: 'Shipping, insurance, customs-agent or handling invoice',           multi: true,  needsClient: false, needsSupplier: true,  accept: '.pdf,.xlsx,.xls',               allowedExts: ['.pdf', '.xlsx', '.xls'] },
   { id: 'carnet',           label: 'ATA Carnet / Temp Doc',  icon: '🛂', hint: 'Temporary import / export document',                                multi: false, needsClient: false, needsSupplier: false, accept: '.pdf',                          allowedExts: ['.pdf'] },
@@ -533,8 +533,8 @@ const _NS_DOC_TYPES = [
 // persisted as local-only shipment documents (saved + registered, never
 // parsed, never trigger DHL/PZ/SAD/wFirma/proforma).
 const _NS_WIRED_TYPES = new Set([
-  'purchase_invoice', 'purchase_packing',
-  'sales_proforma', 'sales_invoice', 'sales_packing',
+  'purchase_invoice', 'purchase_packing_list',
+  'sales_proforma', 'sales_invoice', 'sales_packing_list',
   'awb',
   'service_invoice', 'carnet', 'other',
 ]);
