@@ -183,6 +183,7 @@ const STATUS_MAP = {
   'Customs Verified':      { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
   'Locked':                { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
   'Ready for PZ':          { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+  'PZ Failed':             { bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
   'Generated':             { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
   'Ready for Booking':     { bg: 'var(--badge-purple-bg)',  text: 'var(--badge-purple-text)',  border: 'var(--badge-purple-border)' },
   'Exported':              { bg: 'var(--badge-accent-bg)',  text: 'var(--badge-accent-text)',  border: 'var(--badge-accent-border)' },
@@ -250,7 +251,13 @@ function mapSadStatus(s) {
 
 function mapPzStatus(s) {
   if (!s) return 'Locked';
-  const m = { locked: 'Locked', ready: 'Ready for PZ', generated: 'Generated', exported: 'Exported' };
+  const m = {
+    locked: 'Locked', ready: 'Ready for PZ', generated: 'Generated', exported: 'Exported',
+    // PZ Preview Authority Audit (2026-05-21) — surface engine failure on
+    // the same badge that previously claimed "Ready for PZ". Single
+    // authority for the PZ workflow status.
+    failed: 'PZ Failed', complete: 'Generated',
+  };
   return m[s] || s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
@@ -9197,7 +9204,13 @@ function OperatorWorkflowCard({ batchId, onToast }) {
     const localPzExists  = !!(batchDet && batchDet.files
                               && batchDet.files.pdf
                               && batchDet.files.pdf.exists);
-    const previewErr     = !!(preview && preview.detail);
+    // PZ Preview Authority Audit (2026-05-21) — accept either the legacy
+    // `detail` shape (when PZ_PREVIEW_STRUCTURED_BLOCKERS is off) or the
+    // new structured `blockers` list. Either represents the same "preview
+    // is not actionable" condition. Single authority for the PZ panel.
+    const previewBlockers = (preview && Array.isArray(preview.blockers))
+                              ? preview.blockers : [];
+    const previewErr     = !!(preview && (preview.detail || previewBlockers.length > 0));
     const previewReady   = !!(preview && preview.ready);
     const wouldCreate    = !!(preview && preview.would_create_pz);
     const alreadyCreated = !!(preview && preview.already_created);
@@ -9900,20 +9913,59 @@ function OperatorWorkflowCard({ batchId, onToast }) {
              : 'not ready'}
           </span>
         </div>
-        {previewErr && (
-          <div data-testid="workflow-preview-guard"
-               style={{ marginTop: 4, padding: 6, fontSize: 11,
-                        background: '#fef3c7', color: '#b45309',
-                        borderRadius: 4 }}>
-            ⚠ {(preview.detail && preview.detail.error) || 'pz_preview unavailable'}
-            {preview.detail && preview.detail.code ? (
-              <span style={{ marginLeft: 6, fontFamily: 'ui-monospace,Menlo,monospace',
-                             color: '#9ca3af' }}>
-                ({preview.detail.code})
-              </span>
-            ) : null}
-          </div>
-        )}
+        {previewErr && (() => {
+          // PZ Preview Authority Audit (2026-05-21) — render structured
+          // blockers if the new shape is present; fall back to the legacy
+          // single-detail object otherwise. The frontend reads from a
+          // single backend authority (pz_preview.blockers) instead of
+          // inventing its own "Ready for PZ" guess.
+          const structured = Array.isArray(preview && preview.blockers)
+                              ? preview.blockers : [];
+          const engineErr  = (preview && preview.engine_error) || '';
+          if (structured.length > 0) {
+            const hasEngine = structured.some(b => b && b.code === 'ENGINE_ERROR');
+            const isError   = structured.some(b => b && b.severity === 'error');
+            return (
+              <div data-testid="workflow-preview-guard"
+                   style={{ marginTop: 4, padding: 6, fontSize: 11,
+                            background: isError ? '#fee2e2' : '#fef3c7',
+                            color:      isError ? '#991b1b' : '#b45309',
+                            borderRadius: 4 }}>
+                {hasEngine ? '⛔' : '⚠'} {hasEngine ? 'PZ engine failed:' : 'PZ not ready:'}{' '}
+                {structured.map((b, i) => (
+                  <span key={(b && b.code) || i}>
+                    {i > 0 ? ' · ' : ''}
+                    {(b && b.message) || ''}
+                    {b && b.code ? (
+                      <span style={{ marginLeft: 4,
+                                     fontFamily: 'ui-monospace,Menlo,monospace',
+                                     color: '#9ca3af' }}>
+                        ({b.code})
+                      </span>
+                    ) : null}
+                  </span>
+                ))}
+                {engineErr && !hasEngine ? (
+                  <div style={{ marginTop: 2 }}>{engineErr}</div>
+                ) : null}
+              </div>
+            );
+          }
+          return (
+            <div data-testid="workflow-preview-guard"
+                 style={{ marginTop: 4, padding: 6, fontSize: 11,
+                          background: '#fef3c7', color: '#b45309',
+                          borderRadius: 4 }}>
+              ⚠ {(preview.detail && preview.detail.error) || 'pz_preview unavailable'}
+              {preview.detail && preview.detail.code ? (
+                <span style={{ marginLeft: 6, fontFamily: 'ui-monospace,Menlo,monospace',
+                               color: '#9ca3af' }}>
+                  ({preview.detail.code})
+                </span>
+              ) : null}
+            </div>
+          );
+        })()}
         {!previewErr && preview && (
           <div style={{ marginTop: 4, color: '#6b7280' }}>
             MRN {preview.mrn || '—'} · warehouse {preview.warehouse_id || '—'}

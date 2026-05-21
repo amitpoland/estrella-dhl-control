@@ -134,6 +134,111 @@ def _compute_effective_pz_status(audit: dict) -> tuple:
     return "partial", True
 
 
+# ── PZ preview structured blockers ────────────────────────────────────────────
+#
+# Lesson G + PZ Preview Authority Audit (2026-05-21) — `pz_preview` historically
+# raised HTTPException(422) on every prerequisite gap, which forced the frontend
+# to invent its own optimistic "Ready for PZ" badge in parallel. That duplicate
+# authority lets the badge contradict the engine outcome.
+#
+# The fix: a single read-only authority. `_collect_pz_preview_blockers` returns
+# a list of `{code, message, severity, source}` rows describing every reason
+# the batch is not ready. When the list is empty, the batch is ready. The
+# legacy 422 path is preserved behind feature flag `PZ_PREVIEW_STRUCTURED_BLOCKERS`
+# defaulting ON; OFF restores the prior HTTPException behaviour for one release.
+#
+# Mutating endpoints (`pz_create`, `pz_adopt`, clipboard, json export) keep
+# `_guard_wfirma_export` unchanged — they must hard-fail on prerequisites.
+
+# Stable blocker code vocabulary. Treat as part of the public API.
+BLOCKER_WFIRMA_NO_SAD              = "WFIRMA_NO_SAD"
+BLOCKER_WFIRMA_PZ_NOT_GENERATED    = "WFIRMA_PZ_NOT_GENERATED"
+BLOCKER_WFIRMA_NO_ROWS             = "WFIRMA_NO_ROWS"
+BLOCKER_ENGINE_ERROR               = "ENGINE_ERROR"
+BLOCKER_WFIRMA_CREATE_DISABLED     = "WFIRMA_CREATE_DISABLED"
+BLOCKER_SUPPLIER_NOT_CONFIGURED    = "SUPPLIER_NOT_CONFIGURED"
+BLOCKER_WAREHOUSE_NOT_CONFIGURED   = "WAREHOUSE_NOT_CONFIGURED"
+
+
+def _pz_preview_structured_enabled() -> bool:
+    """Feature flag — defaults ON. Set PZ_PREVIEW_STRUCTURED_BLOCKERS=false
+    in env to restore the legacy 422 raising path for one release."""
+    raw = (os.getenv("PZ_PREVIEW_STRUCTURED_BLOCKERS") or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
+def _collect_pz_preview_blockers(audit: dict, output_dir: Path) -> List[Dict[str, Any]]:
+    """Read-only authority for "is this batch ready for PZ".
+
+    Returns a list of blocker rows. Empty list = the SAD + engine + rows
+    prerequisites are all satisfied (independent of wFirma supplier/warehouse
+    configuration — those are added by the caller using the existing lock_status
+    derivation so we don't duplicate that logic here).
+
+    NEVER raises. NEVER mutates audit or disk.
+    """
+    blockers: List[Dict[str, Any]] = []
+
+    # 1. SAD/ZC429 present?
+    inputs = audit.get("inputs") or {}
+    if not inputs.get("zc429"):
+        blockers.append({
+            "code":     BLOCKER_WFIRMA_NO_SAD,
+            "message":  "wFirma export requires SAD (ZC429). Upload SAD before exporting.",
+            "severity": "error",
+            "source":   "audit.inputs.zc429",
+        })
+
+    # 2. Engine outcome — engine_error wins over stored status. A persisted
+    # engine failure is the strongest signal that PZ is not ready, and it
+    # carries operator-actionable text from pz_import_processor.
+    eng_err = (audit.get("engine_error") or "").strip()
+    if eng_err:
+        blockers.append({
+            "code":     BLOCKER_ENGINE_ERROR,
+            "message":  eng_err,
+            "severity": "error",
+            "source":   "audit.engine_error",
+        })
+
+    # 3. Effective status — uses the existing reconciler so a stale persisted
+    # "failed" status doesn't keep the operator locked after they cleared the
+    # underlying failed_checks.
+    effective, normalized = _compute_effective_pz_status(audit)
+    stored = audit.get("status", "")
+    if effective not in _PZ_DONE and not eng_err:
+        # Skip emitting a second status blocker when ENGINE_ERROR already
+        # surfaced the real reason — they're the same fault expressed twice.
+        blockers.append({
+            "code":     BLOCKER_WFIRMA_PZ_NOT_GENERATED,
+            "message":  (
+                f"wFirma export requires a completed PZ. "
+                f"Stored status: {stored!r}; effective status: {effective!r}."
+            ),
+            "severity": "error",
+            "source":   "audit.status",
+        })
+
+    # 4. PZ rows file present?
+    rows_present = (
+        (output_dir / "pz_rows.json").exists()
+        or any(output_dir.glob("*_calc.xlsx"))
+    )
+    if not rows_present and not eng_err:
+        # When ENGINE_ERROR already surfaced, suppress the duplicate "no rows"
+        # blocker — they share the same root cause.
+        blockers.append({
+            "code":     BLOCKER_WFIRMA_NO_ROWS,
+            "message":  "PZ rows not found. pz_rows.json and XLSX Rows sheet both missing.",
+            "severity": "error",
+            "source":   "outputs.disk",
+        })
+
+    return blockers
+
+
 def _guard_wfirma_export(audit: dict) -> None:
     """Block wFirma export if SAD is missing or PZ not yet generated.
 
@@ -1004,7 +1109,53 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
     """
     output_dir = get_output_dir(batch_id)
     audit      = _read_audit(output_dir)
-    _guard_wfirma_export(audit)
+
+    # ── Structured blockers (Lesson G — single read-only authority) ──────────
+    # When the feature flag is ON we replace the legacy 422-raising guard with
+    # a 200 response carrying a `blockers` list. The mutating create/adopt
+    # endpoints below keep their 422 guards.
+    #
+    # The already_created short-circuit (below) takes precedence — a PZ that
+    # has already been written to wFirma is not "blocked"; it is done. We
+    # only collect prerequisite blockers when no wFirma doc id is linked.
+    _existing_pz_doc_id = ((audit.get("wfirma_export") or {}).get("wfirma_pz_doc_id") or "").strip()
+    if _pz_preview_structured_enabled() and not _existing_pz_doc_id:
+        blockers = _collect_pz_preview_blockers(audit, output_dir)
+        if blockers:
+            # Add wFirma-config blockers so the UI sees a single complete list.
+            supplier_configured  = bool((settings.wfirma_supplier_contractor_id or "").strip())
+            warehouse_configured = bool((settings.wfirma_warehouse_id or "").strip())
+            if not supplier_configured:
+                blockers.append({
+                    "code":     BLOCKER_SUPPLIER_NOT_CONFIGURED,
+                    "message":  "WFIRMA_SUPPLIER_CONTRACTOR_ID not configured — set in .env",
+                    "severity": "warning",
+                    "source":   "settings",
+                })
+            if not warehouse_configured:
+                blockers.append({
+                    "code":     BLOCKER_WAREHOUSE_NOT_CONFIGURED,
+                    "message":  "WFIRMA_WAREHOUSE_ID not configured — set in .env",
+                    "severity": "warning",
+                    "source":   "settings",
+                })
+            eff_status, status_normalized = _compute_effective_pz_status(audit)
+            return JSONResponse({
+                "batch_id":             batch_id,
+                "already_created":      False,
+                "wfirma_pz_doc_id":     None,
+                "would_create_pz":      False,
+                "ready":                False,
+                "blockers":             blockers,
+                "engine_error":         (audit.get("engine_error") or "") or None,
+                "unresolved_product_codes": [],
+                "price_conflicts":      [],
+                "stored_status":        audit.get("status", ""),
+                "effective_status":     eff_status,
+                "status_normalized":    status_normalized,
+            })
+    elif not _pz_preview_structured_enabled():
+        _guard_wfirma_export(audit)
 
     # ── Duplicate guard — check if wFirma PZ already exists ──────────────────
     wfirma_export = audit.get("wfirma_export") or {}
@@ -1023,6 +1174,8 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
             "wfirma_pz_doc_id":     existing_pz_doc_id,
             "would_create_pz":      False,
             "ready":                False,
+            "blockers":             [],
+            "engine_error":         None,
             "unresolved_product_codes": [],
             "price_conflicts":      [],
             "pz_lock_status":       lock_status,
@@ -1116,6 +1269,8 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         "wfirma_pz_doc_id":         None,
         "would_create_pz":          result.ready and bool(supplier_wfirma_id) and bool(warehouse_id),
         "ready":                    result.ready,
+        "blockers":                 [],
+        "engine_error":             None,
         "unresolved_product_codes": result.unresolved_codes,
         "price_conflicts":          result.price_conflicts,
         "supplier_wfirma_id":       supplier_wfirma_id,
