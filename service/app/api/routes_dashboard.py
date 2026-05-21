@@ -294,8 +294,24 @@ def _derive_sad_status(a: Dict[str, Any]) -> str:
 def _derive_pz_status(a: Dict[str, Any]) -> str:
     """
     Derive PZ accounting pipeline status for list column.
-    Returns: 'complete' | 'ready' | 'locked'
+    Returns: 'complete' | 'ready' | 'locked' | 'failed'
+
+    Precedence (highest first):
+      1. failed  — audit.status=='failed' OR audit.engine_error truthy
+                   (Lesson G: do not show "Ready for PZ" when the engine
+                    refused to write outputs. The two authorities — status
+                    badge and engine outcome — must agree.)
+      2. complete — derive_status returns success/partial
+      3. locked   — SAD missing
+      4. ready    — default
     """
+    # Layer 1: engine outcome wins. A persisted failure must surface as
+    # "PZ Failed" rather than the optimistic "Ready for PZ" derived from
+    # SAD presence alone. See PZ Preview Authority Audit, Section 5.
+    stored = (a.get("status") or "").strip().lower()
+    if stored == "failed" or (a.get("engine_error") or "").strip():
+        return "failed"
+
     status = _derive_status(a)
     if status in ("success", "partial"):
         return "complete"
