@@ -215,7 +215,9 @@ def test_malformed_audit_falls_through_silently(tmp_path):
     (batch / "audit.json").write_text("{not valid json", encoding="utf-8")
     log = []
     assert p._try_invoice_from_authority_rows(str(pdf), "inv.pdf", log) is None
-    assert any("authority bridge raised" in l.lower() for l in log)
+    # Bridge Persistence rename — diagnostic format is now
+    # "[bridge_miss] reason=raised exception=..."
+    assert any("reason=raised" in l for l in log) or any("reason=audit_file_absent" in l for l in log)
 
 
 # ── 12. Non-list rows rejected ───────────────────────────────────────────────
