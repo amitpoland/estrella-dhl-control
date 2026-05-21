@@ -270,6 +270,105 @@ Detection signal: `email_service.py` or `smtplib` import reachable without an en
 
 ---
 
+## Lesson G — Generated-artifact stale-display bugs are first a cache / atomicity problem, not a generator problem (2026-05-21)
+
+> Numbered Lesson G to avoid collision with `CLAUDE.md`'s existing
+> Lesson F (V2 frontend migration / V1-freeze) which uses the same
+> letter-key in the CLAUDE.md summary list.
+
+**Origin**: Global Jewellery AWB 4789974092 Polish Description regeneration incident (2026-05-21). Operator repeatedly reported "the stale Polish Description PDF keeps returning even after delete and regenerate." Three earlier hypotheses (stale audit cache, stale packing_lines, stale documents.db registry) were investigated and eliminated. The actual file on disk was the correct fresh 245-row version (97 KB, 42 pages, zero forbidden tokens — verified by direct `pdfplumber` readback). The real cause was the `/api/v1/dhl/download/{filename}` endpoint serving `Cache-Control: max-age=14400` — FastAPI's `FileResponse` default of 4-hour browser caching. The browser served its cached copy for 4 hours regardless of how many times the server file was regenerated; the operator could not see the new file until the cache expired or the browser was force-refreshed without cache (Ctrl+Shift+R + DevTools "Disable cache").
+
+**What happened**
+
+1. Phase-1 Polish Description closure was confirmed via authenticated browser smoke earlier in the session (PDF was 42 pages, 245 items, no forbidden tokens).
+2. Operator subsequently reported the PDF was "stale."
+3. Three diagnostic passes patched the wrong layer:
+   - Audit row cache was cleared (PR #260) — no effect on operator's perception
+   - Packing.db rows were re-parsed (PR #261) — no effect on operator's perception
+   - documents.db was inspected — no stale registry entry
+4. Only after a fourth pass with `fetch(url, cache:'no-store')` from the browser console did the response headers reveal `Cache-Control: max-age=14400`.
+5. PR #265 then set `no-store, no-cache, must-revalidate, max-age=0` headers and added an overwrite-safe validate-then-rollback gate for the generation path.
+
+The waste was three patches at the wrong layer. The pattern below would have located the root cause on the first diagnostic pass.
+
+**Binding rule** — when any generated artifact appears stale after a delete-and-regenerate cycle, follow this checklist BEFORE patching the generator:
+
+**Property 1 — Inspect the disk artifact first**
+Read the file directly from its on-disk path (bypass the HTTP endpoint). Compare the content against the expected fresh output. If the file IS the correct fresh content, the generator is not the bug — stop suspecting it and move to Property 2.
+
+Detection signal: any patch to the generator without first verifying that the on-disk file is genuinely stale.
+
+**Property 2 — Inspect every reference layer in this order**
+Verify each of the following can produce or point at the stale view, in this exact order:
+
+  1. **Disk file** — was it actually rewritten? (mtime, hash, size)
+  2. **Audit pointers** — does `audit.json` reference the correct file? (`polish_desc_filename`, `polish_desc_path`, `polish_desc_generated_at`)
+  3. **Registry rows** — any `documents.db` / packing.db / proforma_links.db row pointing at a stale file?
+  4. **Endpoint resolver** — does the download endpoint find the correct file? (call it with a cache-bust query parameter and capture the response)
+  5. **HTTP response headers** — what `Cache-Control`, `ETag`, `Last-Modified` does the response carry?
+  6. **Browser cache** — is the browser serving a cached copy?
+
+Detection signal: any debugging session that patches layer N without first ruling out layers 1..N-1.
+
+**Property 3 — When the disk content is correct but the rendered output is old, the root cause is almost always HTTP / browser caching**
+Generated PDFs are operator artifacts that change per click. The download endpoint MUST emit:
+
+```
+Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+Pragma: no-cache
+Expires: 0
+```
+
+so the browser ALWAYS revalidates. FastAPI `FileResponse` defaults to a multi-hour cache when no `headers={…}` argument is passed — this is a footgun for any regenerable artifact.
+
+Detection signal: any download endpoint for a regenerable file that does not explicitly set `Cache-Control: no-store`.
+
+**Property 4 — Overwrite-safe generation (validate-then-rollback)**
+Every generation path that writes to a fixed filename (date-stamped or otherwise reused) MUST:
+
+  1. Write to a temp file (or accept post-write read-back)
+  2. Validate the generated content against the forbidden-token list and any other operator-locked invariants
+  3. On validation failure: unlink the bad file and do NOT update audit pointers; return HTTP 422 with the offending tokens
+  4. On validation success: atomically replace the final file (or accept the just-written file) and update audit pointers including `<artifact>_generated_at` timestamp + `<artifact>_file_exists` boolean
+  5. Audit pointer update MUST be the LAST step — never persist a pointer to an unvalidated file
+
+For Polish Description specifically, the forbidden tokens are:
+  - `UNKNOWN`
+  - `metal szlachetny`
+  - `Wyrób jubilerski`
+  - `grouped invoice aggregate`
+
+For other artifacts, the forbidden-token list is defined per-artifact by the operator.
+
+Detection signal: any generator that writes a file then updates audit pointers in the same code block without an intermediate validation step.
+
+**Property 5 — Regression test that the stale artifact cannot be served**
+Add a source-grep / response-header test pinning that:
+  - The download endpoint's response has `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`
+  - No code path emits `max-age=14400`, `max-age=3600`, or any other long cache for regenerable artifacts
+  - The generation path runs validate-then-rollback before the audit update
+  - Audit records `<artifact>_generated_at` timestamp
+
+Detection signal: a download endpoint or generation path without a regression test pinning the cache-policy or rollback contract.
+
+**Where it binds** — every generated artifact and every download endpoint that serves a regenerable file. Apply to:
+  - Polish Description (Polish customs description PDF)
+  - PZ PDFs (purchase goods receipt documents)
+  - PZ Calc XLSX (calculation workbooks)
+  - Audit EN / Audit PL (audit reports)
+  - Memo PDFs
+  - Corrections PDFs
+  - Proforma PDFs
+  - DSK PDFs (broker notification)
+  - SAD-ready JSON exports
+  - Any other DHL / customs / wFirma generated outputs that share a filename across regenerations
+
+Do not solve future stale-output bugs by manual file deletion only. The deletion masks the symptom; the cache / atomicity gap remains. Apply Properties 1–5 systematically.
+
+**Reference**: Global Jewellery AWB 4789974092 incident chain (2026-05-21); PR #260 (audit purge — wrong layer), PR #261 (packing reparse — wrong layer), PR #265 (cache headers + validate-then-rollback — the actual fix); `routes_dhl_clearance.py` `download_dhl_file` + `generate_description` validator block; `service/tests/test_polish_desc_cache_and_overwrite.py` (11 tests pinning the contract).
+
+---
+
 ## Lesson H — Production `.env` must be pure UTF-8 and never carry placeholder literals (2026-05-22)
 
 **Origin**: Global PZ wFirma posting readiness campaign (2026-05-22). During Step 3 (warehouse config) the operator pasted the documentation example lines `WFIRMA_WAREHOUSE_ID=REAL_ID_HERE` and `WFIRMA_WAREHOUSE_MODULE_ENABLED=true` into `C:\PZ\.env` using PowerShell `Add-Content`. PZService entered `STATE: 7 PAUSED`; health endpoint stopped responding. The pasted text was a red herring; the real failure surfaced in `pz_stderr.log`:
@@ -564,3 +663,100 @@ Every `.claude/agents/*.md` whose tool grant includes Bash, Write, Edit, or any 
 - DP4 (sustained): `.claude/memory/scorecards/2026-05-23-pr304-deploy-pending-adoption-ui.md`
 
 **Governance reference**: PROJECT_STATE.md DECISIONS entry 2026-05-23: "Lesson K THRESHOLD SUSTAINED (4th consecutive data point)". Pattern validated across the merge-gate / deploy-gate boundary, demonstrating that prompt-template specificity — not agent substitution, not access restriction — is the correct corrective mechanism for autonomy boundary drift.
+
+## Lesson G — Generated-artifact stale-display bugs are first a cache / atomicity problem, not a generator problem (2026-05-21)
+
+> Numbered Lesson G to avoid collision with `CLAUDE.md`'s existing
+> Lesson F (V2 frontend migration / V1-freeze) which uses the same
+> letter-key in the CLAUDE.md summary list.
+
+**Origin**: Global Jewellery AWB 4789974092 Polish Description regeneration incident (2026-05-21). Operator repeatedly reported "the stale Polish Description PDF keeps returning even after delete and regenerate." Three earlier hypotheses (stale audit cache, stale packing_lines, stale documents.db registry) were investigated and eliminated. The actual file on disk was the correct fresh 245-row version (97 KB, 42 pages, zero forbidden tokens — verified by direct `pdfplumber` readback). The real cause was the `/api/v1/dhl/download/{filename}` endpoint serving `Cache-Control: max-age=14400` — FastAPI's `FileResponse` default of 4-hour browser caching. The browser served its cached copy for 4 hours regardless of how many times the server file was regenerated; the operator could not see the new file until the cache expired or the browser was force-refreshed without cache (Ctrl+Shift+R + DevTools "Disable cache").
+
+**What happened**
+
+1. Phase-1 Polish Description closure was confirmed via authenticated browser smoke earlier in the session (PDF was 42 pages, 245 items, no forbidden tokens).
+2. Operator subsequently reported the PDF was "stale."
+3. Three diagnostic passes patched the wrong layer:
+   - Audit row cache was cleared (PR #260) — no effect on operator's perception
+   - Packing.db rows were re-parsed (PR #261) — no effect on operator's perception
+   - documents.db was inspected — no stale registry entry
+4. Only after a fourth pass with `fetch(url, cache:'no-store')` from the browser console did the response headers reveal `Cache-Control: max-age=14400`.
+5. PR #265 then set `no-store, no-cache, must-revalidate, max-age=0` headers and added an overwrite-safe validate-then-rollback gate for the generation path.
+
+The waste was three patches at the wrong layer. The pattern below would have located the root cause on the first diagnostic pass.
+
+**Binding rule** — when any generated artifact appears stale after a delete-and-regenerate cycle, follow this checklist BEFORE patching the generator:
+
+**Property 1 — Inspect the disk artifact first**
+Read the file directly from its on-disk path (bypass the HTTP endpoint). Compare the content against the expected fresh output. If the file IS the correct fresh content, the generator is not the bug — stop suspecting it and move to Property 2.
+
+Detection signal: any patch to the generator without first verifying that the on-disk file is genuinely stale.
+
+**Property 2 — Inspect every reference layer in this order**
+Verify each of the following can produce or point at the stale view, in this exact order:
+
+  1. **Disk file** — was it actually rewritten? (mtime, hash, size)
+  2. **Audit pointers** — does `audit.json` reference the correct file? (`polish_desc_filename`, `polish_desc_path`, `polish_desc_generated_at`)
+  3. **Registry rows** — any `documents.db` / packing.db / proforma_links.db row pointing at a stale file?
+  4. **Endpoint resolver** — does the download endpoint find the correct file? (call it with a cache-bust query parameter and capture the response)
+  5. **HTTP response headers** — what `Cache-Control`, `ETag`, `Last-Modified` does the response carry?
+  6. **Browser cache** — is the browser serving a cached copy?
+
+Detection signal: any debugging session that patches layer N without first ruling out layers 1..N-1.
+
+**Property 3 — When the disk content is correct but the rendered output is old, the root cause is almost always HTTP / browser caching**
+Generated PDFs are operator artifacts that change per click. The download endpoint MUST emit:
+
+```
+Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+Pragma: no-cache
+Expires: 0
+```
+
+so the browser ALWAYS revalidates. FastAPI `FileResponse` defaults to a multi-hour cache when no `headers={…}` argument is passed — this is a footgun for any regenerable artifact.
+
+Detection signal: any download endpoint for a regenerable file that does not explicitly set `Cache-Control: no-store`.
+
+**Property 4 — Overwrite-safe generation (validate-then-rollback)**
+Every generation path that writes to a fixed filename (date-stamped or otherwise reused) MUST:
+
+  1. Write to a temp file (or accept post-write read-back)
+  2. Validate the generated content against the forbidden-token list and any other operator-locked invariants
+  3. On validation failure: unlink the bad file and do NOT update audit pointers; return HTTP 422 with the offending tokens
+  4. On validation success: atomically replace the final file (or accept the just-written file) and update audit pointers including `<artifact>_generated_at` timestamp + `<artifact>_file_exists` boolean
+  5. Audit pointer update MUST be the LAST step — never persist a pointer to an unvalidated file
+
+For Polish Description specifically, the forbidden tokens are:
+  - `UNKNOWN`
+  - `metal szlachetny`
+  - `Wyrób jubilerski`
+  - `grouped invoice aggregate`
+
+For other artifacts, the forbidden-token list is defined per-artifact by the operator.
+
+Detection signal: any generator that writes a file then updates audit pointers in the same code block without an intermediate validation step.
+
+**Property 5 — Regression test that the stale artifact cannot be served**
+Add a source-grep / response-header test pinning that:
+  - The download endpoint's response has `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`
+  - No code path emits `max-age=14400`, `max-age=3600`, or any other long cache for regenerable artifacts
+  - The generation path runs validate-then-rollback before the audit update
+  - Audit records `<artifact>_generated_at` timestamp
+
+Detection signal: a download endpoint or generation path without a regression test pinning the cache-policy or rollback contract.
+
+**Where it binds** — every generated artifact and every download endpoint that serves a regenerable file. Apply to:
+  - Polish Description (Polish customs description PDF)
+  - PZ PDFs (purchase goods receipt documents)
+  - PZ Calc XLSX (calculation workbooks)
+  - Audit EN / Audit PL (audit reports)
+  - Memo PDFs
+  - Corrections PDFs
+  - Proforma PDFs
+  - DSK PDFs (broker notification)
+  - SAD-ready JSON exports
+  - Any other DHL / customs / wFirma generated outputs that share a filename across regenerations
+
+Do not solve future stale-output bugs by manual file deletion only. The deletion masks the symptom; the cache / atomicity gap remains. Apply Properties 1–5 systematically.
+
+**Reference**: Global Jewellery AWB 4789974092 incident chain (2026-05-21); PR #260 (audit purge — wrong layer), PR #261 (packing reparse — wrong layer), PR #265 (cache headers + validate-then-rollback — the actual fix); `routes_dhl_clearance.py` `download_dhl_file` + `generate_description` validator block; `service/tests/test_polish_desc_cache_and_overwrite.py` (11 tests pinning the contract).
