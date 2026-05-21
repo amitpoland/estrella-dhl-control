@@ -38,7 +38,25 @@ from ..services.batch_service import get_output_dir
 from ..services import packing_db as pdb
 from ..services import document_db as ddb
 from ..services import inventory_state_engine as ise
-from ..services.invoice_packing_extractor import process_packing_upload
+from ..services.invoice_packing_extractor import process_packing_upload, _safe_float
+
+
+def _pdf_text_preview(path: Path) -> str:
+    """Return first ~800 characters of PDF text. Returns '' on any error."""
+    try:
+        import pdfplumber
+        with pdfplumber.open(str(path)) as pdf:
+            if not pdf.pages:
+                return ""
+            return (pdf.pages[0].extract_text() or "")[:800]
+    except Exception:
+        return ""
+
+
+def _is_commercial_invoice_text(text: str) -> bool:
+    """Return True if text looks like a commercial invoice, not a packing list."""
+    t = text.lower()
+    return "commercial invoice" in t and "packing list" not in t
 
 
 def seed_purchase_transit(batch_id: str, line_records: List[Dict[str, Any]]) -> int:
@@ -328,6 +346,18 @@ async def upload_packing_list(
     dest_path = packing_dir / safe_name
     dest_path.write_bytes(content)
 
+    # Content guard: reject commercial invoices uploaded as packing lists
+    if dest_path.suffix.lower() == ".pdf":
+        _preview = _pdf_text_preview(dest_path)
+        if _is_commercial_invoice_text(_preview):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Document appears to be a commercial invoice, not a packing list. "
+                    "Upload it using the Purchase Invoice upload instead."
+                ),
+            )
+
     # Run extraction + matching pipeline
     try:
         result = process_packing_upload(
@@ -385,20 +415,20 @@ async def upload_packing_list(
             "tray_id":              str(row.get("tray_id", "") or ""),
             "item_type":            str(row.get("item_type", "") or ""),
             "uom":                  str(row.get("uom", "") or ""),
-            "quantity":             float(row.get("quantity", 0) or 0),
-            "gross_weight":         float(row.get("gross_weight", 0) or 0),
-            "net_weight":           float(row.get("net_weight", 0) or 0),
+            "quantity":             _safe_float(row.get("quantity", 0)),
+            "gross_weight":         _safe_float(row.get("gross_weight", 0)),
+            "net_weight":           _safe_float(row.get("net_weight", 0)),
             "metal":                str(row.get("metal", "") or ""),
             "karat":                str(row.get("karat", "") or ""),
             "stone_type":           str(row.get("stone_type", "") or ""),
             "remarks":              str(row.get("remarks", "") or ""),
-            "extracted_confidence": float(row.get("extracted_confidence", 0) or 0),
+            "extracted_confidence": _safe_float(row.get("extracted_confidence", 0)),
             "requires_manual_review": bool(row.get("requires_manual_review", False)),
             # PR 2A — product identity enrichment from packing XLSX
             # unit_price_eur: client billing price (packing list Value column, EUR
             #   namespace) — distinct from unit_price which carries the supplier
             #   USD rate set at upsert from unit_price field above.
-            "unit_price_eur":       float(row.get("unit_price", 0) or 0),
+            "unit_price_eur":       _safe_float(row.get("unit_price", 0)),
             # metal_color: standalone color code (W/Y/RG/R) — preserved from the
             #   "Col" column or parsed from combined "14KT/Y" tokens by extractor.
             "metal_color":          str(row.get("metal_color", "") or ""),
@@ -413,6 +443,19 @@ async def upload_packing_list(
     # Seed inventory state → PURCHASE_TRANSIT for every line with a scan_code.
     # Idempotent on re-upload; failures must not break this route.
     seed_purchase_transit(batch_id, line_records)
+
+    # Global Jewellery: generate Polish descriptions from packing lines (non-blocking).
+    # EJL uses descriptions from invoice_lines; Global uses packing_lines directly.
+    if result.get("supplier") == "global_jewellery":
+        try:
+            from ..services.description_engine import regenerate_descriptions_for_packing_lines
+            _desc_result = regenerate_descriptions_for_packing_lines(
+                batch_id=batch_id, dry_run=False
+            )
+            log.info("[%s] Global packing descriptions: %s", batch_id, _desc_result)
+        except Exception as _desc_exc:
+            log.warning("[%s] Global description regen failed (non-fatal): %s",
+                        batch_id, _desc_exc)
 
     # Auto-create / sync proforma drafts from sales_packing_lines (non-blocking).
     # Uses sales_packing_lines (not packing_lines) as the source of truth for

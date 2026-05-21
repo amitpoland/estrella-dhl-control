@@ -46,13 +46,27 @@ from .routes_packing import seed_purchase_transit
 from ..services.awb_parser import parse_awb_pdf
 from ..services.batch_service import get_output_dir
 from ..services.invoice_intake_parser import parse_invoice_pdf
-from ..services.invoice_packing_extractor import process_packing_upload
+from ..services.invoice_packing_extractor import process_packing_upload, _safe_float
+from ..services.global_invoice_parser import parse_global_invoice_pdf
+from ..services.supplier_detect import detect_supplier
 from ..utils.io import write_json_atomic
 from .routes_upload import _mark_agency_documents_received
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/shipment", tags=["intake"])
 _auth  = Depends(require_api_key)
+
+
+def _read_pdf_text_preview(path: Path) -> str:
+    """Return first ~800 characters of a PDF's first page. Returns '' on error."""
+    try:
+        import pdfplumber
+        with pdfplumber.open(str(path)) as pdf:
+            if not pdf.pages:
+                return ""
+            return (pdf.pages[0].extract_text() or "")[:800]
+    except Exception:
+        return ""
 
 _CARRIERS            = {"DHL", "FedEx", "Other"}
 _ALLOWED_INVOICE_EXT = {".pdf"}
@@ -597,14 +611,14 @@ async def shipment_intake(
                     "tray_id":               str(r.get("tray_id", "") or ""),
                     "item_type":             str(r.get("item_type", "") or ""),
                     "uom":                   str(r.get("uom", "") or ""),
-                    "quantity":              float(r.get("quantity", 0) or 0),
-                    "gross_weight":          float(r.get("gross_weight", 0) or 0),
-                    "net_weight":            float(r.get("net_weight", 0) or 0),
+                    "quantity":              _safe_float(r.get("quantity", 0)),
+                    "gross_weight":          _safe_float(r.get("gross_weight", 0)),
+                    "net_weight":            _safe_float(r.get("net_weight", 0)),
                     "metal":                 str(r.get("metal", "") or ""),
                     "karat":                 str(r.get("karat", "") or ""),
                     "stone_type":            str(r.get("stone_type", "") or ""),
                     "remarks":               str(r.get("remarks", "") or ""),
-                    "extracted_confidence":  float(r.get("extracted_confidence", 0) or 0),
+                    "extracted_confidence":  _safe_float(r.get("extracted_confidence", 0)),
                     "requires_manual_review": bool(r.get("requires_manual_review", False)),
                     "invoice_no_raw":        str(r.get("invoice_no", "") or ""),
                     "supplier_name":         supplier,
@@ -612,14 +626,27 @@ async def shipment_intake(
                     # so two same-design rows from one source list aren't
                     # collapsed by the dedup logic.
                     "pack_sr":               r.get("line_position"),
-                    "unit_price":            float(r.get("unit_price", 0) or 0),
-                    "total_value":           float(r.get("total_value", 0) or 0),
+                    "unit_price":            _safe_float(r.get("unit_price", 0)),
+                    "total_value":           _safe_float(r.get("total_value", 0)),
                 }
                 for r in rows
             ]
             if line_records:
                 pdb.upsert_packing_lines(line_records)
                 seed_purchase_transit(batch_id, line_records)
+
+            # Global Jewellery: generate Polish descriptions from packing lines
+            if result.get("supplier") == "global_jewellery":
+                try:
+                    from ..services.description_engine import regenerate_descriptions_for_packing_lines
+                    _desc = regenerate_descriptions_for_packing_lines(
+                        batch_id=batch_id, dry_run=False
+                    )
+                    log.info("[%s] Global packing descriptions (intake): %s", batch_id, _desc)
+                except Exception as _desc_exc:
+                    log.warning("[%s] Global description regen failed (non-fatal): %s",
+                                batch_id, _desc_exc)
+
             pack_summary = {
                 "file":   name,
                 "status": "extracted",
@@ -1282,14 +1309,14 @@ async def add_packing_list(
                     "tray_id":               str(r.get("tray_id", "") or ""),
                     "item_type":             str(r.get("item_type", "") or ""),
                     "uom":                   str(r.get("uom", "") or ""),
-                    "quantity":              float(r.get("quantity", 0) or 0),
-                    "gross_weight":          float(r.get("gross_weight", 0) or 0),
-                    "net_weight":            float(r.get("net_weight", 0) or 0),
+                    "quantity":              _safe_float(r.get("quantity", 0)),
+                    "gross_weight":          _safe_float(r.get("gross_weight", 0)),
+                    "net_weight":            _safe_float(r.get("net_weight", 0)),
                     "metal":                 str(r.get("metal", "") or ""),
                     "karat":                 str(r.get("karat", "") or ""),
                     "stone_type":            str(r.get("stone_type", "") or ""),
                     "remarks":               str(r.get("remarks", "") or ""),
-                    "extracted_confidence":  float(r.get("extracted_confidence", 0) or 0),
+                    "extracted_confidence":  _safe_float(r.get("extracted_confidence", 0)),
                     "requires_manual_review": bool(r.get("requires_manual_review", False)),
                     "invoice_no_raw":        str(r.get("invoice_no", "") or ""),
                     "supplier_name":         supplier_name,
@@ -1298,6 +1325,18 @@ async def add_packing_list(
             ]
             pdb.upsert_packing_lines(line_records)
             seed_purchase_transit(batch_id, line_records)
+
+            # Global Jewellery: generate descriptions from packing lines (non-blocking)
+            if result.get("supplier") == "global_jewellery":
+                try:
+                    from ..services.description_engine import regenerate_descriptions_for_packing_lines
+                    _desc = regenerate_descriptions_for_packing_lines(
+                        batch_id=batch_id, dry_run=False
+                    )
+                    log.info("[%s] Global packing descriptions (backfill): %s", batch_id, _desc)
+                except Exception as _desc_exc:
+                    log.warning("[%s] Global description regen failed (non-fatal): %s",
+                                batch_id, _desc_exc)
         result_summary = {
             "status":               "extracted",
             "rows":                 len(rows),
@@ -1518,7 +1557,13 @@ async def add_document_to_batch(
 
     if policy["parser"] == "invoice":
         try:
-            parsed = parse_invoice_pdf(path, name)
+            # Supplier detection: route Global invoices to dedicated parser
+            _pdf_preview = _read_pdf_text_preview(path)
+            _supplier = detect_supplier(_pdf_preview)
+            if _supplier == "global_jewellery":
+                parsed = parse_global_invoice_pdf(path, name)
+            else:
+                parsed = parse_invoice_pdf(path, name)  # EJL default — unchanged
             lines = parsed.get("lines", [])
             method = parsed.get("extraction_method", "")
             n_stored = ddb.store_invoice_lines(doc_id, batch_id, lines) if doc_id else 0
