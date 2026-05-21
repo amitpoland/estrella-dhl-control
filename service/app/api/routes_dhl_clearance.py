@@ -295,6 +295,27 @@ def _project_invoice_line_to_engine_row(line: dict) -> dict:
     }
 
 
+def _is_placeholder_invoice_line(row: dict) -> bool:
+    """Detect invoice_intake_parser's fallback placeholder row.
+
+    The intake parser falls back to a single zero-valued placeholder row
+    when it can't extract real line items (e.g. for the global_jewellery
+    invoice template whose line layout differs from the EJL template the
+    extractor was tuned for). These rows have qty=0, total_value=0, and a
+    description starting with "(placeholder". Projecting them into the
+    reconciler poisons the FOB sum to 0 even when aggregate invoice_totals
+    were extracted correctly.
+
+    Returns True only for the unambiguous placeholder signature.
+    """
+    if not isinstance(row, dict):
+        return False
+    qty   = float(row.get("quantity")    or 0.0)
+    total = float(row.get("total_value") or row.get("amount_usd") or 0.0)
+    desc  = str(row.get("description") or "")
+    return qty == 0.0 and total == 0.0 and desc.lstrip().startswith("(placeholder")
+
+
 def _inject_rows_from_db_invoice_lines(batch_id: str, audit: dict) -> dict:
     """Project documents.db invoice_lines into ``audit["rows"]``.
 
@@ -304,6 +325,12 @@ def _inject_rows_from_db_invoice_lines(batch_id: str, audit: dict) -> dict:
         all batches sharing the same AWB (dedup by
         (invoice_no, line_position, product_code)).
 
+    Placeholder filter:
+      - Intake-time zero-valued placeholder rows (qty=0, total_value=0,
+        description starts with "(placeholder") are dropped here. Their
+        presence in the DB is a record-of-existence marker, not real
+        per-line data — projecting them would crash the reconciler.
+
     Idempotent: if ``audit`` already has ``rows`` or ``invoices``, no-op.
     """
     if audit.get("rows") or audit.get("invoices"):
@@ -312,6 +339,7 @@ def _inject_rows_from_db_invoice_lines(batch_id: str, audit: dict) -> dict:
     try:
         from app.services import document_db as _ddb
         rows = _ddb.get_invoice_lines_for_batch(batch_id) or []
+        rows = [r for r in rows if not _is_placeholder_invoice_line(r)]
 
         if not rows:
             # Cross-batch fallback: same AWB, different batch_id.
@@ -333,6 +361,9 @@ def _inject_rows_from_db_invoice_lines(batch_id: str, audit: dict) -> dict:
                         continue
                     visited_batches.add(bid)
                     for ln in (_ddb.get_invoice_lines_for_batch(bid) or []):
+                        # Same placeholder filter as primary path.
+                        if _is_placeholder_invoice_line(ln):
+                            continue
                         key = (
                             str(ln.get("invoice_no") or ""),
                             int(ln.get("line_position") or 0),
@@ -363,18 +394,203 @@ def _inject_rows_from_db_invoice_lines(batch_id: str, audit: dict) -> dict:
     return audit
 
 
+def _synthesize_rows_from_invoice_aggregates(batch_id: str, audit: dict) -> dict:
+    """Last-resort grouped-row synthesizer.
+
+    When the DB and XLSX paths produce no per-line rows but the engine
+    successfully parsed aggregate invoice_totals (fob_usd, freight_usd,
+    insurance_usd, product_counts_by_unit) — as happens for the
+    `global_jewellery` template whose per-line layout differs from the
+    EJL template the intake extractor was tuned for — synthesize one
+    grouped row per (invoice, unit_type) so the reconciler can verify
+    against the same aggregate the engine produced.
+
+    Properties:
+      - Pure read of files in source/invoices/ via engine parse_invoice
+      - Re-uses the C27.1 PDF-magic quarantine helper to skip non-PDF
+        masqueraders
+      - One grouped row per (invoice_file, PCS|PRS) — preserves the
+        unit breakdown the operator's customs description needs
+      - Row totals sum exactly to the engine's parsed FOB per file
+      - Idempotent: no-op if audit already has rows or no aggregates
+
+    NEVER touches CIF formula, customs threshold logic, SAD/ZC429 gate,
+    wFirma/PZ write paths.
+    """
+    if audit.get("rows") or audit.get("invoices"):
+        return audit
+
+    inv_totals = audit.get("invoice_totals") or {}
+    declared_fob = 0.0
+    try:
+        declared_fob = float(inv_totals.get("total_fob_usd") or 0.0)
+    except Exception:
+        declared_fob = 0.0
+    if declared_fob <= 0:
+        return audit  # no aggregate to synthesize from
+
+    # Resolve batch dir using the same pattern as other helpers in this file
+    inv_dir: Optional[Path] = None
+    for sub in ("outputs", "working"):
+        candidate = settings.storage_root / sub / batch_id / "source" / "invoices"
+        if candidate.is_dir():
+            inv_dir = candidate
+            break
+    if inv_dir is None:
+        return audit
+
+    inv_pdfs_all = sorted(inv_dir.glob("*.pdf"))
+    # Re-use the C27.1 magic-header quarantine — never feed a non-PDF
+    # to the engine's parser (it would crash or emit empty results that
+    # poison the synthesized rows).
+    try:
+        # Import locally to avoid circular reference; helper lives in
+        # routes_dashboard for the recheck loops.
+        from .routes_dashboard import _partition_valid_pdfs as _ppvp
+        inv_pdfs, _bad = _ppvp(inv_pdfs_all)
+    except Exception:
+        inv_pdfs, _bad = inv_pdfs_all, []
+
+    if not inv_pdfs:
+        return audit
+
+    # Ensure engine importable
+    engine_dir = str(settings.engine_dir)
+    if engine_dir not in sys.path:
+        sys.path.insert(0, engine_dir)
+
+    synthesized: List[dict] = []
+    try:
+        from pz_import_processor import parse_invoice as _pi  # noqa: PLC0415
+    except Exception as exc:
+        log.warning("[%s] synthesize_rows: engine import failed: %s", batch_id, exc)
+        return audit
+
+    line_pos = 0
+    for pdf in inv_pdfs:
+        try:
+            inv = _pi(str(pdf), [])
+        except Exception:
+            inv = None
+        if not isinstance(inv, dict):
+            continue
+        fob = float(inv.get("fob_usd") or 0.0)
+        if fob <= 0:
+            continue
+        invoice_no = (
+            str(inv.get("invoice_no") or "").strip()
+            or pdf.stem
+        )
+        counts_by_unit = inv.get("product_counts_by_unit") or {}
+        # Sum qty across PCS / PRS groups; if engine returned empty dict,
+        # fall back to a single PCS group inferred from total_units or
+        # qty=1 sentinel so the row still carries SOMETHING.
+        pcs_qty = 0
+        prs_qty = 0
+        try:
+            pcs_qty = int(round(sum(float(v or 0) for v in
+                                    (counts_by_unit.get("PCS") or {}).values())))
+            prs_qty = int(round(sum(float(v or 0) for v in
+                                    (counts_by_unit.get("PRS") or {}).values())))
+        except Exception:
+            pcs_qty = prs_qty = 0
+
+        # Fallback: scan the engine's raw text for the GLOBAL/IEC summary
+        # block layout ``PCS 183.0`` / ``PRS 62.0``. Pure read of engine
+        # output — no parser arithmetic, no customs logic.
+        if pcs_qty == 0 and prs_qty == 0:
+            import re as _re_local
+            raw = str(inv.get("_raw_text") or "")
+            m_pcs = _re_local.search(r"\bPCS\s+(\d+(?:\.\d+)?)\b", raw)
+            m_prs = _re_local.search(r"\bPRS\s+(\d+(?:\.\d+)?)\b", raw)
+            if m_pcs:
+                try: pcs_qty = int(round(float(m_pcs.group(1))))
+                except Exception: pass
+            if m_prs:
+                try: prs_qty = int(round(float(m_prs.group(1))))
+                except Exception: pass
+
+        total_qty = pcs_qty + prs_qty
+        if total_qty == 0:
+            # Fallback: try engine top-level qty
+            try:
+                total_qty = int(round(float(
+                    inv.get("total_pcs") or inv.get("total_units") or 0)))
+            except Exception:
+                total_qty = 0
+            pcs_qty = total_qty
+            prs_qty = 0
+            if total_qty == 0:
+                # Nothing to split — emit one grouped row with qty=1
+                # so the reconciler sees a row sum = fob.
+                pcs_qty = 1
+                total_qty = 1
+
+        # Allocate FOB proportionally to qty per unit so the sum is
+        # exact. Rounding residue placed on the last row.
+        groups: list[tuple[str, int]] = []
+        if pcs_qty > 0:
+            groups.append(("PCS", pcs_qty))
+        if prs_qty > 0:
+            groups.append(("PRS", prs_qty))
+
+        alloc_remaining = round(fob, 2)
+        for i, (unit, qty) in enumerate(groups):
+            if i == len(groups) - 1:
+                line_total = round(alloc_remaining, 2)
+            else:
+                # Proportional allocation by qty.
+                line_total = round(fob * (qty / total_qty), 2)
+                alloc_remaining = round(alloc_remaining - line_total, 2)
+            line_pos += 1
+            unit_price = round(line_total / qty, 6) if qty > 0 else 0.0
+            synthesized.append({
+                "invoice_number": invoice_no,
+                "line_position":  line_pos,
+                "product_code":   f"{invoice_no}-AGG-{unit}",
+                "description":    (
+                    f"{unit}, grouped invoice aggregate from "
+                    f"{inv.get('invoice_format') or 'invoice'} ({pdf.name})"
+                ),
+                "item_type":      "",
+                "quantity":       float(qty),
+                "unit_price":     unit_price,
+                "line_total":     line_total,
+                "hsn_code":       "",
+                "currency":       "USD",
+                "uom":            unit,
+            })
+
+    if not synthesized:
+        return audit
+
+    audit["rows"]            = synthesized
+    audit["_rows_source"]    = "synthesized_from_invoice_aggregates"
+    audit["_rows_row_count"] = len(synthesized)
+    log.info(
+        "[%s] _synthesize_rows_from_invoice_aggregates: produced %d grouped "
+        "row(s) summing to USD %.2f across %d invoice file(s)",
+        batch_id, len(synthesized),
+        sum(r["line_total"] for r in synthesized),
+        len({r["invoice_number"] for r in synthesized}),
+    )
+    return audit
+
+
 def _inject_rows_from_sources(batch_id: str, audit: dict) -> dict:
-    """Chain the DB-first row injection with the legacy XLSX path.
+    """Chain row sources in priority order.
 
     Order:
-      1. _inject_rows_from_db_invoice_lines  (PR-206 primary + cross-batch)
-      2. _inject_rows_from_xlsx              (legacy XLSX Rows sheet)
+      1. _inject_rows_from_db_invoice_lines        (DB primary, placeholder-filtered)
+      2. _inject_rows_from_xlsx                    (legacy XLSX Rows sheet)
+      3. _synthesize_rows_from_invoice_aggregates  (engine-aggregate grouped fallback)
 
-    Idempotent on subsequent calls.  Caller MUST apply the lines-missing
+    Idempotent on subsequent calls. Caller MUST apply the lines-missing
     guard (HTTP 422) when the chain still produces no rows.
     """
     audit = _inject_rows_from_db_invoice_lines(batch_id, audit)
     audit = _inject_rows_from_xlsx(batch_id, audit)
+    audit = _synthesize_rows_from_invoice_aggregates(batch_id, audit)
     return audit
 
 

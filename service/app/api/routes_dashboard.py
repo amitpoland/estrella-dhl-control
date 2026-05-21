@@ -3449,6 +3449,12 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
                     _totals = _ct(_parsed)
                     audit["invoice_totals"] = _totals
                     updated["invoice_totals"] = True
+                    # Refresh invoice_names so the rows-vs-audit reconciler
+                    # compares against the actually-valid PDFs in source/invoices/
+                    # — NOT the stale filename of a pre-C27.1 quarantined file
+                    # whose name lingered in audit.json from an earlier intake.
+                    audit["invoice_names"] = [p.name for p in inv_pdfs]
+                    updated["invoice_names"] = True
                     # Update verification CIF reference
                     ver = audit.setdefault("verification", {})
                     ver["invoice_cif_total_usd"] = _totals.get("total_cif_usd")
