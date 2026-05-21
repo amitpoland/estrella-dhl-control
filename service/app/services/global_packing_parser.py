@@ -451,10 +451,15 @@ def _split_style_metal_qty(blob: str) -> Tuple[str, str, int]:
     """Split the messy blob between Type and gross_wt into (style, metal, qty).
 
     Layouts:
-      "JBR00377 9 1"            → style=JBR00377, metal=9,    qty=1
-      "J3609P0119 925SL 1"      → style=J3609P0119, metal=925SL, qty=1
-      "CAO0233EH-1.50925SL 1"   → style=CAO0233EH-1.50, metal=925SL, qty=1
+      "JBR00377 9 1"                  → style=JBR00377, metal=9,    qty=1
+      "J3609P0119 925SL 1"            → style=J3609P0119, metal=925SL, qty=1
+      "CAO0233EH-1.50925SL 1"         → style=CAO0233EH-1.50, metal=925SL, qty=1
         (supplier omitted the space — split on the trailing metal suffix)
+      "JR08296 925SL/ 14KT CO 1M"     → style=JR08296, metal=925SL, qty=1
+        (multi-metal alloy: prefer the first listed; tolerate qty
+         OCR garbage like "1M")
+      "CSTR04794-J-HA9F25SL 1"        → style=CSTR04794-J-HA9F, metal=925SL, qty=1
+        (OCR slipped "9" off "925SL"; trailing "25SL" → treat as 925SL)
 
     Returns ("", "", 1) on failure so caller can still record the row
     via the fallback (FOB still extracts via the outer regex).
@@ -462,29 +467,50 @@ def _split_style_metal_qty(blob: str) -> Tuple[str, str, int]:
     parts = blob.strip().split()
     if not parts:
         return ("", "", 1)
-    # Last token is qty (small integer)
-    qty_raw = parts[-1]
+    # Last token is qty — be tolerant of OCR-trailing-letter garbage
+    # like "1M" / "1 M" / "1." Strip any trailing non-digit chars first.
+    qty_raw = re.sub(r"[^\d]+$", "", parts[-1])
     try:
-        qty = int(qty_raw)
+        qty = int(qty_raw) if qty_raw else 1
     except ValueError:
-        return ("", "", 1)
+        qty = 1
     rest = parts[:-1]
     if not rest:
         return ("", "", qty)
+
+    # Multi-metal alloy designations: "925SL/" or "925SL/ 14KT CO" — take
+    # the first metal-shaped token from the front of rest and treat the
+    # rest of the alloy descriptor as style annotation.
+    for i, tok in enumerate(rest):
+        # Strip alloy markers and combo separators
+        clean = tok.rstrip("/").rstrip()
+        if clean in _METAL_SUFFIX_TOKENS:
+            # Style = everything before this metal token
+            style = " ".join(rest[:i]) if i > 0 else " ".join(rest[:-1] or rest)
+            return (style, clean, qty)
+
     # Common case: rest = [style, metal]
     if len(rest) >= 2:
-        # Verify last token of rest is a known metal suffix
         last = rest[-1]
         if last in _METAL_SUFFIX_TOKENS:
             style = " ".join(rest[:-1])
             return (style, last, qty)
+
     # Single token in rest — try to split off a trailing metal suffix
     blob_no_qty = " ".join(rest)
     for ms in _METAL_SUFFIX_TOKENS:
         if blob_no_qty.endswith(ms) and len(blob_no_qty) > len(ms):
             style = blob_no_qty[: -len(ms)].rstrip()
             return (style, ms, qty)
-    # Couldn't separate — return blob as style, blank metal
+
+    # OCR-quirky fallbacks: trailing "25SL" almost certainly means 925SL
+    # (the supplier's metal column is 925SL; OCR dropped the leading 9).
+    if blob_no_qty.endswith("25SL") and len(blob_no_qty) > 4:
+        style = blob_no_qty[:-4].rstrip()
+        return (style, "925SL", qty)
+
+    # Couldn't separate — return blob as style, blank metal so caller
+    # can record the row even if vocabulary rendering is incomplete.
     return (blob_no_qty, "", qty)
 
 
@@ -611,6 +637,8 @@ def parse_global_packing_pdf(
             "metal":                  _normalise_metal_token(metal_raw),
             "metal_raw":              metal_raw,
             "stone_detail":           stone_detail,
+            # Alias for packing_db.upsert_packing_lines schema (stone_type col)
+            "stone_type":             stone_detail,
             "quantity":               float(qty),
             "gross_weight":           grs_wt,
             "net_weight":             net_wt,
