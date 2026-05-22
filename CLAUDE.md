@@ -315,9 +315,26 @@ plist moved to `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabl
 5. **Fix scope is the workflow class, not the incident batch.** Regression tests must use synthetic audits, not the specific batch's real `audit.json`.
 6. **Every real shipment must improve the platform for the next shipment.** Guards, lifecycle states, authority checks, and regression tests are the unit of platform maturity.
 
+**Incident classification (triage before coding):**
+
+| Incident type | Fix target |
+|---|---|
+| Wrong data generated | Authority chain |
+| Data lost after generation | Persistence / recovery |
+| Conflicting statuses | Lifecycle state machine |
+| Operator confusion | Single authority renderer |
+| Manual external intervention | Reconciliation workflow |
+| Repeat operator action | Automation or guided workflow |
+| Supplier-specific parsing | Supplier authority module |
+| Audit/compliance visibility | Notes / evidence layer |
+
+Complete this sentence before opening a code file: *"This is a [bucket] incident. The fix target is [component]. The workflow class is [description]. Another batch could hit this if [condition]."* If the sentence cannot be completed, root cause is not understood — do not code.
+
+**Cardinal question:** "What class of workflow allowed this to happen, and how do we make that class impossible in the future?" Not: "How do we fix this shipment?"
+
 **Enforcement**: reviewer-challenge fires automatically on every incident-driven PR. A PR that names only the incident batch without naming a workflow class and adding regression tests is incomplete by this lesson.
 
-**Reference**: `.claude/memory/engineering_lessons.md` Lesson I; operator governance statement 2026-05-22: "Every real shipment should improve the platform for the next shipment."
+**Reference**: `.claude/memory/engineering_lessons.md` Lesson I; operator governance statements 2026-05-22.
 
 ### Lesson F — V2 frontend migration requires frozen V1 and strict authority isolation (2026-05-20)
 
