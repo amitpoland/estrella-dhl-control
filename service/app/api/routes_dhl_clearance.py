@@ -2022,6 +2022,11 @@ async def generate_description(
                 "metal szlachetny",
                 "Wyrób jubilerski",
                 "grouped invoice aggregate",
+                # U+25A0 BLACK SQUARE — appears when Polish diacritics (ś, ż,
+                # ą, ę, ł, ć, ń, ó, ź) fail to render because the PDF font
+                # has no glyph for them. Catching it here prevents corrupted
+                # Polish-description PDFs from ever reaching operators.
+                "■",
             )
             _hits = [t for t in _FORBIDDEN_TOKENS if t in _pdf_text]
             if _hits:

@@ -241,3 +241,68 @@ def test_validator_logic_detects_each_token_individually():
         sample = f"... some Polish description with {tok} embedded ..."
         hits = [t for t in forbidden if t in sample]
         assert tok in hits, f"failed to detect {tok!r}"
+
+
+# ── Black-square (U+25A0) corruption rejection ───────────────────────────
+
+
+def test_forbidden_tokens_include_black_square_corruption_marker():
+    """The forbidden-token tuple in routes_dhl_clearance.py MUST include
+    U+25A0 BLACK SQUARE (■). On Windows, polish_description_generator
+    falls back to Helvetica when no OS-matching font path resolves;
+    Helvetica has no glyph for Polish diacritics so they render as ■.
+    Catching ■ in the validator rejects corrupted PDFs at generation
+    time and triggers the rollback path before audit pointers mutate.
+    """
+    src = _ROUTES.read_text(encoding="utf-8")
+    idx = src.find("_FORBIDDEN_TOKENS = (")
+    assert idx >= 0, "_FORBIDDEN_TOKENS tuple missing"
+    # Take the tuple body (rough 500-char window)
+    block = src[idx : idx + 500]
+    assert '"■"' in block, (
+        "U+25A0 BLACK SQUARE must be in _FORBIDDEN_TOKENS to catch "
+        "Windows font-fallback corruption of Polish diacritics"
+    )
+
+
+def test_validator_logic_detects_black_square_corruption():
+    """Direct validator-logic test: a PDF text fragment containing the
+    Windows-font-fallback corruption marker MUST be detected."""
+    forbidden = ("UNKNOWN", "metal szlachetny", "Wyrób jubilerski",
+                 "grouped invoice aggregate", "■")
+    corrupted = (
+        "Pozycja 1: Pier■cionek (RING)\n"
+        "Pier■cionek z diamentami i kamieniami szlachetnymi, "
+        "bi■uteria do noszenia.\n"
+        "Z jakiego materia■u / Material: metal\n"
+    )
+    hits = [t for t in forbidden if t in corrupted]
+    assert "■" in hits, (
+        "Validator failed to detect ■ corruption — "
+        f"hits = {hits!r}"
+    )
+
+
+def test_black_square_rejection_uses_existing_422_rollback_path():
+    """Source-grep: ■ must be handled by the same 422-rollback branch
+    the other 4 tokens use. The validate-then-rollback architecture
+    from PR #265 is the single rejection path; ■ does NOT get a custom
+    branch (`if "■" in pdf_text: ...`) anywhere else in the route file.
+    """
+    src = _ROUTES.read_text(encoding="utf-8")
+    # ■ as a Python string literal (only counts when it appears in code,
+    # not in comments) — must appear exactly once: in the tuple entry.
+    literal_count = src.count('"■"')
+    assert literal_count == 1, (
+        f'"■" literal should appear exactly once (in _FORBIDDEN_TOKENS); '
+        f"found {literal_count}"
+    )
+    # That one occurrence must come AFTER the tuple opens and BEFORE the
+    # forbidden-token scan (`_hits = [t for t in _FORBIDDEN_TOKENS …]`).
+    i_tuple_open = src.find("_FORBIDDEN_TOKENS = (")
+    i_hits       = src.find("_hits = [t for t in _FORBIDDEN_TOKENS")
+    i_literal    = src.find('"■"')
+    assert 0 < i_tuple_open < i_literal < i_hits, (
+        "■ literal must live inside the _FORBIDDEN_TOKENS tuple, "
+        "not in any custom branch elsewhere in the route"
+    )

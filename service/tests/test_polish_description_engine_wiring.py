@@ -162,3 +162,76 @@ def test_unknown_item_type_uses_safe_fallback(storage):
     # Sanity: the description_line stays Polish-first / slash / English-after
     assert " / " in row["description_line"]
     assert row["description_line"].startswith("Wyrób jubilerski")
+
+
+# ── 6. Polish diacritics render correctly — no black-square corruption ──────
+
+
+def test_no_black_square_in_generated_pdf(storage):
+    """Polish diacritics (ś, ż, ą, ę, ł, ć, ń, ó, ź) must render correctly.
+
+    When the PDF generator falls back to Helvetica (e.g. when none of the
+    OS-specific font paths in ``polish_description_generator._FONT_PATHS``
+    resolve), Polish characters are emitted as ``■`` (U+25A0 BLACK SQUARE).
+    This test catches the regression where the font search list was missing
+    paths for the current OS — production runs on Windows, so the original
+    list (macOS + Linux only) caused every generated polish-description PDF
+    to ship with ``■`` instead of ``ś``/``ż``/``ł``/``ć``/``ń``/``ó``/``ź``.
+
+    The fix adds ``C:/Windows/Fonts/arial.ttf`` (and three other Windows
+    Unicode fonts) to ``_FONT_PATHS``. This test pins that the rendered PDF
+    never contains the U+25A0 fallback glyph and that representative Polish
+    words come through intact.
+    """
+    deng.get_description_block(
+        "RING", "RING",
+        description_en="Diamond & Colour Stone PT950 Platinum Jewellery RING",
+    )
+    res = _generate(_make_batch("RING"), storage)
+    text = _read_pdf_text(res["output_path"])
+
+    # Hard invariant: U+25A0 must not appear anywhere in the rendered text.
+    assert "■" not in text, (
+        "Generated PDF contains ■ (U+25A0 BLACK SQUARE) — font fallback "
+        "corrupted Polish diacritics. Check polish_description_generator."
+        "_FONT_PATHS for the current OS. First 300 chars: "
+        + repr(text[:300])
+    )
+
+    # Representative Polish diacritic-bearing words must render intact.
+    for word in ("Pierścionek", "biżuteria", "materiału", "służy", "Ilość"):
+        assert word in text, (
+            f"Polish word {word!r} missing from generated PDF — likely "
+            f"corrupted by font fallback. Inspect _FONT_PATHS resolution. "
+            f"First 300 chars: {text[:300]!r}"
+        )
+
+
+# ── 7. pypdf is declared as a real dependency, not just a soft import ──────
+
+
+def test_pypdf_importable_as_declared_dependency():
+    """pypdf is required by this test module (and by the polish-description
+    PDF validator path). It MUST be declared in service/requirements.txt so
+    that fresh installs and CI environments do not silently degrade tests
+    to the latin-1 byte-scrape fallback.
+    """
+    import importlib
+    try:
+        pypdf = importlib.import_module("pypdf")
+    except ImportError as exc:  # pragma: no cover — guarded by requirements.txt
+        pytest.fail(
+            "pypdf import failed — must be declared in "
+            "service/requirements.txt: " + str(exc)
+        )
+    assert hasattr(pypdf, "PdfReader"), "pypdf.PdfReader API not available"
+
+    # Source-grep: requirements.txt must declare pypdf so future
+    # environments do not silently fall back to the latin-1 byte scrape.
+    req = (Path(__file__).resolve().parents[1] / "requirements.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "pypdf" in req, (
+        "pypdf must be declared in service/requirements.txt — present in "
+        "site-packages now but the requirement file says otherwise"
+    )

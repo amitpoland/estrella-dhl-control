@@ -196,8 +196,17 @@ def _generate(
 
     # ── Register Unicode font for Polish character support ────────────────────
     _FONT_PATHS = [
+        # Windows (production server) — listed first because production runs
+        # on Windows; without these paths Polish diacritics (ś, ż, ą, ę, ł,
+        # ć, ń, ó, ź) render as ■ (U+25A0) via the Helvetica fallback.
+        'C:/Windows/Fonts/arial.ttf',
+        'C:/Windows/Fonts/segoeui.ttf',
+        'C:/Windows/Fonts/calibri.ttf',
+        'C:/Windows/Fonts/tahoma.ttf',
+        # macOS (developer machines)
         '/Library/Fonts/Arial Unicode.ttf',
         '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+        # Linux (CI / containers)
         '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
         '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
     ]
