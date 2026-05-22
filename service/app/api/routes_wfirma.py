@@ -608,26 +608,29 @@ def _patch_pz_adopted(output_dir: Path, wfirma_pz_doc_id: str) -> Optional[str]:
 # ── PZ idempotency guard + lock ───────────────────────────────────────────────
 
 def _build_wfirma_pz_view_url(doc_id: str) -> Optional[str]:
-    """Return the wFirma web-app URL for viewing a warehouse PZ document.
+    """Return a confirmed operator-provided URL for viewing a wFirma PZ document.
 
-    URL pattern: https://app.wfirma.pl/{company_id}/warehouses/view/{doc_id}
+    The wFirma API does not expose a document view URL in its responses, so
+    no URL pattern can be inferred safely. Returns None unless the operator
+    has explicitly confirmed the correct URL pattern via WFIRMA_PZ_VIEW_URL_TEMPLATE.
 
-    Returns None when doc_id or company_id is absent, so callers render
-    graceful degradation (show doc_id text only, no broken link).
+    To enable the View-in-wFirma button:
+    1. Open the PZ document manually in wFirma in your browser.
+    2. Copy the URL from the browser address bar.
+    3. Replace the numeric doc_id with the literal {doc_id} placeholder.
+    4. Set WFIRMA_PZ_VIEW_URL_TEMPLATE=<your-pattern> in C:\\PZ\\.env
+       e.g. WFIRMA_PZ_VIEW_URL_TEMPLATE=https://app.wfirma.pl/companies/359292/view/{doc_id}
+    5. Restart PZService.
 
-    Operators can override the URL template via WFIRMA_PZ_VIEW_URL_TEMPLATE
-    in .env (e.g. "https://app.wfirma.pl/MYCOMPANY/warehouses/view/{doc_id}")
-    without a code deploy if the inferred URL pattern differs from their account.
+    Without the template, wfirma_pz_view_url is null — dashboard shows
+    doc_id + fullnumber text only, no broken link.
     """
     if not (doc_id or "").strip():
         return None
     template = (getattr(settings, "wfirma_pz_view_url_template", "") or "").strip()
-    if template:
-        return template.replace("{doc_id}", doc_id.strip())
-    company_id = (getattr(settings, "wfirma_company_id", "") or "").strip()
-    if not company_id:
+    if not template:
         return None
-    return f"https://app.wfirma.pl/{company_id}/warehouses/view/{doc_id.strip()}"
+    return template.replace("{doc_id}", doc_id.strip())
 
 
 def _has_pz_terminal_event(audit: dict) -> Optional[str]:
