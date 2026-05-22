@@ -607,6 +607,29 @@ def _patch_pz_adopted(output_dir: Path, wfirma_pz_doc_id: str) -> Optional[str]:
 
 # ── PZ idempotency guard + lock ───────────────────────────────────────────────
 
+def _build_wfirma_pz_view_url(doc_id: str) -> Optional[str]:
+    """Return the wFirma web-app URL for viewing a warehouse PZ document.
+
+    URL pattern: https://app.wfirma.pl/{company_id}/warehouses/view/{doc_id}
+
+    Returns None when doc_id or company_id is absent, so callers render
+    graceful degradation (show doc_id text only, no broken link).
+
+    Operators can override the URL template via WFIRMA_PZ_VIEW_URL_TEMPLATE
+    in .env (e.g. "https://app.wfirma.pl/MYCOMPANY/warehouses/view/{doc_id}")
+    without a code deploy if the inferred URL pattern differs from their account.
+    """
+    if not (doc_id or "").strip():
+        return None
+    template = (getattr(settings, "wfirma_pz_view_url_template", "") or "").strip()
+    if template:
+        return template.replace("{doc_id}", doc_id.strip())
+    company_id = (getattr(settings, "wfirma_company_id", "") or "").strip()
+    if not company_id:
+        return None
+    return f"https://app.wfirma.pl/{company_id}/warehouses/view/{doc_id.strip()}"
+
+
 def _has_pz_terminal_event(audit: dict) -> Optional[str]:
     """
     Return the name of any PZ terminal timeline event already recorded
@@ -1399,6 +1422,8 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
                 "batch_id":             batch_id,
                 "already_created":      False,
                 "wfirma_pz_doc_id":     None,
+                "wfirma_pz_fullnumber": None,
+                "wfirma_pz_view_url":   None,
                 "would_create_pz":      False,
                 "ready":                False,
                 "blockers":             blockers,
@@ -1442,6 +1467,8 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
             "batch_id":             batch_id,
             "already_created":      True,
             "wfirma_pz_doc_id":     existing_pz_doc_id,
+            "wfirma_pz_fullnumber": (wfirma_export.get("wfirma_pz_fullnumber") or None),
+            "wfirma_pz_view_url":   _build_wfirma_pz_view_url(existing_pz_doc_id),
             "would_create_pz":      False,
             "ready":                False,
             "blockers":             [],
@@ -1558,6 +1585,8 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         "batch_id":                 batch_id,
         "already_created":          False,
         "wfirma_pz_doc_id":         None,
+        "wfirma_pz_fullnumber":     None,
+        "wfirma_pz_view_url":       None,
         "would_create_pz":          result.ready and bool(supplier_wfirma_id) and bool(warehouse_id),
         "ready":                    result.ready,
         "blockers":                 [],
