@@ -416,6 +416,35 @@ After every fix:
 
 Every production incident is the system teaching itself what it missed. The correct response is not to patch the incident and move on — it is to make that class of incident structurally impossible for the next batch. Guards, lifecycle states, authority checks, and regression tests are the artifacts of that learning. PRs that produce these artifacts are the unit of platform maturity.
 
+**Four-artifact terminal closure test (mandatory for every incident campaign)**
+
+An incident has become **platform knowledge** — and the campaign is closed — when all four exist:
+
+| Artifact | Present? | Verification |
+|---|---|---|
+| Authority rule | ✅ / ❌ | Which system owns truth; no inversion allowed |
+| Lifecycle rule | ✅ / ❌ | State machine covers the failure class |
+| Recovery path | ✅ / ❌ | End-to-end state transition verified on live system |
+| Regression test | ✅ / ❌ | Synthetic audit, not batch-specific file |
+
+If any answer is ❌, the campaign is not closed — even if the current shipment works.
+
+```
+Incident discovered
+    ↓
+Authority rule added?       → No → incomplete
+    ↓
+Lifecycle rule added?       → No → incomplete
+    ↓
+Recovery path verified?     → No → incomplete
+    ↓
+Regression test exists?     → No → incomplete
+    ↓
+Campaign closed
+```
+
+This replaces "bug fixed" as the closure criterion. "Bug fixed" measures whether the shipment works. The four-artifact test measures whether the platform learned.
+
 **Where it binds**: every PR that fixes a production incident; every reviewer-challenge invocation on any incident-driven PR; every `agent-performance-observer` scorecard that evaluates an incident campaign; every `flow-context-keeper` update following an incident resolution. If a PR does not name a workflow class and does not add at least one regression test, it is incomplete by this lesson regardless of whether the immediate incident is resolved.
 
 **Reference**: Global Jewellery PZ campaign 2026-05-22, PRs #269–#283; operator governance statement 2026-05-22: "Every real shipment should improve the platform for the next shipment."
