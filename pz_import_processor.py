@@ -201,10 +201,13 @@ def compute_invoice_totals(invoices: list) -> dict:
               "earrings": 0, "necklaces": 0, "cufflinks": 0, "other_jewellery": 0}
     counts_by_unit: dict = {"PCS": {}, "PRS": {}}
 
+    freight_found_count = 0
     for inv in invoices:
         total_fob  += inv.get("fob_usd", 0.0)
         total_frgt += inv.get("freight_usd", 0.0)
         total_ins  += inv.get("insurance_usd", 0.0)
+        if inv.get("freight_found", False):
+            freight_found_count += 1
         for item in inv.get("items", []):
             qty  = item.get("quantity", 0)
             unit = (item.get("unit", "PCS") or "PCS").upper()
@@ -243,6 +246,7 @@ def compute_invoice_totals(invoices: list) -> dict:
         "total_units":           total_units,
         "total_fob_usd":         round(total_fob, 2),
         "total_freight_usd":     round(total_frgt, 2),
+        "freight_found_count":   freight_found_count,
         "total_insurance_usd":   round(total_ins, 2),
         "total_cif_usd":         round(total_fob + total_frgt + total_ins, 2),
         "product_counts":        counts,
@@ -1130,7 +1134,9 @@ def parse_invoice_global_jewellery(pdf_path: str, text: str, lines: list,
     fob_usd       = (find_amount("FOB US$") or find_amount("FOB USD") or
                      find_amount("Total FOB") or find_amount("FOB Value") or
                      find_amount("FOB"))
-    freight_usd   = find_amount("FRI US$") or find_amount("Freight US$") or find_amount("Freight") or 0.0
+    _frt          = find_amount("FRI US$") or find_amount("Freight US$") or find_amount("Freight")
+    freight_found = bool(_frt)
+    freight_usd   = float(_frt) if _frt else 0.0
     insurance_usd = find_amount("INS US$") or find_amount("Insurance US$") or find_amount("Insurance") or 0.0
 
     # Parsed CIF/Value from document
@@ -1237,6 +1243,7 @@ def parse_invoice_global_jewellery(pdf_path: str, text: str, lines: list,
         # ── Financial ─────────────────────────────────────────────────────────
         "fob_usd":       fob_usd,
         "freight_usd":   freight_usd,
+        "freight_found": freight_found,
         "insurance_usd": insurance_usd,
         "cif_usd":       fob_usd + freight_usd + insurance_usd,
         "cif_validation": cif_validation,
@@ -1300,7 +1307,9 @@ def parse_invoice_generic(pdf_path: str, text: str, lines: list,
         find_amount("Total FOB") or find_amount("FOB") or
         find_amount("Total Amount") or find_amount("Grand Total")
     )
-    freight_usd   = find_amount("Freight") or 0.0
+    _frt          = find_amount("Freight")
+    freight_found = bool(_frt)
+    freight_usd   = float(_frt) if _frt else 0.0
     insurance_usd = find_amount("Insurance") or 0.0
 
     # ── Item rows (broad HSN-anchored scan) ───────────────────────────────────
@@ -1410,6 +1419,7 @@ def parse_invoice_generic(pdf_path: str, text: str, lines: list,
         "country_destination": "",
         "fob_usd":       fob_usd,
         "freight_usd":   freight_usd,
+        "freight_found": freight_found,
         "insurance_usd": insurance_usd,
         "cif_usd":       fob_usd + freight_usd + insurance_usd,
         "cif_validation": cif_validation,
@@ -1528,11 +1538,11 @@ def parse_invoice(pdf_path: str, corrections_log: list) -> dict:
         or find_amount("FOB")
     )
 
-    freight_usd   = find_amount("Freight US$") or find_amount("Freight USD") or find_amount("Freight US")
+    _frt          = find_amount("Freight US$") or find_amount("Freight USD") or find_amount("Freight US")
+    freight_found = bool(_frt)
+    freight_usd   = float(_frt) if _frt else 0.0
     insurance_usd = find_amount("Insurance US$") or find_amount("Insurance USD") or find_amount("Insurance US")
 
-    if not freight_usd:
-        freight_usd = 0.0
     if not insurance_usd:
         insurance_usd = 0.0
 
@@ -1684,6 +1694,7 @@ def parse_invoice(pdf_path: str, corrections_log: list) -> dict:
         # ── Financial ─────────────────────────────────────────────────────────
         "fob_usd":       fob_usd,
         "freight_usd":   freight_usd,
+        "freight_found": freight_found,
         "insurance_usd": insurance_usd,
         "cif_usd":       fob_usd + freight_usd + insurance_usd,
         "cif_validation": cif_validation,

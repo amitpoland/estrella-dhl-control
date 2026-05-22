@@ -803,6 +803,21 @@ def batch_detail(batch_id: str) -> Dict[str, Any]:
     # fails silently to 'n/a', so no extra try/except is needed here.
     audit["sales_status_hint"] = _sales_hint(batch_id)
 
+    # Freight parse-status authority — derived on read, never persisted.
+    # Frontend must render Freight (PLN) from this, not from loose fields.
+    try:
+        from ..services.freight_authority import derive_freight_authority
+        audit["freight_authority"] = derive_freight_authority(audit)
+    except Exception as _fa_err:
+        log.warning("[%s] freight_authority derivation failed: %s", batch_id, _fa_err)
+        audit["freight_authority"] = {
+            "freight_status":        "unparsed",
+            "freight_pln":           None,
+            "freight_usd":           None,
+            "freight_source":        None,
+            "freight_review_reason": "Authority unavailable — derivation error.",
+        }
+
     return audit
 
 
