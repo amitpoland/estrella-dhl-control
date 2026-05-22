@@ -306,14 +306,36 @@ plist moved to `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabl
 5. UI showed contradictory banners simultaneously (multi-authority rendering)
 6. Compact audit notes missing from PZ description field
 
-**Binding rule — six principles:**
+**Six-step execution framework (apply before every incident fix):**
 
-1. **Every incident must name a workflow class before the fix PR closes.** "Can this happen on another batch?" If yes, the fix is a guard/lifecycle/authority-check — never `if batch_id == X`.
-2. **Authority chain flows top-to-bottom only:** invoice-positions → pz_rows.json → wFirma goods → PZ → audit. No cached intermediate substitutes for live authority when that authority is available.
-3. **`pz_lifecycle.state` is the single authority for all PZ UI, create guards, and audit-write decisions.** Any guard that checks `wfirma_export.wfirma_pz_doc_id` without `_has_pz_mapping_cleared_after_create` is incomplete.
-4. **Five mandatory protections for every future shipment**: (1) product-name drift detection; (2) audit-write loss → `PZ_RECOVERY_REQUIRED`; (3) manual-deletion + clear event → `PZ_RECONCILED`; (4) single-authority UI via `pz_lifecycle.state`; (5) compact audit notes via `build_wfirma_pz_notes` on every create/adopt.
-5. **Fix scope is the workflow class, not the incident batch.** Regression tests must use synthetic audits, not the specific batch's real `audit.json`.
-6. **Every real shipment must improve the platform for the next shipment.** Guards, lifecycle states, authority checks, and regression tests are the unit of platform maturity.
+**Step 1 — Classify** (before touching code):
+
+| Observation | Classification |
+|---|---|
+| Wrong data generated | Authority chain |
+| Data lost after generation | Persistence / recovery |
+| Conflicting statuses | Lifecycle state machine |
+| Operator confusion | Single authority renderer |
+| Manual external intervention | Reconciliation workflow |
+| Repeat operator action | Automation candidate |
+| Supplier-specific parsing | Supplier authority module |
+| Missing audit evidence | Notes / evidence layer |
+
+**Step 2 — Find authority owner.** Which system owns truth? No code before this is named. Candidates: Invoice · Customs · Warehouse · Sales · Customer Master · Product Master · PZ lifecycle · wFirma · DHL.
+
+**Step 3 — Cardinal question:** "What workflow class allowed this to happen, and how do we make that class impossible or self-recovering?"
+
+**Step 4 — Convert to platform behavior.** Fix must produce: authority rule · lifecycle state · recovery path · guard · validation · automation · regression test.
+
+**Step 5 — Verify broader impact.** "Can this affect another shipment / supplier / warehouse / customs / accounting flow?" If yes, fix at workflow level.
+
+**Step 6 — Closure requirements** (campaign only closed when all six pass):
+- Root cause (one sentence)
+- Authority owner named
+- Workflow class named
+- Recovery path verified end-to-end
+- Regression tests added (synthetic audits, not batch-specific files)
+- Existing workflows verified unaffected
 
 **Incident classification (triage before coding):**
 
