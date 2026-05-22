@@ -392,3 +392,124 @@ def test_authority_helper_is_read_only():
         assert forbidden not in src.upper(), (
             f"customer_resolution_authority must be read-only; found {forbidden!r}"
         )
+
+
+# ── 13. Lesson-A real-shape test: INTEGER matched_master_id (production) ────
+
+
+def test_integer_matched_master_id_resolves_correctly(tmp_path):
+    """Lesson A real-shape pin.
+
+    Production ``packing_resolutions.sqlite`` rows carry
+    ``matched_master_id`` as INTEGER (SQLite affinity from the
+    operator's selection pipeline). The earlier hand-built test rows
+    used TEXT strings — those passed but masked an ``AttributeError``
+    when the helper called ``.strip()`` on an int. Caught at PR #296
+    post-deploy verification on SHIPMENT_4218922912 (matched_master_id
+    = 52808306 as int).
+
+    This test pins the polymorphic-input normaliser ``_normalise_matched_
+    master_id`` against the actual production type. If the column ever
+    flips back to TEXT (or any other type), the normaliser must still
+    return a usable str for the customer_master lookup.
+    """
+    cm, pr = _make_dbs(tmp_path)
+    _seed_customer_master(
+        cm, id_=34, contractor_id="52808306", name="DG GmbH",
+        nip="DE266491614", country="DE",
+    )
+    # Write the packing row with an INTEGER matched_master_id (not a
+    # string) — matches production data.
+    with sqlite3.connect(str(pr)) as conn:
+        conn.execute(
+            "INSERT INTO packing_contractor_resolution "
+            "(batch_id, role, parsed_name, parsed_tax_id, parsed_country, "
+            "matched_master_type, matched_master_id, status, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, '2026-05-22', '2026-05-22')",
+            (BATCH, "client", "DG GmbH", "DE266491614", "DE",
+             "customer_master", 52808306,  # INT, not "52808306"
+             "confirmed"),
+        )
+
+    r = derive_customer_resolution_via_packing(
+        batch_id=BATCH, client_name="DiamondGroup GmbH",
+        customer_master_db_path=cm, packing_resolution_db_path=pr,
+    )
+    assert r is not None, (
+        "INTEGER matched_master_id must resolve via the normaliser; "
+        "if this fails, the .strip() call leaked back into the path"
+    )
+    assert r["wfirma_customer_id"]   == "52808306"
+    assert r["resolved_master_name"] == "DG GmbH"
+    assert r["customer_master_id"]   == 34
+    assert r["match_strategy"]       == "packing_master"
+
+
+def test_normaliser_handles_str_int_none_and_other_types():
+    """Direct unit test for _normalise_matched_master_id.
+
+    Polymorphic-input normaliser must produce a usable string for
+    every shape the column has ever held in production, dev, or test:
+      - str (TEXT affinity, original test shape)
+      - int (INTEGER affinity, current production shape)
+      - None (no match yet)
+      - empty string (no match)
+      - whitespace-padded string (operator/import artifact)
+    """
+    from app.services.customer_resolution_authority import (
+        _normalise_matched_master_id,
+    )
+    assert _normalise_matched_master_id(52808306)   == "52808306"
+    assert _normalise_matched_master_id("52808306") == "52808306"
+    assert _normalise_matched_master_id("  52808306  ") == "52808306"
+    assert _normalise_matched_master_id(None) == ""
+    assert _normalise_matched_master_id("")   == ""
+    # Defensive: anything else still produces a str
+    assert _normalise_matched_master_id(b"52808306") == "b'52808306'" or \
+           _normalise_matched_master_id(b"52808306").endswith("52808306")
+
+
+def test_real_shape_via_upsert_resolution_int_master_id(tmp_path):
+    """Lesson A integration test: write the packing-resolution row through
+    the REAL production helper ``packing_resolution_db.upsert_resolution``
+    (not a hand-built SQL INSERT). The verdict carries an INT
+    ``matched_master_id`` exactly as ``packing_contractor_resolver``
+    would produce it in production.
+    """
+    from app.services import packing_resolution_db as prdb
+
+    cm, _pr = _make_dbs(tmp_path)
+    _seed_customer_master(
+        cm, id_=34, contractor_id="52808306", name="DG GmbH",
+        nip="DE266491614", country="DE",
+    )
+    # Use a fresh DB path for upsert_resolution — it calls init_db itself.
+    pr_real = tmp_path / "packing_resolutions_real.sqlite"
+    verdict = {
+        "parsed_name":         "DG GmbH",
+        "parsed_tax_id":       "DE266491614",
+        "parsed_country":      "DE",
+        "matched_master_type": "customer_master",
+        "matched_master_id":   52808306,           # INT, like the real resolver
+        "matched_wfirma_id":   None,
+        "tier":                1,
+        "confidence":          1.0,
+        "reason":              "atlas_intake_dropdown_pick",
+        "evidence":            {"source": "intake_dropdown"},
+        "candidates":          [],
+        "status":              "confirmed",
+    }
+    prdb.upsert_resolution(
+        pr_real, batch_id=BATCH, role="client", verdict=verdict,
+        operator_user="test", status_override="confirmed",
+    )
+
+    r = derive_customer_resolution_via_packing(
+        batch_id=BATCH, client_name="DiamondGroup GmbH",
+        customer_master_db_path=cm, packing_resolution_db_path=pr_real,
+    )
+    assert r is not None
+    assert r["match_strategy"]     == "packing_master"
+    assert r["wfirma_customer_id"] == "52808306"
+    assert r["customer_master_id"] == 34
