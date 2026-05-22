@@ -1352,6 +1352,20 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
     created         = 0
     missing_codes: List[str]  = []
     failed_details: List[dict] = []
+    drift_codes:    List[str]  = []   # already-mapped codes whose local name has drifted from authority
+
+    # ── Authority pre-flight (Goods Authority Hardening, 2026-05-22) ──────
+    # Determine whether the current audit/rows constitute a valid authority
+    # source for wFirma goods creation:
+    #   - audit._rows_source == "invoice_positions_authority"  (PR #269)
+    #   - OR per-row pl_desc populated (Estrella supplier path)
+    # The pre-flight is computed ONCE for the batch (cheap), and a refusal
+    # is per-code: every row that lacks usable authority refuses with
+    # STALE_AUTHORITY_REFUSED rather than triggering the legacy
+    # description_engine cache fallback.
+    _global_authority = (audit.get("_rows_source") or "") == "invoice_positions_authority"
+
+    operator_for_log = _operator_from_header(None)  # endpoint has no operator header today
 
     # Performance: batch-fetch all known local products in one SQL round-trip
     # instead of O(N) individual get_product() calls (C6 T6 hardening).
@@ -1362,6 +1376,13 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
         local = _local_cache.get(pc)
         if local and (local.get("wfirma_product_id") or "").strip():
             already_mapped += 1
+            # Drift surface: when authority name (built from row) differs
+            # from cached product_name, expose the code so operator can
+            # run /wfirma/products/sync-names. Does NOT auto-rename.
+            authority_name = _build_authority_name(meta)
+            cached_name = (local.get("product_name") or "").strip()
+            if authority_name and cached_name and authority_name != cached_name:
+                drift_codes.append(pc)
             continue
 
         # ── 2. Live goods/find ────────────────────────────────────────────────
@@ -1388,25 +1409,68 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
             missing_codes.append(pc)
             continue
 
-        # ── 3b. Missing + gate on → create via description_engine ────────────
-        try:
+        # ── 3b. Missing + gate on → create from PZ ROWS AUTHORITY (Phase E) ──
+        # Authority pre-flight: refuse to create when the row lacks a
+        # usable authority source. STALE_AUTHORITY_REFUSED prevents the
+        # repeat of the Global AWB 4789974092 incident, where stale
+        # description_engine cache produced wrong wFirma good names that
+        # were then captured by a PZ document snapshot.
+        row_pl   = (meta.get("pl_desc")        or "").strip()
+        row_en   = (meta.get("description_en") or "").strip()
+        if not _global_authority and not row_pl:
+            failed_details.append({
+                "product_code": pc,
+                "error":        "STALE_AUTHORITY_REFUSED",
+                "reason":       (
+                    "row has no pl_desc and audit._rows_source is not "
+                    "'invoice_positions_authority' — refusing to create "
+                    "wFirma good from a non-authority description source. "
+                    "Re-run the Polish Description regenerate (force=true) "
+                    "before retrying /products/resolve."
+                ),
+                "audit_rows_source": audit.get("_rows_source"),
+                "has_pl_desc":       bool(row_pl),
+            })
+            continue
+
+        # Build the wFirma good name + description block DIRECTLY from
+        # the pz_rows row — the description_engine cache is bypassed for
+        # the create path so future runs cannot ship stale text.
+        wf_name = _build_authority_name(meta)
+        if not wf_name:
+            # Defensive fallback only when row genuinely has nothing —
+            # falls back to product_code as a last-resort identifier.
+            wf_name = pc
+
+        if row_pl:
+            material_pl = _material_from_pl_desc(row_pl) or row_pl
+            description_block = deng.build_description_block(
+                description_pl = row_pl,
+                material_pl    = material_pl,
+                purpose_pl     = "Ozdoba — biżuteria do noszenia.",
+                description_en = row_en,
+            )
+            authority_source = "pz_rows_authority"
+        else:
+            # No row pl_desc but invoice_positions_authority is set — use
+            # description_engine ONCE to seed the description block, but
+            # the name still comes from the row's available description_en.
             block = deng.get_description_block(
                 product_code   = pc,
                 item_type      = meta["item_type"],
-                description_en = meta["description_en"],
+                description_en = row_en,
             )
-            wf_name = (
-                (block.get("description_line") or "").strip()
-                or (block.get("name_pl") or "").strip()
-                or pc
-            )
+            description_block = block.get("description_block") or ""
+            authority_source  = "description_engine_fallback"
+
+        try:
             result_product = wfirma_client.create_product(
                 product_code = pc,
                 name         = wf_name,
                 unit         = "szt.",
                 netto        = 0.0,
                 vat_code_id  = wfirma_client.find_vat_code_id(23),
-                description  = block.get("description_block") or "",
+                description  = description_block,
             )
         except Exception as exc:
             log.warning("[%s] products/resolve: goods/add failed for %r: %s", batch_id, pc, exc)
@@ -1417,15 +1481,39 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
             failed_details.append({"product_code": pc, "error": "goods/add returned no wfirma_id"})
             continue
 
+        # Derive a short PL name (first item type before comma / "ze ")
+        # for the wfirma_products.product_name_pl column.
+        if row_pl:
+            short_pl = row_pl.split(" ze ")[0].split(",")[0].strip() or row_pl
+        else:
+            short_pl = ""
         wfirma_db.upsert_product(
             product_code      = pc,
             wfirma_product_id = result_product.wfirma_id,
-            product_name_pl   = block.get("name_pl") or "",
+            product_name_pl   = short_pl,
             product_name      = wf_name,
-            description_block = block.get("description_block") or "",
+            description_block = description_block,
             unit              = "szt.",
             sync_status       = "matched",
         )
+        # Timeline event — pins the authority source the create used so
+        # future audits can prove no stale-name creation happened.
+        try:
+            tl.log_event(
+                output_dir / "audit.json",
+                EV_WFIRMA_GOOD_CREATED_FROM_AUTHORITY,
+                "dashboard",
+                operator_for_log,
+                detail={
+                    "product_code":      pc,
+                    "wfirma_id":         result_product.wfirma_id,
+                    "name":              wf_name,
+                    "authority_source":  authority_source,
+                    "audit_rows_source": audit.get("_rows_source"),
+                },
+            )
+        except Exception:  # noqa: BLE001 — never fail the create because of audit-log
+            pass
         created += 1
 
     # ── Compute ready_for_pz via pz_preview builder ───────────────────────────
@@ -1487,6 +1575,12 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
         "ready_for_pz":      preview.ready,
         "unresolved_product_codes": preview.unresolved_codes,
         "price_conflicts":   preview.price_conflicts,
+        # Drift surface (Goods Authority Hardening, Phase E): codes that
+        # are already_mapped locally but whose cached wFirma name has
+        # drifted from the current pz_rows authority. Surfacing only —
+        # operator must run /wfirma/products/sync-names to fix.
+        "drift_codes":       drift_codes,
+        "drift_count":       len(drift_codes),
     })
 
 
@@ -1494,8 +1588,27 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
 # Use string literals (no new tl.EV_* constants) to keep the timeline module
 # clean of campaign-specific events; the values become the timeline `event`
 # field verbatim.
-EV_WFIRMA_GOOD_RENAMED    = "wfirma_good_renamed"
-EV_WFIRMA_PZ_MAPPING_CLEARED = "wfirma_pz_mapping_cleared"
+EV_WFIRMA_GOOD_RENAMED                 = "wfirma_good_renamed"
+EV_WFIRMA_PZ_MAPPING_CLEARED           = "wfirma_pz_mapping_cleared"
+EV_WFIRMA_GOOD_CREATED_FROM_AUTHORITY  = "wfirma_good_created_from_authority"
+
+
+def _build_authority_name(row_meta: Dict[str, Any]) -> str:
+    """Build a wFirma good name from a pz_rows row's authoritative
+    fields. Pure function — `row_meta` is the per-code dict assembled
+    in `/products/resolve` (carries pl_desc, description_en, item_type).
+
+    Format mirrors PR #276 sync-names output:
+      "<pl_desc> / <description_en>"  when both present
+      "<pl_desc>"                      when only pl_desc
+      "<description_en>"               when only description_en
+      ""                               when neither
+    """
+    pl = (row_meta.get("pl_desc")        or "").strip()
+    en = (row_meta.get("description_en") or "").strip()
+    if pl and en:
+        return f"{pl} / {en}"
+    return pl or en
 
 
 def _material_from_pl_desc(pl_desc: str) -> str:
