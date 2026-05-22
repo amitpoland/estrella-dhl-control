@@ -2813,10 +2813,21 @@ def _parse_pz_doc_from_xml(xml_text: str) -> dict:
             node = node.find(tag)
         return (node.text or "").strip() if node is not None else ""
 
-    contractor_id = _txt("contractor", "id") or _txt("contractor_id")
-    warehouse_id  = _txt("warehouse", "id") or _txt("warehouse_id")
-    date          = _txt("date") or _txt("document_date")
-    description   = _txt("description") or _txt("number") or ""
+    contractor_id   = _txt("contractor", "id") or _txt("contractor_id")
+    contractor_name = _txt("contractor", "altname") or _txt("contractor", "name") or ""
+    warehouse_id    = _txt("warehouse", "id") or _txt("warehouse_id")
+    date            = _txt("date") or _txt("document_date")
+    description     = _txt("description") or ""
+    status          = _txt("status") or ""
+    currency        = _txt("currency") or "PLN"
+    try:
+        netto_total = float(_txt("netto") or 0)
+    except (TypeError, ValueError):
+        netto_total = 0.0
+    try:
+        brutto_total = float(_txt("brutto") or 0)
+    except (TypeError, ValueError):
+        brutto_total = 0.0
     # wFirma's PZ read response carries the canonical PZ number under
     # ``<fullnumber>`` (no underscore), e.g. "PZ 4/5/2026". Bare
     # ``<number>`` is just the per-month sequence ("4") — only useful
@@ -2859,12 +2870,17 @@ def _parse_pz_doc_from_xml(xml_text: str) -> dict:
         })
 
     return {
-        "pz_number":     pz_number,
-        "date":          date,
-        "contractor_id": contractor_id,
-        "warehouse_id":  warehouse_id,
-        "description":   description,
-        "lines":         lines,
+        "pz_number":      pz_number,
+        "date":           date,
+        "status":         status,
+        "currency":       currency,
+        "contractor_id":  contractor_id,
+        "contractor_name": contractor_name,
+        "warehouse_id":   warehouse_id,
+        "description":    description,
+        "netto_total":    round(netto_total, 2),
+        "brutto_total":   round(brutto_total, 2),
+        "lines":          lines,
     }
 
 
@@ -2928,17 +2944,22 @@ async def wfirma_pz_document(batch_id: str) -> JSONResponse:
     )
 
     return JSONResponse({
-        "batch_id":     batch_id,
-        "pz_doc_id":    pz_doc_id,
-        "pz_number":    parsed.get("pz_number") or fetch.pz_number or "",
-        "date":         parsed.get("date", ""),
-        "contractor_id": parsed.get("contractor_id", ""),
-        "warehouse_id": parsed.get("warehouse_id", ""),
-        "description":  parsed.get("description", ""),
-        "line_count":   len(parsed.get("lines", [])),
-        "lines":        parsed.get("lines", []),
-        "pz_source":    pz_source,
-        "raw_xml":      fetch.raw_response or "",
+        "batch_id":       batch_id,
+        "pz_doc_id":      pz_doc_id,
+        "pz_number":      parsed.get("pz_number") or fetch.pz_number or "",
+        "date":           parsed.get("date", ""),
+        "status":         parsed.get("status", ""),
+        "currency":       parsed.get("currency", "PLN"),
+        "contractor_id":  parsed.get("contractor_id", ""),
+        "contractor_name": parsed.get("contractor_name", ""),
+        "warehouse_id":   parsed.get("warehouse_id", ""),
+        "description":    parsed.get("description", ""),
+        "netto_total":    parsed.get("netto_total", 0.0),
+        "brutto_total":   parsed.get("brutto_total", 0.0),
+        "line_count":     len(parsed.get("lines", [])),
+        "lines":          parsed.get("lines", []),
+        "pz_source":      pz_source,
+        "raw_xml":        fetch.raw_response or "",
     })
 
 
