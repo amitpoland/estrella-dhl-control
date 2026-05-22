@@ -3663,6 +3663,20 @@ async def recheck_batch(batch_id: str, body: RecheckRequest = RecheckRequest()) 
                             f"AI supplemented {len(orch['ai_supplemented_fields'])} field(s): "
                             f"{', '.join(orch['ai_supplemented_fields'])}"
                         )
+                    # Persist AI evidence recovery result (PR #263 module).
+                    # Stored regardless of reconciliation status so operators
+                    # see the AI attempt; financial fields are never touched
+                    # by this store.
+                    if orch.get("ai_customs_evidence"):
+                        audit["ai_customs_evidence"] = orch["ai_customs_evidence"]
+                        updated["ai_customs_evidence"] = True
+                        _ace_status = (orch["ai_customs_evidence"]
+                                       .get("reconciliation", {}).get("status") or "")
+                        if _ace_status == "verified_with_advisory":
+                            warnings.append(
+                                "SAD verified by MRN/AWB/CIF. Invoice "
+                                "reference confirmed by AI evidence extraction."
+                            )
                 elif orch.get("error"):
                     errors.append(orch["error"])
                 else:

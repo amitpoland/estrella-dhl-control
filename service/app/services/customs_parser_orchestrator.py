@@ -263,6 +263,120 @@ def parse_customs_document(
                 log.info("[orchestrator] %s: full AI fallback, mrn=%s, confidence=%s",
                          batch_id, ai_data.get("mrn"), confidence)
 
+    # ── Priority 4: AI evidence recovery on VERIFY-GAP / inferred refs ──────
+    #
+    # When the deterministic parser produced a result but emitted a
+    # VERIFY-GAP because invoice refs had to be inferred from free text
+    # (e.g. Global Jewellery SAD where the supplier ref 088/2026-2027
+    # appears in document sections but not as an N935 reference), we
+    # invoke PR #263's evidence recovery module. The module is a no-op
+    # when no AI provider is configured — deterministic VERIFY-GAP
+    # behaviour is preserved.
+    #
+    # Authority rules (operator-locked):
+    #   - AI may not change any deterministic field. The orchestrator
+    #     does NOT merge AI's invoice_refs into result_data["invoice_refs"]
+    #     — it only attaches the evidence block + reconciliation status
+    #     under ai_customs_evidence.
+    #   - When reconciliation says verified_with_advisory, the
+    #     corresponding [VERIFY-GAP] line is DEMOTED to an advisory
+    #     (no longer prefixed VERIFY-GAP) so the UI shows the resolved
+    #     state. The original wording is preserved in
+    #     ai_customs_evidence.reconciliation for forensics.
+    #   - When AI is unavailable, mismatches, or low-confidence, the
+    #     VERIFY-GAP correction is retained UNCHANGED — operator review.
+    ai_customs_evidence: Optional[Dict[str, Any]] = None
+    if result_data and (
+        result_data.get("invoice_refs_method") == "inferred_from_sad_free_text"
+        or any(c.startswith("[VERIFY-GAP] SAD invoice references inferred")
+               for c in corrections)
+    ):
+        try:
+            from .ai_customs_evidence import (
+                should_invoke_ai, extract_customs_evidence,
+                reconcile_evidence, build_audit_entry,
+            )
+            # Build deterministic anchors from result_data
+            anchors = {
+                "invoice_refs": list(result_data.get("invoice_refs") or []),
+                "mrn":          result_data.get("mrn") or "",
+                "awb":          "",   # parse_zc429 doesn't carry AWB; orchestrator caller knows it
+                "cif_usd":      result_data.get("total_cif_usd"),
+                "exporter":     result_data.get("exporter_name") or "",
+                "importer":     result_data.get("importer_name") or "",
+                "confidence":   confidence,
+            }
+            # AWB hint from caller's audit (orchestrator doesn't read audit
+            # for AWB directly to keep the call shape stable — caller passes it)
+            try:
+                _awb_hint = (audit or {}).get("awb") or \
+                            (audit or {}).get("tracking_no") or \
+                            ((audit or {}).get("inputs") or {}).get("awb") or ""
+                if isinstance(_awb_hint, str):
+                    anchors["awb"] = _awb_hint
+            except Exception:
+                pass
+
+            if should_invoke_ai(anchors, warnings=corrections):
+                # Read SAD text for the AI prompt. Use the existing PDF
+                # text extractor (no engine writes; pure read).
+                sad_text = ""
+                try:
+                    if sad_dir.exists():
+                        pdf_files = [p for p in sorted(sad_dir.glob("*.pdf"))
+                                     if not p.name.lower().startswith("awizo")]
+                        if pdf_files:
+                            import pdfplumber  # noqa: PLC0415
+                            with pdfplumber.open(str(pdf_files[0])) as pdf:
+                                sad_text = "\n".join(
+                                    (page.extract_text() or "")
+                                    for page in pdf.pages[:10]
+                                )
+                except Exception as exc:
+                    log.warning("[orchestrator] %s: SAD text extraction "
+                                "for AI failed: %s", batch_id, exc)
+
+                if sad_text:
+                    ai_block = extract_customs_evidence(
+                        pdf_text=sad_text,
+                        document_hint="SAD/ZC429 customs declaration",
+                        anchors=anchors,
+                    )
+                    recon = reconcile_evidence(ai_block, anchors)
+                    ai_customs_evidence = build_audit_entry(ai_block, recon)
+                    log.info(
+                        "[orchestrator] %s: AI evidence recovery → %s "
+                        "(matches=%d, mismatches=%d)",
+                        batch_id, recon.get("status"),
+                        len(recon.get("matches") or []),
+                        len(recon.get("mismatches") or []),
+                    )
+
+                    # Demote VERIFY-GAP correction to advisory ONLY when
+                    # reconciliation confirms the MRN/AWB/CIF anchors.
+                    # operator_review_required / ai_low_confidence /
+                    # ai_unavailable all preserve the [VERIFY-GAP] line.
+                    if recon.get("status") == "verified_with_advisory":
+                        new_corrections: List[str] = []
+                        demoted = False
+                        for c in corrections:
+                            if (not demoted) and c.startswith(
+                                "[VERIFY-GAP] SAD invoice references inferred"
+                            ):
+                                new_corrections.append(
+                                    "[ADVISORY] " + recon.get("advisory", "")
+                                )
+                                demoted = True
+                            else:
+                                new_corrections.append(c)
+                        corrections = new_corrections
+        except Exception as exc:
+            # Any AI-layer failure must NEVER affect the deterministic
+            # result. Log and continue.
+            log.warning("[orchestrator] %s: AI evidence recovery failed "
+                        "(non-fatal): %s", batch_id, exc)
+            ai_customs_evidence = None
+
     # ── No result at all ────────────────────────────────────────────────────
     if not result_data:
         return {
@@ -301,6 +415,10 @@ def parse_customs_document(
         "corrections": corrections,
         "ai_supplemented_fields": ai_supplemented,
         "validation": validation_result,
+        # Priority-4 AI evidence recovery output. None when no VERIFY-GAP
+        # fired, AI unavailable, or feature flag off. Storage of this dict
+        # under audit["ai_customs_evidence"] is the caller's responsibility.
+        "ai_customs_evidence": ai_customs_evidence,
     }
 
 
