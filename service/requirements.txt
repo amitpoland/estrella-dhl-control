@@ -14,5 +14,7 @@ openpyxl>=3.1
 # packing parser can open .xls vendor files (purchase packing lists).
 xlrd>=1.2.0,<2.0.0
 pymupdf>=1.24          # fitz — PDF parsing
+pdfplumber>=0.10       # Polish-description PDF text validator (routes_dhl_clearance.py)
+pypdf>=6.0             # PDF text extraction for polish-description engine tests
 requests>=2.31         # NBP API
 tzdata>=2024.1         # IANA tz database for ZoneInfo on Windows (warsaw_today())
