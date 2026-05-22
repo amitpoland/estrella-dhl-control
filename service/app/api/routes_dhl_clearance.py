@@ -2001,10 +2001,69 @@ async def generate_description(
             detail=f"PDF generation failed: {pdf_result.get('error', 'unknown error')}",
         )
 
+    # ── Validate-then-rollback overwrite safety ──────────────────────────────
+    # Operator spec: a generated PDF that contains any of the forbidden
+    # placeholder strings (UNKNOWN / metal szlachetny / Wyrób jubilerski /
+    # grouped invoice aggregate) MUST NOT be saved. We can't pre-validate
+    # (the engine writes directly), so we read-back the generated file,
+    # scan its text, and unlink + raise 422 if any forbidden token is
+    # present. The audit pointers are NOT updated in that case — the
+    # previous state remains, and the operator sees a clear error.
+    _generated_path = Path(pdf_result.get("output_path") or "")
+    if _generated_path.is_file():
+        try:
+            import pdfplumber as _pp_validate  # noqa: PLC0415
+            with _pp_validate.open(str(_generated_path)) as _pdf_v:
+                _pdf_text = "\n".join(
+                    (p.extract_text() or "") for p in _pdf_v.pages
+                )
+            _FORBIDDEN_TOKENS = (
+                "UNKNOWN",
+                "metal szlachetny",
+                "Wyrób jubilerski",
+                "grouped invoice aggregate",
+            )
+            _hits = [t for t in _FORBIDDEN_TOKENS if t in _pdf_text]
+            if _hits:
+                # Roll back: unlink the bad file, do NOT touch audit pointers.
+                try:
+                    _generated_path.unlink()
+                except OSError:
+                    pass
+                log.warning(
+                    "[%s] generated PDF rejected — forbidden tokens %s. "
+                    "File unlinked, audit pointers NOT updated.",
+                    batch_id, _hits,
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "guard":  "polish_desc_forbidden_tokens",
+                        "error":  "Generated Polish description contains "
+                                  "forbidden placeholder text. File not saved.",
+                        "code":   "polish_desc_forbidden_tokens",
+                        "tokens": _hits,
+                        "hint":   "Reparse packing list and verify rows "
+                                  "produce real PL/EN descriptions before "
+                                  "regenerating.",
+                    },
+                )
+        except HTTPException:
+            raise
+        except Exception as _ve:
+            # Validation infrastructure failed (e.g. pdfplumber unavailable)
+            # — degrade gracefully, log, do NOT roll back the file.
+            log.warning(
+                "[%s] forbidden-token validation skipped (%s); generated "
+                "file preserved", batch_id, _ve,
+            )
+
     # Update audit
-    audit["clearance_status"]     = "polish_description_generated"
-    audit["polish_desc_filename"] = pdf_result.get("filename")
-    audit["polish_desc_path"]     = pdf_result.get("output_path")
+    audit["clearance_status"]      = "polish_description_generated"
+    audit["polish_desc_filename"]  = pdf_result.get("filename")
+    audit["polish_desc_path"]      = pdf_result.get("output_path")
+    audit["polish_desc_generated_at"] = datetime.now(timezone.utc).isoformat()
+    audit["polish_desc_file_exists"]  = True
     json_result = pkg.get("json") or {}
     if json_result.get("generated"):
         audit["sad_ready_filename"] = json_result.get("filename")
@@ -2115,6 +2174,13 @@ async def download_dhl_file(filename: str) -> FileResponse:
     - DSK output directory
     - Polish descriptions directory
     - SAD-ready directory
+
+    **Cache policy (operator-locked):** generated PDFs are regenerable
+    artifacts that change per click — the response sets
+    ``Cache-Control: no-store, no-cache, must-revalidate, max-age=0``
+    so the browser ALWAYS fetches a fresh copy. Prior behaviour cached
+    for four hours (FastAPI FileResponse default), which caused stale
+    PDFs to persist in the browser cache even after regenerate/delete.
     """
     # Sanitize filename — no path traversal
     if "/" in filename or "\\" in filename or ".." in filename:
@@ -2128,10 +2194,20 @@ async def download_dhl_file(filename: str) -> FileResponse:
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
     media_type = "application/pdf" if ext == ".pdf" else "application/json"
+    # Defeat aggressive browser caching of generated artifacts.
+    # POLISH_DESC_*, DSK_*, SAD_READY_* files share the same filename
+    # across regenerations (date-stamped) so without explicit no-store
+    # the browser serves a stale cached copy for max-age=14400 (4h).
+    no_cache_headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma":        "no-cache",
+        "Expires":       "0",
+    }
     return FileResponse(
         path=str(found),
         media_type=media_type,
         filename=filename,
+        headers=no_cache_headers,
     )
 
 
