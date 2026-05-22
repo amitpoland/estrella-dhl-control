@@ -294,6 +294,31 @@ email-capable service is being restarted.
 2026-05-18 containment: `launchctl unload ~/Library/LaunchAgents/eu.estrellajewels.pz-service.plist`,
 plist moved to `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabled`.
 
+### Lesson I — Production incidents must become workflow-class rules, never shipment-specific patches (2026-05-22)
+
+**GATE 1 + reviewer-challenge.** Origin: Global Jewellery PZ campaign (PRs #269–#283). Six workflow-class failures were exposed by one batch and resolved as permanent workflow hardening.
+
+**Six workflow failures, all shipment-class:**
+1. Product names created from stale authority (cached description, not invoice-position authority)
+2. PZ manually deleted in wFirma; audit mapping lost after `/process` run
+3. `clear-mapping` idempotency used wrong authority (`wfirma_export` field, not timeline)
+4. `pz_create` guard did not understand `PZ_RECONCILED` lifecycle state
+5. UI showed contradictory banners simultaneously (multi-authority rendering)
+6. Compact audit notes missing from PZ description field
+
+**Binding rule — six principles:**
+
+1. **Every incident must name a workflow class before the fix PR closes.** "Can this happen on another batch?" If yes, the fix is a guard/lifecycle/authority-check — never `if batch_id == X`.
+2. **Authority chain flows top-to-bottom only:** invoice-positions → pz_rows.json → wFirma goods → PZ → audit. No cached intermediate substitutes for live authority when that authority is available.
+3. **`pz_lifecycle.state` is the single authority for all PZ UI, create guards, and audit-write decisions.** Any guard that checks `wfirma_export.wfirma_pz_doc_id` without `_has_pz_mapping_cleared_after_create` is incomplete.
+4. **Five mandatory protections for every future shipment**: (1) product-name drift detection; (2) audit-write loss → `PZ_RECOVERY_REQUIRED`; (3) manual-deletion + clear event → `PZ_RECONCILED`; (4) single-authority UI via `pz_lifecycle.state`; (5) compact audit notes via `build_wfirma_pz_notes` on every create/adopt.
+5. **Fix scope is the workflow class, not the incident batch.** Regression tests must use synthetic audits, not the specific batch's real `audit.json`.
+6. **Every real shipment must improve the platform for the next shipment.** Guards, lifecycle states, authority checks, and regression tests are the unit of platform maturity.
+
+**Enforcement**: reviewer-challenge fires automatically on every incident-driven PR. A PR that names only the incident batch without naming a workflow class and adding regression tests is incomplete by this lesson.
+
+**Reference**: `.claude/memory/engineering_lessons.md` Lesson I; operator governance statement 2026-05-22: "Every real shipment should improve the platform for the next shipment."
+
 ### Lesson F — V2 frontend migration requires frozen V1 and strict authority isolation (2026-05-20)
 
 **GATE 1 + V1-FREEZE.** Origin: MASTER-CLOSE-AND-START-V2 architectural directive.

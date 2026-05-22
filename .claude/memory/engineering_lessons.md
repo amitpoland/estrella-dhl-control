@@ -267,3 +267,155 @@ Detection signal: `email_service.py` or `smtplib` import reachable without an en
 **Where it binds**: every scheduler, launchd/cron/NSSM/systemd job, cowork pipeline action runner, SLA follow-up service, or any module that imports `email_service`, `queue_email`, or `smtplib`; every code review of background automation; every deploy gate where an email-capable service is being restarted or added.
 
 **Reference**: 2026-05-18 MacBook containment; `CLAUDE.md` Lesson E summary; plist archived at `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabled`.
+
+---
+
+## Lesson H — Production `.env` must be pure UTF-8 and never carry placeholder literals (2026-05-22)
+
+**Origin**: Global PZ wFirma posting readiness campaign (2026-05-22). During Step 3 (warehouse config) the operator pasted the documentation example lines `WFIRMA_WAREHOUSE_ID=REAL_ID_HERE` and `WFIRMA_WAREHOUSE_MODULE_ENABLED=true` into `C:\PZ\.env` using PowerShell `Add-Content`. PZService entered `STATE: 7 PAUSED`; health endpoint stopped responding. The pasted text was a red herring; the real failure surfaced in `pz_stderr.log`:
+
+```
+File ".../pydantic_settings/sources/providers/dotenv.py", line 81, in _read_env_file
+  ...
+File ".../codecs.py", line 322, in decode
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0x97 in position 1256: invalid start byte
+```
+
+Two bare `0x97` bytes (Windows-1252 em-dashes `–`) were sitting in two DHL-Tracking-API comment lines (line 48 + line 58 of `.env`). pydantic-settings reads `.env` strictly as UTF-8 — any single non-UTF-8 byte raises `UnicodeDecodeError` before settings finish loading. uvicorn fails to import the app; NSSM marks the service PAUSED. Every API call returns connection-refused. Recovery required byte-level repair of `.env` because the agent shell could not write to `C:\PZ\.env` (operator-only path) and PowerShell's default `Set-Content` produces UTF-16-LE which would make the problem worse.
+
+**Binding rule** — every production `.env` edit MUST satisfy all four properties:
+
+**Property 1 — Strict UTF-8 encoding (without BOM)**
+`.env` must be encoded as UTF-8 without a byte-order mark. pydantic-settings rejects Windows-1252 / Latin-1 / UTF-16. PowerShell 5.1's `Set-Content -Encoding UTF8` writes a BOM (which pydantic-settings tolerates but other dotenv libs may not); `Out-File -Encoding utf8` and `Add-Content` (no `-Encoding`) default to UTF-16-LE on Windows PowerShell — never use them for `.env`. Always pass `-Encoding UTF8` explicitly, OR use `[System.IO.File]::WriteAllBytes` with a known byte stream, OR edit in a UTF-8-only editor (Notepad++, VS Code with EOL=LF + Encoding=UTF-8).
+
+Detection signal: any byte in `[0x80..0xC1]` that is not part of a valid UTF-8 multibyte sequence; presence of `0xFE 0xFF` or `0xFF 0xFE` BOM bytes at file head.
+
+**Property 2 — No placeholder literals**
+Documentation patterns like `WFIRMA_WAREHOUSE_ID=REAL_ID_HERE`, `<id-from-wFirma>`, `<your-token-here>`, `XXX`, `TODO`, `FIXME`, or `<value>` must never appear in production `.env`. Pydantic accepts any string; downstream code may treat the literal as a "configured" value and silently send `?warehouse=REAL_ID_HERE` to wFirma, hit a SQL injection trap, or produce an apparently-successful response with garbage data. The example patterns in docs MUST be marked clearly as documentation-only (e.g., enclosed in a "do not paste verbatim" warning), OR the docs must omit the example value entirely and instruct the operator to substitute their actual value before pasting.
+
+Detection signal: regex `(?i)real_id|real_value|<[^>]*>|xxx|todo|fixme|placeholder|your[-_]?(id|key|token|value)` matching any `.env` value after `=`.
+
+**Property 3 — Service-startup pre-flight check on `.env`**
+On every PZService startup, the application MUST validate `.env` is parseable as UTF-8 and contains no placeholder patterns BEFORE attempting to load settings. A failed pre-flight must log a clear, structured error to `pz_stderr.log` (file path, byte offset, character class) rather than letting pydantic-settings crash with a generic `UnicodeDecodeError`. The check is read-only and fast.
+
+Detection signal: `Settings()` construction reachable from `main.py` import without a preceding `_validate_env_file()` call that asserts UTF-8 decode + placeholder absence.
+
+**Property 4 — Backup before edit, byte-level rollback path**
+Every production `.env` edit MUST be preceded by `Copy-Item C:\PZ\.env "C:\PZ\.env.bak_$(Get-Date -Format yyyyMMdd_HHmmss)"`. If a restart fails health, the operator restores the last good backup via `Copy-Item C:\PZ\.env.bak_<timestamp> C:\PZ\.env -Force` and re-runs the service. The agent never writes to production `.env` directly — every edit is operator-typed in elevated PowerShell, with the backup and the change in the same transaction.
+
+Detection signal: any `.env`-editing instruction in chat that omits the backup step; any deploy procedure that touches `.env` without an explicit rollback command listed alongside.
+
+**Where it binds**: every operator instruction set that involves editing `C:\PZ\.env` (or any `.env`); every campaign that requests new env keys; every doc snippet that uses example values; every PR that adds a new `Settings` field expecting a value from `.env`. Documentation example values must be inert (e.g., `<replace-this-with-actual-id-do-not-paste-literally>`) so accidental paste produces a regex-detectable string that pre-flight rejects.
+
+**Reference**: 2026-05-22 PZService PAUSED incident on Global PZ wFirma readiness campaign; recovery via byte-level `0x97 → "--"` replacement + placeholder-line removal; PowerShell `[System.IO.File]::ReadAllBytes` / `WriteAllBytes` pattern used for repair.
+
+---
+
+## Lesson I — Production incidents must become workflow-class rules, never shipment-specific patches (2026-05-22)
+
+**Origin**: Global Jewellery PZ campaign (2026-05-22, PRs #269–#283). Six separate production failures occurred on a single batch (`SHIPMENT_4789974092_2026-05_999deef1`) and were resolved in sequence. After the final fix (PR #283), the operator codified the meta-lesson: every incident is a signal about a class of shipments, not a property of the specific batch that surfaced it.
+
+**What happened — six workflow-class failures exposed by one batch**
+
+| # | Failure | Root class |
+|---|---|---|
+| 1 | Product names created from cached description authority, not invoice-position authority | Authority-chain violation |
+| 2 | PZ manually deleted in wFirma; audit mapping lost after a subsequent `/process` run | Lifecycle gap — no "operator deleted" signal |
+| 3 | `clear-mapping` returned `already_cleared` when `wfirma_export` was empty but timeline had no clearing event | Idempotency guard used wrong authority (export field vs timeline) |
+| 4 | `pz_create` blocked with `PZ_ALREADY_CREATED` after `PZ_RECONCILED` was correctly set | Create guard did not understand the reconciled lifecycle state |
+| 5 | UI showed contradictory banners simultaneously (recovery + creation disabled + ready=true) | Multiple UI authority sources, no single lifecycle source |
+| 6 | Compact audit notes missing from PZ description field | Notes helper not wired into the create path |
+
+None of these are Global-specific. All can recur on Estrella, any future supplier, or any batch where an operator performs a manual wFirma edit.
+
+**Binding rule** — six principles, all permanent:
+
+**Principle 1 — Every incident must be converted to a workflow rule before the fix PR closes**
+
+Root cause analysis must answer: "Can this happen on a different batch?" If yes, the fix must be expressed as a guard, lifecycle state, authority check, or regression test — not as a one-time data correction.
+
+Detection signal: a PR description that names the specific batch ID (`SHIPMENT_XXX`) as the scope of the fix without naming a workflow class that the fix protects. Flag immediately with reviewer-challenge.
+
+Forbidden pattern:
+```python
+if batch_id == "SHIPMENT_4789974092_2026-05_999deef1":
+    # special case
+```
+
+**Principle 2 — Authority chain must flow top-to-bottom, never sideways**
+
+The canonical authority chain for every PZ is:
+
+```
+Invoice positions (parsed from PDF)
+    ↓  bridge: _try_invoice_from_authority_rows
+Polish description authority (pz_rows.json)
+    ↓
+wFirma goods (product names + IDs)
+    ↓  guard: STALE_AUTHORITY_REFUSED
+PZ creation (wFirma warehouse document)
+    ↓
+audit.wfirma_export (local state record)
+```
+
+At no step may a lower-level authority feed back upward to a higher level. At no step may a cached intermediate (description block, prior audit state) substitute for the live top-level authority when that authority is available.
+
+Detection signal: any call to `description_engine.get_description_block()` from a code path that has access to `_pz_engine_authority_rows`. The description engine is downstream of the authority rows — using it in that context is an inversion.
+
+**Principle 3 — PZ lifecycle is a state machine with exactly one authority: `pz_lifecycle.state`**
+
+The canonical lifecycle for every shipment is:
+
+```
+PZ_NOT_READY
+    ↓ (all gates pass + flag on)
+PZ_READY_TO_CREATE
+    ↓ (pz_create succeeds)
+PZ_CREATED
+
+Recovery branch:
+PZ_CREATED → [wfirma_export wiped by /process] → PZ_RECOVERY_REQUIRED
+    ↓ confirm_existing_pz (audit-write recovery)
+PZ_CREATED
+
+Deletion branch:
+PZ_CREATED → [operator deletes in wFirma + calls clear-mapping] → PZ_RECONCILED
+    ↓ recreate
+PZ_CREATED
+```
+
+Every UI surface, every create/adopt guard, and every audit-write decision must consult `pz_lifecycle.state` as the single authority. Any guard that checks `wfirma_export.wfirma_pz_doc_id` without also consulting `_has_pz_mapping_cleared_after_create` is incomplete.
+
+Detection signal: a `pz_create` or `pz_adopt` guard that calls `_has_pz_terminal_event` without also calling `_has_pz_mapping_cleared_after_create`. Flag in every code review of these endpoints.
+
+**Principle 4 — Five mandatory protections for every future shipment**
+
+These five protections must be present for any supplier, any batch:
+
+| Protection | Trigger | Response |
+|---|---|---|
+| 1. Product-name drift detection | `authority_name ≠ wFirma product name` | Surface drift, offer sync via `/products/sync-names`. Never silently continue. |
+| 2. Audit-write loss detection | `wfirma_pz_created` in timeline AND `wfirma_pz_doc_id` missing from export | Auto-classify `PZ_RECOVERY_REQUIRED`. `confirm_existing_pz` is primary action. |
+| 3. Manual-deletion detection | `wfirma_pz_created` in timeline AND `wfirma_pz_mapping_cleared` is latest mapping event | Auto-classify `PZ_RECONCILED`. Recreation allowed. |
+| 4. Single-authority UI | `pz_lifecycle.state` is the only banner/button authority | No dual banner systems. No `pz_lock_status` as primary source when lifecycle is alarming. |
+| 5. Compact audit notes | `build_wfirma_pz_notes(audit, batch_id)` injected into every `pz_create`/`pz_adopt` call | INV, AWB, MRN, SAD, VAT, NBP, SUP, CA — sourced from current shipment authority, no hardcoded values. |
+
+**Principle 5 — Fix scope must be the workflow class, not the incident batch**
+
+When a fix is written, ask: "Does this PR protect every future shipment, or only this one?" The answer must be "every future shipment." If it is not, the PR is incomplete.
+
+After every fix:
+1. Identify root cause (one sentence).
+2. State the workflow class ("any batch where wfirma_export is wiped before clear-mapping is called").
+3. Write the guard or state-machine change that protects the class.
+4. Write regression tests using synthetic audits — not the specific batch's real audit.json.
+5. Verify Estrella reference batch is unaffected.
+6. Deploy as permanent workflow behavior.
+
+**Principle 6 — The platform improves with every real shipment**
+
+Every production incident is the system teaching itself what it missed. The correct response is not to patch the incident and move on — it is to make that class of incident structurally impossible for the next batch. Guards, lifecycle states, authority checks, and regression tests are the artifacts of that learning. PRs that produce these artifacts are the unit of platform maturity.
+
+**Where it binds**: every PR that fixes a production incident; every reviewer-challenge invocation on any incident-driven PR; every `agent-performance-observer` scorecard that evaluates an incident campaign; every `flow-context-keeper` update following an incident resolution. If a PR does not name a workflow class and does not add at least one regression test, it is incomplete by this lesson regardless of whether the immediate incident is resolved.
+
+**Reference**: Global Jewellery PZ campaign 2026-05-22, PRs #269–#283; operator governance statement 2026-05-22: "Every real shipment should improve the platform for the next shipment."
