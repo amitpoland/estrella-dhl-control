@@ -47,6 +47,7 @@ from ..core.security import require_api_key
 from ..core import timeline as tl
 from ..services.batch_service import get_output_dir
 from ..services.import_pz_builder import BatchRow, build_pz_request_from_batch
+from ..services.wfirma_pz_notes import build_wfirma_pz_notes
 from ..services import description_engine as deng
 from ..services import wfirma_client
 from ..services import wfirma_db
@@ -1225,6 +1226,10 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
     ]
 
     # ── Build preview ─────────────────────────────────────────────────────────
+    # Compact audit-trail notes go into the wFirma PZ <description>
+    # field (operator-visible "Uwagi"). Sourced from the current audit
+    # only — never from static templates. See `wfirma_pz_notes.py`.
+    pz_notes = build_wfirma_pz_notes(audit, batch_id)
     result = build_pz_request_from_batch(
         rows           = batch_rows,
         contractor_id  = supplier_wfirma_id,
@@ -1233,6 +1238,7 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         batch_id       = batch_id,
         clearance_date = clearance_date,
         mrn            = mrn,
+        description_override = pz_notes,
     )
 
     planned = [
@@ -1247,8 +1253,13 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         for pl in result.planned_lines
     ]
 
-    mrn_part    = f" | MRN {mrn}" if mrn else ""
-    description = f"batch={batch_id}{mrn_part}"
+    # `description` in the response is the operator-visible "Uwagi"
+    # text that will be written to wFirma on PZ create. It mirrors the
+    # compact audit notes computed above. Falls back to the legacy
+    # batch/MRN format only when no audit fields were available.
+    description = pz_notes or (
+        f"batch={batch_id}" + (f" | MRN {mrn}" if mrn else "")
+    )
 
     log.info(
         "[%s] wFirma PZ preview: ready=%s unresolved=%d conflicts=%d",
@@ -1453,6 +1464,7 @@ async def wfirma_products_resolve(batch_id: str) -> JSONResponse:
         batch_id       = batch_id,
         clearance_date = clearance_date,
         mrn            = mrn,
+        description_override = build_wfirma_pz_notes(audit, batch_id),
     )
 
     log.info(
@@ -1984,6 +1996,9 @@ async def wfirma_pz_create(
         batch_id       = batch_id,
         clearance_date = clearance_date,
         mrn            = mrn,
+        # Compact audit-trail notes for the wFirma <description> field.
+        # See `wfirma_pz_notes.build_wfirma_pz_notes`.
+        description_override = build_wfirma_pz_notes(audit, batch_id),
     )
 
     if not preview.ready:

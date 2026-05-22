@@ -82,6 +82,7 @@ def build_pz_request_from_batch(
     batch_id:       str,
     clearance_date: Optional[str] = None,
     mrn:            str = "",
+    description_override: Optional[str] = None,
 ) -> BatchBuildResult:
     """
     Build a PZRequest (and preview) from PZ engine rows.
@@ -181,8 +182,16 @@ def build_pz_request_from_batch(
         )
 
     # ── Build PZRequest ───────────────────────────────────────────────────────
-    mrn_part = f" | MRN {mrn}" if mrn else ""
-    description = f"batch={batch_id}{mrn_part}"
+    # `description_override` (when non-empty) carries the compact audit-trail
+    # notes built by `wfirma_pz_notes.build_wfirma_pz_notes`. When omitted,
+    # fall back to the legacy `batch=… | MRN …` format so legacy callers and
+    # the Estrella supplier path keep their existing description shape.
+    override = (description_override or "").strip()
+    if override:
+        description = override
+    else:
+        mrn_part = f" | MRN {mrn}" if mrn else ""
+        description = f"batch={batch_id}{mrn_part}"
 
     lines = [
         PZLine(good_id=gid, count=good_agg_qty[gid], price=good_agg_price[gid])
