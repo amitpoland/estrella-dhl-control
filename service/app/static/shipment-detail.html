@@ -5850,15 +5850,31 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         <span style={{ fontSize: 16 }}>✓</span>
                         <div>
                           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-green-text)' }}>wFirma PZ created</div>
-                          <div style={{ fontSize: 11, color: 'var(--badge-green-text)', opacity: 0.85, fontFamily: 'monospace' }}>{pzPreview.wfirma_pz_doc_id}</div>
+                          <div style={{ fontSize: 11, color: 'var(--badge-green-text)', opacity: 0.85, fontFamily: 'monospace' }}>
+                            {pzPreview.wfirma_pz_doc_id}
+                            {pzPreview.wfirma_pz_fullnumber && (
+                              <span style={{ marginLeft: 8, opacity: 0.7 }}>· {pzPreview.wfirma_pz_fullnumber}</span>
+                            )}
+                          </div>
                         </div>
                       </div>
-                      <Btn small variant="outline"
-                          data-testid="btn-view-pz"
-                          disabled={pzDocumentLoading}
-                          onClick={() => pzDocumentOpen ? setPzDocumentOpen(false) : loadPzDocument()}>
-                        {pzDocumentLoading ? '⟳ Loading…' : pzDocumentOpen ? '▲ Hide PZ' : '▼ View PZ'}
-                      </Btn>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                        {pzPreview.wfirma_pz_view_url && (
+                          <a data-testid="btn-pz-view-wfirma"
+                             href={pzPreview.wfirma_pz_view_url}
+                             target="_blank"
+                             rel="noopener noreferrer"
+                             style={{ fontSize: 11, padding: '4px 10px', border: '1px solid var(--badge-green-border)', borderRadius: 4, color: 'var(--badge-green-text)', textDecoration: 'none', whiteSpace: 'nowrap', background: 'transparent' }}>
+                            View in wFirma →
+                          </a>
+                        )}
+                        <Btn small variant="outline"
+                            data-testid="btn-view-pz"
+                            disabled={pzDocumentLoading}
+                            onClick={() => pzDocumentOpen ? setPzDocumentOpen(false) : loadPzDocument()}>
+                          {pzDocumentLoading ? '⟳ Loading…' : pzDocumentOpen ? '▲ Hide PZ' : '▼ View PZ'}
+                        </Btn>
+                      </div>
                     </div>
                   )}
 
