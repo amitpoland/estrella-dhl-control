@@ -245,24 +245,33 @@ def test_missing_wfirma_document_blocks_adopt(client):
     mock_patch.assert_not_called()
 
 
-# ── Test 6: missing identifiers → blocked before wFirma call ─────────────────
+# ── Test 6: missing identifiers → 422 from model_validator ───────────────────
+#
+# Previously expected 200+blocked from Guard 1. After _PZAdoptBody gained a
+# model_validator (2026-05-22), Pydantic rejects the empty body at the schema
+# level and returns 422 before Guard 1 is reached. The error message is
+# machine-readable and contains the same human text as before.
 
-def test_missing_body_identifiers_blocks_before_wfirma(client):
+def test_missing_body_identifiers_returns_422(client):
     """Neither pz_doc_id nor pz_number supplied.
-    Expect: status=blocked immediately, no wFirma call."""
+
+    Expect: 422 Unprocessable Entity from _PZAdoptBody.model_validator with
+    a clear, machine-readable reason. No wFirma call is made.
+    """
     with (
         patch("app.api.routes_wfirma.wfirma_client.fetch_warehouse_pz") as mock_fetch,
         patch("app.api.routes_wfirma.wfirma_client.find_warehouse_pz_by_number") as mock_find,
     ):
-        # Empty body — neither identifier supplied.
         r = _post(client, body_json={})
 
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["status"] == "blocked", body
-    reasons = body.get("blocking_reasons", [])
-    assert any("pz_doc_id or pz_number is required" in str(reason)
-               for reason in reasons), reasons
+    assert r.status_code == 422, r.text
+    detail = r.json().get("detail", [])
+    # Pydantic v2 returns a list of validation error objects; the message is
+    # in detail[0]["msg"].
+    assert any(
+        "pz_doc_id or pz_number is required" in str(item)
+        for item in detail
+    ), detail
     mock_fetch.assert_not_called()
     mock_find.assert_not_called()
 
