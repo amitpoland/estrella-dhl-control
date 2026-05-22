@@ -818,6 +818,24 @@ def batch_detail(batch_id: str) -> Dict[str, Any]:
             "freight_review_reason": "Authority unavailable — derivation error.",
         }
 
+    # SAD invoice-reference authority — derived on read, never persisted.
+    # Frontend must render invoice-ref status from this; never from inferred_refs
+    # or raw corrections_log entries. Free-text tokens (e.g. ['3322','088','2026'])
+    # are advisory only and never enter the authority object.
+    try:
+        from ..services.sad_invoice_authority import derive_sad_invoice_authority
+        audit["sad_invoice_authority"] = derive_sad_invoice_authority(audit)
+    except Exception as _sia_err:
+        log.warning("[%s] sad_invoice_authority derivation failed: %s", batch_id, _sia_err)
+        audit["sad_invoice_authority"] = {
+            "status":              "unverified_no_structured_reference",
+            "source":              "none",
+            "references":          [],
+            "matched_invoice_ids": [],
+            "warning":             None,
+            "review_reason":       "Authority derivation error.",
+        }
+
     return audit
 
 

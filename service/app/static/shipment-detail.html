@@ -7940,6 +7940,52 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                   {hasSad && ver && Object.keys(ver).length > 0 && (
                     <div style={{ margin: '0 20px 16px', padding: 14, background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
                       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>Verification Checks</div>
+                      {/* SAD invoice-reference authority — single structured source.
+                           Reads audit.sad_invoice_authority (injected by batch API on read).
+                           Never shows free-text inferred tokens as invoice references. */}
+                      {audit.sad_invoice_authority && (() => {
+                        const sia = audit.sad_invoice_authority;
+                        const s   = sia.status;
+                        const statusLabel =
+                          s === 'matched_structured_n935'         ? '✓ Verified (N935)'               :
+                          s === 'n935_absent'                     ? 'Structured reference unavailable' :
+                          s === 'n935_present_mismatch'           ? '⚠ Mismatch — verify N935 refs'    :
+                                                                    '⚠ Needs review';
+                        const statusColor =
+                          s === 'matched_structured_n935'         ? 'var(--badge-green-text)' :
+                          s === 'n935_present_mismatch'           ? 'var(--badge-red-text)'   :
+                                                                    'var(--badge-amber-text)';
+                        return (
+                          <div data-testid="sad-invoice-authority-row"
+                               style={{ display: 'flex', alignItems: 'flex-start', gap: 8,
+                                        fontSize: 11, padding: '4px 0 8px',
+                                        borderBottom: '1px solid var(--border-subtle)',
+                                        marginBottom: 8 }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, flexShrink: 0,
+                                           marginTop: 1, color: statusColor }}>
+                              {s === 'matched_structured_n935' ? '✓' :
+                               s === 'n935_present_mismatch'   ? '✗' : '⚠'}
+                            </span>
+                            <div>
+                              <span style={{ fontWeight: 600, color: 'var(--text)' }}>SAD Invoice Refs </span>
+                              <span data-testid="sad-invoice-authority-status"
+                                    style={{ color: statusColor, fontWeight: 600 }}>
+                                {statusLabel}
+                              </span>
+                              {s === 'matched_structured_n935' && sia.references.length > 0 && (
+                                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                                  {sia.references.join(' · ')}
+                                </div>
+                              )}
+                              {sia.review_reason && s !== 'matched_structured_n935' && (
+                                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                                  {sia.review_reason}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
                       {VER_GROUPS.map((group, groupIdx) => {
                         const visibleChecks = group.checks.filter(check => check.key in ver);
                         if (visibleChecks.length === 0) return null;
