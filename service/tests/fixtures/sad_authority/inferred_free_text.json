@@ -1,0 +1,66 @@
+{
+  "batch_id": "SHIPMENT_TEST3333333_2026-05_inferred",
+  "shipment_id": "SHIPMENT_TEST3333333_2026-05_inferred",
+  "awb": "3333333333",
+  "carrier": "DHL",
+  "doc_no": "TEST-PZ-003",
+  "timestamp": "2026-05-22T10:10:00Z",
+  "clearance_status": "dsk_generated",
+  "clearance_complete": true,
+  "customs_workflow_eligible": true,
+  "invoice_names": [
+    "Invoice EJL-26-27-088-22-05-26.pdf"
+  ],
+  "files": [],
+  "zc429": {
+    "mrn": "26PL445010E3333333",
+    "lrn": "TEST-LRN-3333333",
+    "clearance_date": "2026-05-22",
+    "duty_pln": 0.0,
+    "vat_pln": 0.0,
+    "total_cif_usd": 2150.0,
+    "customs_rate_usd": 4.0123,
+    "statistical_value_pln": 8626.45,
+    "sad_invoice_value_usd": 2150.0,
+    "sad_additions_pln": 0.0,
+    "agent": "TEST-AGENT",
+    "importer_name": "Test Importer Sp. z o.o.",
+    "importer_nip": "0000000000",
+    "exporter_name": "Test Exporter Ltd",
+    "cn_code": "71131900",
+    "goods_description": "Jewellery of precious metal",
+    "sad_qty_by_type": {"71131900": "Jewellery of precious metal"},
+    "invoice_refs": [],
+    "invoice_refs_method": "inferred_from_sad_free_text",
+    "inferred_refs": ["3322", "121", "088", "2026", "2027"],
+    "transport_refs": ["3333333333"],
+    "a00_payment_method": null,
+    "b00_payment_method": null,
+    "_parse_meta": {
+      "source": "xml_dict",
+      "confidence": "low"
+    }
+  },
+  "verification": {
+    "invoice_refs_match": null,
+    "parsed_invoice_nos": null,
+    "invoice_refs_label": "Partially verified — invoice references inferred from SAD/free text",
+    "cif_match": true,
+    "cif_status": "ok"
+  },
+  "invoice_reference_check": {
+    "method": "inferred_from_sad_free_text",
+    "invoice_refs_from_sad": ["3322", "121", "088", "2026", "2027"],
+    "invoice_refs_from_pdf": ["EJL/26-27/088"],
+    "inferred_refs": ["3322", "121", "088", "2026", "2027"],
+    "status": "Partially verified — invoice references inferred from SAD/free text"
+  },
+  "totals": {
+    "duty_pln": 0.0,
+    "vat_pln": 0.0,
+    "total_cif_usd": 2150.0
+  },
+  "warnings": [],
+  "amendment_flags": [],
+  "engine_version": "fixture-1.0"
+}

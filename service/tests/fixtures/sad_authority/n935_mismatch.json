@@ -1,0 +1,66 @@
+{
+  "batch_id": "SHIPMENT_TEST4444444_2026-05_mismatch",
+  "shipment_id": "SHIPMENT_TEST4444444_2026-05_mismatch",
+  "awb": "4444444444",
+  "carrier": "DHL",
+  "doc_no": "TEST-PZ-004",
+  "timestamp": "2026-05-22T10:15:00Z",
+  "clearance_status": "dsk_generated",
+  "clearance_complete": true,
+  "customs_workflow_eligible": true,
+  "invoice_names": [
+    "Invoice EJL-26-27-040-22-05-26.pdf"
+  ],
+  "files": [],
+  "zc429": {
+    "mrn": "26PL445010E4444444",
+    "lrn": "TEST-LRN-4444444",
+    "clearance_date": "2026-05-22",
+    "duty_pln": 0.0,
+    "vat_pln": 0.0,
+    "total_cif_usd": 1800.0,
+    "customs_rate_usd": 4.0123,
+    "statistical_value_pln": 7222.14,
+    "sad_invoice_value_usd": 1800.0,
+    "sad_additions_pln": 0.0,
+    "agent": "TEST-AGENT",
+    "importer_name": "Test Importer Sp. z o.o.",
+    "importer_nip": "0000000000",
+    "exporter_name": "Test Exporter Ltd",
+    "cn_code": "71131900",
+    "goods_description": "Jewellery of precious metal",
+    "sad_qty_by_type": {"71131900": "Jewellery of precious metal"},
+    "invoice_refs": ["EJL/26-27/039"],
+    "invoice_refs_method": "N935",
+    "inferred_refs": [],
+    "transport_refs": ["4444444444"],
+    "a00_payment_method": null,
+    "b00_payment_method": null,
+    "_parse_meta": {
+      "source": "xml_dict",
+      "confidence": "high"
+    }
+  },
+  "verification": {
+    "invoice_refs_match": false,
+    "parsed_invoice_nos": ["040"],
+    "invoice_refs_label": "N935 reference does not match uploaded invoice files",
+    "cif_match": true,
+    "cif_status": "ok"
+  },
+  "invoice_reference_check": {
+    "method": "N935",
+    "invoice_refs_from_sad": ["EJL/26-27/039"],
+    "invoice_refs_from_pdf": ["EJL/26-27/040"],
+    "inferred_refs": [],
+    "status": "Mismatch — N935 reference does not match uploaded invoice files"
+  },
+  "totals": {
+    "duty_pln": 0.0,
+    "vat_pln": 0.0,
+    "total_cif_usd": 1800.0
+  },
+  "warnings": [],
+  "amendment_flags": ["sad_invoice_ref_mismatch"],
+  "engine_version": "fixture-1.0"
+}
