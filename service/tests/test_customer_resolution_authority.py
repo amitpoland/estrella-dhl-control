@@ -513,3 +513,365 @@ def test_real_shape_via_upsert_resolution_int_master_id(tmp_path):
     assert r["match_strategy"]     == "packing_master"
     assert r["wfirma_customer_id"] == "52808306"
     assert r["customer_master_id"] == 34
+
+
+# ── 14. PER-DOCUMENT authority chain — primary fix for multi-client batches ─
+
+
+from app.services.customer_resolution_authority import (
+    derive_customer_authority_for_draft,
+)
+
+
+def _make_documents_db(tmp_path):
+    """Create a minimal documents.db with sales_documents + shipment_documents."""
+    path = tmp_path / "documents.db"
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute("""
+            CREATE TABLE sales_documents (
+                id              TEXT PRIMARY KEY,
+                batch_id        TEXT,
+                document_id     TEXT,
+                client_name     TEXT,
+                document_type   TEXT,
+                source_file_path TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE shipment_documents (
+                id                       TEXT PRIMARY KEY,
+                batch_id                 TEXT,
+                document_type            TEXT,
+                file_name                TEXT,
+                client_contractor_id     TEXT,
+                supplier_contractor_id   TEXT
+            )
+        """)
+    return path
+
+
+def _seed_sales_packing_doc(
+    docs_db, *, batch_id, client_name, ship_doc_id,
+    client_contractor_id, file_name, sales_doc_id=None,
+):
+    """Seed a sales packing list — both sales_documents AND shipment_documents."""
+    import uuid
+    sd_id = sales_doc_id or str(uuid.uuid4())
+    with sqlite3.connect(str(docs_db)) as conn:
+        conn.execute(
+            "INSERT INTO sales_documents (id, batch_id, document_id, client_name, "
+            "document_type, source_file_path) VALUES (?, ?, ?, ?, ?, ?)",
+            (sd_id, batch_id, ship_doc_id, client_name,
+             "sales_packing_list", file_name),
+        )
+        conn.execute(
+            "INSERT INTO shipment_documents (id, batch_id, document_type, "
+            "file_name, client_contractor_id) VALUES (?, ?, ?, ?, ?)",
+            (ship_doc_id, batch_id, "sales_packing_list", file_name,
+             client_contractor_id),
+        )
+    return sd_id
+
+
+def test_per_document_diamond_point_resolves_to_own_contractor(tmp_path):
+    """Multi-client batch regression — Diamond Point must resolve to its own
+    wFirma contractor (90484280), NOT DG GmbH's contractor (52808306).
+    Pinned against the actual SHIPMENT_4218922912 production scenario."""
+    cm = tmp_path / "customer_master.sqlite"
+    with sqlite3.connect(str(cm)) as conn:
+        conn.execute("""
+            CREATE TABLE customer_master (
+                id INTEGER PRIMARY KEY, bill_to_contractor_id TEXT,
+                bill_to_name TEXT, country TEXT, nip TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO customer_master VALUES (7, '90484280', 'Diamond Point B.V.', 'NL', 'NL008494162B01')"
+        )
+    docs = _make_documents_db(tmp_path)
+    _seed_sales_packing_doc(
+        docs, batch_id=BATCH, client_name="Diamond Point",
+        ship_doc_id="ship-doc-dp", client_contractor_id="90484280",
+        file_name="EJL-26-27-177-Shipment packing list-Client.xlsx",
+    )
+
+    r = derive_customer_authority_for_draft(
+        batch_id=BATCH, client_name="Diamond Point",
+        documents_db_path=docs, customer_master_db_path=cm,
+    )
+    assert r is not None
+    assert r["wfirma_customer_id"]   == "90484280", (
+        f"Diamond Point must resolve to 90484280 (its own contractor), "
+        f"not {r['wfirma_customer_id']!r} — multi-client bug regression"
+    )
+    assert r["resolved_master_name"] == "Diamond Point B.V."
+    assert r["customer_master_id"]   == 7
+    assert r["match_strategy"]       == "per_document_upload"
+
+
+def test_per_document_multi_client_batch_resolves_each_independently(tmp_path):
+    """The full SHIPMENT_4218922912 production scenario in one test:
+    5 clients on one batch, 5 different sales packing list documents,
+    each with its own operator-selected client_contractor_id. Each
+    proforma draft must resolve to ITS OWN contractor, not the
+    contractor of whichever client happened to be saved in
+    packing_contractor_resolution."""
+    cm = tmp_path / "customer_master.sqlite"
+    with sqlite3.connect(str(cm)) as conn:
+        conn.execute("""
+            CREATE TABLE customer_master (
+                id INTEGER PRIMARY KEY, bill_to_contractor_id TEXT,
+                bill_to_name TEXT, country TEXT, nip TEXT
+            )
+        """)
+        # The 4 production clients that have customer_master rows
+        rows = [
+            (7,  '90484280',  'Diamond Point B.V.',     'NL', 'NL008494162B01'),
+            (34, '52808306',  'DG GmbH',                'DE', 'DE266491614'),
+            (60, '145607516', 'Dream Rings, s.r.o.',    'SK', 'SK2023917434'),
+            (29, '104677702', 'Verhoeven Joaillier',    'FR', 'FR90333134013'),
+        ]
+        for r in rows:
+            conn.execute("INSERT INTO customer_master VALUES (?,?,?,?,?)", r)
+
+    docs = _make_documents_db(tmp_path)
+    seeds = [
+        ("Diamond Point",       "ship-dp",  "90484280",   "EJL-26-27-177.xlsx"),
+        ("DiamondGroup GmbH",   "ship-dg",  "52808306",   "EJL-26-27-178.xlsx"),
+        ("Dream Ring",          "ship-dr",  "145607516",  "EJL-26-27-180-DR.xlsx"),
+        ("Verhoeven Joaillier", "ship-vj",  "104677702",  "EJL-26-27-179.xlsx"),
+    ]
+    for cn, sid, cid, fn in seeds:
+        _seed_sales_packing_doc(
+            docs, batch_id=BATCH, client_name=cn,
+            ship_doc_id=sid, client_contractor_id=cid, file_name=fn,
+        )
+
+    expected = {
+        "Diamond Point":       "90484280",
+        "DiamondGroup GmbH":   "52808306",
+        "Dream Ring":          "145607516",
+        "Verhoeven Joaillier": "104677702",
+    }
+    for client_name, expected_contractor in expected.items():
+        r = derive_customer_authority_for_draft(
+            batch_id=BATCH, client_name=client_name,
+            documents_db_path=docs, customer_master_db_path=cm,
+        )
+        assert r is not None, (
+            f"{client_name!r} must resolve via per_document_upload"
+        )
+        assert r["wfirma_customer_id"] == expected_contractor, (
+            f"{client_name!r} expected {expected_contractor}, "
+            f"got {r['wfirma_customer_id']!r} — multi-client mis-routing"
+        )
+        assert r["match_strategy"] == "per_document_upload"
+
+
+def test_per_document_advisory_on_display_name_mismatch(tmp_path):
+    """The DiamondGroup GmbH ↔ DG GmbH case: proforma name differs from
+    customer_master.bill_to_name → advisory text MUST mention both names,
+    contractor_id, NIP, and the source file (per-document context)."""
+    cm = tmp_path / "customer_master.sqlite"
+    with sqlite3.connect(str(cm)) as conn:
+        conn.execute("""
+            CREATE TABLE customer_master (
+                id INTEGER PRIMARY KEY, bill_to_contractor_id TEXT,
+                bill_to_name TEXT, country TEXT, nip TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO customer_master VALUES (34, '52808306', 'DG GmbH', 'DE', 'DE266491614')"
+        )
+    docs = _make_documents_db(tmp_path)
+    _seed_sales_packing_doc(
+        docs, batch_id=BATCH, client_name="DiamondGroup GmbH",
+        ship_doc_id="ship-dg", client_contractor_id="52808306",
+        file_name="EJL-26-27-178-Client.xlsx",
+    )
+
+    r = derive_customer_authority_for_draft(
+        batch_id=BATCH, client_name="DiamondGroup GmbH",
+        documents_db_path=docs, customer_master_db_path=cm,
+    )
+    assert r is not None
+    adv = r["advisory"]
+    assert "DiamondGroup GmbH" in adv
+    assert "DG GmbH" in adv
+    assert "52808306" in adv
+    assert "DE266491614" in adv
+    assert "per-document upload selection" in adv
+    assert "EJL-26-27-178" in adv  # source file_name surfaces in advisory
+
+
+def test_per_document_no_advisory_when_names_match(tmp_path):
+    """Verhoeven Joaillier: proforma name == master name → no advisory."""
+    cm = tmp_path / "customer_master.sqlite"
+    with sqlite3.connect(str(cm)) as conn:
+        conn.execute("""
+            CREATE TABLE customer_master (
+                id INTEGER PRIMARY KEY, bill_to_contractor_id TEXT,
+                bill_to_name TEXT, country TEXT, nip TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO customer_master VALUES (29, '104677702', 'Verhoeven Joaillier', 'FR', 'FR90333134013')"
+        )
+    docs = _make_documents_db(tmp_path)
+    _seed_sales_packing_doc(
+        docs, batch_id=BATCH, client_name="Verhoeven Joaillier",
+        ship_doc_id="ship-vj", client_contractor_id="104677702",
+        file_name="EJL-26-27-179-Client.xlsx",
+    )
+    r = derive_customer_authority_for_draft(
+        batch_id=BATCH, client_name="Verhoeven Joaillier",
+        documents_db_path=docs, customer_master_db_path=cm,
+    )
+    assert r is not None
+    assert r["advisory"] == "", (
+        f"no advisory expected when names match; got {r['advisory']!r}"
+    )
+
+
+def test_per_document_no_selection_returns_none(tmp_path):
+    """Document exists but operator skipped client selection
+    (client_contractor_id is NULL) → must return None so caller falls
+    through to name-based resolution."""
+    cm = tmp_path / "customer_master.sqlite"
+    with sqlite3.connect(str(cm)) as conn:
+        conn.execute("""
+            CREATE TABLE customer_master (
+                id INTEGER PRIMARY KEY, bill_to_contractor_id TEXT,
+                bill_to_name TEXT, country TEXT, nip TEXT
+            )
+        """)
+    docs = _make_documents_db(tmp_path)
+    _seed_sales_packing_doc(
+        docs, batch_id=BATCH, client_name="UnSelected Client",
+        ship_doc_id="ship-x", client_contractor_id="",  # operator skipped
+        file_name="some.xlsx",
+    )
+    r = derive_customer_authority_for_draft(
+        batch_id=BATCH, client_name="UnSelected Client",
+        documents_db_path=docs, customer_master_db_path=cm,
+    )
+    assert r is None, "missing client_contractor_id must return None"
+
+
+def test_per_document_no_sales_doc_returns_none(tmp_path):
+    """No sales_packing_list document exists for (batch, client) → None."""
+    cm = tmp_path / "customer_master.sqlite"
+    with sqlite3.connect(str(cm)) as conn:
+        conn.execute("""
+            CREATE TABLE customer_master (
+                id INTEGER PRIMARY KEY, bill_to_contractor_id TEXT,
+                bill_to_name TEXT, country TEXT, nip TEXT
+            )
+        """)
+    docs = _make_documents_db(tmp_path)
+    # No sales packing doc seeded
+    r = derive_customer_authority_for_draft(
+        batch_id=BATCH, client_name="Some Client",
+        documents_db_path=docs, customer_master_db_path=cm,
+    )
+    assert r is None
+
+
+def test_per_document_contractor_without_master_record_returns_none(tmp_path):
+    """The Panakas case: operator picked a wFirma contractor (128515865)
+    but customer_master has no row for it. Must return None — caller falls
+    through to name-based resolver which produces a meaningful blocker.
+    Operator signal: 'Panakas needs to be added to customer_master'."""
+    cm = tmp_path / "customer_master.sqlite"
+    with sqlite3.connect(str(cm)) as conn:
+        conn.execute("""
+            CREATE TABLE customer_master (
+                id INTEGER PRIMARY KEY, bill_to_contractor_id TEXT,
+                bill_to_name TEXT, country TEXT, nip TEXT
+            )
+        """)
+        # Note: NO row for contractor 128515865
+    docs = _make_documents_db(tmp_path)
+    _seed_sales_packing_doc(
+        docs, batch_id=BATCH, client_name="Panakas",
+        ship_doc_id="ship-panakas", client_contractor_id="128515865",
+        file_name="EJL-26-27-180-Panakas.xlsx",
+    )
+    r = derive_customer_authority_for_draft(
+        batch_id=BATCH, client_name="Panakas",
+        documents_db_path=docs, customer_master_db_path=cm,
+    )
+    assert r is None, (
+        "wFirma contractor selected but not in customer_master → must "
+        "return None so name-based fallback runs (and produces a "
+        "meaningful operator-facing blocker)"
+    )
+
+
+def test_per_document_only_sales_packing_list_documents_resolve(tmp_path):
+    """Non-sales-packing-list documents (e.g. purchase_invoice) MUST NOT
+    resolve via this path — even if they're in sales_documents by accident."""
+    cm = tmp_path / "customer_master.sqlite"
+    with sqlite3.connect(str(cm)) as conn:
+        conn.execute("""
+            CREATE TABLE customer_master (
+                id INTEGER PRIMARY KEY, bill_to_contractor_id TEXT,
+                bill_to_name TEXT, country TEXT, nip TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO customer_master VALUES (7, '90484280', 'Diamond Point B.V.', 'NL', 'NL008494162B01')"
+        )
+    docs = _make_documents_db(tmp_path)
+    # Seed an entry with document_type != sales_packing_list
+    with sqlite3.connect(str(docs)) as conn:
+        conn.execute(
+            "INSERT INTO sales_documents (id, batch_id, document_id, "
+            "client_name, document_type, source_file_path) "
+            "VALUES ('sd-1', ?, 'ship-1', 'Diamond Point', "
+            "'commercial_invoice', 'invoice.pdf')",
+            (BATCH,)
+        )
+        conn.execute(
+            "INSERT INTO shipment_documents (id, batch_id, document_type, "
+            "file_name, client_contractor_id) "
+            "VALUES ('ship-1', ?, 'commercial_invoice', 'invoice.pdf', '90484280')",
+            (BATCH,)
+        )
+    r = derive_customer_authority_for_draft(
+        batch_id=BATCH, client_name="Diamond Point",
+        documents_db_path=docs, customer_master_db_path=cm,
+    )
+    assert r is None, "only document_type='sales_packing_list' resolves"
+
+
+def test_per_document_routes_proforma_wires_new_authority():
+    """Source-grep: routes_proforma._resolve_customer imports and calls
+    the new per-document helper BEFORE the per-batch fallback."""
+    routes = _svc / "app" / "api" / "routes_proforma.py"
+    src = routes.read_text(encoding="utf-8")
+    # Imports new helper
+    assert "derive_customer_authority_for_draft" in src
+    # New match_strategy value
+    assert '"per_document_upload"' in src
+    # per-document path is BEFORE per-batch packing-master path
+    i_per_doc  = src.find("derive_customer_authority_for_draft")
+    i_per_batch = src.find("derive_customer_resolution_via_packing")
+    assert 0 < i_per_doc < i_per_batch, (
+        "per-document authority must execute BEFORE per-batch fallback "
+        "(per-batch is the bug-prone path; per-document is correct)"
+    )
+
+
+def test_per_document_helper_is_read_only():
+    """The new helper must never INSERT/UPDATE/DELETE anything."""
+    helper = _svc / "app" / "services" / "customer_resolution_authority.py"
+    src = helper.read_text(encoding="utf-8")
+    # Grep ONLY the per-document function body
+    i_start = src.find("def derive_customer_authority_for_draft")
+    i_end   = src.find("\n__all__", i_start)
+    body = src[i_start:i_end]
+    for forbidden in ("INSERT", "UPDATE ", "DELETE ", "DROP ", "REPLACE INTO"):
+        assert forbidden not in body.upper(), (
+            f"per-document helper must be read-only; found {forbidden!r}"
+        )

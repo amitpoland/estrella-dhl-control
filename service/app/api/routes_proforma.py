@@ -313,11 +313,47 @@ def _resolve_customer(
         "advisory":             "",
     }
 
-    # 0. Packing-upload Customer Master selection — operator authority.
-    #    NIP + contractor_id outrank display name. Display-name drift is
-    #    advisory only, never a blocker. Failures here MUST NOT crash the
-    #    resolver — fall through to name-based resolution if anything
-    #    raises so a transient DB issue cannot block readiness.
+    # 0a. PER-DOCUMENT upload-time client selection — primary authority.
+    #     Walks sales_documents → shipment_documents.client_contractor_id
+    #     → customer_master. Correct granularity for multi-client
+    #     shipments where one batch carries N sales packing list uploads,
+    #     each with its own operator-selected client.
+    #     Failures here MUST NOT crash the resolver — fall through on
+    #     any exception so a transient DB issue cannot block readiness.
+    if batch_id and raw:
+        try:
+            from ..services.customer_resolution_authority import (
+                derive_customer_authority_for_draft,
+            )
+            per_doc = derive_customer_authority_for_draft(
+                batch_id=batch_id,
+                client_name=raw,
+                documents_db_path=settings.storage_root / "documents.db",
+                customer_master_db_path=_customer_master_db_path(),
+            )
+            if per_doc is not None:
+                out.update({
+                    "found":                True,
+                    "match_strategy":       "per_document_upload",
+                    "wfirma_customer_id":   per_doc["wfirma_customer_id"],
+                    "resolved_wfirma_name": per_doc["resolved_master_name"],
+                    "advisory":             per_doc["advisory"],
+                })
+                return out
+        except Exception as _pd_err:  # pragma: no cover — defensive
+            log.warning(
+                "[%s] per-document customer authority failed for %r: %s "
+                "— falling through to per-batch packing-master",
+                batch_id, raw, _pd_err,
+            )
+
+    # 0b. Per-BATCH packing-master selection (legacy from PR #296+#297).
+    #     SECONDARY fallback for batches without per-document upload
+    #     selections persisted. Uses UNIQUE(batch_id, role) → returns
+    #     the SAME contractor for every draft on the batch. Correct only
+    #     for single-client batches; for multi-client batches the 0a
+    #     path above resolves cleanly per-document and this path is
+    #     reached only when 0a returns None (defensive).
     if batch_id:
         try:
             from ..services.customer_resolution_authority import (
