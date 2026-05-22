@@ -449,8 +449,19 @@ def _http_request(method: str, module: str, action: str, body_xml: str = "",
         url = f"{path}/{_esc(id_suffix)}" + (f"?{query}" if query else "")
     else:
         url = base
-    headers = _headers_for_module(module)
     breaker = get_circuit_breaker("wfirma")
+
+    # Check circuit BEFORE building headers — avoids raising ValueError for
+    # missing credentials when the circuit is already open and we want to
+    # return the fallback response immediately.
+    if breaker.state.value == "open":
+        log.warning(
+            "wfirma circuit OPEN — request rejected (%s %s/%s)",
+            method, module, action,
+        )
+        return 503, "circuit_breaker_open"
+
+    headers = _headers_for_module(module)
 
     def _do_request() -> tuple[int, str]:
         resp = _requests.request(
