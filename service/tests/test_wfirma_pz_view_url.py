@@ -49,23 +49,32 @@ def _settings_with_company(company_id: str = COMPANY, template: str = ""):
 # ── 1. URL built correctly ─────────────────────────────────────────────────
 
 def test_build_view_url_returns_correct_url():
-    with patch("service.app.api.routes_wfirma.settings", _settings_with_company(COMPANY)):
+    """URL is returned only when WFIRMA_PZ_VIEW_URL_TEMPLATE is explicitly set.
+    The wFirma API does not expose a view URL; inference is disabled."""
+    template = f"https://app.wfirma.pl/{COMPANY}/warehouse_documents/view/{{doc_id}}"
+    with patch("service.app.api.routes_wfirma.settings",
+               _settings_with_company(COMPANY, template=template)):
         url = _build_wfirma_pz_view_url(DOC_ID)
-    assert url == f"https://app.wfirma.pl/{COMPANY}/warehouses/view/{DOC_ID}"
+    assert url == f"https://app.wfirma.pl/{COMPANY}/warehouse_documents/view/{DOC_ID}"
 
 
 # ── 2. URL is None when doc_id absent ─────────────────────────────────────
 
 def test_build_view_url_none_when_no_doc_id():
-    with patch("service.app.api.routes_wfirma.settings", _settings_with_company(COMPANY)):
+    template = "https://app.wfirma.pl/companies/359292/view/{doc_id}"
+    with patch("service.app.api.routes_wfirma.settings",
+               _settings_with_company(COMPANY, template=template)):
         assert _build_wfirma_pz_view_url("") is None
         assert _build_wfirma_pz_view_url(None) is None  # type: ignore[arg-type]
 
 
-# ── 3. URL is None when company_id absent ─────────────────────────────────
+# ── 3. URL is None when no template configured (default — API has no URL) ─
 
-def test_build_view_url_none_when_no_company_id():
-    with patch("service.app.api.routes_wfirma.settings", _settings_with_company("")):
+def test_build_view_url_none_when_no_template():
+    """Without WFIRMA_PZ_VIEW_URL_TEMPLATE the helper returns None.
+    This is the safe default: no URL is shown rather than a 404 link."""
+    with patch("service.app.api.routes_wfirma.settings",
+               _settings_with_company(COMPANY, template="")):
         assert _build_wfirma_pz_view_url(DOC_ID) is None
 
 
@@ -128,9 +137,11 @@ def test_source_grep_fullnumber_in_already_created():
 def test_build_view_url_works_for_any_doc_id():
     """The URL builder is doc-id-agnostic — works for adopted PZ too."""
     adopted_doc_id = "99999999"
-    with patch("service.app.api.routes_wfirma.settings", _settings_with_company(COMPANY)):
+    template = f"https://app.wfirma.pl/{COMPANY}/view/{{doc_id}}"
+    with patch("service.app.api.routes_wfirma.settings",
+               _settings_with_company(COMPANY, template=template)):
         url = _build_wfirma_pz_view_url(adopted_doc_id)
-    assert url == f"https://app.wfirma.pl/{COMPANY}/warehouses/view/{adopted_doc_id}"
+    assert url == f"https://app.wfirma.pl/{COMPANY}/view/{adopted_doc_id}"
 
 
 # ── 9. Helper present in routes_wfirma.py ────────────────────────────────
@@ -140,8 +151,13 @@ def test_helper_present_in_routes():
     assert "def _build_wfirma_pz_view_url(" in src, (
         "_build_wfirma_pz_view_url must be defined in routes_wfirma.py"
     )
-    assert "warehouses/view/{doc_id" in src or "warehouses/view/" in src, (
-        "_build_wfirma_pz_view_url must contain the wFirma warehouse view path"
+    # The helper must use template-only logic (no inferred URL)
+    assert "WFIRMA_PZ_VIEW_URL_TEMPLATE" in src, (
+        "_build_wfirma_pz_view_url must reference WFIRMA_PZ_VIEW_URL_TEMPLATE"
+    )
+    # The old inferred URL pattern must NOT exist (removed for safety)
+    assert "warehouses/view/" not in src or "warehouses/view/{doc_id}" not in src, (
+        "inferred warehouses/view URL must not be hardcoded — use template only"
     )
 
 
