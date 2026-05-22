@@ -32,6 +32,31 @@ _VALID_CONFIRMED_STATUSES = ("confirmed",)
 _VALID_MASTER_TYPE        = "customer_master"
 
 
+def _normalise_matched_master_id(raw: Any) -> str:
+    """Polymorphic-input normaliser (Lesson A pattern) for the
+    ``packing_contractor_resolution.matched_master_id`` column.
+
+    SQLite stores this column with dynamic affinity. Production rows in
+    ``packing_resolutions.sqlite`` carry INTEGER values (e.g. ``52808306``),
+    not TEXT. Calling ``.strip()`` on an int raises ``AttributeError`` —
+    the helper would then bubble the exception up to the caller, hit the
+    ``_resolve_customer`` try/except fallback in routes_proforma.py, and
+    silently never resolve via packing-master authority.
+
+    Coerce to str regardless of input type. Mirrors the
+    ``_normalise_recipient`` precedent for builder→consumer polymorphic
+    inputs (Lesson A, ``service/app/services/dhl_proactive_dispatch_p2.py``).
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, int):
+        return str(raw)
+    if isinstance(raw, str):
+        return raw.strip()
+    # Defensive: anything else (float, bytes, etc.) — coerce via str()
+    return str(raw).strip()
+
+
 def _normalize_name(s: Optional[str]) -> str:
     """Case-insensitive whitespace-collapsed comparison key.
 
@@ -105,7 +130,10 @@ def derive_customer_resolution_via_packing(
         return None
     if (row["matched_master_type"] or "").strip() != _VALID_MASTER_TYPE:
         return None
-    matched_master_id = (row["matched_master_id"] or "").strip()
+    # ── Lesson A: matched_master_id is sometimes stored as INTEGER in
+    # production (sqlite affinity), not TEXT. Normalise to str via the
+    # _normalise_X pattern from CLAUDE.md / Engineering Lessons / Lesson A.
+    matched_master_id = _normalise_matched_master_id(row["matched_master_id"])
     if not matched_master_id:
         return None
 
