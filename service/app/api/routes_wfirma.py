@@ -2970,6 +2970,7 @@ async def wfirma_pz_document_pdf(batch_id: str) -> Response:
     Built from the exact ``warehouse_document_p_z/get/{id}`` API response.
     This is NOT the original wFirma PDF (no warehouse document PDF API exists).
     Clearly labelled "Generated from verified wFirma PZ data".
+    Provenance rows in header: Source API, PZ Document ID, Generated (UTC), Generator.
 
     Returns:
       200 + ``application/pdf`` — reportlab-generated PDF.
@@ -3038,6 +3039,9 @@ async def wfirma_pz_document_pdf(batch_id: str) -> Response:
     )
     story = []
 
+    import datetime as _dt
+    generated_utc = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
     story.append(Paragraph(pz_num, title))
     story.append(Spacer(1, 2*mm))
     story.append(Paragraph(
@@ -3047,11 +3051,14 @@ async def wfirma_pz_document_pdf(batch_id: str) -> Response:
     story.append(Spacer(1, 6*mm))
 
     meta = [
-        ["Document ID", pz_doc_id, "Date", date],
-        ["Contractor", contractor, "Currency", currency],
-        ["Batch", batch_id, "Source",
+        ["Document ID",  pz_doc_id,                    "Date",       date],
+        ["Contractor",   contractor,                    "Currency",   currency],
+        ["Batch",        batch_id,                      "Source",
          "Created via app" if wfirma_export.get("pz_source") == "created_via_app"
          else wfirma_export.get("pz_source") or "—"],
+        ["Source API",   "warehouse_document_p_z/get/{id}",
+         "PZ Document ID", pz_doc_id],
+        ["Generated",    generated_utc,                 "Generator",  "EJ Dashboard Portal"],
     ]
     meta_tbl = Table(meta, colWidths=[35*mm, 65*mm, 25*mm, 40*mm])
     meta_tbl.setStyle(TableStyle([

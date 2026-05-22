@@ -133,6 +133,16 @@ def test_backend_route_pz_document_pdf_exists():
     assert "Generated from verified wFirma PZ data" in src, (
         "PDF must carry the correct 'generated from verified data' label"
     )
+    # Provenance fields — self-identifying document
+    assert "warehouse_document_p_z/get/{id}" in src, (
+        "PDF must embed Source API provenance: warehouse_document_p_z/get/{id}"
+    )
+    assert "EJ Dashboard Portal" in src, (
+        "PDF must embed Generator provenance: EJ Dashboard Portal"
+    )
+    assert "generated_utc" in src, (
+        "PDF must embed Generated UTC timestamp"
+    )
 
 
 # ── 5. PDF route 404 when no PZ linked ───────────────────────────────────────
