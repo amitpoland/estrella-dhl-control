@@ -10,7 +10,7 @@ Referenced by: `deploy_qa_reviewer.md`, `deploy_lead_coordinator.md`, `deploy.md
 | Suite | File / pattern | Required pass count | Failure action |
 |-------|---------------|---------------------|----------------|
 | PZ regression | `test_pz_regression.py` | **160** | Unconditional deploy block |
-| Carrier suite | `tests/test_carrier_*.py` | **366** | Unconditional deploy block |
+| Carrier suite | `tests/test_carrier_*.py` | **381** | Unconditional deploy block |
 
 Any test ERROR (not just FAILED) is also an unconditional block.
 Any count below the required threshold is an unconditional block.
@@ -33,3 +33,4 @@ When a new golden batch is committed or a new test is added:
 | Date | PZ required | Carrier required | Reason |
 |------|-------------|------------------|--------|
 | 2026-05-13 | 160 | 366 | Baseline established (V2.0 engine) |
+| 2026-05-22 | 160 | 381 | count update — carrier suite grew from new adapter/idempotency tests |
