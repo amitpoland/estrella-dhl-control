@@ -616,6 +616,440 @@ def create_good_from_product_code(
     })
 
 
+# ── Search-first product authority — operator-choice write endpoints ───────
+#
+# These 3 endpoints implement the operator-stated 2026-05-23 workflow:
+#
+#    Product required → Search wFirma → Found?
+#      ├─ Yes → adopt → compare metadata → ask before update
+#      │        a) No overwrite  → /goods/adopt           (this section)
+#      │        b) Yes overwrite → /goods/update-and-adopt
+#      └─ No                     → /goods/create-and-adopt
+#
+# Each endpoint asserts an explicit operator decision. They REFUSE to
+# silently cross paths: /adopt errors 409 if wFirma doesn't have the
+# product (operator should call /create-and-adopt); /create-and-adopt
+# errors 409 if wFirma already has the product (operator should call
+# /adopt or /update-and-adopt). This prevents duplicate creation and
+# accidental overwrite even under operator-UI race conditions.
+#
+# Reuses existing infrastructure (no new dependencies, no new flags):
+#   - wfirma_client.get_product_by_code() for search
+#   - wfirma_client.edit_product()        gated on wfirma_edit_product_allowed
+#   - wfirma_client.create_product()      gated on wfirma_create_product_allowed
+#   - wfdb.upsert_product()               for local mirror (sync_status=matched)
+#   - wfirma_product_compare.compare_product_metadata() for diff in responses
+#
+# design_code is NEVER used as identity in any of these endpoints. The
+# product_code is the sole authority key. design_code may appear in
+# request bodies (passed to deng.get_description_block as metadata only).
+
+
+class AdoptProductRequest(BaseModel):
+    """Optional local expectation supplied by the caller; used ONLY for
+    building the response advisory + comparison payload. No effect on
+    the wFirma side (nothing is written there)."""
+    name_pl: Optional[str] = None
+    unit:    Optional[str] = None
+
+
+class UpdateAndAdoptProductRequest(BaseModel):
+    """Operator-supplied new values to push to wFirma's existing product
+    via wfirma_client.edit_product (name + description only — identity
+    fields like code/unit/vat are NEVER mutated)."""
+    name:        Optional[str] = None
+    description: Optional[str] = None
+    # Local expectation for the comparison payload (optional, informational)
+    name_pl:     Optional[str] = None
+    unit:        Optional[str] = None
+
+
+class CreateAndAdoptProductRequest(BaseModel):
+    """Operator-confirmed create. Same shape as CreateFromCodeRequest;
+    we route through deng.get_description_block to lock the Polish
+    description identical to the legacy create endpoint."""
+    item_type:      str
+    description_en: str = ""
+
+
+@router.post("/goods/adopt/{product_code:path}", dependencies=[_auth])
+def adopt_existing_product(
+    product_code: str,
+    req: Optional[AdoptProductRequest] = None,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Operator's "No overwrite" path: search wFirma, MUST find the product,
+    mirror the mapping locally. wFirma side is NEVER mutated by this
+    endpoint — no create, no edit. Idempotent.
+
+    Errors:
+      409  product not in wFirma — operator should call /create-and-adopt
+      502  wFirma search failed
+      500  local mirror write failed
+    """
+    from ..services.wfirma_product_compare import compare_product_metadata
+
+    if not (product_code or "").strip():
+        raise HTTPException(status_code=400, detail="product_code is required")
+    pc = product_code.strip()
+    op = _operator_from_header(x_operator)
+
+    # 1. Search wFirma — MUST find for /adopt to apply
+    try:
+        existing = wfirma_client.get_product_by_code(pc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "search_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    if existing is None:
+        # Refuse to cross paths — operator must call the explicit create
+        # endpoint. This prevents duplicate creation under UI races.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "ok":           False,
+                "status":       "not_in_wfirma",
+                "product_code": pc,
+                "hint":         "wFirma has no product for this code — "
+                                "call POST /goods/create-and-adopt to create.",
+            },
+        )
+
+    # 2. Build comparison for the response advisory (informational only;
+    #    /adopt always proceeds since operator already chose this path).
+    local_expected = None
+    if req is not None:
+        local_expected = {
+            k: v for k, v in {
+                "product_code": pc,
+                "name_pl":      req.name_pl,
+                "unit":         req.unit,
+            }.items() if v not in (None, "")
+        } or None
+    comparison = compare_product_metadata(
+        wfirma_product = existing,
+        local_expected = local_expected,
+        product_code   = pc,
+    )
+
+    # 3. Persist the local mirror (wFirma side untouched).
+    try:
+        wfdb.upsert_product(
+            product_code      = pc,
+            wfirma_product_id = existing.wfirma_id,
+            product_name_pl   = existing.name or "",
+            unit              = existing.unit or "szt.",
+            vat_rate          = "23",
+            sync_status       = "matched",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"ok": False, "status": "local_mirror_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    return JSONResponse({
+        "ok":                True,
+        "action":            "adopted",
+        "product_code":      pc,
+        "wfirma_product_id": existing.wfirma_id,
+        "wfirma_untouched":  True,
+        "operator":          op,
+        "comparison":        comparison,
+    })
+
+
+@router.post("/goods/update-and-adopt/{product_code:path}",
+             dependencies=[_auth])
+def update_and_adopt_product(
+    product_code: str,
+    req: UpdateAndAdoptProductRequest,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Operator's "Yes overwrite" path: search wFirma, MUST find the product,
+    call goods/edit with operator-supplied name/description, then mirror.
+    Only name + description fields are sent to wFirma — code, unit, vat,
+    price are identity-preserved by wfirma_client.edit_product().
+
+    Gated on settings.wfirma_edit_product_allowed (existing flag — does
+    NOT introduce a new flag).
+
+    Errors:
+      400  no fields to update (both name and description empty)
+      403  wfirma_edit_product_allowed is false
+      409  product not in wFirma — operator should call /create-and-adopt
+      502  wFirma edit failed
+      500  local mirror write failed
+    """
+    from ..services.wfirma_product_compare import compare_product_metadata
+
+    if not (product_code or "").strip():
+        raise HTTPException(status_code=400, detail="product_code is required")
+    pc = product_code.strip()
+    op = _operator_from_header(x_operator)
+
+    new_name = (req.name or "").strip()
+    new_desc = (req.description or "").strip()
+    if not new_name and not new_desc:
+        raise HTTPException(
+            status_code=400,
+            detail="at least one of name or description must be non-empty",
+        )
+
+    # Gate
+    if not getattr(settings, "wfirma_edit_product_allowed", False):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "ok":               False,
+                "status":           "blocked",
+                "product_code":     pc,
+                "blocking_reasons": [
+                    "wfirma_edit_product_allowed is false — "
+                    "operator must enable WFIRMA_EDIT_PRODUCT_ALLOWED to update",
+                ],
+            },
+        )
+
+    # 1. Search wFirma — MUST find for /update-and-adopt to apply
+    try:
+        existing = wfirma_client.get_product_by_code(pc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "search_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+    if existing is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "ok":           False,
+                "status":       "not_in_wfirma",
+                "product_code": pc,
+                "hint":         "wFirma has no product for this code — "
+                                "call POST /goods/create-and-adopt to create.",
+            },
+        )
+
+    # 2. Push the edit to wFirma (identity-preserving — code/unit/vat
+    #    are never mutated by wfirma_client.edit_product).
+    edit_kwargs = {}
+    if new_name:
+        edit_kwargs["name"] = new_name
+    if new_desc:
+        edit_kwargs["description"] = new_desc
+    try:
+        edit_result = wfirma_client.edit_product(
+            existing.wfirma_id, **edit_kwargs,
+        )
+    except Exception as exc:
+        log.warning("[%s] goods/edit failed: %s", pc, exc)
+        return JSONResponse(
+            status_code=502,
+            content={"ok": False, "status": "edit_failed",
+                     "product_code": pc,
+                     "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    # 3. Persist local mirror with the updated name.
+    try:
+        wfdb.upsert_product(
+            product_code      = pc,
+            wfirma_product_id = existing.wfirma_id,
+            product_name_pl   = edit_result.get("name") or new_name or existing.name or "",
+            unit              = edit_result.get("unit") or existing.unit or "szt.",
+            vat_rate          = "23",
+            sync_status       = "matched",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"ok": False, "status": "local_mirror_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    # 4. Build post-edit comparison for response payload.
+    #    The local_expected is what the operator just pushed (name +
+    #    optional unit), so an adopt_as_is result confirms the edit
+    #    landed correctly on the wFirma side.
+    local_expected = {
+        k: v for k, v in {
+            "product_code": pc,
+            "name_pl":      new_name or req.name_pl,
+            "unit":         req.unit,
+        }.items() if v not in (None, "")
+    } or None
+    # Synth post-edit wFirma view from edit_result for the diff.
+    class _EditedView:
+        wfirma_id = existing.wfirma_id
+        name = edit_result.get("name") or new_name
+        code = edit_result.get("code") or pc
+        unit = edit_result.get("unit") or existing.unit
+        count = 0.0
+        reserved = 0.0
+    comparison = compare_product_metadata(
+        wfirma_product = _EditedView,
+        local_expected = local_expected,
+        product_code   = pc,
+    )
+
+    return JSONResponse({
+        "ok":                 True,
+        "action":             "updated_and_adopted",
+        "product_code":       pc,
+        "wfirma_product_id":  existing.wfirma_id,
+        "updated_fields":     sorted(edit_kwargs.keys()),
+        "wfirma_post_state":  {
+            "name": edit_result.get("name"),
+            "code": edit_result.get("code"),
+            "unit": edit_result.get("unit"),
+        },
+        "operator":           op,
+        "comparison":         comparison,
+    })
+
+
+@router.post("/goods/create-and-adopt/{product_code:path}",
+             dependencies=[_auth])
+def create_and_adopt_product(
+    product_code: str,
+    req: CreateAndAdoptProductRequest,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """
+    Operator's "missing → create" path: search wFirma, MUST NOT find the
+    product (409 if it exists — operator should call /adopt instead),
+    call goods/add via the locked description_block, mirror locally.
+
+    Gated on settings.wfirma_create_product_allowed (existing flag).
+
+    Errors:
+      403  wfirma_create_product_allowed is false
+      409  product ALREADY in wFirma — operator should call /adopt
+      502  wFirma search OR create failed
+      500  local mirror write failed
+    """
+    if not (product_code or "").strip():
+        raise HTTPException(status_code=400, detail="product_code is required")
+    pc = product_code.strip()
+    op = _operator_from_header(x_operator)
+
+    # Gate
+    if not settings.wfirma_create_product_allowed:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "ok":               False,
+                "status":           "blocked",
+                "product_code":     pc,
+                "blocking_reasons": [
+                    "wfirma_create_product_allowed is false — "
+                    "operator must enable WFIRMA_CREATE_PRODUCT_ALLOWED to create",
+                ],
+            },
+        )
+
+    # 1. Search wFirma — MUST NOT find for /create-and-adopt to apply.
+    #    Prevents duplicate creation under UI races.
+    try:
+        existing = wfirma_client.get_product_by_code(pc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"ok": False, "status": "search_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "ok":           False,
+                "status":       "already_in_wfirma",
+                "product_code": pc,
+                "wfirma_product_id": existing.wfirma_id,
+                "hint":         "wFirma already has this product — "
+                                "call POST /goods/adopt (or "
+                                "/goods/update-and-adopt) instead. "
+                                "Refusing to create a duplicate.",
+            },
+        )
+
+    # 2. Build the locked description_block via deng (same as the legacy
+    #    /create-from-product-code endpoint — keeps Polish name formatting
+    #    canonical).
+    block = deng.get_description_block(
+        product_code   = pc,
+        item_type      = req.item_type,
+        description_en = req.description_en,
+    )
+    wf_name = (
+        (block.get("description_line") or "").strip()
+        or (block.get("name_pl") or "").strip()
+        or pc
+    )
+
+    # 3. Create via goods/add.
+    try:
+        result = wfirma_client.create_product(
+            product_code = pc,
+            name         = wf_name,
+            unit         = "szt.",
+            netto        = 0.0,
+            vat_code_id  = wfirma_client.find_vat_code_id(23),
+            description  = block.get("description_block") or "",
+        )
+    except Exception as exc:
+        log.warning("[%s] goods/add failed: %s", pc, exc)
+        return JSONResponse(
+            status_code=502,
+            content={"ok": False, "status": "create_failed",
+                     "product_code": pc,
+                     "error": f"{type(exc).__name__}: {exc}"},
+        )
+    if not result.wfirma_id:
+        return JSONResponse(
+            status_code=502,
+            content={"ok": False, "status": "create_failed",
+                     "product_code": pc,
+                     "error": "goods/add returned no wfirma_id — refusing fake mapping"},
+        )
+
+    # 4. Persist local mirror only on confirmed wFirma success.
+    try:
+        wfdb.upsert_product(
+            product_code      = pc,
+            wfirma_product_id = result.wfirma_id,
+            product_name_pl   = block.get("name_pl") or "",
+            unit              = "szt.",
+            vat_rate          = "23",
+            sync_status       = "matched",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"ok": False, "status": "local_mirror_failed",
+                    "error": f"{type(exc).__name__}: {exc}"},
+        )
+
+    return JSONResponse({
+        "ok":                True,
+        "action":            "created_and_adopted",
+        "product_code":      pc,
+        "wfirma_product_id": result.wfirma_id,
+        "name":              result.name,
+        "unit":              result.unit,
+        "description_used":  block.get("description_line"),
+        "operator":          op,
+    })
+
+
 # ── Batch wFirma product auto-registration (dry-run + write) ───────────────
 #
 # Compose the existing single-product create flow over an entire batch's
