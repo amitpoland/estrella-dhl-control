@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import httpx
 
+from ..core.circuit_breaker import CircuitBreakerError, get_circuit_breaker
 from ..core.config import settings
 from ..core.logging import get_logger
 
@@ -203,7 +204,12 @@ async def _get_access_token() -> str:
 
 
 async def _refresh_access_token() -> str:
-    """Exchange refresh token for a new access token via Zoho OAuth."""
+    """Exchange refresh token for a new access token via Zoho OAuth.
+
+    Protected by the zoho_cliq circuit breaker.  If the circuit is OPEN the
+    cached token (possibly stale) is returned so the caller can still attempt
+    a delivery — a 401 from the channel endpoint will surface the real failure.
+    """
     global _access_token
     refresh_token  = settings.cliq_refresh_token
     client_id      = settings.cliq_client_id
@@ -213,8 +219,10 @@ async def _refresh_access_token() -> str:
         log.warning("OAuth refresh credentials not configured (CLIQ_REFRESH_TOKEN / CLIQ_CLIENT_ID / CLIQ_CLIENT_SECRET)")
         return ""
 
+    breaker = get_circuit_breaker("zoho_cliq")
+
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=breaker.config.call_timeout) as client:
             r = await client.post(
                 "https://accounts.zoho.in/oauth/v2/token",
                 params={
@@ -230,11 +238,16 @@ async def _refresh_access_token() -> str:
             if new_token:
                 async with _get_token_lock():
                     _access_token = new_token
+                breaker._on_success()  # record success against circuit
                 log.info("Cliq OAuth token refreshed successfully")
                 return new_token
             log.error("Token refresh response missing access_token: %s", data.get("error", "unknown"))
             return ""
+    except CircuitBreakerError:
+        log.warning("zoho_cliq circuit OPEN — returning cached token (may be stale)")
+        return _access_token
     except Exception as exc:
+        breaker._on_failure()  # record failure against circuit
         log.error("Cliq token refresh failed: %s", exc)
         return ""
 
@@ -248,6 +261,8 @@ async def post_to_channel(text: str, channel: str = _PZ_CHANNEL) -> bool:
     Header: Authorization: Zoho-oauthtoken <access_token>
 
     Retries once on 401 by refreshing the token.
+    Protected by the zoho_cliq circuit breaker — returns False immediately
+    when the circuit is OPEN rather than hanging on a dead connection.
     Never falls back to the bot webhook — if the channel post fails, returns False.
     """
     url = settings.cliq_channel_api_url or settings.cliq_channel_webhook_url
@@ -258,11 +273,17 @@ async def post_to_channel(text: str, channel: str = _PZ_CHANNEL) -> bool:
 
     log.info("post_to_channel: target=#%s url=%s preview=%r", channel, url, text[:80])
 
+    breaker = get_circuit_breaker("zoho_cliq")
+
+    if breaker.state.value == "open":
+        log.warning("post_to_channel: zoho_cliq circuit OPEN — message not delivered to #%s", channel)
+        return False
+
     for attempt in range(2):
         token = await _get_access_token()
         headers = {"Authorization": f"Zoho-oauthtoken {token}"}
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=breaker.config.call_timeout) as client:
                 r = await client.post(url, json={"text": text}, headers=headers)
             log.info("post_to_channel: #%s attempt=%d → HTTP %d body=%r",
                      channel, attempt + 1, r.status_code, r.text[:120])
@@ -271,10 +292,13 @@ async def post_to_channel(text: str, channel: str = _PZ_CHANNEL) -> bool:
                 await _refresh_access_token()
                 continue
             if r.status_code in (200, 201, 204):
+                breaker._on_success()
                 return True
             log.error("post_to_channel: #%s HTTP %d — %s", channel, r.status_code, r.text[:300])
+            breaker._on_failure()
             return False
         except Exception as exc:
+            breaker._on_failure()
             log.error("post_to_channel: #%s failed: %s", channel, exc)
             return False
 

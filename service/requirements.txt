@@ -17,4 +17,5 @@ pymupdf>=1.24          # fitz — PDF parsing
 pdfplumber>=0.10       # Polish-description PDF text validator (routes_dhl_clearance.py)
 pypdf>=6.0             # PDF text extraction for polish-description engine tests
 requests>=2.31         # NBP API
+tenacity>=8.2.0        # retry / circuit-breaker support
 tzdata>=2024.1         # IANA tz database for ZoneInfo on Windows (warsaw_today())

@@ -41,6 +41,8 @@ from typing import Any, Dict, Optional, Tuple
 
 import requests
 
+from ..core.circuit_breaker import CircuitBreakerError, get_circuit_breaker
+
 log = logging.getLogger(__name__)
 
 # ── OAuth token cache (in-process, refresh automatically) ───────────────────
@@ -188,20 +190,23 @@ def _resolve_batch_folder(batch_id: str, token: str) -> Optional[str]:
 # ── File upload ───────────────────────────────────────────────────────────────
 
 def upload_file(file_path: Path, folder_id: str, token: str) -> Optional[str]:
-    """
-    Upload a single file to WorkDrive folder. Returns resource_id or None.
+    """Upload a single file to WorkDrive folder. Returns resource_id or None.
+
+    Protected by the zoho_workdrive circuit breaker — returns None immediately
+    when the circuit is OPEN rather than timing out on a dead connection.
     """
     api_base = os.environ.get("WORKDRIVE_API_URL", "https://workdrive.zoho.in")
-    headers = {"Authorization": f"Bearer {token}"}
+    headers  = {"Authorization": f"Bearer {token}"}
+    breaker  = get_circuit_breaker("zoho_workdrive")
 
-    try:
+    def _do_upload() -> Optional[str]:
         with open(file_path, "rb") as fh:
             resp = requests.post(
                 f"{api_base}/api/v1/upload",
                 headers=headers,
                 data={"parent_id": folder_id, "override-name-exist": "true"},
                 files={"content": (file_path.name, fh, _mime(file_path))},
-                timeout=60,
+                timeout=breaker.config.call_timeout,
             )
         data = resp.json()
         resource_id = (
@@ -211,11 +216,20 @@ def upload_file(file_path: Path, folder_id: str, token: str) -> Optional[str]:
         if resource_id:
             log.info("[workdrive_uploader] uploaded %s → %s", file_path.name, resource_id)
             return resource_id
-        log.error("[workdrive_uploader] upload response: %s", data)
+        log.error("[workdrive_uploader] upload response missing resource_id: %s", data)
+        return None
+
+    try:
+        return breaker.call(_do_upload)
+    except CircuitBreakerError:
+        log.warning(
+            "[workdrive_uploader] zoho_workdrive circuit OPEN — upload skipped: %s",
+            file_path.name,
+        )
+        return None
     except Exception as exc:
         log.error("[workdrive_uploader] upload failed %s: %s", file_path.name, exc)
-
-    return None
+        return None
 
 
 def _mime(path: Path) -> str:
