@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from ..core.config import settings
 from ..core.logging import get_logger
@@ -2593,16 +2593,27 @@ async def wfirma_pz_create(
 # ── PZ Adopt ──────────────────────────────────────────────────────────────────
 
 class _PZAdoptBody(BaseModel):
-    """
-    Request body for POST .../wfirma/pz_adopt.
+    """Request body for POST .../wfirma/pz_adopt and .../wfirma/pz_confirm.
 
-    At least one of pz_doc_id (preferred) or pz_number must be supplied.
+    At least one of pz_doc_id (preferred) or pz_number must be non-empty.
     pz_doc_id is the canonical wFirma internal numeric ID.
-    pz_number is the human-readable document number (e.g. "PZ 1/5/2026") used
-    only when the internal ID is not known.
+    pz_number is the human-readable document number (e.g. "PZ 1/5/2026")
+    used only when the internal ID is not known.
+
+    An empty body raises 422 with a machine-readable reason before
+    reaching Guard 1 (defence-in-depth).
     """
     pz_doc_id: Optional[str] = None
     pz_number: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _require_at_least_one(self) -> "_PZAdoptBody":
+        if not (self.pz_doc_id or "").strip() and not (self.pz_number or "").strip():
+            raise ValueError(
+                "pz_doc_id or pz_number is required — provide the wFirma "
+                "numeric document ID or the full PZ number (e.g. PZ 9/5/2026)."
+            )
+        return self
 
 
 @router.post("/shipment/{batch_id}/wfirma/pz_adopt",   dependencies=[_auth])

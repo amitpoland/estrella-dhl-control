@@ -5673,19 +5673,47 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
 
                   {confirmingPz && (
                     <div style={{ marginBottom: 16, padding: 14, background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8, color: 'var(--text)' }}>Enter PZ Number</div>
+                      <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8, color: 'var(--text)' }}>Enter PZ Number or Document ID</div>
                       <div style={{ display: 'flex', gap: 8 }}>
-                        <Inp value={pzNumber} onChange={e => setPzNumber(e.target.value)} placeholder="e.g. PZ/2026/001234" style={{ flex: 1 }} />
-                        <Btn variant="gold" onClick={async () => {
-                          const fd3 = new FormData();
-                          fd3.append('doc_no', pzNumber);
-                          await doAction('setPz', 'Confirm PZ Number', async () => {
-                            const r = await fetch(`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/set_pz`, { method: 'POST', body: fd3, credentials: 'include' });
-                            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                            return r.json();
-                          });
-                          setConfirmingPz(false);
-                        }}>Confirm</Btn>
+                        <Inp data-testid="input-pz-number-confirm"
+                             value={pzNumber} onChange={e => setPzNumber(e.target.value)}
+                             placeholder="PZ 9/5/2026  or  185759075" style={{ flex: 1 }} />
+                        <Btn variant="gold"
+                             data-testid="btn-confirm-pz-number"
+                             disabled={!pzNumber || !pzNumber.trim() || !!busy.setPz}
+                             title={!pzNumber || !pzNumber.trim() ? 'Enter a PZ number or document ID first' : ''}
+                             onClick={async () => {
+                               const _t = (pzNumber || '').trim();
+                               if (!_t) return;
+                               // Auto-detect: numeric string → pz_doc_id, formatted → pz_number
+                               const payload = /^\d+$/.test(_t)
+                                 ? { pz_doc_id: _t }
+                                 : { pz_number: _t };
+                               await doAction('setPz', 'Confirm PZ Number', async () => {
+                                 const r = await fetch(
+                                   `/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_confirm`,
+                                   { method: 'POST',
+                                     headers: { 'Content-Type': 'application/json' },
+                                     body: JSON.stringify(payload),
+                                     credentials: 'include' }
+                                 );
+                                 let _rj = null;
+                                 try { _rj = await r.json(); } catch (_) {}
+                                 if (!r.ok) {
+                                   // Parse structured error — never surface raw "HTTP 422"
+                                   const reason =
+                                     _rj?.detail?.error ||
+                                     (Array.isArray(_rj?.detail) && _rj.detail[0]?.msg) ||
+                                     _rj?.message ||
+                                     `Confirm PZ failed (${r.status})`;
+                                   throw new Error(String(reason));
+                                 }
+                                 return _rj;
+                               });
+                               setConfirmingPz(false);
+                             }}>
+                          {busy.setPz ? '⟳ Confirming…' : 'Confirm'}
+                        </Btn>
                         <Btn variant="outline" onClick={() => setConfirmingPz(false)}>Cancel</Btn>
                       </div>
                     </div>
