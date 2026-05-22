@@ -5905,8 +5905,87 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     </div>
                   )}
 
-                  {/* PZ Lock-Status Banner — read-only summary from pz_preview.pz_lock_status */}
-                  {pzPreview?.pz_lock_status && (() => {
+                  {/* ── PZ Lifecycle Banner (PR #281) — single authority ──────
+                       Reads `pzPreview.pz_lifecycle.state` as the canonical
+                       source. For the alarming states (RECOVERY_REQUIRED,
+                       DUPLICATE_DETECTED, LOCKED, RECONCILED) this banner is
+                       the PRIMARY status display; the legacy pz_lock_status
+                       banner below is suppressed for those states to avoid
+                       contradictory messages. For CREATED / READY_TO_CREATE /
+                       NOT_READY states, the legacy banner still renders to
+                       carry granular detail. Backward-compatible: when
+                       pz_lifecycle is absent (older backend), the legacy
+                       banner renders unchanged. */}
+                  {pzPreview?.pz_lifecycle && (() => {
+                    const _lf = pzPreview.pz_lifecycle;
+                    const _alarming = (
+                      _lf.state === 'PZ_RECOVERY_REQUIRED' ||
+                      _lf.state === 'PZ_DUPLICATE_DETECTED' ||
+                      _lf.state === 'PZ_LOCKED' ||
+                      _lf.state === 'PZ_RECONCILED'
+                    );
+                    if (!_alarming) return null;   // legacy banner handles the rest
+                    let _tone, _headline, _subtitle;
+                    if (_lf.state === 'PZ_RECOVERY_REQUIRED') {
+                      _tone = 'red';
+                      _headline = 'PZ recovery required';
+                      _subtitle = 'PZ was created in wFirma, but local audit mapping is missing. Confirm the existing PZ to recover.';
+                    } else if (_lf.state === 'PZ_DUPLICATE_DETECTED') {
+                      _tone = 'red';
+                      _headline = 'Duplicate wFirma PZ doc id detected';
+                      _subtitle = _lf.duplicate_owner_batch_id
+                        ? `Doc id is claimed by batch ${_lf.duplicate_owner_batch_id}. Resolve cross-batch conflict before proceeding.`
+                        : 'A wFirma PZ doc id is claimed by another batch. Resolve cross-batch conflict before proceeding.';
+                    } else if (_lf.state === 'PZ_LOCKED') {
+                      _tone = 'neutral';
+                      _headline = 'PZ locked';
+                      _subtitle = 'Batch locked by accounting period close or operator hold.';
+                    } else {   // PZ_RECONCILED
+                      _tone = 'amber';
+                      _headline = 'PZ mapping cleared — recreate when ready';
+                      _subtitle = 'The previous wFirma PZ was unlinked. A new PZ can be created when all gates pass.';
+                    }
+                    const _bg = {
+                      red: 'var(--badge-red-bg)', amber: 'var(--badge-amber-bg)',
+                      neutral: 'var(--bg-subtle)',
+                    }[_tone];
+                    const _bd = {
+                      red: 'var(--badge-red-border)', amber: 'var(--badge-amber-border)',
+                      neutral: 'var(--border)',
+                    }[_tone];
+                    const _fg = {
+                      red: 'var(--badge-red-text)', amber: 'var(--badge-amber-text)',
+                      neutral: 'var(--text-2)',
+                    }[_tone];
+                    const _icon = _tone === 'red' ? '✗' : _tone === 'amber' ? '⚠' : '🔒';
+                    return (
+                      <div data-testid="pz-lifecycle-banner"
+                           data-state={_lf.state}
+                           data-primary-action={_lf.primary_action || ''}
+                           style={{ marginBottom: 12, padding: '12px 16px',
+                                    background: _bg, border: `1px solid ${_bd}`, borderRadius: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <span style={{ fontSize: 16, color: _fg }}>{_icon}</span>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: _fg }}>{_headline}</div>
+                            <div style={{ fontSize: 11, color: _fg, opacity: 0.9, marginTop: 3 }}>{_subtitle}</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* PZ Lock-Status Banner — legacy granular detail (PR #281:
+                       suppressed when pz_lifecycle is in an alarming state to
+                       prevent contradictory messages). */}
+                  {pzPreview?.pz_lock_status && !(
+                    pzPreview?.pz_lifecycle && (
+                      pzPreview.pz_lifecycle.state === 'PZ_RECOVERY_REQUIRED' ||
+                      pzPreview.pz_lifecycle.state === 'PZ_DUPLICATE_DETECTED' ||
+                      pzPreview.pz_lifecycle.state === 'PZ_LOCKED' ||
+                      pzPreview.pz_lifecycle.state === 'PZ_RECONCILED'
+                    )
+                  ) && (() => {
                     const ls = pzPreview.pz_lock_status;
                     // Tone selection drives banner color + icon
                     const tone =
@@ -6087,13 +6166,24 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       {pzPreviewLoading ? '⟳ Loading…' : '↻ Refresh PZ Preview'}
                     </Btn>
 
-                    <Btn variant="outline" disabled={!!busy.pzResolve} onClick={resolveProducts}
-                        data-testid="btn-pz-resolve"
-                        title={pzPreview?.unresolved_count > 0 ? 'Match unresolved product codes to wFirma goods' : 'Re-run product resolution'}>
-                      {busy.pzResolve ? '⟳ Resolving…' : '⚙ Resolve Products'}
-                    </Btn>
+                    {/* Resolve Products — hidden when pz_lifecycle says so
+                         (PR #281: e.g. PZ_RECOVERY_REQUIRED hides this
+                         because the operator must Confirm Existing PZ
+                         instead). */}
+                    {!(pzPreview?.pz_lifecycle && pzPreview.pz_lifecycle.hide_resolve_products) && (
+                      <Btn variant="outline" disabled={!!busy.pzResolve} onClick={resolveProducts}
+                          data-testid="btn-pz-resolve"
+                          title={pzPreview?.unresolved_count > 0 ? 'Match unresolved product codes to wFirma goods' : 'Re-run product resolution'}>
+                        {busy.pzResolve ? '⟳ Resolving…' : '⚙ Resolve Products'}
+                      </Btn>
+                    )}
 
-                    {!pzCreateConfirm ? (
+                    {/* Create wFirma PZ — hidden when pz_lifecycle says so;
+                         otherwise gated by pz_lock_status.can_create (legacy
+                         authority preserved for granular reasons). PR #281
+                         single-authority discipline: lifecycle's hide_create_button
+                         takes precedence over the legacy gate. */}
+                    {!(pzPreview?.pz_lifecycle && pzPreview.pz_lifecycle.hide_create_button) && (!pzCreateConfirm ? (
                       <Btn variant="gold"
                           data-testid="btn-pz-create"
                           disabled={
@@ -6135,12 +6225,17 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         </Btn>
                         <Btn small variant="ghost" onClick={() => setPzCreateConfirm(false)}>Cancel</Btn>
                       </div>
-                    )}
+                    ))}
 
-                    {/* Confirm Existing PZ — adopt a manually-created or historical PZ */}
+                    {/* Confirm Existing PZ — adopt a manually-created or historical PZ.
+                         PR #281: when pz_lifecycle.primary_action ===
+                         "confirm_existing_pz" we render as variant="gold" (primary)
+                         instead of variant="outline" (secondary) so the operator
+                         sees the recovery CTA prominently. */}
                     {!pzAdoptOpen ? (
-                      <Btn variant="outline"
+                      <Btn variant={pzPreview?.pz_lifecycle?.primary_action === 'confirm_existing_pz' ? 'gold' : 'outline'}
                           data-testid="btn-pz-adopt-open"
+                          data-primary={String(pzPreview?.pz_lifecycle?.primary_action === 'confirm_existing_pz')}
                           disabled={
                             // pz_lock_status.can_adopt is the authoritative gate.
                             // Recovery case (timeline event without doc_id) keeps
@@ -10600,17 +10695,42 @@ function ExecutePZGate({ batchId, onToast }) {
                                                           || caps.flags.wfirma_create_pz_allowed))));
   const enabled = ready && wouldCreate && flagOn && !alreadyCreated && !busy;
 
+  // PR #281: when pz_lifecycle.override_create_disabled_message is true
+  // (e.g. PZ_RECOVERY_REQUIRED / PZ_DUPLICATE_DETECTED / PZ_LOCKED), the
+  // operator must NOT see a generic "PZ creation is disabled" chip — the
+  // lifecycle banner in the wFirma Warehouse card carries the real
+  // primary action (Confirm Existing PZ, etc.). Same logic applies to
+  // generic blocked wording when lifecycle indicates a recovery state.
+  const _lifecycle = data && data.pz_lifecycle;
+  const _lfSuppressCreateDisabled = !!(_lifecycle && _lifecycle.override_create_disabled_message);
+  const _lfRecoveryState = !!(_lifecycle && (
+      _lifecycle.state === 'PZ_RECOVERY_REQUIRED' ||
+      _lifecycle.state === 'PZ_DUPLICATE_DETECTED' ||
+      _lifecycle.state === 'PZ_LOCKED'
+  ));
+
   // Build disabled-reason chips so the operator sees exactly why.
   const reasons = [];
-  if (alreadyCreated)               reasons.push('PZ already created');
-  if (!flagOn)                      reasons.push('PZ creation is disabled (admin setting)');
-  if (!ready)                       reasons.push('PZ preview not ready — resolve issues in steps 1–6 above');
-  if (!wouldCreate && !alreadyCreated) reasons.push('Preview check: no PZ would be created — verify product and customer mapping');
-  if (data && (data.unresolved_product_codes || []).length > 0) {
-    reasons.push(`${data.unresolved_product_codes.length} product code(s) unresolved`);
-  }
-  if (data && (data.price_conflicts || []).length > 0) {
-    reasons.push(`${data.price_conflicts.length} price conflict(s)`);
+  if (_lfRecoveryState) {
+    // Single, clear, primary directive — no contradictory chips.
+    if (_lifecycle.state === 'PZ_RECOVERY_REQUIRED') {
+      reasons.push('PZ recovery required — use Confirm Existing PZ in the wFirma Warehouse card above');
+    } else if (_lifecycle.state === 'PZ_DUPLICATE_DETECTED') {
+      reasons.push('Duplicate wFirma PZ doc id — resolve cross-batch conflict before creating');
+    } else if (_lifecycle.state === 'PZ_LOCKED') {
+      reasons.push('Batch locked by accounting period close or operator hold');
+    }
+  } else {
+    if (alreadyCreated)               reasons.push('PZ already created');
+    if (!flagOn && !_lfSuppressCreateDisabled) reasons.push('PZ creation is disabled (admin setting)');
+    if (!ready)                       reasons.push('PZ preview not ready — resolve issues in steps 1–6 above');
+    if (!wouldCreate && !alreadyCreated) reasons.push('Preview check: no PZ would be created — verify product and customer mapping');
+    if (data && (data.unresolved_product_codes || []).length > 0) {
+      reasons.push(`${data.unresolved_product_codes.length} product code(s) unresolved`);
+    }
+    if (data && (data.price_conflicts || []).length > 0) {
+      reasons.push(`${data.price_conflicts.length} price conflict(s)`);
+    }
   }
 
   return (
