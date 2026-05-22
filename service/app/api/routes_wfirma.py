@@ -764,6 +764,240 @@ _PZ_LOCK_STALE_SECS = 120  # locks older than 2 min are force-released
 
 # ── Read-only PZ lock-status snapshot (for dashboard) ────────────────────────
 
+# ── PZ lifecycle state — single authority for the UI ─────────────────────────
+#
+# Background
+# ----------
+# The shipment-detail PZ panel historically composed its render from four
+# separate authority sources (pz_preview.ready, pz_lock_status,
+# capabilities.create_pz_allowed, timeline events). The four did not have a
+# documented precedence, so the UI could simultaneously claim:
+#   - "PZ audit write recovery required"
+#   - "PZ creation disabled"
+#   - ready=true / would_create_pz=true
+# The operator had to mentally reconcile contradictions the backend already
+# knew how to resolve.
+#
+# `_compute_pz_lifecycle_state` collapses every signal into ONE canonical
+# state value. Every UI surface that renders PZ status MUST consume only the
+# `pz_lifecycle.state` field — never combine multiple authorities.
+#
+# Precedence (first match wins; this is the load-bearing contract):
+#   1. PZ_DUPLICATE_DETECTED — another batch owns the same wfirma_pz_doc_id
+#   2. PZ_RECOVERY_REQUIRED  — timeline says created, audit doc_id empty
+#                              (overrides ANY "creation disabled" messaging)
+#   3. PZ_LOCKED             — audit.wfirma_locked or accounting period closed
+#                              (reserved; not emitted today)
+#   4. PZ_CREATED            — doc_id present + pz_source set
+#   5. PZ_RECONCILED         — wfirma_pz_mapping_cleared after wfirma_pz_created
+#                              with no later wfirma_pz_created; doc_id empty
+#   6. PZ_READY_TO_CREATE    — preview ready + supplier + warehouse + flag on
+#   7. PZ_NOT_READY          — default; blockers / flag off / engine_error
+#
+# PZ_CREATING is reserved for a future async-create path; the current
+# synchronous create endpoint never emits it (no audit state to derive it
+# from). It stays in the enum so consumers can already pattern-match against
+# the full state set.
+
+PZ_LIFECYCLE_STATES: tuple = (
+    "PZ_DUPLICATE_DETECTED",
+    "PZ_RECOVERY_REQUIRED",
+    "PZ_LOCKED",
+    "PZ_CREATED",
+    "PZ_CREATING",          # reserved — see comment above
+    "PZ_RECONCILED",
+    "PZ_READY_TO_CREATE",
+    "PZ_NOT_READY",
+)
+
+_PZ_LIFECYCLE_PRIMARY_ACTIONS = {
+    "PZ_DUPLICATE_DETECTED": "resolve_cross_batch_conflict",
+    "PZ_RECOVERY_REQUIRED":  "confirm_existing_pz",
+    "PZ_LOCKED":             "none",
+    "PZ_CREATED":            "none",
+    "PZ_CREATING":           "wait_for_completion",
+    "PZ_RECONCILED":         "recreate_when_ready",
+    "PZ_READY_TO_CREATE":    "create_pz",
+    "PZ_NOT_READY":          "resolve_blockers",
+}
+
+
+def _has_pz_mapping_cleared_after_create(audit: Dict[str, Any]) -> bool:
+    """Return True when the timeline contains a `wfirma_pz_mapping_cleared`
+    event that is the most recent PZ-mapping-related event (i.e. no later
+    `wfirma_pz_created` or `wfirma_pz_adopted` after it).
+
+    Used to detect the post-clear / pre-recreate intermediate state.
+    """
+    timeline = audit.get("timeline") or []
+    last_mapping_event = ""
+    for ev in timeline:
+        name = (ev or {}).get("event") or ""
+        if name in (
+            EV_WFIRMA_PZ_CREATED,
+            EV_WFIRMA_PZ_ADOPTED,
+            "wfirma_pz_mapping_cleared",
+        ):
+            last_mapping_event = name
+    return last_mapping_event == "wfirma_pz_mapping_cleared"
+
+
+def _compute_pz_lifecycle_state(
+    audit: Dict[str, Any],
+    *,
+    preview_ready: bool         = False,
+    supplier_configured: bool   = False,
+    warehouse_configured: bool  = False,
+    create_allowed: bool        = False,
+    duplicate_owner_batch_id: Optional[str] = None,
+    blocker_codes:  Optional[List[str]]      = None,
+) -> Dict[str, Any]:
+    """Single authority for the UI's PZ status panel.
+
+    Returns a 10-field envelope:
+        state, reason, primary_action, secondary_actions,
+        hide_create_button, hide_resolve_products,
+        override_create_disabled_message,
+        wfirma_pz_doc_id, terminal_event, blocker_codes
+
+    Every UI surface MUST read `pz_lifecycle.state` (and optionally the
+    action flags) as the sole source for the PZ panel. The legacy
+    `pz_lock_status` field remains for backward compat with already-
+    deployed dashboards; new code should target `pz_lifecycle`.
+
+    `duplicate_owner_batch_id`: when provided + non-empty AND non-self,
+    the state is `PZ_DUPLICATE_DETECTED`. The caller (preview/create)
+    invokes `_find_pz_owner_batch` only when a doc_id is set; passing the
+    result here keeps this helper a pure function on the audit dict.
+
+    `blocker_codes`: stable list of codes from `pz_preview.blockers[].code`
+    (e.g. ENGINE_ERROR). Echoed in the envelope so a UI consuming only
+    `pz_lifecycle` still has access.
+    """
+    wfirma_export = audit.get("wfirma_export") or {}
+    doc_id        = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
+    pz_source     = (wfirma_export.get("pz_source") or "").strip()
+    terminal_ev   = _has_pz_terminal_event(audit)
+    codes_in      = list(blocker_codes or [])
+
+    # Default envelope template — the matched branch overrides fields.
+    out: Dict[str, Any] = {
+        "state":                            "PZ_NOT_READY",
+        "reason":                           "",
+        "primary_action":                   "resolve_blockers",
+        "secondary_actions":                [],
+        "hide_create_button":               False,
+        "hide_resolve_products":            False,
+        "override_create_disabled_message": False,
+        "wfirma_pz_doc_id":                 doc_id or None,
+        "terminal_event":                   terminal_ev,
+        "blocker_codes":                    codes_in,
+    }
+
+    # ── 1. Cross-batch duplicate ─────────────────────────────────────────
+    if duplicate_owner_batch_id:
+        out.update({
+            "state":                            "PZ_DUPLICATE_DETECTED",
+            "reason":                           "wfirma_pz_doc_id_claimed_by_other_batch",
+            "primary_action":                   "resolve_cross_batch_conflict",
+            "hide_create_button":               True,
+            "hide_resolve_products":            True,
+            "override_create_disabled_message": True,
+            "duplicate_owner_batch_id":         duplicate_owner_batch_id,
+        })
+        return out
+
+    # ── 2a. Reconciled (operator explicitly cleared the mapping post-create) ─
+    # MUST come before PZ_RECOVERY_REQUIRED — when the latest tracked
+    # PZ-mapping event is `wfirma_pz_mapping_cleared`, the missing doc_id
+    # is intentional, not a half-state. The operator wants to recreate.
+    if not doc_id and _has_pz_mapping_cleared_after_create(audit):
+        out.update({
+            "state":             "PZ_RECONCILED",
+            "reason":            "pz_mapping_cleared_awaiting_recreate",
+            "primary_action":    "recreate_when_ready",
+            "hide_create_button":    not (preview_ready and supplier_configured
+                                          and warehouse_configured and create_allowed),
+            "hide_resolve_products": False,
+            "terminal_event":        terminal_ev,
+        })
+        return out
+
+    # ── 2b. Recovery required (audit write failed after wFirma success) ─
+    # Distinct from PZ_RECONCILED: the operator did NOT clear the mapping,
+    # but the audit still lost its doc_id. The operator's job is to
+    # Confirm Existing PZ, not to flip a flag. Overrides any "creation
+    # disabled" message.
+    if terminal_ev and not doc_id:
+        out.update({
+            "state":                            "PZ_RECOVERY_REQUIRED",
+            "reason":                           "audit_write_recovery_required",
+            "primary_action":                   "confirm_existing_pz",
+            "secondary_actions":                ["refresh_mapping"],
+            "hide_create_button":               True,
+            "hide_resolve_products":            True,
+            "override_create_disabled_message": True,
+        })
+        return out
+
+    # ── 3. Locked (accounting period close, operator hold, etc.) ────────
+    # Reserved — no emitter today. Surfaces immediately when audit flag
+    # is set so the UI doesn't have to guess.
+    if bool(audit.get("wfirma_locked") or audit.get("accounting_period_closed")):
+        out.update({
+            "state":                            "PZ_LOCKED",
+            "reason":                           "wfirma_locked",
+            "primary_action":                   "none",
+            "hide_create_button":               True,
+            "hide_resolve_products":            True,
+            "override_create_disabled_message": True,
+        })
+        return out
+
+    # ── 4. Already created (canonical happy-path terminal state) ────────
+    if doc_id and pz_source:
+        out.update({
+            "state":          "PZ_CREATED",
+            "reason":         "pz_created" if pz_source == "created_via_app"
+                              else "pz_adopted_existing" if pz_source == "adopted_existing"
+                              else f"pz_source_{pz_source}",
+            "primary_action": "none",
+            "secondary_actions": ["refresh_mapping"],
+            "hide_create_button":    True,
+            "hide_resolve_products": False,
+        })
+        return out
+
+    # ── 5. Ready to create ──────────────────────────────────────────────
+    # (PZ_RECONCILED branch lives at priority 2a — operators clearing a
+    # mapping is a distinct intent from a half-state audit-write recovery.)
+    if (preview_ready and supplier_configured and warehouse_configured
+            and create_allowed):
+        out.update({
+            "state":             "PZ_READY_TO_CREATE",
+            "reason":            "ready",
+            "primary_action":    "create_pz",
+            "hide_create_button":    False,
+            "hide_resolve_products": False,
+        })
+        return out
+
+    # ── 7. Not ready (default) ──────────────────────────────────────────
+    if not create_allowed:
+        reason = "create_disabled"
+    elif not preview_ready:
+        reason = "preview_not_ready"
+    elif not supplier_configured:
+        reason = "supplier_not_configured"
+    elif not warehouse_configured:
+        reason = "warehouse_not_configured"
+    else:
+        reason = "not_ready"
+    out["reason"] = reason
+    out["hide_create_button"] = True
+    return out
+
+
 def _compute_pz_lock_status(
     audit: Dict[str, Any],
     *,
@@ -1141,6 +1375,15 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
                     "source":   "settings",
                 })
             eff_status, status_normalized = _compute_effective_pz_status(audit)
+            pz_lifecycle = _compute_pz_lifecycle_state(
+                audit,
+                preview_ready=False,
+                supplier_configured=supplier_configured,
+                warehouse_configured=warehouse_configured,
+                create_allowed=bool(getattr(settings, "wfirma_create_pz_allowed", False)),
+                duplicate_owner_batch_id=None,
+                blocker_codes=[b.get("code") for b in blockers if b.get("code")],
+            )
             return JSONResponse({
                 "batch_id":             batch_id,
                 "already_created":      False,
@@ -1149,6 +1392,7 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
                 "ready":                False,
                 "blockers":             blockers,
                 "engine_error":         (audit.get("engine_error") or "") or None,
+                "pz_lifecycle":         pz_lifecycle,
                 "unresolved_product_codes": [],
                 "price_conflicts":      [],
                 "stored_status":        audit.get("status", ""),
@@ -1162,11 +1406,25 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
     wfirma_export = audit.get("wfirma_export") or {}
     existing_pz_doc_id = wfirma_export.get("wfirma_pz_doc_id") or ""
     if existing_pz_doc_id:
+        _supplier_cfg  = bool((settings.wfirma_supplier_contractor_id or "").strip())
+        _warehouse_cfg = bool((settings.wfirma_warehouse_id or "").strip())
+        _create_flag   = bool(getattr(settings, "wfirma_create_pz_allowed", False))
         lock_status = _compute_pz_lock_status(
             audit,
             preview_ready=False,            # already created — preview is moot
-            supplier_configured=bool((settings.wfirma_supplier_contractor_id or "").strip()),
-            warehouse_configured=bool((settings.wfirma_warehouse_id or "").strip()),
+            supplier_configured=_supplier_cfg,
+            warehouse_configured=_warehouse_cfg,
+        )
+        # Cross-batch duplicate detection — only when doc_id is set.
+        _dup_owner = _find_pz_owner_batch(existing_pz_doc_id, batch_id)
+        pz_lifecycle = _compute_pz_lifecycle_state(
+            audit,
+            preview_ready=False,
+            supplier_configured=_supplier_cfg,
+            warehouse_configured=_warehouse_cfg,
+            create_allowed=_create_flag,
+            duplicate_owner_batch_id=_dup_owner,
+            blocker_codes=[],
         )
         eff_status, status_normalized = _compute_effective_pz_status(audit)
         return JSONResponse({
@@ -1180,6 +1438,7 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
             "unresolved_product_codes": [],
             "price_conflicts":      [],
             "pz_lock_status":       lock_status,
+            "pz_lifecycle":         pz_lifecycle,
             "stored_status":        audit.get("status", ""),
             "effective_status":     eff_status,
             "status_normalized":    status_normalized,
@@ -1272,6 +1531,16 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         supplier_configured=bool(supplier_wfirma_id),
         warehouse_configured=bool(warehouse_id),
     )
+    # Single PZ lifecycle authority — UI consumes ONLY this field.
+    pz_lifecycle = _compute_pz_lifecycle_state(
+        audit,
+        preview_ready=result.ready,
+        supplier_configured=bool(supplier_wfirma_id),
+        warehouse_configured=bool(warehouse_id),
+        create_allowed=bool(getattr(settings, "wfirma_create_pz_allowed", False)),
+        duplicate_owner_batch_id=None,    # no doc_id on this build path
+        blocker_codes=[],
+    )
 
     eff_status, status_normalized = _compute_effective_pz_status(audit)
     return JSONResponse({
@@ -1282,6 +1551,7 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         "ready":                    result.ready,
         "blockers":                 [],
         "engine_error":             None,
+        "pz_lifecycle":             pz_lifecycle,
         "unresolved_product_codes": result.unresolved_codes,
         "price_conflicts":          result.price_conflicts,
         "supplier_wfirma_id":       supplier_wfirma_id,
