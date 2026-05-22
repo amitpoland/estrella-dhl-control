@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from ..core.config import settings
@@ -2961,6 +2961,167 @@ async def wfirma_pz_document(batch_id: str) -> JSONResponse:
         "pz_source":      pz_source,
         "raw_xml":        fetch.raw_response or "",
     })
+
+
+@router.get("/shipment/{batch_id}/wfirma/pz_document.pdf", dependencies=[_auth])
+async def wfirma_pz_document_pdf(batch_id: str) -> Response:
+    """Generate a read-only PDF of the linked wFirma PZ document.
+
+    Built from the exact ``warehouse_document_p_z/get/{id}`` API response.
+    This is NOT the original wFirma PDF (no warehouse document PDF API exists).
+    Clearly labelled "Generated from verified wFirma PZ data".
+
+    Returns:
+      200 + ``application/pdf`` — reportlab-generated PDF.
+      404 — no PZ doc_id linked.
+      502 — wFirma fetch failed.
+      503 — reportlab not installed.
+    """
+    try:
+        from io import BytesIO
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer,
+        )
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_RIGHT
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": f"PDF generation unavailable: {exc}", "code": "PDF_LIB_MISSING"},
+        )
+
+    output_dir = get_output_dir(batch_id)
+    audit      = _read_audit(output_dir)
+
+    wfirma_export = audit.get("wfirma_export") or {}
+    pz_doc_id     = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
+
+    if not pz_doc_id:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "No wFirma PZ linked to this shipment.",
+                    "code": "PZ_NOT_LINKED", "batch_id": batch_id},
+        )
+
+    fetch = wfirma_client.fetch_warehouse_pz(pz_doc_id)
+    if not fetch.ok:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": f"wFirma fetch failed: {fetch.error}",
+                    "code": "PZ_FETCH_FAILED", "batch_id": batch_id},
+        )
+
+    d       = _parse_pz_doc_from_xml(fetch.raw_response or "")
+    pz_num  = d.get("pz_number") or fetch.pz_number or pz_doc_id
+    date    = d.get("date", "")
+    contractor = d.get("contractor_name") or d.get("contractor_id", "—")
+    currency   = d.get("currency", "PLN")
+    netto   = d.get("netto_total", 0.0)
+    brutto  = d.get("brutto_total", 0.0)
+    lines   = d.get("lines", [])
+    desc    = d.get("description", "")
+
+    buf    = BytesIO()
+    styles = getSampleStyleSheet()
+    right  = ParagraphStyle("right", parent=styles["Normal"], alignment=TA_RIGHT, fontSize=8)
+    small  = ParagraphStyle("small", parent=styles["Normal"], fontSize=7.5,
+                            textColor=colors.HexColor("#888888"))
+    bold   = ParagraphStyle("bold", parent=styles["Normal"], fontSize=10, fontName="Helvetica-Bold")
+    title  = ParagraphStyle("title", parent=styles["Normal"], fontSize=14, fontName="Helvetica-Bold")
+
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm,
+    )
+    story = []
+
+    story.append(Paragraph(pz_num, title))
+    story.append(Spacer(1, 2*mm))
+    story.append(Paragraph(
+        "Generated from verified wFirma PZ data — not the original wFirma PDF",
+        small,
+    ))
+    story.append(Spacer(1, 6*mm))
+
+    meta = [
+        ["Document ID", pz_doc_id, "Date", date],
+        ["Contractor", contractor, "Currency", currency],
+        ["Batch", batch_id, "Source",
+         "Created via app" if wfirma_export.get("pz_source") == "created_via_app"
+         else wfirma_export.get("pz_source") or "—"],
+    ]
+    meta_tbl = Table(meta, colWidths=[35*mm, 65*mm, 25*mm, 40*mm])
+    meta_tbl.setStyle(TableStyle([
+        ("FONTSIZE",    (0, 0), (-1, -1), 8),
+        ("FONTNAME",    (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME",    (2, 0), (2, -1), "Helvetica-Bold"),
+        ("TEXTCOLOR",   (0, 0), (0, -1), colors.HexColor("#555555")),
+        ("TEXTCOLOR",   (2, 0), (2, -1), colors.HexColor("#555555")),
+        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.HexColor("#f7f7f7"), colors.white]),
+        ("BOX",         (0, 0), (-1, -1), 0.3, colors.HexColor("#cccccc")),
+        ("INNERGRID",   (0, 0), (-1, -1), 0.2, colors.HexColor("#dddddd")),
+        ("TOPPADDING",  (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(meta_tbl)
+    story.append(Spacer(1, 5*mm))
+
+    if desc:
+        story.append(Paragraph("Audit Notes", bold))
+        story.append(Spacer(1, 1*mm))
+        for note_line in desc.splitlines():
+            story.append(Paragraph(note_line or " ", styles["Normal"]))
+        story.append(Spacer(1, 5*mm))
+
+    col_w = [8*mm, 22*mm, 80*mm, 18*mm, 22*mm, 22*mm]
+    tbl_data = [["#", "Good ID", "Description", "Qty", f"Unit ({currency})", f"Total ({currency})"]]
+    for i, ln in enumerate(lines, 1):
+        qty   = ln.get("count", 0) or 0
+        price = ln.get("price_netto", 0) or 0
+        total = qty * price
+        tbl_data.append([
+            str(i),
+            str(ln.get("good_id", "")),
+            Paragraph(ln.get("name", ""), ParagraphStyle("wrap", parent=styles["Normal"], fontSize=7.5)),
+            f"{qty:g}",
+            f"{price:,.2f}",
+            f"{total:,.2f}",
+        ])
+
+    if lines:
+        tbl_data.append(["", "", Paragraph("<b>Totals</b>", styles["Normal"]),
+                          "", f"Netto {netto:,.2f}", f"Brutto {brutto:,.2f}"])
+        line_tbl = Table(tbl_data, colWidths=col_w, repeatRows=1)
+        line_tbl.setStyle(TableStyle([
+            ("FONTSIZE",      (0, 0), (-1, -1), 7.5),
+            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTNAME",      (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("BACKGROUND",    (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
+            ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
+            ("BACKGROUND",    (0, -1), (-1, -1), colors.HexColor("#ecf0f1")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#f9f9f9")]),
+            ("GRID",          (0, 0), (-1, -1), 0.2, colors.HexColor("#cccccc")),
+            ("TOPPADDING",    (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("ALIGN",         (3, 0), (-1, -1), "RIGHT"),
+        ]))
+        story.append(line_tbl)
+    else:
+        story.append(Paragraph("No line items in wFirma response.", small))
+
+    doc.build(story)
+    safe_num = "".join(c if (c.isalnum() or c in "._- ") else "_" for c in pz_num)
+    filename  = f"{safe_num}.pdf"
+    log.info("[%s] pz_document_pdf: generated %d-line PDF for PZ %s",
+             batch_id, len(lines), pz_doc_id)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Refresh canonical PZ mapping (historical-batch backfill) ──────────────
