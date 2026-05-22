@@ -655,6 +655,17 @@ def _assert_pz_not_locked(audit: dict, batch_id: str, action: str) -> None:
     if not existing_pz_doc_id and not existing_pz_source and not terminal_event:
         return
 
+    # PZ_RECONCILED fast-exit: the operator explicitly cleared the mapping via
+    # /wfirma/pz/clear-mapping after a previous create/adopt.  The clearing
+    # event is the most recent PZ-mapping event in the timeline, and the export
+    # fields are already empty.  Allow recreation — this is the intended workflow
+    # after a wFirma PZ has been manually deleted and the local mapping cleared.
+    # We only bypass when BOTH export fields are empty (no live doc_id) so a
+    # real duplicate (doc_id still present) is never bypassed.
+    if (not existing_pz_doc_id and not existing_pz_source
+            and _has_pz_mapping_cleared_after_create(audit)):
+        return
+
     # Build a precise reason string + machine-readable code
     if terminal_event == EV_WFIRMA_PZ_CREATED:
         reason = "PZ has already been created for this shipment"
