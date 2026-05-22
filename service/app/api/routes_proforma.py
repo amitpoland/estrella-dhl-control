@@ -250,11 +250,23 @@ def _normalize_client_name(raw: str) -> str:
     return _re.sub(r"\s+", " ", raw.strip())
 
 
-def _resolve_customer(client_name: str) -> Dict[str, Any]:
+def _resolve_customer(
+    client_name: str,
+    batch_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Resolve a sales-list client name to a wfirma_customers row.
 
-    Three-step strategy:
-      1. Normalized exact match (case-insensitive) — wins immediately.
+    Authority chain (highest priority first):
+      0. **Packing-upload selection** — when ``batch_id`` is provided AND
+         the operator picked a Customer Master client during sales packing
+         upload (stored in ``packing_contractor_resolution`` as confirmed
+         + role=client + matched_master_type=customer_master), use that
+         selection. NIP and wFirma ``contractor_id`` outrank display name.
+         Display-name divergence between the proforma's free-text and the
+         master record's ``bill_to_name`` becomes an advisory note, never
+         a blocker. See ``services/customer_resolution_authority.py``.
+      1. Normalized exact match (case-insensitive) against
+         ``wfirma_customers`` cache.
       2. Prefix tolerance — sales-side input is a leading substring of
          the wFirma stored name (e.g. ``"Clear-Diamonds"`` ⇒
          ``"Clear-Diamonds Ltd"``). Auto-resolves only when exactly ONE
@@ -270,17 +282,20 @@ def _resolve_customer(client_name: str) -> Dict[str, Any]:
           "normalized_name":        <stripped+collapsed>,
           "found":                  bool,           # exactly one match
           "ambiguous":              bool,           # 2+ candidates
-          "match_strategy":         "exact" | "prefix" | "reverse_prefix" |
-                                    "ambiguous" | "none",
+          "match_strategy":         "packing_master" | "exact" | "prefix" |
+                                    "reverse_prefix" | "ambiguous" | "none",
           "customer":               <full wfirma_customers row dict> | None,
           "wfirma_customer_id":     str | "",
           "resolved_wfirma_name":   str,            # the customer's stored name
           "candidates":             List[str],      # display names when ambiguous
+          "advisory":               str,            # operator-facing note (empty
+                                                    # when no display-name drift)
         }
 
-    The resolver does NOT call the live wFirma API. It only reads the
-    local ``wfirma_customers`` table (populated by a separate sync flow).
-    No mutation; no creation; safe for read-only preview gates and write
+    The resolver does NOT call the live wFirma API. It reads only local
+    state: ``wfirma_customers`` (populated by a separate sync flow),
+    ``packing_contractor_resolution``, and ``customer_master``. No
+    mutation; no creation; safe for read-only preview gates and write
     payload builders alike.
     """
     raw = client_name or ""
@@ -295,7 +310,43 @@ def _resolve_customer(client_name: str) -> Dict[str, Any]:
         "wfirma_customer_id":   "",
         "resolved_wfirma_name": "",
         "candidates":           [],
+        "advisory":             "",
     }
+
+    # 0. Packing-upload Customer Master selection — operator authority.
+    #    NIP + contractor_id outrank display name. Display-name drift is
+    #    advisory only, never a blocker. Failures here MUST NOT crash the
+    #    resolver — fall through to name-based resolution if anything
+    #    raises so a transient DB issue cannot block readiness.
+    if batch_id:
+        try:
+            from ..services.customer_resolution_authority import (
+                derive_customer_resolution_via_packing,
+            )
+            packing_master = derive_customer_resolution_via_packing(
+                batch_id=batch_id,
+                client_name=raw,
+                customer_master_db_path=_customer_master_db_path(),
+                packing_resolution_db_path=(
+                    settings.storage_root / "packing_resolutions.sqlite"
+                ),
+            )
+            if packing_master is not None:
+                out.update({
+                    "found":                True,
+                    "match_strategy":       "packing_master",
+                    "wfirma_customer_id":   packing_master["wfirma_customer_id"],
+                    "resolved_wfirma_name": packing_master["resolved_master_name"],
+                    "advisory":             packing_master["advisory"],
+                })
+                return out
+        except Exception as _pm_err:  # pragma: no cover — defensive
+            log.warning(
+                "[%s] packing-master customer resolution failed: %s "
+                "— falling through to name-based resolver",
+                batch_id, _pm_err,
+            )
+
     if not norm or wfdb._db_path is None:
         return out
 
@@ -447,7 +498,10 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     # Resolve customer up-front so the early-exit path (no sales rows) and
     # the full path produce a consistent response shape and so a passing
     # preview implies _build_proforma_request will succeed at this step.
-    customer_resolution = _resolve_customer(client_name)
+    # Pass batch_id so the packing-upload Customer Master selection (set when
+    # the operator picked a client during sales packing intake) outranks
+    # any name-based fallback. See _resolve_customer docstring authority chain.
+    customer_resolution = _resolve_customer(client_name, batch_id=batch_id)
 
     # ── 1. Resolution rows (sales → wFirma product_code) ────────────────────
     resolution_rows = [
