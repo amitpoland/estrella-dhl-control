@@ -6998,12 +6998,43 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       <InfoRow label="Invoice CIF (USD)"
                         value={<span style={{ color: cifZero ? 'var(--badge-red-text)' : 'inherit', fontWeight: cifZero ? 700 : 'inherit' }}>{fmtUsd(cifUsd)}</span>} />
                       <InfoRow label="Total Net (USD)" value={totalFobUsd != null ? `USD ${Number(totalFobUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'Not parsed — process invoices'} />
-                      <InfoRow label="Freight (PLN)" value={(() => {
-                        if (freightPln != null) return fmtPLN(freightPln);
-                        if (freightUsd != null && freightUsd > 0) return `USD ${Number(freightUsd).toLocaleString('en-US', { minimumFractionDigits: 2 })} (rate not available)`;
-                        if (!audit.invoice_totals) return 'Not declared';
-                        return '0.00 PLN';
-                      })()} />
+                      <InfoRow label="Freight (PLN)" data-testid="freight-pln-row"
+                        value={(() => {
+                          const fa = audit.freight_authority;
+                          if (!fa) {
+                            // Backward compat: old audit.json without freight_authority
+                            if (freightPln != null) return fmtPLN(freightPln);
+                            if (freightUsd != null && freightUsd > 0)
+                              return `USD ${Number(freightUsd).toLocaleString('en-US', { minimumFractionDigits: 2 })} (rate not available)`;
+                            return 'Not declared';
+                          }
+                          if (fa.freight_status === 'parsed_positive') {
+                            if (fa.freight_pln != null) return fmtPLN(fa.freight_pln);
+                            if (fa.freight_usd != null && fa.freight_usd > 0)
+                              return `USD ${Number(fa.freight_usd).toLocaleString('en-US', { minimumFractionDigits: 2 })} (rate not available)`;
+                            return '0.00 PLN';
+                          }
+                          if (fa.freight_status === 'confidently_absent') return '0.00 PLN';
+                          if (fa.freight_status === 'missing_invoice')    return 'Not declared';
+                          // unparsed — show review state + AI invoice review action
+                          return (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <span data-testid="freight-needs-review"
+                                    style={{ color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                                ⚠ Needs review
+                              </span>
+                              <Btn small variant="outline" data-testid="btn-freight-ai-review"
+                                   disabled={!!busy.freightAiReview}
+                                   onClick={() => doAction('freightAiReview', 'Invoice freight review',
+                                     () => apiFetch(
+                                       `/api/v1/ai-bridge/tasks/${encodeURIComponent(batchId)}`,
+                                       { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                         body: JSON.stringify({ task_type: 'invoice_freight_review' }) }))}>
+                                {busy.freightAiReview ? '⟳ Reviewing…' : '🔍 Review invoice fields'}
+                              </Btn>
+                            </span>
+                          );
+                        })()} />
                       <InfoRow label="DHL Clearance Status" value={dhlClearance ? mapDhlStatus(dhlClearance) : 'Not started'} />
                       <InfoRow label="Polish Description" value={audit.polish_desc_filename ? 'Generated ✓' : 'Not generated'} />
                       <InfoRow label="DSK File" value={audit.dsk_filename ? 'Generated ✓' : 'Not generated'} />

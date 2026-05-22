@@ -109,8 +109,64 @@ def test_no_internal_text_in_freight_display():
         "invoice_totals.freight",
     ]
     freight_idx = src.find(MARKER)
-    vicinity = src[freight_idx:freight_idx + 600]
+    vicinity = src[freight_idx:freight_idx + 900]
     for phrase in banned:
         assert phrase not in vicinity, (
             f"Internal text '{phrase}' must not appear in freight display branch"
         )
+
+
+# ── 9. ⚠ Needs review appears for unparsed status ────────────────────────────
+
+def test_needs_review_text_present_for_unparsed():
+    src = HTML.read_text(encoding="utf-8")
+    assert "Needs review" in src, (
+        "Freight display must show 'Needs review' for unparsed status"
+    )
+    assert 'data-testid="freight-needs-review"' in src, (
+        "Needs review span must have data-testid=freight-needs-review"
+    )
+
+
+# ── 10. AI review button wired with testid ────────────────────────────────────
+
+def test_btn_freight_ai_review_testid_present():
+    src = HTML.read_text(encoding="utf-8")
+    assert 'data-testid="btn-freight-ai-review"' in src, (
+        "AI review button must have data-testid=btn-freight-ai-review"
+    )
+    assert "invoice_freight_review" in src, (
+        "AI review button must reference invoice_freight_review task type"
+    )
+    assert "ai-bridge/tasks" in src, (
+        "AI review button must target the ai-bridge tasks endpoint"
+    )
+
+
+# ── 11. confidently_absent branch renders 0.00 PLN ────────────────────────────
+
+def test_confidently_absent_branch_in_source():
+    src = HTML.read_text(encoding="utf-8")
+    assert "confidently_absent" in src, (
+        "Freight display must handle confidently_absent status → '0.00 PLN'"
+    )
+    # The branch must resolve to '0.00 PLN'
+    freight_idx = src.find(MARKER)
+    vicinity = src[freight_idx:freight_idx + 1200]
+    assert "confidently_absent" in vicinity and "'0.00 PLN'" in vicinity, (
+        "confidently_absent branch must appear in Freight (PLN) display and return '0.00 PLN'"
+    )
+
+
+# ── 12. parsed_positive branch present ────────────────────────────────────────
+
+def test_parsed_positive_branch_in_source():
+    src = HTML.read_text(encoding="utf-8")
+    assert "parsed_positive" in src, (
+        "Freight display must handle parsed_positive status"
+    )
+    freight_idx = src.find(MARKER)
+    vicinity = src[freight_idx:freight_idx + 1200]
+    assert "fmtPLN(fa.freight_pln)" in vicinity, (
+        "parsed_positive branch must call fmtPLN(fa.freight_pln)"
+    )

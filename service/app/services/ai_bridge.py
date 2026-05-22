@@ -79,6 +79,7 @@ _ALLOWED_WRITES: Dict[str, List[str]] = {
     #                                + custom value sent before shipment arrival)
     # None of these are financial fields. Post-import hook applies rank guards.
     "email_scan":           ["email_scan_results", "dhl_email", "agency_preclearance"],
+    "invoice_freight_review": ["ai_freight_review"],
 }
 
 # ── Task templates ─────────────────────────────────────────────────────────────
@@ -158,6 +159,33 @@ TASK_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "result_schema": {
             "answer":  "str",
             "sources": "list[str]",
+        },
+    },
+    "invoice_freight_review": {
+        "description": (
+            "Review uploaded invoice documents for freight line items. "
+            "Reports found freight values without modifying financial fields."
+        ),
+        "instructions": (
+            "1. Locate invoice files for this batch from the context payload "
+            "(look for files listed under inputs.invoices or similar).\n"
+            "2. Read each invoice document and search for freight, handling, "
+            "or shipping charge line items.\n"
+            "3. For each found freight line report: invoice_no, line_desc, "
+            "amount, currency.\n"
+            "4. Set recommendation to one of: freight_confirmed_absent "
+            "(no freight row found on any invoice), freight_found (at least "
+            "one freight row found), or inconclusive (documents unreadable).\n"
+            "5. NEVER modify invoice_totals, cif, duty, or any financial field. "
+            "Write observations to ai_freight_review only."
+        ),
+        "result_schema": {
+            "ai_freight_review": {
+                "reviewed_at":        "ISO timestamp",
+                "freight_lines_found": "list[{invoice_no, line_desc, amount, currency}]",
+                "summary":            "plain-text summary of findings",
+                "recommendation":     "freight_confirmed_absent | freight_found | inconclusive",
+            },
         },
     },
     "email_scan": {
