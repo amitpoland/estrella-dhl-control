@@ -212,4 +212,136 @@ def derive_customer_resolution_via_packing(
     }
 
 
-__all__ = ["derive_customer_resolution_via_packing"]
+def derive_customer_authority_for_draft(
+    *,
+    batch_id: Optional[str],
+    client_name: Optional[str],
+    documents_db_path: Path,
+    customer_master_db_path: Path,
+) -> Optional[Dict[str, Any]]:
+    """Resolve a proforma draft via its originating sales-packing-list
+    document's upload-time client selection. Per-DOCUMENT authority —
+    the correct granularity for multi-client shipments.
+
+    Authority chain walked here:
+
+        proforma_draft (batch_id + client_name)
+            ↓ join by (batch_id, client_name, document_type='sales_packing_list')
+        sales_documents.document_id
+            ↓ join
+        shipment_documents.client_contractor_id  ← operator's upload-time pick
+            ↓ join
+        customer_master.bill_to_contractor_id
+            ↓
+        wFirma contractor + master record
+
+    Why this exists alongside ``derive_customer_resolution_via_packing``:
+    the older per-batch helper (PR #296+#297) reads
+    ``packing_contractor_resolution`` which has UNIQUE(batch_id, role) →
+    exactly ONE client per batch. For multi-client shipments (5 distinct
+    proforma drafts on one batch) that helper returns the SAME contractor
+    for every draft → wrong-routes 4 of 5 invoices. The per-document path
+    here uses the operator's individual selection per sales packing list,
+    which is the correct granularity.
+
+    Returns same shape as ``derive_customer_resolution_via_packing``
+    (with match_strategy='per_document_upload') so callers can use them
+    interchangeably. Returns ``None`` when:
+      * batch_id or client_name empty
+      * DB files missing
+      * no sales_packing_list document for this (batch_id, client_name)
+      * the document has no client_contractor_id (operator skipped pick)
+      * customer_master has no matching row (data gap — caller falls
+        through to name-based resolver, which will likely produce a
+        meaningful blocker for the operator)
+    """
+    if not (batch_id or "").strip() or not (client_name or "").strip():
+        return None
+    docs_path = Path(documents_db_path)
+    cm_path   = Path(customer_master_db_path)
+    if not docs_path.is_file() or not cm_path.is_file():
+        return None
+
+    # 1. Find the per-client sales_packing_list document.
+    #    sales_documents stores client_name verbatim from the upload
+    #    intake; the join is by (batch_id, client_name) string equality.
+    with sqlite3.connect(str(docs_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        sd_row = conn.execute(
+            "SELECT id, document_id, client_name FROM sales_documents "
+            "WHERE batch_id = ? AND client_name = ? "
+            "AND document_type = 'sales_packing_list' "
+            "LIMIT 1",
+            (batch_id.strip(), client_name.strip()),
+        ).fetchone()
+        if sd_row is None or not sd_row["document_id"]:
+            return None
+        sales_document_uuid = sd_row["id"]
+        shipment_doc_id     = sd_row["document_id"]
+
+        # 2. Read client_contractor_id from the shipment_documents row.
+        ship_row = conn.execute(
+            "SELECT client_contractor_id, file_name "
+            "FROM shipment_documents WHERE id = ?",
+            (shipment_doc_id,),
+        ).fetchone()
+        if ship_row is None:
+            return None
+        client_contractor_id = (ship_row["client_contractor_id"] or "").strip()
+        if not client_contractor_id:
+            return None
+        source_file_name = ship_row["file_name"] or ""
+
+    # 3. Look up customer_master by bill_to_contractor_id.
+    with sqlite3.connect(str(cm_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        cm_row = conn.execute(
+            "SELECT id, bill_to_contractor_id, bill_to_name, country, nip "
+            "FROM customer_master WHERE bill_to_contractor_id = ?",
+            (client_contractor_id,),
+        ).fetchone()
+    if cm_row is None:
+        # The operator picked a wFirma contractor that has no
+        # customer_master mirror. We do NOT assert authority because
+        # downstream proforma needs the master record's NIP / country
+        # for posting. Caller falls through to name resolver, which
+        # will likely produce a meaningful blocker.
+        return None
+
+    master_name = (cm_row["bill_to_name"] or "").strip()
+
+    # 4. Build the result. The advisory note when proforma name differs
+    #    from the master record uses the same wording as the per-batch
+    #    helper so the frontend renders both uniformly.
+    proforma_norm = _normalize_name(client_name)
+    master_norm   = _normalize_name(master_name)
+
+    advisory = ""
+    if proforma_norm and master_norm and proforma_norm != master_norm:
+        advisory = (
+            f"Proforma client name {client_name!r} differs from Customer "
+            f"Master {master_name!r} (wFirma contractor {client_contractor_id}, "
+            f"NIP {cm_row['nip']!r}). Resolved via per-document upload "
+            f"selection on {source_file_name!r} — VAT/contractor_id "
+            f"outrank display name."
+        )
+
+    return {
+        "wfirma_customer_id":     client_contractor_id,
+        "resolved_master_name":   master_name,
+        "customer_master_id":     int(cm_row["id"]),
+        "parsed_packing_name":    (sd_row["client_name"] or "").strip(),
+        "parsed_packing_nip":     "",  # sales_documents doesn't carry NIP
+        "parsed_packing_country": (cm_row["country"] or "").strip(),
+        "matched_master_id":      client_contractor_id,
+        "match_strategy":         "per_document_upload",
+        "advisory":               advisory,
+        "source_document_id":     shipment_doc_id,
+        "source_file_name":       source_file_name,
+    }
+
+
+__all__ = [
+    "derive_customer_resolution_via_packing",
+    "derive_customer_authority_for_draft",
+]
