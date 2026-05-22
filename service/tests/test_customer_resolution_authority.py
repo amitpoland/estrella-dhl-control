@@ -875,3 +875,152 @@ def test_per_document_helper_is_read_only():
         assert forbidden not in body.upper(), (
             f"per-document helper must be read-only; found {forbidden!r}"
         )
+
+
+# ── 15. Cross-leak invariant — operator-required (2026-05-23) ───────────────
+
+
+def test_no_cross_leak_between_sales_packing_lists_in_same_shipment(tmp_path):
+    """Operator-required INVARIANT (2026-05-23):
+
+        A proforma draft may only use ``shipment_documents.client_contractor_id``
+        from the ORIGINATING Sales Packing List.
+        NEVER from another Sales Packing List inside the same shipment.
+
+    This is the negative-space pin for the multi-client scenario. The
+    positive-space test above (``test_per_document_multi_client_batch_
+    resolves_each_independently``) verifies each draft RETURNS the
+    expected contractor. This test additionally verifies each draft
+    DOES NOT return ANY of the other drafts' contractors — proving
+    that batch-level leakage between sibling sales packing lists is
+    impossible at the resolver layer.
+
+    Setup mirrors the production SHIPMENT_4218922912 shape:
+      Draft A (Diamond Point)        → must return 90484280, never any other
+      Draft B (DiamondGroup GmbH)    → must return 52808306, never any other
+      Draft C (Dream Ring)           → must return 145607516, never any other
+      Draft D (Verhoeven Joaillier)  → must return 104677702, never any other
+    """
+    cm = tmp_path / "customer_master.sqlite"
+    with sqlite3.connect(str(cm)) as conn:
+        conn.execute("""
+            CREATE TABLE customer_master (
+                id INTEGER PRIMARY KEY, bill_to_contractor_id TEXT,
+                bill_to_name TEXT, country TEXT, nip TEXT
+            )
+        """)
+        rows = [
+            (7,  '90484280',  'Diamond Point B.V.',     'NL', 'NL008494162B01'),
+            (34, '52808306',  'DG GmbH',                'DE', 'DE266491614'),
+            (60, '145607516', 'Dream Rings, s.r.o.',    'SK', 'SK2023917434'),
+            (29, '104677702', 'Verhoeven Joaillier',    'FR', 'FR90333134013'),
+        ]
+        for r in rows:
+            conn.execute("INSERT INTO customer_master VALUES (?,?,?,?,?)", r)
+
+    docs = _make_documents_db(tmp_path)
+    seeds = [
+        ("Diamond Point",       "ship-dp",  "90484280",   "pl-dp.xlsx"),
+        ("DiamondGroup GmbH",   "ship-dg",  "52808306",   "pl-dg.xlsx"),
+        ("Dream Ring",          "ship-dr",  "145607516",  "pl-dr.xlsx"),
+        ("Verhoeven Joaillier", "ship-vj",  "104677702",  "pl-vj.xlsx"),
+    ]
+    for cn, sid, cid, fn in seeds:
+        _seed_sales_packing_doc(
+            docs, batch_id=BATCH, client_name=cn,
+            ship_doc_id=sid, client_contractor_id=cid, file_name=fn,
+        )
+
+    # The full set of contractor IDs present on this batch's documents.
+    # Each resolved draft must match exactly one — and never any of the
+    # other three.
+    expected = {
+        "Diamond Point":       "90484280",
+        "DiamondGroup GmbH":   "52808306",
+        "Dream Ring":          "145607516",
+        "Verhoeven Joaillier": "104677702",
+    }
+    all_batch_contractors = set(expected.values())
+
+    for client_name, expected_contractor in expected.items():
+        r = derive_customer_authority_for_draft(
+            batch_id=BATCH, client_name=client_name,
+            documents_db_path=docs, customer_master_db_path=cm,
+        )
+        assert r is not None, (
+            f"{client_name!r} must resolve via per_document_upload"
+        )
+
+        # Positive pin: returns the EXPECTED contractor.
+        assert r["wfirma_customer_id"] == expected_contractor, (
+            f"{client_name!r} expected own contractor {expected_contractor}, "
+            f"got {r['wfirma_customer_id']!r}"
+        )
+
+        # Negative pin (the cross-leak invariant): returns NONE OF the
+        # other sibling clients' contractors. If any other contractor
+        # leaked through, this assertion catches it. The invariant
+        # makes batch-level leakage impossible at the resolver layer.
+        other_contractors = all_batch_contractors - {expected_contractor}
+        assert r["wfirma_customer_id"] not in other_contractors, (
+            f"CROSS-LEAK: {client_name!r} returned {r['wfirma_customer_id']!r} "
+            f"which is another sibling draft's contractor on the same "
+            f"shipment. Operator-required invariant violated."
+        )
+
+        # Source-document pin: the resolved document_id must be the one
+        # we seeded for THIS client, not any other sibling document.
+        expected_doc_id = next(sid for cn, sid, cid, fn in seeds if cn == client_name)
+        assert r["source_document_id"] == expected_doc_id, (
+            f"CROSS-LEAK: {client_name!r} resolved through "
+            f"source_document_id={r['source_document_id']!r} instead of "
+            f"its own {expected_doc_id!r} — another draft's packing list "
+            f"was used as authority. Invariant violated."
+        )
+
+
+def test_no_cross_leak_when_proforma_name_matches_sibling_master_name(tmp_path):
+    """Stress-variant of the cross-leak invariant: even if the proforma
+    draft's client_name happens to match another sibling's master record's
+    bill_to_name, the resolver must still use the draft's OWN sales packing
+    list — not the sibling's. The join key is sales_documents.client_name,
+    which is set by the operator at upload time and is the authority.
+
+    Scenario: draft client_name='Dream Ring' on a batch where:
+      - 'Diamond Point' packing list selected contractor 90484280
+      - 'Dream Ring'    packing list selected contractor 145607516
+    The 'Dream Ring' draft must resolve via its OWN packing list,
+    contractor 145607516. The fact that 'Diamond Point' shares the batch
+    must not contaminate the resolution.
+    """
+    cm = tmp_path / "customer_master.sqlite"
+    with sqlite3.connect(str(cm)) as conn:
+        conn.execute("""
+            CREATE TABLE customer_master (
+                id INTEGER PRIMARY KEY, bill_to_contractor_id TEXT,
+                bill_to_name TEXT, country TEXT, nip TEXT
+            )
+        """)
+        conn.execute("INSERT INTO customer_master VALUES (7,  '90484280',  'Diamond Point B.V.',  'NL', 'NL008494162B01')")
+        conn.execute("INSERT INTO customer_master VALUES (60, '145607516', 'Dream Rings, s.r.o.', 'SK', 'SK2023917434')")
+    docs = _make_documents_db(tmp_path)
+    _seed_sales_packing_doc(
+        docs, batch_id=BATCH, client_name="Diamond Point",
+        ship_doc_id="ship-dp", client_contractor_id="90484280", file_name="pl-dp.xlsx",
+    )
+    _seed_sales_packing_doc(
+        docs, batch_id=BATCH, client_name="Dream Ring",
+        ship_doc_id="ship-dr", client_contractor_id="145607516", file_name="pl-dr.xlsx",
+    )
+
+    r = derive_customer_authority_for_draft(
+        batch_id=BATCH, client_name="Dream Ring",
+        documents_db_path=docs, customer_master_db_path=cm,
+    )
+    assert r is not None
+    assert r["wfirma_customer_id"] == "145607516"
+    assert r["wfirma_customer_id"] != "90484280", (
+        "Dream Ring draft must NOT inherit Diamond Point's contractor"
+    )
+    assert r["source_document_id"] == "ship-dr"
+    assert r["source_document_id"] != "ship-dp"
