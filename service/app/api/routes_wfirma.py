@@ -689,6 +689,19 @@ def _assert_pz_not_locked(audit: dict, batch_id: str, action: str) -> None:
             and _has_pz_mapping_cleared_after_create(audit)):
         return
 
+    # PZ_RECOVERY_REQUIRED adopt-allow: when both export fields are empty and
+    # the action is pz_adopt (not pz_create), allow adoption regardless of
+    # terminal timeline events.  The recovery flow ("Confirm Existing PZ") is
+    # exactly this case: a PZ exists in wFirma but the local audit lost the
+    # link (export wiped by a /process run).  Adoption re-establishes the link
+    # without creating anything in wFirma.  The same-id idempotent guard in the
+    # adopt endpoint (Guard 5) catches any re-adoption of the same doc_id; the
+    # cross-batch guard (Guard 4) catches ownership conflicts.  We must never
+    # block adoption when the export is empty — that is the definition of
+    # "needs recovery".
+    if action == "pz_adopt" and not existing_pz_doc_id and not existing_pz_source:
+        return
+
     # Build a precise reason string + machine-readable code
     if terminal_event == EV_WFIRMA_PZ_CREATED:
         reason = "PZ has already been created for this shipment"
@@ -2589,7 +2602,8 @@ class _PZAdoptBody(BaseModel):
     pz_number: Optional[str] = None
 
 
-@router.post("/shipment/{batch_id}/wfirma/pz_adopt", dependencies=[_auth])
+@router.post("/shipment/{batch_id}/wfirma/pz_adopt",   dependencies=[_auth])
+@router.post("/shipment/{batch_id}/wfirma/pz_confirm", dependencies=[_auth])
 async def wfirma_pz_adopt(
     batch_id: str,
     body: _PZAdoptBody,
@@ -2623,22 +2637,15 @@ async def wfirma_pz_adopt(
     pz_doc_id_raw = (body.pz_doc_id or "").strip()
     pz_number_raw = (body.pz_number or "").strip()
 
-    # ── Guard 0: WFIRMA_CREATE_PZ_ALLOWED kill-switch ────────────────────────
-    # pz_adopt writes wfirma_pz_doc_id to audit.json (permanent state change).
-    # It must respect the same global kill-switch as pz_create so that
-    # disabling the flag truly prevents all PZ state mutations.
-    if not getattr(settings, "wfirma_create_pz_allowed", False):
-        return JSONResponse(
-            status_code=403,
-            content={
-                "ok":              False,
-                "status":          "blocked",
-                "blocking_reasons": [
-                    "WFIRMA_CREATE_PZ_ALLOWED is not enabled. "
-                    "Set WFIRMA_CREATE_PZ_ALLOWED=true in .env to allow PZ adoption."
-                ],
-            },
-        )
+    # Guard 0 (creation kill-switch) intentionally NOT applied here.
+    # pz_adopt makes no wFirma write calls — it only reads the wFirma API to
+    # verify the document exists, then writes to the LOCAL audit only.
+    # WFIRMA_CREATE_PZ_ALLOWED governs wFirma write operations (PZ creation).
+    # Adoption / confirmation of an existing PZ is a different risk class:
+    # the PZ already exists in wFirma; we are re-linking audit state to it.
+    # Gating adoption on the create flag forces operators to enable creation
+    # just to run the recovery flow — which is the opposite of safe practice.
+    # The duplicate guards below (4/5/6) remain as safety rails.
 
     # ── Guard 1: at least one identifier ─────────────────────────────────────
     if not pz_doc_id_raw and not pz_number_raw:
@@ -2699,6 +2706,7 @@ async def wfirma_pz_adopt(
             "batch_id":         batch_id,
             "wfirma_pz_doc_id": existing_pz_doc_id,
             "pz_number":        resolved_number,
+            "wfirma_pz_view_url": _build_wfirma_pz_view_url(existing_pz_doc_id),
         })
 
     # ── Acquire write lock + full idempotency check + audit write ────────────
@@ -2771,6 +2779,7 @@ async def wfirma_pz_adopt(
         "wfirma_pz_doc_id": resolved_doc_id,
         "pz_number":       resolved_number,
         "pz_source":       "adopted_existing",
+        "wfirma_pz_view_url": _build_wfirma_pz_view_url(resolved_doc_id),
     })
 
 
