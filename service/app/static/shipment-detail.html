@@ -5878,45 +5878,95 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                     </div>
                   )}
 
-                  {/* PZ Document inline panel */}
+                  {/* PZ Document inline viewer — first-class read-only view
+                       Authority: warehouse_document_p_z/get/{id} via /wfirma/pz_document
+                       Works for created, adopted, and recovered PZs.
+                       No dependency on app.wfirma.pl URLs. */}
                   {pzDocumentOpen && pzDocumentData && (
-                    <div data-testid="pz-document-panel" style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', fontSize: 11 }}>
-                      <div style={{ padding: '8px 14px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: 10 }}>wFirma PZ — {pzDocumentData.pz_number || pzDocumentData.pz_doc_id}</span>
-                        <Btn small variant="ghost" onClick={() => setPzDocumentOpen(false)}>✕</Btn>
+                    <div data-testid="pz-document-panel" style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', fontSize: 12 }}>
+
+                      {/* Header */}
+                      <div style={{ padding: '10px 14px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                          <span style={{ fontWeight: 700, color: 'var(--text)', fontSize: 13 }}>
+                            {pzDocumentData.pz_number || `PZ ${pzDocumentData.pz_doc_id}`}
+                          </span>
+                          {pzDocumentData.status && (
+                            <Badge label={pzDocumentData.status} status={pzDocumentData.status === 'confirmed' ? 'Completed' : 'Pending'} small style={{ marginLeft: 8 }} />
+                          )}
+                        </div>
+                        <Btn small variant="ghost" data-testid="btn-pz-document-close" onClick={() => setPzDocumentOpen(false)}>✕</Btn>
                       </div>
-                      <div style={{ padding: '10px 14px', display: 'flex', gap: 20, flexWrap: 'wrap', color: 'var(--text-2)', borderBottom: pzDocumentData.lines?.length ? '1px solid var(--border-subtle)' : 'none' }}>
-                        <div><span style={{ color: 'var(--text-3)' }}>Date: </span><b style={{ color: 'var(--text)' }}>{pzDocumentData.date || '—'}</b></div>
-                        <div><span style={{ color: 'var(--text-3)' }}>Contractor ID: </span><span style={{ fontFamily: 'monospace' }}>{pzDocumentData.contractor_id || '—'}</span></div>
-                        <div><span style={{ color: 'var(--text-3)' }}>Warehouse ID: </span><span style={{ fontFamily: 'monospace' }}>{pzDocumentData.warehouse_id || '—'}</span></div>
-                        <div><span style={{ color: 'var(--text-3)' }}>Lines: </span><b>{pzDocumentData.line_count ?? pzDocumentData.lines?.length ?? '—'}</b></div>
-                        <div><span style={{ color: 'var(--text-3)' }}>Source: </span><span>{pzDocumentData.pz_source || '—'}</span></div>
+
+                      {/* Document metadata */}
+                      <div style={{ padding: '10px 14px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '6px 20px', borderBottom: '1px solid var(--border-subtle)', fontSize: 11 }}>
+                        <div><span style={{ color: 'var(--text-3)' }}>Document ID </span><span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{pzDocumentData.pz_doc_id}</span></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Date </span><b style={{ color: 'var(--text)' }}>{pzDocumentData.date || '—'}</b></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Currency </span><span>{pzDocumentData.currency || 'PLN'}</span></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Source </span><span>{pzDocumentData.pz_source === 'created_via_app' ? 'Created via app' : pzDocumentData.pz_source === 'adopted_existing' ? 'Adopted existing' : pzDocumentData.pz_source || '—'}</span></div>
+                        <div style={{ gridColumn: '1 / -1' }}>
+                          <span style={{ color: 'var(--text-3)' }}>Contractor </span>
+                          <b style={{ color: 'var(--text)' }}>{pzDocumentData.contractor_name || '—'}</b>
+                          {pzDocumentData.contractor_id && <span style={{ color: 'var(--text-3)', fontFamily: 'monospace', fontSize: 10, marginLeft: 6 }}>ID {pzDocumentData.contractor_id}</span>}
+                        </div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Warehouse ID </span><span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{pzDocumentData.warehouse_id || '—'}</span></div>
+                        <div><span style={{ color: 'var(--text-3)' }}>Lines </span><b>{pzDocumentData.line_count ?? pzDocumentData.lines?.length ?? '—'}</b></div>
                       </div>
+
+                      {/* Compact audit notes (description) */}
+                      {pzDocumentData.description && (
+                        <div data-testid="pz-document-notes" style={{ padding: '8px 14px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Audit notes</div>
+                          <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 11, color: 'var(--text-2)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{pzDocumentData.description}</pre>
+                        </div>
+                      )}
+
+                      {/* Line items table */}
                       {pzDocumentData.lines?.length > 0 && (
                         <div style={{ overflowX: 'auto' }}>
                           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                             <thead>
                               <tr style={{ background: 'var(--sidebar-bg)' }}>
-                                {['Good ID','Name','Qty','Price netto (PLN)'].map(h => (
-                                  <th key={h} style={{ padding: '5px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'white', whiteSpace: 'nowrap' }}>{h}</th>
+                                {['#', 'Good ID', 'Description', 'Qty', 'Unit price netto (PLN)', 'Line total (PLN)'].map(h => (
+                                  <th key={h} style={{ padding: '5px 10px', textAlign: h === 'Qty' || h.startsWith('Unit') || h.startsWith('Line') ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'white', whiteSpace: 'nowrap' }}>{h}</th>
                                 ))}
                               </tr>
                             </thead>
                             <tbody>
-                              {pzDocumentData.lines.map((ln, i) => (
-                                <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)', background: i % 2 === 0 ? 'white' : 'var(--bg-subtle)' }}>
-                                  <td style={{ padding: '5px 10px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10 }}>{ln.good_id || '—'}</td>
-                                  <td style={{ padding: '5px 10px', color: 'var(--text)' }}>{ln.name || '—'}</td>
-                                  <td style={{ padding: '5px 10px', textAlign: 'right' }}>{ln.count}</td>
-                                  <td style={{ padding: '5px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{ln.price_netto?.toLocaleString('pl-PL', { minimumFractionDigits: 2 })}</td>
-                                </tr>
-                              ))}
+                              {pzDocumentData.lines.map((ln, i) => {
+                                const lineTotal = (ln.count || 0) * (ln.price_netto || 0);
+                                return (
+                                  <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)', background: i % 2 === 0 ? 'transparent' : 'var(--bg-subtle)' }}>
+                                    <td style={{ padding: '5px 10px', color: 'var(--text-3)', fontSize: 10, textAlign: 'right' }}>{i + 1}</td>
+                                    <td style={{ padding: '5px 10px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 10, whiteSpace: 'nowrap' }}>{ln.good_id || '—'}</td>
+                                    <td style={{ padding: '5px 10px', color: 'var(--text)', maxWidth: 320 }}>{ln.name || '—'}</td>
+                                    <td style={{ padding: '5px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{ln.count}</td>
+                                    <td style={{ padding: '5px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{(ln.price_netto || 0).toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                    <td style={{ padding: '5px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{lineTotal.toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
+                            {(pzDocumentData.netto_total > 0 || pzDocumentData.brutto_total > 0) && (
+                              <tfoot>
+                                <tr style={{ background: 'var(--bg-subtle)', borderTop: '2px solid var(--border)' }}>
+                                  <td colSpan={4} style={{ padding: '6px 10px', fontWeight: 700, fontSize: 11, color: 'var(--text-2)' }}>Totals</td>
+                                  <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }}>
+                                    <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Netto</div>
+                                    {(pzDocumentData.netto_total || 0).toLocaleString('pl-PL', { minimumFractionDigits: 2 })}
+                                  </td>
+                                  <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }}>
+                                    <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Brutto</div>
+                                    {(pzDocumentData.brutto_total || 0).toLocaleString('pl-PL', { minimumFractionDigits: 2 })}
+                                  </td>
+                                </tr>
+                              </tfoot>
+                            )}
                           </table>
                         </div>
                       )}
                       {!pzDocumentData.lines?.length && (
-                        <div style={{ padding: '10px 14px', color: 'var(--text-3)', fontSize: 11 }}>No line items returned (wFirma may require warehouse_document_contents fetch).</div>
+                        <div style={{ padding: '12px 14px', color: 'var(--text-3)', fontSize: 11 }}>No line items in wFirma response.</div>
                       )}
                     </div>
                   )}
