@@ -2204,7 +2204,12 @@ async def wfirma_pz_clear_mapping(
     prev_doc_id   = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
     prev_source   = (wfirma_export.get("pz_source") or "").strip()
 
-    if not prev_doc_id:
+    # True idempotency: already cleared when the timeline's latest PZ-mapping
+    # event is wfirma_pz_mapping_cleared (the same check the lifecycle engine
+    # uses). Checking only prev_doc_id is insufficient — a /process run can
+    # wipe wfirma_export without writing the clearing event, leaving the
+    # timeline in PZ_RECOVERY_REQUIRED state with no self-service exit.
+    if _has_pz_mapping_cleared_after_create(audit):
         return JSONResponse({
             "status":   "already_cleared",
             "batch_id": batch_id,
