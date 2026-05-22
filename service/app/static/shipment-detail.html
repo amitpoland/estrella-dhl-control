@@ -5968,6 +5968,21 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       {!pzDocumentData.lines?.length && (
                         <div style={{ padding: '12px 14px', color: 'var(--text-3)', fontSize: 11 }}>No line items in wFirma response.</div>
                       )}
+
+                      {/* PDF note + generated-PDF download */}
+                      <div data-testid="pz-document-pdf-note"
+                           style={{ padding: '8px 14px', background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-subtle)',
+                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 10.5, color: 'var(--text-3)', fontStyle: 'italic', flex: '1 1 auto' }}>
+                          PZ PDF download is not available through confirmed wFirma API. Verified PZ data shown from wFirma document API.
+                        </span>
+                        <a data-testid="btn-pz-download-generated-pdf"
+                           href={`/api/v1/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_document.pdf`}
+                           target="_blank" rel="noopener noreferrer"
+                           style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textDecoration: 'underline', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                          ↓ Generated PDF
+                        </a>
+                      </div>
                     </div>
                   )}
 
