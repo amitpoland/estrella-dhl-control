@@ -6998,7 +6998,12 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       <InfoRow label="Invoice CIF (USD)"
                         value={<span style={{ color: cifZero ? 'var(--badge-red-text)' : 'inherit', fontWeight: cifZero ? 700 : 'inherit' }}>{fmtUsd(cifUsd)}</span>} />
                       <InfoRow label="Total Net (USD)" value={totalFobUsd != null ? `USD ${Number(totalFobUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'Not parsed — process invoices'} />
-                      <InfoRow label="Freight (PLN)" value={freightPln != null ? fmtPLN(freightPln) : (freightUsd ? `USD ${Number(freightUsd).toLocaleString('en-US', { minimumFractionDigits: 2 })} (rate not available)` : 'No freight on invoices')} />
+                      <InfoRow label="Freight (PLN)" value={(() => {
+                        if (freightPln != null) return fmtPLN(freightPln);
+                        if (freightUsd != null && freightUsd > 0) return `USD ${Number(freightUsd).toLocaleString('en-US', { minimumFractionDigits: 2 })} (rate not available)`;
+                        if (!audit.invoice_totals) return 'Not declared';
+                        return '0.00 PLN';
+                      })()} />
                       <InfoRow label="DHL Clearance Status" value={dhlClearance ? mapDhlStatus(dhlClearance) : 'Not started'} />
                       <InfoRow label="Polish Description" value={audit.polish_desc_filename ? 'Generated ✓' : 'Not generated'} />
                       <InfoRow label="DSK File" value={audit.dsk_filename ? 'Generated ✓' : 'Not generated'} />
