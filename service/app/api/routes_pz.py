@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated, List, Literal, Optional
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
@@ -450,6 +454,177 @@ async def learning_summary() -> dict:
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── Global PZ Lineage (read-only authority surface) ──────────────────────────
+#
+# Exposes the invoice→packing→PZ relational authority built by
+# global_pz_lineage.build_global_pz_lineage for Global Jewellery batches.
+# Gate: Global supplier only (detected from source PDF content).
+# No writes. No PZ mutation. No wFirma calls.
+#
+# Returns {is_global_supplier: false} for non-Global batches so the
+# dashboard can suppress the panel cleanly without a 404 branch.
+
+
+def _is_global_batch(batch_id: str) -> bool:
+    """Detect Global Jewellery supplier by scanning the first 1k chars of any
+    source PDF.  Pure read — no DB writes, no network calls."""
+    try:
+        from ..services.supplier_detect import detect_supplier  # noqa: PLC0415
+        import pdfplumber  # noqa: PLC0415
+    except Exception:
+        return False
+    for sub in ("outputs", "working"):
+        base = settings.storage_root / sub / batch_id / "source"
+        if not base.is_dir():
+            continue
+        for cat in ("invoices", "packing"):
+            d = base / cat
+            if not d.is_dir():
+                continue
+            for pdf in sorted(d.glob("*.pdf")):
+                try:
+                    with pdfplumber.open(str(pdf)) as p:
+                        if not p.pages:
+                            continue
+                        head = (p.pages[0].extract_text() or "")[:1000]
+                    if detect_supplier(head) == "global_jewellery":
+                        return True
+                except Exception:
+                    continue
+        break
+    return False
+
+
+def _find_source_pdf(batch_id: str, category: str) -> Optional[Path]:
+    """Return the first PDF in source/{category}/ across outputs/ and working/."""
+    for sub in ("outputs", "working"):
+        d = settings.storage_root / sub / batch_id / "source" / category
+        if d.is_dir():
+            pdfs = sorted(d.glob("*.pdf"))
+            if pdfs:
+                return pdfs[0]
+    return None
+
+
+def _load_pz_rows_from_audit(batch_id: str) -> Optional[List[Dict[str, Any]]]:
+    """Load audit.json rows[] for this batch. Returns None when absent."""
+    for sub in ("outputs", "working"):
+        p = settings.storage_root / sub / batch_id / "audit.json"
+        if p.exists():
+            try:
+                audit = json.loads(p.read_text(encoding="utf-8"))
+                rows = audit.get("rows") or []
+                return rows or None
+            except Exception:
+                return None
+    return None
+
+
+def _extract_invoice_no(inv_pdf: Path) -> str:
+    """Extract invoice number (NNN/YYYY-YYYY) from the invoice PDF using the
+    engine parser; falls back to the file stem if the engine is unavailable."""
+    engine_dir = str(settings.engine_dir)
+    if engine_dir not in sys.path:
+        sys.path.insert(0, engine_dir)
+    try:
+        from pz_import_processor import parse_invoice as _pi  # noqa: PLC0415
+        inv = _pi(str(inv_pdf), [])
+        if isinstance(inv, dict):
+            raw = str(inv.get("_raw_text") or "")
+            m = re.search(r"\b(\d{1,4}/\d{4}-\d{4})\b", raw)
+            if m:
+                return m.group(1)
+            return str(inv.get("invoice_no") or "").strip()
+    except Exception:
+        pass
+    return inv_pdf.stem
+
+
+@router.get("/pz/lineage/{batch_id}", dependencies=[_auth])
+def global_pz_lineage(batch_id: str) -> Dict[str, Any]:
+    """Read-only invoice→packing→PZ relational authority for Global Jewellery.
+
+    Returns the 4-dimensional match status, position links, and confidence
+    reasons. Gated to Global Jewellery batches only. Returns
+    ``{is_global_supplier: false}`` for all other batches so the dashboard
+    can suppress the panel without raising a 404.
+
+    No writes. No PZ mutation. No wFirma calls.
+    """
+    import dataclasses  # noqa: PLC0415
+
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    # ── 1. Supplier gate ─────────────────────────────────────────────────────
+    if not _is_global_batch(batch_id):
+        return {"batch_id": batch_id, "is_global_supplier": False}
+
+    # ── 2. Locate source files ───────────────────────────────────────────────
+    inv_pdf  = _find_source_pdf(batch_id, "invoices")
+    pack_pdf = _find_source_pdf(batch_id, "packing")
+
+    if not inv_pdf:
+        return {
+            "batch_id":           batch_id,
+            "is_global_supplier": True,
+            "error":              "invoice PDF not found in source/invoices/",
+            "match_status":       "UNMATCHED",
+        }
+    if not pack_pdf:
+        return {
+            "batch_id":           batch_id,
+            "is_global_supplier": True,
+            "error":              "packing PDF not found in source/packing/",
+            "match_status":       "UNMATCHED",
+        }
+
+    # ── 3. Parse ─────────────────────────────────────────────────────────────
+    try:
+        from ..services.global_invoice_position_parser import (  # noqa: PLC0415
+            parse_invoice_positions_from_pdf,
+        )
+        from ..services.global_packing_parser import (  # noqa: PLC0415
+            parse_global_packing_pdf,
+        )
+        from ..services.global_pz_lineage import build_global_pz_lineage  # noqa: PLC0415
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=f"lineage parsers unavailable: {exc}")
+
+    try:
+        positions = parse_invoice_positions_from_pdf(inv_pdf)
+    except Exception as exc:
+        return {
+            "batch_id":           batch_id,
+            "is_global_supplier": True,
+            "error":              f"invoice parse failed: {exc}",
+            "match_status":       "UNMATCHED",
+        }
+
+    try:
+        pack_rows, *_ = parse_global_packing_pdf(pack_pdf)
+    except Exception as exc:
+        return {
+            "batch_id":           batch_id,
+            "is_global_supplier": True,
+            "error":              f"packing parse failed: {exc}",
+            "match_status":       "UNMATCHED",
+        }
+
+    # ── 4. Load optional PZ rows from audit ─────────────────────────────────
+    pz_rows = _load_pz_rows_from_audit(batch_id)
+
+    # ── 5. Build lineage ─────────────────────────────────────────────────────
+    invoice_no = _extract_invoice_no(inv_pdf)
+    result = build_global_pz_lineage(positions, pack_rows, pz_rows, invoice_no)
+
+    # ── 6. Serialize and annotate ─────────────────────────────────────────────
+    d = dataclasses.asdict(result)
+    d["batch_id"]           = batch_id
+    d["is_global_supplier"] = True
+    return d
 
 
 # ── File download ─────────────────────────────────────────────────────────────
