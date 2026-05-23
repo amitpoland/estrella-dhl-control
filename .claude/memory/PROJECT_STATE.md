@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-23T(PR319-HOTFIX)Z. Origin/main HEAD: 62ec20f. PENDING deploys: none. OPEN PRs: 1/3 (#268 docs-only). Production: PR #319 + hotfix LIVE (62ec20f). Phase 6: NOT STARTED — awaiting operator instruction.
+**Last-run-at:** 2026-05-23T(PHASE6-MERGED)Z. Origin/main HEAD: 958e914. PENDING deploys: Phase 6 (deploy script ready — `.claude/manifests/windows_deploy_958e914.ps1`). OPEN PRs: 1/3 (#268 docs-only). Production: Phase 5 LIVE (eaa2875). Phase 6: MERGED — deploy pending operator execution.
 
 ---
 
@@ -82,8 +82,42 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
   - Local health: 200 | /product: 200 (advisory_class=R) | /finishing: 200 (advisory_class=R)
   - stderr: clean startup
   - `entity_count=0`: expected — production master-data source has no product/finishing rows yet (not a deploy failure)
-- **PENDING deploys**: none
-- **Phase 6**: NOT STARTED — awaiting operator instruction
+- **PENDING deploys**: none (Phase 5 production state)
+- **Phase 6**: MERGED — PR #321 squash-merged at SHA 958e914 (2026-05-23). Deploy pending.
+
+---
+
+## Phase 6 — Document Coverage Intelligence Foundation (2026-05-23, MERGED — DEPLOY PENDING)
+
+**Campaign type**: Platform-wide advisory intelligence extension (deterministic, no LLM, no writes)
+**Status**: PR #321 MERGED — squash SHA `958e914` on main (2026-05-23). Deploy pending operator execution.
+
+### Phase 6 implementation facts (2026-05-23)
+
+- **Phase 6 extends MDI with a `document` domain** scoring document/evidence completeness:
+  - `get_document_coverage_summary(db_path)` in `document_db.py` — read-only aggregate over documents.db with PRAGMA query_only = ON
+  - `_score_documents(summary: Dict)` in `master_data_intelligence.py` — pure function, no DB calls, five weighted dimensions (extraction 0.30, AWB 0.20, MRN 0.15, PZ 0.15, WorkDrive 0.20)
+  - `document: DomainScore` added to `MasterDataIntelligenceReport` dataclass
+  - `to_dict()` updated to include `"document"` key
+  - `_DOC_DB = settings.storage_root / "documents.db"` path constant added
+  - Platform weights rebalanced for 6 domains: [0.25, 0.22, 0.18, 0.12, 0.13, 0.10] sum=1.00
+  - `"document"` added to `_VALID_DOMAINS` in routes_mdi.py
+- **New GET endpoint**: `GET /api/v1/master-data/intelligence/document` — serves `document` DomainScore
+- **All invariants preserved**: `llm_used=False` hardcoded, no Anthropic calls, GET-only routes, no writes
+- **Tests**: 113 Phase 4+5 tests + 86 Phase 6 tests = 199 total, all PASS on merged main
+  - Source-grep: no INSERT/UPDATE/DELETE in _score_documents or get_document_coverage_summary
+  - PRAGMA query_only = ON confirmed in coverage summary function
+  - Phase 4/5 regression: all prior domains still score correctly
+- **7-agent gate**: ALL GO — 7/7 verdicts (chief-orchestrator, reviewer-challenge, backend-api, database-storage, security-permissions, testing-verification, release-manager)
+  - Gate 5 disclosure (Lesson B): named deploy agents not in FleetView registry; capability-equivalent substitutes used
+- **GATE 2**: 1/3 open PRs (#268 docs-only) after merge (within limit)
+- **Files to deploy**: 3 runtime files within service/app/** — standard robocopy
+  - `document_db.py` → `C:\PZ\app\services\document_db.py`
+  - `master_data_intelligence.py` → `C:\PZ\app\services\master_data_intelligence.py`
+  - `routes_mdi.py` → `C:\PZ\app\api\routes_mdi.py`
+- **PZService restart**: REQUIRED
+- **Deploy script**: `.claude/manifests/windows_deploy_958e914.ps1`
+- **Scorecard**: pending (fires after operator confirms deploy)
 
 ---
 
