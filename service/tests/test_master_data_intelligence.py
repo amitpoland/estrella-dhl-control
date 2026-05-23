@@ -153,33 +153,36 @@ from app.services.master_data_intelligence import (
 def test_report_llm_used_is_false():
     with patch("app.services.master_data_intelligence.list_customers", return_value=[]):
         with patch("app.services.master_data_intelligence.list_designs", return_value=[]):
-            with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
-                with patch("app.services.master_data_intelligence.cm_init"):
-                    with patch("app.services.master_data_intelligence.md_init"):
-                        with patch("app.services.master_data_intelligence.supp_init"):
-                            report = generate_report()
+            with patch("app.services.master_data_intelligence.list_product_local", return_value=[]):
+                with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
+                    with patch("app.services.master_data_intelligence.cm_init"):
+                        with patch("app.services.master_data_intelligence.md_init"):
+                            with patch("app.services.master_data_intelligence.supp_init"):
+                                report = generate_report()
     assert report.llm_used is False
 
 
 def test_report_advisory_class_is_R():
     with patch("app.services.master_data_intelligence.list_customers", return_value=[]):
         with patch("app.services.master_data_intelligence.list_designs", return_value=[]):
-            with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
-                with patch("app.services.master_data_intelligence.cm_init"):
-                    with patch("app.services.master_data_intelligence.md_init"):
-                        with patch("app.services.master_data_intelligence.supp_init"):
-                            report = generate_report()
+            with patch("app.services.master_data_intelligence.list_product_local", return_value=[]):
+                with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
+                    with patch("app.services.master_data_intelligence.cm_init"):
+                        with patch("app.services.master_data_intelligence.md_init"):
+                            with patch("app.services.master_data_intelligence.supp_init"):
+                                report = generate_report()
     assert report.advisory_class == "R"
 
 
 def test_report_has_all_five_domains():
     with patch("app.services.master_data_intelligence.list_customers", return_value=[]):
         with patch("app.services.master_data_intelligence.list_designs", return_value=[]):
-            with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
-                with patch("app.services.master_data_intelligence.cm_init"):
-                    with patch("app.services.master_data_intelligence.md_init"):
-                        with patch("app.services.master_data_intelligence.supp_init"):
-                            report = generate_report()
+            with patch("app.services.master_data_intelligence.list_product_local", return_value=[]):
+                with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
+                    with patch("app.services.master_data_intelligence.cm_init"):
+                        with patch("app.services.master_data_intelligence.md_init"):
+                            with patch("app.services.master_data_intelligence.supp_init"):
+                                report = generate_report()
     d = report.to_dict()
     for domain in ("customer", "product", "finishing", "supplier", "readiness"):
         assert domain in d, f"missing domain {domain}"
@@ -193,11 +196,12 @@ def test_report_to_dict_never_has_write_keys():
     """Output dict must never contain keys implying mutation."""
     with patch("app.services.master_data_intelligence.list_customers", return_value=[_perfect_customer()]):
         with patch("app.services.master_data_intelligence.list_designs", return_value=[_perfect_design()]):
-            with patch("app.services.master_data_intelligence.list_suppliers", return_value=[_perfect_supplier()]):
-                with patch("app.services.master_data_intelligence.cm_init"):
-                    with patch("app.services.master_data_intelligence.md_init"):
-                        with patch("app.services.master_data_intelligence.supp_init"):
-                            report = generate_report()
+            with patch("app.services.master_data_intelligence.list_product_local", return_value=[]):
+                with patch("app.services.master_data_intelligence.list_suppliers", return_value=[_perfect_supplier()]):
+                    with patch("app.services.master_data_intelligence.cm_init"):
+                        with patch("app.services.master_data_intelligence.md_init"):
+                            with patch("app.services.master_data_intelligence.supp_init"):
+                                report = generate_report()
     d_str = str(report.to_dict())
     forbidden_keys = ("write", "modify", "execute", "correct", "approve", "create", "delete",
                       "INSERT", "UPDATE", "DELETE", "upsert")
@@ -490,11 +494,12 @@ def test_readiness_missing_supplier_wfirma_id_is_blocker():
 def test_platform_score_between_0_and_1():
     with patch("app.services.master_data_intelligence.list_customers", return_value=[_perfect_customer()]):
         with patch("app.services.master_data_intelligence.list_designs", return_value=[_perfect_design()]):
-            with patch("app.services.master_data_intelligence.list_suppliers", return_value=[_perfect_supplier()]):
-                with patch("app.services.master_data_intelligence.cm_init"):
-                    with patch("app.services.master_data_intelligence.md_init"):
-                        with patch("app.services.master_data_intelligence.supp_init"):
-                            report = generate_report()
+            with patch("app.services.master_data_intelligence.list_product_local", return_value=[]):
+                with patch("app.services.master_data_intelligence.list_suppliers", return_value=[_perfect_supplier()]):
+                    with patch("app.services.master_data_intelligence.cm_init"):
+                        with patch("app.services.master_data_intelligence.md_init"):
+                            with patch("app.services.master_data_intelligence.supp_init"):
+                                report = generate_report()
     assert 0.0 <= report.platform_score <= 1.0
 
 
@@ -503,20 +508,22 @@ def test_platform_score_higher_with_complete_data():
                return_value=[_perfect_customer()]):
         with patch("app.services.master_data_intelligence.list_designs",
                    return_value=[_perfect_design()]):
-            with patch("app.services.master_data_intelligence.list_suppliers",
-                       return_value=[_perfect_supplier()]):
-                with patch("app.services.master_data_intelligence.cm_init"):
-                    with patch("app.services.master_data_intelligence.md_init"):
-                        with patch("app.services.master_data_intelligence.supp_init"):
-                            full_report = generate_report()
+            with patch("app.services.master_data_intelligence.list_product_local", return_value=[]):
+                with patch("app.services.master_data_intelligence.list_suppliers",
+                           return_value=[_perfect_supplier()]):
+                    with patch("app.services.master_data_intelligence.cm_init"):
+                        with patch("app.services.master_data_intelligence.md_init"):
+                            with patch("app.services.master_data_intelligence.supp_init"):
+                                full_report = generate_report()
 
     with patch("app.services.master_data_intelligence.list_customers", return_value=[]):
         with patch("app.services.master_data_intelligence.list_designs", return_value=[]):
-            with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
-                with patch("app.services.master_data_intelligence.cm_init"):
-                    with patch("app.services.master_data_intelligence.md_init"):
-                        with patch("app.services.master_data_intelligence.supp_init"):
-                            empty_report = generate_report()
+            with patch("app.services.master_data_intelligence.list_product_local", return_value=[]):
+                with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
+                    with patch("app.services.master_data_intelligence.cm_init"):
+                        with patch("app.services.master_data_intelligence.md_init"):
+                            with patch("app.services.master_data_intelligence.supp_init"):
+                                empty_report = generate_report()
 
     assert full_report.platform_score > empty_report.platform_score
 
@@ -524,11 +531,12 @@ def test_platform_score_higher_with_complete_data():
 def test_top_recommendations_is_list():
     with patch("app.services.master_data_intelligence.list_customers", return_value=[]):
         with patch("app.services.master_data_intelligence.list_designs", return_value=[]):
-            with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
-                with patch("app.services.master_data_intelligence.cm_init"):
-                    with patch("app.services.master_data_intelligence.md_init"):
-                        with patch("app.services.master_data_intelligence.supp_init"):
-                            report = generate_report()
+            with patch("app.services.master_data_intelligence.list_product_local", return_value=[]):
+                with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
+                    with patch("app.services.master_data_intelligence.cm_init"):
+                        with patch("app.services.master_data_intelligence.md_init"):
+                            with patch("app.services.master_data_intelligence.supp_init"):
+                                report = generate_report()
     assert isinstance(report.top_recommendations, list)
 
 
@@ -587,9 +595,10 @@ def test_report_generated_at_is_iso_timestamp():
     import re as _re
     with patch("app.services.master_data_intelligence.list_customers", return_value=[]):
         with patch("app.services.master_data_intelligence.list_designs", return_value=[]):
-            with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
-                with patch("app.services.master_data_intelligence.cm_init"):
-                    with patch("app.services.master_data_intelligence.md_init"):
-                        with patch("app.services.master_data_intelligence.supp_init"):
-                            report = generate_report()
+            with patch("app.services.master_data_intelligence.list_product_local", return_value=[]):
+                with patch("app.services.master_data_intelligence.list_suppliers", return_value=[]):
+                    with patch("app.services.master_data_intelligence.cm_init"):
+                        with patch("app.services.master_data_intelligence.md_init"):
+                            with patch("app.services.master_data_intelligence.supp_init"):
+                                report = generate_report()
     assert _re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", report.generated_at)
