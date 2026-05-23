@@ -4,11 +4,38 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-23T(PHASE-4-MDI-DEPLOYED)Z. Origin/main HEAD: 7c2bf0a. PENDING deploys: none. OPEN PRs: 1/3 (#268 docs-only). Production: stable. AI Gateway live + dormant. Global Jewellery lineage + correction proposal backend + UI card: LIVE. Phase 4 MDI: LIVE (llm_used=false, GET-only, no writes). Phase 5: NOT STARTED — awaiting operator instruction.
+**Last-run-at:** 2026-05-23T(PHASE-5-MERGED)Z. Origin/main HEAD: 2886a94. PENDING deploys: Phase 5 (windows_deploy_2886a94.ps1). OPEN PRs: 1/3 (#268 docs-only). Production: stable at Phase 4 MDI live. Phase 5: MERGED — deploy pending.
 
 ---
 
 # FACTS
+
+## Phase 5 — Product/Finishing Intelligence Foundation (2026-05-23, MERGED — DEPLOY PENDING)
+
+**Campaign type**: Platform-wide advisory intelligence extension (deterministic, no LLM, no writes)  
+**Status**: PR #316 MERGED — squash SHA `2886a94` on main (2026-05-23). Deploy manifest: `.claude/manifests/windows_deploy_2886a94.ps1`
+
+### Phase 5 implementation facts (2026-05-23)
+
+- **Phase 5 extends master_data_intelligence.py** with product and finishing intelligence:
+  - Description quality scoring: `_desc_quality()` → "none" | "poor" | "ok" | "good" per design display_name
+  - Near-duplicate detection: `_design_near_duplicates()` → clusters by normalized display_name (generic jewellery tokens stripped, probability=0.80)
+  - ProductLocal coverage: % of designs with ProductLocal augmentation (matched via product_ref or design_code vs product_local.product_code)
+  - Metal/stone compatibility advisory: `_metal_stone_compat_warnings()` → silver + high-value stones (diamond/emerald/ruby/sapphire) flagged as advisory-unusual (not blocking)
+  - Stone keyword coverage count per finishing domain
+- **New import**: `list_product_local` added to module-level import from `.master_data_db`
+- **generate_report()**: loads `product_locals` via `list_product_local(_MD_DB, limit=5000)` inside existing try/except; passes to `_score_products()`
+- **All invariants preserved**: `llm_used=False` hardcoded, no Anthropic calls, GET-only routes, no wFirma/DHL/customs/PZ/proforma writes
+- **Tests**: 45 Phase 4 tests (updated for `list_product_local` patch) + 68 Phase 5 tests = 113 total, all PASS
+  - Source-grep: no INSERT/UPDATE/DELETE, no anthropic/ai_gateway/openai, `llm_used=False` hardcoded
+  - Phase 4 regression: 10 explicit regression tests in Phase 5 suite confirm no breaking changes
+- **7-agent gate**: ALL GO — git-diff PASS, backend PASS, persistence PASS, security PASS, QA PASS, release-manager PASS, lead-coordinator GO
+- **GATE 2**: 1/3 open PRs (#268 docs-only)
+- **Files to deploy**: `master_data_intelligence.py` → `C:\PZ\app\services\`. PZService restart required.
+- **Scorecard**: (to be written by agent-performance-observer after this state update)
+- **DEPLOY PENDING**: operator must run `windows_deploy_2886a94.ps1` in elevated PowerShell on Windows machine
+
+---
 
 ## Phase 3A — AI Safety Patch (2026-05-23, DEPLOYED to Windows production)
 
@@ -46,7 +73,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Card behaviour**: read-only advisory for Global batches; all buttons disabled; CANCEL_AND_RECREATE filtered; suppresses silently for non-Global + 404
 - **GATE 2 state**: 2/3 open PRs (#268 docs-only + #315 now merged → 1/3 post-merge)
 - **Scorecard**: `.claude/memory/scorecards/2026-05-23-pr315-deploy-correction-proposal-card.md` — all 7 agents EXEMPLARY, 0 NEEDS-TUNING
-- **Note**: Phase 4 MDI backend also merged to main (`1a74d6c`) in same session; deploy manifest `windows_deploy_1a74d6c.ps1` exists; MDI backend DEPLOYED 2026-05-23 (see Phase 4 block below)
+- **Note**: Phase 4 MDI backend also merged to main (`1a74d6c`) in same session; deploy manifest `windows_deploy_1a74d6c.ps1` exists; MDI backend DEPLOYED 2026-05-23 (see Phase 4 COMPLETE block below). Phase 5 extends Phase 4 MDI with product/finishing intelligence (PR #316, SHA 2886a94) — deploy pending.
 
 ---
 
@@ -72,7 +99,8 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **PENDING deploys**: none
 - **OPEN PRs**: 1/3 (#268 docs-only)
 - **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase4-mdi-foundation.md`
-- **Phase 5**: NOT STARTED — do not begin until operator instructs
+- **DEPLOYED to Windows production**: confirmed by operator 2026-05-23 (see Phase 4 COMPLETE block above)
+- **Phase 5**: MERGED (PR #316, SHA 2886a94) — deploy pending
 
 ---
 
@@ -222,9 +250,9 @@ Gateway live on Windows production. Ledger writing entries. Redaction confirmed.
 
 ```
 Phase 3A (Safety Gate)           ✅ COMPLETE + LIVE
-Phase 3 Proper (Foundation)      ✅ COMPLETE (PR #312 open)
-Phase 4  Customer Intelligence    ← NEXT AVAILABLE
-Phase 5  Product/Finishing Intelligence
+Phase 3 Proper (Foundation)      ✅ COMPLETE + LIVE
+Phase 4  Master Data Intelligence ✅ COMPLETE + LIVE
+Phase 5  Product/Finishing Intelligence ✅ MERGED — deploy pending
 Phase 6  Document Intelligence
 Phase 7  Natural-Language Search
 Phase 2  Advisory LLM Explanations  ← UNBLOCKED BY PHASE 3 PROPER
@@ -305,38 +333,6 @@ Model Selection Policy (Haiku → Sonnet → Opus)
 
 ---
 
-## Phase 4 — Master Data Intelligence Foundation (2026-05-23, ACTIVE)
-
-**Campaign type**: Platform-wide advisory intelligence (deterministic, no LLM, no writes)  
-**Status**: PR #314 MERGED — squash SHA `1a74d6c` on main (2026-05-23). Deploy manifest: `.claude/manifests/windows_deploy_1a74d6c.ps1`
-
-### Phase 4 implementation facts (2026-05-23)
-
-- **Unified MDI service created** — `service/app/services/master_data_intelligence.py` (450+ lines)
-  - 5-domain scoring engine: customer, product, finishing, supplier, readiness
-  - `llm_used=False` hardcoded — no Anthropic call possible by design
-  - Consumes: `customer_master_db`, `master_data_db`, `suppliers_db` (read-only)
-  - Platform score weighted: customer 0.30, product 0.25, finishing 0.20, supplier 0.15, readiness 0.10
-  - Duplicate detection: NIP clusters (customers), VAT ID clusters (suppliers), normalized-name clusters
-- **GET-only router** — `service/app/api/routes_mdi.py`
-  - `GET /api/v1/master-data/intelligence` — full platform report
-  - `GET /api/v1/master-data/intelligence/{domain}` — single domain (customer|product|finishing|supplier|readiness)
-  - No POST, PUT, DELETE, PATCH routes — source-grep contract test enforces this
-- **Test suite** — `service/tests/test_master_data_intelligence.py` — 45 tests, all PASS
-  - Advisory contract: `llm_used=False`, `advisory_class="R"`, all 5 domains present
-  - Source-grep: no INSERT/UPDATE/DELETE, no LLM calls, no write DB calls, GET-only routes
-  - Scoring logic: empty DB, perfect data, missing fields, duplicate detection per domain
-  - Platform score: bounded [0,1], higher with complete data
-- **main.py** — `include_router(mdi_router)` added (Phase 4 comment)
-- **Regression**: 241/241 domain tests pass (ai, customer, master_data, suppliers)
-- **PR #314 MERGED**: squash SHA `1a74d6c` — 2026-05-23. 7-agent gate: ALL GO.
-- **Deploy manifest**: `.claude/manifests/windows_deploy_1a74d6c.ps1` — committed at SHA `08671c6`
-- **Files to deploy**: `master_data_intelligence.py`, `routes_mdi.py`, `main.py` → `C:\PZ\app\**`. PZService restart required.
-- **GATE 2 state**: 1/3 open PRs after #314 merge (#268 Lesson G docs only)
-- **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase4-mdi-foundation.md` — 6 agents, all EXEMPLARY
-- **DEPLOY PENDING**: operator must run `windows_deploy_1a74d6c.ps1` in elevated PowerShell on Windows machine
-
----
 
 ## C26 — Canonical Proforma Setup Reader Contract (2026-05-21, ACTIVE on main)
 
@@ -1216,8 +1212,8 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
   Phase 3A (Safety Gate)              ✅ LIVE
   Phase 3 Proper (Foundation)         ✅ LIVE
   [Smoke Validation Campaign]         ✅ CLOSED 2026-05-23
-  Phase 4 Master Data Intelligence    ← MERGED (SHA 1a74d6c) — DEPLOY PENDING
-  Phase 5 Product/Finishing Intelligence
+  Phase 4 Master Data Intelligence    ✅ LIVE (SHA 1a74d6c)
+  Phase 5 Product/Finishing Intelligence ← MERGED (SHA 2886a94) — DEPLOY PENDING
   Phase 6 Document Intelligence
   Phase 7 Natural-Language Search
   Phase 2 Advisory LLM Explanations   ← UNBLOCKED by Phase 3 Proper
