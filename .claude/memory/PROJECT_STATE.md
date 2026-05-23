@@ -51,7 +51,12 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **GATE 2 state**: 1/3 open PRs (#268 only — Lesson G docs PR)
 - **Deploy manifest**: `.claude/manifests/windows_deploy_617b2b7.ps1` — committed 2026-05-23 at `87317f4`
 - **7-agent gate**: ALL GO — git-diff-reviewer CLEAN, backend SAFE, persistence SAFE, security SECURE, QA PASS (166/166), release-manager READY, lead-coordinator GO (revised)
-- **Status**: PHASE 3 PROPER DEPLOY PENDING — manifest ready, operator must run `windows_deploy_617b2b7.ps1` in elevated PowerShell on Windows machine
+- **DEPLOYED to Windows production** — operator-confirmed 2026-05-23:
+  - All 7 runtime files deployed (ai_gateway.py, ai_call_ledger.py, ai_redactor.py, ai_customs_parser.py, ai_customs_evidence.py, config.py, global_pz_lineage.py)
+  - Local health: 200 | Public health: 200 | stderr: Clean (no ImportError, no Traceback)
+  - anthropic.Anthropic() confirmed only in ai_gateway.py | prompt_hash in ledger | redact_pair in redactor
+  - AI gateway: DORMANT (ai_parser_enabled=False — no live Anthropic call possible)
+- **Status**: PHASE 3 PROPER LIVE IN PRODUCTION
 
 ### Claude-first fallback rule (permanent, binds all phases)
 
@@ -253,6 +258,37 @@ Model Selection Policy (Haiku → Sonnet → Opus)
   - `is_global_supplier: true` ✓
 - **Hard rules**: no automatic writes, no wFirma mutation, operator approval required before any corrective write. Endpoint is read-only forever.
 - **Deployed via**: standard robocopy (service/app/** path) 2026-05-23, PZService restart confirmed RUNNING.
+
+---
+
+## Phase 4 — Master Data Intelligence Foundation (2026-05-23, ACTIVE)
+
+**Campaign type**: Platform-wide advisory intelligence (deterministic, no LLM, no writes)  
+**Status**: PR #314 open — `feat/phase4-master-data-intelligence`
+
+### Phase 4 implementation facts (2026-05-23)
+
+- **Unified MDI service created** — `service/app/services/master_data_intelligence.py` (450+ lines)
+  - 5-domain scoring engine: customer, product, finishing, supplier, readiness
+  - `llm_used=False` hardcoded — no Anthropic call possible by design
+  - Consumes: `customer_master_db`, `master_data_db`, `suppliers_db` (read-only)
+  - Platform score weighted: customer 0.30, product 0.25, finishing 0.20, supplier 0.15, readiness 0.10
+  - Duplicate detection: NIP clusters (customers), VAT ID clusters (suppliers), normalized-name clusters
+- **GET-only router** — `service/app/api/routes_mdi.py`
+  - `GET /api/v1/master-data/intelligence` — full platform report
+  - `GET /api/v1/master-data/intelligence/{domain}` — single domain (customer|product|finishing|supplier|readiness)
+  - No POST, PUT, DELETE, PATCH routes — source-grep contract test enforces this
+- **Test suite** — `service/tests/test_master_data_intelligence.py` — 45 tests, all PASS
+  - Advisory contract: `llm_used=False`, `advisory_class="R"`, all 5 domains present
+  - Source-grep: no INSERT/UPDATE/DELETE, no LLM calls, no write DB calls, GET-only routes
+  - Scoring logic: empty DB, perfect data, missing fields, duplicate detection per domain
+  - Platform score: bounded [0,1], higher with complete data
+- **main.py** — `include_router(mdi_router)` added (Phase 4 comment)
+- **Regression**: 241/241 domain tests pass (ai, customer, master_data, suppliers)
+- **PR #314**: open 2026-05-23, branch `feat/phase4-master-data-intelligence`
+- **Deploy note**: standard robocopy `service/app → C:\PZ\app` covers all 3 new files. No schema change, no migration, no engine-layer files.
+- **GATE 2 state**: 2/3 open PRs after #314 (#268 Lesson G docs + #314 Phase 4)
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase4-mdi-foundation.md` — 6 agents, all EXEMPLARY
 
 ---
 
@@ -1098,6 +1134,28 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
 - **ai_call_ledger.py is AI infrastructure** (2026-05-23) — exempt from gateway violation model-name checks alongside ai_gateway.py and config.py
 - **patch("app.services.ai_gateway", mock, create=True) is correct mock target** (2026-05-23) — for `from . import ai_gateway` inside function bodies; NOT patch.dict("sys.modules", ...) and NOT patch("app.services.ai_customs_parser.ai_gateway", ...)
 
+## Phase 4 and sequencing decisions (operator-locked 2026-05-23)
+
+- **Smoke validation precedes Phase 4** — production smoke validation (AI disabled, 8 items) MUST complete before Phase 4 work begins. Operator-stated sequencing: Step 1 smoke → Step 2 close campaign → Step 3 launch Phase 4. No Phase 4 sprint may open until smoke campaign is closed.
+- **Phase 4 scope = Master Data Intelligence Foundation (platform-wide, NOT customer-only)** — covers all of: Customer Master completeness, VAT number validation status, EU VAT/VIES status, missing customer fields, duplicate customer detection, Product Master completeness, missing finishing fields, description quality analysis, Supplier normalization, Classification confidence, Authority scoring. Source: operator direction 2026-05-23.
+- **Phase 4 output contract (permanent, may not be relaxed without operator instruction)** — advisory and recommendations ONLY. Output types permitted: completeness scores, confidence scores, advisory text, recommendations. Forbidden: writes, automatic corrections, execution, any mutation of Customer Master / Product Master / PZ / Proforma / Sales / Inventory / Readiness data.
+- **"Services express intent. Gateway executes policy."** — permanent architectural rule (operator-stated 2026-05-23). No service makes policy decisions; gateway owns execution policy.
+- **AI phase chain revised** (operator direction 2026-05-23, supersedes prior chain):
+  ```
+  Phase 3A (Safety Gate)              ✅ LIVE
+  Phase 3 Proper (Foundation)         ✅ LIVE
+  [Smoke Validation Campaign]         ✅ CLOSED 2026-05-23
+  Phase 4 Master Data Intelligence    ← ACTIVE (PR #314 open)
+  Phase 5 Product/Finishing Intelligence
+  Phase 6 Document Intelligence
+  Phase 7 Natural-Language Search
+  Phase 2 Advisory LLM Explanations   ← UNBLOCKED by Phase 3 Proper
+  Phase 8 Action Proposal Advisor
+  Phase 9 Operations Assistant
+  Phase 10 Optimization / Forecasting
+  ```
+- **Hard rules (permanent, verbatim per operator, 2026-05-23)**: No new AI product feature. No advisory LLM wiring without smoke campaign closed. No customer/product/document/search AI feature until Phase 4 properly opened. No production writes. No wFirma/DHL/customs/accounting/PZ/proforma/customer/product writes. No V1 dashboard edits. No duplicate AI client paths. No raw prompt storage by default. No external API call unless tests mock it or config explicitly enables it. No direct Anthropic call outside ai_gateway.py. No service-level model selection.
+
 ## Engineering lessons governance (appended 2026-05-13)
 
 - **Engineering lessons are append-only.** Supersede with new dated entries; never delete. Source: `.claude/memory/engineering_lessons.md` header + CLAUDE.md "Engineering Lessons (permanent)" section.
@@ -1227,9 +1285,22 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Merge PR #312 (Phase 3 Proper AI Gateway)** — feat/ai-gateway-phase3-proper → main; all tests passing; unblocks Phase 2 and Phase 4+ work. Target: immediate — gating: none (ready for merge).
-2. **Windows deploy — C13E + Phase 3A backend + C14A–C21A static + Phase 3 Proper** — deploy 6 backend files including new ai_gateway.py, ai_call_ledger.py, ai_redactor.py + migrated parsers + PZService restart, then robocopy `shipment-detail.html`. Target: next operator Windows session — gating: PR #312 merge + operator elevated shell on Windows prod.
-3. **V1/V2/V3 reconciliation PR** — Windows production HEAD is `7392be1` (3 local commits above `32d6a8f` not on GitHub). Per Lesson D: operator must push V1/V2/V3 to GitHub or confirm content, then open reconciliation PR before next `git pull --ff-only origin main`. Gating: operator action (Windows → GitHub push).
+1. ~~**Merge PR #312 (Phase 3 Proper AI Gateway)**~~ — **DONE 2026-05-23**: merged at SHA `bf9a9ae`. All 166 AI tests passing.
+2. ~~**Windows deploy — Phase 3 Proper**~~ — **DONE 2026-05-23**: operator-confirmed all 7 runtime files live, local health 200, public health 200, stderr clean. Manifest: `windows_deploy_617b2b7.ps1`.
+3. ~~**Production smoke validation (AI disabled)**~~ — **DONE 2026-05-23**: all 8 items PASS. Health 200, AI gateway dormant, no regressions, no errors. Phase 4 unlocked.
+
+## Pending next steps (added 2026-05-23)
+
+1. **Production smoke validation** (operator initiates) — run 8 verification items against Windows production with AI disabled:
+   - Existing shipment workflows still behave identically
+   - Customs parser path works when AI is disabled
+   - Evidence extraction path works when AI is disabled
+   - Ledger initialization causes no production-side file/permission issues
+   - Circuit breaker state initialization is clean
+   - Correction proposal endpoint behaves correctly with real data
+   - Global Lineage V2 behaves correctly with real data
+   - No unexpected latency appears in shipment processing
+2. **Phase 4 — Master Data Intelligence Foundation** (after smoke validation closes) — platform-wide advisory analysis. No writes, no automatic corrections. See DECISIONS § "Phase 4 scope" below.
 
 ## Completed actions (Campaign 8, 2026-05-19)
 - ~~**Windows deploy**~~ — **DONE 2026-05-19**: Campaign 8 deploy complete. Windows HEAD = `7392be1` (32d6a8f + V1/V2/V3). All smoke checks PASS. See "Campaign 8 deploy smoke results" above. Deployment maturity: standard sequence — future static/UI changes are routine, not campaigns. Operational stance: ops/perf/UX only.
