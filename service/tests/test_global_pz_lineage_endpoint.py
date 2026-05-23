@@ -382,10 +382,17 @@ def test_production_fixture_endpoint_warning_match():
         pytest.skip("production fixture not available")
 
     import app.core.security as sec
+    import app.api.routes_pz as routes_mod
+    from app.core.config import settings
+
+    # storage_root may differ between dev and prod; point it at production storage
+    # so _is_global_batch and _find_source_pdf can locate the real fixture PDFs.
+    prod_storage = Path("C:/PZ/storage")
     app2 = FastAPI()
     app2.include_router(pz_router)
 
-    with patch.object(sec, "require_api_key", return_value=None):
+    with patch.object(sec, "require_api_key", return_value=None), \
+         patch.object(settings, "storage_root", prod_storage):
         c = TestClient(app2)
         resp = c.get(f"/api/v1/pz/lineage/{_FIXTURE_BATCH}")
 
