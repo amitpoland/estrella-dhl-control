@@ -22,7 +22,7 @@ router = APIRouter(
 
 _auth = Depends(require_api_key)
 
-_VALID_DOMAINS = {"customer", "product", "finishing", "supplier", "readiness"}
+_VALID_DOMAINS = {"customer", "product", "finishing", "supplier", "document", "readiness"}
 
 
 @router.get(
@@ -51,7 +51,7 @@ def platform_report() -> JSONResponse:
     summary="Single-domain master-data intelligence",
     description=(
         "Returns advisory scores for one domain: "
-        "customer | product | finishing | supplier | readiness. "
+        "customer | product | finishing | supplier | document | readiness. "
         "llm_used=False — deterministic only. No writes."
     ),
 )
