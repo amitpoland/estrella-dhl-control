@@ -1,11 +1,13 @@
-"""Master Data Intelligence — Phase 4 advisory scoring engine.
+"""Master Data Intelligence — Phase 4+5 advisory scoring engine.
 
 Deterministic, read-only. llm_used=False. No writes.
 
 Domains:
   customer   — completeness, VAT status, duplicate probability
-  product    — completeness, HS classification, finishing coverage
-  finishing  — metal/stone/unit field coverage per design
+  product    — completeness, HS classification, finishing coverage,
+               description quality, near-duplicate detection, product_local coverage
+  finishing  — metal/stone/unit field coverage per design,
+               metal/stone compatibility advisory, non-standard metal detection
   supplier   — completeness, wFirma integration, duplicate probability
   readiness  — cross-domain gap analysis, actionable blockers
 
@@ -25,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from ..core.config import settings
 from ..core.logging import get_logger
 from .customer_master_db import list_customers, init_db as cm_init
-from .master_data_db import list_designs, init_db as md_init
+from .master_data_db import list_designs, list_product_local, init_db as md_init
 from .suppliers_db import list_suppliers, init_db as supp_init
 
 log = get_logger(__name__)
@@ -281,6 +283,107 @@ def _score_customers(customers: List[Any]) -> DomainScore:
     )
 
 
+# ── Phase 5: Product / Finishing intelligence helpers ────────────────────────
+
+# Material vocabulary for description quality scoring
+_MATERIAL_WORDS: frozenset = frozenset({
+    "gold", "silver", "platinum", "palladium", "rhodium", "titanium",
+    "diamond", "pearl", "ruby", "emerald", "sapphire", "topaz", "amethyst",
+    "opal", "garnet", "aquamarine", "tourmaline", "turquoise", "coral",
+    "sterling", "white gold", "rose gold", "yellow gold", "zirconia", "cz",
+    "moissanite",
+})
+
+# Common jewellery type tokens that don't add description value
+_GENERIC_JEWELLERY_TOKENS: frozenset = frozenset({
+    "ring", "necklace", "bracelet", "earring", "pendant", "brooch",
+    "chain", "bangle", "stud", "hoop", "set", "collection",
+    "pierscien", "naszyjnik", "bransoletka", "kolczyki",
+})
+
+# High-value stones advisorily flagged in silver (not forbidden, just unusual)
+_SILVER_ADVISORY_STONES: frozenset = frozenset({
+    "diamond", "emerald", "ruby", "sapphire", "tanzanite", "alexandrite",
+})
+
+# Stone vocabulary for compatibility detection
+_STONE_KEYWORDS: frozenset = frozenset({
+    "diamond", "emerald", "ruby", "sapphire", "tanzanite", "alexandrite",
+    "pearl", "opal", "amethyst", "topaz", "garnet", "aquamarine",
+    "tourmaline", "peridot", "citrine", "spinel", "zircon", "zirconia",
+    "cz", "moissanite", "coral", "turquoise",
+})
+
+
+def _desc_quality(display_name: Optional[str]) -> str:
+    """Classify display_name description quality: 'none' | 'poor' | 'ok' | 'good'."""
+    if not display_name or not display_name.strip():
+        return "none"
+    s = display_name.strip()
+    if len(s) < 5:
+        return "poor"
+    tokens = set(_norm(s).split())
+    has_material = bool(tokens & _MATERIAL_WORDS)
+    is_long_enough = len(s) >= 10
+    if has_material and is_long_enough:
+        return "good"
+    if len(s) >= 5:
+        return "ok"
+    return "poor"
+
+
+def _design_near_duplicates(designs: List[Any]) -> List[DuplicateCluster]:
+    """Detect near-duplicate designs by normalized display_name."""
+    name_groups: Dict[str, List[str]] = {}
+    for d in designs:
+        name = getattr(d, "display_name", None)
+        if not name or not name.strip():
+            continue
+        # Normalize: lower, remove punctuation, strip generic jewellery tokens
+        tokens = set(_norm(name).split()) - _GENERIC_JEWELLERY_TOKENS
+        key = " ".join(sorted(tokens)) if tokens else _norm(name)
+        if key:
+            name_groups.setdefault(key, []).append(d.design_code)
+    clusters: List[DuplicateCluster] = []
+    for key, codes in name_groups.items():
+        if len(codes) > 1:
+            clusters.append(DuplicateCluster(
+                key=f"name:{key}", entity_keys=codes, probability=0.80,
+            ))
+    return clusters
+
+
+def _metal_stone_compat_warnings(designs: List[Any]) -> List[Dict[str, Any]]:
+    """Return advisory compatibility warnings for unusual metal/stone combinations.
+
+    Silver + high-value stones (diamond, emerald, ruby, sapphire) is flagged as
+    advisory-unusual because high-value stones are customarily set in gold/platinum.
+    This is NOT a blocking error — it may be intentional — but surfaces for review.
+    """
+    warnings: List[Dict[str, Any]] = []
+    for d in designs:
+        metal = getattr(d, "metal", None)
+        stone = getattr(d, "stone_summary", None)
+        if not metal or not stone:
+            continue
+        metal_norm = _norm(metal)
+        stone_lower = stone.lower()
+        if "silver" in metal_norm or "srebro" in metal_norm:
+            matched_stones = [s for s in _SILVER_ADVISORY_STONES if s in stone_lower]
+            if matched_stones:
+                warnings.append({
+                    "design_code": d.design_code,
+                    "metal": metal,
+                    "stone_indicator": stone[:60],
+                    "matched_advisory_stones": matched_stones,
+                    "advisory": (
+                        f"High-value stone ({', '.join(matched_stones)}) set in silver — "
+                        "typically set in gold/platinum; verify if intentional"
+                    ),
+                })
+    return warnings
+
+
 # ── Product domain (Designs) ──────────────────────────────────────────────────
 
 _PRODUCT_FIELDS: List[tuple] = [
@@ -297,7 +400,17 @@ _PRODUCT_TOTAL_WEIGHT = sum(w for _, _, w, _ in _PRODUCT_FIELDS)
 _HS_CODE_RE = re.compile(r"^\d{4,12}$")
 
 
-def _score_products(designs: List[Any]) -> DomainScore:
+def _score_products(
+    designs: List[Any],
+    product_locals: Optional[List[Any]] = None,
+) -> DomainScore:
+    """Score product domain.
+
+    Phase 5 additions (over Phase 4):
+    - description quality breakdown (none/poor/ok/good)
+    - near-duplicate detection by normalized display_name
+    - product_local coverage: % of designs with ProductLocal augmentation
+    """
     if not designs:
         return DomainScore(
             domain="product", entity_count=0,
@@ -308,10 +421,21 @@ def _score_products(designs: List[Any]) -> DomainScore:
             details={},
         )
 
+    product_locals = product_locals or []
+    pl_codes: frozenset = frozenset(
+        getattr(pl, "product_code", None) for pl in product_locals
+        if getattr(pl, "product_code", None)
+    )
+
     n = len(designs)
     field_missing: Dict[str, int] = {f: 0 for f, _, _, _ in _PRODUCT_FIELDS}
     per_entity_scores: List[float] = []
     invalid_hs: List[str] = []
+
+    # Phase 5: description quality counters
+    desc_quality_counts: Dict[str, int] = {"none": 0, "poor": 0, "ok": 0, "good": 0}
+    # Phase 5: product_local coverage
+    pl_linked: int = 0
 
     for d in designs:
         entity_score = 0.0
@@ -329,6 +453,17 @@ def _score_products(designs: List[Any]) -> DomainScore:
 
         per_entity_scores.append(min(1.0, entity_score / _PRODUCT_TOTAL_WEIGHT))
 
+        # Phase 5: description quality
+        dq = _desc_quality(getattr(d, "display_name", None))
+        desc_quality_counts[dq] += 1
+
+        # Phase 5: product_local coverage check
+        # Match on product_ref (design → wFirma product_code) or design_code
+        pref = getattr(d, "product_ref", None)
+        dcode = getattr(d, "design_code", None)
+        if (pref and pref in pl_codes) or (dcode and dcode in pl_codes):
+            pl_linked += 1
+
     completeness = sum(per_entity_scores) / n
     critical_missing_pct = sum(
         field_missing[f] for f, sev, _, _ in _PRODUCT_FIELDS if sev == "critical"
@@ -345,6 +480,9 @@ def _score_products(designs: List[Any]) -> DomainScore:
             ))
     gaps.sort(key=lambda g: ({"critical": 0, "important": 1, "optional": 2}[g.severity], -g.pct))
 
+    # Phase 5: near-duplicate clusters
+    dup_clusters = _design_near_duplicates(designs)
+
     recs: List[str] = []
     for g in [x for x in gaps if x.severity == "critical"][:2]:
         recs.append(
@@ -359,12 +497,35 @@ def _score_products(designs: List[Any]) -> DomainScore:
         recs.append(
             f"Add '{g.field}' to {g.affected_count} design(s) ({g.pct:.0f}%)"
         )
+    # Phase 5: description quality recommendation
+    poor_or_none = desc_quality_counts["none"] + desc_quality_counts["poor"]
+    if poor_or_none > 0:
+        recs.append(
+            f"{poor_or_none} design(s) have missing or very short display names — "
+            "improve for wFirma product registration and customs descriptions"
+        )
+    # Phase 5: product_local coverage recommendation
+    pl_coverage_pct = _pct(pl_linked, n)
+    if pl_coverage_pct < 50 and product_locals:
+        recs.append(
+            f"Only {pl_coverage_pct:.0f}% of designs have ProductLocal augmentation — "
+            "link designs to product_local records for HS code overrides and customs accuracy"
+        )
+    # Phase 5: near-duplicate advisory
+    if dup_clusters:
+        recs.append(
+            f"Review {len(dup_clusters)} near-duplicate design cluster(s) — "
+            "possible data entry duplication in Design Master"
+        )
 
     advisory = (
         f"{n} design(s) scored. "
         f"Completeness: {completeness:.0%}. "
-        f"HS code coverage: {_pct(n - field_missing.get('hs_code', 0), n):.0f}%."
+        f"HS code coverage: {_pct(n - field_missing.get('hs_code', 0), n):.0f}%. "
+        f"Description quality: {desc_quality_counts['good']} good / "
+        f"{desc_quality_counts['ok']} ok / {poor_or_none} poor-or-none."
         + (f" {len(invalid_hs)} malformed HS code(s)." if invalid_hs else "")
+        + (f" {len(dup_clusters)} near-duplicate cluster(s)." if dup_clusters else "")
     )
 
     return DomainScore(
@@ -372,7 +533,7 @@ def _score_products(designs: List[Any]) -> DomainScore:
         completeness_score=round(completeness, 3),
         confidence=round(confidence, 3),
         field_gaps=gaps,
-        duplicate_clusters=[],
+        duplicate_clusters=dup_clusters,
         advisory=advisory,
         recommendations=recs,
         details={
@@ -380,6 +541,10 @@ def _score_products(designs: List[Any]) -> DomainScore:
             "invalid_hs_code_count": len(invalid_hs),
             "missing_display_name_count": field_missing.get("display_name", 0),
             "missing_unit_count": field_missing.get("unit", 0),
+            # Phase 5 additions
+            "description_quality": desc_quality_counts,
+            "product_local_coverage_pct": round(pl_coverage_pct, 1),
+            "product_local_linked_count": pl_linked,
         },
     )
 
@@ -399,6 +564,12 @@ _KNOWN_METALS = {"gold", "silver", "platinum", "palladium", "rhodium", "titanium
 
 
 def _score_finishing(designs: List[Any]) -> DomainScore:
+    """Score finishing domain.
+
+    Phase 5 additions (over Phase 4):
+    - metal/stone compatibility warnings (silver + high-value stone advisory)
+    - stone coverage breakdown by stone keyword presence
+    """
     if not designs:
         return DomainScore(
             domain="finishing", entity_count=0,
@@ -413,6 +584,8 @@ def _score_finishing(designs: List[Any]) -> DomainScore:
     field_missing: Dict[str, int] = {f: 0 for f, _, _, _ in _FINISHING_FIELDS}
     per_entity_scores: List[float] = []
     non_standard_metals: List[str] = []
+    # Phase 5: stone coverage (designs with at least one recognized stone keyword)
+    has_stone_keyword: int = 0
 
     for d in designs:
         entity_score = 0.0
@@ -426,6 +599,13 @@ def _score_finishing(designs: List[Any]) -> DomainScore:
         metal = getattr(d, "metal", None)
         if metal and _norm(metal) not in _KNOWN_METALS:
             non_standard_metals.append(f"{d.design_code}:{metal}")
+
+        # Phase 5: stone keyword presence
+        stone = getattr(d, "stone_summary", None)
+        if stone:
+            stone_lower = stone.lower()
+            if any(kw in stone_lower for kw in _STONE_KEYWORDS):
+                has_stone_keyword += 1
 
         per_entity_scores.append(min(1.0, entity_score / _FINISHING_TOTAL_WEIGHT))
 
@@ -443,6 +623,9 @@ def _score_finishing(designs: List[Any]) -> DomainScore:
             ))
     gaps.sort(key=lambda g: ({"critical": 0, "important": 1, "optional": 2}[g.severity], -g.pct))
 
+    # Phase 5: metal/stone compatibility warnings
+    compat_warnings = _metal_stone_compat_warnings(designs)
+
     recs: List[str] = []
     for g in [x for x in gaps if x.severity == "critical"][:1]:
         recs.append(
@@ -459,11 +642,20 @@ def _score_finishing(designs: List[Any]) -> DomainScore:
             f"{stone_gap} design(s) missing stone_summary — "
             "fill for complete customs description generation"
         )
+    # Phase 5: compatibility advisory recommendation
+    if compat_warnings:
+        recs.append(
+            f"{len(compat_warnings)} design(s) have unusual metal/stone combinations — "
+            "review: " + "; ".join(
+                w["advisory"][:80] for w in compat_warnings[:2]
+            )
+        )
 
     advisory = (
         f"{n} design(s) scored for finishing completeness. "
         f"Metal coverage: {_pct(n - field_missing.get('metal', 0), n):.0f}%. "
         f"Stone summary coverage: {_pct(n - field_missing.get('stone_summary', 0), n):.0f}%."
+        + (f" {len(compat_warnings)} compatibility advisory flag(s)." if compat_warnings else "")
     )
 
     return DomainScore(
@@ -478,6 +670,9 @@ def _score_finishing(designs: List[Any]) -> DomainScore:
             "missing_metal_count": field_missing.get("metal", 0),
             "missing_stone_summary_count": field_missing.get("stone_summary", 0),
             "non_standard_metal_count": len(non_standard_metals),
+            # Phase 5 additions
+            "stone_keyword_coverage_count": has_stone_keyword,
+            "metal_stone_compat_warnings": compat_warnings,
         },
     )
 
@@ -706,6 +901,7 @@ def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceRepor
     """
     customers: List[Any] = []
     designs: List[Any] = []
+    product_locals: List[Any] = []
     suppliers: List[Any] = []
 
     try:
@@ -717,8 +913,9 @@ def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceRepor
     try:
         md_init(_MD_DB)
         designs = list_designs(_MD_DB, limit=5000)
+        product_locals = list_product_local(_MD_DB, limit=5000)
     except Exception as exc:
-        log.warning("[mdi] master_data (designs) read failed: %s", exc)
+        log.warning("[mdi] master_data (designs/product_locals) read failed: %s", exc)
 
     try:
         supp_init(_SUPP_DB)
@@ -727,7 +924,7 @@ def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceRepor
         log.warning("[mdi] suppliers read failed: %s", exc)
 
     customer_score = _score_customers(customers)
-    product_score  = _score_products(designs)
+    product_score  = _score_products(designs, product_locals=product_locals)
     finishing_score = _score_finishing(designs)
     supplier_score = _score_suppliers(suppliers)
     readiness_score = _score_readiness(
