@@ -39,7 +39,10 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **PZService restart required**: NO (no main.py, no route changes)
 - **Rollback**: git revert f749bb7 --no-edit + standard robocopy (safe -- no schema, no startup deps)
 - **Sprint 2 prerequisite**: PR #331 merged to main [DONE] + Sprint 1 deployed to production [PENDING operator instruction]
-- **Scorecard**: `.claude/memory/scorecards/2026-05-24-phase8-sprint1-intelligence-graph.md` -- 6 EXEMPLARY, 0 ACCEPTABLE, 0 NEEDS-TUNING (2026-05-24)
+- **Sprint 2 gate**: No Sprint 2 route work until Sprint 1 deployed. Explicitly enforced.
+- **Rollback SHA correction**: rollback SHA on main is c9c8418 (squash SHA), not f749bb7 (branch SHA)
+- **Scorecard (implementation)**: `.claude/memory/scorecards/2026-05-24-phase8-sprint1-intelligence-graph.md` -- 6 EXEMPLARY (2026-05-24)
+- **Scorecard (merge/blockers)**: `.claude/memory/scorecards/2026-05-24-phase8-sprint1-merge-blockers.md` -- 4 EXEMPLARY (2026-05-24)
 
 ---
 
