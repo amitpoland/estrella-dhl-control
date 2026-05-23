@@ -117,7 +117,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
   - `routes_mdi.py` → `C:\PZ\app\api\routes_mdi.py`
 - **PZService restart**: REQUIRED
 - **Deploy script**: `.claude/manifests/windows_deploy_958e914.ps1`
-- **Scorecard**: pending (fires after operator confirms deploy)
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase6-document-coverage-intelligence.md` — 5 EXEMPLARY, 2 ACCEPTABLE
 
 ---
 
