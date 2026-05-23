@@ -33,20 +33,20 @@ def test_settings_ai_parser_model_default_is_current_sonnet():
     )
 
 
-def test_ai_customs_parser_getattr_fallback_matches_settings_default():
-    """The hardcoded fallback in ai_customs_parser.py:82 must match the
-    Pydantic Settings default. Drift between the two declaration sites
-    is the failure mode this test prevents."""
+def test_ai_customs_parser_delegates_to_gateway():
+    """Phase 3 Proper: ai_customs_parser.py must delegate model selection to
+    ai_gateway.call(), not select a model locally. The old `model = getattr(...)`
+    pattern must not exist — model authority belongs to ai_gateway.py."""
     import inspect
     from app.services import ai_customs_parser
     src = inspect.getsource(ai_customs_parser)
-    expected_line = (
-        f'model = getattr(settings, "ai_parser_model", "{_EXPECTED_DEFAULT}")'
+    assert 'model = getattr(settings, "ai_parser_model"' not in src, (
+        "ai_customs_parser.py still contains local model selection — "
+        "model authority belongs to ai_gateway.py (Phase 3 Proper)."
     )
-    assert expected_line in src, (
-        f"ai_customs_parser.py getattr fallback drift: expected the "
-        f"fallback string {_EXPECTED_DEFAULT!r}. If the canonical default "
-        f"changed, update BOTH config.py:79 and ai_customs_parser.py:82."
+    assert "ai_gateway.call(" in src, (
+        "ai_customs_parser.py does not call ai_gateway.call() — "
+        "migration to Phase 3 Proper is incomplete."
     )
 
 

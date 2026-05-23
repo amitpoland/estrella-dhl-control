@@ -62,13 +62,24 @@ source files.
 | `polish_description_generator.py` | D | Description draft generator. | No |
 | `learning_agent.py`, `invoice_learning_agent.py` | R | Pattern learning from prior batches. | No |
 
-**Phase 1 additions (this PR):**
+**Phase 1 additions (PR #307, 2026-05-23):**
 
 | Path | Class | What it does | Touches `/execute`? |
 |---|---|---|---|
 | `service/app/services/ai_advisory.py` | R | Computes deterministic "why is this workflow blocked?" explanation from `batch_readiness`. | No |
 | `service/app/api/routes_ai_advisory.py` | R | Exposes `GET /api/v1/ai/advisory/workflow-blockers/{batch_id}`. | No |
 | `service/app/static/ai-advisory-v2.html` | R | Standalone V2-aligned page rendering the explanation. NOT a modification to V1. | No |
+
+**Pre-existing LLM services (retroactively classified 2026-05-23):**
+
+These existed on main before Phase 1 and have active Anthropic API calls.
+They are Class-R and within T3 token budget. They are missing a Rule 8 call-log.
+Remediation: wire both into `ai_call_ledger.py` by Phase 3 close.
+
+| Path | Class | Model | max_tokens | What it does | Touches `/execute`? |
+|---|---|---|---|---|---|
+| `service/app/services/ai_customs_parser.py` | R | claude-sonnet-4-6 | 2000 | Customs PDF parsing fallback when deterministic parser fails. | No |
+| `service/app/services/ai_customs_evidence.py` | R | claude-sonnet-4-6 | 1500 | Customs evidence extraction from documents. | No |
 
 ---
 
@@ -157,16 +168,18 @@ the LLM lands:
 
 ## 9. Phase plan
 
-- **Phase 1 (this PR)** — Capability map (this file), `ai_advisory` service
-  skeleton, read-only `workflow-blockers` endpoint, standalone V2 page,
-  no-write proof tests, PROJECT_STATE.md governance note.
-- **Phase 2** — Wire LLM into `ai_advisory.synthesise_explanation()` behind a
-  feature flag. Add prompt-injection mitigations. Add ai-call ledger.
-- **Phase 3** — Extend advisory to anomaly detection (read-only).
-- **Phase 4** — Extend advisory to document analysis. Reuse existing
-  `ai_customs_*` services rather than parallel implementations.
-- **Phase 5** — Natural-language search over timeline/audit (read-only).
-- **Phase 6** — Operator-approved action AI: extend
-  `routes_action_proposals.py`, do not bypass.
+Full roadmap detail: `docs/ai-governance/ai-roadmap-phase2-to-phase10.md`
+
+- **Phase 1 — CLOSED, live on production** (SHA 74ff7a8, 2026-05-23). Capability map, advisory skeleton, read-only endpoint, V2 page, no-write tests, token-budget policy, API fallback policy.
+- **Phase 2** — Wire LLM into `ai_advisory.synthesise_explanation()` behind `ai_advisory_llm_enabled` flag. Add Rule 8 call-log. Class-R, Haiku only, $1/day ceiling.
+- **Phase 3** — Centralize call-log into `ai_call_ledger.py`. Retrofit pre-existing LLM services (ai_customs_parser, ai_customs_evidence). In-process cache.
+- **Phase 4** — Customer Master Intelligence. VAT/EU VAT advisory, completeness scoring, duplicate candidate detection. Class-A, new V2 page.
+- **Phase 5** — Product / Finishing Intelligence. Description quality, missing metal/stone/carat fields, wfirma_product_id sync gaps. Class-A.
+- **Phase 6** — Document Intelligence. Invoice/packing mismatch advisory, SAD/ZC429 gap explanation. Extends ai_customs_*. Class-R+A. Rule 9 (no raw PDF) mandatory.
+- **Phase 7** — Natural-language search over timeline/audit. Class-R, dashboard-v2 dependency.
+- **Phase 8** — Action Proposal Advisor. Class-X. Proposes wfirma_create/dhl_send_reply/closure_confirm via routes_action_proposals.py. NEVER calls execute_action directly.
+- **Phase 9** — Operations Assistant. Management summaries. Class-A. No PII in prompts.
+- **Phase 10** — Controlled optimization and forecasting. Class-A analytics only. No automated decisions.
 
 No phase relaxes §6.
+Each phase ships disabled-by-default, behind a config flag, with its own PR and 7-agent deploy gate.

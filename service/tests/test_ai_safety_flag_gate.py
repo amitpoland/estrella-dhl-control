@@ -183,7 +183,9 @@ def test_no_api_call_when_evidence_disabled():
 
 def test_parse_with_ai_enabled_path_returns_dict(tmp_path):
     """When ai_parser_enabled=True and API key present, parse_with_ai
-    proceeds to the API call and returns a dict on success."""
+    proceeds to the gateway call and returns a dict on success.
+    Phase 3 Proper: model selection is owned by ai_gateway — we mock at
+    the gateway boundary, not at the anthropic boundary."""
     import json
     from app.services import ai_customs_parser
 
@@ -191,7 +193,6 @@ def test_parse_with_ai_enabled_path_returns_dict(tmp_path):
     config_mod = MagicMock()
     config_mod.settings = fake_settings
 
-    # Stub out PDF text extraction
     fake_extracted = "MRN: 26PL12345 DUTY PLN 1000"
 
     ai_response_payload = json.dumps({
@@ -214,33 +215,30 @@ def test_parse_with_ai_enabled_path_returns_dict(tmp_path):
         "b00_payment_method": None,
     })
 
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=ai_response_payload)]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_response
-    mock_anthropic = MagicMock()
-    mock_anthropic.Anthropic.return_value = mock_client
+    mock_gateway = MagicMock()
+    mock_gateway.call.return_value = ai_response_payload
 
     dummy_pdf = tmp_path / "doc.pdf"
     dummy_pdf.write_bytes(b"%PDF")
 
-    with patch.dict("sys.modules", {
-        "app.core.config": config_mod,
-        "anthropic": mock_anthropic,
-    }), patch.object(ai_customs_parser, "_extract_pdf_text", return_value=fake_extracted):
-        result = ai_customs_parser.parse_with_ai(str(dummy_pdf))
+    with patch.dict("sys.modules", {"app.core.config": config_mod}):
+        with patch("app.services.ai_gateway", mock_gateway, create=True):
+            with patch.object(ai_customs_parser, "_extract_pdf_text", return_value=fake_extracted):
+                result = ai_customs_parser.parse_with_ai(str(dummy_pdf))
 
     assert isinstance(result, dict)
     assert result.get("mrn") == "26PL12345"
     assert "_ai_meta" in result
-    mock_client.messages.create.assert_called_once()
+    mock_gateway.call.assert_called_once()
 
 
 # ── Test 6: Enabled path still works (extract_customs_evidence) ──────────────
 
 def test_extract_customs_evidence_enabled_path_returns_dict():
     """When ai_parser_enabled=True and API key present,
-    extract_customs_evidence proceeds to the API call and returns a dict."""
+    extract_customs_evidence proceeds to the gateway call and returns a dict.
+    Phase 3 Proper: model selection is owned by ai_gateway — we mock at
+    the gateway boundary, not at the anthropic boundary."""
     import json
     from app.services import ai_customs_evidence
 
@@ -260,27 +258,21 @@ def test_extract_customs_evidence_enabled_path_returns_dict():
         "evidence": ["088/2026-2027 found on page 1"],
     })
 
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=ai_response_payload)]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_response
-    mock_anthropic = MagicMock()
-    mock_anthropic.Anthropic.return_value = mock_client
+    mock_gateway = MagicMock()
+    mock_gateway.call.return_value = ai_response_payload
 
-    with patch.dict("sys.modules", {
-        "app.core.config": config_mod,
-        "anthropic": mock_anthropic,
-    }):
-        result = ai_customs_evidence.extract_customs_evidence(
-            "document text with invoice 088/2026-2027",
-            document_hint="ZC429",
-        )
+    with patch("app.services.ai_customs_evidence._provider_available", return_value=True):
+        with patch("app.services.ai_gateway", mock_gateway, create=True):
+            result = ai_customs_evidence.extract_customs_evidence(
+                "document text with invoice 088/2026-2027",
+                document_hint="ZC429",
+            )
 
     assert isinstance(result, dict)
     assert result.get("confidence") == "high"
     assert "088/2026-2027" in result.get("invoice_refs", [])
     assert "_ai_meta" in result
-    mock_client.messages.create.assert_called_once()
+    mock_gateway.call.assert_called_once()
 
 
 # ── Test 7: Disabled even when api_key is present (regression guard) ──────────

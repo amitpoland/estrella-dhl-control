@@ -83,8 +83,6 @@ def parse_with_ai(
         log.debug("[ai_parser] ai_parser_enabled=False — AI parsing disabled by config")
         return None
 
-    model = getattr(settings, "ai_parser_model", "claude-sonnet-4-6")
-
     # Extract text from PDF
     pdf_text = _extract_pdf_text(file_path)
     if not pdf_text:
@@ -101,22 +99,29 @@ def parse_with_ai(
 
     user_msg = f"Extract customs data from this document:{focus_hint}\n\n---\n{pdf_text[:8000]}"
 
-    # Call Anthropic API
+    # Call via AI Gateway (single authority — no direct Anthropic client here)
     try:
-        import anthropic
+        from . import ai_gateway  # noqa: PLC0415
 
-        client = anthropic.Anthropic(api_key=api_key)
         t0 = time.monotonic()
-
-        response = client.messages.create(
-            model=model,
-            max_tokens=2000,
+        raw_text = ai_gateway.call(
             system=system,
-            messages=[{"role": "user", "content": user_msg}],
+            user=user_msg,
+            task_type="customs_extraction",
+            service_name="ai_customs_parser",
+            object_id=Path(file_path).name,
+            complexity="moderate",
+            risk_level="medium",
+            context_size=len(pdf_text),
+            confidence_score=1.0,
+            max_tokens=2000,
         )
-
         elapsed_ms = int((time.monotonic() - t0) * 1000)
-        raw_text = response.content[0].text.strip()
+
+        if raw_text is None:
+            return None
+
+        raw_text = raw_text.strip()
 
         # Parse JSON response
         import json
@@ -140,7 +145,6 @@ def parse_with_ai(
 
         parsed["_ai_meta"] = {
             "confidence":        confidence,
-            "model":             model,
             "fields_extracted":  fields_extracted,
             "fields_null":       fields_null,
             "extraction_time_ms": elapsed_ms,
@@ -151,9 +155,6 @@ def parse_with_ai(
 
         return parsed
 
-    except ImportError:
-        log.error("[ai_parser] anthropic package not installed — pip install anthropic")
-        return None
     except Exception as e:
         log.error("[ai_parser] API call failed: %s", e)
         return None
