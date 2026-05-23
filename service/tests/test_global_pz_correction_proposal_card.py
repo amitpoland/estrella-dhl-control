@@ -5,16 +5,23 @@ Source-grep tests for GlobalPZCorrectionProposalCard in shipment-detail.html.
 Coverage:
   - Component defined in shipment-detail.html
   - Component rendered in PZ / Accounting tab, after GlobalPZLineageCard
-  - Endpoint path is GET-only (no POST/PUT/DELETE in component)
+  - Proposal endpoint path is GET (correction-proposal)
+  - Execution endpoint path is POST (correction-execute)
   - data-testid attributes present for all key UI elements
-  - Read-only label present: "Read-only proposal · no wFirma mutation"
-  - All option buttons carry `disabled` attribute
-  - ALIGN_TO_AUTHORITY button shows disabled reason "Execution endpoint not available"
-  - SPLIT_TO_STYLE_LEVEL button shows disabled reason "Preview only"
+  - "No wFirma mutation" label present (no direct wFirma calls)
+  - Action buttons are enabled with onClick handlers (not statically disabled)
+  - Inline confirmation modal present (data-testid="global-pz-correction-confirm-modal")
+  - Reason input field present (data-testid="global-pz-correction-reason-input")
+  - Confirm/cancel buttons present
+  - Execution disabled while executing (reason.trim() guard)
   - CANCEL_AND_RECREATE is filtered from options (never rendered)
   - Non-global suppression: is_global_supplier gate present, returns null
+  - 404 → return null silently
   - No wFirma import or mutation call within component body
-  - No frontend POST/mutation call within component body
+  - No pz_create or pz_cancel call within component body
+  - KEEP_CURRENT affirmative notice present
+  - Stats fields (current_pz_line_count, authority_row_count, lineage_link_count)
+  - Risk level rendered per option
 """
 from __future__ import annotations
 
@@ -59,8 +66,8 @@ def test_correction_proposal_card_rendered_in_pz_tab():
 def test_correction_proposal_card_placed_after_lineage_card():
     """Card must appear after GlobalPZLineageCard in the tab markup."""
     src = _HTML.read_text(encoding="utf-8")
-    tab_start   = src.find("activeTab === 'PZ / Accounting'")
-    lineage_idx = src.find("<GlobalPZLineageCard", tab_start)
+    tab_start    = src.find("activeTab === 'PZ / Accounting'")
+    lineage_idx  = src.find("<GlobalPZLineageCard", tab_start)
     proposal_idx = src.find("<GlobalPZCorrectionProposalCard", tab_start)
     assert lineage_idx > 0,  "GlobalPZLineageCard JSX not found in PZ/Accounting tab"
     assert proposal_idx > 0, "GlobalPZCorrectionProposalCard JSX not found in PZ/Accounting tab"
@@ -69,7 +76,7 @@ def test_correction_proposal_card_placed_after_lineage_card():
     )
 
 
-# ── 3. Endpoint path and method ──────────────────────────────────────────────
+# ── 3. Endpoint paths ─────────────────────────────────────────────────────────
 
 def test_correction_proposal_endpoint_path():
     body = _card_body()
@@ -78,24 +85,31 @@ def test_correction_proposal_endpoint_path():
     )
 
 
-def test_correction_proposal_no_post_in_component():
-    """Component must not make any mutating fetch calls."""
+def test_correction_execute_endpoint_path():
     body = _card_body()
-    # method:'POST' or method:"POST" must not appear in the component
-    assert "method:'POST'" not in body
-    assert 'method:"POST"' not in body
-    assert "method: 'POST'" not in body
-    assert 'method: "POST"' not in body
+    assert "/correction-execute" in body, (
+        "Component must POST to /api/v1/pz/lineage/{batchId}/correction-execute"
+    )
 
 
-def test_correction_proposal_no_mutation_fetch():
-    """Fetch inside the component must use GET only (default when no method given)."""
+def test_correction_execute_uses_post_method():
+    """Execution fetch must use POST method."""
     body = _card_body()
-    # The fetch call must reference the correction-proposal endpoint
-    fetch_idx = body.find("/correction-proposal")
-    assert fetch_idx > 0
-    # Slice a window around the fetch call to confirm no 'POST' appears nearby
-    window = body[max(0, fetch_idx - 200): fetch_idx + 200]
+    exec_idx = body.find("/correction-execute")
+    assert exec_idx > 0, "correction-execute endpoint not found"
+    # Inspect the window around the execute fetch call
+    window = body[max(0, exec_idx - 300): exec_idx + 100]
+    assert "POST" in window, (
+        "Fetch to correction-execute must use method: 'POST'"
+    )
+
+
+def test_correction_proposal_fetch_is_get():
+    """Proposal fetch must NOT use POST (default GET is correct)."""
+    body = _card_body()
+    proposal_idx = body.find("/correction-proposal")
+    assert proposal_idx > 0
+    window = body[max(0, proposal_idx - 200): proposal_idx + 200]
     assert "POST" not in window, (
         "Fetch to correction-proposal endpoint must not use POST method"
     )
@@ -133,48 +147,82 @@ def test_correction_proposal_refresh_button_testid():
     assert 'data-testid="global-pz-correction-refresh"' in body
 
 
-# ── 5. Read-only label ────────────────────────────────────────────────────────
-
-def test_correction_proposal_readonly_label_present():
+def test_correction_proposal_confirm_modal_testid():
     body = _card_body()
-    assert "Read-only proposal · no wFirma mutation" in body, (
-        "Component must display 'Read-only proposal · no wFirma mutation'"
+    assert 'data-testid="global-pz-correction-confirm-modal"' in body, (
+        "Inline confirmation panel must have data-testid='global-pz-correction-confirm-modal'"
     )
 
 
-# ── 6. All option buttons are disabled ───────────────────────────────────────
-
-def test_correction_proposal_buttons_all_disabled():
-    """Every action button in the options list must carry the disabled attribute."""
+def test_correction_proposal_reason_input_testid():
     body = _card_body()
-    # The option button pattern uses `button disabled` in JSX
-    assert "button disabled" in body, (
-        "All option buttons must render with the disabled attribute"
-    )
-    # Confirm no enabled button targets wFirma or mutating verbs
-    assert 'onClick={' not in body or 'refresh' in body, (
-        "No onClick handler may fire a mutation — only refresh is allowed"
+    assert 'data-testid="global-pz-correction-reason-input"' in body, (
+        "Reason textarea must have data-testid='global-pz-correction-reason-input'"
     )
 
 
-def test_correction_proposal_align_button_disabled_reason():
+def test_correction_proposal_confirm_btn_testid():
     body = _card_body()
-    assert "Execution endpoint not available" in body, (
-        "ALIGN_TO_AUTHORITY option must display 'Execution endpoint not available'"
+    assert 'data-testid="global-pz-correction-confirm-btn"' in body, (
+        "Confirm execution button must have data-testid='global-pz-correction-confirm-btn'"
     )
 
 
-def test_correction_proposal_split_button_disabled_reason():
+def test_correction_proposal_cancel_btn_testid():
     body = _card_body()
-    assert "Preview only" in body, (
-        "SPLIT_TO_STYLE_LEVEL option must display 'Preview only'"
+    assert 'data-testid="global-pz-correction-cancel-btn"' in body, (
+        "Cancel button must have data-testid='global-pz-correction-cancel-btn'"
     )
 
 
-def test_correction_proposal_keep_current_disabled_reason():
+def test_correction_proposal_result_testid():
     body = _card_body()
-    assert "Acknowledgement endpoint not yet available" in body, (
-        "KEEP_CURRENT button must explain it is disabled: 'Acknowledgement endpoint not yet available'"
+    assert 'data-testid="global-pz-correction-result"' in body, (
+        "Execution result banner must have data-testid='global-pz-correction-result'"
+    )
+
+
+# ── 5. No wFirma mutation label ───────────────────────────────────────────────
+
+def test_correction_proposal_no_wfirma_mutation_label():
+    body = _card_body()
+    assert "No wFirma mutation" in body, (
+        "Component must display 'No wFirma mutation' label"
+    )
+
+
+def test_correction_proposal_local_staging_label():
+    body = _card_body()
+    assert "local staging only" in body or "local pz_rows" in body, (
+        "Component must clarify that execution targets local staging only"
+    )
+
+
+# ── 6. Buttons are enabled with onClick handlers ──────────────────────────────
+
+def test_correction_proposal_buttons_have_onclick():
+    """Action buttons must have onClick handlers (not statically disabled)."""
+    body = _card_body()
+    assert "onClick={() => setConfirmOpt" in body, (
+        "Option buttons must have onClick handlers that open confirmation"
+    )
+
+
+def test_correction_proposal_confirm_btn_calls_handleExecute():
+    body = _card_body()
+    assert "onClick={handleExecute}" in body, (
+        "Confirm execution button must call handleExecute"
+    )
+
+
+def test_correction_proposal_executing_guard():
+    """Confirm button must be disabled while executing."""
+    body = _card_body()
+    assert "executing" in body, (
+        "Component must track executing state to prevent double-submit"
+    )
+    assert "reason.trim()" in body, (
+        "Confirm button must be disabled when reason is empty"
     )
 
 
@@ -183,7 +231,6 @@ def test_correction_proposal_keep_current_disabled_reason():
 def test_correction_proposal_cancel_and_recreate_filtered():
     """CANCEL_AND_RECREATE must be filtered out of the rendered option list."""
     body = _card_body()
-    # The filter must exclude CANCEL_AND_RECREATE
     assert "CANCEL_AND_RECREATE" in body, (
         "CANCEL_AND_RECREATE filter must be present in the component"
     )
@@ -202,7 +249,6 @@ def test_correction_proposal_suppressed_for_non_global():
     global_cond_idx = body.find("is_global_supplier")
     assert global_cond_idx > 0
     # Find the `return null` that comes AFTER the is_global_supplier check
-    # (there may be an earlier `return null` from the 404 path — ignore that one)
     null_guard_idx = body.find("return null", global_cond_idx)
     assert null_guard_idx > 0, (
         "Component must return null after is_global_supplier check for non-global batches"
@@ -231,11 +277,10 @@ def test_correction_proposal_suppresses_404_silently():
 def test_correction_proposal_no_wfirma_call():
     """Component must not make any wFirma API call.
 
-    The UI label 'no wFirma mutation' contains 'wfirma' in lowercase — that is
-    intentional documentation.  We check for actual API call patterns only.
+    The UI label 'No wFirma mutation' contains 'wFirma' — intentional documentation.
+    We check for actual API call patterns only.
     """
     body = _card_body()
-    # These are the real wFirma mutation patterns — none must appear
     forbidden = [
         "wfirma_create", "wfirma_cancel", "wfirma_post",
         "wfirma_update", "wfirma_delete",
@@ -302,4 +347,40 @@ def test_correction_proposal_risk_level_rendered():
     )
     assert 'data-testid={`global-pz-correction-risk-${opt.option_id}`}' in body, (
         "Risk badge must carry a testid per option"
+    )
+
+
+# ── 13. Execution result display ─────────────────────────────────────────────
+
+def test_correction_proposal_already_executed_message():
+    body = _card_body()
+    assert "already_executed" in body, (
+        "Component must handle already_executed flag in execution result"
+    )
+    assert "Already executed" in body, (
+        "Component must display 'Already executed' message when result.already_executed"
+    )
+
+
+def test_correction_proposal_result_shows_line_counts():
+    body = _card_body()
+    assert "pre_line_count" in body and "post_line_count" in body, (
+        "Execution result must show pre_line_count and post_line_count"
+    )
+
+
+# ── 14. Confirmation panel content ───────────────────────────────────────────
+
+def test_correction_proposal_confirm_explains_no_wfirma():
+    body = _card_body()
+    # Confirmation panel must warn operator about no wFirma calls
+    assert "No wFirma calls" in body or "no wFirma" in body.lower(), (
+        "Confirmation panel must clarify no wFirma calls are made"
+    )
+
+
+def test_correction_proposal_confirm_explains_backup():
+    body = _card_body()
+    assert "backup" in body.lower(), (
+        "Confirmation panel must mention automatic backup"
     )

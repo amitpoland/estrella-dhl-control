@@ -723,6 +723,101 @@ def global_pz_correction_proposal(batch_id: str) -> Dict[str, Any]:
     return d
 
 
+# ── Global PZ correction execution ───────────────────────────────────────────
+
+class CorrectionExecuteRequest(BaseModel):
+    option_id:       str
+    operator_reason: str
+
+
+@router.post("/pz/lineage/{batch_id}/correction-execute", dependencies=[_auth])
+def global_pz_correction_execute(
+    batch_id: str,
+    body: CorrectionExecuteRequest,
+) -> Dict[str, Any]:
+    """Governed execution of a Global PZ correction option.
+
+    Execution target: LOCAL pz_rows.json only.
+    No wFirma API calls.  wFirma push is a separate, downstream operator step.
+
+    Safety properties (Lesson E compliance):
+      1. Execution-time validation  -- option_id and pz_rows validated here.
+      2. Idempotency                -- correction_execution_record.json checked
+                                       before any write.
+      3. Terminal-state suppression -- is_global_supplier gate enforced here
+                                       before calling the service.
+      4. Replay safety              -- backup + record written atomically.
+      5. No direct wFirma calls     -- only the existing PZ pipeline calls wFirma.
+    """
+    import dataclasses  # noqa: PLC0415
+
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    # --- Terminal-state suppression: Global supplier gate ---
+    if not _is_global_batch(batch_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Correction execution is only available for Global Jewellery batches.",
+        )
+
+    # --- Re-derive proposed_lines server-side ---
+    inv_pdf  = _find_source_pdf(batch_id, "invoices")
+    pack_pdf = _find_source_pdf(batch_id, "packing")
+    if not inv_pdf or not pack_pdf:
+        raise HTTPException(
+            status_code=422,
+            detail="Source PDFs not found; cannot re-derive correction proposal.",
+        )
+
+    try:
+        from ..services.global_invoice_position_parser import (  # noqa: PLC0415
+            parse_invoice_positions_from_pdf,
+        )
+        from ..services.global_packing_parser import parse_global_packing_pdf  # noqa: PLC0415
+        from ..services.global_pz_lineage import build_global_pz_lineage  # noqa: PLC0415
+        from ..services.global_pz_correction import build_correction_proposal  # noqa: PLC0415
+        from ..services.global_pz_execution import execute_correction_option  # noqa: PLC0415
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=f"correction modules unavailable: {exc}")
+
+    try:
+        positions = parse_invoice_positions_from_pdf(inv_pdf)
+        pack_rows, *_ = parse_global_packing_pdf(pack_pdf)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"parse failed: {exc}")
+
+    invoice_no     = _extract_invoice_no(inv_pdf)
+    pz_rows        = _load_pz_rows_from_file(batch_id)
+    authority_rows = _load_authority_rows_from_audit(batch_id)
+    lineage_result = build_global_pz_lineage(positions, pack_rows, None, invoice_no)
+
+    proposal = build_correction_proposal(
+        batch_id=batch_id,
+        invoice_no=invoice_no,
+        lineage_result=lineage_result,
+        pz_rows=pz_rows,
+        authority_rows=authority_rows,
+    )
+
+    # Extract ProposedLine list from the re-derived proposal
+    proposed_lines = proposal.proposed_lines
+
+    # --- Execute ---
+    result = execute_correction_option(
+        batch_id=batch_id,
+        option_id=body.option_id,
+        operator_reason=body.operator_reason,
+        proposed_lines=proposed_lines,
+        storage_root=settings.storage_root,
+    )
+
+    if not result.ok:
+        raise HTTPException(status_code=422, detail=result.error or "Execution failed.")
+
+    return dataclasses.asdict(result)
+
+
 # ── File download ─────────────────────────────────────────────────────────────
 
 @router.get("/files/{batch_id}/source/{category}/{filename}", dependencies=[_auth])
