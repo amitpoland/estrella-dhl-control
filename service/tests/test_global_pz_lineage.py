@@ -1009,3 +1009,274 @@ class TestConfidenceReasons:
         link = next(lk for lk in r.position_links if lk.position_no == 7)
         # FULL qty match but via OCR fallback — reason should note this
         assert "OCR" in link.confidence_reason or "fallback" in link.confidence_reason.lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# V2 — Style-code item-type classifier
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+from app.services.global_pz_lineage import classify_item_type_from_style  # noqa: E402
+
+
+class TestClassifyItemTypeFromStyle:
+    """classify_item_type_from_style() maps Global Jewellery design_no patterns."""
+
+    def test_jbg_bangle(self):
+        assert classify_item_type_from_style("JBG01234") == "BANGLE"
+
+    def test_jbr_bracelet(self):
+        assert classify_item_type_from_style("JBR00377") == "BRACELET"
+
+    def test_j_digits_e_earring(self):
+        assert classify_item_type_from_style("J3604E00489") == "EARRING"
+
+    def test_cste_earring(self):
+        assert classify_item_type_from_style("CSTE00123") == "EARRING"
+
+    def test_j_digits_p_pendant(self):
+        assert classify_item_type_from_style("J3604P00200") == "PENDANT"
+
+    def test_jp_pendant(self):
+        assert classify_item_type_from_style("JP00567") == "PENDANT"
+
+    def test_cstp_pendant(self):
+        assert classify_item_type_from_style("CSTP00789") == "PENDANT"
+
+    def test_jr_ring(self):
+        assert classify_item_type_from_style("JR08296") == "RING"
+
+    def test_j_digits_r_ring(self):
+        assert classify_item_type_from_style("J3609R0517") == "RING"
+
+    def test_cstr_ring(self):
+        assert classify_item_type_from_style("CSTR04910") == "RING"
+
+    def test_r_digits_ring(self):
+        assert classify_item_type_from_style("R12163-A") == "RING"
+
+    def test_ca_digits_ring(self):
+        assert classify_item_type_from_style("CA0148EH") == "RING"
+
+    def test_gl_digits_ring(self):
+        assert classify_item_type_from_style("GL4058") == "RING"
+
+    def test_jbr_not_ring(self):
+        assert classify_item_type_from_style("JBR00377") != "RING"
+
+    def test_jbg_not_bracelet(self):
+        assert classify_item_type_from_style("JBG01234") != "BRACELET"
+
+    def test_empty_returns_none(self):
+        assert classify_item_type_from_style("") is None
+
+    def test_none_returns_none(self):
+        assert classify_item_type_from_style(None) is None  # type: ignore[arg-type]
+
+    def test_unknown_code_returns_none(self):
+        assert classify_item_type_from_style("XYZ999") is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# V2 — Unit-price scoring: ring disambiguation regression test
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestV2UnitPriceDisambiguation:
+    """V2 must route packing rows to the position whose expected unit rate
+    best matches the row's actual unit_price — not just the first with budget.
+
+    Regression: AWB 4789974092 pos=4 RING (rate≈$7) vs pos=5 RING (rate≈$80).
+    Greedy V1 would assign expensive rows to pos=4 first (it has budget).
+    V2 scoring must route them to pos=5 instead.
+    """
+
+    def _ring_positions(self):
+        """Two RING positions with the same stone family, different unit rates."""
+        cheap = _make_invoice_position(
+            4, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 2.0, "amount": 14.56}],   # rate ≈ $7.28
+        )
+        expensive = _make_invoice_position(
+            5, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 2.0, "amount": 161.0}],   # rate ≈ $80.50
+        )
+        return [cheap, expensive]
+
+    def test_expensive_ring_assigned_to_high_rate_position(self):
+        """A $81 ring must land in pos=5 (rate≈$80.50), not pos=4 (rate≈$7)."""
+        positions = self._ring_positions()
+        packing = [
+            _make_packing_row(1, "Ring", "925 SILVER", "CZ Round Shape 38", fob=6.0, design_no="JR05588"),
+            _make_packing_row(2, "Ring", "925 SILVER", "CZ Round Shape 38", fob=7.0, design_no="JR07980"),
+            _make_packing_row(3, "Ring", "925 SILVER", "CZ Round Shape 38", fob=81.0, design_no="JR08296"),
+            _make_packing_row(4, "Ring", "925 SILVER", "CZ Round Shape 38", fob=80.0, design_no="JR08297"),
+        ]
+        r = build_global_pz_lineage(positions, packing)
+
+        pos4_link = next(lk for lk in r.position_links if lk.position_no == 4)
+        pos5_link = next(lk for lk in r.position_links if lk.position_no == 5)
+
+        # Expensive rows (serials 3, 4) must go to pos=5
+        assert 3 in pos5_link.packing_serials, "sr=3 ($81) must be in pos=5 (rate≈$80.50)"
+        assert 4 in pos5_link.packing_serials, "sr=4 ($80) must be in pos=5 (rate≈$80.50)"
+        # Cheap rows (serials 1, 2) must go to pos=4
+        assert 1 in pos4_link.packing_serials, "sr=1 ($6) must be in pos=4 (rate≈$7.28)"
+        assert 2 in pos4_link.packing_serials, "sr=2 ($7) must be in pos=4 (rate≈$7.28)"
+
+    def test_cheap_ring_not_stolen_from_correct_position(self):
+        """Cheap rows must land in the low-rate position, not the high-rate one."""
+        positions = self._ring_positions()
+        packing = [
+            _make_packing_row(1, "Ring", "925 SILVER", "CZ Round Shape 38", fob=7.0, design_no="JR07980"),
+            _make_packing_row(2, "Ring", "925 SILVER", "CZ Round Shape 38", fob=6.5, design_no="JR05588"),
+            _make_packing_row(3, "Ring", "925 SILVER", "CZ Round Shape 38", fob=80.0, design_no="JR08297"),
+            _make_packing_row(4, "Ring", "925 SILVER", "CZ Round Shape 38", fob=81.0, design_no="JR08296"),
+        ]
+        r = build_global_pz_lineage(positions, packing)
+
+        pos4_link = next(lk for lk in r.position_links if lk.position_no == 4)
+        pos5_link = next(lk for lk in r.position_links if lk.position_no == 5)
+
+        assert 1 in pos4_link.packing_serials
+        assert 2 in pos4_link.packing_serials
+        assert 3 in pos5_link.packing_serials
+        assert 4 in pos5_link.packing_serials
+
+    def test_both_positions_full_when_prices_match(self):
+        """With 4 correctly priced rows (2 cheap + 2 expensive), both positions FULL."""
+        positions = self._ring_positions()
+        packing = [
+            _make_packing_row(1, "Ring", "925 SILVER", "CZ Round Shape 38", fob=7.0, design_no="JR01"),
+            _make_packing_row(2, "Ring", "925 SILVER", "CZ Round Shape 38", fob=8.0, design_no="JR02"),
+            _make_packing_row(3, "Ring", "925 SILVER", "CZ Round Shape 38", fob=81.0, design_no="JR03"),
+            _make_packing_row(4, "Ring", "925 SILVER", "CZ Round Shape 38", fob=80.0, design_no="JR04"),
+        ]
+        r = build_global_pz_lineage(positions, packing)
+
+        pos4_link = next(lk for lk in r.position_links if lk.position_no == 4)
+        pos5_link = next(lk for lk in r.position_links if lk.position_no == 5)
+        assert pos4_link.match_status == "FULL"
+        assert pos5_link.match_status == "FULL"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# V2 — Allocation confidence and evidence
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestV2AllocationConfidence:
+    """V2 must populate allocation_confidence on every assigned link."""
+
+    def test_strong_price_match_yields_high_confidence(self):
+        """A single unambiguous position with price within 10% → HIGH confidence."""
+        pos = [_make_invoice_position(
+            1, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 2.0, "amount": 160.0}],  # rate = $80
+        )]
+        packing = [
+            _make_packing_row(1, "Ring", "925 SILVER", "CZ Round Shape 38",
+                              fob=81.0, design_no="JR08296"),
+            _make_packing_row(2, "Ring", "925 SILVER", "CZ Round Shape 38",
+                              fob=80.0, design_no="JR08297"),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        link = r.position_links[0]
+        assert link.allocation_confidence == "HIGH"
+        assert "PRICE_MATCH" in link.allocation_reason_codes
+
+    def test_empty_link_has_empty_confidence(self):
+        """Unassigned (EMPTY) link must have allocation_confidence=''."""
+        pos = [
+            _make_invoice_position(
+                1, "PCS", "925 Silver", "CZ Stud Jewellery",
+                [{"type": "Ring", "qty": 2.0, "amount": 20.0}],
+            ),
+            _make_invoice_position(
+                2, "PCS", "09KT Gold", "Lab Grown Diamond Jewellery",
+                [{"type": "Bracelet", "qty": 1.0, "amount": 500.0}],
+            ),
+        ]
+        packing = [
+            _make_packing_row(1, "Ring", "925 SILVER", "CZ Round Shape 38", fob=10.0),
+            _make_packing_row(2, "Ring", "925 SILVER", "CZ Round Shape 38", fob=10.0),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        empty_links = [lk for lk in r.position_links if lk.match_status == "EMPTY"]
+        for lk in empty_links:
+            assert lk.allocation_confidence == "", (
+                f"EMPTY link pos{lk.position_no} should have empty confidence"
+            )
+
+    def test_confidence_is_not_empty_when_rows_assigned(self):
+        """Any link with packing rows must have a non-empty allocation_confidence."""
+        pos = [_make_invoice_position(
+            1, "PCS", "09KT Gold", "Lab Grown Diamond Jewellery",
+            [{"type": "Bracelet", "qty": 2.0, "amount": 600.0}],
+        )]
+        packing = [
+            _make_packing_row(1, "Bracelet", "9KT GOLD", "LAB ROUND DIA 1 2.0", fob=300.0),
+            _make_packing_row(2, "Bracelet", "9KT GOLD", "LAB ROUND DIA 1 2.0", fob=300.0),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        link = r.position_links[0]
+        assert link.allocation_confidence in ("HIGH", "MEDIUM", "LOW")
+
+
+class TestV2AllocationEvidence:
+    """V2 must populate allocation_evidence keyed by serial number."""
+
+    def test_evidence_has_entry_for_each_assigned_serial(self):
+        pos = [_make_invoice_position(
+            1, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 2.0, "amount": 20.0}],
+        )]
+        packing = [
+            _make_packing_row(1, "Ring", "925 SILVER", "CZ Round Shape 38", fob=10.0),
+            _make_packing_row(2, "Ring", "925 SILVER", "CZ Round Shape 38", fob=10.0),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        assert 1 in r.allocation_evidence
+        assert 2 in r.allocation_evidence
+
+    def test_evidence_record_has_required_keys(self):
+        pos = [_make_invoice_position(
+            1, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 1.0, "amount": 80.0}],
+        )]
+        packing = [
+            _make_packing_row(5, "Ring", "925 SILVER", "CZ Round Shape 38",
+                              fob=81.0, design_no="JR08296"),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        ev = r.allocation_evidence[5]
+        assert "position_no"   in ev
+        assert "item_type"     in ev
+        assert "tier"          in ev
+        assert "score"         in ev
+        assert "unit_price"    in ev
+        assert "expected_rate" in ev
+        assert "style_type"    in ev
+        assert "design_no"     in ev
+
+    def test_evidence_position_no_matches_assigned_link(self):
+        pos = [_make_invoice_position(
+            3, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 1.0, "amount": 80.0}],
+        )]
+        packing = [
+            _make_packing_row(7, "Ring", "925 SILVER", "CZ Round Shape 38", fob=80.0),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        assert r.allocation_evidence[7]["position_no"] == 3
+
+    def test_evidence_expected_rate_matches_invoice(self):
+        pos = [_make_invoice_position(
+            1, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 2.0, "amount": 160.0}],  # rate = $80
+        )]
+        packing = [
+            _make_packing_row(1, "Ring", "925 SILVER", "CZ Round Shape 38", fob=81.0),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        assert abs(r.allocation_evidence[1]["expected_rate"] - 80.0) < 0.01
