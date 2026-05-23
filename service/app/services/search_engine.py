@@ -1,4 +1,4 @@
-"""search_engine.py -- Phase 7 / 7.1: Natural-Language Search Foundation.
+"""search_engine.py -- Phase 7 / 7.1 / Phase 8 Sprint 4: Natural-Language Search.
 
 Deterministic, read-only. llm_used=False. No writes. No LLM calls.
 
@@ -6,6 +6,10 @@ Public API
 ----------
 parse_query(q)          -> SearchIntent
 execute_search(intent)  -> SearchResult
+
+Phase 8 Sprint 4 addition: enrich=True enriches each SearchHit with graph
+metadata (related_count, related_batch_ids, graph_available) sourced from
+documents.db. Read-only. PRAGMA query_only = ON.
 
 Supported domains: document | customer | supplier | product | shipment
 
@@ -98,6 +102,8 @@ class SearchHit:
     match_reason: str
     details:      Dict[str, Any]
     score:        float = 1.0      # 0.0-1.0; higher = more relevant
+    # Phase 8 Sprint 4: populated when enrich=True; None otherwise
+    graph_enrichment: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -111,25 +117,28 @@ class SearchResult:
     generated_at:    str
 
     def to_dict(self) -> Dict[str, Any]:
+        def _hit_dict(h: "SearchHit") -> Dict[str, Any]:
+            d: Dict[str, Any] = {
+                "domain":       h.domain,
+                "entity_id":    h.entity_id,
+                "title":        h.title,
+                "subtitle":     h.subtitle,
+                "match_reason": h.match_reason,
+                "details":      h.details,
+                "score":        round(h.score, 3),
+            }
+            if h.graph_enrichment is not None:
+                d["graph_enrichment"] = h.graph_enrichment
+            return d
+
         return {
             "query":            self.query,
             "interpreted_as":   self.interpreted_as,
             "domains_searched": self.domains_searched,
-            "hits": [
-                {
-                    "domain":       h.domain,
-                    "entity_id":    h.entity_id,
-                    "title":        h.title,
-                    "subtitle":     h.subtitle,
-                    "match_reason": h.match_reason,
-                    "details":      h.details,
-                    "score":        round(h.score, 3),
-                }
-                for h in self.hits
-            ],
-            "total":          self.total,
-            "llm_used":       self.llm_used,
-            "generated_at":   self.generated_at,
+            "hits":             [_hit_dict(h) for h in self.hits],
+            "total":            self.total,
+            "llm_used":         self.llm_used,
+            "generated_at":     self.generated_at,
         }
 
 
@@ -694,11 +703,16 @@ def execute_search(
     supp_db:     Optional[Path] = None,
     md_db:       Optional[Path] = None,
     tracking_db: Optional[Path] = None,
+    enrich:      bool = False,
 ) -> SearchResult:
     """Execute a parsed SearchIntent across the requested domains.
 
     domain filter overrides intent.domains_hint if provided.
     llm_used is always False.
+
+    Phase 8 Sprint 4: when enrich=True, each returned hit gains a
+    graph_enrichment dict with related_count, related_batch_ids,
+    and graph_available sourced from documents.db.  Read-only only.
     """
     if not intent.raw_query:
         return SearchResult(
@@ -739,12 +753,17 @@ def execute_search(
 
     # Sort by score descending, stable (insertion order preserved for ties)
     all_hits.sort(key=lambda h: h.score, reverse=True)
+    top_hits = all_hits[:limit]
+
+    # Phase 8 Sprint 4: optional graph enrichment
+    if enrich:
+        _enrich_hits(top_hits, doc_db=doc_db)
 
     return SearchResult(
         query=intent.raw_query,
         interpreted_as=_describe_intent(intent),
         domains_searched=effective_domains,
-        hits=all_hits[:limit],
+        hits=top_hits,
         total=len(all_hits),
         llm_used=False,
         generated_at=_now(),
@@ -900,3 +919,119 @@ def _shipment_match_reason(row: sqlite3.Row, intent: SearchIntent) -> str:
     if intent.keyword:
         return f"keyword match in stage/description: '{intent.keyword}'"
     return "keyword match"
+
+
+# ── Phase 8 Sprint 4: graph enrichment helpers ───────────────────────────────
+
+
+def _resolve_batch_ids_for_hit(
+    hit: SearchHit,
+    con: sqlite3.Connection,
+) -> List[str]:
+    """Resolve batch_ids from a SearchHit depending on its domain.
+
+    Read-only.  Uses the already-open, PRAGMA query_only connection.
+    Returns an empty list when no batch relationship can be found.
+    """
+    try:
+        if hit.domain == "document":
+            # entity_id is document id; find its batch_id
+            row = con.execute(
+                "SELECT batch_id FROM shipment_documents "
+                "WHERE id = ? AND batch_id != '' LIMIT 1",
+                (hit.entity_id,),
+            ).fetchone()
+            if row:
+                return [row[0]]
+
+        elif hit.domain == "shipment":
+            # entity_id IS the batch_id
+            if hit.entity_id:
+                return [hit.entity_id]
+
+        elif hit.domain == "customer":
+            # entity_id is bill_to_contractor_id
+            rows = con.execute(
+                "SELECT DISTINCT batch_id FROM shipment_documents "
+                "WHERE client_contractor_id = ? AND batch_id != '' LIMIT 20",
+                (hit.entity_id,),
+            ).fetchall()
+            return [r[0] for r in rows]
+
+        elif hit.domain == "supplier":
+            # entity_id is supplier_code; matched against supplier_contractor_id
+            rows = con.execute(
+                "SELECT DISTINCT batch_id FROM shipment_documents "
+                "WHERE supplier_contractor_id = ? AND batch_id != '' LIMIT 20",
+                (hit.entity_id,),
+            ).fetchall()
+            return [r[0] for r in rows]
+
+        # "product" hits: no batch relationship available in documents.db
+
+    except Exception as exc:
+        log.debug(
+            "[search] batch_id resolution failed for %s %s: %s",
+            hit.domain, hit.entity_id, exc,
+        )
+    return []
+
+
+def _enrich_hits(
+    hits: List[SearchHit],
+    doc_db: Optional[Path] = None,
+) -> None:
+    """Enrich hits in-place with graph metadata from documents.db.
+
+    Sets hit.graph_enrichment = {
+        "related_count":    int,    # number of documents in the same batch(es)
+        "related_batch_ids": list,  # batch_ids connected to this hit
+        "graph_available":  bool,   # True when at least one batch_id is found
+    }
+
+    Read-only.  PRAGMA query_only = ON.  No writes.  llm_used=False.
+    """
+    empty: Dict[str, Any] = {
+        "related_count": 0,
+        "related_batch_ids": [],
+        "graph_available": False,
+    }
+
+    path = doc_db or _DOC_DB
+    if not path or not Path(path).exists():
+        for h in hits:
+            h.graph_enrichment = dict(empty)
+        return
+
+    try:
+        con = _ro_conn(path)
+        try:
+            for h in hits:
+                batch_ids = _resolve_batch_ids_for_hit(h, con)
+                if not batch_ids:
+                    h.graph_enrichment = dict(empty)
+                    continue
+
+                placeholders = ",".join("?" for _ in batch_ids)
+                count_row = con.execute(
+                    f"SELECT COUNT(*) FROM shipment_documents "
+                    f"WHERE batch_id IN ({placeholders})",
+                    batch_ids,
+                ).fetchone()
+                count = count_row[0] if count_row else 0
+                # For document hits subtract self from the count
+                if h.domain == "document":
+                    count = max(0, count - 1)
+
+                h.graph_enrichment = {
+                    "related_count":    count,
+                    "related_batch_ids": batch_ids,
+                    "graph_available":  True,
+                }
+        finally:
+            con.close()
+    except Exception as exc:
+        log.warning("[search] graph enrichment failed: %s", exc)
+        for h in hits:
+            if h.graph_enrichment is None:
+                h.graph_enrichment = dict(empty)
