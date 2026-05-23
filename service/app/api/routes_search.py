@@ -1,9 +1,11 @@
-"""routes_search.py -- Phase 7: Natural-Language Search Foundation.
+"""routes_search.py -- Phase 7 / Phase 8 Sprint 4: Natural-Language Search.
 
 GET /api/v1/search
 
 Deterministic only. llm_used=False. No writes. No LLM calls.
 GET-only. Read-only authority data.
+
+Phase 8 Sprint 4: enrich=true adds graph_enrichment to each hit.
 """
 from __future__ import annotations
 
@@ -65,6 +67,14 @@ def search(
         le=MAX_LIMIT,
         description=f"Max results per domain (1-{MAX_LIMIT}). Default {DEFAULT_LIMIT}.",
     ),
+    enrich: bool = Query(
+        default=False,
+        description=(
+            "Phase 8: when true each hit gains graph_enrichment "
+            "with related_count, related_batch_ids, and graph_available. "
+            "Read-only. llm_used=False."
+        ),
+    ),
 ) -> JSONResponse:
     # Parse domain filter
     domain_list = None
@@ -83,7 +93,7 @@ def search(
 
     try:
         intent = parse_query(q)
-        result = execute_search(intent, domains=domain_list, limit=limit)
+        result = execute_search(intent, domains=domain_list, limit=limit, enrich=enrich)
         return JSONResponse(content=result.to_dict())
     except HTTPException:
         raise
