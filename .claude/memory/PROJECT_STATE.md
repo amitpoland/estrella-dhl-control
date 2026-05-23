@@ -4,11 +4,49 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-23T(PHASE-5-DEPLOYED)Z. Origin/main HEAD: eaa2875. PENDING deploys: none. OPEN PRs: 1/3 (#268 docs-only). Production: Phase 5 LIVE (eaa2875). Phase 6: NOT STARTED — awaiting operator instruction.
+**Last-run-at:** 2026-05-23T(PR319-HOTFIX)Z. Origin/main HEAD: 62ec20f. PENDING deploys: none. OPEN PRs: 1/3 (#268 docs-only). Production: PR #319 + hotfix LIVE (62ec20f). Phase 6: NOT STARTED — awaiting operator instruction.
 
 ---
 
 # FACTS
+
+## PR #319 Hotfix — correction-execute proposed_lines AttributeError (2026-05-23, DEPLOYED)
+
+- **Bug**: `POST /correction-execute` returned 500 post-deploy. Error: `'CorrectionProposal' object has no attribute 'proposed_lines'`.
+- **Root cause**: `routes_pz.py` line 804 accessed `proposal.proposed_lines` but `proposed_lines` is a field on `CorrectionOption` (the individual option), not on `CorrectionProposal`. Implementation error in PR #319.
+- **Fix**: Extract selected option from `proposal.options` by `option_id`, then read `proposed_lines` from that option. Also added 422 guard if option_id not in proposal.
+- **Commit SHA**: `62ec20f` — pushed to origin/main 2026-05-23
+- **Files fixed**: `service/app/api/routes_pz.py` + `C:\PZ\app\api\routes_pz.py` (both updated)
+- **Tests post-fix**: 38/38 proposal card tests PASS, 25/25 execution tests PASS
+- **Python functional verification**: Confirmed old code raises AttributeError, new code correctly extracts proposed_lines from CorrectionOption
+- **Production state**: PZService RUNNING (PID 10976), Health 200 local + public. No global batches in storage to do live POST smoke — gate correctly returns 403 for non-global batches.
+- **Stale cache**: `C:\PZ\app\services\__pycache__\global_pz_correction*.pyc` cleared as first hypothesis; confirmed not the root cause (the .py file was always correct; the endpoint code was wrong)
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-pr319-hotfix-proposed-lines.md` — in progress
+
+---
+
+## PR #319 — Global PZ Correction Execution Layer (2026-05-23, MERGED + DEPLOYED)
+
+- **Merge SHA**: `8dea14b` — squash-merged to main 2026-05-23
+- **Branch**: feat/global-pz-correction-execution (deleted after merge)
+- **Files changed** (4 files):
+  - `service/app/services/global_pz_execution.py` — NEW: execution service, zero wFirma imports
+  - `service/app/api/routes_pz.py` — POST `/correction-execute` endpoint added
+  - `service/app/static/shipment-detail.html` — GlobalPZCorrectionProposalCard upgraded from read-only to execution-capable (confirmation modal, reason input, executing state, result banner)
+  - `service/tests/test_global_pz_correction_proposal_card.py` — 28 → 38 tests
+  - `service/tests/test_global_pz_execution.py` — NEW: 25 tests
+- **Tests**: 38/38 proposal card + 25/25 execution unit + 180/180 existing lineage/correction = 243 total PASS
+- **7-agent gate**: ALL GO — all 7 agents EXEMPLARY; scorecard `.claude/memory/scorecards/2026-05-23-pr319-deploy-correction-execution.md`
+- **Deployed to production**: 3 runtime files copied to C:\PZ, PZService restarted
+  - `C:\PZ\app\services\global_pz_execution.py` (14763 bytes) ✓
+  - `C:\PZ\app\api\routes_pz.py` (38018 bytes) ✓ — endpoint at line 733
+  - `C:\PZ\app\static\shipment-detail.html` (901422 bytes) ✓
+- **Execution tiers**: KEEP_CURRENT/NO_ACTION (no writes), ALIGN_TO_AUTHORITY (product_code rename in pz_rows.json), SPLIT_TO_STYLE_LEVEL (proportional rebuild by packing_qty)
+- **Lesson E compliance**: 5 properties — execution-time validation, idempotency (correction_execution_record.json), terminal-state suppression, replay safety (backup), no wFirma calls
+- **GATE 2**: 1/3 open PRs (#268 docs-only) after merge
+- **Post-deploy smoke**: Health 200, non-global 403 gate working, GET correction-proposal working. POST correction-execute hit 500 (hotfix above)
+
+---
 
 ## Phase 5 — Product/Finishing Intelligence Foundation (2026-05-23, COMPLETE + DEPLOYED)
 
