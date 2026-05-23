@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-20T(C24-FINALIZE + C22-PERMANENT)Z. Origin/main HEAD: 37da7c6 (C22-PERMANENT squash merged). PENDING Windows deploys: (1) C13E -- `windows_deploy_c13e_backend.ps1` -- PZService restart required; (2) C14A-C21A+C22+C24 static -- `windows_deploy_c21a_static.ps1` -- no restart. OPEN PRs (3/3 limit): #246 C24-FINALIZE (bill_to_nip fix + bypass flag), #10 inventory stubs, #1 UI sidebar. OPERATOR ACTIONS NEEDED: customer authority (5 clients) + product authority (12 products) for shipment 4218922912 — done in browser UI against Windows prod after PR #246 merges.
+**Last-run-at:** 2026-05-23T(PHASE-3-PROPER-LIVE + CORRECTION-PROPOSAL-LIVE)Z. Origin/main HEAD: 7c8ee82 (Phase 3 Proper squash-merged). PENDING deploys: none. OPEN PRs: 1 (#268 docs-only — no blast radius). Production: stable. AI Gateway live + dormant. Global Jewellery lineage + correction proposal live.
 
 ---
 
@@ -197,7 +197,62 @@ Existing AI Migration (customs parser + evidence)
 Model Selection Policy (Haiku → Sonnet → Opus)
 ```
 
-**Status**: COMPLETE — PR #312 open awaiting merge
+**Status**: COMPLETE + LIVE — PR #312 squash-merged SHA `bf9a9ae` 2026-05-23. Windows production deploy 2026-05-23: manual Copy-Item (7 files). Health 200/200. Gateway dormant (ai_parser_enabled=False). anthropic.Anthropic() confined to ai_gateway.py only. stderr clean.
+
+---
+
+## PR #311 — Global Lineage V2 Deterministic Allocation (2026-05-23, DEPLOYED)
+
+- **PR #311 merged** to main (SHA: `01764ce`) — 2026-05-23T14:19Z. Squash-merge, branch `feat/global-lineage-v2-deterministic`.
+- **Files changed** (production deploy scope):
+  - `service/app/services/global_pz_lineage.py` — V2 deterministic allocation engine (Lesson J: under `service/app/**`, standard robocopy covers it, no extra sync needed)
+  - `service/app/services/ai_customs_evidence.py` — `ai_parser_enabled` gate added to `_provider_available()` (PR #310 changes included in same robocopy pass)
+  - `service/app/services/ai_customs_parser.py` — `ai_parser_enabled` gate added to `parse_with_ai()` (PR #310)
+  - `service/tests/test_global_pz_lineage.py` — tests only, NOT deployed
+- **What V2 does**: replaces greedy first-match allocation with deterministic scored allocation. `_score_candidates()` scores candidates by unit-price proximity (+4/+2/-3) and style-code confirmation (+1). Highest-scoring under-budget candidate wins. Adds `allocation_confidence` (HIGH/MEDIUM/LOW), `allocation_reason_codes` (PRICE_MATCH/PRICE_SIGNAL/AMBIGUOUS_STONE_FAMILY/OCR_METAL_FALLBACK), and `allocation_evidence` dict per packing serial.
+- **No wFirma writes** — lineage module has no wFirma import, no PZ creation calls, no accounting mutations, no endpoint contract changes.
+- **No PZ mutation** — read-only allocation engine; does not create, modify, or delete any PZ document.
+- **Test gate**: 133/133 tests pass (test_global_pz_lineage + test_global_pz_lineage_endpoint combined).
+- **Production deploy** (2026-05-23T~16:29Z):
+  - robocopy `service/app` → `C:\PZ\app` — 3 files copied (global_pz_lineage.py 47834B, ai_customs_evidence.py 22489B, ai_customs_parser.py 6518B)
+  - PZService restarted → STATE: RUNNING (PID 15952)
+  - Health check: `GET /api/v1/health` → 200 `{"status":"ok","engine":"ok","environment":"prod"}`
+  - Lineage endpoint: `GET /api/v1/pz/lineage/4789974092` → 200 `{"batch_id":"4789974092","is_global_supplier":false}` — correct; AWB 4789974092 is not a Global Jewellery batch in production; minimal envelope returned as designed.
+- **AWB 4789974092 endpoint**: `WARNING_MATCH` remains the expected status for Global Jewellery batches when per-position OVERFLOW/PARTIAL exist despite balanced totals. V2 evidence improves allocation confidence; it does not force `FULL_MATCH`. PRICE_MATCH evidence confirmed present by `TestV2UnitPriceDisambiguation` (133 tests).
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-pr311-deploy-lineage-v2-deterministic.md` (pending observer fire)
+- **Open PRs after merge**: 1 open (#268 docs) — within Gate 2 limit. PR #310 closed 2026-05-23 as duplicate of PR #309 (commit fe0ab30 already on main).
+
+### Post-deploy integrity audit (2026-05-23)
+
+- **Bare AWB lookup `4789974092` returns `is_global_supplier:false`** — expected and correct. The endpoint `/api/v1/pz/lineage/{batch_id}` expects the internal batch_id, NOT the bare AWB number. `_is_global_batch()` looks for `STORAGE_ROOT/outputs/{batch_id}/source/`; no directory exists for the bare AWB string.
+- **Correct batch_id**: `SHIPMENT_4789974092_2026-05_999deef1` (lives at `C:\PZ\storage\outputs\SHIPMENT_4789974092_2026-05_999deef1\`; `STORAGE_ROOT=C:/PZ/storage` set in `C:\PZ\.env`).
+- **Verified production response** with correct batch_id:
+  - `is_global_supplier: true` ✓
+  - `match_status: WARNING_MATCH` ✓ (stone-family ambiguity on pos=2 PENDANT overflow, pos=5 RING overflow — expected by design)
+  - `shipment_total_match: FULL` ✓ (245/245 qty balanced)
+  - `invoice_position_match: WARNING` ✓
+  - `allocation_evidence: present` ✓ (keyed by packing serial)
+  - `PRICE_MATCH` evidence present on pos=2, pos=4, pos=6, pos=7, pos=10 (HIGH confidence) ✓
+- **PR #310 / PR #309 clarification**: `ai_customs_evidence.py` and `ai_customs_parser.py` were copied by robocopy because they were already updated on main via PR #309 (`fe0ab30`, squash-merge by operator before this session). Deployed hashes match main exactly. No contamination. `ai_parser_enabled` defaults to False — AI gate active and disabled by default in production.
+- **No rollback. No redeploy. PR #311 is live and working.**
+
+---
+
+## Global PZ Correction Proposal — Read-only endpoint (2026-05-23, DEPLOYED)
+
+- **New service**: `service/app/services/global_pz_correction.py` — pure function, no IO, no wFirma imports. AST-checked.
+- **New endpoint**: `GET /api/v1/pz/lineage/{batch_id}/correction-proposal` — reads pz_rows.json + audit._pz_engine_authority_rows, calls build_correction_proposal(), returns structured proposal.
+- **New tests**: `service/tests/test_global_pz_correction.py` — 47/47 PASS (9 classes, covers NO_ACTION / KEEP_CURRENT / ALIGN_TO_AUTHORITY / SPLIT_TO_STYLE_LEVEL / wFirma confirmation / empty inputs / AST guard / endpoint contract).
+- **Live verification** (AWB 4789974092 batch `SHIPMENT_4789974092_2026-05_999deef1`):
+  - `recommended_option: KEEP_CURRENT` — structure correct, only product-code format differs (sequential -N vs INV-NN)
+  - `pz_confirmed_in_wfirma: false` — no wFirma doc ID on any posted row
+  - `product_code_format_mismatch: true` — sequential suffix in pz_rows vs INV-NN in authority
+  - `current_pz_line_count: 10` = `authority_row_count: 10` — structurally equivalent
+  - `lineage_link_count: 14` — 14 links from 10 positions due to mixed types at pos 2 and 4
+  - `mixed_type_positions: [2, 4]` — SPLIT_TO_STYLE_LEVEL available at MEDIUM risk (unconfirmed)
+  - `is_global_supplier: true` ✓
+- **Hard rules**: no automatic writes, no wFirma mutation, operator approval required before any corrective write. Endpoint is read-only forever.
+- **Deployed via**: standard robocopy (service/app/** path) 2026-05-23, PZService restart confirmed RUNNING.
 
 ---
 
