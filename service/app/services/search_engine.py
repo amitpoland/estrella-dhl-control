@@ -1,4 +1,4 @@
-"""search_engine.py -- Phase 7: Natural-Language Search Foundation.
+"""search_engine.py -- Phase 7 / 7.1: Natural-Language Search Foundation.
 
 Deterministic, read-only. llm_used=False. No writes. No LLM calls.
 
@@ -7,7 +7,7 @@ Public API
 parse_query(q)          -> SearchIntent
 execute_search(intent)  -> SearchResult
 
-Supported domains: document | customer | supplier | product
+Supported domains: document | customer | supplier | product | shipment
 
 Pattern recognition (no LLM):
   - AWB:     10-12 digit number (DHL air waybill)
@@ -36,10 +36,11 @@ log = get_logger(__name__)
 
 # ── DB paths (read-only) ──────────────────────────────────────────────────────
 
-_CM_DB    = settings.storage_root / "customer_master.sqlite"
-_MD_DB    = settings.storage_root / "master_data.sqlite"
-_SUPP_DB  = settings.storage_root / "suppliers.sqlite"
-_DOC_DB   = settings.storage_root / "documents.db"
+_CM_DB       = settings.storage_root / "customer_master.sqlite"
+_MD_DB       = settings.storage_root / "master_data.sqlite"
+_SUPP_DB     = settings.storage_root / "suppliers.sqlite"
+_DOC_DB      = settings.storage_root / "documents.db"
+_TRACKING_DB = settings.storage_root / "tracking_events.db"
 
 # ── Patterns ─────────────────────────────────────────────────────────────────
 
@@ -207,11 +208,12 @@ def parse_query(q: str) -> SearchIntent:
     domains: List[str] = []
     if awb_matches or mrn_matches or batch_matches or pz_matches:
         domains.append("document")
+        domains.append("shipment")   # Phase 7.1: AWB/batch also searches tracking events
     if hs_matches:
         domains.append("product")
     if not domains:
         # Free-text keyword: search everywhere
-        domains = ["document", "customer", "supplier", "product"]
+        domains = ["document", "customer", "supplier", "product", "shipment"]
 
     return SearchIntent(
         raw_query=raw,
@@ -583,6 +585,102 @@ def search_products(
     return hits[:limit]
 
 
+def search_shipments(
+    intent: SearchIntent,
+    limit: int = DEFAULT_LIMIT,
+    db_path: Optional[Path] = None,
+) -> List[SearchHit]:
+    """Search shipment_tracking_events for matching shipments.
+
+    Phase 7.1: wires AWB and batch_id queries into the tracking events store.
+
+    Searches:
+    - shipment_tracking_events: awb (exact / LIKE), batch_id (exact),
+                                normalized_stage, description, raw_subject
+    """
+    path = db_path or _TRACKING_DB
+    if not path or not Path(path).exists():
+        return []
+    hits: List[SearchHit] = []
+    seen_shipments: set = set()   # dedup (batch_id, awb) pairs
+
+    try:
+        con = _ro_conn(path)
+        try:
+            clauses: List[str] = []
+            params: List[Any] = []
+
+            if intent.awb_matches:
+                placeholders = ",".join("?" for _ in intent.awb_matches)
+                clauses.append(f"awb IN ({placeholders})")
+                params.extend(intent.awb_matches)
+
+            if intent.batch_matches:
+                for bid in intent.batch_matches:
+                    clauses.append("batch_id = ?")
+                    params.append(bid)
+
+            if intent.keyword:
+                kw = f"%{intent.keyword}%"
+                clauses.append(
+                    "(awb LIKE ? OR batch_id LIKE ? "
+                    "OR description LIKE ? OR raw_subject LIKE ? "
+                    "OR normalized_stage LIKE ?)"
+                )
+                params.extend([kw, kw, kw, kw, kw])
+
+            if not clauses:
+                return []
+
+            # Fetch most-recent event per (batch_id, awb) pair
+            sql = (
+                "SELECT batch_id, awb, carrier, normalized_stage, stage, "
+                "status, event_time, description, location, "
+                "requires_manual_review "
+                "FROM shipment_tracking_events WHERE "
+                + " OR ".join(f"({c})" for c in clauses)
+                + " ORDER BY event_time DESC LIMIT ?"
+            )
+            params.append(limit * 5)   # over-fetch — dedup reduces to limit
+
+            for row in con.execute(sql, params).fetchall():
+                key = (row["batch_id"], row["awb"])
+                if key in seen_shipments:
+                    continue
+                seen_shipments.add(key)
+                score = _shipment_score(row, intent)
+                hits.append(SearchHit(
+                    domain="shipment",
+                    entity_id=row["batch_id"],
+                    title=f"Shipment {row['batch_id']}",
+                    subtitle=(
+                        f"AWB {row['awb']} | {row['carrier']} | "
+                        f"{row['normalized_stage'] or row['stage']}"
+                    ),
+                    match_reason=_shipment_match_reason(row, intent),
+                    details={
+                        "batch_id":          row["batch_id"],
+                        "awb":               row["awb"],
+                        "carrier":           row["carrier"],
+                        "normalized_stage":  row["normalized_stage"],
+                        "stage":             row["stage"],
+                        "status":            row["status"],
+                        "event_time":        row["event_time"],
+                        "location":          row["location"],
+                        "description":       row["description"],
+                        "requires_manual_review": bool(row["requires_manual_review"]),
+                    },
+                    score=score,
+                ))
+                if len(hits) >= limit:
+                    break
+        finally:
+            con.close()
+    except Exception as exc:
+        log.warning("[search] shipments search failed: %s", exc)
+    return hits[:limit]
+
+
 # ── Top-level search executor ─────────────────────────────────────────────────
 
 
@@ -591,10 +689,11 @@ def execute_search(
     domains: Optional[List[str]] = None,
     limit: int = DEFAULT_LIMIT,
     *,
-    doc_db:  Optional[Path] = None,
-    cm_db:   Optional[Path] = None,
-    supp_db: Optional[Path] = None,
-    md_db:   Optional[Path] = None,
+    doc_db:      Optional[Path] = None,
+    cm_db:       Optional[Path] = None,
+    supp_db:     Optional[Path] = None,
+    md_db:       Optional[Path] = None,
+    tracking_db: Optional[Path] = None,
 ) -> SearchResult:
     """Execute a parsed SearchIntent across the requested domains.
 
@@ -619,18 +718,26 @@ def execute_search(
 
     limit = max(1, min(limit, MAX_LIMIT))
 
+    # Fetch up to `limit` per domain.  The cross-domain merge then sorts
+    # globally and returns the top `limit`.  Using `limit` per domain ensures
+    # every domain has a fair shot at the final ranking even when one domain
+    # has many equal-score matches.  Total candidates before cut = limit *
+    # num_domains (at most 50 * 5 = 250 — well within budget).
+    per_domain = max(limit, DEFAULT_LIMIT)
     all_hits: List[SearchHit] = []
 
     if "document" in effective_domains:
-        all_hits.extend(search_documents(intent, limit=limit, db_path=doc_db))
+        all_hits.extend(search_documents(intent, limit=per_domain, db_path=doc_db))
     if "customer" in effective_domains:
-        all_hits.extend(search_customers(intent, limit=limit, db_path=cm_db))
+        all_hits.extend(search_customers(intent, limit=per_domain, db_path=cm_db))
     if "supplier" in effective_domains:
-        all_hits.extend(search_suppliers(intent, limit=limit, db_path=supp_db))
+        all_hits.extend(search_suppliers(intent, limit=per_domain, db_path=supp_db))
     if "product" in effective_domains:
-        all_hits.extend(search_products(intent, limit=limit, db_path=md_db))
+        all_hits.extend(search_products(intent, limit=per_domain, db_path=md_db))
+    if "shipment" in effective_domains:
+        all_hits.extend(search_shipments(intent, limit=per_domain, db_path=tracking_db))
 
-    # Sort by score descending
+    # Sort by score descending, stable (insertion order preserved for ties)
     all_hits.sort(key=lambda h: h.score, reverse=True)
 
     return SearchResult(
@@ -646,7 +753,7 @@ def execute_search(
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-_ALL_DOMAINS = {"document", "customer", "supplier", "product"}
+_ALL_DOMAINS = {"document", "customer", "supplier", "product", "shipment"}
 
 
 def _now() -> str:
@@ -770,4 +877,26 @@ def _product_match_reason(row: sqlite3.Row, intent: SearchIntent) -> str:
         return f"HS code match: {row['hs_code']}"
     if intent.keyword:
         return f"design_code/name keyword match: '{intent.keyword}'"
+    return "keyword match"
+
+
+def _shipment_score(row: sqlite3.Row, intent: SearchIntent) -> float:
+    awb = row["awb"] or ""
+    bid = row["batch_id"] or ""
+    if awb and awb in intent.awb_matches:
+        return 1.0
+    if bid and bid in intent.batch_matches:
+        return 0.9
+    return 0.6
+
+
+def _shipment_match_reason(row: sqlite3.Row, intent: SearchIntent) -> str:
+    awb = row["awb"] or ""
+    bid = row["batch_id"] or ""
+    if awb and awb in intent.awb_matches:
+        return f"AWB exact match: {awb}"
+    if bid and bid in intent.batch_matches:
+        return f"batch_id exact match: {bid}"
+    if intent.keyword:
+        return f"keyword match in stage/description: '{intent.keyword}'"
     return "keyword match"

@@ -945,3 +945,323 @@ class TestSourceGrepSafety:
         assert "create_pz" not in src
         assert "post_to_cliq" not in src
         assert "queue_email" not in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 7.1 — Search Coverage Wiring: Shipment Domain
+# ---------------------------------------------------------------------------
+
+def _make_tracking_db(path: Path) -> None:
+    """Create a minimal tracking_events.db and seed rows."""
+    con = sqlite3.connect(str(path))
+    con.executescript("""
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS shipment_tracking_events (
+            id                     TEXT PRIMARY KEY,
+            batch_id               TEXT NOT NULL,
+            awb                    TEXT NOT NULL,
+            carrier                TEXT NOT NULL DEFAULT 'DHL',
+            stage                  TEXT NOT NULL,
+            status                 TEXT NOT NULL DEFAULT '',
+            event_time             TEXT NOT NULL,
+            captured_at            TEXT NOT NULL,
+            source                 TEXT NOT NULL,
+            source_ref             TEXT DEFAULT '',
+            email_message_id       TEXT DEFAULT '',
+            raw_subject            TEXT DEFAULT '',
+            raw_sender             TEXT DEFAULT '',
+            location               TEXT DEFAULT '',
+            description            TEXT DEFAULT '',
+            normalized_stage       TEXT NOT NULL DEFAULT '',
+            confidence             REAL NOT NULL DEFAULT 0.0,
+            requires_manual_review INTEGER NOT NULL DEFAULT 0,
+            created_at             TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_te_awb
+            ON shipment_tracking_events (awb);
+        CREATE INDEX IF NOT EXISTS idx_te_batch_id
+            ON shipment_tracking_events (batch_id);
+    """)
+    ts = "2026-05-23T10:00:00+00:00"
+    con.executemany(
+        "INSERT INTO shipment_tracking_events "
+        "(id, batch_id, awb, carrier, stage, status, event_time, captured_at, "
+        "source, normalized_stage, description, location, requires_manual_review, "
+        "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            # AWB 9765416334 — shipment with two events
+            ("evt-1", "SHIPMENT_94_2026_ABC1", "9765416334",
+             "DHL", "DEPARTED_ORIGIN", "OK",
+             "2026-05-20T08:00:00+00:00", ts, "email",
+             "departed_origin", "Shipment departed Mumbai", "Mumbai, IN", 0, ts),
+            ("evt-2", "SHIPMENT_94_2026_ABC1", "9765416334",
+             "DHL", "IN_TRANSIT", "OK",
+             "2026-05-22T14:00:00+00:00", ts, "email",
+             "in_transit", "Shipment in transit", "Frankfurt, DE", 0, ts),
+            # AWB 4789974092 — different batch
+            ("evt-3", "SHIPMENT_93_2026_DEF2", "4789974092",
+             "DHL", "DELIVERED", "DELIVERED",
+             "2026-05-15T12:00:00+00:00", ts, "api",
+             "delivered", "Delivered to recipient", "Warsaw, PL", 0, ts),
+            # UUID batch (matching batch helper)
+            ("evt-4", "batch-uuid-test-1111", "1122334455",
+             "DHL", "AWAITING_CUSTOMS", "PENDING",
+             "2026-05-21T10:00:00+00:00", ts, "email",
+             "awaiting_customs", "Held at customs", "Warsaw, PL", 1, ts),
+        ],
+    )
+    con.commit()
+    con.close()
+
+
+class TestSearchShipments:
+    """Phase 7.1 — search_shipments() domain function."""
+
+    def _svc(self):
+        from app.services.search_engine import search_shipments, parse_query
+        return search_shipments, parse_query
+
+    def test_awb_exact_match_returns_hit(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        search_shipments, parse_query = self._svc()
+        intent = parse_query("9765416334")
+        hits = search_shipments(intent, db_path=tmp_path / "tracking_events.db")
+        assert len(hits) == 1  # deduped — only one unique (batch_id, awb) pair
+        assert hits[0].domain == "shipment"
+        assert hits[0].entity_id == "SHIPMENT_94_2026_ABC1"
+        assert "9765416334" in hits[0].subtitle
+        assert hits[0].score == 1.0
+
+    def test_awb_match_reason(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        search_shipments, parse_query = self._svc()
+        intent = parse_query("9765416334")
+        hits = search_shipments(intent, db_path=tmp_path / "tracking_events.db")
+        assert "AWB exact match" in hits[0].match_reason
+
+    def test_awb_not_found_returns_empty(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        search_shipments, parse_query = self._svc()
+        intent = parse_query("9999999999")
+        hits = search_shipments(intent, db_path=tmp_path / "tracking_events.db")
+        assert hits == []
+
+    def test_second_awb_returns_different_batch(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        search_shipments, parse_query = self._svc()
+        intent = parse_query("4789974092")
+        hits = search_shipments(intent, db_path=tmp_path / "tracking_events.db")
+        assert len(hits) == 1
+        assert hits[0].entity_id == "SHIPMENT_93_2026_DEF2"
+
+    def test_dedup_multiple_events_same_awb(self, tmp_path):
+        """AWB 9765416334 has 2 events but should yield 1 deduped shipment hit."""
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        search_shipments, parse_query = self._svc()
+        intent = parse_query("9765416334")
+        hits = search_shipments(intent, db_path=tmp_path / "tracking_events.db")
+        assert len(hits) == 1
+
+    def test_keyword_search_matches_description(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        search_shipments, parse_query = self._svc()
+        intent = parse_query("Mumbai")
+        hits = search_shipments(intent, db_path=tmp_path / "tracking_events.db")
+        assert len(hits) >= 1
+        assert any("SHIPMENT_94_2026_ABC1" == h.entity_id for h in hits)
+
+    def test_keyword_match_normalized_stage(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        search_shipments, parse_query = self._svc()
+        intent = parse_query("delivered")
+        hits = search_shipments(intent, db_path=tmp_path / "tracking_events.db")
+        assert len(hits) >= 1
+        assert any("SHIPMENT_93_2026_DEF2" == h.entity_id for h in hits)
+
+    def test_missing_db_returns_empty(self, tmp_path):
+        search_shipments, parse_query = self._svc()
+        intent = parse_query("9765416334")
+        hits = search_shipments(intent, db_path=tmp_path / "nonexistent.db")
+        assert hits == []
+
+    def test_details_include_required_fields(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        search_shipments, parse_query = self._svc()
+        intent = parse_query("9765416334")
+        hits = search_shipments(intent, db_path=tmp_path / "tracking_events.db")
+        d = hits[0].details
+        assert "batch_id" in d
+        assert "awb" in d
+        assert "carrier" in d
+        assert "normalized_stage" in d
+        assert "event_time" in d
+
+    def test_limit_respected(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        search_shipments, parse_query = self._svc()
+        # keyword "DHL" in carrier column LIKE — broad match
+        intent = parse_query("transit")
+        hits = search_shipments(intent, limit=1, db_path=tmp_path / "tracking_events.db")
+        assert len(hits) <= 1
+
+    def test_requires_manual_review_in_details(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        search_shipments, parse_query = self._svc()
+        intent = parse_query("1122334455")   # AWB for evt-4 (requires_manual_review=1)
+        hits = search_shipments(intent, db_path=tmp_path / "tracking_events.db")
+        assert len(hits) == 1
+        assert hits[0].details["requires_manual_review"] is True
+
+
+class TestExecuteSearchWithShipments:
+    """Phase 7.1 — execute_search dispatches to shipment domain."""
+
+    def _exec(self):
+        from app.services.search_engine import execute_search, parse_query
+        return execute_search, parse_query
+
+    def test_awb_query_searches_shipment_domain(self, tmp_path):
+        """Isolated test: only tracking_db exists; documents domain returns 0 hits."""
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        execute_search, parse_query = self._exec()
+        intent = parse_query("9765416334")
+        result = execute_search(
+            intent,
+            # Pass nonexistent paths for all other domains so only shipment returns hits
+            doc_db=tmp_path / "no_docs.db",
+            cm_db=tmp_path / "no_cm.db",
+            supp_db=tmp_path / "no_supp.db",
+            md_db=tmp_path / "no_md.db",
+            tracking_db=tmp_path / "tracking_events.db",
+        )
+        assert result.llm_used is False
+        shipment_hits = [h for h in result.hits if h.domain == "shipment"]
+        assert len(shipment_hits) == 1
+        assert shipment_hits[0].entity_id == "SHIPMENT_94_2026_ABC1"
+
+    def test_awb_query_domains_hint_includes_shipment(self):
+        from app.services.search_engine import parse_query
+        intent = parse_query("9765416334")
+        assert "shipment" in intent.domains_hint
+
+    def test_shipment_domain_filter_works(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        execute_search, parse_query = self._exec()
+        intent = parse_query("Mumbai")
+        result = execute_search(
+            intent,
+            domains=["shipment"],
+            tracking_db=tmp_path / "tracking_events.db",
+        )
+        assert result.llm_used is False
+        assert result.domains_searched == ["shipment"]
+        assert len(result.hits) >= 1
+
+    def test_llm_used_false_always(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        execute_search, parse_query = self._exec()
+        result = execute_search(
+            parse_query("9765416334"),
+            doc_db=tmp_path / "no_docs.db",
+            tracking_db=tmp_path / "tracking_events.db",
+        )
+        assert result.llm_used is False
+        assert result.to_dict()["llm_used"] is False
+
+    def test_no_tracking_db_returns_zero_shipment_hits(self, tmp_path):
+        """With no tracking DB on disk, AWB search returns 0 shipment hits (graceful)."""
+        execute_search, parse_query = self._exec()
+        result = execute_search(
+            parse_query("9765416334"),
+            domains=["shipment"],   # shipment domain only
+            tracking_db=tmp_path / "does_not_exist.db",
+        )
+        assert result.llm_used is False
+        shipment_hits = [h for h in result.hits if h.domain == "shipment"]
+        assert shipment_hits == []
+
+    def test_result_to_dict_includes_shipment_hits(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        execute_search, parse_query = self._exec()
+        result = execute_search(
+            parse_query("9765416334"),
+            domains=["shipment"],   # isolated: shipment domain only
+            tracking_db=tmp_path / "tracking_events.db",
+        )
+        d = result.to_dict()
+        assert "hits" in d
+        shipment_hits = [h for h in d["hits"] if h["domain"] == "shipment"]
+        assert len(shipment_hits) == 1
+
+
+class TestShipmentDomainInRoute:
+    """Phase 7.1 — /api/v1/search?domains=shipment accepted by route."""
+
+    def _client(self, tmp_path):
+        _make_tracking_db(tmp_path / "tracking_events.db")
+        from unittest.mock import patch as _patch
+        from app.services.search_engine import (
+            parse_query, execute_search, _TRACKING_DB,
+        )
+        import app.services.search_engine as se
+        # Patch the module-level _TRACKING_DB constant so the route uses tmp_path
+        with _patch.object(se, "_TRACKING_DB", tmp_path / "tracking_events.db"):
+            from app.main import app
+            client = TestClient(app, raise_server_exceptions=True)
+            yield client
+
+    def test_shipment_in_valid_domains_route(self, tmp_path):
+        from app.api.routes_search import _VALID_DOMAINS
+        assert "shipment" in _VALID_DOMAINS
+
+    def test_all_domains_in_search_engine_includes_shipment(self):
+        from app.services.search_engine import _ALL_DOMAINS
+        assert "shipment" in _ALL_DOMAINS
+
+    def test_parse_query_awb_includes_shipment_in_hint(self):
+        from app.services.search_engine import parse_query
+        intent = parse_query("9765416334")
+        assert "shipment" in intent.domains_hint
+
+    def test_keyword_all_domains_includes_shipment(self):
+        """Free-text keyword search should include shipment in domains_hint."""
+        from app.services.search_engine import parse_query
+        intent = parse_query("diamond ring")
+        assert "shipment" in intent.domains_hint
+
+
+class TestPhase71SourceGrep:
+    """Phase 7.1 source-grep safety invariants."""
+
+    @staticmethod
+    def _read_service() -> str:
+        p = Path(__file__).parent.parent / "app" / "services" / "search_engine.py"
+        return p.read_text(encoding="utf-8")
+
+    def test_no_insert_in_search_shipments(self):
+        src = self._read_service()
+        # search_shipments must not contain INSERT / UPDATE / DELETE
+        fn_start = src.find("def search_shipments(")
+        fn_end   = src.find("\ndef ", fn_start + 1)
+        if fn_end == -1:
+            fn_end = len(src)
+        fn_src = src[fn_start:fn_end].upper()
+        assert "INSERT " not in fn_src
+        assert "UPDATE " not in fn_src
+        assert "DELETE " not in fn_src
+
+    def test_pragma_query_only_still_present(self):
+        src = self._read_service()
+        assert "PRAGMA query_only" in src
+
+    def test_llm_used_false_still_hardcoded(self):
+        src = self._read_service()
+        assert "llm_used=False" in src
+
+    def test_tracking_db_constant_defined(self):
+        src = self._read_service()
+        assert "_TRACKING_DB" in src
+
+    def test_shipment_in_all_domains_constant(self):
+        src = self._read_service()
+        assert '"shipment"' in src

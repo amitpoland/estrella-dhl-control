@@ -89,6 +89,7 @@ from .services.wfirma_db    import init_wfirma_db
 from .services.correction_registry import init_correction_registry
 from .services.intake_lineage     import init_intake_lineage
 from .services.proforma_service_charges_db import init as init_proforma_service_charges
+from .services.tracking_db  import init_tracking_db  # Phase 7.1: enables /search?q=<AWB>
 # Governance constants — import at module level so assert_no_overlap() runs at startup.
 # If any action appears in both SAFE_AUTONOMOUS and HUMAN_APPROVAL_REQUIRED sets, this
 # raises AssertionError immediately, preventing the service from starting with a
@@ -138,6 +139,7 @@ async def lifespan(app: FastAPI):
     init_correction_registry(_root / "correction_registry.db")
     init_intake_lineage(_root / "intake_lineage.db")
     init_proforma_service_charges(_root / "proforma_links.db")
+    init_tracking_db(_root  / "tracking_events.db")  # Phase 7.1: AWB search coverage
     # Product Master canonical-identity registry (PR-1 Foundation).
     # Write-only at this stage — store_invoice_lines projects every
     # minted product_code into product_master. Consumers are NOT
@@ -151,7 +153,7 @@ async def lifespan(app: FastAPI):
             "reservation_queue.db init failed at startup (non-fatal): %s",
             _rdb_init_exc,
         )
-    log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma / reservation)", _root)
+    log.info("Operational DBs ready under %s (packing / warehouse / documents / wfirma / tracking / reservation)", _root)
 
     # ── W-5 / P0: replay persisted DHL self-clearance runtime flags ──────
     # Restores operator-set flag values onto in-memory `settings` so that
