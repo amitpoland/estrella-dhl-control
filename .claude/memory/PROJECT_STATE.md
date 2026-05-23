@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-23T(PHASE6-DEPLOYED)Z. Origin/main HEAD: 66d822e. PENDING deploys: none. OPEN PRs: 1/3 (#268 docs-only). Production: Phase 6 LIVE (66d822e). Phase 6: COMPLETE + DEPLOYED (operator-confirmed 2026-05-23).
+**Last-run-at:** 2026-05-23T(PHASE7-MERGED)Z. Origin/main HEAD: 3302a1b. PENDING deploys: Phase 7. OPEN PRs: 1/3 (#268 docs-only). Production: Phase 6 LIVE (66d822e). Phase 7: MERGED (SHA 3302a1b) -- deploy pending.
 
 ---
 
@@ -84,6 +84,35 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
   - `entity_count=0`: expected — production master-data source has no product/finishing rows yet (not a deploy failure)
 - **PENDING deploys**: none (Phase 5 production state)
 - **Phase 6**: MERGED — PR #321 squash-merged at SHA 958e914 (2026-05-23). Deploy pending.
+
+---
+
+## Phase 7 — Natural-Language Search Foundation (2026-05-23, MERGED)
+
+**Campaign type**: Platform-wide search capability (deterministic, no LLM, no writes)  
+**Status**: PR #325 MERGED — squash SHA `3302a1b` on main (2026-05-23). Deploy pending operator execution.
+
+### Phase 7 implementation facts (2026-05-23)
+
+- **PR #325 squash-merged** to main at SHA `3302a1b`, 2026-05-23
+- **Branch**: feat/phase7-search-foundation (deleted after merge)
+- **Files changed** (4):
+  - `service/app/services/search_engine.py` — NEW (773 lines): parse_query(), execute_search(), search_documents(), search_customers(), search_suppliers(), search_products()
+  - `service/app/api/routes_search.py` — NEW (92 lines): GET /api/v1/search
+  - `service/app/main.py` — +2 lines: import + include_router
+  - `service/tests/test_phase7_search_foundation.py` — NEW (92 tests)
+- **Route**: `GET /api/v1/search?q=...&domains=...&limit=...` (prefix /api/v1/search)
+- **Pattern recognition**: AWB (10-12 digit), MRN (Polish customs format), UUID batch IDs, HS codes (71xx jewellery range), PZ/invoice refs (NNN/YYYY), free-text keyword fallback
+- **Domain functions**: search_documents (documents.db), search_customers (customer_master.sqlite), search_suppliers (suppliers.sqlite), search_products (master_data.sqlite)
+- **All DB connections**: PRAGMA query_only = ON
+- **llm_used=False** hardcoded — no LLM, no ai_gateway, no Anthropic
+- **Tests**: 92 Phase 7 tests + 154 Phase 5+6 regression = 246 total PASS
+- **7-agent gate**: ALL GO (10 EXEMPLARY, 0 ACCEPTABLE, 0 NEEDS-TUNING)
+- **GATE 2**: 2/3 open PRs (#268 docs-only + #325 now merged = 1/3 post-merge)
+- **Lesson J compliant**: all 3 runtime files within service/app/**
+- **Files to deploy**: search_engine.py, routes_search.py, main.py — standard robocopy
+- **PZService restart required** on deployment
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase7-search-foundation.md` — 10 EXEMPLARY
 
 ---
 
@@ -358,7 +387,7 @@ Phase 3 Proper (Foundation)      ✅ COMPLETE + LIVE
 Phase 4  Master Data Intelligence ✅ COMPLETE + LIVE
 Phase 5  Product/Finishing Intelligence ✅ COMPLETE + LIVE
 Phase 6  Document Intelligence    ✅ COMPLETE + LIVE (SHA 66d822e, 2026-05-23)
-Phase 7  Natural-Language Search
+Phase 7  Natural-Language Search ✅ MERGED (SHA 3302a1b) -- deploy pending
 Phase 2  Advisory LLM Explanations  <- UNBLOCKED BY PHASE 3 PROPER
 Phase 8  Action Proposal Advisor
 Phase 9  Operations Assistant
@@ -1319,7 +1348,7 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
   Phase 4 Master Data Intelligence    ✅ LIVE (SHA 1a74d6c)
   Phase 5 Product/Finishing Intelligence ✅ LIVE (SHA 2886a94)
   Phase 6 Document Intelligence        ✅ LIVE (SHA 66d822e, 2026-05-23)
-  Phase 7 Natural-Language Search
+  Phase 7 Natural-Language Search -- MERGED (SHA 3302a1b) -- deploy pending
   Phase 2 Advisory LLM Explanations   <- UNBLOCKED by Phase 3 Proper
   Phase 8 Action Proposal Advisor
   Phase 9 Operations Assistant
