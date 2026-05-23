@@ -40,7 +40,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Production gap note (AWB 0 hits after deploy)**: Even after deploy, `q=9765416334` will return 0 SHIPMENT hits until DHL tracking events for that AWB are recorded via the self-clearance pipeline. tracking_events.db will be created (empty) at startup. Shipment hits appear only when real tracking events exist.
 - **HS gap note**: HS -> product 0 hits is a data-only gap (designs table empty in production). Code is correct; no Phase 7.1 fix needed.
 - **PENDING deploys**: Phase 7.1 (cbb23ef)
-- **Scorecard**: to be written after deploy
+- **Scorecard**: `.claude/memory/scorecards/2026-05-24-phase71-search-coverage-wiring.md` -- 7 EXEMPLARY, 0 ACCEPTABLE, 0 NEEDS-TUNING (2026-05-24)
 
 ---
 
