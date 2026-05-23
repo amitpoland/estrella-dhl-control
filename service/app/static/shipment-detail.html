@@ -9248,6 +9248,24 @@ function OperatorWorkflowCard({ batchId, onToast }) {
   const [setupProductPreview,         setSetupProductPreview]         = React.useState(null);
   const [setupProductPreviewLoading,  setSetupProductPreviewLoading]  = React.useState(false);
   const [setupProductPreviewErr,      setSetupProductPreviewErr]      = React.useState('');
+  // ── PR 4 of 4 — pending_adoption operator-decision UI ─────────────────
+  // V1-freeze exception per Lesson F: this is the critical-fix completion
+  // of PR #303's authority surface change. Operators have no other UI
+  // path to resolve pending_adoption rows; PZ + Proforma silently block
+  // until each row is explicitly adopted/updated/created. Backend read +
+  // 3 write endpoints already deployed (PR #300 + PR #302). This is an
+  // EXPLICIT, ONE-TIME, NON-PRECEDENT-SETTING exception — do NOT use it
+  // to justify future V1 additions; V2 dashboard owns everything else.
+  const [pendingList,         setPendingList]         = React.useState(null);
+  const [pendingListLoading,  setPendingListLoading]  = React.useState(false);
+  const [pendingListErr,      setPendingListErr]      = React.useState('');
+  const [pendingModalOpen,    setPendingModalOpen]    = React.useState(false);
+  // per-product_code state maps — keep modal scalable for batches with
+  // many pending rows (raised by reviewer-challenge as scale concern)
+  const [pendingActionBusy,   setPendingActionBusy]   = React.useState({});
+  const [pendingActionMsg,    setPendingActionMsg]    = React.useState({});
+  const [pendingCompare,      setPendingCompare]      = React.useState({});
+  const [pendingCompareBusy,  setPendingCompareBusy]  = React.useState({});
   const [setupCustomerResolve,        setSetupCustomerResolve]        = React.useState(null);
   const [setupCustomerResolveLoading, setSetupCustomerResolveLoading] = React.useState(false);
   const [setupCustomerResolveErr,     setSetupCustomerResolveErr]     = React.useState('');
@@ -9361,6 +9379,92 @@ function OperatorWorkflowCard({ batchId, onToast }) {
     setSetupProductPreviewLoading(false);
     refreshSetupDetail();
   }, [batchId, refreshSetupDetail]);
+
+  // ── PR 4 of 4 — pending_adoption resolution handlers ───────────────
+  // All reads + writes go through the already-deployed endpoints:
+  //   GET  /api/v1/wfirma/products?sync_status=pending_adoption   (PR foundation)
+  //   GET  /api/v1/wfirma/goods/search-and-compare?product_code=… (PR #300)
+  //   POST /api/v1/wfirma/goods/adopt/{product_code}              (PR #302)
+  //   POST /api/v1/wfirma/goods/update-and-adopt/{product_code}   (PR #302)
+  //   POST /api/v1/wfirma/goods/create-and-adopt/{product_code}   (PR #302)
+  // This UI is a THIN CALLER — it never re-derives workflow legality,
+  // never silently advances pending→matched, never persists locally.
+  // Backend authority is preserved.
+
+  const refreshPendingList = React.useCallback(async () => {
+    setPendingListLoading(true); setPendingListErr('');
+    try {
+      const d = await apiFetch('/api/v1/wfirma/products?sync_status=pending_adoption');
+      setPendingList((d && d.products) || []);
+    } catch (e) {
+      setPendingListErr((e && e.message) || 'pending list fetch failed');
+      setPendingList(null);
+    }
+    setPendingListLoading(false);
+  }, []);
+
+  const fetchPendingCompare = React.useCallback(async (productCode) => {
+    setPendingCompareBusy(prev => ({ ...prev, [productCode]: true }));
+    try {
+      const d = await apiFetch(
+        `/api/v1/wfirma/goods/search-and-compare?product_code=${encodeURIComponent(productCode)}`
+      );
+      setPendingCompare(prev => ({ ...prev, [productCode]: (d && d.comparison) || null }));
+    } catch (e) {
+      setPendingCompare(prev => ({
+        ...prev, [productCode]: { error: (e && e.message) || 'compare failed' }
+      }));
+    }
+    setPendingCompareBusy(prev => ({ ...prev, [productCode]: false }));
+  }, []);
+
+  const _postPendingAction = React.useCallback(async (productCode, endpoint, actionLabel) => {
+    setPendingActionBusy(prev => ({ ...prev, [productCode]: actionLabel }));
+    setPendingActionMsg(prev => ({ ...prev, [productCode]: '' }));
+    try {
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      const operator = (localStorage.getItem('pz_operator_name') || '').trim();
+      const r = await fetch(
+        `/api/v1/wfirma/goods/${endpoint}/${encodeURIComponent(productCode)}`,
+        { method:      'POST',
+          headers:     { ...hdrs, 'X-Operator': operator || 'operator' },
+          credentials: 'include' },
+      );
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setPendingActionMsg(prev => ({ ...prev, [productCode]: `${actionLabel} succeeded` }));
+        // Real-time refresh — addresses reviewer-challenge race concern:
+        // after any operator action, re-fetch list so other open modals
+        // see the row removed on next render.
+        await refreshPendingList();
+      } else {
+        const detail = j && (j.detail || j.error);
+        const msg    = typeof detail === 'string' ? detail
+                     : (detail && detail.error)    ? detail.error
+                     : `HTTP ${r.status}`;
+        setPendingActionMsg(prev => ({ ...prev, [productCode]: `${actionLabel} failed: ${msg}` }));
+      }
+    } catch (e) {
+      setPendingActionMsg(prev => ({ ...prev, [productCode]: `${actionLabel} error: ${e.message || e}` }));
+    }
+    setPendingActionBusy(prev => ({ ...prev, [productCode]: '' }));
+  }, [refreshPendingList]);
+
+  const handlePendingAdopt          = React.useCallback((pc) => _postPendingAction(pc, 'adopt',            'Adopt as-is'),       [_postPendingAction]);
+  const handlePendingUpdateAndAdopt = React.useCallback((pc) => _postPendingAction(pc, 'update-and-adopt', 'Update then adopt'), [_postPendingAction]);
+  const handlePendingCreateAndAdopt = React.useCallback((pc) => _postPendingAction(pc, 'create-and-adopt', 'Create new'),        [_postPendingAction]);
+
+  const openPendingModal  = React.useCallback(() => {
+    setPendingModalOpen(true);
+    refreshPendingList();
+  }, [refreshPendingList]);
+
+  // Cancel-is-noop: ONLY resets local UI state. No backend call. No
+  // mutation. The deployed endpoints are the single source of truth
+  // for whether a pending row advances to matched.
+  const closePendingModal = React.useCallback(() => {
+    setPendingModalOpen(false);
+  }, []);
 
   // ── C25A-handlers — Customer resolve (dry-run) ─────────────────────
   // POST /api/v1/wfirma/customers/auto-resolve-preview/{batch}.  NEVER
@@ -10552,6 +10656,150 @@ function OperatorWorkflowCard({ batchId, onToast }) {
                   </div>
                 )}
               </div>
+            )}
+
+            {/* ── PR 4 of 4 — pending_adoption operator-decision surface ───
+                V1-freeze exception per Lesson F. Each new product_code
+                discovered in wFirma must be explicitly resolved by the
+                operator. NO silent adoption. NO automatic sync_status=
+                "matched". Cancel/close causes zero mutation.
+            */}
+            <div data-testid="pending-adoption-panel"
+                 style={{ marginTop: 10, padding: '8px 10px',
+                          background: 'var(--bg)', border: '1px solid var(--border-subtle)',
+                          borderRadius: 3, fontSize: 11 }}>
+              <div style={{ display: 'flex', alignItems: 'center',
+                            justifyContent: 'space-between', marginBottom: 4 }}>
+                <div style={{ fontWeight: 600 }}>Pending wFirma adoption decisions</div>
+                <Btn variant="outline"
+                     data-testid="pending-adoption-open-modal"
+                     onClick={openPendingModal}>
+                  Resolve pending products
+                </Btn>
+              </div>
+              <div style={{ color: 'var(--text-3)' }}>
+                Each new product_code found in wFirma must be explicitly
+                adopted. PZ + Proforma stay blocked until an operator chooses.
+              </div>
+            </div>
+
+            {pendingModalOpen && (
+              <Modal title="Resolve pending wFirma products"
+                     onClose={closePendingModal} wide>
+                <div data-testid="pending-adoption-modal-body"
+                     style={{ fontSize: 11 }}>
+                  {pendingListLoading && <div>Loading pending rows…</div>}
+                  {pendingListErr && (
+                    <div data-testid="pending-adoption-error"
+                         style={{ color: 'var(--badge-red-text)' }}>
+                      error: {pendingListErr}
+                    </div>
+                  )}
+                  {!pendingListLoading && !pendingListErr &&
+                    Array.isArray(pendingList) && pendingList.length === 0 && (
+                    <div data-testid="pending-adoption-empty"
+                         style={{ color: 'var(--text-3)' }}>
+                      No pending products. All product_codes resolved.
+                    </div>
+                  )}
+                  {!pendingListLoading && Array.isArray(pendingList) &&
+                    pendingList.length > 0 && (
+                    // Scrollable list — handles batches with many pending
+                    // rows (raised by reviewer-challenge as scale concern).
+                    <div data-testid="pending-adoption-list"
+                         style={{ maxHeight: 480, overflowY: 'auto' }}>
+                      {pendingList.map((p) => {
+                        const pc   = p.product_code;
+                        const cmp  = pendingCompare[pc];
+                        const busy = pendingActionBusy[pc];
+                        const msg  = pendingActionMsg[pc];
+                        const isErrMsg = msg && (msg.includes('failed') || msg.includes('error'));
+                        return (
+                          <div key={pc}
+                               data-testid={`pending-row-${pc}`}
+                               style={{ padding: 8, border: '1px solid var(--border-subtle)',
+                                        borderRadius: 3, marginBottom: 6 }}>
+                            <div style={{ display: 'flex',
+                                          justifyContent: 'space-between',
+                                          alignItems: 'center',
+                                          marginBottom: 4 }}>
+                              <div style={{ fontWeight: 600, fontFamily: 'monospace' }}>{pc}</div>
+                              <div style={{ color: 'var(--text-3)', fontSize: 10 }}>
+                                wfid={p.wfirma_product_id || '—'} ·
+                                name={p.product_name_pl || '—'} ·
+                                unit={p.unit || '—'}
+                              </div>
+                            </div>
+                            <div style={{ marginBottom: 4 }}>
+                              <Btn variant="outline"
+                                   data-testid={`pending-compare-${pc}`}
+                                   onClick={() => fetchPendingCompare(pc)}
+                                   disabled={!!pendingCompareBusy[pc]}>
+                                {pendingCompareBusy[pc] ? '⟳ Comparing…' : 'Compare with wFirma'}
+                              </Btn>
+                              {cmp && (
+                                <div data-testid={`pending-comparison-${pc}`}
+                                     style={{ marginTop: 4, padding: 6, fontSize: 10,
+                                              background: 'var(--bg)',
+                                              border: '1px dashed var(--border-subtle)' }}>
+                                  {cmp.error ? (
+                                    <div style={{ color: 'var(--badge-red-text)' }}>{cmp.error}</div>
+                                  ) : (
+                                    <>
+                                      <div><b>recommendation:</b> {cmp.recommendation}</div>
+                                      {cmp.advisory && (
+                                        <div style={{ marginTop: 2 }}>{cmp.advisory}</div>
+                                      )}
+                                      {Array.isArray(cmp.differences) && cmp.differences.length > 0 && (
+                                        <div style={{ marginTop: 2 }}>
+                                          <b>differences:</b>
+                                          {cmp.differences.map((d, i) => (
+                                            <div key={i} style={{ fontFamily: 'monospace' }}>
+                                              · {d.field} [{d.severity}] local={JSON.stringify(d.local)} wfirma={JSON.stringify(d.wfirma)}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              <Btn data-testid={`pending-action-adopt-${pc}`}
+                                   onClick={() => handlePendingAdopt(pc)}
+                                   disabled={!!busy}>
+                                {busy === 'Adopt as-is' ? '⟳ Adopting…' : 'Adopt as-is'}
+                              </Btn>
+                              <Btn data-testid={`pending-action-update-${pc}`}
+                                   onClick={() => handlePendingUpdateAndAdopt(pc)}
+                                   disabled={!!busy}>
+                                {busy === 'Update then adopt' ? '⟳ Updating…' : 'Update then adopt'}
+                              </Btn>
+                              <Btn data-testid={`pending-action-create-${pc}`}
+                                   onClick={() => handlePendingCreateAndAdopt(pc)}
+                                   disabled={!!busy}>
+                                {busy === 'Create new' ? '⟳ Creating…' : 'Create new'}
+                              </Btn>
+                            </div>
+                            {msg && (
+                              <div data-testid={`pending-message-${pc}`}
+                                   style={{ marginTop: 4, fontSize: 10,
+                                            color: isErrMsg ? 'var(--badge-red-text)' : 'var(--badge-green-text)' }}>
+                                {msg}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div style={{ marginTop: 8, textAlign: 'right' }}>
+                    <Btn data-testid="pending-adoption-close"
+                         onClick={closePendingModal}>Close (no mutation)</Btn>
+                  </div>
+                </div>
+              </Modal>
             )}
 
             {/* C25A-handlers — inline customer resolve result */}
