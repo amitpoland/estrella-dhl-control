@@ -233,6 +233,7 @@ Model Selection Policy (Haiku → Sonnet → Opus)
 - **PR #314**: open 2026-05-23, branch `feat/phase4-master-data-intelligence`
 - **Deploy note**: standard robocopy `service/app → C:\PZ\app` covers all 3 new files. No schema change, no migration, no engine-layer files.
 - **GATE 2 state**: 2/3 open PRs after #314 (#268 Lesson G docs + #314 Phase 4)
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase4-mdi-foundation.md` — 6 agents, all EXEMPLARY
 
 ---
 
