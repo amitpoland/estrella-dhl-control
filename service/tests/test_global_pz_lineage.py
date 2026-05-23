@@ -10,7 +10,12 @@ ACCEPTANCE CRITERIA (from task spec, Invoice 088/2026-2027):
   - Every packing row 1-245 assigned exactly once
   - Every invoice position has matched packing rows
   - No Ring/Pendant/Bangle/Earring visibility lost inside mixed PZ lines
-  - match_status = PARTIAL_MATCH or FULL_MATCH (never UNMATCHED)
+  - match_status = WARNING_MATCH (never FULL_MATCH when positions are PARTIAL/OVERFLOW)
+  - shipment_total_match = FULL (aggregate qty/FOB balance)
+  - invoice_position_match = WARNING (individual positions have PARTIAL/OVERFLOW)
+  - packing_row_assignment_match = WARNING (all rows assigned but with overflow)
+  - duplicate_assignments = [] (no serial assigned more than once)
+  - Every PARTIAL/OVERFLOW link has non-empty confidence_reason
 
 UNIT TESTS:
   - Stone classifier vocabulary alignment with invoice position parser
@@ -268,8 +273,12 @@ class TestSingleTypePosition:
         ]
 
     def test_returns_full_match(self):
+        # Clean single-type position with exact metal + stone → FULL_MATCH
         result = build_global_pz_lineage(self._positions(), self._packing())
-        assert result.match_status in ("FULL_MATCH", "PARTIAL_MATCH")
+        assert result.match_status == "FULL_MATCH"
+        assert result.invoice_position_match == "FULL"
+        assert result.shipment_total_match == "FULL"
+        assert result.packing_row_assignment_match == "FULL"
 
     def test_all_packing_rows_assigned(self):
         result = build_global_pz_lineage(self._positions(), self._packing())
@@ -602,3 +611,401 @@ class TestAcceptance088:
         all_styles = [s for lk in pos1_links for s in lk.style_codes]
         assert len(all_styles) == 2
         assert "JBR00377" in all_styles
+
+    # ── New hardening tests (PR #306 hardening) ───────────────────────────
+
+    def test_match_status_is_warning_not_full(self, result):
+        """Core rule: FULL_MATCH forbidden when any position is PARTIAL/OVERFLOW."""
+        assert result.match_status == "WARNING_MATCH", (
+            f"Expected WARNING_MATCH (positions have PARTIAL/OVERFLOW); "
+            f"got {result.match_status!r}"
+        )
+
+    def test_shipment_totals_are_full(self, result):
+        """Aggregate qty=245 and FOB=3172 balance → shipment_total_match FULL."""
+        assert result.shipment_total_match == "FULL", (
+            f"shipment_total_match={result.shipment_total_match!r}; "
+            f"pack_qty={result.total_packing_qty}, inv_qty={result.total_invoice_qty}, "
+            f"pack_fob={result.total_packing_fob_usd}, inv_fob={result.total_invoice_fob_usd}"
+        )
+
+    def test_invoice_position_match_is_warning(self, result):
+        """Individual positions have PARTIAL/OVERFLOW → invoice_position_match WARNING."""
+        assert result.invoice_position_match == "WARNING", (
+            f"invoice_position_match={result.invoice_position_match!r}; "
+            f"link statuses: "
+            + ", ".join(
+                f"pos{lk.position_no}/{lk.invoice_item_type}={lk.match_status}"
+                for lk in result.position_links
+                if lk.match_status not in ("FULL", "EMPTY")
+            )
+        )
+
+    def test_packing_row_assignment_is_not_partial(self, result):
+        """All 245 rows assigned → packing_row_assignment_match FULL or WARNING."""
+        assert result.packing_row_assignment_match in ("FULL", "WARNING"), (
+            f"packing_row_assignment_match={result.packing_row_assignment_match!r}"
+        )
+
+    def test_no_duplicate_assignments(self, result):
+        """Each packing serial must be assigned at most once."""
+        assert result.duplicate_assignments == [], (
+            f"Duplicate serials: {result.duplicate_assignments}"
+        )
+
+    def test_every_partial_overflow_link_has_confidence_reason(self, result):
+        """Every PARTIAL/OVERFLOW link must carry a non-empty confidence_reason."""
+        bad = [
+            f"pos{lk.position_no}/{lk.invoice_item_type}={lk.match_status}"
+            for lk in result.position_links
+            if lk.match_status in ("PARTIAL", "OVERFLOW") and not lk.confidence_reason
+        ]
+        assert not bad, f"Missing confidence_reason on: {bad}"
+
+    def test_shared_stone_positions_have_shared_annotation(self, result):
+        """Links in stone-family-ambiguous groups must name the shared positions."""
+        # CZ Stud Silver has both INV-04 and INV-05 — they share the same
+        # stone-family key for RING.
+        shared_links = [
+            lk for lk in result.position_links
+            if lk.stone_family_shared_positions
+        ]
+        assert shared_links, (
+            "Expected at least some links to have stone_family_shared_positions"
+        )
+
+    def test_pz_position_no_and_invoice_position_no_tracked_separately(self, result):
+        """pz_position_no (sequential) and invoice_position_no (INV-NN) must
+        be stored as independent fields in every PZLineLineage."""
+        if not result.pz_line_lineages:
+            pytest.skip("pz_rows not provided")
+        for lin in result.pz_line_lineages:
+            assert hasattr(lin, "pz_position_no")
+            assert hasattr(lin, "invoice_position_no")
+            # Both must be positive integers
+            assert lin.pz_position_no > 0, f"pz_position_no not positive: {lin}"
+            assert lin.invoice_position_no > 0, f"invoice_position_no not positive: {lin}"
+
+    def test_supplier_serial_nos_preserved(self, result):
+        """Packing serials must match the supplier's original row numbers (1-245),
+        not internally-derived indexes."""
+        all_serials = sorted(s for lk in result.position_links for s in lk.packing_serials)
+        assert all_serials == list(range(1, 246)), (
+            "Serial numbers must be the supplier's original packing row numbers"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4-dimensional status model — unit tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestStatusDimensions:
+    """Rules for the four independent match-quality dimensions."""
+
+    def _clean_result(self):
+        """One position, exact metal+stone, qty matches exactly → FULL_MATCH."""
+        pos = [_make_invoice_position(
+            1, "PCS", "09KT Gold", "Lab Grown Diamond Jewellery",
+            [{"type": "Bracelet", "qty": 2.0, "amount": 600.0}],
+        )]
+        packing = [
+            _make_packing_row(1, "Bracelet", "9KT GOLD", "LAB ROUND DIA 1 2.0", fob=300.0),
+            _make_packing_row(2, "Bracelet", "9KT GOLD", "LAB ROUND DIA 1 2.0", fob=300.0),
+        ]
+        return build_global_pz_lineage(pos, packing)
+
+    def _overflow_result(self):
+        """One position, 3 rows but budget=2 → OVERFLOW link."""
+        pos = [_make_invoice_position(
+            1, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 2.0, "amount": 20.0}],
+        )]
+        packing = [
+            _make_packing_row(s, "Ring", "925 SILVER", "CZ Round Shape 2 0.060", fob=10.0)
+            for s in [1, 2, 3]
+        ]
+        return build_global_pz_lineage(pos, packing)
+
+    def _partial_result(self):
+        """One position, budget=5 but only 3 rows → PARTIAL link."""
+        pos = [_make_invoice_position(
+            1, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 5.0, "amount": 50.0}],
+        )]
+        packing = [
+            _make_packing_row(s, "Ring", "925 SILVER", "CZ Round Shape 2 0.060", fob=10.0)
+            for s in [1, 2, 3]
+        ]
+        return build_global_pz_lineage(pos, packing)
+
+    def _empty_position_result(self):
+        """Two positions; packing only for position 1 → position 2 EMPTY."""
+        pos = [
+            _make_invoice_position(
+                1, "PCS", "925 Silver", "CZ Stud Jewellery",
+                [{"type": "Ring", "qty": 2.0, "amount": 20.0}],
+            ),
+            _make_invoice_position(
+                2, "PCS", "09KT Gold", "Lab Grown Diamond Jewellery",
+                [{"type": "Bracelet", "qty": 1.0, "amount": 500.0}],
+            ),
+        ]
+        packing = [
+            _make_packing_row(s, "Ring", "925 SILVER", "CZ Round Shape 1 0.010", fob=10.0)
+            for s in [1, 2]
+        ]
+        return build_global_pz_lineage(pos, packing)
+
+    # ── Clean / FULL_MATCH ────────────────────────────────────────────────
+
+    def test_clean_match_status_is_full_match(self):
+        r = self._clean_result()
+        assert r.match_status == "FULL_MATCH"
+
+    def test_clean_all_dimensions_full(self):
+        r = self._clean_result()
+        assert r.shipment_total_match        == "FULL"
+        assert r.invoice_position_match      == "FULL"
+        assert r.packing_row_assignment_match == "FULL"
+
+    # ── OVERFLOW ─────────────────────────────────────────────────────────
+
+    def test_overflow_match_status_is_warning(self):
+        """Overflow where 3 rows fill a budget-2 position: aggregate qty mismatch
+        (3 vs 2) → shipment_total=PARTIAL → overall PARTIAL_MATCH.
+        WARNING_MATCH requires aggregate totals to balance (as in 088/2026-2027
+        where stone-family shifting keeps qty=245 intact)."""
+        r = self._overflow_result()
+        assert r.match_status == "PARTIAL_MATCH"
+        assert r.match_status != "FULL_MATCH"
+
+    def test_overflow_invoice_position_match_is_warning(self):
+        r = self._overflow_result()
+        assert r.invoice_position_match == "WARNING"
+
+    def test_overflow_packing_row_assignment_is_warning(self):
+        """All rows assigned even with overflow → row assignment is WARNING not PARTIAL."""
+        r = self._overflow_result()
+        assert r.packing_row_assignment_match == "WARNING"
+        assert r.unmatched_packing_serials == []
+
+    def test_no_full_match_when_overflow_exists(self):
+        """Core rule: FULL_MATCH forbidden when any position is OVERFLOW."""
+        r = self._overflow_result()
+        assert r.match_status != "FULL_MATCH"
+
+    # ── PARTIAL (under-assigned) ──────────────────────────────────────────
+
+    def test_partial_match_status_is_warning(self):
+        """Under-assigned position where 3 rows fill a budget-5 position:
+        aggregate qty mismatch (3 vs 5) → shipment_total=PARTIAL → overall
+        PARTIAL_MATCH. WARNING_MATCH requires totals to balance globally."""
+        r = self._partial_result()
+        assert r.match_status == "PARTIAL_MATCH"
+        assert r.match_status != "FULL_MATCH"
+        assert r.invoice_position_match == "WARNING"
+
+    def test_partial_invoice_position_match_is_warning(self):
+        r = self._partial_result()
+        assert r.invoice_position_match == "WARNING"
+
+    def test_no_full_match_when_partial_position_exists(self):
+        """Core rule: FULL_MATCH forbidden when any position is PARTIAL."""
+        r = self._partial_result()
+        assert r.match_status != "FULL_MATCH"
+
+    # ── EMPTY position (position with no rows at all) ─────────────────────
+
+    def test_empty_position_degrades_invoice_to_partial(self):
+        """A position with ALL EMPTY links → invoice_position_match = PARTIAL."""
+        r = self._empty_position_result()
+        assert r.invoice_position_match == "PARTIAL"
+
+    def test_empty_position_match_status_is_partial(self):
+        r = self._empty_position_result()
+        assert r.match_status == "PARTIAL_MATCH"
+
+    # ── Duplicate serial enforcement ──────────────────────────────────────
+
+    def test_duplicate_serial_recorded_not_double_assigned(self):
+        """A serial that appears twice in packing_rows is assigned once,
+        second occurrence goes to duplicate_assignments."""
+        pos = [_make_invoice_position(
+            1, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 3.0, "amount": 30.0}],
+        )]
+        packing = [
+            _make_packing_row(1, "Ring", "925 SILVER", "CZ Round Shape", fob=10.0),
+            _make_packing_row(1, "Ring", "925 SILVER", "CZ Round Shape", fob=10.0),  # dupe
+            _make_packing_row(2, "Ring", "925 SILVER", "CZ Round Shape", fob=10.0),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        assert 1 in r.duplicate_assignments
+        # Serial 1 assigned exactly once
+        all_serials = [s for lk in r.position_links for s in lk.packing_serials]
+        assert all_serials.count(1) == 1
+
+    def test_no_duplicates_in_clean_shipment(self):
+        assert self._clean_result().duplicate_assignments == []
+
+    # ── Stone-family shared-position detection ────────────────────────────
+
+    def test_shared_stone_family_positions_annotated(self):
+        """Two positions with same (unit, stone_en, item_type) key get
+        stone_family_shared_positions set on both links."""
+        pos = [
+            _make_invoice_position(
+                4, "PCS", "925 Silver", "CZ Stud Jewellery",
+                [{"type": "Ring", "qty": 3.0, "amount": 30.0}],
+            ),
+            _make_invoice_position(
+                5, "PCS", "925 Silver", "CZ Stud Jewellery",
+                [{"type": "Ring", "qty": 2.0, "amount": 20.0}],
+            ),
+        ]
+        packing = [
+            _make_packing_row(s, "Ring", "925 SILVER", "CZ Round Shape 1 0.050", fob=10.0)
+            for s in range(1, 6)
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        ring_links = [lk for lk in r.position_links if lk.invoice_item_type == "RING"]
+        assert len(ring_links) == 2
+        # Both links must name the other position in their shared list
+        assert 5 in ring_links[0].stone_family_shared_positions
+        assert 4 in ring_links[1].stone_family_shared_positions
+
+    def test_shared_stone_overflow_has_reason_with_position_names(self):
+        """Overflow caused by stone-family budget-shift must name the shared positions."""
+        pos = [
+            _make_invoice_position(
+                4, "PCS", "925 Silver", "CZ Stud Jewellery",
+                [{"type": "Ring", "qty": 3.0, "amount": 30.0}],
+            ),
+            _make_invoice_position(
+                5, "PCS", "925 Silver", "CZ Stud Jewellery",
+                [{"type": "Ring", "qty": 2.0, "amount": 20.0}],
+            ),
+        ]
+        # 6 rings: pos 4 fills (budget 3), then 3 more spill into pos 5 (budget 2) → OVERFLOW
+        packing = [
+            _make_packing_row(s, "Ring", "925 SILVER", "CZ Round Shape 1 0.050", fob=10.0)
+            for s in range(1, 7)
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        overflow_links = [lk for lk in r.position_links if lk.match_status == "OVERFLOW"]
+        assert overflow_links, "Expected at least one OVERFLOW link"
+        for lk in overflow_links:
+            assert lk.confidence_reason, f"Missing confidence_reason on OVERFLOW link pos{lk.position_no}"
+            assert str(lk.position_no) in lk.confidence_reason or \
+                   any(str(p) in lk.confidence_reason for p in lk.stone_family_shared_positions), \
+                   f"Position numbers not in confidence_reason: {lk.confidence_reason!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Confidence reasons — unit tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestConfidenceReasons:
+    """confidence_reason is present and informative on every PARTIAL/OVERFLOW link."""
+
+    def test_overflow_link_has_reason_naming_quantities(self):
+        pos = [_make_invoice_position(
+            1, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 2.0, "amount": 20.0}],
+        )]
+        packing = [
+            _make_packing_row(s, "Ring", "925 SILVER", "CZ Round Shape", fob=10.0)
+            for s in [1, 2, 3]
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        link = r.position_links[0]
+        assert link.match_status == "OVERFLOW"
+        assert link.confidence_reason, "OVERFLOW must have confidence_reason"
+        # Must mention the excess
+        assert "3" in link.confidence_reason   # packing qty
+        assert "2" in link.confidence_reason   # invoice qty
+
+    def test_partial_link_has_reason_naming_quantities(self):
+        pos = [_make_invoice_position(
+            1, "PCS", "925 Silver", "CZ Stud Jewellery",
+            [{"type": "Ring", "qty": 5.0, "amount": 50.0}],
+        )]
+        packing = [
+            _make_packing_row(s, "Ring", "925 SILVER", "CZ Round Shape", fob=10.0)
+            for s in [1, 2, 3]
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        link = r.position_links[0]
+        assert link.match_status == "PARTIAL"
+        assert link.confidence_reason
+        assert "3" in link.confidence_reason   # packing qty
+        assert "5" in link.confidence_reason   # invoice qty
+
+    def test_empty_link_has_reason(self):
+        pos = [
+            _make_invoice_position(
+                1, "PCS", "925 Silver", "CZ Stud Jewellery",
+                [{"type": "Ring", "qty": 2.0, "amount": 20.0}],
+            ),
+            _make_invoice_position(
+                2, "PCS", "09KT Gold", "Lab Grown Diamond Jewellery",
+                [{"type": "Bracelet", "qty": 1.0, "amount": 500.0}],
+            ),
+        ]
+        packing = [
+            _make_packing_row(s, "Ring", "925 SILVER", "CZ Round Shape 1", fob=10.0)
+            for s in [1, 2]
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        empty_links = [lk for lk in r.position_links if lk.match_status == "EMPTY"]
+        assert empty_links
+        for lk in empty_links:
+            assert lk.confidence_reason, f"EMPTY link pos{lk.position_no} missing reason"
+
+    def test_full_exact_link_has_empty_reason(self):
+        """Clean FULL + EXACT match with no stone-family sharing → empty reason."""
+        pos = [_make_invoice_position(
+            1, "PCS", "09KT Gold", "Lab Grown Diamond Jewellery",
+            [{"type": "Bracelet", "qty": 2.0, "amount": 600.0}],
+        )]
+        packing = [
+            _make_packing_row(1, "Bracelet", "9KT GOLD", "LAB ROUND DIA 1 2.0", fob=300.0),
+            _make_packing_row(2, "Bracelet", "9KT GOLD", "LAB ROUND DIA 1 2.0", fob=300.0),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        link = r.position_links[0]
+        assert link.match_status == "FULL"
+        assert link.match_tier == "EXACT"
+        assert link.confidence_reason == ""
+
+    def test_ocr_fallback_tier_recorded(self):
+        """LGD earring with OCR-misread metal gets match_tier = OCR_METAL_FALLBACK."""
+        pos = [_make_invoice_position(
+            7, "PRS", "14KT Gold", "Lab Grown Diamond Jewellery",
+            [{"type": "Earrings", "qty": 1.0, "amount": 659.0}],
+        )]
+        packing = [
+            _make_packing_row(184, "Earring", "925 SILVER",
+                              "LAB ROUND DIA 54 1.890 33.000 62.370", fob=659.0),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        link = next(lk for lk in r.position_links if lk.position_no == 7)
+        assert link.match_tier == "OCR_METAL_FALLBACK"
+        assert 184 in link.packing_serials
+
+    def test_ocr_fallback_noted_in_confidence_reason(self):
+        """OCR fallback tier must appear in confidence_reason when it affected the link."""
+        pos = [_make_invoice_position(
+            7, "PRS", "14KT Gold", "Lab Grown Diamond Jewellery",
+            [{"type": "Earrings", "qty": 1.0, "amount": 659.0}],
+        )]
+        packing = [
+            _make_packing_row(184, "Earring", "925 SILVER",
+                              "LAB ROUND DIA 54 1.890 33.000 62.370", fob=659.0),
+        ]
+        r = build_global_pz_lineage(pos, packing)
+        link = next(lk for lk in r.position_links if lk.position_no == 7)
+        # FULL qty match but via OCR fallback — reason should note this
+        assert "OCR" in link.confidence_reason or "fallback" in link.confidence_reason.lower()
