@@ -4,11 +4,43 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PHASE71-MERGED)Z. Origin/main HEAD: cbb23ef. PENDING deploys: Phase 7.1. OPEN PRs: 1/3 (#268 docs-only). Production: Phase 7 LIVE (3302a1b). Phase 7.1: MERGED (SHA cbb23ef) -- deploy pending.
+**Last-run-at:** 2026-05-24T(PHASE8-SPRINT1-PR-OPEN)Z. Origin/main HEAD: cbb23ef. PENDING deploys: Phase 7.1. OPEN PRs: 2/3 (#268 docs-only, #331 Phase 8 Sprint 1). Production: Phase 7 LIVE (3302a1b). Phase 7.1: MERGED (SHA cbb23ef) -- deploy pending. Phase 8 Sprint 1: PR #331 open (f749bb7) -- 7-agent gate ALL GO.
 
 ---
 
 # FACTS
+
+## Phase 8 Sprint 1 -- Intelligence Graph Foundation (2026-05-24, PR #331 OPEN)
+
+**Campaign type**: Read-only batch_id-centered relationship resolver (no LLM, no writes, no routes)
+**Status**: PR #331 OPEN -- branch feat/phase8-intelligence-graph-sprint1, SHA f749bb7. 7-agent gate ALL GO. Awaiting merge.
+
+### Phase 8 Sprint 1 implementation facts (2026-05-24)
+
+- **PR #331** opened 2026-05-24, branch feat/phase8-intelligence-graph-sprint1
+- **Commit SHA**: f749bb7
+- **Files added** (2):
+  - `service/app/services/intelligence_graph.py` -- NEW (816 lines): four read-only builders
+  - `service/tests/test_phase8_intelligence_graph.py` -- NEW (903 lines): 44 tests
+- **Four public builders** (all take batch_id: str → GraphResult):
+  - `build_awb_graph(batch_id)` -- AWB from docs + tracking; detects source conflict
+  - `build_batch_graph(batch_id)` -- full cross-DB (docs/tracking/customer_master/suppliers)
+  - `build_customer_graph(batch_id)` -- customer contractor resolution + conflict exposure
+  - `build_invoice_graph(batch_id)` -- invoice lines + customs MRN (authoritative) + PZ ref
+- **Dataclasses**: AttributedValue (value + authority), LinkCompleteness, GraphResult
+- **Conflict principle**: when two sources disagree → expose both as field + field_conflict. Never pick a winner silently.
+- **Missing-link principle**: null + link_completeness.missing. Never infer.
+- **Governance invariants** (source-grep tested): llm_used=False hardcoded, PRAGMA query_only=ON, no writes, single _ro_conn() entry point
+- **Sprint 1 boundary enforced**: NO routes, NO main.py changes, NO MDI changes, NO search changes
+- **Tests**: 44/44 PASS. 118 Phase 7 tests PASS (0 regressions).
+- **7-agent gate**: ALL 7 GO (Lead Coordinator, Git Diff, Backend Impact, Persistence/Storage, Security, QA, Release Manager)
+- **GATE 2**: 2/3 open PRs (#268 docs + #331) -- within limit
+- **Lesson J compliant**: both files within service/app/** standard robocopy path
+- **PZService restart required**: NO (no main.py, no route changes)
+- **Rollback**: git revert f749bb7 --no-edit + standard robocopy (safe -- no schema, no startup deps)
+- **Sprint 2 prerequisite**: PR #331 merged to main
+
+---
 
 ## Phase 7.1 -- Search Coverage Wiring (2026-05-24, MERGED)
 
