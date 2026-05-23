@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PHASE8-SPRINT1-PR-OPEN)Z. Origin/main HEAD: cbb23ef. PENDING deploys: Phase 7.1. OPEN PRs: 2/3 (#268 docs-only, #331 Phase 8 Sprint 1). Production: Phase 7 LIVE (3302a1b). Phase 7.1: MERGED (SHA cbb23ef) -- deploy pending. Phase 8 Sprint 1: PR #331 open (f749bb7) -- 7-agent gate ALL GO.
+**Last-run-at:** 2026-05-24T(PHASE8-SPRINT1-MERGED)Z. Origin/main HEAD: c9c8418 (post-merge). PENDING deploys: Phase 8 Sprint 1 (separately instructed). OPEN PRs: 1/3 (#268 docs-only). Production: Phase 7.1 LIVE (cbb23ef, confirmed by operator 2026-05-24). Phase 8 Sprint 1: MERGED to main SHA c9c8418 -- NOT deployed.
 
 ---
 
@@ -13,12 +13,12 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 ## Phase 8 Sprint 1 -- Intelligence Graph Foundation (2026-05-24, PR #331 OPEN)
 
 **Campaign type**: Read-only batch_id-centered relationship resolver (no LLM, no writes, no routes)
-**Status**: PR #331 OPEN -- branch feat/phase8-intelligence-graph-sprint1, SHA f749bb7. 7-agent gate ALL GO. Awaiting merge.
+**Status**: PR #331 MERGED -- squash SHA `c9c8418` on main (2026-05-24). NOT deployed (deploy separately instructed). Sprint 2 route work must NOT begin until Sprint 1 is deployed.
 
 ### Phase 8 Sprint 1 implementation facts (2026-05-24)
 
-- **PR #331** opened 2026-05-24, branch feat/phase8-intelligence-graph-sprint1
-- **Commit SHA**: f749bb7
+- **PR #331** squash-merged 2026-05-24, branch feat/phase8-intelligence-graph-sprint1 (deleted after merge)
+- **Commit SHA on main**: c9c8418
 - **Files added** (2):
   - `service/app/services/intelligence_graph.py` -- NEW (816 lines): four read-only builders
   - `service/tests/test_phase8_intelligence_graph.py` -- NEW (903 lines): 44 tests
@@ -38,15 +38,15 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Lesson J compliant**: both files within service/app/** standard robocopy path
 - **PZService restart required**: NO (no main.py, no route changes)
 - **Rollback**: git revert f749bb7 --no-edit + standard robocopy (safe -- no schema, no startup deps)
-- **Sprint 2 prerequisite**: PR #331 merged to main
+- **Sprint 2 prerequisite**: PR #331 merged to main [DONE] + Sprint 1 deployed to production [PENDING operator instruction]
 - **Scorecard**: `.claude/memory/scorecards/2026-05-24-phase8-sprint1-intelligence-graph.md` -- 6 EXEMPLARY, 0 ACCEPTABLE, 0 NEEDS-TUNING (2026-05-24)
 
 ---
 
-## Phase 7.1 -- Search Coverage Wiring (2026-05-24, MERGED)
+## Phase 7.1 -- Search Coverage Wiring (2026-05-24, LIVE)
 
 **Campaign type**: Search coverage extension (deterministic, no LLM, no writes)
-**Status**: PR #328 MERGED -- squash SHA `cbb23ef` on main (2026-05-24). Deploy pending operator execution.
+**Status**: LIVE in production. Windows HEAD: cbb23ef (confirmed by operator 2026-05-24). Evidence: GET /api/v1/search?q=9765416334 -> 200, interpreted_as=AWB 9765416334, domains_searched=["document","shipment"], llm_used=false, stderr clean.
 
 ### Phase 7.1 implementation facts (2026-05-24)
 
@@ -72,7 +72,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **PZService restart required** on deployment
 - **Production gap note (AWB 0 hits after deploy)**: Even after deploy, `q=9765416334` will return 0 SHIPMENT hits until DHL tracking events for that AWB are recorded via the self-clearance pipeline. tracking_events.db will be created (empty) at startup. Shipment hits appear only when real tracking events exist.
 - **HS gap note**: HS -> product 0 hits is a data-only gap (designs table empty in production). Code is correct; no Phase 7.1 fix needed.
-- **PENDING deploys**: Phase 7.1 (cbb23ef)
+- **DEPLOYED**: Phase 7.1 LIVE -- confirmed by operator 2026-05-24. Windows HEAD cbb23ef. GET /search returns domains_searched=["document","shipment"].
 - **Scorecard**: `.claude/memory/scorecards/2026-05-24-phase71-search-coverage-wiring.md` -- 7 EXEMPLARY, 0 ACCEPTABLE, 0 NEEDS-TUNING (2026-05-24)
 
 ---
