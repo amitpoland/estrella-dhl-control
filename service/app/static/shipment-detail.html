@@ -5549,6 +5549,10 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
             {/* Global Jewellery PZ Lineage — read-only, Global supplier only.
                 Renders null for Estrella and all non-Global batches. */}
             <GlobalPZLineageCard batchId={batchId} onToast={onToast} />
+            {/* Global PZ Correction Proposal — read-only advisory, Global supplier only.
+                Renders null for Estrella and all non-Global batches.
+                No POST, no wFirma calls, no PZ mutation. */}
+            <GlobalPZCorrectionProposalCard batchId={batchId} onToast={onToast} />
             {/* ── Legacy / advanced panel ────────────────────────────────────
                 The unified workflow above is the canonical operator surface.
                 Older Section 3 + reservation/wFirma panels stay available
@@ -11511,6 +11515,230 @@ function GlobalPZLineageCard({ batchId, onToast }) {
         </button>
         <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)' }}>
           Read-only · no PZ mutation
+        </span>
+      </div>
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// GLOBAL PZ CORRECTION PROPOSAL CARD  (read-only advisory)
+// ════════════════════════════════════════════════════════════════════
+//
+// Shows only for Global Jewellery batches (gated by is_global_supplier).
+// Renders null for Estrella / all other suppliers — no panel at all.
+//
+// Endpoint (GET only — no mutations):
+//   GET /api/v1/pz/lineage/{batchId}/correction-proposal
+//
+// Option display rules:
+//   KEEP_CURRENT      → green/neutral chip, "Accept recommendation" button disabled
+//                       (acknowledgement endpoint not yet available)
+//   ALIGN_TO_AUTHORITY → amber chip, button disabled "Execution endpoint not available"
+//   SPLIT_TO_STYLE_LEVEL → amber chip, button disabled "Preview only"
+//   CANCEL_AND_RECREATE → hidden unless returned by backend
+//
+// No POST. No wFirma calls. No PZ mutation.
+
+function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError]     = React.useState('');
+
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true); setError('');
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-proposal`,
+        { headers: window.__apiHeaders ? window.__apiHeaders() : {} },
+      );
+      if (!r.ok) { setError(`HTTP ${r.status}`); setData(null); }
+      else        { setData(await r.json()); }
+    } catch (e) { setError(String(e)); setData(null); }
+    finally     { setLoading(false); }
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // ── Style atoms ──────────────────────────────────────────────────
+  const card = {
+    background: 'var(--card,#fff)', border: '1px solid var(--border,#e5e7eb)',
+    borderRadius: 8, padding: 16, marginBottom: 16,
+  };
+  const h2 = {
+    fontSize: 14, fontWeight: 700, marginBottom: 12,
+    display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+  };
+
+  const riskStyle = (level) => {
+    const map = {
+      NONE:   { bg: '#dcfce7', color: '#15803d' },
+      LOW:    { bg: '#fef3c7', color: '#b45309' },
+      MEDIUM: { bg: '#fed7aa', color: '#c2410c' },
+      HIGH:   { bg: '#fee2e2', color: '#991b1b' },
+    };
+    const s = map[level] || { bg: '#f3f4f6', color: '#6b7280' };
+    return {
+      display: 'inline-block', padding: '2px 7px', borderRadius: 8,
+      fontSize: 11, fontWeight: 600, background: s.bg, color: s.color,
+    };
+  };
+
+  const recStyle = (optionId) => {
+    if (optionId === 'KEEP_CURRENT') return { bg: '#dcfce7', color: '#15803d', label: 'KEEP CURRENT' };
+    if (optionId === 'NO_ACTION')    return { bg: '#f3f4f6', color: '#374151', label: 'NO ACTION' };
+    return { bg: '#fef3c7', color: '#b45309', label: optionId };
+  };
+
+  // ── Button label and disabled reason per option ──────────────────
+  const optionButton = (opt) => {
+    if (opt.option_id === 'KEEP_CURRENT') {
+      return { label: 'Accept recommendation', disabledReason: 'Acknowledgement endpoint not yet available' };
+    }
+    if (opt.option_id === 'ALIGN_TO_AUTHORITY') {
+      return { label: 'Align to authority', disabledReason: 'Execution endpoint not available' };
+    }
+    if (opt.option_id === 'SPLIT_TO_STYLE_LEVEL') {
+      return { label: 'Preview split', disabledReason: 'Preview only' };
+    }
+    if (opt.option_id === 'NO_ACTION') {
+      return { label: 'No action needed', disabledReason: 'No changes required' };
+    }
+    return { label: opt.option_id, disabledReason: 'Not yet available' };
+  };
+
+  // ── Loading ───────────────────────────────────────────────────────
+  if (loading) return (
+    <div style={card} data-testid="global-pz-correction-card">
+      <div style={h2}>⚙ PZ Correction Proposal</div>
+      <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}>Loading proposal…</div>
+    </div>
+  );
+
+  // ── Fetch error — suppress silently for non-global (404/non-supplier) ──
+  if (error) {
+    if (error === 'HTTP 404') return null;
+    return (
+      <div style={card} data-testid="global-pz-correction-card">
+        <div style={h2}>⚙ PZ Correction Proposal</div>
+        <div style={{ fontSize: 12, color: '#991b1b' }}
+             data-testid="global-pz-correction-error">
+          Could not load correction proposal: {error}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Supplier gate — suppress for Estrella + all non-Global ───────
+  if (!data || !data.is_global_supplier) return null;
+
+  const rec    = data.recommended_option || 'KEEP_CURRENT';
+  const recS   = recStyle(rec);
+  const options = (data.options || []).filter(o => o.option_id !== 'CANCEL_AND_RECREATE');
+
+  return (
+    <div style={card} data-testid="global-pz-correction-card">
+      {/* ── Header ── */}
+      <div style={h2}>
+        ⚙ PZ Correction Proposal
+        <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 12,
+                       fontSize: 12, fontWeight: 700,
+                       background: recS.bg, color: recS.color }}
+              data-testid="global-pz-correction-recommended-badge">
+          {recS.label}
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-2,#6b7280)', fontWeight: 400 }}
+              data-testid="global-pz-correction-readonly-label">
+          Read-only proposal · no wFirma mutation
+        </span>
+      </div>
+
+      {/* ── Summary stats ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8,
+                    fontSize: 11, marginBottom: 14, padding: 8,
+                    background: 'var(--bg-subtle,#f9fafb)', borderRadius: 4 }}
+           data-testid="global-pz-correction-stats">
+        <div>Current PZ lines: <strong>{data.current_pz_line_count ?? '—'}</strong></div>
+        <div>Authority rows: <strong>{data.authority_row_count ?? '—'}</strong></div>
+        <div>Lineage links: <strong>{data.lineage_link_count ?? '—'}</strong></div>
+      </div>
+
+      {/* ── KEEP_CURRENT affirmative notice ── */}
+      {rec === 'KEEP_CURRENT' && (
+        <div style={{ padding: '8px 12px', background: '#f0fdf4', borderRadius: 6,
+                      fontSize: 12, color: '#15803d', marginBottom: 12,
+                      border: '1px solid #bbf7d0' }}
+             data-testid="global-pz-correction-keep-notice">
+          Existing PZ can remain. Lineage explains the grouped structure.
+        </div>
+      )}
+
+      {/* ── Options list ── */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+           data-testid="global-pz-correction-options">
+        {options.map((opt) => {
+          const btn = optionButton(opt);
+          const isRec = opt.option_id === rec;
+          return (
+            <div key={opt.option_id}
+                 style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 10px',
+                          borderRadius: 6, border: '1px solid var(--border,#e5e7eb)',
+                          background: isRec ? 'var(--bg-subtle,#f9fafb)' : 'transparent' }}
+                 data-testid={`global-pz-correction-option-${opt.option_id}`}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700 }}>{opt.label}</span>
+                  {isRec && (
+                    <span style={{ fontSize: 10, background: '#dcfce7', color: '#15803d',
+                                   borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>
+                      Recommended
+                    </span>
+                  )}
+                  <span style={riskStyle(opt.risk_level)}
+                        data-testid={`global-pz-correction-risk-${opt.option_id}`}>
+                    {opt.risk_level || 'NONE'}
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
+                  {opt.description}
+                </div>
+                {(opt.notes || []).length > 0 && (
+                  <div style={{ fontSize: 10, color: '#b45309', marginTop: 3 }}>
+                    {opt.notes.map((n, i) => <div key={i}>{n}</div>)}
+                  </div>
+                )}
+              </div>
+              <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
+                <button disabled
+                        title={btn.disabledReason}
+                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: 'not-allowed',
+                                 border: '1px solid var(--border,#e5e7eb)', opacity: 0.5,
+                                 background: 'var(--bg,#fff)', color: 'var(--text,#111)' }}
+                        data-testid={`global-pz-correction-btn-${opt.option_id}`}
+                        data-disabled-reason={btn.disabledReason}>
+                  {btn.label}
+                </button>
+                <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)', maxWidth: 140, textAlign: 'right' }}>
+                  {btn.disabledReason}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button onClick={refresh}
+                style={{ fontSize: 11, padding: '3px 8px', cursor: 'pointer',
+                         border: '1px solid var(--border,#e5e7eb)', borderRadius: 4,
+                         background: 'var(--bg,#fff)' }}
+                data-testid="global-pz-correction-refresh">
+          Refresh
+        </button>
+        <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)' }}>
+          Read-only proposal · no wFirma mutation
         </span>
       </div>
     </div>
