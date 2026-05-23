@@ -124,16 +124,24 @@ class TestEnsureProductsForBatch:
         assert p_get.call_count == 9
         p_create.assert_not_called()
 
-    def test_existing_mapped_mirrors_locally_skips_create(self, isolated_dbs, monkeypatch):
-        bid = "B_EXISTING"
+    def test_existing_wfirma_returns_pending_adoption_not_matched(
+        self, isolated_dbs, monkeypatch
+    ):
+        """PR 3 of 4 refit (2026-05-23): when wFirma has a product for a
+        queried product_code, the per-code result MUST be
+        ``pending_adoption`` and the local row MUST be
+        ``sync_status='pending_adoption'`` — NOT ``existing_mapped`` /
+        ``'matched'``. This blocks PZ + Proforma until the operator
+        chooses /adopt or /update-and-adopt."""
+        bid = "B_EXISTING_PENDING"
         _seed_invoice_lines(isolated_dbs / "documents.db", bid,
                             _awb_6049349806_lines()[:3])  # 3 codes
 
-        # All 3 already exist in wFirma
         existing_stub = MagicMock()
         existing_stub.wfirma_id = "WF-EXISTING-1"
         existing_stub.name      = "Pierścionek"
         existing_stub.unit      = "szt."
+        existing_stub.code      = ""
 
         from app.services import wfirma_product_auto_register as svc
         with patch("app.services.wfirma_client.get_product_by_code",
@@ -142,17 +150,185 @@ class TestEnsureProductsForBatch:
             r = svc.ensure_products_for_batch(bid, dry_run=True)
 
         assert r["scanned"] == 3
-        assert r["existing_mapped"] == 3
+        assert r["pending_adoption"] == 3, (
+            f"expected pending_adoption=3, got result: {r}"
+        )
+        assert r["existing_mapped"] == 0, (
+            "must NOT silently auto-adopt as matched — refit pre-condition"
+        )
         assert r["missing"] == 0
+        # The per-code status field must be 'pending_adoption' too
+        for res in r["results"]:
+            assert res["status"] == "pending_adoption", res
+            assert res["wfirma_product_id"] == "WF-EXISTING-1"
+            assert res["wfirma_name"] == "Pierścionek"
+            assert res["wfirma_unit"] == "szt."
         p_create.assert_not_called()
 
-        # Local mirror written via wfdb
+        # Local mirror written with the pending state
         from app.services import wfirma_db as wfdb
         for pc, _, _ in _awb_6049349806_lines()[:3]:
             row = wfdb.get_product(pc)
             assert row is not None, f"local mirror missing for {pc}"
             assert row["wfirma_product_id"] == "WF-EXISTING-1"
-            assert row["sync_status"] == "matched"
+            assert row["sync_status"] == "pending_adoption", (
+                f"sync_status must be 'pending_adoption' (not 'matched'), "
+                f"got {row['sync_status']!r}"
+            )
+
+    def test_existing_wfirma_never_calls_edit_product(self, isolated_dbs):
+        """Operator-required: when wFirma already has the product_code,
+        the auto-register MUST NOT call edit_product. Updates only happen
+        through the explicit POST /goods/update-and-adopt endpoint."""
+        bid = "B_NO_EDIT"
+        _seed_invoice_lines(isolated_dbs / "documents.db", bid,
+                            _awb_6049349806_lines()[:2])
+
+        existing_stub = MagicMock()
+        existing_stub.wfirma_id = "WF-NO-EDIT-1"
+        existing_stub.name      = "Old Name"
+        existing_stub.unit      = "szt."
+        existing_stub.code      = ""
+
+        from app.services import wfirma_product_auto_register as svc
+        # The whole module is patched: even if a regression accidentally
+        # adds an edit_product call, this assertion catches it.
+        with patch("app.services.wfirma_client.get_product_by_code",
+                   return_value=existing_stub), \
+             patch("app.services.wfirma_client.create_product") as p_create, \
+             patch("app.services.wfirma_client.edit_product") as p_edit:
+            r = svc.ensure_products_for_batch(bid, dry_run=True)
+
+        assert r["pending_adoption"] == 2
+        p_create.assert_not_called()
+        p_edit.assert_not_called()
+
+    def test_pending_adoption_blocks_pz_and_proforma_gates(self, isolated_dbs):
+        """Operator-required: a product in 'pending_adoption' state MUST
+        keep PZ and Proforma blocked. The gates in routes_proforma and
+        routes_wfirma check ``sync_status == 'matched'`` exclusively, so
+        any other sync_status (including 'pending_adoption') correctly
+        fails the gate. This test pins the gate contract via wfdb +
+        source-grep — behavioral guarantee that the refit does not
+        accidentally re-enable downstream advance."""
+        bid = "B_PENDING_GATES"
+        _seed_invoice_lines(isolated_dbs / "documents.db", bid,
+                            _awb_6049349806_lines()[:1])
+        existing_stub = MagicMock()
+        existing_stub.wfirma_id = "WF-PENDING-GATE-1"
+        existing_stub.name      = "Pierścionek"
+        existing_stub.unit      = "szt."
+        existing_stub.code      = ""
+
+        from app.services import wfirma_product_auto_register as svc
+        from app.services import wfirma_db as wfdb
+        with patch("app.services.wfirma_client.get_product_by_code",
+                   return_value=existing_stub):
+            r = svc.ensure_products_for_batch(bid, dry_run=True)
+
+        assert r["pending_adoption"] == 1
+
+        # Behavioral: the row sits in 'pending_adoption' — gates will
+        # reject it because their condition is sync_status == 'matched'.
+        row = wfdb.get_product("EJL/26-27/121-1")
+        assert row["sync_status"] == "pending_adoption"
+        assert row["sync_status"] != "matched"
+
+        # Source-grep guard: ensure the PZ + Proforma gates still use
+        # the exact 'matched' literal — pins the contract that any new
+        # sync_status value (including pending_adoption) blocks
+        # downstream advance.
+        from pathlib import Path
+        proforma = (Path(__file__).parents[1] /
+                    "app" / "api" / "routes_proforma.py").read_text(
+            encoding="utf-8", errors="ignore"
+        )
+        wfirma_routes = (Path(__file__).parents[1] /
+                         "app" / "api" / "routes_wfirma.py").read_text(
+            encoding="utf-8", errors="ignore"
+        )
+        # PZ-side gate: routes_wfirma.py contains the canonical
+        # `prod.get("sync_status") == "matched"` literal (line ~140 +
+        # ~750). Both substrings must be present.
+        assert "sync_status" in wfirma_routes, (
+            "routes_wfirma.py must reference sync_status for the gate"
+        )
+        assert '"matched"' in wfirma_routes, (
+            "routes_wfirma.py must reference the 'matched' literal "
+            "as the gate threshold"
+        )
+        # Proforma side: the same 'matched' literal is the gate.
+        assert "sync_status" in proforma, (
+            "routes_proforma.py must reference sync_status"
+        )
+        assert "'matched'" in proforma or '"matched"' in proforma, (
+            "routes_proforma.py must still gate on 'matched'"
+        )
+
+    def test_pending_adoption_fast_path_skips_wfirma_round_trip(
+        self, isolated_dbs
+    ):
+        """A product already in 'pending_adoption' (from a prior run)
+        MUST short-circuit without re-querying wFirma — the comparison
+        surface lives at GET /goods/search-and-compare for the operator
+        UI to consult on demand."""
+        bid = "B_PENDING_FAST_PATH"
+        _seed_invoice_lines(isolated_dbs / "documents.db", bid,
+                            _awb_6049349806_lines()[:1])
+        existing_stub = MagicMock()
+        existing_stub.wfirma_id = "WF-FAST-1"
+        existing_stub.name      = "Initial"
+        existing_stub.unit      = "szt."
+        existing_stub.code      = ""
+
+        from app.services import wfirma_product_auto_register as svc
+
+        # First run: hit wFirma → pending_adoption row written.
+        with patch("app.services.wfirma_client.get_product_by_code",
+                   return_value=existing_stub) as p_first:
+            r1 = svc.ensure_products_for_batch(bid, dry_run=True)
+        assert r1["pending_adoption"] == 1
+        assert p_first.call_count == 1
+
+        # Second run: fast path fires — wFirma must NOT be called again.
+        with patch("app.services.wfirma_client.get_product_by_code",
+                   return_value=existing_stub) as p_second:
+            r2 = svc.ensure_products_for_batch(bid, dry_run=True)
+        assert r2["pending_adoption"] == 1
+        assert p_second.call_count == 0, (
+            "pending_adoption fast path must skip wFirma round-trip"
+        )
+
+    def test_pending_adoption_real_shape_ejl_178_jr08007(self, isolated_dbs):
+        """Lesson A real-shape regression: the operator-cited example
+        product_code 'EJL/26-27/178-1' with design_code 'JR08007' must
+        flow through the pending_adoption path correctly. design_code
+        appears only as part of the invoice description (metadata); the
+        wFirma lookup key is product_code only."""
+        bid = "B_LESSON_A"
+        _seed_invoice_lines(isolated_dbs / "documents.db", bid, [
+            ("EJL/26-27/178-1",
+             "PCS, 14KT Gold,Stud With Diam Jewel RING JR08007", "71131913"),
+        ])
+        existing_stub = MagicMock()
+        existing_stub.wfirma_id = "WF-178-1"
+        existing_stub.name      = "Pierścionek z brylantami"
+        existing_stub.unit      = "szt."
+        existing_stub.code      = "EJL/26-27/178-1"
+
+        from app.services import wfirma_product_auto_register as svc
+        with patch("app.services.wfirma_client.get_product_by_code",
+                   return_value=existing_stub) as p_get:
+            r = svc.ensure_products_for_batch(bid, dry_run=True)
+
+        assert r["pending_adoption"] == 1
+        # The search key must be the product_code, NOT the design_code.
+        p_get.assert_called_once_with("EJL/26-27/178-1")
+        # The local row sits in pending state for operator decision.
+        from app.services import wfirma_db as wfdb
+        row = wfdb.get_product("EJL/26-27/178-1")
+        assert row["wfirma_product_id"] == "WF-178-1"
+        assert row["sync_status"] == "pending_adoption"
 
     def test_missing_flag_off_returns_blocked(self, isolated_dbs, monkeypatch):
         bid = "B_FLAG_OFF"
@@ -415,8 +591,17 @@ def _seed_reservation_queue_db(tmp_path):
 
 class TestReservationMappingMirror:
 
-    def test_existing_mapped_writes_reservation_mapping(self, isolated_dbs):
-        bid = "B_MIRROR_EXISTING"
+    def test_pending_adoption_does_NOT_write_reservation_mapping(
+        self, isolated_dbs
+    ):
+        """PR 3 of 4 refit (2026-05-23): when wFirma already has the
+        product, the row is 'pending_adoption' — no reservation can
+        legitimately advance against a pending row. The reservation_queue
+        mirror MUST therefore NOT be written. (When the operator later
+        invokes /goods/adopt or /goods/update-and-adopt, those endpoints
+        write to wfirma_products as 'matched'; the reservation chain
+        picks up via the existing PZ flow at that point.)"""
+        bid = "B_NO_RES_MIRROR_PENDING"
         _seed_invoice_lines(isolated_dbs / "documents.db", bid,
                             _awb_6049349806_lines()[:2])
         _seed_reservation_queue_db(isolated_dbs)
@@ -432,19 +617,20 @@ class TestReservationMappingMirror:
                    return_value=existing_stub):
             r = svc.ensure_products_for_batch(bid, dry_run=True)
 
-        assert r["existing_mapped"] == 2
-        # Verify mirror rows landed in reservation_queue.wfirma_product_mapping
+        assert r["pending_adoption"] == 2
+        assert r["existing_mapped"] == 0
+        # Reservation queue mirror MUST be empty — no row should be
+        # written for a pending_adoption product. This is the inversion
+        # of the pre-refit contract.
         with sqlite3.connect(str(isolated_dbs / "reservation_queue.db")) as con:
-            con.row_factory = sqlite3.Row
-            rows = con.execute(
-                "SELECT product_code, wfirma_product_id, sync_status "
-                "FROM wfirma_product_mapping ORDER BY product_code"
-            ).fetchall()
-        assert len(rows) == 2
-        for row in rows:
-            assert row["wfirma_product_id"] == "WF-EX-9"
-            assert row["sync_status"] == "matched"
-        # Per-code result has no warnings
+            n = con.execute(
+                "SELECT COUNT(*) FROM wfirma_product_mapping"
+            ).fetchone()[0]
+        assert n == 0, (
+            "pending_adoption MUST NOT write to reservation_queue — "
+            "would create a false reservation surface"
+        )
+        # No warnings expected — there is no mirror call to potentially fail
         for res in r["results"]:
             assert res["warnings"] == []
 
@@ -531,13 +717,16 @@ class TestReservationMappingMirror:
             n = con.execute("SELECT COUNT(*) FROM wfirma_product_mapping").fetchone()[0]
         assert n == 0
 
-    def test_idempotent_second_run_preserves_row(self, isolated_dbs):
-        """Second dry_run call on an already-matched product uses the local-DB
-        fast path (sync_status='matched') and skips the wFirma API round-trip.
-        The contract guaranteed by idempotency is: still exactly 1 mapping row,
-        same wfirma_product_id.  Name refresh is intentionally NOT a dry_run
-        side-effect — dry_run is for existence checks, not data refreshes."""
-        bid = "B_MIRROR_IDEMPOTENT"
+    def test_idempotent_second_run_preserves_pending_row(self, isolated_dbs):
+        """PR 3 of 4 refit (2026-05-23): second dry_run on a
+        pending_adoption product fires the new 'pending_adoption'
+        fast path, skips the wFirma API round-trip, and does NOT
+        write to reservation_queue.
+
+        The idempotency contract is: still exactly 1 wfirma_products
+        row in pending_adoption state, same wfirma_product_id, and
+        zero reservation_queue rows (operator still has not chosen)."""
+        bid = "B_MIRROR_IDEMPOTENT_PENDING"
         _seed_invoice_lines(isolated_dbs / "documents.db", bid,
                             _awb_6049349806_lines()[:1])
         _seed_reservation_queue_db(isolated_dbs)
@@ -552,39 +741,48 @@ class TestReservationMappingMirror:
         with patch("app.services.wfirma_client.get_product_by_code",
                    return_value=existing_stub):
             r1 = svc.ensure_products_for_batch(bid, dry_run=True)
-        assert r1["existing_mapped"] == 1
+        assert r1["pending_adoption"] == 1
 
-        # Second dry_run: local-DB fast path fires — wFirma not called.
-        # Name change on the stub is irrelevant; local mirror is not re-written.
-        existing_stub.name = "Updated Name"
+        # Second dry_run: pending_adoption fast path fires — wFirma not called.
         fetch_calls: list = []
-        original_fetch = svc.wfirma_client.get_product_by_code
         def counting_fetch(code):
             fetch_calls.append(code)
-            return original_fetch(code)
-
+            return existing_stub
         with patch("app.services.wfirma_client.get_product_by_code",
                    side_effect=counting_fetch):
             r2 = svc.ensure_products_for_batch(bid, dry_run=True)
 
-        # Local fast path fired — wFirma should NOT have been called for this code
-        assert len(fetch_calls) == 0, "dry_run fast path must skip wFirma for matched products"
-        assert r2["existing_mapped"] == 1
+        assert len(fetch_calls) == 0, (
+            "dry_run pending_adoption fast path must skip wFirma round-trip"
+        )
+        assert r2["pending_adoption"] == 1
 
+        # wfirma_products: still exactly 1 row, still pending
+        from app.services import wfirma_db as wfdb
+        row = wfdb.get_product("EJL/26-27/121-1")
+        assert row is not None
+        assert row["wfirma_product_id"] == "WF-IDEM-77"
+        assert row["sync_status"] == "pending_adoption"
+
+        # reservation_queue: still empty (no operator decision yet)
         with sqlite3.connect(str(isolated_dbs / "reservation_queue.db")) as con:
-            rows = con.execute(
-                "SELECT product_code, wfirma_product_id, wfirma_name "
-                "FROM wfirma_product_mapping"
-            ).fetchall()
-        # Still exactly 1 row — idempotent
-        assert len(rows) == 1
-        assert rows[0][1] == "WF-IDEM-77"  # correct wfirma_product_id preserved
+            n = con.execute(
+                "SELECT COUNT(*) FROM wfirma_product_mapping"
+            ).fetchone()[0]
+        assert n == 0, (
+            "reservation_queue must stay empty until operator adopts/updates"
+        )
 
-    def test_mirror_failure_does_not_flip_status_records_warning(self, isolated_dbs):
-        """If reservation_queue.db is missing, the product result must
-        remain `existing_mapped` (wFirma + local mirror succeeded) but
-        the per-code result.warnings must record the mirror failure."""
-        bid = "B_MIRROR_NO_DB"
+    def test_pending_adoption_does_not_attempt_reservation_mirror(
+        self, isolated_dbs
+    ):
+        """PR 3 of 4 refit (2026-05-23): the wFirma-hit branch no longer
+        attempts a reservation_queue mirror at all (the prior contract
+        was: mirror failure → warning; the new contract is: no mirror
+        call → no warning, no failure mode). Even when reservation_queue
+        is intentionally absent, the pending_adoption path must complete
+        cleanly without warnings."""
+        bid = "B_NO_MIRROR_CALL"
         _seed_invoice_lines(isolated_dbs / "documents.db", bid,
                             _awb_6049349806_lines()[:1])
         # Deliberately do NOT create reservation_queue.db
@@ -601,11 +799,14 @@ class TestReservationMappingMirror:
                    return_value=existing_stub):
             r = svc.ensure_products_for_batch(bid, dry_run=True)
 
-        # Status still successful — wFirma side + local mirror both ok
-        assert r["existing_mapped"] == 1
+        # Pending state — wFirma + local mirror both ok
+        assert r["pending_adoption"] == 1
+        assert r["existing_mapped"] == 0
         assert r["failed"] == 0
-        # Warning recorded on the per-code result
-        warnings = r["results"][0]["warnings"]
-        assert warnings, "expected a warning when reservation_queue.db absent"
-        assert "reservation_queue.db not found" in warnings[0] or \
-               "reservation_mapping mirror failed" in warnings[0]
+        # No warnings — the refit removed the reservation mirror call
+        # entirely for pending_adoption, so there is no mirror failure
+        # mode to surface.
+        assert r["results"][0]["warnings"] == [], (
+            f"pending_adoption must produce no warnings; got: "
+            f"{r['results'][0]['warnings']}"
+        )

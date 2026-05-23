@@ -9,16 +9,47 @@ flag-gated path for registering one product. This service composes that
 exact logic over a whole batch, so an operator (or a future observer)
 can register every invoice-line code in one call.
 
+PR 3 of 4 — pending-adoption refit (2026-05-23)
+-----------------------------------------------
+The search-first authority workflow (operator-stated 2026-05-23) requires
+an EXPLICIT operator decision when wFirma already has a product for the
+queried ``product_code``. Previously, this module silently mirrored the
+existing wFirma product as ``sync_status='matched'`` — that collapsed
+three distinct operator actions ("adopt as-is", "update then adopt",
+"create new") into one silent path and prevented duplicate-creation
+protection under UI race conditions.
+
+The refit replaces the silent auto-mirror with a ``pending_adoption``
+state. The operator resolves each pending row through the
+search-first write endpoints (deployed at SHA ``2d45e4f``):
+
+  * POST /api/v1/wfirma/goods/adopt/{product_code}             — no overwrite
+  * POST /api/v1/wfirma/goods/update-and-adopt/{product_code}  — yes overwrite
+  * POST /api/v1/wfirma/goods/create-and-adopt/{product_code}  — missing only
+
 Hard rules:
   * The service NEVER calls ``create_product`` in dry-run mode.
+  * The service NEVER calls ``edit_product`` from this module at all
+    (updates are exclusively operator-driven via the /update-and-adopt
+    endpoint).
   * The service NEVER writes to ``wfirma_products`` unless wFirma
     confirms the product (search hit OR successful goods/add with a
     non-empty ``wfirma_id``). No fake mappings.
+  * When wFirma already has the product, the local row is written with
+    ``sync_status='pending_adoption'`` (NOT ``'matched'``). The PZ +
+    Proforma gates check ``sync_status == 'matched'`` exclusively, so
+    pending rows correctly keep downstream workflow blocked until the
+    operator chooses /adopt or /update-and-adopt.
   * The service ALWAYS honors ``settings.wfirma_create_product_allowed``
-    when ``dry_run=False``. There is no service-actor bypass.
+    when ``dry_run=False`` AND the product is missing from wFirma. There
+    is no service-actor bypass.
   * Idempotent: re-running on the same batch produces ``created=0`` once
-    every code is mapped (search-first short-circuits to
-    ``existing_mapped``).
+    every code is either mapped or pending.
+
+Identity rule: ``product_code`` is the sole wFirma lookup key.
+``design_code`` is metadata that may flow through
+``description_engine.get_description_block`` for display formatting but
+is never used as the identity authority for wFirma lookup.
 
 Public API
 ----------
@@ -27,24 +58,29 @@ Public API
 Returns::
 
     {
-      'batch_id':         str,
-      'dry_run':          bool,
-      'scanned':          int,
-      'existing_mapped':  int,
-      'missing':          int,    # dry_run only — codes NOT in wFirma
-      'created':          int,
-      'blocked':          int,    # write-mode + flag off OR description block missing
-      'failed':           int,
-      'errors':           [str],
+      'batch_id':          str,
+      'dry_run':           bool,
+      'scanned':           int,
+      'existing_mapped':   int,   # already locally mapped (matched) — fast path
+      'pending_adoption':  int,   # wFirma has product; operator must choose
+      'missing':           int,   # dry_run only — codes NOT in wFirma
+      'created':           int,   # explicit create succeeded (flag-on path)
+      'blocked':           int,   # write-mode + flag off OR description block missing
+      'failed':            int,
+      'errors':            [str],
       'results': [
          {
            'product_code':       str,
            'item_type':          str,
            'description_en':     str,
-           'status':             'existing_mapped' | 'missing' | 'created'
+           'status':             'existing_mapped' | 'pending_adoption'
+                                  | 'missing' | 'created'
                                   | 'blocked' | 'failed' | 'search_failed',
            'wfirma_product_id':  str (when known) | '',
+           'wfirma_name':        str (when pending_adoption) | '',
+           'wfirma_unit':        str (when pending_adoption) | '',
            'error':              str (when status is failed/blocked/search_failed) | '',
+           'warnings':           [str],
          },
          ...
       ],
@@ -167,32 +203,64 @@ def _register_one(
         "description_en":     description_en,
         "status":             "",
         "wfirma_product_id":  "",
+        # wFirma-side display fields, populated only on pending_adoption so
+        # the operator UI (PR 4) can render the wFirma row without making
+        # another GET /goods/search-and-compare round-trip for the basic
+        # name/unit identity. The full comparison metadata still comes from
+        # the search-and-compare endpoint when the operator opens the modal.
+        "wfirma_name":        "",
+        "wfirma_unit":        "",
         "error":              "",
         # Non-fatal warnings (e.g. reservation_queue mirror failure when
-        # the wFirma + local mirror both succeeded). The status remains
-        # `existing_mapped` / `created`; the operator can re-run later.
+        # the wFirma + local mirror both succeeded on a `created` row).
+        # `pending_adoption` rows do not write to reservation_queue at
+        # all — no warnings expected.
         "warnings":           [],
     }
 
-    # 0. Dry-run fast path: if the product is already confirmed in the local
-    #    wfirma_products DB (sync_status='matched' with a valid wfirma_product_id),
-    #    skip the wFirma API round-trip entirely — no new information can come
-    #    from re-querying a product the local mirror already resolved.
-    #    Write mode (dry_run=False) always goes to wFirma for fresh state.
-    if dry_run:
-        try:
-            local_row = wfdb.get_product(product_code)
-            if (
-                local_row
-                and (local_row.get("sync_status") or "") == "matched"
-                and (local_row.get("wfirma_product_id") or "").strip()
-            ):
-                out["status"]            = "existing_mapped"
-                out["wfirma_product_id"] = local_row["wfirma_product_id"]
-                return out
-        except Exception:
-            # Local-DB check failure is non-fatal — fall through to wFirma.
-            pass
+    # 0. Local-DB fast path: if the product was already resolved through
+    #    a prior operator action (sync_status='matched' via explicit
+    #    /goods/adopt, /goods/update-and-adopt, /goods/create-and-adopt,
+    #    or a legacy auto-register create-flow run) → return
+    #    'existing_mapped' immediately. No wFirma round-trip.
+    #
+    #    If the product is already in 'pending_adoption' from a prior
+    #    run of this same module, return 'pending_adoption' immediately
+    #    too — re-running wFirma search would just re-discover the same
+    #    pending state, and the comparison surface lives at GET
+    #    /goods/search-and-compare for the UI to consult on demand.
+    #
+    #    The fast path runs in BOTH dry_run and write mode for the
+    #    pending_adoption case: write mode must never silently advance
+    #    a pending row to matched without explicit operator action.
+    try:
+        local_row = wfdb.get_product(product_code)
+    except Exception:
+        local_row = None   # non-fatal — fall through to wFirma
+
+    if local_row:
+        _ss  = (local_row.get("sync_status") or "").strip()
+        _wid = (local_row.get("wfirma_product_id") or "").strip()
+        if _ss == "matched" and _wid:
+            # Trust the prior explicit operator decision. Fires in both
+            # dry_run and write mode — re-querying wFirma here only to
+            # re-confirm an already-confirmed mapping wastes a round-trip
+            # and (pre-refit) caused a silent re-mirror that the refit
+            # has converted to pending_adoption. With the local cache as
+            # the trust anchor, idempotent re-runs stay `existing_mapped`.
+            out["status"]            = "existing_mapped"
+            out["wfirma_product_id"] = _wid
+            return out
+        if _ss == "pending_adoption" and _wid:
+            # Already pending — surface to operator UI without re-querying
+            # wFirma. Applies in both dry_run and write mode: write mode
+            # MUST NOT silently advance pending → matched without /adopt
+            # or /update-and-adopt being invoked.
+            out["status"]            = "pending_adoption"
+            out["wfirma_product_id"] = _wid
+            out["wfirma_name"]       = local_row.get("product_name_pl") or ""
+            out["wfirma_unit"]       = local_row.get("unit") or ""
+            return out
 
     # 1. Search wFirma first (read-only)
     try:
@@ -203,8 +271,27 @@ def _register_one(
         return out
 
     if existing is not None:
-        # Mirror locally — same behaviour as the HTTP endpoint's
-        # existing_mapped branch.
+        # ── PR 3 of 4 refit (2026-05-23) ──────────────────────────────
+        # wFirma already has a product for this product_code. The old
+        # behavior silently mirrored it as ``sync_status='matched'`` and
+        # logged a correction-registry "approved" entry — that collapsed
+        # the three distinct operator actions ("adopt as-is", "update
+        # then adopt", "create new") into one silent path and bypassed
+        # the duplicate-creation protection introduced in PR #302.
+        #
+        # The refit:
+        #   * Writes the local row with ``sync_status='pending_adoption'``
+        #     (NOT 'matched') so PZ + Proforma gates correctly block
+        #     downstream workflow until the operator chooses.
+        #   * Stores the wfirma_product_id + name + unit so the operator
+        #     UI (PR 4) can display the wFirma side without re-querying.
+        #   * Does NOT mirror to reservation_queue (no reservation can
+        #     legitimately advance against a pending row).
+        #   * Does NOT log a correction-registry entry (no operator
+        #     decision has been made yet — the /adopt or /update-and-adopt
+        #     endpoint logs the decision when the operator makes it).
+        #   * Does NOT call ``edit_product`` or ``create_product`` — both
+        #     are exclusively operator-driven via the deployed endpoints.
         try:
             wfdb.upsert_product(
                 product_code      = product_code,
@@ -212,7 +299,7 @@ def _register_one(
                 product_name_pl   = existing.name or "",
                 unit              = existing.unit or "szt.",
                 vat_rate          = "23",
-                sync_status       = "matched",
+                sync_status       = "pending_adoption",
             )
         except Exception as exc:
             # Local-mirror failure is reported as failed but never overrides
@@ -220,39 +307,10 @@ def _register_one(
             out["status"] = "failed"
             out["error"]  = f"local mirror failed: {type(exc).__name__}: {exc}"
             return out
-        # Mirror into the secondary reservation registry so the
-        # PZ/reservation chain sees the same mapping. Non-fatal.
-        warn = _mirror_to_reservation_mapping(
-            product_code      = product_code,
-            wfirma_product_id = existing.wfirma_id or "",
-            wfirma_code       = (getattr(existing, "code", "") or product_code),
-            wfirma_name       = existing.name or "",
-            unit              = existing.unit or "szt.",
-        )
-        if warn:
-            out["warnings"].append(warn)
-        out["status"]            = "existing_mapped"
+        out["status"]            = "pending_adoption"
         out["wfirma_product_id"] = existing.wfirma_id
-        # Append-only correction registry — operator-approved mapping outcome.
-        log_warn = _log_correction_safe(
-            correction_type = "product_mapping_override",
-            entity_type     = "product",
-            entity_key      = product_code,
-            old_value       = "missing",
-            new_value       = existing.wfirma_id,
-            batch_id        = batch_id,
-            operator        = operator,
-            module_source   = "wfirma_product_auto_register",
-            confidence      = 1.0,
-            approved        = True,
-            notes           = "existing_mapped",
-            evidence_refs   = [
-                {"type": "endpoint",     "ref": "/api/v1/wfirma/goods/auto-register"},
-                {"type": "product_code", "ref": product_code},
-            ],
-        )
-        if log_warn:
-            out["warnings"].append(log_warn)
+        out["wfirma_name"]       = existing.name or ""
+        out["wfirma_unit"]       = existing.unit or ""
         return out
 
     # 2. Not in wFirma — dry-run reports missing without any write attempt.
@@ -377,16 +435,21 @@ def ensure_products_for_batch(
     See module docstring for the full result shape.
     """
     out: Dict[str, Any] = {
-        "batch_id":         batch_id,
-        "dry_run":          bool(dry_run),
-        "scanned":          0,
-        "existing_mapped":  0,
-        "missing":          0,
-        "created":          0,
-        "blocked":          0,
-        "failed":           0,
-        "errors":           [],
-        "results":          [],
+        "batch_id":          batch_id,
+        "dry_run":           bool(dry_run),
+        "scanned":           0,
+        "existing_mapped":   0,
+        # PR 3 of 4 refit (2026-05-23): when wFirma already has a product
+        # for a queried product_code, the row is persisted as
+        # sync_status='pending_adoption' (not 'matched') and surfaced to
+        # the operator UI for explicit adopt / update-and-adopt decision.
+        "pending_adoption":  0,
+        "missing":           0,
+        "created":           0,
+        "blocked":           0,
+        "failed":            0,
+        "errors":            [],
+        "results":           [],
     }
 
     if not batch_id:
@@ -427,6 +490,8 @@ def ensure_products_for_batch(
         st = res["status"]
         if st == "existing_mapped":
             out["existing_mapped"] += 1
+        elif st == "pending_adoption":
+            out["pending_adoption"] += 1
         elif st == "missing":
             out["missing"] += 1
         elif st == "created":
@@ -440,8 +505,9 @@ def ensure_products_for_batch(
 
     log.info(
         "[wfirma_auto_register] batch=%s dry_run=%s scanned=%d "
-        "existing=%d missing=%d created=%d blocked=%d failed=%d",
+        "existing=%d pending=%d missing=%d created=%d blocked=%d failed=%d",
         batch_id, dry_run, out["scanned"], out["existing_mapped"],
-        out["missing"], out["created"], out["blocked"], out["failed"],
+        out["pending_adoption"], out["missing"], out["created"],
+        out["blocked"], out["failed"],
     )
     return out
