@@ -1165,6 +1165,31 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
 
 # DECISIONS
 
+## Global PZ Correction Workflow — Architecture and Execution Gate (2026-05-23)
+
+- **Global PZ investigation CLOSED at review/proposal layer.** Current AWB 4789974092 recommended action: KEEP_CURRENT. Quantities, FOB, and authority rows reconcile. Lineage is explainable. No information is lost. Current PZ structure is valid. No corrective action required for this shipment.
+
+- **Four-layer execution architecture is locked:**
+  1. Authority generation (lineage engine — live)
+  2. Proposal generation (`global_pz_correction.py` — live)
+  3. Operator review (correction proposal card — live)
+  4. Execution layer — **NOT IMPLEMENTED BY DESIGN. Future campaign only.**
+
+- **Execution layer contract (bind this before any future execution campaign):**
+  - Input: `CorrectionProposal` object (already produced by engine — no recalculation needed)
+  - Path: chosen option → governed execution endpoint → wFirma action
+  - Required per option before any execution PR may open:
+    - `ALIGN_TO_AUTHORITY`: preview + operator confirmation + idempotency + audit trail
+    - `CANCEL_AND_RECREATE`: capability check + side-by-side comparison + operator reason + rollback record
+    - `SPLIT_TO_STYLE_LEVEL`: business approval + accounting approval + explicit execution path
+  - All three require: write gate, idempotency protection, audit trail, rollback command
+
+- **No new lineage or matching work is needed for execution.** `proposed_lines[]`, `recommended_option`, `risk_level`, and current-vs-authority comparison are already present in the proposal object.
+
+- **Execution campaign gate (HARD):** May not begin until operator explicitly instructs. Phase 5 is unrelated and proceeds independently.
+
+---
+
 ## Bound operator decisions
 
 - **GATE 2 limit** — max 3 simultaneous open implementation PRs (+1 docs/governance exception). Source: PR #35 / CLAUDE.md MANDATORY GOVERNANCE GATES.
