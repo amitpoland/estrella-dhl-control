@@ -264,7 +264,7 @@ Model Selection Policy (Haiku → Sonnet → Opus)
 ## Phase 4 — Master Data Intelligence Foundation (2026-05-23, ACTIVE)
 
 **Campaign type**: Platform-wide advisory intelligence (deterministic, no LLM, no writes)  
-**Status**: PR #314 open — `feat/phase4-master-data-intelligence`
+**Status**: PR #314 MERGED — squash SHA `1a74d6c` on main (2026-05-23). Deploy manifest: `.claude/manifests/windows_deploy_1a74d6c.ps1`
 
 ### Phase 4 implementation facts (2026-05-23)
 
@@ -285,10 +285,12 @@ Model Selection Policy (Haiku → Sonnet → Opus)
   - Platform score: bounded [0,1], higher with complete data
 - **main.py** — `include_router(mdi_router)` added (Phase 4 comment)
 - **Regression**: 241/241 domain tests pass (ai, customer, master_data, suppliers)
-- **PR #314**: open 2026-05-23, branch `feat/phase4-master-data-intelligence`
-- **Deploy note**: standard robocopy `service/app → C:\PZ\app` covers all 3 new files. No schema change, no migration, no engine-layer files.
-- **GATE 2 state**: 2/3 open PRs after #314 (#268 Lesson G docs + #314 Phase 4)
+- **PR #314 MERGED**: squash SHA `1a74d6c` — 2026-05-23. 7-agent gate: ALL GO.
+- **Deploy manifest**: `.claude/manifests/windows_deploy_1a74d6c.ps1` — committed at SHA `08671c6`
+- **Files to deploy**: `master_data_intelligence.py`, `routes_mdi.py`, `main.py` → `C:\PZ\app\**`. PZService restart required.
+- **GATE 2 state**: 1/3 open PRs after #314 merge (#268 Lesson G docs only)
 - **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase4-mdi-foundation.md` — 6 agents, all EXEMPLARY
+- **DEPLOY PENDING**: operator must run `windows_deploy_1a74d6c.ps1` in elevated PowerShell on Windows machine
 
 ---
 
@@ -1145,7 +1147,7 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
   Phase 3A (Safety Gate)              ✅ LIVE
   Phase 3 Proper (Foundation)         ✅ LIVE
   [Smoke Validation Campaign]         ✅ CLOSED 2026-05-23
-  Phase 4 Master Data Intelligence    ← ACTIVE (PR #314 open)
+  Phase 4 Master Data Intelligence    ← MERGED (SHA 1a74d6c) — DEPLOY PENDING
   Phase 5 Product/Finishing Intelligence
   Phase 6 Document Intelligence
   Phase 7 Natural-Language Search
