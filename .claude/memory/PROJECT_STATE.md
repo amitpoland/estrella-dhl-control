@@ -39,6 +39,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **PZService restart required**: NO (no main.py, no route changes)
 - **Rollback**: git revert f749bb7 --no-edit + standard robocopy (safe -- no schema, no startup deps)
 - **Sprint 2 prerequisite**: PR #331 merged to main
+- **Scorecard**: `.claude/memory/scorecards/2026-05-24-phase8-sprint1-intelligence-graph.md` -- 6 EXEMPLARY, 0 ACCEPTABLE, 0 NEEDS-TUNING (2026-05-24)
 
 ---
 
