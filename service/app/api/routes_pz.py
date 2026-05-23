@@ -800,8 +800,18 @@ def global_pz_correction_execute(
         authority_rows=authority_rows,
     )
 
-    # Extract ProposedLine list from the re-derived proposal
-    proposed_lines = proposal.proposed_lines
+    # Extract ProposedLine list from the selected option in the re-derived proposal
+    # NOTE: proposed_lines lives on CorrectionOption, not on CorrectionProposal.
+    selected_option = next(
+        (opt for opt in proposal.options if opt.option_id == body.option_id),
+        None,
+    )
+    if selected_option is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"option_id '{body.option_id}' not found in correction proposal.",
+        )
+    proposed_lines = selected_option.proposed_lines
 
     # --- Execute ---
     result = execute_correction_option(
