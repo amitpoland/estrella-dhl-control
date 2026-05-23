@@ -49,7 +49,9 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Scorecard written** to `.claude/memory/scorecards/2026-05-23-phase3-proper-gateway.md` (5 EXEMPLARY, 2 ACCEPTABLE, 0 NEEDS-TUNING)
 - **Pre-merge verification**: 136 AI tests passing (100 Phase 3 Proper + 36 ai_customs_evidence); 791 full-suite failures all pre-existing (dashboard/wFirma/DHL/email external-service-dependent); 0 new failures in any file touched by PR #312
 - **GATE 2 state**: 1/3 open PRs (#268 only — Lesson G docs PR)
-- **Status**: PHASE 3 PROPER MERGED — next step is Windows production deploy (pending operator /deploy)
+- **Deploy manifest**: `.claude/manifests/windows_deploy_617b2b7.ps1` — committed 2026-05-23 at `87317f4`
+- **7-agent gate**: ALL GO — git-diff-reviewer CLEAN, backend SAFE, persistence SAFE, security SECURE, QA PASS (166/166), release-manager READY, lead-coordinator GO (revised)
+- **Status**: PHASE 3 PROPER DEPLOY PENDING — manifest ready, operator must run `windows_deploy_617b2b7.ps1` in elevated PowerShell on Windows machine
 
 ### Claude-first fallback rule (permanent, binds all phases)
 
