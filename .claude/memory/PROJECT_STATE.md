@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-23T(PHASE-5-MERGED)Z. Origin/main HEAD: 2886a94. PENDING deploys: Phase 5 (windows_deploy_2886a94.ps1). OPEN PRs: 1/3 (#268 docs-only). Production: stable at Phase 4 MDI live. Phase 5: MERGED — deploy pending.
+**Last-run-at:** 2026-05-23T(PHASE-5-SCORECARD)Z. Origin/main HEAD: 0376ad9. PENDING deploys: Phase 5 (windows_deploy_2886a94.ps1). OPEN PRs: 1/3 (#268 docs-only). Production: stable at Phase 4 MDI live. Phase 5: MERGED (2886a94) — deploy pending. Scorecard: 2026-05-23-phase5-product-finishing-intelligence.md (5 EXEMPLARY).
 
 ---
 
@@ -32,7 +32,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **7-agent gate**: ALL GO — git-diff PASS, backend PASS, persistence PASS, security PASS, QA PASS, release-manager PASS, lead-coordinator GO
 - **GATE 2**: 1/3 open PRs (#268 docs-only)
 - **Files to deploy**: `master_data_intelligence.py` → `C:\PZ\app\services\`. PZService restart required.
-- **Scorecard**: (to be written by agent-performance-observer after this state update)
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase5-product-finishing-intelligence.md` — 5 EXEMPLARY, 2 ACCEPTABLE, 0 NEEDS-TUNING (2026-05-23)
 - **DEPLOY PENDING**: operator must run `windows_deploy_2886a94.ps1` in elevated PowerShell on Windows machine
 
 ---
