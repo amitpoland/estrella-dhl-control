@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-23T(PHASE6-MERGED)Z. Origin/main HEAD: 958e914. PENDING deploys: Phase 6 (deploy script ready — `.claude/manifests/windows_deploy_958e914.ps1`). OPEN PRs: 1/3 (#268 docs-only). Production: Phase 5 LIVE (eaa2875). Phase 6: MERGED — deploy pending operator execution.
+**Last-run-at:** 2026-05-23T(PHASE6-DEPLOYED)Z. Origin/main HEAD: 66d822e. PENDING deploys: none. OPEN PRs: 1/3 (#268 docs-only). Production: Phase 6 LIVE (66d822e). Phase 6: COMPLETE + DEPLOYED (operator-confirmed 2026-05-23).
 
 ---
 
@@ -87,10 +87,10 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 ---
 
-## Phase 6 — Document Coverage Intelligence Foundation (2026-05-23, MERGED — DEPLOY PENDING)
+## Phase 6 — Document Coverage Intelligence Foundation (2026-05-23, COMPLETE + DEPLOYED)
 
 **Campaign type**: Platform-wide advisory intelligence extension (deterministic, no LLM, no writes)
-**Status**: PR #321 MERGED — squash SHA `958e914` on main (2026-05-23). Deploy pending operator execution.
+**Status**: PR #321 MERGED — squash SHA `958e914` on main (2026-05-23). DEPLOYED to Windows production — operator-confirmed 2026-05-23. Production HEAD: `66d822e` (includes scorecard chore commit on top of 958e914).
 
 ### Phase 6 implementation facts (2026-05-23)
 
@@ -118,6 +118,26 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **PZService restart**: REQUIRED
 - **Deploy script**: `.claude/manifests/windows_deploy_958e914.ps1`
 - **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase6-document-coverage-intelligence.md` — 5 EXEMPLARY, 2 ACCEPTABLE
+- **DEPLOYED to Windows production** — operator-confirmed 2026-05-23:
+  - Deploy method: manual file copy (deploy manifest `.claude/manifests/windows_deploy_958e914.ps1` failed due to em-dash encoding in PowerShell — see manifest encoding rule in DECISIONS)
+  - PZService: RUNNING (PID 9108)
+  - Local health: 200
+  - `GET /api/v1/master-data/intelligence/document`: 200
+    - `entity_count`: 105
+    - `llm_used`: false (invariant held)
+    - `advisory_class`: R
+    - `completeness_score`: 0.308 (expected low — see operational note below)
+    - `extraction_complete_count`: 30 / 105 (29%)
+    - `awb_linked_count`: 98 / 105 (93%)
+    - `mrn_linked_count`: 22 / 105 (21%)
+    - `customs_declarations`: 5 (all cleared)
+    - `pz_document_count`: 10
+    - `pz_with_workdrive_count`: 0 / 10 (no PZ WorkDrive uploads yet)
+  - `GET /api/v1/master-data/intelligence/product`: 200 (Phase 5 regression pass)
+  - `GET /api/v1/master-data/intelligence/finishing`: 200 (Phase 5 regression pass)
+  - stderr: clean (no ImportError, no Traceback)
+- **Operational note on completeness_score=0.308**: Score is correct. Low value reflects real production state -- only 30/105 documents extracted, 22/105 MRN-linked, 0/10 PZ WorkDrive uploads. These are genuine document coverage gaps the advisory is designed to surface, not a deploy defect. AWB coverage (93%) is strong. Document domain is scoring real operational data from documents.db.
+- **PENDING deploys**: none
 
 ---
 
@@ -336,10 +356,10 @@ Gateway live on Windows production. Ledger writing entries. Redaction confirmed.
 Phase 3A (Safety Gate)           ✅ COMPLETE + LIVE
 Phase 3 Proper (Foundation)      ✅ COMPLETE + LIVE
 Phase 4  Master Data Intelligence ✅ COMPLETE + LIVE
-Phase 5  Product/Finishing Intelligence ✅ MERGED — deploy pending
-Phase 6  Document Intelligence
+Phase 5  Product/Finishing Intelligence ✅ COMPLETE + LIVE
+Phase 6  Document Intelligence    ✅ COMPLETE + LIVE (SHA 66d822e, 2026-05-23)
 Phase 7  Natural-Language Search
-Phase 2  Advisory LLM Explanations  ← UNBLOCKED BY PHASE 3 PROPER
+Phase 2  Advisory LLM Explanations  <- UNBLOCKED BY PHASE 3 PROPER
 Phase 8  Action Proposal Advisor
 Phase 9  Operations Assistant
 Phase 10 Optimization / Forecasting
@@ -1297,15 +1317,32 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
   Phase 3 Proper (Foundation)         ✅ LIVE
   [Smoke Validation Campaign]         ✅ CLOSED 2026-05-23
   Phase 4 Master Data Intelligence    ✅ LIVE (SHA 1a74d6c)
-  Phase 5 Product/Finishing Intelligence ← MERGED (SHA 2886a94) — DEPLOY PENDING
-  Phase 6 Document Intelligence
+  Phase 5 Product/Finishing Intelligence ✅ LIVE (SHA 2886a94)
+  Phase 6 Document Intelligence        ✅ LIVE (SHA 66d822e, 2026-05-23)
   Phase 7 Natural-Language Search
-  Phase 2 Advisory LLM Explanations   ← UNBLOCKED by Phase 3 Proper
+  Phase 2 Advisory LLM Explanations   <- UNBLOCKED by Phase 3 Proper
   Phase 8 Action Proposal Advisor
   Phase 9 Operations Assistant
   Phase 10 Optimization / Forecasting
   ```
 - **Hard rules (permanent, verbatim per operator, 2026-05-23)**: No new AI product feature. No advisory LLM wiring without smoke campaign closed. No customer/product/document/search AI feature until Phase 4 properly opened. No production writes. No wFirma/DHL/customs/accounting/PZ/proforma/customer/product writes. No V1 dashboard edits. No duplicate AI client paths. No raw prompt storage by default. No external API call unless tests mock it or config explicitly enables it. No direct Anthropic call outside ai_gateway.py. No service-level model selection.
+
+## Deploy manifest encoding rule (HARD RULE, 2026-05-23)
+
+**Origin**: Phase 6 deploy manifest `windows_deploy_958e914.ps1` failed on Windows PowerShell due to em-dash characters (--) in comment lines. Same issue occurred in Phase 4 deploy manifest. Third occurrence prohibited.
+
+**Rule (permanent, no exceptions)**:
+- All Windows deploy manifests (`.claude/manifests/*.ps1`) MUST use ASCII-only characters
+- No em-dashes (--), no smart quotes (" " ' '), no non-ASCII punctuation of any kind
+- Use plain hyphens (-) for dashes in comments and string literals
+- Use straight quotes only in PowerShell strings
+- Files MUST be saved as ASCII or UTF-8 with BOM for PowerShell 5.1 compatibility
+- Agent producing the manifest is responsible for compliance BEFORE writing the file
+- flow-context-keeper verifies on every manifest commit
+
+**Binding surface**: every `.claude/agents/deploy_release_manager.md` run that produces a manifest; every PR containing a `.claude/manifests/*.ps1` file; every deploy command that references a manifest.
+
+---
 
 ## Engineering lessons governance (appended 2026-05-13)
 
