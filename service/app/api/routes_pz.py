@@ -627,6 +627,102 @@ def global_pz_lineage(batch_id: str) -> Dict[str, Any]:
     return d
 
 
+def _load_pz_rows_from_file(batch_id: str) -> Optional[List[Dict[str, Any]]]:
+    """Load pz_rows.json for this batch (posted PZ grouping). Returns None if absent."""
+    for sub in ("outputs", "working"):
+        p = settings.storage_root / sub / batch_id / "pz_rows.json"
+        if p.exists():
+            try:
+                import json as _json  # noqa: PLC0415
+                return _json.loads(p.read_text(encoding="utf-8")) or None
+            except Exception:
+                return None
+    return None
+
+
+def _load_authority_rows_from_audit(batch_id: str) -> Optional[List[Dict[str, Any]]]:
+    """Load _pz_engine_authority_rows from audit.json. Returns None if absent."""
+    for sub in ("outputs", "working"):
+        p = settings.storage_root / sub / batch_id / "audit.json"
+        if p.exists():
+            try:
+                import json as _json  # noqa: PLC0415
+                audit = _json.loads(p.read_text(encoding="utf-8"))
+                rows = audit.get("_pz_engine_authority_rows") or []
+                return rows or None
+            except Exception:
+                return None
+    return None
+
+
+@router.get("/pz/lineage/{batch_id}/correction-proposal", dependencies=[_auth])
+def global_pz_correction_proposal(batch_id: str) -> Dict[str, Any]:
+    """Read-only correction proposal for the posted Global Jewellery PZ.
+
+    Compares the posted PZ grouping (pz_rows.json), the engine authority
+    (audit._pz_engine_authority_rows), and the live lineage result to produce
+    a structured CorrectionProposal with zero-to-three correction options.
+
+    Gate: Global Jewellery batches only.
+    No writes. No wFirma calls. No PZ mutation.
+    Operator approval is required before any corrective write can be issued.
+    """
+    import dataclasses  # noqa: PLC0415
+
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    if not _is_global_batch(batch_id):
+        return {"batch_id": batch_id, "is_global_supplier": False}
+
+    inv_pdf  = _find_source_pdf(batch_id, "invoices")
+    pack_pdf = _find_source_pdf(batch_id, "packing")
+
+    if not inv_pdf or not pack_pdf:
+        return {
+            "batch_id":           batch_id,
+            "is_global_supplier": True,
+            "error":              "source PDFs not found; lineage unavailable",
+        }
+
+    try:
+        from ..services.global_invoice_position_parser import (  # noqa: PLC0415
+            parse_invoice_positions_from_pdf,
+        )
+        from ..services.global_packing_parser import parse_global_packing_pdf  # noqa: PLC0415
+        from ..services.global_pz_lineage import build_global_pz_lineage  # noqa: PLC0415
+        from ..services.global_pz_correction import build_correction_proposal  # noqa: PLC0415
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=f"correction modules unavailable: {exc}")
+
+    try:
+        positions = parse_invoice_positions_from_pdf(inv_pdf)
+        pack_rows, *_ = parse_global_packing_pdf(pack_pdf)
+    except Exception as exc:
+        return {
+            "batch_id":           batch_id,
+            "is_global_supplier": True,
+            "error":              f"parse failed: {exc}",
+        }
+
+    invoice_no     = _extract_invoice_no(inv_pdf)
+    pz_rows        = _load_pz_rows_from_file(batch_id)
+    authority_rows = _load_authority_rows_from_audit(batch_id)
+    lineage_result = build_global_pz_lineage(positions, pack_rows, None, invoice_no)
+
+    proposal = build_correction_proposal(
+        batch_id=batch_id,
+        invoice_no=invoice_no,
+        lineage_result=lineage_result,
+        pz_rows=pz_rows,
+        authority_rows=authority_rows,
+    )
+
+    d = dataclasses.asdict(proposal)
+    d["is_global_supplier"] = True
+    return d
+
+
 # ── File download ─────────────────────────────────────────────────────────────
 
 @router.get("/files/{batch_id}/source/{category}/{filename}", dependencies=[_auth])
