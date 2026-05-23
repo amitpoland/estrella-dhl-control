@@ -1878,3 +1878,120 @@ def upsert_product_identity_from_backfill(
             (pc, *row_values, now, now),
         )
         return "inserted"
+
+
+# ── Phase 6 MDI: Document Coverage Aggregate ─────────────────────────────────
+
+def get_document_coverage_summary(db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Platform-wide document coverage aggregation for MDI document domain.
+
+    Read-only. Never raises — returns {} if the DB is missing or not
+    initialised, so MDI scoring degrades gracefully.
+
+    Returned keys:
+        total_documents                  int
+        document_type_counts             {type: int}
+        extraction_status_counts         {status: int}
+        parser_status_counts             {status: int}
+        awb_linked_count                 int  (shipment_documents.awb != '')
+        mrn_linked_count                 int  (related_mrn != '')
+        pz_linked_count                  int  (related_pz_no != '')
+        requires_manual_review_count     int
+        customs_declaration_count        int
+        customs_with_clearance_date      int  (clearance_date != '')
+        pz_document_count                int
+        pz_with_workdrive_count          int  (both pdf+xlsx WorkDrive IDs present)
+        awb_document_count               int
+        invoice_line_count               int
+        invoice_lines_with_hs_code       int
+    """
+    path = db_path or _db_path
+    if path is None or not Path(path).exists():
+        return {}
+    try:
+        con = sqlite3.connect(str(path), check_same_thread=False, timeout=5)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+
+        result: Dict[str, Any] = {}
+
+        # ── shipment_documents totals ─────────────────────────────────────────
+        row = con.execute("SELECT COUNT(*) AS n FROM shipment_documents").fetchone()
+        result["total_documents"] = int(row["n"]) if row else 0
+
+        # document_type breakdown
+        rows = con.execute(
+            "SELECT document_type, COUNT(*) AS n FROM shipment_documents "
+            "GROUP BY document_type ORDER BY n DESC"
+        ).fetchall()
+        result["document_type_counts"] = {r["document_type"]: int(r["n"]) for r in rows}
+
+        # extraction_status breakdown
+        rows = con.execute(
+            "SELECT extraction_status, COUNT(*) AS n FROM shipment_documents "
+            "GROUP BY extraction_status"
+        ).fetchall()
+        result["extraction_status_counts"] = {r["extraction_status"]: int(r["n"]) for r in rows}
+
+        # parser_status breakdown
+        rows = con.execute(
+            "SELECT parser_status, COUNT(*) AS n FROM shipment_documents "
+            "GROUP BY parser_status"
+        ).fetchall()
+        result["parser_status_counts"] = {r["parser_status"]: int(r["n"]) for r in rows}
+
+        # linkage counts
+        row = con.execute(
+            "SELECT "
+            "  SUM(CASE WHEN TRIM(awb) != '' THEN 1 ELSE 0 END) AS awb_linked, "
+            "  SUM(CASE WHEN TRIM(related_mrn) != '' THEN 1 ELSE 0 END) AS mrn_linked, "
+            "  SUM(CASE WHEN TRIM(related_pz_no) != '' THEN 1 ELSE 0 END) AS pz_linked, "
+            "  SUM(requires_manual_review) AS manual_review "
+            "FROM shipment_documents"
+        ).fetchone()
+        result["awb_linked_count"]             = int(row["awb_linked"]    or 0) if row else 0
+        result["mrn_linked_count"]             = int(row["mrn_linked"]    or 0) if row else 0
+        result["pz_linked_count"]              = int(row["pz_linked"]     or 0) if row else 0
+        result["requires_manual_review_count"] = int(row["manual_review"] or 0) if row else 0
+
+        # ── customs_declarations ──────────────────────────────────────────────
+        row = con.execute(
+            "SELECT "
+            "  COUNT(*) AS total, "
+            "  SUM(CASE WHEN TRIM(clearance_date) != '' THEN 1 ELSE 0 END) AS with_date "
+            "FROM customs_declarations"
+        ).fetchone()
+        result["customs_declaration_count"]    = int(row["total"]     or 0) if row else 0
+        result["customs_with_clearance_date"]  = int(row["with_date"] or 0) if row else 0
+
+        # ── pz_documents ──────────────────────────────────────────────────────
+        row = con.execute(
+            "SELECT "
+            "  COUNT(*) AS total, "
+            "  SUM(CASE WHEN TRIM(workdrive_pdf_id) != '' "
+            "            AND TRIM(workdrive_xlsx_id) != '' THEN 1 ELSE 0 END) AS with_wdrive "
+            "FROM pz_documents"
+        ).fetchone()
+        result["pz_document_count"]     = int(row["total"]      or 0) if row else 0
+        result["pz_with_workdrive_count"] = int(row["with_wdrive"] or 0) if row else 0
+
+        # ── awb_documents ─────────────────────────────────────────────────────
+        row = con.execute("SELECT COUNT(*) AS n FROM awb_documents").fetchone()
+        result["awb_document_count"] = int(row["n"]) if row else 0
+
+        # ── invoice_lines ─────────────────────────────────────────────────────
+        row = con.execute(
+            "SELECT "
+            "  COUNT(*) AS total, "
+            "  SUM(CASE WHEN TRIM(COALESCE(hsn_code,'')) != '' OR "
+            "           TRIM(COALESCE(hs_code,'')) != '' THEN 1 ELSE 0 END) AS with_hs "
+            "FROM invoice_lines"
+        ).fetchone()
+        result["invoice_line_count"]          = int(row["total"]   or 0) if row else 0
+        result["invoice_lines_with_hs_code"]  = int(row["with_hs"] or 0) if row else 0
+
+        con.close()
+        return result
+    except Exception as exc:
+        log.warning("[document_db] get_document_coverage_summary failed: %s", exc)
+        return {}

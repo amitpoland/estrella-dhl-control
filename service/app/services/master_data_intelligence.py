@@ -1,4 +1,4 @@
-"""Master Data Intelligence — Phase 4+5 advisory scoring engine.
+"""Master Data Intelligence — Phase 4+5+6 advisory scoring engine.
 
 Deterministic, read-only. llm_used=False. No writes.
 
@@ -9,6 +9,9 @@ Domains:
   finishing  — metal/stone/unit field coverage per design,
                metal/stone compatibility advisory, non-standard metal detection
   supplier   — completeness, wFirma integration, duplicate probability
+  document   — document/evidence completeness, extraction coverage, AWB/MRN/PZ
+               linkage, customs declaration coverage, WorkDrive upload tracking
+               (Phase 6 addition)
   readiness  — cross-domain gap analysis, actionable blockers
 
 Output contract: score | confidence | advisory | recommendations | explanation
@@ -29,6 +32,7 @@ from ..core.logging import get_logger
 from .customer_master_db import list_customers, init_db as cm_init
 from .master_data_db import list_designs, list_product_local, init_db as md_init
 from .suppliers_db import list_suppliers, init_db as supp_init
+from .document_db import get_document_coverage_summary
 
 log = get_logger(__name__)
 
@@ -37,6 +41,7 @@ log = get_logger(__name__)
 _CM_DB   = settings.storage_root / "customer_master.sqlite"
 _MD_DB   = settings.storage_root / "master_data.sqlite"
 _SUPP_DB = settings.storage_root / "suppliers.sqlite"
+_DOC_DB  = settings.storage_root / "documents.db"
 
 # ── Output types ─────────────────────────────────────────────────────────────
 
@@ -79,6 +84,7 @@ class MasterDataIntelligenceReport:
     product: DomainScore
     finishing: DomainScore
     supplier: DomainScore
+    document: DomainScore       # Phase 6: document/evidence coverage
     readiness: DomainScore
     top_recommendations: List[str]
 
@@ -113,6 +119,7 @@ class MasterDataIntelligenceReport:
             "product": _ds(self.product),
             "finishing": _ds(self.finishing),
             "supplier": _ds(self.supplier),
+            "document": _ds(self.document),
             "readiness": _ds(self.readiness),
             "top_recommendations": self.top_recommendations,
         }
@@ -891,18 +898,238 @@ def _score_readiness(
     )
 
 
+# ── Document domain (Phase 6) ─────────────────────────────────────────────────
+
+def _score_documents(summary: Dict[str, Any]) -> DomainScore:
+    """Score document/evidence completeness from deterministic signals.
+
+    Phase 6 addition. Read-only. llm_used=False. No writes.
+
+    Inputs come from ``get_document_coverage_summary()`` — a platform-wide
+    aggregate over documents.db (shipment_documents, customs_declarations,
+    pz_documents, awb_documents, invoice_lines).
+
+    Completeness score is a weighted average of five coverage dimensions:
+
+        extraction_complete_rate  — docs with extraction_status='extracted'   (0.30)
+        awb_linkage_rate          — docs with non-empty awb column             (0.20)
+        mrn_linkage_rate          — docs with non-empty related_mrn            (0.15)
+        pz_linkage_rate           — docs with non-empty related_pz_no          (0.15)
+        workdrive_rate            — pz_documents with both pdf+xlsx uploaded   (0.20)
+
+    Confidence degrades when total_documents == 0 (no evidence to score).
+    """
+    n = summary.get("total_documents", 0)
+
+    if n == 0:
+        return DomainScore(
+            domain="document", entity_count=0,
+            completeness_score=0.0, confidence=0.0,
+            field_gaps=[], duplicate_clusters=[],
+            advisory="No shipment documents registered in the document store.",
+            recommendations=[
+                "Upload purchase invoices, packing lists, and SAD/ZC429 files to "
+                "begin document coverage scoring.",
+            ],
+            details={"total_documents": 0},
+        )
+
+    # ── Extraction completeness ───────────────────────────────────────────────
+    extraction_counts = summary.get("extraction_status_counts", {})
+    extracted = extraction_counts.get("extracted", 0)
+    failed    = extraction_counts.get("failed", 0)
+    pending   = sum(
+        v for k, v in extraction_counts.items()
+        if k not in ("extracted", "failed")
+    )
+    extraction_rate = extracted / n
+
+    # ── Linkage rates ─────────────────────────────────────────────────────────
+    awb_linked = summary.get("awb_linked_count", 0)
+    mrn_linked = summary.get("mrn_linked_count", 0)
+    pz_linked  = summary.get("pz_linked_count", 0)
+    awb_rate   = awb_linked / n
+    mrn_rate   = mrn_linked / n
+    pz_rate    = pz_linked  / n
+
+    # ── WorkDrive coverage ────────────────────────────────────────────────────
+    pz_total     = summary.get("pz_document_count", 0)
+    pz_workdrive = summary.get("pz_with_workdrive_count", 0)
+    workdrive_rate = (pz_workdrive / pz_total) if pz_total > 0 else 1.0
+    # No PZ docs at all: treat as neutral (1.0) so it doesn't penalise new installs
+
+    # ── Invoice HS code coverage ──────────────────────────────────────────────
+    inv_lines   = summary.get("invoice_line_count", 0)
+    inv_hs      = summary.get("invoice_lines_with_hs_code", 0)
+    hs_rate     = (inv_hs / inv_lines) if inv_lines > 0 else 1.0
+
+    # ── Weighted completeness ─────────────────────────────────────────────────
+    completeness = (
+        0.30 * extraction_rate
+        + 0.20 * awb_rate
+        + 0.15 * mrn_rate
+        + 0.15 * pz_rate
+        + 0.20 * workdrive_rate
+    )
+
+    # ── Confidence — degrades on parser failures ──────────────────────────────
+    fail_rate  = failed / n
+    confidence = max(0.1, 1.0 - fail_rate * 1.5)
+
+    # ── Field gaps ────────────────────────────────────────────────────────────
+    gaps: List[FieldGap] = []
+
+    not_extracted = n - extracted
+    if not_extracted > 0:
+        sev = "critical" if fail_rate > 0.20 else "important"
+        gaps.append(FieldGap(
+            field="extraction_status",
+            affected_count=not_extracted,
+            pct=_pct(not_extracted, n),
+            severity=sev,
+            advisory=(
+                f"{failed} document(s) failed extraction, {pending} pending — "
+                "evidence may be incomplete for affected shipments"
+            ),
+        ))
+
+    not_awb = n - awb_linked
+    if not_awb > 0:
+        gaps.append(FieldGap(
+            field="awb_linkage",
+            affected_count=not_awb,
+            pct=_pct(not_awb, n),
+            severity="important",
+            advisory="Documents without AWB cannot be linked to DHL shipment tracking",
+        ))
+
+    not_mrn = n - mrn_linked
+    if not_mrn > 0:
+        gaps.append(FieldGap(
+            field="mrn_linkage",
+            affected_count=not_mrn,
+            pct=_pct(not_mrn, n),
+            severity="important",
+            advisory="Documents without MRN cannot be linked to SAD/customs clearance records",
+        ))
+
+    not_pz = n - pz_linked
+    if not_pz > 0:
+        gaps.append(FieldGap(
+            field="pz_linkage",
+            affected_count=not_pz,
+            pct=_pct(not_pz, n),
+            severity="optional",
+            advisory="Documents without PZ reference — purchase receipt may not yet be issued",
+        ))
+
+    manual_review = summary.get("requires_manual_review_count", 0)
+    if manual_review > 0:
+        gaps.append(FieldGap(
+            field="requires_manual_review",
+            affected_count=manual_review,
+            pct=_pct(manual_review, n),
+            severity="important",
+            advisory="Documents flagged for manual review — extraction quality uncertain",
+        ))
+
+    if pz_total > 0:
+        pz_missing_wdrive = pz_total - pz_workdrive
+        if pz_missing_wdrive > 0:
+            gaps.append(FieldGap(
+                field="pz_workdrive_upload",
+                affected_count=pz_missing_wdrive,
+                pct=_pct(pz_missing_wdrive, pz_total),
+                severity="optional",
+                advisory="PZ output documents without WorkDrive upload — PDF/XLSX not shared",
+            ))
+
+    if inv_lines > 0 and hs_rate < 0.90:
+        missing_hs = inv_lines - inv_hs
+        gaps.append(FieldGap(
+            field="invoice_hs_code",
+            affected_count=missing_hs,
+            pct=_pct(missing_hs, inv_lines),
+            severity="important",
+            advisory="Invoice lines missing HS code — customs classification incomplete",
+        ))
+
+    gaps.sort(key=lambda g: ({"critical": 0, "important": 1, "optional": 2}[g.severity], -g.pct))
+
+    # ── Recommendations ───────────────────────────────────────────────────────
+    recs: List[str] = []
+    for g in [x for x in gaps if x.severity == "critical"][:1]:
+        recs.append(
+            f"Resolve extraction failures for {g.affected_count} document(s) "
+            f"({g.pct:.0f}%) — {g.advisory}"
+        )
+    for g in [x for x in gaps if x.severity == "important"][:2]:
+        recs.append(
+            f"Fix '{g.field}' for {g.affected_count} document(s) "
+            f"({g.pct:.0f}%) — {g.advisory}"
+        )
+    if pz_total > 0 and pz_workdrive < pz_total:
+        recs.append(
+            f"Upload {pz_total - pz_workdrive} PZ document(s) to WorkDrive "
+            "for complete evidence chain"
+        )
+
+    # ── Advisory text ─────────────────────────────────────────────────────────
+    customs_decl = summary.get("customs_declaration_count", 0)
+    customs_cleared = summary.get("customs_with_clearance_date", 0)
+    advisory = (
+        f"{n} document(s) registered. "
+        f"Extraction complete: {extracted}/{n} ({extraction_rate*100:.0f}%). "
+        f"AWB linked: {awb_linked}/{n}. "
+        f"MRN linked: {mrn_linked}/{n}. "
+        f"Customs declarations: {customs_decl}"
+        + (f" ({customs_cleared} cleared)." if customs_decl else ".")
+    )
+
+    return DomainScore(
+        domain="document",
+        entity_count=n,
+        completeness_score=round(completeness, 3),
+        confidence=round(confidence, 3),
+        field_gaps=gaps,
+        duplicate_clusters=[],
+        advisory=advisory,
+        recommendations=recs,
+        details={
+            "total_documents":              n,
+            "extraction_complete_count":    extracted,
+            "extraction_failed_count":      failed,
+            "extraction_pending_count":     pending,
+            "awb_linked_count":             awb_linked,
+            "mrn_linked_count":             mrn_linked,
+            "pz_linked_count":              pz_linked,
+            "requires_manual_review_count": manual_review,
+            "customs_declaration_count":    customs_decl,
+            "customs_with_clearance_date":  customs_cleared,
+            "pz_document_count":            pz_total,
+            "pz_with_workdrive_count":      pz_workdrive,
+            "awb_document_count":           summary.get("awb_document_count", 0),
+            "invoice_line_count":           inv_lines,
+            "invoice_lines_with_hs_code":   inv_hs,
+            "document_type_counts":         summary.get("document_type_counts", {}),
+        },
+    )
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceReport:
     """
     Produce a MasterDataIntelligenceReport. Never raises. Never writes.
 
-    domain: None (all) | "customer" | "product" | "finishing" | "supplier" | "readiness"
+    domain: None (all) | "customer" | "product" | "finishing" | "supplier"
+            | "document" | "readiness"
     """
     customers: List[Any] = []
     designs: List[Any] = []
     product_locals: List[Any] = []
     suppliers: List[Any] = []
+    doc_summary: Dict[str, Any] = {}
 
     try:
         cm_init(_CM_DB)
@@ -923,29 +1150,41 @@ def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceRepor
     except Exception as exc:
         log.warning("[mdi] suppliers read failed: %s", exc)
 
-    customer_score = _score_customers(customers)
-    product_score  = _score_products(designs, product_locals=product_locals)
+    try:
+        doc_summary = get_document_coverage_summary(_DOC_DB)
+    except Exception as exc:
+        log.warning("[mdi] document coverage summary failed: %s", exc)
+
+    customer_score  = _score_customers(customers)
+    product_score   = _score_products(designs, product_locals=product_locals)
     finishing_score = _score_finishing(designs)
-    supplier_score = _score_suppliers(suppliers)
+    supplier_score  = _score_suppliers(suppliers)
+    document_score  = _score_documents(doc_summary)
     readiness_score = _score_readiness(
         customers, designs, suppliers,
         customer_score, product_score, supplier_score,
     )
 
-    # Platform score: weighted average
-    weights = [0.30, 0.25, 0.20, 0.15, 0.10]
+    # Platform score: weighted average across 6 domains
+    # Phase 6 rebalance: customer=0.25, product=0.22, finishing=0.18,
+    #                    supplier=0.12, document=0.13, readiness=0.10
+    weights = [0.25, 0.22, 0.18, 0.12, 0.13, 0.10]
     scores  = [
         customer_score.completeness_score,
         product_score.completeness_score,
         finishing_score.completeness_score,
         supplier_score.completeness_score,
+        document_score.completeness_score,
         readiness_score.completeness_score,
     ]
     platform_score = sum(w * s for w, s in zip(weights, scores))
 
-    # Top 5 recommendations across domains
+    # Top 6 recommendations across all domains
     all_recs: List[tuple] = []  # (severity_rank, text)
-    for score_obj in (customer_score, product_score, finishing_score, supplier_score, readiness_score):
+    for score_obj in (
+        customer_score, product_score, finishing_score,
+        supplier_score, document_score, readiness_score,
+    ):
         for i, rec in enumerate(score_obj.recommendations):
             all_recs.append((i, rec))
     top_recs = [r for _, r in sorted(all_recs, key=lambda x: x[0])[:6]]
@@ -959,6 +1198,7 @@ def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceRepor
         product=product_score,
         finishing=finishing_score,
         supplier=supplier_score,
+        document=document_score,
         readiness=readiness_score,
         top_recommendations=top_recs,
     )
