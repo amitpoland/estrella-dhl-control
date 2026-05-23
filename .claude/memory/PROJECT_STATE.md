@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(WFIRMA-PUSH-DEPLOYED)Z. Origin/main HEAD: 3ee9585 (wFirma push layer). PENDING deploys: Phase 8 Sprint 1 (separately instructed). OPEN PRs: 1/3 (#268 docs-only). Production: wFirma push layer LIVE (SHA 3ee9585, deployed 2026-05-24 00:55:13). Phase 8 Sprint 1: MERGED to main SHA c9c8418 -- NOT deployed.
+**Last-run-at:** 2026-05-24T(PHASE8-SPRINT1-MANIFEST-READY+WFIRMA-PUSH-DEPLOYED)Z. Origin/main HEAD: 6a0c989 (wFirma push layer + audit). PENDING deploys: Phase 8 Sprint 1 (manifest ready at .claude/manifests/windows_deploy_c9c8418.ps1, awaiting operator execution). OPEN PRs: 2/3 (#268 docs-only + #335 Phase8-Sprint2). Production: wFirma push layer LIVE (SHA 3ee9585, deployed 2026-05-24). Phase 8 Sprint 1: MERGED c9c8418 -- NOT deployed. Phase 8 Sprint 2: PR #335 open (merge pending).
 
 ---
 
@@ -137,6 +137,7 @@ The commit title `"(PR#1)"` implied a PR had been created. No PR exists. Mislead
 - **Sprint 2 prerequisite**: PR #331 merged to main [DONE] + Sprint 1 deployed to production [PENDING operator instruction]
 - **Sprint 2 gate**: No Sprint 2 route work until Sprint 1 deployed. Explicitly enforced.
 - **Rollback SHA correction**: rollback SHA on main is c9c8418 (squash SHA), not f749bb7 (branch SHA)
+- **Deploy manifest**: `.claude/manifests/windows_deploy_c9c8418.ps1` -- generated 2026-05-24, awaiting operator execution
 - **Scorecard (implementation)**: `.claude/memory/scorecards/2026-05-24-phase8-sprint1-intelligence-graph.md` -- 6 EXEMPLARY (2026-05-24)
 - **Scorecard (merge/blockers)**: `.claude/memory/scorecards/2026-05-24-phase8-sprint1-merge-blockers.md` -- 4 EXEMPLARY (2026-05-24)
 
