@@ -5546,6 +5546,9 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 already defined below. Read-only by default; every write button
                 lives inside its section and is operator-click-only. */}
             <OperatorWorkflowCard batchId={batchId} onToast={onToast} />
+            {/* Global Jewellery PZ Lineage — read-only, Global supplier only.
+                Renders null for Estrella and all non-Global batches. */}
+            <GlobalPZLineageCard batchId={batchId} onToast={onToast} />
             {/* ── Legacy / advanced panel ────────────────────────────────────
                 The unified workflow above is the canonical operator surface.
                 Older Section 3 + reservation/wFirma panels stay available
@@ -11232,6 +11235,284 @@ function ExecutePZGate({ batchId, onToast }) {
           {error}
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// GLOBAL PZ LINEAGE CARD  (read-only invoice→packing→PZ authority)
+// ════════════════════════════════════════════════════════════════════
+//
+// Shows only for Global Jewellery batches (gated by is_global_supplier).
+// Renders null for Estrella / all other suppliers — no panel at all.
+//
+// Status badge contract:
+//   FULL_MATCH    → green
+//   WARNING_MATCH → amber  (NEVER green; operator must see the deviation)
+//   PARTIAL_MATCH → red
+//   UNMATCHED     → red
+//
+// Read-only endpoint:
+//   GET /api/v1/pz/lineage/{batchId}
+// No writes. No PZ mutation. No wFirma calls.
+
+function GlobalPZLineageCard({ batchId, onToast }) {
+  const [data, setData]       = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError]     = React.useState('');
+
+  const refresh = React.useCallback(async () => {
+    if (!batchId) return;
+    setLoading(true); setError('');
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}`,
+        { headers: window.__apiHeaders ? window.__apiHeaders() : {} },
+      );
+      if (!r.ok) { setError(`HTTP ${r.status}`); setData(null); }
+      else        { setData(await r.json()); }
+    } catch (e) { setError(String(e)); setData(null); }
+    finally     { setLoading(false); }
+  }, [batchId]);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // ── Style atoms (inline so component is self-contained) ─────────────
+  const card  = {
+    background: 'var(--card,#fff)', border: '1px solid var(--border,#e5e7eb)',
+    borderRadius: 8, padding: 16, marginBottom: 16,
+  };
+  const h2    = { fontSize: 14, fontWeight: 700, marginBottom: 12,
+                  display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
+  const dimRow = { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 };
+
+  const statusBadge = (status) => {
+    const map = {
+      FULL_MATCH:    { bg: '#dcfce7', color: '#15803d', label: 'FULL MATCH' },
+      WARNING_MATCH: { bg: '#fef3c7', color: '#b45309', label: 'WARNING MATCH' },
+      PARTIAL_MATCH: { bg: '#fee2e2', color: '#991b1b', label: 'PARTIAL MATCH' },
+      UNMATCHED:     { bg: '#fee2e2', color: '#991b1b', label: 'UNMATCHED' },
+    };
+    const s = map[status] || { bg: '#f3f4f6', color: '#374151', label: status || '—' };
+    return { display: 'inline-block', padding: '3px 10px', borderRadius: 12,
+             fontSize: 12, fontWeight: 700, background: s.bg, color: s.color,
+             label: s.label };
+  };
+
+  const dimBadge = (dim) => {
+    const map = {
+      FULL:      { bg: '#dcfce7', color: '#15803d' },
+      WARNING:   { bg: '#fef3c7', color: '#b45309' },
+      PARTIAL:   { bg: '#fee2e2', color: '#991b1b' },
+      UNMATCHED: { bg: '#fee2e2', color: '#991b1b' },
+      'N/A':     { bg: '#f3f4f6', color: '#6b7280' },
+    };
+    const s = map[dim] || { bg: '#f3f4f6', color: '#6b7280' };
+    return { display: 'inline-block', padding: '2px 7px', borderRadius: 8,
+             fontSize: 11, fontWeight: 600, background: s.bg, color: s.color };
+  };
+
+  const linkRowBg = (status) => {
+    if (status === 'OVERFLOW' || status === 'PARTIAL') return '#fffbeb';
+    if (status === 'EMPTY')                             return '#fef2f2';
+    return 'transparent';
+  };
+
+  // ── Loading ──────────────────────────────────────────────────────────
+  if (loading) return (
+    <div style={card} data-testid="global-pz-lineage-card">
+      <div style={h2}>🔗 Global Jewellery PZ Lineage</div>
+      <div style={{ fontSize: 12, color: 'var(--text-2,#6b7280)' }}>Loading lineage…</div>
+    </div>
+  );
+
+  // ── Fetch error ──────────────────────────────────────────────────────
+  if (error) return (
+    <div style={card} data-testid="global-pz-lineage-card">
+      <div style={h2}>🔗 Global Jewellery PZ Lineage</div>
+      <div style={{ fontSize: 12, color: '#991b1b' }}
+           data-testid="global-pz-lineage-error">
+        Could not load lineage: {error}
+      </div>
+    </div>
+  );
+
+  // ── Supplier gate — Estrella + all non-Global suppressed ─────────────
+  if (!data || !data.is_global_supplier) return null;
+
+  // ── Parse error (parsers failed) ─────────────────────────────────────
+  if (data.error) return (
+    <div style={card} data-testid="global-pz-lineage-card">
+      <div style={h2}>🔗 Global Jewellery PZ Lineage</div>
+      <div style={{ fontSize: 12, color: '#991b1b' }}
+           data-testid="global-pz-lineage-parse-error">
+        Lineage unavailable: {data.error}
+      </div>
+    </div>
+  );
+
+  const overall  = data.match_status || 'UNMATCHED';
+  const ovStyle  = statusBadge(overall);
+
+  return (
+    <div style={card} data-testid="global-pz-lineage-card">
+      {/* ── Header ── */}
+      <div style={h2}>
+        🔗 Global Jewellery PZ Lineage
+        <span style={{ display: ovStyle.display, padding: ovStyle.padding,
+                       borderRadius: ovStyle.borderRadius, fontSize: ovStyle.fontSize,
+                       fontWeight: ovStyle.fontWeight, background: ovStyle.bg,
+                       color: ovStyle.color }}
+              data-testid="global-pz-lineage-overall-badge">
+          {ovStyle.label}
+        </span>
+        {overall !== 'FULL_MATCH' && (
+          <span style={{ fontSize: 11, color: '#b45309' }}
+                data-testid="global-pz-lineage-warning-notice">
+            ⚠ Operator review required before finalising PZ
+          </span>
+        )}
+      </div>
+
+      {/* ── 4-Dimension summary ── */}
+      <div style={dimRow} data-testid="global-pz-lineage-dimensions">
+        {[
+          ['Shipment totals',    data.shipment_total_match,          'dim-shipment'],
+          ['Invoice positions',  data.invoice_position_match,        'dim-invoice'],
+          ['Packing row assign', data.packing_row_assignment_match,  'dim-packing'],
+          ['PZ visibility',      data.pz_line_visibility_match,      'dim-pz'],
+        ].map(([label, val, tid]) => {
+          const s = dimBadge(val || 'UNMATCHED');
+          return (
+            <div key={tid} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+              <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)', marginBottom: 2 }}>
+                {label}
+              </span>
+              <span style={s} data-testid={`global-pz-lineage-${tid}`}>
+                {val || '—'}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Totals reconciliation ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8,
+                    fontSize: 11, marginBottom: 12, padding: 8,
+                    background: 'var(--bg-subtle,#f9fafb)', borderRadius: 4 }}
+           data-testid="global-pz-lineage-totals">
+        <div>Invoice positions: <strong>{data.invoice_position_count || 0}</strong></div>
+        <div>Packing rows: <strong>{data.packing_row_count || 0}</strong></div>
+        <div>Total inv qty: <strong>{data.total_invoice_qty || 0}</strong></div>
+        <div>Total pack qty: <strong>{data.total_packing_qty || 0}</strong></div>
+        <div>Invoice FOB: <strong>${(data.total_invoice_fob_usd || 0).toFixed(2)}</strong></div>
+        <div>Packing FOB: <strong>${(data.total_packing_fob_usd || 0).toFixed(2)}</strong></div>
+      </div>
+
+      {/* ── Position links table ── */}
+      {(data.position_links || []).length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6,
+                        color: 'var(--text-2,#6b7280)' }}>
+            Invoice position links
+          </div>
+          <div style={{ overflowX: 'auto' }} data-testid="global-pz-lineage-links-table">
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle,#f9fafb)',
+                             borderBottom: '1px solid var(--border,#e5e7eb)' }}>
+                  {['Pos', 'Item', 'Unit', 'Metal', 'Stone', 'Inv qty', 'Pack qty', 'Status', 'Reason'].map(h => (
+                    <th key={h} style={{ padding: '4px 6px', textAlign: 'left',
+                                         fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(data.position_links || []).map((lk, i) => {
+                  const st = dimBadge(
+                    lk.match_status === 'FULL'     ? 'FULL'
+                    : lk.match_status === 'OVERFLOW' ? 'WARNING'
+                    : lk.match_status === 'PARTIAL'  ? 'PARTIAL'
+                    : lk.match_status === 'EMPTY'    ? 'UNMATCHED'
+                    : 'UNMATCHED'
+                  );
+                  return (
+                    <tr key={i}
+                        style={{ borderBottom: '1px solid var(--border,#e5e7eb)',
+                                 background: linkRowBg(lk.match_status) }}
+                        data-testid={`global-pz-link-row-${i}`}>
+                      <td style={{ padding: '3px 6px' }}>{lk.position_no}</td>
+                      <td style={{ padding: '3px 6px' }}>{lk.invoice_item_type}</td>
+                      <td style={{ padding: '3px 6px' }}>{lk.unit}</td>
+                      <td style={{ padding: '3px 6px', maxWidth: 90, overflow: 'hidden',
+                                   textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {lk.metal_en}
+                      </td>
+                      <td style={{ padding: '3px 6px', maxWidth: 110, overflow: 'hidden',
+                                   textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {lk.stone_en}
+                      </td>
+                      <td style={{ padding: '3px 6px', textAlign: 'right' }}>
+                        {lk.invoice_qty}
+                      </td>
+                      <td style={{ padding: '3px 6px', textAlign: 'right' }}>
+                        {lk.packing_qty_sum}
+                      </td>
+                      <td style={{ padding: '3px 6px' }}>
+                        <span style={st}>{lk.match_status}</span>
+                      </td>
+                      <td style={{ padding: '3px 6px', color: '#b45309', maxWidth: 200,
+                                   fontSize: 10 }}>
+                        {lk.confidence_reason || ''}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Unmatched / duplicates ── */}
+      {(data.unmatched_packing_serials || []).length > 0 && (
+        <div style={{ padding: '6px 8px', background: '#fef2f2',
+                      borderRadius: 4, fontSize: 11, marginBottom: 8,
+                      color: '#991b1b' }}
+             data-testid="global-pz-lineage-unmatched">
+          ⚠ Unmatched packing serials: {(data.unmatched_packing_serials || []).join(', ')}
+        </div>
+      )}
+      {(data.duplicate_assignments || []).length > 0 && (
+        <div style={{ padding: '6px 8px', background: '#fef2f2',
+                      borderRadius: 4, fontSize: 11, marginBottom: 8,
+                      color: '#991b1b' }}
+             data-testid="global-pz-lineage-duplicates">
+          ⚠ Duplicate packing serials detected: {(data.duplicate_assignments || []).join(', ')}
+        </div>
+      )}
+
+      {/* ── Notes ── */}
+      {(data.notes || []).length > 0 && (
+        <div style={{ fontSize: 10, color: 'var(--text-2,#6b7280)', marginTop: 4 }}
+             data-testid="global-pz-lineage-notes">
+          {(data.notes || []).map((n, i) => <div key={i}>{n}</div>)}
+        </div>
+      )}
+
+      <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button onClick={refresh}
+                style={{ fontSize: 11, padding: '3px 8px', cursor: 'pointer',
+                         border: '1px solid var(--border,#e5e7eb)', borderRadius: 4,
+                         background: 'var(--bg,#fff)' }}
+                data-testid="global-pz-lineage-refresh">
+          Refresh
+        </button>
+        <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)' }}>
+          Read-only · no PZ mutation
+        </span>
+      </div>
     </div>
   );
 }
