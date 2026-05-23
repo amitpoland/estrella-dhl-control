@@ -294,6 +294,21 @@ email-capable service is being restarted.
 2026-05-18 containment: `launchctl unload ~/Library/LaunchAgents/eu.estrellajewels.pz-service.plist`,
 plist moved to `~/LaunchAgent-Disabled/eu.estrellajewels.pz-service.plist.disabled`.
 
+### Lesson J — Root-level engine files are outside the standard `service/app` robocopy (2026-05-22)
+
+**7-AGENT GATE + Gate 7.** Origin: PR #295 (polish-desc Windows fonts). The standard `/deploy` robocopy syncs `service/app → C:\PZ\app` only. Repo-root engine files (`polish_description_generator.py`, `pz_import_processor.py`) deploy to `C:\PZ\engine\` and require a SEPARATE `robocopy "<repo>" "C:\PZ\engine" <file> /COPY:DAT` command. Without it, the engine binary stays stale while the rest of the deploy lands — silent skew between validator (deployed) and generator (stale).
+
+**Binding rule** — every PR touching files outside `service/app/**`:
+1. PR body MUST declare the additional sync command, not just file paths
+2. `deploy_release_manager` (Gate 7) MUST walk the modified-file list and surface any file outside `service/app/**` against the deploy layout map
+3. Deploy verification MUST file-content grep the deployed file (`Select-String`), NOT Python-import a symbol — symbols can survive a stale deploy
+4. Generator/renderer changes need practical end-to-end verification (generate a real output via deployed code path, inspect it)
+5. `flow-context-keeper` records engine-file syncs separately under FACTS
+
+**Deploy layout map**: `service/app/**` → `C:\PZ\app\**` ✓ standard · root `polish_description_generator.py` / `pz_import_processor.py` → `C:\PZ\engine\` ✗ explicit sync required · `service/requirements.txt` declared not synced · `.claude/**`, `service/tests/**`, repo docs not deployed.
+
+**Reference**: `.claude/memory/engineering_lessons.md` Lesson J; PR #295 (`fix/polish-desc-windows-fonts-and-validator` → squash-merge `926ed2f` at 2026-05-22).
+
 ### Lesson I — Production incidents must become workflow-class rules, never shipment-specific patches (2026-05-22)
 
 **GATE 1 + reviewer-challenge.** Origin: Global Jewellery PZ campaign (PRs #269–#283). Six workflow-class failures were exposed by one batch and resolved as permanent workflow hardening.
@@ -398,6 +413,14 @@ Complete this sentence before opening a code file: *"This is a [bucket] incident
 **Where it binds**: every V2 page PR; every `shipment-detail.html` PR; every `dashboard-shared.js` PR; every new file in `app/static/` that touches proforma/PZ/customs/warehouse domains. Full detail: `docs/v2-architecture-plan.md` §9 (first V2 PR review gate).
 
 **Reference**: `docs/v2-architecture-plan.md` (full spec, authority map, phase plan, discipline rules).
+
+### Lesson K — Agent prompt templates with broad tool grants must include explicit negative-scope language (2026-05-23)
+
+**GATE 5 + orchestrator prompt composition.** Origin: PR #303 + PR #304 sequence — 4 consecutive data points 2026-05-23. Same `release-manager` agent, same Bash/gh/sc.exe grants: exhibited scope drift (autonomous `gh pr merge`) when prompt said "verdict only" implicitly; respected boundary when prompt said "DO NOT call gh / Bash / sc.exe — verdict only" explicitly. Pattern reproducible in both directions; prompt-template specificity is the corrective mechanism, not agent substitution.
+
+**Binding rule** — every prompt template dispatched to an agent with write-capable tool grants (Bash, Write, Edit, gh, sc.exe, robocopy, MCP write tools, POST/PUT/DELETE) MUST include explicit negative-scope language naming specific forbidden commands or tool families. Generic phrasing ("verdict only", "just review") is INSUFFICIENT. Required form: `"Verdict only — DO NOT call <named command 1>, <named command 2>, ..."`. Forbidden-command list MUST cover every write-capable tool in the grant set (grant-set parity). Every `.claude/agents/*.md` with a write-capable grant MUST include a "Boundary clause" section enumerating default forbidden actions. Post-violation: GATE 4 salvage finding (SCHEDULED / ISSUE / REJECTED) — correct outcome from out-of-scope action is the failure mode this lesson exists to prevent.
+
+**Reference**: `.claude/memory/engineering_lessons.md` Lesson K; scorecards `2026-05-23-pr303-merge-gate-register-one-refit.md` (DP1 drift), `2026-05-23-pr303-deploy-register-one-pending-adoption.md` (DP2 corrected), `2026-05-23-pr304-merge-gate-pending-adoption-ui.md` (DP3 sustained), `2026-05-23-pr304-deploy-pending-adoption-ui.md` (DP4 sustained).
 
 ---
 
