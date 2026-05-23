@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(BOOTSTRAP-CAMPAIGN-PHASES0-4+SPRINT2-MERGED)Z. Origin/main HEAD: 24bc62f (Phase 8 Sprint 2 routes merged). OPEN PRs: #337 (routes-search doc fix) + #268 (docs) = 2/3. CRITICAL: Phase 8 Sprint 1 (intelligence_graph.py) NOT in C:\PZ — Sprint 2 routes now on main but Sprint 1 service not deployed. Sprint 1 manifest: .claude/manifests/windows_deploy_c9c8418.ps1. Phase 7.1 doc fix: PR #337 open (fix/routes-search-shipment-domain-doc).
+**Last-run-at:** 2026-05-24T(PHASE8-ALL-SPRINTS-MERGED+MANIFESTS-READY)Z. Origin/main HEAD: 12f3f90 (Phase 8 Sprint 4 search enrich merged). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3. CRITICAL: Phase 8 Sprints 1-4 all merged to main. NOT deployed yet -- operator must execute manifests in order: c9c8418 -> 24bc62f -> 6995f48 -> 12f3f90.
 
 ---
 
@@ -109,6 +109,65 @@ The commit title `"(PR#1)"` implied a PR had been created. No PR exists. Mislead
 - First real Global batch POST smoke test — pending until a Global Jewellery shipment is processed in production; gate correctly returns 403 for non-Global batches
 - Optional future UI wiring to the `correction-push-wfirma` endpoint — deferred; no timeline
 - Separate future research into CANCEL_AND_RECREATE capability — explicitly out of scope for this PR; requires new operator decision and dedicated PR with full 7-agent gate
+
+---
+
+## Phase 8 Sprint 4 -- Search Graph Enrichment (2026-05-24, PR #339 MERGED)
+
+**Campaign type**: Search result enrichment with graph metadata (read-only, no LLM, no writes)
+**Status**: PR #339 MERGED -- squash SHA `12f3f90` on main (2026-05-24). NOT deployed (pending Sprint 1-3 deploy sequence).
+
+- **Commit SHA on main**: 12f3f90
+- **Files modified**: search_engine.py (SearchHit.graph_enrichment, execute_search enrich=, _enrich_hits, _resolve_batch_ids_for_hit), routes_search.py (enrich query param)
+- **Files added**: test_phase8_search_graph_enrichment.py (35 tests)
+- **Feature**: GET /api/v1/search?enrich=true adds graph_enrichment {related_count, related_batch_ids, graph_available} to each hit
+- **Backward compatible**: enrich=false default -- no graph_enrichment key, existing callers unaffected
+- **Invariants**: llm_used=False, PRAGMA query_only=ON, no write SQL, Lesson J compliant
+- **Tests**: 35/35 PASS; 264/264 Phase 7+8 suite PASS
+- **7-agent gate**: 6/7 GO (release-manager conditional on deploy sequencing, not code quality)
+- **Deploy manifest**: `.claude/manifests/windows_deploy_12f3f90.ps1`
+- **Deploy prerequisite**: Sprint 3 (6995f48) must be deployed first
+- **PZService restart required**: YES
+- **Rollback**: git revert 12f3f90 --no-edit + robocopy + sc.exe restart
+
+---
+
+## Phase 8 Sprint 3 -- MDI Graph Domain (2026-05-24, PR #338 MERGED)
+
+**Campaign type**: Master Data Intelligence graph domain addition (read-only, no LLM, no writes)
+**Status**: PR #338 MERGED -- squash SHA `6995f48` on main (2026-05-24). NOT deployed (pending Sprint 1-2 deploy sequence).
+
+- **Commit SHA on main**: 6995f48
+- **Files modified**: master_data_intelligence.py (graph DomainScore, _score_graph(), 7-domain weights [0.22, 0.20, 0.16, 0.11, 0.12, 0.09, 0.10]=1.00), routes_mdi.py ("graph" added to _VALID_DOMAINS)
+- **Files added**: test_phase8_mdi_graph_domain.py (31 tests)
+- **Feature**: GET /api/v1/master-data/intelligence/graph returns 200; platform report includes "graph" key
+- **Scoring**: link-completeness across batches (6 dims: awb/invoice/customs/pz/customer/supplier + optional tracking)
+- **Invariants**: PRAGMA query_only=ON, no writes, llm_used=False, Lesson J compliant
+- **Tests**: 31/31 PASS; 229/229 Phase 7+8 Sprint 1+2+3 suite PASS
+- **7-agent gate**: ALL 7 GO
+- **Deploy manifest**: `.claude/manifests/windows_deploy_6995f48.ps1`
+- **Deploy prerequisite**: Sprint 2 (24bc62f) must be deployed first
+- **PZService restart required**: YES
+- **Rollback**: git revert 6995f48 --no-edit + robocopy + sc.exe restart
+
+---
+
+## Phase 8 Sprint 2 -- Intelligence Graph Route (2026-05-24, PR #335 MERGED)
+
+**Campaign type**: REST route exposing intelligence graph builders (read-only, no LLM, no writes)
+**Status**: PR #335 MERGED -- squash SHA `24bc62f` on main (2026-05-24). NOT deployed (pending Sprint 1 deploy).
+
+- **Commit SHA on main**: 24bc62f
+- **Files modified**: intelligence_graph.py (to_dict() on GraphResult), main.py (import + include_router intelligence_graph_router)
+- **Files added**: routes_intelligence_graph.py (GET /api/v1/intelligence/graph), test_phase8_intelligence_graph_route.py (36 tests)
+- **Route**: GET /api/v1/intelligence/graph?anchor=X&anchor_type=batch|awb|customer|invoice&builder=batch|awb|customer|invoice
+- **Anchor resolution**: non-batch anchor types resolved to batch_id via documents.db (PRAGMA query_only); 404 if not found, 422 on invalid params
+- **Tests**: 36/36 PASS; 193/193 Phase 7+8 Sprint 1+2 suite PASS
+- **7-agent gate**: ALL 7 GO
+- **Deploy manifest**: `.claude/manifests/windows_deploy_24bc62f.ps1`
+- **Deploy prerequisite**: Sprint 1 (c9c8418) must be deployed first
+- **PZService restart required**: YES (main.py changed)
+- **Rollback**: git revert 24bc62f --no-edit + robocopy + sc.exe restart
 
 ---
 
