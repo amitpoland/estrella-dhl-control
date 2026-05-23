@@ -4,16 +4,16 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-23T(PHASE-5-SCORECARD)Z. Origin/main HEAD: 0376ad9. PENDING deploys: Phase 5 (windows_deploy_2886a94.ps1). OPEN PRs: 1/3 (#268 docs-only). Production: stable at Phase 4 MDI live. Phase 5: MERGED (2886a94) — deploy pending. Scorecard: 2026-05-23-phase5-product-finishing-intelligence.md (5 EXEMPLARY).
+**Last-run-at:** 2026-05-23T(PHASE-5-DEPLOYED)Z. Origin/main HEAD: eaa2875. PENDING deploys: none. OPEN PRs: 1/3 (#268 docs-only). Production: Phase 5 LIVE (eaa2875). Phase 6: NOT STARTED — awaiting operator instruction.
 
 ---
 
 # FACTS
 
-## Phase 5 — Product/Finishing Intelligence Foundation (2026-05-23, MERGED — DEPLOY PENDING)
+## Phase 5 — Product/Finishing Intelligence Foundation (2026-05-23, COMPLETE + DEPLOYED)
 
 **Campaign type**: Platform-wide advisory intelligence extension (deterministic, no LLM, no writes)  
-**Status**: PR #316 MERGED — squash SHA `2886a94` on main (2026-05-23). Deploy manifest: `.claude/manifests/windows_deploy_2886a94.ps1`
+**Status**: PR #316 MERGED — squash SHA `2886a94` on main (2026-05-23). DEPLOYED to Windows production — operator-confirmed 2026-05-23.
 
 ### Phase 5 implementation facts (2026-05-23)
 
@@ -33,7 +33,19 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **GATE 2**: 1/3 open PRs (#268 docs-only)
 - **Files to deploy**: `master_data_intelligence.py` → `C:\PZ\app\services\`. PZService restart required.
 - **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase5-product-finishing-intelligence.md` — 5 EXEMPLARY, 2 ACCEPTABLE, 0 NEEDS-TUNING (2026-05-23)
-- **DEPLOY PENDING**: operator must run `windows_deploy_2886a94.ps1` in elevated PowerShell on Windows machine
+- **DEPLOYED to Windows production** — operator-confirmed 2026-05-23:
+  - Windows HEAD: eaa2875
+  - Phase 5 file copied: confirmed
+  - `llm_used=false`: present
+  - `description_quality`: present
+  - `product_local_coverage_pct`: present
+  - `metal_stone_compat_warnings`: present
+  - `stone_keyword_coverage_count`: present
+  - Local health: 200 | /product: 200 (advisory_class=R) | /finishing: 200 (advisory_class=R)
+  - stderr: clean startup
+  - `entity_count=0`: expected — production master-data source has no product/finishing rows yet (not a deploy failure)
+- **PENDING deploys**: none
+- **Phase 6**: NOT STARTED — awaiting operator instruction
 
 ---
 
