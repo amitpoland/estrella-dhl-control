@@ -168,9 +168,18 @@ def _is_numeric_noise(token: str) -> bool:
 
 
 def _provider_available() -> bool:
-    """Return True iff an AI provider is configured and importable."""
+    """Return True iff AI is enabled, a provider key is configured, and the
+    anthropic package is importable.
+
+    Checks ``settings.ai_parser_enabled`` first so that the flag-gate is
+    enforced at the service entry point even when invoked outside the
+    orchestrator.  With ``ai_parser_enabled=False`` (the production default)
+    this function returns False and no Anthropic client is ever created.
+    """
     try:
         from ..core.config import settings  # noqa: PLC0415
+        if not getattr(settings, "ai_parser_enabled", False):
+            return False
         key = getattr(settings, "anthropic_api_key", None) or ""
         if not key.strip():
             return False

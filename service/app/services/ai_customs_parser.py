@@ -74,6 +74,10 @@ def parse_with_ai(
     """
     from ..core.config import settings
 
+    if not getattr(settings, "ai_parser_enabled", False):
+        log.debug("[ai_parser] ai_parser_enabled=False — AI parsing disabled at service level")
+        return None
+
     api_key = getattr(settings, "anthropic_api_key", None)
     if not api_key:
         log.warning("[ai_parser] ANTHROPIC_API_KEY not set — AI parsing unavailable")
