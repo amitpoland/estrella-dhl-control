@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-23T(PHASE-3-PROPER-LIVE + CORRECTION-PROPOSAL-LIVE)Z. Origin/main HEAD: 7c8ee82 (Phase 3 Proper squash-merged). PENDING deploys: none. OPEN PRs: 1 (#268 docs-only — no blast radius). Production: stable. AI Gateway live + dormant. Global Jewellery lineage + correction proposal live.
+**Last-run-at:** 2026-05-23T(PHASE-4-MDI-DEPLOYED)Z. Origin/main HEAD: 7c2bf0a. PENDING deploys: none. OPEN PRs: 1/3 (#268 docs-only). Production: stable. AI Gateway live + dormant. Global Jewellery lineage + correction proposal backend + UI card: LIVE. Phase 4 MDI: LIVE (llm_used=false, GET-only, no writes). Phase 5: NOT STARTED — awaiting operator instruction.
 
 ---
 
@@ -29,6 +29,50 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Governance doc**: `docs/ai-governance/ai-consolidation-inventory.md` — complete platform AI inventory
 - **GATE 2 state**: 1/3 open PRs (#268 only — Lesson G docs PR)
 - **Scorecards**: `.claude/memory/scorecards/2026-05-23-phase3a-merge-gate.md` + `.claude/memory/scorecards/2026-05-23-phase3a-deploy.md`
+
+---
+
+## PR #315 — GlobalPZCorrectionProposalCard UI (2026-05-23, DEPLOYED)
+
+- **PR #315 squash-merged** to main at SHA `7c2bf0a` — 2026-05-23
+- **Branch**: feat/global-pz-correction-proposal-card (deleted after merge)
+- **Files changed** (2, UI + tests only):
+  - `service/app/static/shipment-detail.html` — GlobalPZCorrectionProposalCard component + JSX in PZ/Accounting tab
+  - `service/tests/test_global_pz_correction_proposal_card.py` — 28 source-grep tests (NEW)
+- **Tests**: 28/28 new + 180/180 existing lineage/correction = 208 total passing
+- **7-agent gate**: ALL GO — git-diff CLEAR, backend CLEAR, persistence CLEAR, security SECURE, QA PASS, release-manager READY, lead-coordinator GO
+- **Deployed**: `shipment-detail.html` copied to `C:\PZ\app\static\` — SHA256 HASH MATCH `8CE5906338F4246AEC30462B9AEAE61D502A61EC5AA869988462835DCAA0315D`
+- **No service restart needed**: static file only
+- **Card behaviour**: read-only advisory for Global batches; all buttons disabled; CANCEL_AND_RECREATE filtered; suppresses silently for non-Global + 404
+- **GATE 2 state**: 2/3 open PRs (#268 docs-only + #315 now merged → 1/3 post-merge)
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-pr315-deploy-correction-proposal-card.md` — all 7 agents EXEMPLARY, 0 NEEDS-TUNING
+- **Note**: Phase 4 MDI backend also merged to main (`1a74d6c`) in same session; deploy manifest `windows_deploy_1a74d6c.ps1` exists; MDI backend DEPLOYED 2026-05-23 (see Phase 4 block below)
+
+---
+
+## Phase 4 — Master Data Intelligence Foundation (2026-05-23, COMPLETE + DEPLOYED)
+
+- **PR #314 squash-merged** to main at SHA `1a74d6c` — 2026-05-23
+- **Production HEAD at deploy**: `7c2bf0a` (PR #315 correction card on top — both included)
+- **Files deployed** (manual Copy-Item — manifest encoding-broken due to PS5.1 / UTF-8 em-dash):
+  - `service/app/services/master_data_intelligence.py` → `C:\PZ\app\services\`
+  - `service/app/api/routes_mdi.py` → `C:\PZ\app\api\`
+  - `service/app/main.py` → `C:\PZ\app\`
+- **Smoke verification** — operator-confirmed 2026-05-23:
+  - Local health: 200
+  - MDI root `/api/v1/master-data/intelligence`: 200
+  - MDI customer domain: 200
+  - MDI product domain: 200
+  - `llm_used`: false (confirmed in deployed service)
+  - Writes: none (GET-only router, no POST/PUT/DELETE)
+  - Uvicorn: clean startup
+  - stderr: clean
+- **MDI architecture**: 5-domain advisory scoring (customer / product / finishing / supplier / readiness). Deterministic only. No Anthropic calls. No wFirma writes. Read-only.
+- **PZService restart**: completed — RUNNING (START_PENDING was transient; API confirmed 200)
+- **PENDING deploys**: none
+- **OPEN PRs**: 1/3 (#268 docs-only)
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase4-mdi-foundation.md`
+- **Phase 5**: NOT STARTED — do not begin until operator instructs
 
 ---
 
