@@ -32,11 +32,24 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 ---
 
-## Phase 3 Proper — AI Gateway + Call Ledger + Redaction + Model Selection (NEXT — not yet started)
+## Phase 3 Proper — AI Gateway + Call Ledger + Redaction + Model Selection (2026-05-23, COMPLETE)
 
 **Campaign type**: Architectural (not a feature campaign)  
 **Operator designation**: 2026-05-23  
 **Strategic constraint**: No new AI feature may ship until Phase 3 Proper is complete and deployed.
+
+### Phase 3 Proper completion facts (2026-05-23)
+
+- **AI Gateway infrastructure created** — `ai_gateway.py` centralized AI infrastructure with call(), model selection, timeout/retry, and circuit breaker patterns
+- **AI Call Ledger implemented** — `ai_call_ledger.py` SQLite-backed comprehensive logging with 15 required fields including model selection reasoning
+- **Redaction layer implemented** — `ai_redactor.py` comprehensive secret scrubbing for all external AI prompts
+- **Service migration completed** — `ai_customs_parser.py` and `ai_customs_evidence.py` migrated from direct anthropic.Anthropic() to ai_gateway.call()
+- **100 tests passing** across 8 test files — 22 gateway contract, 17 violation source-grep, 15 ledger, 16 redactor, 9 parser migration, 8 evidence migration, 3 config, 10 safety flag
+- **PR #312 merged** to main at SHA `bf9a9ae` — 2026-05-23 (squash merge, branch deleted)
+- **Scorecard written** to `.claude/memory/scorecards/2026-05-23-phase3-proper-gateway.md` (5 EXEMPLARY, 2 ACCEPTABLE, 0 NEEDS-TUNING)
+- **Pre-merge verification**: 136 AI tests passing (100 Phase 3 Proper + 36 ai_customs_evidence); 791 full-suite failures all pre-existing (dashboard/wFirma/DHL/email external-service-dependent); 0 new failures in any file touched by PR #312
+- **GATE 2 state**: 1/3 open PRs (#268 only — Lesson G docs PR)
+- **Status**: PHASE 3 PROPER MERGED — next step is Windows production deploy (pending operator /deploy)
 
 ### Claude-first fallback rule (permanent, binds all phases)
 
@@ -158,18 +171,18 @@ Gateway live on Windows production. Ledger writing entries. Redaction confirmed.
 
 ```
 Phase 3A (Safety Gate)           ✅ COMPLETE + LIVE
-Phase 3 Proper (Foundation)      ← NEXT CAMPAIGN
-Phase 4  Customer Intelligence
+Phase 3 Proper (Foundation)      ✅ COMPLETE (PR #312 open)
+Phase 4  Customer Intelligence    ← NEXT AVAILABLE
 Phase 5  Product/Finishing Intelligence
 Phase 6  Document Intelligence
 Phase 7  Natural-Language Search
-Phase 2  Advisory LLM Explanations
+Phase 2  Advisory LLM Explanations  ← UNBLOCKED BY PHASE 3 PROPER
 Phase 8  Action Proposal Advisor
 Phase 9  Operations Assistant
 Phase 10 Optimization / Forecasting
 ```
 
-No feature from Phase 4 onward may start until Phase 3 Proper is complete and deployed.
+Phase 3 Proper completion 2026-05-23 unblocks all downstream phases.
 
 **Effective scope of Phase 3 Proper** (operator finalized 2026-05-23):
 ```
@@ -182,7 +195,7 @@ Existing AI Migration (customs parser + evidence)
 Model Selection Policy (Haiku → Sonnet → Opus)
 ```
 
-**Status**: NOT STARTED — awaiting campaign kickoff in a fresh session
+**Status**: COMPLETE — PR #312 open awaiting merge
 
 ---
 
@@ -946,6 +959,7 @@ Campaign 6 executed on 2026-05-19. Branch: `chore/wave2-patch4-batch-condensatio
 - **2026-05-13** — Engineering lessons file: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch), Lesson B (mid-session registry refresh non-determinism), Lesson C (orchestrator scorecard verification), **Lesson D (LOCAL-COMMIT-ONLY deploy disclosure + reconciliation — CODIFIED 2026-05-13 via PR #76)** are all binding rules.
 - **2026-05-13** — Scorecard ON DISK but previously uncited (retroactive RULE 6 registration 2026-05-18): `.claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` — P2 ignition switch model C analysis. File confirmed on disk. GATE 4 disposition: **ACCEPTED GAP** — file is valid; omission from prior RULE 6 citations was an oversight (not a Lesson C silent-loss event). No retroactive action required beyond this citation.
 - **2026-05-23** — Scorecard written: `.claude/memory/scorecards/2026-05-23-phase3a-merge-gate.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 3A safety patch merge gate. Cited for RULE 6 compliance.
+- **2026-05-23** — Scorecard written: `.claude/memory/scorecards/2026-05-23-phase3-proper-gateway.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 3 Proper AI gateway implementation. 7 agents scored: 5 EXEMPLARY, 2 ACCEPTABLE, 0 NEEDS-TUNING. File confirmed on disk: 8,550 bytes (Lesson C verified).
 
 ## Campaign 21A scorecard (appended 2026-05-20, RULE 2 auto-fire)
 
@@ -1024,6 +1038,8 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
 - **Engineering discipline rules (locked 2026-05-12)** — doc-vs-code consistency gate (Issue #27 pattern), API error templating (`{detail, error_code, field, hint}`), exception-leak prevention. Source: memory `engineering_discipline_rules`.
 - **agent-prompt-refiner and pattern-historian deferred** pending two campaigns under observation-layer baseline. Source: PR #41 + Issue #39.
 - **Phase 3 is a Phase 2 precondition (not a successor)** — decided 2026-05-23 consolidation campaign
+- **ai_call_ledger.py is AI infrastructure** (2026-05-23) — exempt from gateway violation model-name checks alongside ai_gateway.py and config.py
+- **patch("app.services.ai_gateway", mock, create=True) is correct mock target** (2026-05-23) — for `from . import ai_gateway` inside function bodies; NOT patch.dict("sys.modules", ...) and NOT patch("app.services.ai_customs_parser.ai_gateway", ...)
 
 ## Engineering lessons governance (appended 2026-05-13)
 
@@ -1154,9 +1170,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Windows deploy — C13E + Phase 3A backend + C14A–C21A static** — deploy 3 backend files (`inventory_state_engine.py`, `ai_customs_parser.py`, `ai_customs_evidence.py`) + PZService restart, then robocopy `shipment-detail.html` to `C:\PZ\app\static\`. Phase 3A AI safety patch is latest backend change. Target: next operator Windows session — gating: operator elevated shell on Windows prod.
-2. **V1/V2/V3 reconciliation PR** — Windows production HEAD is `7392be1` (3 local commits above `32d6a8f` not on GitHub). Per Lesson D: operator must push V1/V2/V3 to GitHub or confirm content, then open reconciliation PR before next `git pull --ff-only origin main`. Gating: operator action (Windows → GitHub push).
-3. **gap-detection agent tuning** — enforce pre-implementation-only invocation trigger (GATE 4 SCHEDULED from C21A scorecard: REPEATED-WEAK verdict on gap-detection in 2 of last 5). Target: next agent-tuning session — gating: none (scheduling only).
+1. **Merge PR #312 (Phase 3 Proper AI Gateway)** — feat/ai-gateway-phase3-proper → main; all tests passing; unblocks Phase 2 and Phase 4+ work. Target: immediate — gating: none (ready for merge).
+2. **Windows deploy — C13E + Phase 3A backend + C14A–C21A static + Phase 3 Proper** — deploy 6 backend files including new ai_gateway.py, ai_call_ledger.py, ai_redactor.py + migrated parsers + PZService restart, then robocopy `shipment-detail.html`. Target: next operator Windows session — gating: PR #312 merge + operator elevated shell on Windows prod.
+3. **V1/V2/V3 reconciliation PR** — Windows production HEAD is `7392be1` (3 local commits above `32d6a8f` not on GitHub). Per Lesson D: operator must push V1/V2/V3 to GitHub or confirm content, then open reconciliation PR before next `git pull --ff-only origin main`. Gating: operator action (Windows → GitHub push).
 
 ## Completed actions (Campaign 8, 2026-05-19)
 - ~~**Windows deploy**~~ — **DONE 2026-05-19**: Campaign 8 deploy complete. Windows HEAD = `7392be1` (32d6a8f + V1/V2/V3). All smoke checks PASS. See "Campaign 8 deploy smoke results" above. Deployment maturity: standard sequence — future static/UI changes are routine, not campaigns. Operational stance: ops/perf/UX only.
@@ -1208,6 +1224,6 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Issues #58/#59/#60 override polish (cascade endpoint, request_id correlation, GET /audit endpoint)** — when do they fire? Answerer: operator scheduling. Impact: operator UX improvements on top of the predecessor-override mechanic; none currently blocking.
 - **Cumulative ADR drift work** — blocked on Issue #51 resolution. Until #51 is reconciled, downstream ADR work (e.g. ADR-018 follow-ups in Issue #42) carries semantic risk of stacking onto unreconciled successor relationships.
 - **Is the `_TOP_LEVEL_FIELDS` enforcement gap on `dhl_clearance_manifest.py` (system-architect LOW finding) acceptable to defer to P2 kickoff, or should it be addressed in a hotfix PR?** Answerer: operator. Impact: a future phase implementer could write a top-level field that bypasses the schema fence. Filed in Issue #38 as SCHEDULED for P2.
-- **Phase 3 proper (call-log + redaction) and Phase 2 (advisory LLM) still pending** — Phase 3 must ship before Phase 2 per roadmap decision
+- **Phase 2 (advisory LLM) still pending** — Phase 3 Proper complete 2026-05-23, unblocks Phase 2 work
 
 ---
