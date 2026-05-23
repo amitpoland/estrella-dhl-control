@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-23T(PHASE7-MERGED)Z. Origin/main HEAD: 3302a1b. PENDING deploys: Phase 7. OPEN PRs: 1/3 (#268 docs-only). Production: Phase 6 LIVE (66d822e). Phase 7: MERGED (SHA 3302a1b) -- deploy pending.
+**Last-run-at:** 2026-05-23T(PHASE7-DEPLOYED)Z. Origin/main HEAD: 3302a1b. PENDING deploys: none. OPEN PRs: 1/3 (#268 docs-only). Production: Phase 7 LIVE (3302a1b). Phase 7: COMPLETE + DEPLOYED -- operator-confirmed 2026-05-23.
 
 ---
 
@@ -87,10 +87,10 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 ---
 
-## Phase 7 — Natural-Language Search Foundation (2026-05-23, MERGED)
+## Phase 7 — Natural-Language Search Foundation (2026-05-23, COMPLETE + DEPLOYED)
 
 **Campaign type**: Platform-wide search capability (deterministic, no LLM, no writes)  
-**Status**: PR #325 MERGED — squash SHA `3302a1b` on main (2026-05-23). Deploy pending operator execution.
+**Status**: PR #325 MERGED — squash SHA `3302a1b` on main (2026-05-23). DEPLOYED to Windows production -- operator-confirmed 2026-05-23.
 
 ### Phase 7 implementation facts (2026-05-23)
 
@@ -113,6 +113,16 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Files to deploy**: search_engine.py, routes_search.py, main.py — standard robocopy
 - **PZService restart required** on deployment
 - **Scorecard**: `.claude/memory/scorecards/2026-05-23-phase7-search-foundation.md` — 10 EXEMPLARY
+- **DEPLOYED to Windows production** -- operator-confirmed 2026-05-23:
+  - Production HEAD: `3302a1b`
+  - PZService: RUNNING
+  - Local health: 200
+  - `GET /api/v1/search?q=test`: 200, llm_used=false, customer hit returned
+  - `GET /api/v1/search?q=9765416334` (AWB): 200, llm_used=false, intent=AWB, 0 hits (tracking_db gap -- Phase 7.1)
+  - `GET /api/v1/search?q=7113190000` (HS code): 200, llm_used=false, intent=HS, 0 hits (empty designs table -- Phase 7.1)
+  - stderr: clean (no ImportError, no Traceback)
+- **PENDING deploys**: none
+- **Next**: Phase 7.1 -- Search Coverage Wiring (AWB->shipment hit via tracking_db; HS->product hit)
 
 ---
 
