@@ -79,6 +79,10 @@ def parse_with_ai(
         log.warning("[ai_parser] ANTHROPIC_API_KEY not set — AI parsing unavailable")
         return None
 
+    if not getattr(settings, "ai_parser_enabled", False):
+        log.debug("[ai_parser] ai_parser_enabled=False — AI parsing disabled by config")
+        return None
+
     model = getattr(settings, "ai_parser_model", "claude-sonnet-4-6")
 
     # Extract text from PDF
