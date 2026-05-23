@@ -22,6 +22,7 @@ from xml.etree import ElementTree as ET
 
 import requests as _requests
 
+from ..core.circuit_breaker import CircuitBreakerError, get_circuit_breaker
 from ..core.config import settings
 from ..core.logging import get_logger
 
@@ -448,16 +449,38 @@ def _http_request(method: str, module: str, action: str, body_xml: str = "",
         url = f"{path}/{_esc(id_suffix)}" + (f"?{query}" if query else "")
     else:
         url = base
+    breaker = get_circuit_breaker("wfirma")
+
+    # Check circuit BEFORE building headers — avoids raising ValueError for
+    # missing credentials when the circuit is already open and we want to
+    # return the fallback response immediately.
+    if breaker.state.value == "open":
+        log.warning(
+            "wfirma circuit OPEN — request rejected (%s %s/%s)",
+            method, module, action,
+        )
+        return 503, "circuit_breaker_open"
+
     headers = _headers_for_module(module)
-    try:
+
+    def _do_request() -> tuple[int, str]:
         resp = _requests.request(
             method.upper(),
             url,
             headers=headers,
             data=body_xml.encode("utf-8") if body_xml else None,
-            timeout=(5, 15),
+            timeout=(5, breaker.config.call_timeout),
         )
         return resp.status_code, resp.text
+
+    try:
+        return breaker.call(_do_request)
+    except CircuitBreakerError:
+        log.warning(
+            "wfirma circuit OPEN — request rejected (%s %s/%s)",
+            method, module, action,
+        )
+        return 503, "circuit_breaker_open"
     except _requests.exceptions.RequestException as exc:
         raise ConnectionError(f"wFirma HTTP error ({module}/{action}): {exc}") from exc
 
