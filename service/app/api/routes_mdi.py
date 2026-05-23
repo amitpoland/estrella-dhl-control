@@ -22,7 +22,7 @@ router = APIRouter(
 
 _auth = Depends(require_api_key)
 
-_VALID_DOMAINS = {"customer", "product", "finishing", "supplier", "document", "readiness"}
+_VALID_DOMAINS = {"customer", "product", "finishing", "supplier", "document", "graph", "readiness"}
 
 
 @router.get(

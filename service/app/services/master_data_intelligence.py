@@ -1,4 +1,4 @@
-"""Master Data Intelligence — Phase 4+5+6 advisory scoring engine.
+"""Master Data Intelligence — Phase 4+5+6+8 advisory scoring engine.
 
 Deterministic, read-only. llm_used=False. No writes.
 
@@ -12,6 +12,9 @@ Domains:
   document   — document/evidence completeness, extraction coverage, AWB/MRN/PZ
                linkage, customs declaration coverage, WorkDrive upload tracking
                (Phase 6 addition)
+  graph      — link-completeness aggregate across batch_id hubs: what % of batches
+               have each relationship (AWB, tracking, customer, supplier, invoice,
+               customs) linked vs missing (Phase 8 addition)
   readiness  — cross-domain gap analysis, actionable blockers
 
 Output contract: score | confidence | advisory | recommendations | explanation
@@ -85,6 +88,7 @@ class MasterDataIntelligenceReport:
     finishing: DomainScore
     supplier: DomainScore
     document: DomainScore       # Phase 6: document/evidence coverage
+    graph: DomainScore          # Phase 8: link-completeness aggregate across batches
     readiness: DomainScore
     top_recommendations: List[str]
 
@@ -120,6 +124,7 @@ class MasterDataIntelligenceReport:
             "finishing": _ds(self.finishing),
             "supplier": _ds(self.supplier),
             "document": _ds(self.document),
+            "graph": _ds(self.graph),
             "readiness": _ds(self.readiness),
             "top_recommendations": self.top_recommendations,
         }
@@ -1116,6 +1121,239 @@ def _score_documents(summary: Dict[str, Any]) -> DomainScore:
     )
 
 
+# ── Graph domain (Phase 8) ────────────────────────────────────────────────────
+
+def _score_graph(
+    doc_db:      Optional[Path] = None,
+    tracking_db: Optional[Path] = None,
+) -> DomainScore:
+    """Score link-completeness across all batch_id hubs.
+
+    Phase 8 addition. Read-only. llm_used=False. No writes.
+
+    For each distinct batch_id in documents.db, checks which of six link
+    dimensions are present:
+        awb      -- at least one row with non-empty awb column
+        invoice  -- at least one row with non-empty related_invoice_no
+        customs  -- at least one row with non-empty related_mrn
+        pz       -- at least one row with non-empty related_pz_no
+        customer -- at least one row with non-empty client_contractor_id
+        supplier -- at least one row with non-empty supplier_contractor_id
+
+    tracking dimension requires tracking_events.db (optional):
+        tracking -- at least one shipment_tracking_events row for the batch_id
+
+    completeness_score = average link score across all batches
+                         where link_score = linked_dimensions / total_dimensions
+
+    Confidence: 0.3 if no batches; scales toward 0.9 as batch count grows.
+    """
+    import sqlite3  # local import -- module-level import already present above
+
+    _doc_path  = doc_db      or _DOC_DB
+    _track_path = tracking_db or (settings.storage_root / "tracking_events.db")
+
+    _DIMENSIONS = ("awb", "invoice", "customs", "pz", "customer", "supplier", "tracking")
+    _n_dims = len(_DIMENSIONS)
+
+    batch_scores:      List[float] = []
+    dim_linked_counts: Dict[str, int] = {d: 0 for d in _DIMENSIONS}
+    batch_ids:         List[str] = []
+
+    # --- read all batch_ids from documents.db ---------------------------------
+    if not _doc_path.exists():
+        return DomainScore(
+            domain="graph",
+            entity_count=0,
+            completeness_score=0.0,
+            confidence=0.0,
+            field_gaps=[FieldGap(
+                field="documents_db",
+                affected_count=0,
+                pct=100.0,
+                severity="critical",
+                advisory="documents.db not found -- graph link-completeness cannot be scored",
+            )],
+            duplicate_clusters=[],
+            advisory="Graph domain: No data. documents.db absent.",
+            recommendations=["Ensure documents.db is initialised and populated before scoring."],
+            details={"batch_count": 0, "dimensions": {}, "tracking_db_available": False},
+        )
+
+    try:
+        con = sqlite3.connect(str(_doc_path), check_same_thread=False, timeout=5)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        rows = con.execute(
+            """
+            SELECT batch_id,
+                   MAX(CASE WHEN awb != '' THEN 1 ELSE 0 END)                    AS has_awb,
+                   MAX(CASE WHEN related_invoice_no != '' THEN 1 ELSE 0 END)     AS has_invoice,
+                   MAX(CASE WHEN related_mrn != '' THEN 1 ELSE 0 END)            AS has_customs,
+                   MAX(CASE WHEN related_pz_no != '' THEN 1 ELSE 0 END)          AS has_pz,
+                   MAX(CASE WHEN client_contractor_id != '' THEN 1 ELSE 0 END)   AS has_customer,
+                   MAX(CASE WHEN supplier_contractor_id != '' THEN 1 ELSE 0 END) AS has_supplier
+            FROM shipment_documents
+            WHERE batch_id != ''
+            GROUP BY batch_id
+            """
+        ).fetchall()
+        con.close()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[mdi] _score_graph documents read failed: %s", exc)
+        return DomainScore(
+            domain="graph",
+            entity_count=0,
+            completeness_score=0.0,
+            confidence=0.3,
+            field_gaps=[],
+            duplicate_clusters=[],
+            advisory="Graph domain: documents.db read failed.",
+            recommendations=[],
+            details={"error": str(exc), "batch_count": 0},
+        )
+
+    for row in rows:
+        bid = row["batch_id"]
+        batch_ids.append(bid)
+        dim_present = {
+            "awb":      bool(row["has_awb"]),
+            "invoice":  bool(row["has_invoice"]),
+            "customs":  bool(row["has_customs"]),
+            "pz":       bool(row["has_pz"]),
+            "customer": bool(row["has_customer"]),
+            "supplier": bool(row["has_supplier"]),
+            "tracking": False,  # filled below if tracking_db available
+        }
+        for dim, linked in dim_present.items():
+            if linked:
+                dim_linked_counts[dim] += 1
+
+    # --- check tracking dimension per batch -----------------------------------
+    if _track_path.exists() and batch_ids:
+        try:
+            tcon = sqlite3.connect(str(_track_path), check_same_thread=False, timeout=5)
+            tcon.row_factory = sqlite3.Row
+            tcon.execute("PRAGMA query_only = ON")
+            tracked_batches = set()
+            t_rows = tcon.execute(
+                "SELECT DISTINCT batch_id FROM shipment_tracking_events WHERE batch_id != ''"
+            ).fetchall()
+            tcon.close()
+            tracked_batches = {r["batch_id"] for r in t_rows}
+            for bid in batch_ids:
+                if bid in tracked_batches:
+                    dim_linked_counts["tracking"] += 1
+        except Exception as exc:  # noqa: BLE001
+            log.debug("[mdi] _score_graph tracking read failed: %s", exc)
+
+    tracking_db_available = _track_path.exists()
+    n_batches = len(batch_ids)
+
+    # --- per-batch scores (tracking only counted if DB available) -------------
+    effective_dims = _n_dims if tracking_db_available else (_n_dims - 1)
+    if n_batches == 0:
+        return DomainScore(
+            domain="graph",
+            entity_count=0,
+            completeness_score=0.0,
+            confidence=0.3,
+            field_gaps=[FieldGap(
+                field="batch_coverage",
+                affected_count=0,
+                pct=100.0,
+                severity="important",
+                advisory="No batches with batch_id found in documents.db",
+            )],
+            duplicate_clusters=[],
+            advisory="Graph domain: 0 batches found. Link-completeness cannot be scored.",
+            recommendations=["Process at least one shipment batch to enable graph scoring."],
+            details={"batch_count": 0, "dimensions": {}, "tracking_db_available": tracking_db_available},
+        )
+
+    # Recompute per-batch link score using effective_dims
+    # (simplified: use aggregate rates since we don't have per-batch tracking booleans)
+    agg_link_sum = sum(
+        dim_linked_counts[d]
+        for d in ("awb", "invoice", "customs", "pz", "customer", "supplier")
+    )
+    if tracking_db_available:
+        agg_link_sum += dim_linked_counts["tracking"]
+
+    completeness_score = agg_link_sum / (n_batches * effective_dims) if n_batches > 0 else 0.0
+    completeness_score = min(1.0, completeness_score)
+
+    confidence = min(0.9, 0.3 + (n_batches / 20.0) * 0.6)
+
+    # --- field gaps (dimensions with <80% coverage) ---------------------------
+    gaps: List[FieldGap] = []
+    dim_labels = {
+        "awb":      "AWB not linked",
+        "invoice":  "Invoice reference missing",
+        "customs":  "Customs MRN not linked",
+        "pz":       "PZ reference missing",
+        "customer": "Customer contractor not identified",
+        "supplier": "Supplier contractor not identified",
+        "tracking": "No tracking events recorded",
+    }
+    check_dims = list(_DIMENSIONS) if tracking_db_available else [d for d in _DIMENSIONS if d != "tracking"]
+    for dim in check_dims:
+        rate = dim_linked_counts[dim] / n_batches if n_batches > 0 else 0.0
+        missing_pct = round((1.0 - rate) * 100, 1)
+        if missing_pct > 20.0:
+            severity = "critical" if missing_pct > 60.0 else "important" if missing_pct > 35.0 else "optional"
+            gaps.append(FieldGap(
+                field=dim,
+                affected_count=n_batches - dim_linked_counts[dim],
+                pct=missing_pct,
+                severity=severity,
+                advisory=f"{dim_labels.get(dim, dim)}: {missing_pct}% of batches ({n_batches - dim_linked_counts[dim]}/{n_batches})",
+            ))
+
+    # --- recommendations ------------------------------------------------------
+    recs: List[str] = []
+    if dim_linked_counts.get("awb", 0) < n_batches:
+        recs.append("Ensure AWB is populated on all shipment documents.")
+    if dim_linked_counts.get("customs", 0) < n_batches:
+        recs.append("Link customs MRN to all batches for complete duty traceability.")
+    if dim_linked_counts.get("pz", 0) < n_batches:
+        recs.append("Link PZ reference on all batches for accounting completeness.")
+    if dim_linked_counts.get("supplier", 0) < n_batches:
+        recs.append("Identify supplier contractor on all shipment documents.")
+    if not tracking_db_available:
+        recs.append("Enable DHL tracking pipeline to populate tracking events for all batches.")
+
+    advisory_parts = [
+        f"{n_batches} batch(es) scored across {effective_dims} link dimensions.",
+        f"Link completeness: {round(completeness_score * 100, 1)}%.",
+    ]
+    if gaps:
+        advisory_parts.append(f"{len(gaps)} dimension(s) below 80% coverage threshold.")
+
+    return DomainScore(
+        domain="graph",
+        entity_count=n_batches,
+        completeness_score=round(completeness_score, 3),
+        confidence=round(confidence, 3),
+        field_gaps=gaps,
+        duplicate_clusters=[],
+        advisory=" ".join(advisory_parts),
+        recommendations=recs,
+        details={
+            "batch_count":           n_batches,
+            "tracking_db_available": tracking_db_available,
+            "dimensions": {
+                dim: {
+                    "linked": dim_linked_counts[dim],
+                    "total":  n_batches,
+                    "rate":   round(dim_linked_counts[dim] / n_batches, 3) if n_batches else 0.0,
+                }
+                for dim in (check_dims)
+            },
+        },
+    )
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceReport:
@@ -1123,7 +1361,7 @@ def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceRepor
     Produce a MasterDataIntelligenceReport. Never raises. Never writes.
 
     domain: None (all) | "customer" | "product" | "finishing" | "supplier"
-            | "document" | "readiness"
+            | "document" | "graph" | "readiness"
     """
     customers: List[Any] = []
     designs: List[Any] = []
@@ -1160,21 +1398,23 @@ def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceRepor
     finishing_score = _score_finishing(designs)
     supplier_score  = _score_suppliers(suppliers)
     document_score  = _score_documents(doc_summary)
+    graph_score     = _score_graph()
     readiness_score = _score_readiness(
         customers, designs, suppliers,
         customer_score, product_score, supplier_score,
     )
 
-    # Platform score: weighted average across 6 domains
-    # Phase 6 rebalance: customer=0.25, product=0.22, finishing=0.18,
-    #                    supplier=0.12, document=0.13, readiness=0.10
-    weights = [0.25, 0.22, 0.18, 0.12, 0.13, 0.10]
+    # Platform score: weighted average across 7 domains
+    # Phase 8 rebalance (7 domains): customer=0.22, product=0.20, finishing=0.16,
+    #                                supplier=0.11, document=0.12, graph=0.09, readiness=0.10
+    weights = [0.22, 0.20, 0.16, 0.11, 0.12, 0.09, 0.10]
     scores  = [
         customer_score.completeness_score,
         product_score.completeness_score,
         finishing_score.completeness_score,
         supplier_score.completeness_score,
         document_score.completeness_score,
+        graph_score.completeness_score,
         readiness_score.completeness_score,
     ]
     platform_score = sum(w * s for w, s in zip(weights, scores))
@@ -1183,7 +1423,7 @@ def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceRepor
     all_recs: List[tuple] = []  # (severity_rank, text)
     for score_obj in (
         customer_score, product_score, finishing_score,
-        supplier_score, document_score, readiness_score,
+        supplier_score, document_score, graph_score, readiness_score,
     ):
         for i, rec in enumerate(score_obj.recommendations):
             all_recs.append((i, rec))
@@ -1199,6 +1439,7 @@ def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceRepor
         finishing=finishing_score,
         supplier=supplier_score,
         document=document_score,
+        graph=graph_score,
         readiness=readiness_score,
         top_recommendations=top_recs,
     )
