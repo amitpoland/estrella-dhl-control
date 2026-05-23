@@ -39,10 +39,11 @@ _VALID_DOMAINS = {"document", "customer", "supplier", "product", "shipment"}
     dependencies=[_auth],
     summary="Natural-language search over authority data",
     description=(
-        "Searches customers, suppliers, products, and documents using "
+        "Searches customers, suppliers, products, documents, and shipments using "
         "deterministic pattern matching and keyword search. "
-        "Recognizes: AWB numbers, MRN references, PZ/invoice refs, "
-        "UUID batch IDs, HS codes, and free-text keywords. "
+        "Recognizes: AWB numbers (routes to document+shipment), MRN references, "
+        "PZ/invoice refs, UUID batch IDs, HS codes (routes to product), "
+        "and free-text keywords. "
         "llm_used=False -- deterministic only. No writes."
     ),
 )
@@ -57,7 +58,7 @@ def search(
         default="",
         description=(
             "Comma-separated domain filter: "
-            "document,customer,supplier,product. "
+            "document,customer,supplier,product,shipment. "
             "Default: all domains."
         ),
     ),
