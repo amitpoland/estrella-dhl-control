@@ -474,15 +474,11 @@ def test_end_to_end_global_noisy_sad_refs_recovered(monkeypatch):
     fires, AI returns '088/2026-2027', reconciler classifies as
     verified_with_advisory."""
     import app.services.ai_customs_evidence as _mod
+    from unittest.mock import MagicMock, patch
 
     # Stub provider as available, with a canned response
     monkeypatch.setattr(_mod, "_provider_available", lambda: True)
 
-    import sys
-    class _Resp:
-        def __init__(self, text):
-            self.content = [type("X", (), {"text": text})()]
-    fake = type(sys)("anthropic_fake_e2e")
     canned = json.dumps({
         "invoice_refs": ["088/2026-2027"],
         "awb":          "4789974092",
@@ -495,14 +491,9 @@ def test_end_to_end_global_noisy_sad_refs_recovered(monkeypatch):
         "evidence":     ["Exporter's Ref: 088/2026-2027 (page 1)",
                          "MRN: 26PL44302D00C2M4R4"],
     })
-    class _FakeClient:
-        def __init__(self, api_key): pass
-        class messages:
-            @staticmethod
-            def create(**kw):
-                return _Resp(canned)
-    fake.Anthropic = _FakeClient
-    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    mock_gateway = MagicMock()
+    mock_gateway.call.return_value = canned
+    monkeypatch.setattr("app.services.ai_gateway", mock_gateway, raising=False)
 
     # Gate check
     noisy_anchors = {
@@ -536,13 +527,9 @@ def test_end_to_end_ai_disagreement_remains_blocker(monkeypatch):
     deterministic anchor MUST classify as operator_review_required —
     the AI cannot override deterministic facts."""
     import app.services.ai_customs_evidence as _mod
+    from unittest.mock import MagicMock
     monkeypatch.setattr(_mod, "_provider_available", lambda: True)
 
-    import sys
-    class _Resp:
-        def __init__(self, text):
-            self.content = [type("X", (), {"text": text})()]
-    fake = type(sys)("anthropic_fake_disagree")
     bad = json.dumps({
         "invoice_refs": ["088/2026-2027"],
         "awb":          "4789974092",
@@ -551,14 +538,9 @@ def test_end_to_end_ai_disagreement_remains_blocker(monkeypatch):
         "confidence":   "high",
         "evidence":     ["fake quote"],
     })
-    class _FakeClient:
-        def __init__(self, api_key): pass
-        class messages:
-            @staticmethod
-            def create(**kw):
-                return _Resp(bad)
-    fake.Anthropic = _FakeClient
-    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    mock_gateway = MagicMock()
+    mock_gateway.call.return_value = bad
+    monkeypatch.setattr("app.services.ai_gateway", mock_gateway, raising=False)
 
     ai_block = _mod.extract_customs_evidence(pdf_text="X")
     anchors = {

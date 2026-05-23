@@ -98,6 +98,18 @@ class Settings(BaseSettings):
     ai_parser_model:     str           = Field(default="claude-sonnet-4-6")
     ai_parser_enabled:   bool          = Field(default=False)
 
+    # ── AI Gateway (Phase 3 Proper — owns all AI execution policy) ────────────
+    # 0.0 = no daily budget limit
+    ai_gateway_daily_budget_usd:            float = Field(default=0.0)
+    # Timeout for each individual Anthropic API call (seconds)
+    ai_gateway_timeout_seconds:             int   = Field(default=30)
+    # Max retries per call (exponential backoff 1s/2s/4s; 429+5xx only)
+    ai_gateway_max_retries:                 int   = Field(default=3)
+    # Circuit breaker: open after this many consecutive failures
+    ai_gateway_circuit_breaker_threshold:   int   = Field(default=5)
+    # Circuit breaker: seconds before attempting half-open
+    ai_gateway_circuit_breaker_reset_s:     int   = Field(default=60)
+
     # ── AI advisory budget controls (all disabled by default — see api-fallback-policy.md) ──
     # Phase 2 LLM advisory — must be explicitly enabled via .env; never True in code defaults.
     ai_advisory_llm_enabled:        bool          = Field(default=False)

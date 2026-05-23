@@ -10,6 +10,182 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 
 # FACTS
 
+## Phase 3A — AI Safety Patch (2026-05-23, DEPLOYED to Windows production)
+
+- **PR #309 squash-merged** to main at SHA `fe0ab30` — 2026-05-23
+- **DEPLOYED to Windows production** — operator-confirmed 2026-05-23:
+  - ai_customs_parser.py guard: Confirmed in production
+  - ai_customs_evidence.py guard: Confirmed in production
+  - Local health: 200 | Public health: 200 | Uvicorn: Clean | Runtime errors: None
+  - Anthropic bypass risk: CLOSED
+- **Gap 3 (HIGH) CLOSED in production** — `ai_parser_enabled=False` enforced at service entry points; no Anthropic API call executes unless flag is True
+- **Files deployed** (5 files, all within service/app/**):
+  - `service/app/services/ai_customs_parser.py` — flag check before PDF extraction and Anthropic client creation
+  - `service/app/services/ai_customs_evidence.py` — flag check inside `_provider_available()` before key check
+  - `service/app/api/routes_pz.py` — from PRs #306/#308
+  - `service/app/services/global_pz_lineage.py` — NEW service from PRs #306/#308
+  - `service/app/static/shipment-detail.html` — GlobalPZLineageCard from PR #308
+- **Tests shipped**: `service/tests/test_ai_safety_flag_gate.py` — 10 tests, all PASS
+- **Governance doc**: `docs/ai-governance/ai-consolidation-inventory.md` — complete platform AI inventory
+- **GATE 2 state**: 1/3 open PRs (#268 only — Lesson G docs PR)
+- **Scorecards**: `.claude/memory/scorecards/2026-05-23-phase3a-merge-gate.md` + `.claude/memory/scorecards/2026-05-23-phase3a-deploy.md`
+
+---
+
+## Phase 3 Proper — AI Gateway + Call Ledger + Redaction + Model Selection (NEXT — not yet started)
+
+**Campaign type**: Architectural (not a feature campaign)  
+**Operator designation**: 2026-05-23  
+**Strategic constraint**: No new AI feature may ship until Phase 3 Proper is complete and deployed.
+
+### Claude-first fallback rule (permanent, binds all phases)
+
+Claude Code / Claude Work is the primary reasoning path. Anthropic API is allowed only as a governed fallback through `ai_gateway.py` when Claude-first execution fails, times out, lacks sufficient context, or returns low confidence. No service may call Anthropic directly.
+
+Correct chain:
+```
+User / Operator request
+  ↓
+Claude Code / Claude Work tries first
+  ↓
+If Claude path fails, times out, lacks context, or confidence is low
+  ↓
+ai_gateway.py may call Anthropic API
+  ↓
+ai_gateway.py selects model: Haiku / Sonnet / Opus
+  ↓
+ai_gateway.py applies redaction, budget, retry, timeout, ledger
+  ↓
+Result returns as advisory output only
+```
+
+Forbidden chain: `Service → Anthropic API directly`
+
+### Gateway violation rule (PR-review gate, permanent)
+
+If any file outside `ai_gateway.py` contains any of the following, **block the PR**:
+- `anthropic.Anthropic()` or any external AI client construction
+- Direct model-name selection (e.g. `"claude-sonnet-4-6"` as a call argument)
+- Retry logic for AI calls
+- Redaction transforms
+- Token accounting or budget checks
+
+Exception: test files that prove the violation is forbidden (source-grep contract tests) are permitted and required.
+
+### Success criteria — Phase 3 Proper is CLOSED only when ALL of the following pass:
+
+**1. Single AI Authority**  
+No service instantiates `anthropic.Anthropic()` or any AI provider client directly.  
+All AI traffic routes through `service/app/services/ai_gateway.py`.  
+`ai_customs_parser.py` and `ai_customs_evidence.py` migrated to call gateway.  
+Source-grep tests confirm: zero direct `import anthropic` outside gateway.
+
+**2. Single Ledger**  
+Every external AI call recorded to `service/app/services/ai_call_ledger.py` (SQLite append-only).  
+Minimum fields per record:
+- `timestamp`
+- `service` (which service made the call)
+- `object_id` (batch_id / shipment_id / document_id)
+- `model`
+- `prompt_hash` (SHA-256 of redacted prompt — no raw text)
+- `input_tokens`
+- `output_tokens`
+- `estimated_cost`
+- `latency_ms`
+- `success` (bool)
+- `fallback_reason` (null if not a fallback)
+
+**3. Single Redaction Layer**  
+All external prompts pass through `redactor.py` before transmission.  
+Secrets, API keys, passwords, tokens, customer private identifiers, internal credentials stripped.  
+Redaction is not optional and not per-service.
+
+**4. Single Resilience Layer**  
+Gateway owns: timeouts, retry policy, circuit breaker, cache, budget checks, stop conditions.  
+Not duplicated in any service.
+
+**5. Migration complete**  
+`ai_customs_parser.py` — direct Anthropic client removed; calls `ai_gateway.call()`  
+`ai_customs_evidence.py` — direct Anthropic client removed; calls `ai_gateway.call()`
+
+**6. Token Governance enforced by gateway**  
+Daily budget ceiling | per-request limits | per-service limits  
+Prompt compression | cache reuse | large-document restrictions | fallback controls
+
+**7. Model Selection Authority owned by gateway**  
+No service selects a model directly. `ai_gateway.py` owns all model selection.
+
+**Model tiers:**
+- `haiku` — default for simple, low-risk, low-context tasks
+- `sonnet` — default for moderate reasoning, structured document analysis, workflow explanation, multi-field validation
+- `opus` — allowed only for high-complexity, cross-domain, low-confidence, legal/customs-heavy, or operator-explicit escalation tasks
+
+**Selection inputs (all required as gateway call parameters):**
+- `task_type`, `complexity`, `context_size`, `risk_level`, `confidence_score`
+- `token_budget`, `daily_budget_remaining`, `operator_override`
+
+**Escalation rules:**
+- Always start with cheapest capable model
+- Haiku may escalate to Sonnet if confidence is low or ambiguity detected
+- Sonnet may escalate to Opus only when: high complexity, cross-domain, legally/customs sensitive, or operator-explicit
+- Every Opus usage must write `selection_reason` and `escalation_reason` in ledger
+
+**Ledger fields for model selection:**
+- `requested_model`, `selected_model`, `model_tier`
+- `selection_reason`, `escalation_reason`
+- `confidence_score`
+- `estimated_input_tokens`, `estimated_output_tokens`, `estimated_cost`
+- `actual_input_tokens` (if available), `actual_output_tokens` (if available), `actual_cost` (if available)
+
+Both estimated and actual fields are required. The delta between them is the feedback signal for governance: it enables cost variance reports, estimate accuracy tracking, and identification of which task types or prompts are most expensive relative to their estimated budget. This turns token governance from a static rule into a measurable feedback loop.
+
+**Forbidden — gateway violation rule extended:**
+- No service may hard-code `haiku`, `sonnet`, or `opus`
+- No service may choose a model directly
+- No model-name string (`claude-haiku-*`, `claude-sonnet-*`, `claude-opus-*`) may appear outside: `ai_gateway.py`, config files, docs, or tests proving the gateway rule is enforced
+
+**8. Production deployment verified**  
+Gateway live on Windows production. Ledger writing entries. Redaction confirmed. Model selection active. Governance tests pass.
+
+### Gaps closed (from `docs/ai-governance/ai-consolidation-inventory.md`)
+- Gap 1 (HIGH) — no call-log → `ai_call_ledger.py`
+- Gap 2 (HIGH) — no redaction → `redactor.py` wired to gateway (partial; full in Phase 6)
+- Gap 5 (MEDIUM) — no retry → gateway retry policy
+- Gap 6 (MEDIUM) — no timeout → gateway 30s timeout
+- Gap 8 (LOW) — dual independent clients → single gateway client
+
+### Full phase chain (operator decision 2026-05-23, LOCKED)
+
+```
+Phase 3A (Safety Gate)           ✅ COMPLETE + LIVE
+Phase 3 Proper (Foundation)      ← NEXT CAMPAIGN
+Phase 4  Customer Intelligence
+Phase 5  Product/Finishing Intelligence
+Phase 6  Document Intelligence
+Phase 7  Natural-Language Search
+Phase 2  Advisory LLM Explanations
+Phase 8  Action Proposal Advisor
+Phase 9  Operations Assistant
+Phase 10 Optimization / Forecasting
+```
+
+No feature from Phase 4 onward may start until Phase 3 Proper is complete and deployed.
+
+**Effective scope of Phase 3 Proper** (operator finalized 2026-05-23):
+```
+AI Gateway (ai_gateway.py)
+AI Call Ledger (ai_call_ledger.py)
+Redaction Layer
+Timeout / Retry / Circuit Breaker
+Token Governance
+Existing AI Migration (customs parser + evidence)
+Model Selection Policy (Haiku → Sonnet → Opus)
+```
+
+**Status**: NOT STARTED — awaiting campaign kickoff in a fresh session
+
+---
+
 ## C26 — Canonical Proforma Setup Reader Contract (2026-05-21, ACTIVE on main)
 
 - **PR #252 merged** to main (SHA: `8ccc457`) — 2026-05-21. No deploy required (documentation + tests only; no runtime file touched).
@@ -495,7 +671,8 @@ Expected: synthetic=true, source="audit.tracking", total=30, counts.PURCHASE_TRA
 - **GATE 2: 0 open PRs** as of Campaign 9 close
 
 ## Current origin/main HEAD
-- **2026-05-20** — `3dd5243` C21A follow-up — fix: 3 observer-identified error divs in WorkflowCard/CN panel — **origin/main HEAD (2026-05-20)**
+- **2026-05-23** — `fe0ab30` Phase 3A AI safety patch — enforce ai_parser_enabled flag at service level — **origin/main HEAD (2026-05-23)**
+- **2026-05-20** — `3dd5243` C21A follow-up — fix: 3 observer-identified error divs in WorkflowCard/CN panel — **prior origin/main HEAD**
 - **2026-05-20** — `384e55a` C21A — fix: workflow button token compliance, 10 hardcoded hex → CSS vars
 - **2026-05-20** — `500472e` C20A — fix: component API truth — Btn primary variant, Badge label prop, --surface tokens
 - **2026-05-20** — `64d0799` C19A — delete dead intelligence renderer — single authority ProformaDraftPanel
@@ -669,11 +846,11 @@ Expected: synthetic=true, source="audit.tracking", total=30, counts.PURCHASE_TRA
 - **Attachment integrity guard shadow observation** — guard is LIVE on Windows prod as of `4c797e4`. Status: `AWAITING-FIRST-REAL-AWB`. Shadow-observing-real-traffic flag must NOT be set until `active_shipment_monitor` fires its first real sweep and an AWB enters eligibility filter. No customs emails queued since restart. Operator must confirm first AWB timestamp to upgrade status.
 
 ## Deployment status per machine
-- **Mac (dev)** — current origin/main head `3dd5243` (C21A follow-up, 2026-05-20). C13E + C14A–C21A all on origin/main.
-- **Windows (prod, NSSM `PZService` at `C:\PZ`, `https://pz.estrellajewels.eu`)** — **CAMPAIGN-8-DEPLOY-COMPLETE; C13E + C14A–C21A PENDING WINDOWS DEPLOY**
+- **Mac (dev)** — current origin/main head `fe0ab30` (Phase 3A AI safety patch, 2026-05-23). Phase 3A + all prior campaigns on origin/main.
+- **Windows (prod, NSSM `PZService` at `C:\PZ`, `https://pz.estrellajewels.eu`)** — **PHASE 3A + C13E + C14A–C21A PENDING WINDOWS DEPLOY**
   - Static pending: `shipment-detail.html` (C14A–C21A cumulative changes) — NO restart required
-  - Backend pending: `inventory_state_engine.py` (C13E) — PZService restart required
-  - C21A-specific: workflow button token compliance (10 hex colors + 3 error divs) in `shipment-detail.html` included in static deploy above
+  - Backend pending: `inventory_state_engine.py` (C13E) + 2 AI safety files (Phase 3A) — PZService restart required
+  - Phase 3A backend files: `ai_customs_parser.py`, `ai_customs_evidence.py`
   - **Campaign 8 deploy SHA: `7392be1`** (32d6a8f + V1/V2/V3 Windows-local, 2026-05-19). 321-commit catch-up from `4c797e4` → `32d6a8f` (origin/main Campaign 6 HEAD) + 3 additional Windows-local commits.
   - PZService: RUNNING (operator confirmed post-restart)
   - Public health: 200 OK `https://pz.estrellajewels.eu/api/v1/health` — body contains `"ok"` and `"prod"`
@@ -768,10 +945,17 @@ Campaign 6 executed on 2026-05-19. Branch: `chore/wave2-patch4-batch-condensatio
 - **2026-05-13T16:00Z (Lesson D closure)** — Scorecard written: `.claude/memory/scorecards/2026-05-13-lesson-d-closure.md` — RULE 2 auto-fire for PR #77. 3 agents scored (system-architect, final-consistency-review, deploy_release_manager). All issues resolved pre-commit. **Total scorecards on disk: 8**.
 - **2026-05-13** — Engineering lessons file: `.claude/memory/engineering_lessons.md` — Lesson A (test-stub return-shape mismatch), Lesson B (mid-session registry refresh non-determinism), Lesson C (orchestrator scorecard verification), **Lesson D (LOCAL-COMMIT-ONLY deploy disclosure + reconciliation — CODIFIED 2026-05-13 via PR #76)** are all binding rules.
 - **2026-05-13** — Scorecard ON DISK but previously uncited (retroactive RULE 6 registration 2026-05-18): `.claude/memory/scorecards/2026-05-13-w5-p2-ignition-switch-model-c.md` — P2 ignition switch model C analysis. File confirmed on disk. GATE 4 disposition: **ACCEPTED GAP** — file is valid; omission from prior RULE 6 citations was an oversight (not a Lesson C silent-loss event). No retroactive action required beyond this citation.
+- **2026-05-23** — Scorecard written: `.claude/memory/scorecards/2026-05-23-phase3a-merge-gate.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 3A safety patch merge gate. Cited for RULE 6 compliance.
 
 ## Campaign 21A scorecard (appended 2026-05-20, RULE 2 auto-fire)
 
 - **2026-05-20** — Scorecard written: `.claude/memory/scorecards/2026-05-20-c21a-workflow-button-token-compliance.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). 3 agents scored: testing-verification EXEMPLARY, frontend-ui ACCEPTABLE, gap-detection NEEDS-TUNING (REPEATED-WEAK: 2 of last 5). GATE 4 dispositions: (1) gap-detection invocation pattern → SCHEDULED, (2) 827 pre-existing test failures → SCHEDULED. **Running total confirmed scorecards: 12+.**
+
+## AI Governance scorecards (appended 2026-05-23, RULE 2 auto-fire)
+
+- **2026-05-23** — Scorecard written: `.claude/memory/scorecards/2026-05-23-ai-governance-phase1.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 1 deployment campaign. File path cited in AI Governance Phase 1 section above.
+- **2026-05-23** — Scorecard written: `.claude/memory/scorecards/2026-05-23-ai-governance-master-bootstrap.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Master governance bootstrapping campaign.
+- **2026-05-23** — Scorecard written: `.claude/memory/scorecards/2026-05-23-ai-consolidation-campaign.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). AI Consolidation Campaign. 6 agents scored, all EXEMPLARY. **Running total confirmed scorecards: 15+.**
 
 ## Campaign 8 scorecard (appended 2026-05-19, RULE 2 auto-fire)
 
@@ -839,6 +1023,7 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
 - **Classifier is the single point of catastrophic failure** for P4/P5. Required: ≥200 shadow classifications + Customs Compliance Reviewer sign-off before P4 live; 100% SAD/PZC precision + Inventory/Finance Reviewer sign-off before P5 live. Source: master plan §4.5 R2.
 - **Engineering discipline rules (locked 2026-05-12)** — doc-vs-code consistency gate (Issue #27 pattern), API error templating (`{detail, error_code, field, hint}`), exception-leak prevention. Source: memory `engineering_discipline_rules`.
 - **agent-prompt-refiner and pattern-historian deferred** pending two campaigns under observation-layer baseline. Source: PR #41 + Issue #39.
+- **Phase 3 is a Phase 2 precondition (not a successor)** — decided 2026-05-23 consolidation campaign
 
 ## Engineering lessons governance (appended 2026-05-13)
 
@@ -928,9 +1113,48 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **upsert_design = partial-update (2026-05-19)** — `master_data_db.upsert_design()` uses partial-update semantics: absent keys preserve existing DB values (not wiped to NULL). Callers may send partial payloads safely.
 - **upsert_customer = full-SET (2026-05-19)** — `customer_master_db.upsert_customer()` uses full-SET semantics: caller MUST send all fields. Governance note added in code. These two upsert contracts are intentionally different and must not be conflated.
 
+## AI Governance Phase 1 — DEPLOYED 2026-05-23
+
+- **PR #307 merged** → squash SHA `74ff7a8` → **deployed to Windows production 2026-05-23**
+- **Manifest**: `.claude/manifests/windows_deploy_74ff7a8.ps1` — 5-file robocopy, PZService restart
+- **Files deployed to `C:\PZ\app`**:
+  - `services/ai_advisory.py` (NEW — Class-R advisory service, deterministic, llm_used=False)
+  - `api/routes_ai_advisory.py` (NEW — GET-only router, prefix /api/v1/ai/advisory)
+  - `core/config.py` (MODIFIED — 7 AI budget config fields, all disabled by default)
+  - `main.py` (MODIFIED — ai_advisory_router mounted)
+  - `static/ai-advisory-v2.html` (NEW — standalone V2 advisory surface)
+- **New route**: `GET /api/v1/ai/advisory/workflow-blockers/{batch_id}`
+- **New governance docs** (docs only — not deployed): `docs/ai-governance/ai-capability-map.md`, `token-budget-policy.md`, `api-fallback-policy.md`
+- **New tests** (not deployed): `test_ai_advisory_no_writes.py` (33), `test_ai_advisory_endpoint.py` (6), `test_ai_token_governance.py` (17) — 55 total, all PASS
+- **Deploy smoke** (operator-confirmed 2026-05-23):
+  - HEAD: `74ff7a8`
+  - Local health: 200 OK
+  - Public health: 200 OK
+  - PZService: RUNNING
+  - Stderr: CLEAN
+- **Phase 1 contract**: `llm_used=False` enforced, no write paths, Class-R only
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-ai-governance-phase1.md`
+- **GATE 2**: 2 open PRs remaining (#306, #268) — 2/3 limit
+
+## AI Consolidation Campaign — CLOSED 2026-05-23
+
+- **Primary deliverable**: `docs/ai-governance/ai-consolidation-inventory.md` written
+- **Live LLM services confirmed**: EXACTLY 2 (`ai_customs_parser.py` + `ai_customs_evidence.py`)
+- **Both use claude-sonnet-4-6**; both call Anthropic directly (no shared gateway)
+- **All other "AI" services confirmed deterministic** (no LLM calls)
+- **8 governance gaps documented** in inventory (3 HIGH, 5 MEDIUM)
+- **CRITICAL: ai_parser_enabled flag only enforced at orchestrator level, NOT service level**
+  → services bypass flag if called outside `customs_parser_orchestrator.py` path
+- **No OpenAI usage anywhere in codebase**
+- **PDF pipeline**: pdfplumber only, 8000-char truncation, no OCR/vision API
+- **Scorecard**: `.claude/memory/scorecards/2026-05-23-ai-consolidation-campaign.md`
+- **Campaign verdict**: EXEMPLARY (all 6 agents)
+
+---
+
 ## Next 3 actions in queue
 
-1. **Windows deploy — C13E backend + C14A–C21A static** — run `windows_deploy_c13e_backend.ps1` (PZService restart) then robocopy `shipment-detail.html` to `C:\PZ\app\static\`. C21A (workflow button token compliance) is the latest change; all C13E–C21A changes are now pending on Windows. Target: next operator Windows session — gating: operator elevated shell on Windows prod.
+1. **Windows deploy — C13E + Phase 3A backend + C14A–C21A static** — deploy 3 backend files (`inventory_state_engine.py`, `ai_customs_parser.py`, `ai_customs_evidence.py`) + PZService restart, then robocopy `shipment-detail.html` to `C:\PZ\app\static\`. Phase 3A AI safety patch is latest backend change. Target: next operator Windows session — gating: operator elevated shell on Windows prod.
 2. **V1/V2/V3 reconciliation PR** — Windows production HEAD is `7392be1` (3 local commits above `32d6a8f` not on GitHub). Per Lesson D: operator must push V1/V2/V3 to GitHub or confirm content, then open reconciliation PR before next `git pull --ff-only origin main`. Gating: operator action (Windows → GitHub push).
 3. **gap-detection agent tuning** — enforce pre-implementation-only invocation trigger (GATE 4 SCHEDULED from C21A scorecard: REPEATED-WEAK verdict on gap-detection in 2 of last 5). Target: next agent-tuning session — gating: none (scheduling only).
 
@@ -984,5 +1208,6 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Issues #58/#59/#60 override polish (cascade endpoint, request_id correlation, GET /audit endpoint)** — when do they fire? Answerer: operator scheduling. Impact: operator UX improvements on top of the predecessor-override mechanic; none currently blocking.
 - **Cumulative ADR drift work** — blocked on Issue #51 resolution. Until #51 is reconciled, downstream ADR work (e.g. ADR-018 follow-ups in Issue #42) carries semantic risk of stacking onto unreconciled successor relationships.
 - **Is the `_TOP_LEVEL_FIELDS` enforcement gap on `dhl_clearance_manifest.py` (system-architect LOW finding) acceptable to defer to P2 kickoff, or should it be addressed in a hotfix PR?** Answerer: operator. Impact: a future phase implementer could write a top-level field that bypasses the schema fence. Filed in Issue #38 as SCHEDULED for P2.
+- **Phase 3 proper (call-log + redaction) and Phase 2 (advisory LLM) still pending** — Phase 3 must ship before Phase 2 per roadmap decision
 
 ---

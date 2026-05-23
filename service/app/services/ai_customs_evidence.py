@@ -228,16 +228,6 @@ def extract_customs_evidence(
     if not pdf_text or not pdf_text.strip():
         return None
 
-    try:
-        from ..core.config import settings  # noqa: PLC0415
-        import anthropic  # noqa: PLC0415
-    except Exception as exc:
-        log.warning("[ai_evidence] provider import failed: %s", exc)
-        return None
-
-    api_key = getattr(settings, "anthropic_api_key", None)
-    model = getattr(settings, "ai_parser_model", "claude-sonnet-4-6")
-
     schema_str = "\n".join(f'  "{k}": {v}' for k, v in EVIDENCE_SCHEMA.items())
     system = _SYSTEM_PROMPT.format(schema=schema_str)
 
@@ -248,19 +238,30 @@ def extract_customs_evidence(
         f"---\n{truncated}"
     )
 
+    # Call via AI Gateway (single authority — no direct Anthropic client here)
     try:
-        client = anthropic.Anthropic(api_key=api_key)
+        from . import ai_gateway  # noqa: PLC0415
         t0 = time.monotonic()
-        response = client.messages.create(
-            model=model,
-            max_tokens=1500,
+        raw_text = ai_gateway.call(
             system=system,
-            messages=[{"role": "user", "content": user_msg}],
+            user=user_msg,
+            task_type="evidence_recovery",
+            service_name="ai_customs_evidence",
+            object_id=None,
+            complexity="moderate",
+            risk_level="medium",
+            context_size=len(truncated),
+            confidence_score=1.0,
+            max_tokens=1500,
         )
         elapsed_ms = int((time.monotonic() - t0) * 1000)
-        raw_text = (response.content[0].text or "").strip()
+
+        if raw_text is None:
+            return None
+
+        raw_text = raw_text.strip()
     except Exception as exc:
-        log.warning("[ai_evidence] provider call failed: %s", exc)
+        log.warning("[ai_evidence] gateway call failed: %s", exc)
         return None
 
     parsed = _parse_strict_json(raw_text)
@@ -275,7 +276,6 @@ def extract_customs_evidence(
     # coerce types, filter numeric-noise invoice refs.
     normalised = _normalise_response(parsed)
     normalised["_ai_meta"] = {
-        "model":              model,
         "extraction_time_ms": elapsed_ms,
         "raw_confidence":     str(parsed.get("confidence") or "").lower(),
     }
