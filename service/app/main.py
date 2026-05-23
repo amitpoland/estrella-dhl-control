@@ -35,6 +35,7 @@ from .api.routes_lifecycle import router as lifecycle_router
 from .api.routes_intake import router as intake_router
 from .api.routes_execute import router as execute_router
 from .api.routes_ai_advisory import router as ai_advisory_router
+from .api.routes_mdi import router as mdi_router
 from .api.routes_settings import router as settings_router
 from .api.routes_system import router as system_router
 from .api.routes_agents import router as agents_router
@@ -361,6 +362,7 @@ app.include_router(lifecycle_router)
 app.include_router(intake_router)
 app.include_router(execute_router)
 app.include_router(ai_advisory_router)
+app.include_router(mdi_router)              # Phase 4: master-data intelligence (advisory, no writes)
 app.include_router(system_router)
 app.include_router(agents_router)
 app.include_router(packing_router)
