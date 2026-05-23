@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AI Advisory · Workflow Blockers (V2)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/dashboard-shared.js" disabled>
+  <style>
+    :root {
+      --bg:         #fafafa;
+      --surface:    #ffffff;
+      --text:       #1f2328;
+      --muted:      #6b7280;
+      --border:     #e5e7eb;
+      --accent:     #2563eb;
+      --badge-ok:   #10b981;
+      --badge-warn: #f59e0b;
+      --badge-bad:  #ef4444;
+    }
+    body { margin: 0; padding: 24px; font-family: -apple-system, system-ui, sans-serif;
+           background: var(--bg); color: var(--text); }
+    .container { max-width: 880px; margin: 0 auto; }
+    h1 { font-size: 20px; margin: 0 0 4px 0; }
+    .subtitle { color: var(--muted); margin: 0 0 20px 0; font-size: 13px; }
+    .advisory-banner {
+      background: #fff7ed; border: 1px solid #fed7aa; color: #7c2d12;
+      padding: 8px 12px; border-radius: 6px; font-size: 12px; margin-bottom: 16px;
+    }
+    .input-row { display: flex; gap: 8px; margin-bottom: 16px; }
+    input[type=text] {
+      flex: 1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+      font-size: 14px;
+    }
+    button {
+      padding: 8px 16px; background: var(--accent); color: white; border: 0;
+      border-radius: 6px; font-size: 14px; cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 16px; margin-bottom: 12px;
+    }
+    .card h2 { font-size: 15px; margin: 0 0 8px 0; }
+    .summary { white-space: pre-wrap; font-size: 14px; line-height: 1.5; }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+      font-weight: 600; color: white;
+    }
+    .badge-ok   { background: var(--badge-ok); }
+    .badge-warn { background: var(--badge-warn); }
+    .badge-bad  { background: var(--badge-bad); }
+    .blocker { border-left: 3px solid var(--badge-warn); padding: 8px 12px; margin: 8px 0;
+               background: #fffbeb; border-radius: 4px; }
+    .blocker .domain { font-weight: 600; }
+    .blocker .why { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .blocker .unblock { font-size: 13px; margin-top: 4px; }
+    .error { color: var(--badge-bad); font-size: 13px; }
+    .meta { font-size: 11px; color: var(--muted); margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AI Advisory — Workflow Blockers</h1>
+    <p class="subtitle">Read-only explanation derived from <code>batch_readiness</code>. No write actions.</p>
+    <div class="advisory-banner">
+      Advisory only — this surface never executes write actions. All writes flow through
+      <code>/api/v1/execute/{action}</code> with operator approval.
+    </div>
+
+    <div class="input-row">
+      <input id="batchId" type="text" placeholder="batch_id (e.g. SHIPMENT_4218922912_2026-05_9040dd39)" />
+      <button id="goBtn">Explain</button>
+    </div>
+
+    <div id="out"></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const out = $('out');
+
+    function renderError(msg) {
+      out.innerHTML = '<div class="card"><div class="error">' + escapeHtml(msg) + '</div></div>';
+    }
+
+    function escapeHtml(s) {
+      return String(s ?? '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function render(data) {
+      const readyBadge = data.ready_for_closure
+        ? '<span class="badge badge-ok">READY</span>'
+        : '<span class="badge badge-bad">BLOCKED</span>';
+
+      let html = '';
+      html += '<div class="card">';
+      html += '<h2>' + readyBadge + ' &nbsp; ' + escapeHtml(data.batch_id) + '</h2>';
+      html += '<div class="summary">' + escapeHtml(data.summary) + '</div>';
+      html += '<div class="meta">advisory_class=' + escapeHtml(data.advisory_class)
+            + ' · source=' + escapeHtml(data.source)
+            + ' · llm_used=' + String(data.llm_used) + '</div>';
+      html += '</div>';
+
+      if (data.blockers && data.blockers.length) {
+        html += '<div class="card"><h2>Blockers</h2>';
+        for (const b of data.blockers) {
+          html += '<div class="blocker">';
+          html += '<div><span class="domain">' + escapeHtml(b.domain) + '</span>'
+                + ' <span class="badge badge-warn">' + escapeHtml(b.status) + '</span></div>';
+          html += '<div class="why">' + escapeHtml(b.why) + '</div>';
+          html += '<div class="unblock"><strong>To unblock:</strong> '
+                + escapeHtml(b.what_unblocks_it) + '</div>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+      out.innerHTML = html;
+    }
+
+    async function explain() {
+      const id = $('batchId').value.trim();
+      if (!id) { renderError('Enter a batch_id'); return; }
+      out.innerHTML = '<div class="card">Loading…</div>';
+      try {
+        const resp = await fetch('/api/v1/ai/advisory/workflow-blockers/' + encodeURIComponent(id));
+        const data = await resp.json();
+        if (!resp.ok || data.ok === false) {
+          renderError('Error ' + resp.status + ': ' + (data.error || data.detail || 'unknown'));
+          return;
+        }
+        render(data);
+      } catch (e) {
+        renderError('Network error: ' + e.message);
+      }
+    }
+
+    $('goBtn').addEventListener('click', explain);
+    $('batchId').addEventListener('keydown', (e) => { if (e.key === 'Enter') explain(); });
+  </script>
+</body>
+</html>
