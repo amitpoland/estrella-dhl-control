@@ -102,6 +102,7 @@ __all__ = [
     "CategoryBreakdownItem",
     "PZLineLineage",
     "classify_stone_from_detail",
+    "classify_item_type_from_style",
     "packing_metal_to_en",
     "item_type_unit",
 ]
@@ -209,6 +210,49 @@ def item_type_unit(item_type: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Style-code item-type classifier (Global Jewellery design_no conventions)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Ordered: more-specific prefixes first so JBR is caught as BRACELET, not RING.
+_STYLE_TYPE_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    (r"^JBG",   "BANGLE"),
+    (r"^JBR",   "BRACELET"),
+    (r"^J\d+E", "EARRING"),
+    (r"^JE",    "EARRING"),
+    (r"^CSTE",  "EARRING"),
+    (r"^J\d+P", "PENDANT"),
+    (r"^JP",    "PENDANT"),
+    (r"^CSTP",  "PENDANT"),
+    (r"^J\d*R", "RING"),
+    (r"^JR",    "RING"),
+    (r"^CSTR",  "RING"),
+    (r"^R\d",   "RING"),
+    (r"^CA\d",  "RING"),
+    (r"^GL\d",  "RING"),
+)
+
+_COMPILED_STYLE_PATTERNS: Tuple[Tuple[Any, str], ...] = tuple(
+    (re.compile(pat, re.IGNORECASE), itype)
+    for pat, itype in _STYLE_TYPE_PATTERNS
+)
+
+
+def classify_item_type_from_style(design_no: str) -> Optional[str]:
+    """Infer item_type from a Global Jewellery design_no / product_code.
+
+    Returns a normalised uppercase item_type string (e.g. "RING", "EARRING"),
+    or None when the code does not match any known pattern.
+    """
+    code = (design_no or "").strip()
+    if not code:
+        return None
+    for pattern, itype in _COMPILED_STYLE_PATTERNS:
+        if pattern.match(code):
+            return itype
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Status severity ordering
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -289,6 +333,17 @@ class PositionRowLink:
     stone_family_shared_positions: List[int] = field(default_factory=list)
     # Other invoice position_no values that share the same stone-family
     # match key. Non-empty → budget-fill is order-dependent between them.
+
+    # V2 deterministic allocation metadata
+    allocation_confidence:   str       = ""
+    # HIGH   — unit-price scoring unambiguously selected this position
+    # MEDIUM — price signal present but partial; style code or heuristic used
+    # LOW    — no price signal; stone-family shared; order-dependent
+    # ""     — no rows assigned (EMPTY link)
+
+    allocation_reason_codes: List[str] = field(default_factory=list)
+    # Machine-readable codes explaining the confidence level.
+    # E.g. ["PRICE_MATCH"], ["AMBIGUOUS_STONE_FAMILY"], ["OCR_METAL_FALLBACK"]
 
 
 @dataclass
@@ -391,6 +446,11 @@ class LineageResult:
     match_status:                 str   = "UNMATCHED"
 
     notes:                        List[str] = field(default_factory=list)
+
+    # V2 per-serial allocation audit trail
+    # {serial_no: {position_no, item_type, tier, score, unit_price,
+    #              expected_rate, style_type, design_no}}
+    allocation_evidence:          Dict[int, Dict] = field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -676,6 +736,8 @@ def _run_matching(
     unmatched_serials: List[int]     = []
     link_tier_set:   Dict[int, set]  = {}   # id(link) → {"EXACT" / "OCR_METAL_FALLBACK"}
     link_ambig:      Dict[int, bool] = {}   # id(link) → was ambiguous key used?
+    link_scores:     Dict[int, List[int]] = {}  # id(link) → [score per row]
+    alloc_evidence:  Dict[int, Dict] = {}   # serial_no → assignment audit record
 
     for pr in packing_rows:
         serial = int(pr.get("serial_no") or 0)
@@ -698,8 +760,9 @@ def _run_matching(
         fob     = float(pr.get("unit_price") or pr.get("total_value") or 0.0)
         design  = (pr.get("design_no") or "").strip()
 
-        link, tier = _find_best_link(
+        link, tier, score = _find_best_link(
             unit, metal, stone_f, itype, exact_index, fallback_index,
+            unit_price=fob, design_no=design,
         )
 
         if link is None:
@@ -708,6 +771,12 @@ def _run_matching(
                 f"[unmatched] sr={serial} type={itype} metal={metal} "
                 f"stone={stone_f}"
             )
+            alloc_evidence[serial] = {
+                "position_no": None, "item_type": itype, "tier": "NONE",
+                "score": 0, "unit_price": fob, "expected_rate": None,
+                "style_type": classify_item_type_from_style(design),
+                "design_no": design,
+            }
             continue
 
         link.packing_serials.append(serial)
@@ -718,6 +787,22 @@ def _run_matching(
 
         lid = id(link)
         link_tier_set.setdefault(lid, set()).add(tier)
+        link_scores.setdefault(lid, []).append(score)
+
+        expected_rate = (
+            link.invoice_value_usd / link.invoice_qty
+            if link.invoice_qty > 0 else 0.0
+        )
+        alloc_evidence[serial] = {
+            "position_no":  link.position_no,
+            "item_type":    link.invoice_item_type,
+            "tier":         tier,
+            "score":        score,
+            "unit_price":   fob,
+            "expected_rate": round(expected_rate, 4),
+            "style_type":   classify_item_type_from_style(design),
+            "design_no":    design,
+        }
 
         # Mark as ambiguous if the key that resolved this assignment is shared
         ekey = (unit, metal, stone_f, itype)
@@ -751,6 +836,36 @@ def _run_matching(
     # ── Step 4: Fill confidence reasons ──────────────────────────────────
     for link in all_links:
         link.confidence_reason = _make_confidence_reason(link, link_ambig)
+
+    # ── Step 4b: Compute V2 allocation_confidence per link ────────────────
+    for link in all_links:
+        lid    = id(link)
+        scores = link_scores.get(lid, [])
+        if not scores:
+            link.allocation_confidence   = ""
+            link.allocation_reason_codes = []
+            continue
+
+        avg_score        = sum(scores) / len(scores)
+        has_strong_price = any(s >= 4 for s in scores)
+        has_price_signal = any(s != 0 for s in scores)
+        codes: List[str] = []
+
+        if avg_score >= 3 and has_strong_price:
+            link.allocation_confidence = "HIGH"
+            codes.append("PRICE_MATCH")
+        elif avg_score >= 1 and has_price_signal:
+            link.allocation_confidence = "MEDIUM"
+            codes.append("PRICE_SIGNAL")
+        elif link.stone_family_shared_positions:
+            link.allocation_confidence = "LOW"
+            codes.append("AMBIGUOUS_STONE_FAMILY")
+        else:
+            link.allocation_confidence = "MEDIUM"
+            if link.match_tier in ("OCR_METAL_FALLBACK", "MIXED"):
+                codes.append("OCR_METAL_FALLBACK")
+
+        link.allocation_reason_codes = codes
 
     # ── Step 5: Identify unmatched invoice positions ──────────────────────
     pos_link_map: Dict[int, List[PositionRowLink]] = {}
@@ -802,7 +917,53 @@ def _run_matching(
         pz_line_visibility_match=dims["pz_visibility"],
         match_status=overall,
         notes=notes,
+        allocation_evidence=alloc_evidence,
     )
+
+
+def _score_candidates(
+    candidates: List[PositionRowLink],
+    unit_price:  float,
+    design_no:   str,
+) -> List[Tuple[int, PositionRowLink]]:
+    """Return (score, link) pairs sorted by score descending.
+
+    Scoring dimensions:
+      Unit-price proximity — compares packing row unit_price against
+          link.invoice_value_usd / link.invoice_qty.
+          within 10%  → +4   (strong price match)
+          within 30%  → +2   (weak price match)
+          beyond 60%  → -3   (price mismatch — penalise)
+      Style-code confirmation — +1 when classify_item_type_from_style(design_no)
+          agrees with link.invoice_item_type.
+
+    When unit_price=0 no price signal is available; all candidates score 0
+    and are returned in their original (position_no) order, preserving the
+    V1 greedy behaviour for rows that carry no unit_price.
+    """
+    style_type = classify_item_type_from_style(design_no)
+    scored: List[Tuple[int, PositionRowLink]] = []
+    for link in candidates:
+        score = 0
+
+        if unit_price > 0 and link.invoice_qty > 0:
+            expected = link.invoice_value_usd / link.invoice_qty
+            if expected > 0:
+                ratio = abs(unit_price - expected) / expected
+                if ratio < 0.10:
+                    score += 4
+                elif ratio < 0.30:
+                    score += 2
+                elif ratio > 0.60:
+                    score -= 3
+
+        if style_type and style_type == link.invoice_item_type:
+            score += 1
+
+        scored.append((score, link))
+
+    scored.sort(key=lambda x: -x[0])
+    return scored
 
 
 def _find_best_link(
@@ -812,38 +973,41 @@ def _find_best_link(
     item_type:      str,
     exact_index:    Dict[Tuple, List[PositionRowLink]],
     fallback_index: Dict[Tuple, List[PositionRowLink]],
-) -> Tuple[Optional[PositionRowLink], str]:
-    """Return the best PositionRowLink for a packing row, plus the tier string.
+    unit_price:     float = 0.0,
+    design_no:      str   = "",
+) -> Tuple[Optional[PositionRowLink], str, int]:
+    """Return (best_link, tier, score) for a packing row.
 
     Tier 1: exact match on (unit, metal_en, stone_family, item_type).
     Tier 2: fallback on (unit, stone_family, item_type) — ignores metal.
 
-    Within each tier, returns the first link with remaining budget.  If all
-    budget is exhausted, returns the last candidate to allow overflow (so
-    every packing row is assigned).  Returns (None, "NONE") only when no
-    link exists at all.
+    Within each tier candidates are scored by unit-price proximity and style
+    code agreement (see _score_candidates).  The highest-scoring under-budget
+    candidate is preferred; if all candidates are over budget the
+    highest-scoring is returned to allow overflow (so every packing row is
+    assigned).  Returns (None, "NONE", 0) only when no candidate exists.
     """
-    # Tier 1 — with remaining budget
-    for link in exact_index.get((unit, metal_en, stone_family, item_type), []):
-        if link.packing_qty_sum < link.invoice_qty:
-            return link, "EXACT"
+    exact_candidates = exact_index.get((unit, metal_en, stone_family, item_type), [])
+    if exact_candidates:
+        scored = _score_candidates(exact_candidates, unit_price, design_no)
+        under = [(s, lk) for s, lk in scored if lk.packing_qty_sum < lk.invoice_qty]
+        if under:
+            best_score, best_link = under[0]
+            return best_link, "EXACT", best_score
+        best_score, best_link = scored[0]
+        return best_link, "EXACT", best_score
 
-    # Tier 1 — budget exhausted; allow overflow on exact candidate
-    candidates_exact = exact_index.get((unit, metal_en, stone_family, item_type), [])
-    if candidates_exact:
-        return candidates_exact[-1], "EXACT"
+    fb_candidates = fallback_index.get((unit, stone_family, item_type), [])
+    if fb_candidates:
+        scored = _score_candidates(fb_candidates, unit_price, design_no)
+        under = [(s, lk) for s, lk in scored if lk.packing_qty_sum < lk.invoice_qty]
+        if under:
+            best_score, best_link = under[0]
+            return best_link, "OCR_METAL_FALLBACK", best_score
+        best_score, best_link = scored[0]
+        return best_link, "OCR_METAL_FALLBACK", best_score
 
-    # Tier 2 — with remaining budget
-    for link in fallback_index.get((unit, stone_family, item_type), []):
-        if link.packing_qty_sum < link.invoice_qty:
-            return link, "OCR_METAL_FALLBACK"
-
-    # Tier 2 — budget exhausted; allow overflow on fallback candidate
-    candidates_fb = fallback_index.get((unit, stone_family, item_type), [])
-    if candidates_fb:
-        return candidates_fb[-1], "OCR_METAL_FALLBACK"
-
-    return None, "NONE"
+    return None, "NONE", 0
 
 
 def _build_pz_lineages(
