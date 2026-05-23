@@ -147,6 +147,44 @@ class GraphResult:
     link_completeness: LinkCompleteness = field(default_factory=LinkCompleteness)
     conflict_keys:     List[str] = field(default_factory=list)  # fields with conflicts
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise GraphResult to a plain dict suitable for JSONResponse."""
+        def _av(av: Optional[AttributedValue]) -> Optional[Dict[str, Any]]:
+            if av is None:
+                return None
+            return {"value": av.value, "authority": av.authority}
+
+        lc = self.link_completeness
+        return {
+            "batch_id":   self.batch_id,
+            "llm_used":   self.llm_used,
+            "built_at":   self.built_at,
+            "builder":    self.builder,
+            "awb":                _av(self.awb),
+            "awb_conflict":       _av(self.awb_conflict),
+            "customer":           _av(self.customer),
+            "customer_conflict":  _av(self.customer_conflict),
+            "supplier":           _av(self.supplier),
+            "supplier_code":      _av(self.supplier_code),
+            "invoice_ref":        _av(self.invoice_ref),
+            "invoice_line_count": self.invoice_line_count,
+            "mrn":    _av(self.mrn),
+            "pz_ref": _av(self.pz_ref),
+            "tracking_event_count":       self.tracking_event_count,
+            "tracking_latest_stage":      self.tracking_latest_stage,
+            "tracking_has_manual_review": self.tracking_has_manual_review,
+            "link_completeness": {
+                "awb_linked":      lc.awb_linked,
+                "tracking_linked": lc.tracking_linked,
+                "customer_linked": lc.customer_linked,
+                "supplier_linked": lc.supplier_linked,
+                "invoice_linked":  lc.invoice_linked,
+                "customs_linked":  lc.customs_linked,
+                "missing":         lc.missing,
+            },
+            "conflict_keys": self.conflict_keys,
+        }
+
 
 # ── Private resolution helpers ────────────────────────────────────────────────
 
