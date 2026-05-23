@@ -324,6 +324,85 @@ def search_good(
     })
 
 
+# ── Search-first PRODUCT AUTHORITY: search-and-compare (PR 1 foundation) ────
+#
+# Operator-stated workflow (2026-05-23):
+#   Search wFirma → Found? Yes → compare metadata → ask before update/overwrite
+# This endpoint is the read-only "compare metadata" surface. Future PRs
+# wire the interactive /adopt, /update-and-adopt, /create write paths that
+# act on operator confirmation. This endpoint NEVER writes — operators can
+# preview the comparison freely without risking unintended adoption.
+
+
+@router.get("/goods/search-and-compare", dependencies=[_auth])
+def search_and_compare_good(
+    product_code: str = Query(..., min_length=1),
+    name_pl:      Optional[str] = Query(default=None),
+    unit:         Optional[str] = Query(default=None),
+    vat_rate:     Optional[str] = Query(default=None),
+) -> JSONResponse:
+    """
+    Search wFirma for ``product_code`` AND compare the live response against
+    the operator-supplied local expectation. Read-only; never writes.
+
+    Surfaces the metadata-comparison foundation of the search-first product
+    authority workflow. Future endpoints (``/adopt``, ``/update-and-adopt``,
+    ``/create``) will consume the same comparison output and act on operator
+    confirmation. This endpoint allows preview without write risk.
+
+    Response payload::
+
+        {
+          "ok":           True | False,
+          "wfirma_error": <str>  # populated only when wFirma side raised
+          "comparison":   { ... output of compare_product_metadata ... }
+        }
+
+    Use cases:
+      * Operator triages a missing-mapping blocker in the proforma preview
+        and wants to see what wFirma already has under that code.
+      * Dashboard "Verify" button shows the diff inline before any write.
+      * Pre-flight check before bulk auto-register: which codes would
+        trigger operator-review status?
+    """
+    from ..services.wfirma_product_compare import compare_product_metadata
+
+    # 1. Live wFirma search (read-only)
+    wfirma_error = ""
+    try:
+        wf_product = wfirma_client.get_product_by_code(product_code)
+    except Exception as exc:
+        wf_product = None
+        wfirma_error = f"{type(exc).__name__}: {exc}"
+
+    # 2. Build local expectation from optional query params. Empty / None
+    #    fields are dropped so the comparator treats them as "no expectation".
+    local_expected = {
+        k: v for k, v in {
+            "product_code": product_code,
+            "name_pl":      name_pl,
+            "unit":         unit,
+            "vat_rate":     vat_rate,
+        }.items() if v not in (None, "")
+    }
+    if list(local_expected.keys()) == ["product_code"]:
+        # Only the code echo — no real local expectation supplied.
+        local_expected = None  # type: ignore[assignment]
+
+    # 3. Pure compare — no writes.
+    comparison = compare_product_metadata(
+        wfirma_product = wf_product,
+        local_expected = local_expected,
+        product_code   = product_code,
+    )
+
+    return JSONResponse({
+        "ok":           wfirma_error == "",
+        "wfirma_error": wfirma_error,
+        "comparison":   comparison,
+    })
+
+
 # ── Bulk goods search (read-only triage) ────────────────────────────────────
 
 class BulkGoodsSearchRequest(BaseModel):
