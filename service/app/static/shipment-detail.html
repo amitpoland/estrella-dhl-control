@@ -11542,13 +11542,17 @@ function GlobalPZLineageCard({ batchId, onToast }) {
 // No POST. No wFirma calls. No PZ mutation.
 
 function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
-  const [data, setData]       = React.useState(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError]     = React.useState('');
+  const [data, setData]               = React.useState(null);
+  const [loading, setLoading]         = React.useState(true);
+  const [error, setError]             = React.useState('');
+  const [confirmOpt, setConfirmOpt]   = React.useState(null); // option_id pending confirmation
+  const [reason, setReason]           = React.useState('');
+  const [executing, setExecuting]     = React.useState(false);
+  const [execResult, setExecResult]   = React.useState(null); // last execution result
 
   const refresh = React.useCallback(async () => {
     if (!batchId) return;
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setConfirmOpt(null); setReason(''); setExecResult(null);
     try {
       const r = await fetch(
         `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-proposal`,
@@ -11561,6 +11565,38 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
   }, [batchId]);
 
   React.useEffect(() => { refresh(); }, [refresh]);
+
+  const handleExecute = React.useCallback(async () => {
+    if (!confirmOpt || !reason.trim()) return;
+    setExecuting(true);
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-execute`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(window.__apiHeaders ? window.__apiHeaders() : {}),
+          },
+          body: JSON.stringify({ option_id: confirmOpt, operator_reason: reason.trim() }),
+        },
+      );
+      const json = await r.json();
+      if (!r.ok) {
+        setExecResult({ ok: false, error: json.detail || `HTTP ${r.status}` });
+        onToast && onToast('error', `Execution failed: ${json.detail || r.status}`);
+      } else {
+        setExecResult(json);
+        onToast && onToast('success', `Correction executed: ${confirmOpt}`);
+        setConfirmOpt(null); setReason('');
+      }
+    } catch (e) {
+      setExecResult({ ok: false, error: String(e) });
+      onToast && onToast('error', `Execution error: ${e}`);
+    } finally {
+      setExecuting(false);
+    }
+  }, [batchId, confirmOpt, reason, onToast]);
 
   // ── Style atoms ──────────────────────────────────────────────────
   const card = {
@@ -11592,21 +11628,13 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
     return { bg: '#fef3c7', color: '#b45309', label: optionId };
   };
 
-  // ── Button label and disabled reason per option ──────────────────
-  const optionButton = (opt) => {
-    if (opt.option_id === 'KEEP_CURRENT') {
-      return { label: 'Accept recommendation', disabledReason: 'Acknowledgement endpoint not yet available' };
-    }
-    if (opt.option_id === 'ALIGN_TO_AUTHORITY') {
-      return { label: 'Align to authority', disabledReason: 'Execution endpoint not available' };
-    }
-    if (opt.option_id === 'SPLIT_TO_STYLE_LEVEL') {
-      return { label: 'Preview split', disabledReason: 'Preview only' };
-    }
-    if (opt.option_id === 'NO_ACTION') {
-      return { label: 'No action needed', disabledReason: 'No changes required' };
-    }
-    return { label: opt.option_id, disabledReason: 'Not yet available' };
+  // ── Button label per option ──────────────────────────────────────
+  const optionButtonLabel = (opt) => {
+    if (opt.option_id === 'KEEP_CURRENT')       return 'Accept recommendation';
+    if (opt.option_id === 'ALIGN_TO_AUTHORITY') return 'Align to authority';
+    if (opt.option_id === 'SPLIT_TO_STYLE_LEVEL') return 'Split to style level';
+    if (opt.option_id === 'NO_ACTION')          return 'No action needed';
+    return opt.option_id;
   };
 
   // ── Loading ───────────────────────────────────────────────────────
@@ -11634,8 +11662,8 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
   // ── Supplier gate — suppress for Estrella + all non-Global ───────
   if (!data || !data.is_global_supplier) return null;
 
-  const rec    = data.recommended_option || 'KEEP_CURRENT';
-  const recS   = recStyle(rec);
+  const rec     = data.recommended_option || 'KEEP_CURRENT';
+  const recS    = recStyle(rec);
   const options = (data.options || []).filter(o => o.option_id !== 'CANCEL_AND_RECREATE');
 
   return (
@@ -11651,7 +11679,7 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
         </span>
         <span style={{ fontSize: 11, color: 'var(--text-2,#6b7280)', fontWeight: 400 }}
               data-testid="global-pz-correction-readonly-label">
-          Read-only proposal · no wFirma mutation
+          No wFirma mutation · local staging only
         </span>
       </div>
 
@@ -11675,55 +11703,122 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
         </div>
       )}
 
+      {/* ── Execution result banner ── */}
+      {execResult && (
+        <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
+                      background: execResult.ok ? '#f0fdf4' : '#fef2f2',
+                      color: execResult.ok ? '#15803d' : '#991b1b',
+                      border: `1px solid ${execResult.ok ? '#bbf7d0' : '#fecaca'}` }}
+             data-testid="global-pz-correction-result">
+          {execResult.ok ? (
+            execResult.already_executed
+              ? 'Already executed — returning existing record.'
+              : `Executed: ${execResult.option_id}. Lines: ${execResult.pre_line_count} → ${execResult.post_line_count}.`
+          ) : (
+            `Execution failed: ${execResult.error}`
+          )}
+        </div>
+      )}
+
       {/* ── Options list ── */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
            data-testid="global-pz-correction-options">
         {options.map((opt) => {
-          const btn = optionButton(opt);
+          const lbl   = optionButtonLabel(opt);
           const isRec = opt.option_id === rec;
+          const isPending = confirmOpt === opt.option_id;
           return (
             <div key={opt.option_id}
-                 style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 10px',
-                          borderRadius: 6, border: '1px solid var(--border,#e5e7eb)',
-                          background: isRec ? 'var(--bg-subtle,#f9fafb)' : 'transparent' }}
+                 style={{ padding: '8px 10px', borderRadius: 6,
+                          border: `1px solid ${isPending ? '#93c5fd' : 'var(--border,#e5e7eb)'}`,
+                          background: isPending ? '#eff6ff' : (isRec ? 'var(--bg-subtle,#f9fafb)' : 'transparent') }}
                  data-testid={`global-pz-correction-option-${opt.option_id}`}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700 }}>{opt.label}</span>
-                  {isRec && (
-                    <span style={{ fontSize: 10, background: '#dcfce7', color: '#15803d',
-                                   borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>
-                      Recommended
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700 }}>{opt.label}</span>
+                    {isRec && (
+                      <span style={{ fontSize: 10, background: '#dcfce7', color: '#15803d',
+                                     borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>
+                        Recommended
+                      </span>
+                    )}
+                    <span style={riskStyle(opt.risk_level)}
+                          data-testid={`global-pz-correction-risk-${opt.option_id}`}>
+                      {opt.risk_level || 'NONE'}
                     </span>
-                  )}
-                  <span style={riskStyle(opt.risk_level)}
-                        data-testid={`global-pz-correction-risk-${opt.option_id}`}>
-                    {opt.risk_level || 'NONE'}
-                  </span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
-                  {opt.description}
-                </div>
-                {(opt.notes || []).length > 0 && (
-                  <div style={{ fontSize: 10, color: '#b45309', marginTop: 3 }}>
-                    {opt.notes.map((n, i) => <div key={i}>{n}</div>)}
                   </div>
-                )}
+                  <div style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
+                    {opt.description}
+                  </div>
+                  {(opt.notes || []).length > 0 && (
+                    <div style={{ fontSize: 10, color: '#b45309', marginTop: 3 }}>
+                      {opt.notes.map((n, i) => <div key={i}>{n}</div>)}
+                    </div>
+                  )}
+                </div>
+                <div style={{ flexShrink: 0 }}>
+                  <button
+                    onClick={() => setConfirmOpt(isPending ? null : opt.option_id)}
+                    disabled={executing}
+                    style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                             cursor: executing ? 'not-allowed' : 'pointer',
+                             border: `1px solid ${isPending ? '#3b82f6' : 'var(--border,#e5e7eb)'}`,
+                             background: isPending ? '#3b82f6' : 'var(--bg,#fff)',
+                             color: isPending ? '#fff' : 'var(--text,#111)',
+                             opacity: executing ? 0.6 : 1 }}
+                    data-testid={`global-pz-correction-btn-${opt.option_id}`}>
+                    {isPending ? 'Cancel' : lbl}
+                  </button>
+                </div>
               </div>
-              <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
-                <button disabled
-                        title={btn.disabledReason}
-                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: 'not-allowed',
-                                 border: '1px solid var(--border,#e5e7eb)', opacity: 0.5,
-                                 background: 'var(--bg,#fff)', color: 'var(--text,#111)' }}
-                        data-testid={`global-pz-correction-btn-${opt.option_id}`}
-                        data-disabled-reason={btn.disabledReason}>
-                  {btn.label}
-                </button>
-                <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)', maxWidth: 140, textAlign: 'right' }}>
-                  {btn.disabledReason}
-                </span>
-              </div>
+
+              {/* ── Inline confirmation panel ── */}
+              {isPending && (
+                <div style={{ marginTop: 10, padding: '10px 12px', background: '#fff',
+                              borderRadius: 6, border: '1px solid #bfdbfe' }}
+                     data-testid="global-pz-correction-confirm-modal">
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                    Confirm: {opt.option_id}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#374151', marginBottom: 8 }}>
+                    This will write to local <code>pz_rows.json</code> only.
+                    No wFirma calls. wFirma push is a separate operator step.
+                    A backup will be created automatically.
+                  </div>
+                  <textarea
+                    placeholder="Operator reason (required)…"
+                    value={reason}
+                    onChange={e => setReason(e.target.value)}
+                    rows={2}
+                    style={{ width: '100%', fontSize: 11, padding: '4px 6px',
+                             borderRadius: 4, border: '1px solid #d1d5db',
+                             resize: 'vertical', boxSizing: 'border-box' }}
+                    data-testid="global-pz-correction-reason-input"
+                  />
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                    <button
+                      onClick={handleExecute}
+                      disabled={executing || !reason.trim()}
+                      style={{ fontSize: 11, padding: '4px 12px', borderRadius: 4,
+                               cursor: (executing || !reason.trim()) ? 'not-allowed' : 'pointer',
+                               background: '#2563eb', color: '#fff',
+                               border: 'none', opacity: (executing || !reason.trim()) ? 0.5 : 1 }}
+                      data-testid="global-pz-correction-confirm-btn">
+                      {executing ? 'Executing…' : 'Confirm execution'}
+                    </button>
+                    <button
+                      onClick={() => { setConfirmOpt(null); setReason(''); }}
+                      disabled={executing}
+                      style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                               cursor: 'pointer', border: '1px solid var(--border,#e5e7eb)',
+                               background: 'var(--bg,#fff)' }}
+                      data-testid="global-pz-correction-cancel-btn">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
@@ -11737,8 +11832,9 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
                 data-testid="global-pz-correction-refresh">
           Refresh
         </button>
-        <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)' }}>
-          Read-only proposal · no wFirma mutation
+        <span style={{ fontSize: 10, color: 'var(--text-2,#6b7280)' }}
+              data-testid="global-pz-correction-readonly-label">
+          No wFirma mutation · local staging only
         </span>
       </div>
     </div>
