@@ -828,6 +828,96 @@ def global_pz_correction_execute(
     return dataclasses.asdict(result)
 
 
+# ── Global PZ correction → wFirma push ───────────────────────────────────────
+
+class CorrectionPushRequest(BaseModel):
+    """Request body for POST /pz/lineage/{batch_id}/correction-push-wfirma.
+
+    All four fields are mandatory.  The confirm_understanding sentinel prevents
+    accidental invocation and must match the exact string returned by
+    GET /pz/lineage/{batch_id}/correction-push-wfirma/info.
+    """
+    operator_reason:       str
+    idempotency_key:       str
+    confirm_understanding: str
+
+
+@router.post("/pz/lineage/{batch_id}/correction-push-wfirma", dependencies=[_auth])
+def global_pz_correction_push_wfirma(
+    batch_id: str,
+    body: CorrectionPushRequest,
+) -> Dict[str, Any]:
+    """Push a staged Global PZ correction to wFirma as a new PZ document.
+
+    Pre-conditions (all checked server-side — never trust the client):
+      1. settings.wfirma_correction_push_allowed must be True.
+      2. Batch must be a Global Jewellery batch (is_global_supplier gate).
+      3. A staged correction execution record must exist
+         (correction_execution_record.json written by /correction-execute).
+      4. The staged option must be ALIGN_TO_AUTHORITY or SPLIT_TO_STYLE_LEVEL.
+         KEEP_CURRENT and NO_ACTION are permanently blocked from this path.
+      5. No terminal PZ event must exist in the audit timeline (idempotency).
+      6. idempotency_key + option_id must not match an existing push record.
+      7. confirm_understanding must match the exact sentinel string.
+
+    Returns a PushResult dict with status=pushed|already_pushed|blocked|failed.
+
+    Safety properties (Lesson E compliance):
+      1. Execution-time validation  -- pz_rows, product_map, audit state.
+      2. Idempotency                -- correction_push_record.json checked.
+      3. Terminal-state suppression -- audit timeline checked before push.
+      4. Replay safety              -- push record written after wFirma success.
+      5. Environment isolation      -- wfirma_correction_push_allowed flag.
+
+    wFirma capability boundary: create-only.
+    No update, cancel, delete, or CANCEL_AND_RECREATE paths are implemented.
+    """
+    import dataclasses  # noqa: PLC0415
+
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    # Global supplier gate
+    if not _is_global_batch(batch_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Correction push is only available for Global Jewellery batches.",
+        )
+
+    try:
+        from ..services.global_pz_push import push_correction_to_wfirma  # noqa: PLC0415
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"global_pz_push module unavailable: {exc}",
+        )
+
+    result = push_correction_to_wfirma(
+        batch_id=batch_id,
+        execution_record_id=batch_id,         # push service reads record from disk
+        operator_reason=body.operator_reason,
+        idempotency_key=body.idempotency_key,
+        confirm_understanding=body.confirm_understanding,
+        storage_root=settings.storage_root,
+        contractor_id=settings.wfirma_supplier_contractor_id,
+        warehouse_id=settings.wfirma_warehouse_id,
+    )
+
+    if not result.ok and result.status == "failed":
+        raise HTTPException(
+            status_code=502,
+            detail=result.error or "wFirma push failed.",
+        )
+
+    if not result.ok and result.status == "blocked":
+        raise HTTPException(
+            status_code=422,
+            detail=result.error or "Push blocked by pre-condition check.",
+        )
+
+    return dataclasses.asdict(result)
+
+
 # ── File download ─────────────────────────────────────────────────────────────
 
 @router.get("/files/{batch_id}/source/{category}/{filename}", dependencies=[_auth])

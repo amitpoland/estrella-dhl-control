@@ -245,6 +245,12 @@ class Settings(BaseSettings):
     wfirma_sync_suppliers_allowed:  bool = Field(default=False)
     wfirma_delete_invoice_allowed:  bool = Field(default=False)
     wfirma_create_pz_allowed:       bool = Field(default=False)
+    # Governed correction push gate: enables POST /pz/lineage/{batch_id}/correction-push-wfirma.
+    # Default False. Flip to True only when a Global Jewellery correction has been staged
+    # (correction_execution_record.json written) and the operator intends to push to wFirma.
+    # Turn back to False immediately after the push completes.
+    # Requires: staged execution record + idempotency_key + confirm_understanding sentinel.
+    wfirma_correction_push_allowed: bool = Field(default=False)
     # Manual Proforma → final invoice conversion gate. Off by default;
     # operator flips to true only for the conversion run, then back.
     wfirma_create_invoice_allowed:  bool = Field(default=False)
