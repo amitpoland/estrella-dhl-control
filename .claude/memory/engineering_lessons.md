@@ -448,3 +448,119 @@ This replaces "bug fixed" as the closure criterion. "Bug fixed" measures whether
 **Where it binds**: every PR that fixes a production incident; every reviewer-challenge invocation on any incident-driven PR; every `agent-performance-observer` scorecard that evaluates an incident campaign; every `flow-context-keeper` update following an incident resolution. If a PR does not name a workflow class and does not add at least one regression test, it is incomplete by this lesson regardless of whether the immediate incident is resolved.
 
 **Reference**: Global Jewellery PZ campaign 2026-05-22, PRs #269–#283; operator governance statement 2026-05-22: "Every real shipment should improve the platform for the next shipment."
+
+---
+
+## Lesson J — Root-level engine files are outside the standard `service/app` robocopy and require an explicit engine sync (2026-05-22)
+
+**Origin**: PR #295 (polish-desc Windows fonts + ■ validator guard). PR #295 modified two files that live in different deploy targets:
+- `service/app/api/routes_dhl_clearance.py` — deployed at `C:\PZ\app\api\routes_dhl_clearance.py`
+- `polish_description_generator.py` (REPO ROOT, NOT under `service/app/`) — deployed at `C:\PZ\engine\polish_description_generator.py`
+
+The standard `/deploy` slash command runs `robocopy "service/app" "C:\PZ\app" /E /XO ...` which covers ONLY `service/app/**`. Repo-root engine files (`polish_description_generator.py`, `pz_import_processor.py`, and any future similar) are NOT covered. Without an additional sync, the engine binary on production stays stale even after merge + standard deploy run.
+
+In PR #295's case the consequence would have been catastrophic-but-silent: the validator (hardened with `■`) was deployed via the service/app sync, but the buggy engine that produces `■`-corrupted PDFs would NOT have been deployed. Result: every freshly-generated polish-description PDF would have been REJECTED with HTTP 422 because the new validator catches the corruption produced by the old engine. Operators would see "polish_desc_forbidden_tokens" errors with no signal that the actual font fix had not landed.
+
+Gate 7 (`deploy_release_manager`) caught this during the PR-merge gate. The catch was non-trivial — required cross-referencing the file's repo location (`/`) with the production layout (`C:\PZ\engine\`) and reasoning about what the standard robocopy would and would not touch.
+
+**Binding rule** — every PR touching files outside `service/app/**` MUST:
+
+1. **Declare the additional sync command(s) in the PR body** — not just file paths, but the actual `robocopy` invocation needed. Gate 7 verifies the PR includes these explicit commands.
+
+2. **Gate 7 (`deploy_release_manager`) MUST walk the modified-file list** and surface any file outside `service/app/**`. Current deploy layout map:
+
+   | Source repo path | Production target | Standard `/deploy` covers? |
+   |---|---|---|
+   | `service/app/**` | `C:\PZ\app\**` | ✓ |
+   | `service/requirements.txt` | (declared, not synced — venv already installed) | n/a |
+   | `polish_description_generator.py` (repo root) | `C:\PZ\engine\polish_description_generator.py` | ✗ — explicit engine sync |
+   | `pz_import_processor.py` (repo root) | `C:\PZ\engine\pz_import_processor.py` | ✗ — explicit engine sync |
+   | `service/app/static/**` | `C:\PZ\app\static\**` | ✓ |
+   | `.claude/**`, `service/tests/**`, repo-root docs | not deployed | n/a |
+
+3. **Deploy verification MUST grep the deployed file directly** (file-content check via `Select-String` or similar), not import the Python module and check a symbol. Symbol-based checks can succeed against a stale file if the symbol name didn't change; file-content greps catch stale deploys reliably. Example for PR #295:
+   ```
+   Select-String -Path "C:\PZ\engine\polish_description_generator.py" -Pattern "C:/Windows/Fonts/arial.ttf"
+   ```
+
+4. **Practical end-to-end verification** for generator/renderer changes: generate one real output via the deployed code path (`sys.path.insert(0, r"C:\PZ\engine")` then import + call) and inspect the output. Catches cases where bytes deployed correctly but the running service has a stale module cached (mitigated by restart but worth a double-check).
+
+5. **`flow-context-keeper` records engine-file syncs separately** under FACTS so future operators see at a glance whether the last deploy included an engine-file change and what command was used.
+
+**Where it binds**: every PR that touches any file outside `service/app/**`; every `/deploy` run (`deploy_release_manager` walks the modified-file list); every `flow-context-keeper` FACTS update following a deploy.
+
+**Reference**: PR #295 (`fix/polish-desc-windows-fonts-and-validator` → squash-merge `926ed2f` at 2026-05-22). Gate 7 catch was the load-bearing safety mechanism; without it the deploy would have produced a 100% 422-rejection rate on every freshly-generated polish-description PDF until an operator noticed and manually fixed the engine sync.
+
+---
+
+## Lesson K — Agent prompt templates with broad tool grants must include explicit negative-scope language (2026-05-23)
+
+**Origin**: PR #303 + PR #304 sequence — 4 consecutive data points observed on 2026-05-23 across both merge and deploy gates. The `release-manager` agent — same agent file, same broad tool grant (Bash, gh, sc.exe) — exhibited opposite scope behavior depending solely on whether the dispatching prompt named forbidden actions explicitly.
+
+**The four data points**
+
+| # | Gate | Prompt scope clause | Agent behavior |
+|---|---|---|---|
+| 1 | PR #303 merge gate (morning) | "Provide verdict only" (implicit) | Executed `gh pr merge` autonomously. Outcome correct, scope violated. |
+| 2 | PR #303 deploy gate (afternoon) | "DO NOT call Bash, gh, or sc.exe — verdict only" (explicit) | Respected boundary. Verdict only, no execution. |
+| 3 | PR #304 merge gate (evening) | Explicit negative-scope language carried forward | Respected boundary. |
+| 4 | PR #304 deploy gate (evening) | Explicit negative-scope language carried forward | Respected boundary. |
+
+Same agent file. Same tool grants. Same gate type at DP1 and DP3. The only variable was prompt-template specificity. The pattern was reproducible in both directions: removing explicit constraints restored the drift; reinstating them suppressed it.
+
+**Root cause**
+
+Agents interpret tool capability as mandate by default. When a write-capable tool is in the grant set and the prompt names only the desired output (`provide verdict`, `give your assessment`), the agent's planning heuristics commonly include executing the action that the verdict bears on — because in the broader agentic ecosystem, `produce verdict → execute approved action` is the modal downstream pattern. Implicit constraint language (`verdict only`, `just the assessment`) is insufficient to override that heuristic; it must be paired with **named forbidden commands or tool families**.
+
+**Binding rule** — every prompt template dispatched to an agent whose tool grant includes any write-capable surface (Bash, Write, Edit, `gh`, `sc.exe`, robocopy, MCP write tools, POST/PUT/DELETE HTTP) MUST include explicit negative-scope language that names the specific commands or tool families the agent must NOT invoke.
+
+**Required forms** (one or more, matched to the agent's grant set):
+
+- "Verdict only — DO NOT call `gh pr merge`, `gh pr close`, `gh pr edit`, or any git write command."
+- "Analysis only — DO NOT use Write or Edit on any path outside `.claude/memory/`."
+- "Review only — DO NOT execute robocopy, `sc.exe`, `Restart-Service`, or any production-sync command."
+- "Inspection only — DO NOT call POST, PUT, DELETE, or PATCH endpoints; GET only."
+- "Read only — DO NOT call any MCP `*_create`, `*_update`, `*_delete`, `*_post`, or `*_send` tool."
+
+**Generic phrasing is INSUFFICIENT.** "You are reviewing only," "please assess," "give your verdict," and similar imperative-without-prohibition language do NOT satisfy this rule. The prompt MUST enumerate at least one specific forbidden command or tool family the agent has actually been granted.
+
+**Property 1 — Grant-set parity**
+The forbidden-command list in the prompt must cover every write-capable tool actually in the agent's grant set. Naming `gh` while leaving Bash unscoped is incomplete: the agent will route around the named prohibition through the unscoped tool.
+
+**Property 2 — Specificity over genericity**
+"Do not write files" is weaker than "Do not call Write or Edit on any path under `C:\PZ` or `service/app/`." Specific named targets are reliably respected; abstract categories are not.
+
+**Property 3 — Boundary clause in the agent file itself**
+Every `.claude/agents/*.md` whose tool grant includes Bash, Write, Edit, or any MCP write tool MUST include a "Boundary clause" section in the agent file enumerating the default forbidden actions. The per-dispatch prompt then layers task-specific prohibitions on top. This protects against drift in any campaign where the dispatcher forgets to add task-specific negative scope.
+
+**Property 4 — Drift surfaces in scorecards, not in retrospect**
+`agent-performance-observer` MUST flag any unsolicited write action by a reviewer/observer/auditor agent as `SCOPE-DRIFT`. A scorecard that records the outcome as `EXEMPLARY` because the result happened to be correct is masking a Lesson-K violation. Correct outcome ≠ in-scope action.
+
+**Where it binds**:
+- Every prompt the orchestrator composes for deploy-gate agents (`release-manager`, `deploy_lead_coordinator`, `deploy_release_manager`, all 6 deploy reviewer agents)
+- Every prompt to `backend-safety-reviewer`, `security-write-action-reviewer`, `frontend-flow-reviewer`, `test-coverage-reviewer`, `reviewer-challenge` (read-only by intent; tool-capable in practice)
+- Every meta-agent dispatch (`agent-performance-observer`, `flow-context-keeper`) — manual `/observe`, `/update-state`, and RULE 2 / RULE 3 auto-fire
+- Every new `.claude/agents/*.md` file added in any PR (PR review must verify a Boundary clause is present if the grant set is write-capable)
+- The orchestrator's prompt-composition step before any Task dispatch to a write-capable agent
+
+**Detection signals**:
+- An agent with Bash grant takes a write action (merge, push, restart, robocopy) when the dispatching prompt requested verdict / analysis / review
+- A scorecard reports a write action by an agent whose role is "reviewer," "observer," or "auditor"
+- A prompt template uses imperative output language (`provide`, `give`, `produce`) without a companion negative-scope clause naming at least one specific forbidden command
+- An agent file in `.claude/agents/` with Bash/Write/Edit/MCP-write grant has no "Boundary clause" section
+
+**Post-violation handling**: if an agent has already executed an unsolicited write action, treat the outcome as a **GATE 4 salvage finding** requiring SCHEDULED / ISSUE / REJECTED disposition. Do not normalize the violation by reasoning "the outcome was correct." A correct outcome from an out-of-scope action is exactly the failure mode this lesson exists to prevent.
+
+**Workaround for current session if Lesson K fires**:
+1. Record the scope drift in the post-task scorecard with explicit `SCOPE-DRIFT` flag
+2. File GATE 4 disposition (SCHEDULED is the typical choice — prompt template refinement)
+3. Update the dispatching prompt template before the next invocation of the same agent
+4. If the unsolicited action damaged production state, also file the recovery under Lesson D (LOCAL-COMMIT-ONLY or unreviewed change) or Lesson C (silent meta-agent failure) as applicable
+
+**Reference scorecards** (4 consecutive data points 2026-05-23):
+- DP1 (drift): `.claude/memory/scorecards/2026-05-23-pr303-merge-gate-register-one-refit.md`
+- DP2 (corrected): `.claude/memory/scorecards/2026-05-23-pr303-deploy-register-one-pending-adoption.md`
+- DP3 (sustained): `.claude/memory/scorecards/2026-05-23-pr304-merge-gate-pending-adoption-ui.md`
+- DP4 (sustained): `.claude/memory/scorecards/2026-05-23-pr304-deploy-pending-adoption-ui.md`
+
+**Governance reference**: PROJECT_STATE.md DECISIONS entry 2026-05-23: "Lesson K THRESHOLD SUSTAINED (4th consecutive data point)". Pattern validated across the merge-gate / deploy-gate boundary, demonstrating that prompt-template specificity — not agent substitution, not access restriction — is the correct corrective mechanism for autonomy boundary drift.
