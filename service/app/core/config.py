@@ -98,6 +98,16 @@ class Settings(BaseSettings):
     ai_parser_model:     str           = Field(default="claude-sonnet-4-6")
     ai_parser_enabled:   bool          = Field(default=False)
 
+    # ── AI advisory budget controls (all disabled by default — see api-fallback-policy.md) ──
+    # Phase 2 LLM advisory — must be explicitly enabled via .env; never True in code defaults.
+    ai_advisory_llm_enabled:        bool          = Field(default=False)
+    ai_fallback_enabled:            bool          = Field(default=False)
+    ai_advisory_max_tokens_per_call: int          = Field(default=1000)
+    ai_advisory_budget_usd_per_day: float         = Field(default=1.0)
+    ai_advisory_cache_ttl_seconds:  int           = Field(default=300)
+    # Advisory model — haiku is mandatory for cost control; opus requires operator approval.
+    ai_advisory_model:              str           = Field(default="claude-haiku-4-5-20251001")
+
     # ── Carrier tracking API credentials ─────────────────────────────────────
     dhl_api_key:         Optional[str] = Field(default=None)
     fedex_client_id:     Optional[str] = Field(default=None)
