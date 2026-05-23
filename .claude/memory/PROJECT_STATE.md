@@ -4,13 +4,47 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-23T(PHASE7-DEPLOYED)Z. Origin/main HEAD: 3302a1b. PENDING deploys: none. OPEN PRs: 1/3 (#268 docs-only). Production: Phase 7 LIVE (3302a1b). Phase 7: COMPLETE + DEPLOYED -- operator-confirmed 2026-05-23.
+**Last-run-at:** 2026-05-24T(PHASE71-MERGED)Z. Origin/main HEAD: cbb23ef. PENDING deploys: Phase 7.1. OPEN PRs: 1/3 (#268 docs-only). Production: Phase 7 LIVE (3302a1b). Phase 7.1: MERGED (SHA cbb23ef) -- deploy pending.
 
 ---
 
 # FACTS
 
-## PR #319 Hotfix — correction-execute proposed_lines AttributeError (2026-05-23, DEPLOYED)
+## Phase 7.1 -- Search Coverage Wiring (2026-05-24, MERGED)
+
+**Campaign type**: Search coverage extension (deterministic, no LLM, no writes)
+**Status**: PR #328 MERGED -- squash SHA `cbb23ef` on main (2026-05-24). Deploy pending operator execution.
+
+### Phase 7.1 implementation facts (2026-05-24)
+
+- **PR #328 squash-merged** to main at SHA `cbb23ef`, 2026-05-24
+- **Branch**: feat/phase71-search-coverage-wiring (deleted after merge)
+- **Files changed** (4):
+  - `service/app/services/search_engine.py` -- MODIFIED: search_shipments(), _TRACKING_DB, "shipment" in _ALL_DOMAINS, tracking_db kwarg in execute_search(), per-domain over-fetch, _shipment_score/reason helpers
+  - `service/app/api/routes_search.py` -- MODIFIED: "shipment" added to _VALID_DOMAINS
+  - `service/app/main.py` -- MODIFIED: init_tracking_db called at startup
+  - `service/tests/test_phase7_search_foundation.py` -- MODIFIED: +26 tests (118 total)
+- **New domain function**: search_shipments() queries shipment_tracking_events by awb (exact), batch_id (exact), keyword (LIKE on description/normalized_stage/raw_subject)
+- **DB path**: _TRACKING_DB = settings.storage_root / "tracking_events.db" (created at startup by init_tracking_db)
+- **AWB search flow**: parse_query("9765416334") -> intent.awb_matches=["9765416334"], domains_hint=["document","shipment"] -> execute_search dispatches both domains
+- **Dedup logic**: search_shipments deduplicates (batch_id, awb) pairs -- multiple events per shipment yield one hit
+- **All invariants preserved**: llm_used=False hardcoded, PRAGMA query_only = ON, GET-only route, no writes
+- **Tests**: 118 Phase 7 + 7.1 tests, all PASS; 3 pre-existing failures in test_tracking_db::TestDhlPipelineHook (unrelated, not in changed files)
+- **7-agent gate**: ALL GO (git-diff PASS, backend PASS, persistence PASS, security PASS, QA PASS, release-manager PASS, lead-coordinator GO)
+- **GATE 2**: 2/3 open PRs (#268 docs-only + #328 now merged = 1/3) -- within limit
+- **Lesson J compliant**: all 3 runtime files within service/app/**
+- **Lesson K compliant**: agent prompts included explicit DO-NOT-CALL language for Bash/gh/write tools
+- **Files to deploy**: search_engine.py, routes_search.py, main.py -- standard robocopy
+- **Deploy script**: `.claude/manifests/windows_deploy_cbb23ef.ps1`
+- **PZService restart required** on deployment
+- **Production gap note (AWB 0 hits after deploy)**: Even after deploy, `q=9765416334` will return 0 SHIPMENT hits until DHL tracking events for that AWB are recorded via the self-clearance pipeline. tracking_events.db will be created (empty) at startup. Shipment hits appear only when real tracking events exist.
+- **HS gap note**: HS -> product 0 hits is a data-only gap (designs table empty in production). Code is correct; no Phase 7.1 fix needed.
+- **PENDING deploys**: Phase 7.1 (cbb23ef)
+- **Scorecard**: to be written after deploy
+
+---
+
+## PR #319 Hotfix -- correction-execute proposed_lines AttributeError (2026-05-23, DEPLOYED)
 
 - **Bug**: `POST /correction-execute` returned 500 post-deploy. Error: `'CorrectionProposal' object has no attribute 'proposed_lines'`.
 - **Root cause**: `routes_pz.py` line 804 accessed `proposal.proposed_lines` but `proposed_lines` is a field on `CorrectionOption` (the individual option), not on `CorrectionProposal`. Implementation error in PR #319.
