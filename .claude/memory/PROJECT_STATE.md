@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-25T(ANTHROPIC-CANARY-A-PASSED)Z. Origin/main HEAD: aa251b8 (lifecycle activation package #360). Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED. Phase 2B DEPLOYED (all provider flags were OFF). Phase 2C DEPLOYED + VERIFIED. ANTHROPIC PILOT ACTIVE: key rotated, flags ON, canary A PASSED (llm_used=true, provider_used=anthropic_api, fallback=0, cost=$0.000223). 3-state quality validation in progress (B + C pending, no broad traffic). PZ Correction Lifecycle PR A+B+C DEPLOYED (flags absent from .env, backend dormant). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear).
+**Last-run-at:** 2026-05-25T(ACTIVATION-PACKAGE-MERGED+CANARY-A-PASSED)Z. Origin/main HEAD: 1ee78df. Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED. Phase 2B DEPLOYED (all provider flags were OFF). Phase 2C DEPLOYED + VERIFIED (SHA 40c30f1). ANTHROPIC PILOT ACTIVE: key rotated, flags ON (AI_PARSER_ENABLED=true + AI_ADVISORY_LLM_ENABLED=true), canary A PASSED (llm_used=true, provider_used=anthropic_api, fallback=0, cost=$0.000223, ledger ID=1). 3-state quality validation in progress (B + C pending, no broad traffic). Activation package PR #360 MERGED (SHA aa251b8, 2026-05-25) — all 8 safety gates PASS. ACTIVATION DEPLOY BLOCKED pending M1+M3 fixes. GATE 4 follow-ups M1/M2/M3/M4 logged. PZ Correction Lifecycle PR A+B+C DEPLOYED (SHA 5bcb492, flags absent from .env, backend dormant). PZService RUNNING. Health 200/200. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear).
 
 ---
 
@@ -54,6 +54,81 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## Activation Package — PR #360 (2026-05-25, MERGED — DEPLOY BLOCKED)
+
+**Campaign type**: Operational tooling — Phase 1 activation runbook + scripts + IaC
+**Status**: PR #360 MERGED — squash SHA `aa251b8` on main (2026-05-25). NOT DEPLOYED TO PRODUCTION. Activation flags remain DISABLED.
+
+- **Merge SHA**: `aa251b8`
+- **Merge timestamp**: 2026-05-25
+- **PR**: #360 — https://github.com/amitpoland/estrella-dhl-control/pull/360
+- **Branch**: feat/pz-lifecycle-activation-package (deleted after merge)
+- **Files added** (4):
+  - `service/scripts/activate_pz_lifecycle.py` — gated Python automation (dry-run default; `--execute` required for live writes; push-flag abort guard; atomic `.env` writes; auto-rollback on restart/health failure; 6-step sequence + decision gate)
+  - `service/scripts/env_config_manager.ps1` — PowerShell IaC: 8 explicit actions (Show/ActivateLifecycle/RollbackLifecycle/AssertHealth/AssertPushOff/Checkpoint/RestartService/FullGate); pre-write checkpoint; atomic writes; push-flag abort in ActivateLifecycle
+  - `service/scripts/lifecycle_smoke_tests.py` — smoke test suite: health, flag state, stderr clean, auth, correction-commit push-gate (CRITICAL: rejects 2xx from commit), old-route 410, full lifecycle flow (stage→reset→suppress, no commit)
+  - `.claude/runbooks/pz_lifecycle_activation_runbook.md` — 6-step manual runbook with pre-step gates, success/abort criteria, DECISION GATE between Steps 4 and 5, emergency rollback, monitoring guidance, completion checklist
+
+- **Safety gate results (all 8 PASS)**:
+
+| Gate | Check | Method | Verdict |
+|------|-------|--------|---------|
+| 1 | Python syntax | `py_compile` both files | ✅ PASS |
+| 2 | PowerShell AST parse | `[Parser]::ParseInput` UTF-8 | ✅ PASS (1263 tokens, 0 errors) |
+| 3 | `FLAG_PUSH` never passed to `_set_flag()` | AST walk | ✅ PASS |
+| 4 | No external/wFirma API calls | AST URL scan | ✅ PASS (all targets 127.0.0.1) |
+| 5 | `dry_run = not args.execute` | AST assignment check | ✅ PASS (line 444) |
+| 6 | Mutating PS actions behind `ValidateSet` | Pattern match | ✅ PASS (3/3 actions confirmed) |
+| 7 | No `AUTH_SECRET_KEY` value in print/audit paths | grep + AST | ✅ PASS |
+| 8 | Runbook lifecycle-only scope | 5 pattern match | ✅ PASS (5/5) |
+
+- **GATE 2**: 3/3 → 2/3 (PR #360 merged; #337 + #268 remain open; slot available)
+
+- **Activation flag status (confirmed NOT changed by this PR)**:
+  - `PZ_CORRECTION_LIFECYCLE_ENABLED`: ABSENT from .env → defaults False → lifecycle routes return 503 ✅
+  - `WFIRMA_CORRECTION_PUSH_ALLOWED`: ABSENT from .env → defaults False → correction-commit blocked ✅
+
+- **Deploy status**: BLOCKED. These are tooling scripts only — not service code. No robocopy to `C:\PZ\app` required or intended. Scripts reside in `service/scripts/` and are executed manually by the operator from the repo working directory.
+
+- **GATE 4 tracked issues (must resolve before first `--execute` run)**:
+  - **M1** (medium): `activate_pz_lifecycle.py` — no pre-write checkpoint before `_set_flag()`; runbook Step 1 success criterion "checkpoint exists" is unmet when using Option B (Python). Remediation: add `_checkpoint()` call in `step1_enable_lifecycle_flag()` before `_set_flag()`.
+  - **M2** (medium): `activate_pz_lifecycle.py --rollback` blocked by `_assert_push_flag_not_set()` (runs before rollback branch). Emergency rollback unavailable via Python if push flag is ON. PowerShell `RollbackLifecycle` unaffected. Disposition: SCHEDULED — document PowerShell as rollback fallback; move guard inside non-rollback branch.
+  - **M3** (medium): Runbook Step 4b shows `POST /correction-reset`; `lifecycle_smoke_tests.py` uses `DELETE /correction-stage`. URL and method inconsistent. Cannot be resolved without backend route verification. Disposition: SCHEDULED — verify `routes_pz.py` reset endpoint definition; synchronize runbook or smoke test.
+  - **M4** (medium): `test_correction_commit_503_when_push_off` — fallthrough `PASS` when lifecycle is OFF and commit returns non-503. Should return `FAIL`. Disposition: SCHEDULED — add `else: return SmokeResult(verdict="FAIL", ...)` in lifecycle-off branch.
+
+- **Additional tracked issues (low priority)**:
+  - **L1**: `env_config_manager.ps1` — no UTF-8 BOM; `→` characters may display garbled on cp1252 Windows; no logic impact.
+  - **L2**: `run_full_lifecycle_flow` permanently suppresses test batch (TERMINAL_SUPPRESSED); runbook should warn to use a dedicated test batch.
+  - **L3**: SHA `"5bcb492"` hardcoded in audit log entries in `activate_pz_lifecycle.py` (lines 464, 483); stale at next activation.
+
+- **Next required action**: File follow-up PR fixing M1 + M3 before activation attempt. M2 + M4 can follow in same PR or next maintenance window.
+
+---
+
+## AI Pilot — Canary Run (2026-05-25, SUCCESSFUL)
+
+**Status**: AI Pilot LIVE. First real LLM call confirmed in production ledger.
+
+- **Canary batch**: `SHIPMENT_9765416334_2026-05_c4639366`
+- **Endpoint**: `GET /api/v1/ai/advisory/workflow-blockers/SHIPMENT_9765416334_2026-05_c4639366`
+- **HTTP response**: 200 OK
+- **Response fields**: `ok=true`, `ready_for_closure=false`, `advisory_class=R`, `source=batch_readiness+llm`, `llm_used=true`, `model_used=claude-haiku-4-5-20251001`
+- **Blocked domains**: warehouse (no packing lines), sales (no invoice linkage), wfirma (no reservation preview)
+- **Summary quality**: Correct 3-domain diagnosis with specific unblocking steps. No hallucinated data.
+- **Ledger row ID=1** (first live call ever):
+  - `service=ai_advisory`, `task_type=advisory_explanation`
+  - `selected_model=claude-haiku-4-5-20251001`
+  - `success=1`, `error_type=None`
+  - `actual_input_tokens=276`, `actual_output_tokens=123`
+  - `actual_cost=$0.000223`
+  - `provider_requested=anthropic_api`, `provider_used=anthropic_api`
+  - `fallback_used=0`
+- **Budget burn rate**: $0.000223/call → ~4,500 calls before $1.00/day ceiling
+- **Status**: Holding at one batch per operator instruction. No traffic broadening until explicit instruction.
+- **Root cause of prior /status showing gateway_available=false**: Duplicate `ANTHROPIC_API_KEY` in `.env` — real key at line 41, placeholder `<new-rotated-key>` at line 72. Python-dotenv last-occurrence wins → invalid key loaded. Fix: removed line 72.
+
+---
 
 ## Phase 2B — Provider Architecture + Admin API Key Health Check (2026-05-24, DEPLOYED WITH ALL PROVIDER FLAGS OFF)
 
