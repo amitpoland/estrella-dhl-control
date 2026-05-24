@@ -1608,6 +1608,28 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
 
 ---
 
+## wFirma PZ Cancel/Delete Capability Audit -- DEFERRED/MANUAL-ONLY (2026-05-24)
+
+- **Audit scope**: Read-only investigation into whether `warehouse_document_p_z/delete/{id}` exists in the wFirma API and whether inventory reversal is safe. No code changed, no flags changed, no wFirma calls made.
+- **Classification**: UNSAFE / DEFER -- three-layer consensus.
+- **Evidence layer 1 -- external docs**: `https://doc.wfirma.pl` returned no API documentation at time of audit (bare domain only). `docs/WFIRMA_API_VALIDATED_MAP.md` rates `warehousedocuments/delete` as UNVERIFIED (partial Postman evidence for ZPD delete only, not PZ-specific). wFirma forum 2023 states "no ability to create warehouse documents through API" -- deletion support unconfirmed.
+- **Evidence layer 2 -- codebase statements (three independent authoritative sources)**:
+  - `service/app/services/global_pz_push.py` lines 630-646: `rollback_note` hardcoded as "wFirma PZ documents cannot be deleted via API. Manual wFirma intervention required to remove document if needed."
+  - `service/app/api/routes_wfirma.py` lines 2217-2218: `/shipment/.../wfirma/pz/clear-mapping` explicitly states "The endpoint does NOT attempt to delete the PZ document in wFirma (no such wrapper exists, by design -- accounting documents are not programmatically destroyed from this app)."
+  - `service/tests/test_wfirma_pz_clear_mapping.py`: asserts "Does NOT attempt to delete the PZ in wFirma (no client wrapper)."
+- **Evidence layer 3 -- governance test**: `service/tests/test_wfirma_pz_notes_workflow_rule.py` (`test_no_pz_document_mutation_path_in_wfirma_client`) is a PASSING pinned regression test that would FAIL immediately if any `delete_warehouse_pz`, `cancel_warehouse_pz`, or `"warehouse_document_p_z", "delete"` callsite were added to `wfirma_client.py`. This test is part of the CI baseline.
+- **Inventory reversal**: Moot until basic endpoint existence is confirmed by wFirma support. If delete API exists, reversal semantics are UNKNOWN and must be documented before any automation is considered.
+- **Decision**: CANCEL_AND_RECREATE remains MANUAL-ONLY. No automated PZ delete/cancel/update implementation is permitted. The `rollback_note` in `global_pz_push.py` is the production-deployed position and must not be changed without explicit operator instruction and wFirma API confirmation.
+- **Safe operator workflow**: Manual PZ deletion via wFirma UI is possible. After manual wFirma intervention, call `POST /shipment/{batch_id}/wfirma/pz/clear-mapping` (X-Operator header required) to reset local audit mapping. This endpoint is local-audit-only and never calls wFirma.
+- **Four prerequisites before OQ1 can reopen and any implementation PR may open**:
+  1. wFirma support confirms `warehouse_document_p_z/delete/{id}` exists and returns a success response
+  2. wFirma support confirms inventory reversal behavior (stock is decremented on delete)
+  3. Operator explicitly instructs: "Implement automated PZ delete with inventory reversal"
+  4. 7-agent deploy gate reviewed with write-gate, idempotency, audit-trail, and rollback requirements satisfied
+- **Trigger condition**: Operator receives written confirmation from wFirma support (`pomoc@wfirma.pl`) that the endpoint exists with documented inventory reversal semantics.
+
+---
+
 ## Global PZ Correction Workflow — Architecture and Execution Gate (2026-05-23)
 
 - **Global PZ investigation CLOSED at review/proposal layer.** Current AWB 4789974092 recommended action: KEEP_CURRENT. Quantities, FOB, and authority rows reconcile. Lineage is explainable. No information is lost. Current PZ structure is valid. No corrective action required for this shipment.
@@ -1856,6 +1878,16 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ---
 
 # OPEN QUESTIONS
+
+## OQ1 -- wFirma PZ delete API existence + inventory reversal (DEFERRED/MANUAL-ONLY, 2026-05-24)
+
+- **Question**: Does `warehouse_document_p_z/delete/{id}` exist in the wFirma API? If so, does it reverse inventory (decrement stock)?
+- **Status**: DEFERRED/MANUAL-ONLY -- audit closed 2026-05-24. See DECISIONS "wFirma PZ Cancel/Delete Capability Audit" for full three-layer evidence chain.
+- **Why deferred**: Three-layer consensus (external docs unconfirmed, three independent codebase statements, pinned governance test) confirms no existing implementation and no confirmed API support. CANCEL_AND_RECREATE explicitly out of scope per `global_pz_push.py` module docstring and `rollback_note`.
+- **Answerer**: wFirma support (`pomoc@wfirma.pl`) -- operator must contact support to confirm endpoint existence and inventory reversal semantics.
+- **Trigger to reopen**: Operator receives written wFirma support confirmation that `warehouse_document_p_z/delete/{id}` exists with documented inventory reversal behavior.
+- **Impact if never answered**: CANCEL_AND_RECREATE remains manual-only forever. This is the safe and correct default. No code, no campaign, and no PR is blocked by this open question.
+- **All four prerequisites for any future implementation PR** are listed in DECISIONS above.
 
 ## Campaign 8 / post-deploy open questions (added 2026-05-19)
 
