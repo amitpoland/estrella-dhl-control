@@ -240,7 +240,12 @@ adds the test, backend-safety-reviewer flags missing
 (substitution disclosure — meta-agent substitution forbidden) and
 at the orchestrator's first-task-of-session diagnostic. A Lesson-A
 failure detected AFTER merge is a GATE 4 salvage finding requiring
-SCHEDULED / ISSUE / REJECTED disposition.
+SCHEDULED / ISSUE / REJECTED disposition. **Lesson G binds at every
+generated-artifact PR and every download-endpoint PR** —
+backend-safety-reviewer must flag any `FileResponse` /
+`StreamingResponse` for a regenerable file that does not explicitly
+set `Cache-Control: no-store`, and any generator that updates audit
+pointers without an intermediate forbidden-token validation step.
 
 ### Lesson A — Test stubs must match real production return shapes (2026-05-13)
 **GATE 1.** Stubs MUST match the real builder return shape; stub authors must read the real function first. Every coordinator/builder PR MUST include a real-builder regression test (no stub) asserting the type contract. Coordinators MUST normalise polymorphic inputs via `_normalise_X`. Post-merge Lesson-A failure → **GATE 4** salvage (SCHEDULED / ISSUE / REJECTED).
@@ -413,6 +418,55 @@ Complete this sentence before opening a code file: *"This is a [bucket] incident
 **Where it binds**: every V2 page PR; every `shipment-detail.html` PR; every `dashboard-shared.js` PR; every new file in `app/static/` that touches proforma/PZ/customs/warehouse domains. Full detail: `docs/v2-architecture-plan.md` §9 (first V2 PR review gate).
 
 **Reference**: `docs/v2-architecture-plan.md` (full spec, authority map, phase plan, discipline rules).
+
+### Lesson G — Generated-artifact stale-display bugs are first a cache / atomicity problem, not a generator problem (2026-05-21)
+
+**Origin**: Global Jewellery AWB 4789974092 Polish Description regeneration incident. Operator
+repeatedly reported "the stale PDF keeps returning after delete and regenerate." Three diagnostic
+passes patched the wrong layer (audit cache, packing rows, documents.db) before browser-side
+header inspection revealed `Cache-Control: max-age=14400` — FastAPI's `FileResponse` default of
+4-hour browser caching. The on-disk file was always correct; the browser was serving its cached
+copy. PR #265 fixed the actual cause.
+
+**Binding rule** — when any generated artifact (PDF / XLSX / JSON export) appears stale after a
+delete-and-regenerate cycle, follow this checklist BEFORE patching the generator:
+
+1. **Inspect the disk artifact first.** Read directly from the file path, bypass HTTP.
+   If on-disk content is correct, stop suspecting the generator.
+
+2. **Walk the reference layers in order**:
+   disk file → audit pointers → registry rows (`documents.db`, `packing.db`, …) →
+   download-endpoint resolver → HTTP response headers → browser cache.
+   Do not patch layer N without ruling out layers 1..N-1.
+
+3. **When disk content is correct but rendered output is old, root cause is almost always
+   HTTP / browser caching.** The download endpoint MUST set
+   `Cache-Control: no-store, no-cache, must-revalidate, max-age=0` + `Pragma: no-cache` +
+   `Expires: 0`. FastAPI's `FileResponse` default of multi-hour caching is a footgun for any
+   regenerable artifact.
+
+4. **Overwrite-safe generation (validate-then-rollback)** for every fixed-filename
+   generator: write file → validate against forbidden-token list → on hit unlink + return
+   422 + do NOT update audit pointers → on success atomically replace + update audit
+   pointers (including `<artifact>_generated_at` timestamp). Audit pointer update MUST be
+   the LAST step.
+
+5. **Regression test** pinning that the download endpoint emits `no-store` and the
+   generation path runs validate-then-rollback before audit update.
+
+**Where it binds**: every generated artifact + download endpoint. Apply to Polish Description,
+PZ PDFs, PZ Calc XLSX, Audit EN/PL, Memo PDFs, Corrections PDFs, Proforma PDFs, DSK PDFs,
+SAD-ready JSON, and any other DHL / customs / wFirma generated outputs that share a filename
+across regenerations.
+
+**Do not solve future stale-output bugs by manual file deletion only.** Deletion masks the
+symptom; the cache / atomicity gap remains.
+
+**Reference**: `.claude/memory/engineering_lessons.md` Lesson G (full detail, 5 properties +
+detection signals); PR #265 (cache headers + validate-then-rollback in `routes_dhl_clearance.py`
+`download_dhl_file` + `generate_description`); `service/tests/test_polish_desc_cache_and_overwrite.py`
+(11 tests pinning the contract); PR #260 + #261 (wrong-layer patches that the checklist would
+have prevented).
 
 ### Lesson K — Agent prompt templates with broad tool grants must include explicit negative-scope language (2026-05-23)
 
