@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-25T(ACTIVATION-PACKAGE-MERGED+CANARY-A-PASSED)Z. Origin/main HEAD: 1ee78df. Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED. Phase 2B DEPLOYED (all provider flags were OFF). Phase 2C DEPLOYED + VERIFIED (SHA 40c30f1). ANTHROPIC PILOT ACTIVE: key rotated, flags ON (AI_PARSER_ENABLED=true + AI_ADVISORY_LLM_ENABLED=true), canary A PASSED (llm_used=true, provider_used=anthropic_api, fallback=0, cost=$0.000223, ledger ID=1). 3-state quality validation in progress (B + C pending, no broad traffic). Activation package PR #360 MERGED (SHA aa251b8, 2026-05-25) — all 8 safety gates PASS. ACTIVATION DEPLOY BLOCKED pending M1+M3 fixes. GATE 4 follow-ups M1/M2/M3/M4 logged. PZ Correction Lifecycle PR A+B+C DEPLOYED (SHA 5bcb492, flags absent from .env, backend dormant). PZService RUNNING. Health 200/200. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear).
+**Last-run-at:** 2026-05-25T(ANTHROPIC-3-CANARY-COMPLETE)Z. Origin/main HEAD: da2a219. Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED. Phase 2B DEPLOYED (all provider flags were OFF). Phase 2C DEPLOYED + VERIFIED (SHA 40c30f1). ANTHROPIC PILOT: 3-canary quality validation COMPLETE. All signals clean. Advisory state-sensitive confirmed (canary C surfaced DHL as 4th domain, ranked first). Spend $0.001116/$1.00 (0.11%). Monitoring window open — broad traffic gate pending explicit operator go. Activation package PR #360 MERGED (SHA aa251b8, 2026-05-25) — all 8 safety gates PASS. ACTIVATION DEPLOY BLOCKED pending M1+M3 fixes. GATE 4 follow-ups M1/M2/M3/M4 logged. PZ Correction Lifecycle PR A+B+C DEPLOYED (SHA 5bcb492, flags absent from .env, backend dormant). PZService RUNNING. Health 200/200. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear).
 
 ---
 
@@ -198,14 +198,38 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
   - `_advisory_budget_ok()` counts ALL services, not advisory-only
   - Advisory cache key doesn't include model (stale on model change)
   - `is_available()` returns True when `ai_cowork_enabled=True` even with no API key
-- **Pilot sequence** (Anthropic-only canary — not started, pending operator approval):
-  - Step 1: Rotate ANTHROPIC_API_KEY (key was exposed in session chat — required before Windows use)
-  - Step 2: Get pilot plan approval from operator
-  - Step 3: Set `AI_PARSER_ENABLED=true` + `AI_ADVISORY_LLM_ENABLED=true` in Windows `.env`
-  - Step 4: Leave `AI_COWORK_ENABLED=false` + `AI_FALLBACK_ENABLED=false` — Anthropic-direct path only
-  - Step 5: Restart PZService; verify `/status` shows `active_provider=anthropic_api`
-- **Next action**: Open PR for Phase 2C, run 7-agent gate, deploy to Windows after operator approval
-- **OPEN QUESTION (OQ1)**: Anthropic pilot plan approval (operator decision — Phase 2C is prerequisite, now unblocked)
+- **Pilot sequence**: COMPLETE — all steps executed 2026-05-25. Key rotated, flags live, 3 canaries passed.
+- **OQ1 resolved**: Anthropic pilot approved and validated. No further blockers.
+
+## Anthropic Pilot — 3-Canary Quality Validation COMPLETE (2026-05-25)
+
+**Phase**: Track A — Anthropic-only direct path (Path B direct, no Cowork, no fallback)
+**Status**: ALL THREE CANARIES PASSED (2026-05-25, operator-confirmed). Quality validated. Monitoring window open. Broad traffic gate pending explicit operator go.
+
+### Production config (live on Windows as of 2026-05-25)
+`AI_PARSER_ENABLED=true` · `AI_ADVISORY_LLM_ENABLED=true` · `AI_COWORK_ENABLED=false` · `AI_FALLBACK_ENABLED=false` · `AI_GATEWAY_DAILY_BUDGET_USD=2.00` · Key rotated, compromised file deleted.
+
+### 3-canary results (2026-05-25, operator-confirmed)
+
+| # | Batch | Blocked domains | Cost | Model | Fallback |
+|---|-------|----------------|------|-------|---------|
+| A | SHIPMENT_9765416334_2026-05_c4639366 | warehouse, sales, wfirma | $0.000223 | haiku-4-5 | 0 ✅ |
+| B | SHIPMENT_4218922912_2026-05_9040dd39 | warehouse, sales, wfirma | $0.000372 | haiku-4-5 | 0 ✅ |
+| C | SHIPMENT_3483447564_2026-05_6f45fbc3 | warehouse, sales, wfirma, **DHL** | $0.000521 | haiku-4-5 | 0 ✅ |
+
+- **Total spend**: $0.001116 / $1.00 budget (0.11%)
+- **State-sensitive confirmed**: Canary C surfaced DHL customs clearance as 4th domain absent in A+B; advisory ranked DHL as `next_step` ahead of warehouse/sales — sequencing logic correct.
+- **No hallucinated domains** across all three. `advisory_class=R` (read-only) across all three.
+- **Cost per call**: $0.000372 avg → ~2,688 calls before $1.00/day. Budget not the near-term constraint.
+
+### Monitoring window (24–48 h post-canary)
+Stop signals: any `error_type` value · any `success=0` · `fallback_used > 0` · `provider_used ≠ anthropic_api`. Check via `GET /api/v1/ai/advisory/status`.
+
+### Gate to broad traffic
+Explicit operator go required after monitoring window. No automated broadening.
+
+### Rollback
+Remove 6 pilot `.env` lines → restart PZService → confirm `active_provider=none`.
 
 ## AI Advisory Phase 2 -- LLM Explanation Path (2026-05-24, DEPLOYED WITH LLM OFF)
 
