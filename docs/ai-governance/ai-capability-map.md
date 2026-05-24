@@ -1,8 +1,8 @@
 # AI Capability Map — EJ Dashboard Portal
 
-**Status**: ACTIVE (Phase 1)
+**Status**: ACTIVE (Phase 2)
 **Owner**: orchestrator + reviewer-challenge
-**Last revised**: 2026-05-23
+**Last revised**: 2026-05-24
 
 This document is the single source of truth for *where AI may run* inside the
 EJ Dashboard Portal, *what class of AI each insertion point is*, and *what
@@ -70,6 +70,15 @@ source files.
 | `service/app/api/routes_ai_advisory.py` | R | Exposes `GET /api/v1/ai/advisory/workflow-blockers/{batch_id}`. | No |
 | `service/app/static/ai-advisory-v2.html` | R | Standalone V2-aligned page rendering the explanation. NOT a modification to V1. | No |
 
+**Phase 2 additions (PR #TBD, 2026-05-24):**
+
+| Path | Class | What it does | Touches `/execute`? |
+|---|---|---|---|
+| `service/app/services/ai_advisory.py` | R | Phase 2 upgrade: opt-in LLM synthesis via `ai_gateway.call()`. Flag: `ai_advisory_llm_enabled` (default False). Deterministic fallback preserved. | No |
+| `service/app/api/routes_ai_advisory.py` | R | New: `GET /api/v1/ai/advisory/status` — observability endpoint for flag state, budget, gateway health. | No |
+
+Phase 2 LLM call parameters: `task_type="advisory_explanation"`, `service_name="ai_advisory"`, `complexity="simple"`, `risk_level="low"`. Budget ceiling: `ai_advisory_budget_usd_per_day` (default $1.00/day). TTL cache: `ai_advisory_cache_ttl_seconds` (default 300s). Response field `llm_used=True` only when LLM call succeeded; `source="batch_readiness+llm"` distinguishes from Phase 1 deterministic path (`source="batch_readiness"`). All Phase 1 contracts unchanged.
+
 **Pre-existing LLM services (retroactively classified 2026-05-23):**
 
 These existed on main before Phase 1 and have active Anthropic API calls.
@@ -83,17 +92,20 @@ Remediation: wire both into `ai_call_ledger.py` by Phase 3 close.
 
 ---
 
-## 4. Why Phase 1 ships no LLM call
+## 4. Phase 1 design rationale and Phase 2 LLM contract
 
-Phase 1 establishes the contract: **AI advisory is read-only, derived from
-existing authority output, and provably cannot mutate state.** Adding an
-actual LLM call inside this skeleton would conflate two unrelated risks
-(authority leakage and prompt-injection) into a single first PR.
+Phase 1 established the contract: **AI advisory is read-only, derived from
+existing authority output, and provably cannot mutate state.** The no-LLM
+design was intentional — separating authority-leakage risk from prompt-injection
+risk into distinct phases.
 
-A future Phase 2 may wire an LLM into `ai_advisory.synthesise_explanation()`
-as a strictly additive enhancement — the contract enforced here (no writes,
-no `/execute` calls, no domain authority redefinition) carries forward
-unchanged. Prompt-injection mitigation lands at that time, not now.
+Phase 2 wires LLM into `ai_advisory.explain_workflow_blockers()` under the
+same contract (no writes, no `/execute` calls, no domain authority redefinition).
+The prompt-injection posture: `_build_user_prompt()` receives **only structured
+fields** from `batch_readiness` authority output — status codes, domain names,
+short deterministic message strings. Raw email text, supplier documents, and
+operator free-form input are never passed to the model. The input surface is
+closed; prompt-injection risk is minimal by construction.
 
 ---
 
@@ -134,11 +146,9 @@ Violation of any item is a GATE 1 PR-blocker.
 
 ---
 
-## 7. Prompt-injection posture (forward-looking)
+## 7. Prompt-injection posture (binding as of Phase 2)
 
-Phase 1 ships no LLM, so prompt-injection is not yet a live risk. The
-posture for Phase 2+ is recorded here so the contract is unambiguous when
-the LLM lands:
+Phase 2 ships with an LLM call in `ai_advisory.py`. The posture is now active:
 
 - Untrusted text (DHL email body, supplier document text, customer message)
   MUST be passed to any future LLM as data, never as instructions.
@@ -171,7 +181,7 @@ the LLM lands:
 Full roadmap detail: `docs/ai-governance/ai-roadmap-phase2-to-phase10.md`
 
 - **Phase 1 — CLOSED, live on production** (SHA 74ff7a8, 2026-05-23). Capability map, advisory skeleton, read-only endpoint, V2 page, no-write tests, token-budget policy, API fallback policy.
-- **Phase 2** — Wire LLM into `ai_advisory.synthesise_explanation()` behind `ai_advisory_llm_enabled` flag. Add Rule 8 call-log. Class-R, Haiku only, $1/day ceiling.
+- **Phase 2 — SHIPPED (2026-05-24, PR #TBD)**. LLM wired into `ai_advisory.explain_workflow_blockers()` via `ai_gateway.call()`. Feature flag `ai_advisory_llm_enabled` (default False). `ai_call_ledger` logging. `GET /api/v1/ai/advisory/status` endpoint. 25 new tests (82 total advisory). All flags deploy OFF. Deploy manifest: `.claude/manifests/windows_deploy_phase2_advisory.ps1`.
 - **Phase 3** — Centralize call-log into `ai_call_ledger.py`. Retrofit pre-existing LLM services (ai_customs_parser, ai_customs_evidence). In-process cache.
 - **Phase 4** — Customer Master Intelligence. VAT/EU VAT advisory, completeness scoring, duplicate candidate detection. Class-A, new V2 page.
 - **Phase 5** — Product / Finishing Intelligence. Description quality, missing metal/stone/carat fields, wfirma_product_id sync gaps. Class-A.
