@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-25T(ANTHROPIC-3-CANARY-COMPLETE)Z. Origin/main HEAD: da2a219. Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED. Phase 2B DEPLOYED (all provider flags were OFF). Phase 2C DEPLOYED + VERIFIED (SHA 40c30f1). ANTHROPIC PILOT: 3-canary quality validation COMPLETE. All signals clean. Advisory state-sensitive confirmed (canary C surfaced DHL as 4th domain, ranked first). Spend $0.001116/$1.00 (0.11%). Monitoring window open — broad traffic gate pending explicit operator go. Activation package PR #360 MERGED (SHA aa251b8, 2026-05-25) — all 8 safety gates PASS. ACTIVATION DEPLOY BLOCKED pending M1+M3 fixes. GATE 4 follow-ups M1/M2/M3/M4 logged. PZ Correction Lifecycle PR A+B+C DEPLOYED (SHA 5bcb492, flags absent from .env, backend dormant). PZService RUNNING. Health 200/200. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear).
+**Last-run-at:** 2026-05-25T(PR-361-OPEN+ACTIVATION-GATE-3-OF-3)Z. Origin/main HEAD: 9f5c32f. Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED. Phase 2B DEPLOYED. Phase 2C DEPLOYED + VERIFIED (SHA 40c30f1). ANTHROPIC PILOT: 3-canary quality validation COMPLETE. All signals clean. Advisory state-sensitive confirmed (canary C surfaced DHL as 4th domain, ranked first). Spend $0.001116/$1.00 (0.11%). Monitoring window open — broad traffic gate pending explicit operator go (24-48h check). Activation package PR #360 MERGED (SHA aa251b8). PR #361 OPEN — M1+M2+M3+M4+L2+L3 all fixed; activation gate 3/3 pending merge. PZ Correction Lifecycle PR A+B+C DEPLOYED (SHA 5bcb492, flags absent from .env, backend dormant). PZService RUNNING. Health 200/200. OPEN PRs: #337 + #268 + #361 = 3/3 (GATE 2 AT LIMIT — no new PRs until one closes).
 
 ---
 
@@ -91,18 +91,40 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 - **Deploy status**: BLOCKED. These are tooling scripts only — not service code. No robocopy to `C:\PZ\app` required or intended. Scripts reside in `service/scripts/` and are executed manually by the operator from the repo working directory.
 
-- **GATE 4 tracked issues (must resolve before first `--execute` run)**:
-  - **M1** (medium): `activate_pz_lifecycle.py` — no pre-write checkpoint before `_set_flag()`; runbook Step 1 success criterion "checkpoint exists" is unmet when using Option B (Python). Remediation: add `_checkpoint()` call in `step1_enable_lifecycle_flag()` before `_set_flag()`.
-  - **M2** (medium): `activate_pz_lifecycle.py --rollback` blocked by `_assert_push_flag_not_set()` (runs before rollback branch). Emergency rollback unavailable via Python if push flag is ON. PowerShell `RollbackLifecycle` unaffected. Disposition: SCHEDULED — document PowerShell as rollback fallback; move guard inside non-rollback branch.
-  - **M3** (medium): Runbook Step 4b shows `POST /correction-reset`; `lifecycle_smoke_tests.py` uses `DELETE /correction-stage`. URL and method inconsistent. Cannot be resolved without backend route verification. Disposition: SCHEDULED — verify `routes_pz.py` reset endpoint definition; synchronize runbook or smoke test.
-  - **M4** (medium): `test_correction_commit_503_when_push_off` — fallthrough `PASS` when lifecycle is OFF and commit returns non-503. Should return `FAIL`. Disposition: SCHEDULED — add `else: return SmokeResult(verdict="FAIL", ...)` in lifecycle-off branch.
+- **GATE 4 tracked issues — ALL RESOLVED via PR #361 (2026-05-25, OPEN — pending merge)**:
+  - **M1** ✅ RESOLVED (PR #361): `_create_checkpoint()` added — saves `.env` to `C:\PZ\env-checkpoints\env-checkpoint-YYYYMMDD-HHMMSS.bak` before any `_set_flag()` call (activation and rollback paths). Secrets never printed. Dry-run safe.
+  - **M2** ✅ RESOLVED (PR #361): `_assert_push_flag_not_set()` now skipped when `--rollback` passed. Rollback unconditionally safe regardless of push flag state.
+  - **M3** ✅ RESOLVED (PR #361): Backend confirmed `DELETE /api/v1/pz/lineage/{batch_id}/correction-stage` (`routes_pz.py:1226`). Phantom `/correction-reset` does not exist. Runbook Step 4b corrected (v1.1). New smoke test `test_correction_reset_uses_delete_not_post` — PASS confirmed live.
+  - **M4** ✅ RESOLVED (PR #361): False-PASS fallthrough closed — `-1` network error and stray `2xx` now return FAIL.
 
-- **Additional tracked issues (low priority)**:
-  - **L1**: `env_config_manager.ps1` — no UTF-8 BOM; `→` characters may display garbled on cp1252 Windows; no logic impact.
-  - **L2**: `run_full_lifecycle_flow` permanently suppresses test batch (TERMINAL_SUPPRESSED); runbook should warn to use a dedicated test batch.
-  - **L3**: SHA `"5bcb492"` hardcoded in audit log entries in `activate_pz_lifecycle.py` (lines 464, 483); stale at next activation.
+- **Additional tracked issues**:
+  - **L1**: `env_config_manager.ps1` — no UTF-8 BOM; `→` characters may display garbled on cp1252 Windows; no logic impact. Remains low priority.
+  - **L2** ✅ RESOLVED (PR #361): Irreversible-state warning added before `--full-lifecycle` Step D.
+  - **L3** ✅ RESOLVED (PR #361): `_get_git_sha()` added; audit events use runtime SHA.
 
-- **Next required action**: File follow-up PR fixing M1 + M3 before activation attempt. M2 + M4 can follow in same PR or next maintenance window.
+- **Activation gate status**: **3/3** — all blockers resolved. Pending PR #361 merge. No further code changes required before first `--execute` run.
+- **Next required action**: Merge PR #361. Then activation is unblocked on operator's schedule.
+
+## AI Pilot Monitoring Gate — 24-48h Check (2026-05-25, OPEN)
+
+**Status**: 3/3 canaries passed. Monitoring window open. Broad traffic held.
+
+**7 gate conditions for broad traffic enablement** (operator runs 24-48h check):
+1. `budget_ok=true`
+2. `spent_usd_today` safely below cap (< $0.80/day target)
+3. `fallback_used=0` on all recent ledger rows
+4. `error_type` empty/null on recent rows
+5. No circuit breaker warnings in stdout log
+6. No new ERROR lines in stderr
+7. Advisory quality acceptable (accurate summaries, no hallucinated data)
+
+**Check commands** (provided by operator, 2026-05-25):
+```powershell
+$k = (Get-Content "C:\PZ\.env" | Where-Object { $_ -match "^AUTH_SECRET_KEY=" } | ForEach-Object { $_.Split("=",2)[1] })
+(Invoke-WebRequest "http://127.0.0.1:47213/api/v1/ai/advisory/status" -Headers @{"X-API-Key"=$k} -UseBasicParsing).Content
+python -c "import sqlite3; con=sqlite3.connect(r'C:\PZ\storage\ai_call_ledger.db'); rows=con.execute('SELECT id,timestamp,success,actual_cost,provider_used,fallback_used,error_type FROM ai_calls ORDER BY id DESC LIMIT 20').fetchall(); [print(r) for r in rows]; con.close()"
+Get-Content C:\PZ\logs\pz_stderr.log -Tail 80
+```
 
 ---
 
