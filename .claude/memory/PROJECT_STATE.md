@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-25T(PHASE2C-DEPLOYED-VERIFIED)Z. Origin/main HEAD: 5bcb492 (PR C record + GATE 2 update). Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED (LLM flags OFF). Phase 2B DEPLOYED (ALL PROVIDER FLAGS OFF). Phase 2C DEPLOYED + VERIFIED (SHA 40c30f1 — STARTUP_AI_AUDIT confirmed pz_stdout.log, all AI flags OFF, /status healthy — pilot NOT started). PZ Correction Lifecycle PR A + PR B + PR C ALL MERGED (not deployed, flags off). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). ANTHROPIC_API_KEY ROTATION REQUIRED before pilot (key exposed in chat). Pilot plan documented — Anthropic-only canary, pending key rotation + operator go.
+**Last-run-at:** 2026-05-25T(LIFECYCLE-DEPLOYED)Z. Origin/main HEAD: bc661ac. Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED (LLM flags OFF). Phase 2B DEPLOYED (ALL PROVIDER FLAGS OFF). Phase 2C DEPLOYED + VERIFIED (SHA 40c30f1 — STARTUP_AI_AUDIT confirmed pz_stdout.log, all AI flags OFF — pilot NOT started; ANTHROPIC_API_KEY ROTATION REQUIRED before pilot). PZ Correction Lifecycle PR A + PR B + PR C DEPLOYED to C:\PZ\app (2026-05-25, SHA 5bcb492). Both lifecycle flags ABSENT from .env (defaults False — backend dormant). PZService RUNNING. Health 200/200. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). No AI execution flags enabled. No PZ lifecycle flags enabled.
 
 ---
 
@@ -245,6 +245,26 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **Security**: no CANCEL_AND_RECREATE, no wfirma_client.py changes, no UI changes, no flags enabled, not deployed
 - **GATE 2 update**: 3/3 → 2/3 (PR #358 merged; #337 + #268 remain open; slot available)
 - **ALL PRs A+B+C MERGED** — backend activation blockers 1–5 all closed; Phase 1 ready for activation when operator decides
+
+### Deploy record — PRs A+B+C (2026-05-25)
+
+- **Deployed SHA**: `5bcb492` (main HEAD at deploy time)
+- **Deploy method**: 7-agent gate (GATE 5: project-specific agents not in registry; substitutes used with capability-equivalence disclosure per Lesson B) → robocopy `service/app → C:\PZ\app` → sc.exe restart
+- **7-agent gate**: 7/7 GO (Git/Diff CLEAR · Backend CLEAR · Persistence CLEAR · Security CLEAR · QA GO · Release Manager GO · Lead Coordinator READY-TO-DEPLOY)
+- **Robocopy result**: Exit code 3 (success) — 113 files copied, key files confirmed: `routes_pz.py` (newer), `global_pz_push.py` (newer), `pz_correction_lifecycle.py` (new), `pz_correction_state.py` (new)
+- **PZService**: RUNNING (PID 3032 post-restart)
+- **Health**: local 200 ✅ / public 200 ✅
+- **Content verification**:
+  - `_GlobalBatchCheck` present at C:\PZ\app\api\routes_pz.py:32 ✅
+  - `correction-suppress` URL present in routes_pz.py:1139/1148 ✅
+  - Gate 4a present in global_pz_push.py:381 ✅
+  - `write_json_atomic` import in global_pz_push.py:51 ✅
+  - 410 old route guard present in routes_pz.py:90 ✅
+- **Flag status**: `PZ_CORRECTION_LIFECYCLE_ENABLED` ABSENT from .env (defaults False) ✅ / `WFIRMA_CORRECTION_PUSH_ALLOWED` ABSENT from .env (defaults False) ✅
+- **Smoke test**: `GET /api/v1/pz/lineage/TEST-BATCH-001/correction-state` → 503 while flag off ✅
+- **Stderr**: clean (no new tracebacks) ✅
+- **Rollback command**: `git revert 5bcb492 --no-edit` + robocopy + sc.exe restart
+- **Activation**: NOT started — both flags off; operator must explicitly set `PZ_CORRECTION_LIFECYCLE_ENABLED=true` in C:\PZ\.env and restart PZService to activate
 
 ---
 
