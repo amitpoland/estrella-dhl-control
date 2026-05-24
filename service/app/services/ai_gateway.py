@@ -88,12 +88,15 @@ _CB_THRESHOLD         : int   = 5    # failures before open
 _CB_RESET_AFTER_S     : float = 60.0 # seconds before attempting half-open
 
 
-def _cb_is_open() -> bool:
+def _cb_is_open(
+    threshold: int = _CB_THRESHOLD,
+    reset_s: float = _CB_RESET_AFTER_S,
+) -> bool:
     global _cb_consecutive_fails, _cb_open_since
     with _CB_LOCK:
-        if _cb_consecutive_fails < _CB_THRESHOLD:
+        if _cb_consecutive_fails < threshold:
             return False
-        if time.monotonic() - _cb_open_since >= _CB_RESET_AFTER_S:
+        if time.monotonic() - _cb_open_since >= reset_s:
             # Half-open: allow one attempt
             return False
         return True
@@ -120,6 +123,52 @@ def reset_circuit_breaker() -> None:
     with _CB_LOCK:
         _cb_consecutive_fails = 0
         _cb_open_since = 0.0
+
+
+# ── Cowork circuit breaker (isolated — separate state from Anthropic CB) ──────
+# Phase 3: Cowork and Anthropic failures must not cross-contaminate.
+# A burst of Anthropic timeouts must not close the Cowork path, and vice versa.
+
+_COWORK_CB_LOCK               = threading.Lock()
+_cowork_cb_consecutive_fails : int   = 0
+_cowork_cb_open_since        : float = 0.0
+
+
+def _cowork_cb_is_open(
+    threshold: int = _CB_THRESHOLD,
+    reset_s: float = _CB_RESET_AFTER_S,
+) -> bool:
+    global _cowork_cb_consecutive_fails, _cowork_cb_open_since
+    with _COWORK_CB_LOCK:
+        if _cowork_cb_consecutive_fails < threshold:
+            return False
+        if time.monotonic() - _cowork_cb_open_since >= reset_s:
+            # Half-open: allow one attempt through
+            return False
+        return True
+
+
+def _cowork_cb_record_success() -> None:
+    global _cowork_cb_consecutive_fails, _cowork_cb_open_since
+    with _COWORK_CB_LOCK:
+        _cowork_cb_consecutive_fails = 0
+        _cowork_cb_open_since = 0.0
+
+
+def _cowork_cb_record_failure(threshold: int = _CB_THRESHOLD) -> None:
+    global _cowork_cb_consecutive_fails, _cowork_cb_open_since
+    with _COWORK_CB_LOCK:
+        _cowork_cb_consecutive_fails += 1
+        if _cowork_cb_consecutive_fails >= threshold:
+            _cowork_cb_open_since = time.monotonic()
+
+
+def reset_cowork_circuit_breaker() -> None:
+    """Reset cowork circuit breaker state. For tests only."""
+    global _cowork_cb_consecutive_fails, _cowork_cb_open_since
+    with _COWORK_CB_LOCK:
+        _cowork_cb_consecutive_fails = 0
+        _cowork_cb_open_since = 0.0
 
 
 # ── Model selection ───────────────────────────────────────────────────────────
@@ -190,7 +239,12 @@ def is_available() -> bool:
             return False
         cowork_enabled = bool(getattr(settings, "ai_cowork_enabled", False))
         if cowork_enabled:
-            return True
+            # Phase 3: cowork availability requires a real API key (not just the flag).
+            # Check cowork-specific key first; fall back to anthropic_api_key.
+            cowork_key = getattr(settings, "ai_cowork_api_key", None) or ""
+            if not cowork_key.strip():
+                cowork_key = getattr(settings, "anthropic_api_key", None) or ""
+            return bool(cowork_key.strip())
         key = getattr(settings, "anthropic_api_key", None) or ""
         if not key.strip():
             return False
@@ -294,29 +348,118 @@ def check_key_health(*, force_refresh: bool = False) -> Optional[dict]:
     return result
 
 
-# ── Provider: Cowork stub (Phase 2B) ─────────────────────────────────────────
+# ── Provider: Cowork (Phase 3 — Model A: Anthropic SDK, isolated CB) ─────────
 
 def _cowork_call(
     *,
+    api_key: str,
     system: str,
     user: str,
     selected_model: str,
     max_tokens: int,
+    max_retries: int,
     timeout_s: int,
-) -> Tuple[Optional[str], Optional[str]]:
-    """Cowork / Claude-first provider call.
+    ledger: Any,
+    cb_threshold: int = _CB_THRESHOLD,
+    cb_reset_s: float = _CB_RESET_AFTER_S,
+) -> Tuple[Optional[str], Optional[int], Optional[int], Optional[float], Optional[str]]:
+    """Cowork provider call via Anthropic SDK (Phase 3: Model A).
 
-    Phase 2B: stub implementation.  Returns (None, "cowork_not_implemented").
-    Does NOT make any network calls.
-    Does NOT increment the circuit breaker (logical gate, not a network failure).
+    Governance note (Phase 3): The Cowork provider uses the same Anthropic SDK
+    as the Anthropic provider but with:
+      - A separate circuit breaker (_cowork_cb_*) so failures on one path do
+        not contaminate the other.
+      - A separate configurable API key (ai_cowork_api_key), falling back to
+        anthropic_api_key when absent — enabling future key rotation per-path.
+      - Distinct error types in the ledger so telemetry distinguishes cowork
+        failures from anthropic failures even though both call the same API.
 
-    Phase 3 will replace this body with real Cowork/Claude API integration.
+    Cowork CB is checked here (not in call()) to keep gate logic self-contained.
 
     Returns:
-        (raw_text, error_type) — raw_text is None on any failure/stub.
+        (raw_text, actual_in, actual_out, actual_cost_val, error_type)
+        raw_text is None on any failure.
+
+    Error types (never trip the Anthropic CB):
+        cowork_cb_open             — cowork CB was open at call time
+        cowork_bridge_unavailable  — no API key or anthropic package missing
+        cowork_timeout             — call timed out
+        cowork_result_error        — non-retryable API error (auth, etc.)
+        cowork_malformed_result    — response present but no usable text content
     """
-    log.debug("[ai_gateway] Cowork provider: stub — not yet implemented")
-    return None, "cowork_not_implemented"
+    # ── Cowork CB gate (isolated — does NOT check Anthropic CB) ──────────────
+    if _cowork_cb_is_open(threshold=cb_threshold, reset_s=cb_reset_s):
+        log.warning("[ai_gateway] cowork circuit breaker OPEN — skipping cowork call")
+        return None, None, None, None, "cowork_cb_open"
+
+    if not api_key.strip():
+        log.debug("[ai_gateway] cowork: no API key configured")
+        return None, None, None, None, "cowork_bridge_unavailable"
+
+    try:
+        import anthropic as _anth  # noqa: PLC0415
+    except ImportError:
+        log.error("[ai_gateway] cowork: anthropic package not installed — pip install anthropic")
+        return None, None, None, None, "cowork_bridge_unavailable"
+
+    client = _anth.Anthropic(api_key=api_key, timeout=float(timeout_s))
+
+    raw_text:        Optional[str]   = None
+    actual_in:       Optional[int]   = None
+    actual_out:      Optional[int]   = None
+    actual_cost_val: Optional[float] = None
+    last_exc_type:   Optional[str]   = None
+
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            backoff = 2 ** (attempt - 1)  # 1s, 2s, 4s
+            log.info("[ai_gateway] cowork retry %d/%d after %ds", attempt, max_retries, backoff)
+            time.sleep(backoff)
+
+        try:
+            response = client.messages.create(
+                model=selected_model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+            candidate = (response.content[0].text or "").strip()
+            if not candidate:
+                # Empty response is an API anomaly — treat as a failure, trip CB
+                _cowork_cb_record_failure(threshold=cb_threshold)
+                return None, None, None, None, "cowork_malformed_result"
+
+            raw_text = candidate
+
+            # Capture actual usage if reported
+            usage = getattr(response, "usage", None)
+            if usage:
+                actual_in  = getattr(usage, "input_tokens",  None)
+                actual_out = getattr(usage, "output_tokens", None)
+                if actual_in is not None and actual_out is not None:
+                    actual_cost_val = ledger.estimate_cost(selected_model, actual_in, actual_out)
+
+            _cowork_cb_record_success()
+            return raw_text, actual_in, actual_out, actual_cost_val, None
+
+        except Exception as exc:
+            exc_name = type(exc).__name__
+            last_exc_type = exc_name
+            is_timeout = "timeout" in exc_name.lower() or "timeout" in str(exc).lower()
+
+            retryable = _is_retryable(exc)
+            log.warning("[ai_gateway] cowork attempt %d/%d failed (%s): %s",
+                        attempt + 1, max_retries + 1, exc_name, exc)
+
+            if not retryable or attempt >= max_retries:
+                _cowork_cb_record_failure(threshold=cb_threshold)
+                err = "cowork_timeout" if is_timeout else "cowork_result_error"
+                return None, None, None, None, err
+            # else: retryable — loop continues
+
+    # Exhausted retries without a final exception (should not normally reach here)
+    _cowork_cb_record_failure(threshold=cb_threshold)
+    return None, None, None, None, last_exc_type or "cowork_result_error"
 
 
 # ── Provider: Anthropic API ───────────────────────────────────────────────────
@@ -403,7 +546,12 @@ def _is_cb_failure(error_type: Optional[str]) -> bool:
     configuration or policy decisions, not external service degradation.
     """
     _LOGICAL_GATES = {
+        # Legacy / stub
         "cowork_not_implemented",
+        # Cowork-specific — cowork CB and bridge failures must not trip Anthropic CB
+        "cowork_cb_open",
+        "cowork_bridge_unavailable",
+        # Shared logical gates
         "budget_exhausted",
         "cb_open",
         "disabled",
@@ -465,6 +613,21 @@ def call(
 
     api_key = getattr(settings, "anthropic_api_key", None) or ""
 
+    # Read cowork API key (separate key; falls back to Anthropic key when absent)
+    cowork_key = getattr(settings, "ai_cowork_api_key", None) or ""
+    if not cowork_key.strip():
+        cowork_key = api_key
+
+    # Read CB settings from config (Phase 3: wired from settings, not hardcoded)
+    try:
+        cb_threshold = max(1, int(getattr(settings, "ai_gateway_circuit_breaker_threshold",
+                                          _CB_THRESHOLD)))
+        cb_reset_s   = float(getattr(settings, "ai_gateway_circuit_breaker_reset_s",
+                                     _CB_RESET_AFTER_S))
+    except (TypeError, ValueError):
+        cb_threshold = _CB_THRESHOLD
+        cb_reset_s   = _CB_RESET_AFTER_S
+
     # Determine intended provider path
     use_cowork_first = cowork_enabled and (provider_preference == _PROVIDER_COWORK)
     provider_requested = _PROVIDER_COWORK if use_cowork_first else _PROVIDER_ANTHROPIC
@@ -474,10 +637,17 @@ def call(
         log.debug("[ai_gateway] no API key and cowork not enabled — skipping")
         return None
 
-    # ── Gate 2: circuit breaker ───────────────────────────────────────────────
-    if _cb_is_open():
-        log.warning("[ai_gateway] circuit breaker OPEN — skipping call")
-        return None
+    # ── Gate 2: circuit breaker (provider-specific) ───────────────────────────
+    # Cowork CB and Anthropic CB are checked independently so a burst of
+    # failures on one path does not block the other.
+    if use_cowork_first:
+        if _cowork_cb_is_open(threshold=cb_threshold, reset_s=cb_reset_s):
+            log.warning("[ai_gateway] cowork circuit breaker OPEN — skipping call")
+            return None
+    else:
+        if _cb_is_open(threshold=cb_threshold, reset_s=cb_reset_s):
+            log.warning("[ai_gateway] circuit breaker OPEN — skipping call")
+            return None
 
     # ── Gate 3: daily budget ──────────────────────────────────────────────────
     daily_budget = getattr(settings, "ai_gateway_daily_budget_usd", 0.0)
@@ -522,20 +692,28 @@ def call(
 
     if use_cowork_first:
         # ── Path A: Cowork primary ────────────────────────────────────────────
-        cowork_text, cowork_err = _cowork_call(
+        cowork_text, cowork_in, cowork_out, cowork_cost, cowork_err = _cowork_call(
+            api_key=cowork_key,
             system=system_clean,
             user=user_clean,
             selected_model=selected_model,
             max_tokens=max_tokens,
+            max_retries=max_retries,
             timeout_s=cowork_timeout_s,
+            ledger=ledger,
+            cb_threshold=cb_threshold,
+            cb_reset_s=cb_reset_s,
         )
 
         if cowork_text is not None:
-            raw_text     = cowork_text
-            success      = True
-            provider_used = _PROVIDER_COWORK
-            fallback_used = False
-            error_type   = None
+            raw_text        = cowork_text
+            actual_in       = cowork_in
+            actual_out      = cowork_out
+            actual_cost_val = cowork_cost
+            success         = True
+            provider_used   = _PROVIDER_COWORK
+            fallback_used   = False
+            error_type      = None
         else:
             # Cowork did not return a result
             if not fallback_enabled:
@@ -569,6 +747,26 @@ def call(
                     actual_in=None, actual_out=None, actual_cost_val=None,
                     latency_ms=int((time.monotonic() - t_start) * 1000),
                     success=False, fallback_reason="no_api_key", error_type="no_api_key",
+                    provider_requested=provider_requested, provider_used=None,
+                    fallback_used=True,
+                )
+                return None
+
+            # Guard: also check Anthropic CB before attempting fallback
+            if _cb_is_open(threshold=cb_threshold, reset_s=cb_reset_s):
+                log.warning("[ai_gateway] cowork failed (%s); Anthropic CB also OPEN — no fallback",
+                            cowork_err)
+                _ledger_write(
+                    ledger=ledger,
+                    task_type=task_type, service_name=service_name, object_id=object_id,
+                    requested_model=operator_override_model, selected_model=selected_model,
+                    model_tier=model_tier, selection_reason=selection_reason,
+                    escalation_reason=escalation_reason, confidence_score=confidence_score,
+                    p_hash=p_hash, est_in=est_in, est_out=est_out, est_cost=est_cost,
+                    actual_in=None, actual_out=None, actual_cost_val=None,
+                    latency_ms=int((time.monotonic() - t_start) * 1000),
+                    success=False, fallback_reason="anthropic_cb_open",
+                    error_type="anthropic_cb_open",
                     provider_requested=provider_requested, provider_used=None,
                     fallback_used=True,
                 )
@@ -653,7 +851,9 @@ def _is_retryable(exc: Exception) -> bool:
         if isinstance(exc, anthropic.APIStatusError):
             status = getattr(exc, "status_code", 0)
             return status >= 500
-    except ImportError:
+    except (ImportError, TypeError):
+        # TypeError occurs in tests when anthropic is mocked and RateLimitError
+        # is a MagicMock rather than a real class.
         pass
     # Fallback: retry on timeout-like exceptions by name
     name = type(exc).__name__.lower()

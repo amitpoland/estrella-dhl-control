@@ -128,9 +128,12 @@ class Settings(BaseSettings):
     # Primary provider: Claude/Cowork (stub; no live calls until P3 implementation)
     # Anthropic API is governed fallback only when ai_fallback_enabled=True.
     # None of these are ever True/active by default.
-    ai_cowork_enabled:          bool = Field(default=False)
-    ai_cowork_timeout_seconds:  int  = Field(default=30)
-    ai_provider_preference:     str  = Field(default="claude_cowork")
+    ai_cowork_enabled:          bool          = Field(default=False)
+    ai_cowork_timeout_seconds:  int           = Field(default=30)
+    ai_provider_preference:     str           = Field(default="claude_cowork")
+    # Separate API key for Cowork provider; falls back to anthropic_api_key when absent.
+    # All flag defaults are OFF — never enable in code; set in .env on production host only.
+    ai_cowork_api_key:          Optional[str] = Field(default=None)
     ai_advisory_max_tokens_per_call: int          = Field(default=1000)
     ai_advisory_budget_usd_per_day: float         = Field(default=1.0)
     ai_advisory_cache_ttl_seconds:  int           = Field(default=300)
