@@ -4,11 +4,37 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PHASE8-COMPLETE+DEPLOYED)Z. Origin/main HEAD: 12f3f90 (Phase 8 Sprint 4 search enrich -- DEPLOYED). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3. Phase 8 ALL 4 sprints DEPLOYED to Windows production -- operator-confirmed 2026-05-24. Health 200/200. PZService RUNNING. stderr clean. llm_used=false across all new endpoints. No regressions. Phase 9 (Workflow Intelligence Foundation) is next.
+**Last-run-at:** 2026-05-24T(PHASE9-MERGED)Z. Origin/main HEAD: 1c6046b (Phase 9 Workflow Intelligence -- PR #342 MERGED). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3 (GATE 2 limit: 3). Phase 9 NOT deployed yet -- operator must execute manifest windows_deploy_1c6046b.ps1. Phase 8 ALL 4 sprints confirmed deployed. Phase 10 (Operations Intelligence) starts after Phase 9 deployed + smoke verified.
 
 ---
 
 # FACTS
+
+## Phase 9 -- Workflow Intelligence Foundation (2026-05-24, PR #342 MERGED)
+
+**Campaign type**: Multi-signal workflow aggregation (read-only, no LLM, no writes)
+**Status**: PR #342 MERGED -- squash SHA `1c6046b` on main (2026-05-24). NOT deployed yet.
+
+- **Commit SHA on main**: 1c6046b
+- **Files added** (2 new + 1 modified):
+  - `service/app/services/workflow_intelligence.py` -- NEW: WorkflowBlocker, WorkflowWarning, WorkflowIntelligenceResult; get_workflow_intelligence(); resolve_batch_id_from_awb()
+  - `service/app/api/routes_workflow_intelligence.py` -- NEW: GET /api/v1/workflow/intelligence
+  - `service/app/main.py` -- +3 lines: import + include_router
+  - `service/tests/test_phase9_workflow_intelligence.py` -- NEW: 56 tests
+- **Route**: GET /api/v1/workflow/intelligence?batch_id=X | ?awb=X [&domain=X]
+- **Status values**: BLOCKED | INCOMPLETE | READY | UNKNOWN
+- **Severity mapping**: HIGH (wfirma/sales/conflict), MEDIUM (warehouse), LOW (dhl no-breach)
+- **Signals consumed**: batch_readiness.get_batch_readiness(), intelligence_graph.build_batch_graph(), documents.db AWB resolver
+- **Invariants**: PRAGMA query_only=ON, no writes, llm_used=False, no ai_gateway, Lesson J compliant
+- **Tests**: 56/56 PASS; 320/320 Phase 7+8+9 suite PASS
+- **7-agent gate**: 6/7 GO (release-manager: procedural -- branch not created yet before gate ran)
+- **Deploy manifest**: `.claude/manifests/windows_deploy_1c6046b.ps1`
+- **Deploy prerequisite**: Phase 8 all 4 sprints (c9c8418 -> 24bc62f -> 6995f48 -> 12f3f90) deployed first
+- **PZService restart required**: YES (main.py changed)
+- **Rollback**: git revert 1c6046b --no-edit + robocopy + sc.exe restart
+- **Phase 10 gate**: Deploy Phase 9 and smoke verify before starting Phase 10
+
+---
 
 ## Phase 8 Campaign -- Intelligence Graph (2026-05-24, COMPLETE + ALL 4 SPRINTS DEPLOYED)
 
