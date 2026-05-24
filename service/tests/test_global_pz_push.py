@@ -521,3 +521,106 @@ def test_18_push_record_format(svc, tmp_path):
     }
     missing = required_keys - set(rec.keys())
     assert not missing, f"Push record missing keys: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# PR B — Atomicity tests (19–22)
+# ---------------------------------------------------------------------------
+
+def test_19_write_json_atomic_imported():
+    """global_pz_push.py must import write_json_atomic from utils.io (PR B)."""
+    import ast as _ast
+    tree = _ast.parse(_SVC.read_text(encoding="utf-8"))
+    found = False
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.ImportFrom):
+            module = node.module or ""
+            names  = [a.name for a in node.names]
+            if "utils.io" in module and "write_json_atomic" in names:
+                found = True
+                break
+    assert found, (
+        "global_pz_push.py must import write_json_atomic from ..utils.io "
+        "(PR B atomicity hardening)"
+    )
+
+
+def test_20_push_record_uses_write_json_atomic(svc, tmp_path):
+    """push_correction_to_wfirma must write correction_push_record.json
+    via write_json_atomic, not _write_json_file (PR B)."""
+    bdir = _make_batch_dir(tmp_path)
+    _write_exec_record(bdir)
+    _write_pz_rows(bdir)
+    _write_audit(bdir)
+
+    atomic_calls: List[Any] = []
+
+    original_atomic = svc.write_json_atomic
+
+    def _capture_atomic(path, data, **kw):
+        atomic_calls.append(str(path))
+        return original_atomic(path, data, **kw)
+
+    with patch.object(svc, "write_json_atomic", side_effect=_capture_atomic):
+        _call_push(svc, tmp_path)
+
+    push_rec_path = str(bdir / "correction_push_record.json")
+    assert any(push_rec_path in c for c in atomic_calls), (
+        f"correction_push_record.json must be written via write_json_atomic; "
+        f"calls seen: {atomic_calls}"
+    )
+
+
+def test_21_audit_patch_uses_write_json_atomic(svc, tmp_path):
+    """_patch_audit_pz_doc_id must write audit.json via write_json_atomic (PR B)."""
+    bdir = _make_batch_dir(tmp_path)
+    _write_exec_record(bdir)
+    _write_pz_rows(bdir)
+    _write_audit(bdir)
+
+    atomic_calls: List[Any] = []
+
+    original_atomic = svc.write_json_atomic
+
+    def _capture_atomic(path, data, **kw):
+        atomic_calls.append(str(path))
+        return original_atomic(path, data, **kw)
+
+    with patch.object(svc, "write_json_atomic", side_effect=_capture_atomic):
+        _call_push(svc, tmp_path)
+
+    audit_path = str(bdir / "audit.json")
+    assert any(audit_path in c for c in atomic_calls), (
+        f"audit.json must be written via write_json_atomic; "
+        f"calls seen: {atomic_calls}"
+    )
+
+
+def test_22_write_json_file_not_called_on_success_path(svc, tmp_path):
+    """_write_json_file must not be called on the success write path (PR B).
+
+    After PR B, all safety-critical writes (push record, audit patch) use
+    write_json_atomic. _write_json_file may still exist as a helper but must
+    not be reached on the wFirma success path.
+    """
+    bdir = _make_batch_dir(tmp_path)
+    _write_exec_record(bdir)
+    _write_pz_rows(bdir)
+    _write_audit(bdir)
+
+    legacy_calls: List[Any] = []
+
+    original_legacy = svc._write_json_file
+
+    def _capture_legacy(path, data):
+        legacy_calls.append(str(path))
+        return original_legacy(path, data)
+
+    with patch.object(svc, "_write_json_file", side_effect=_capture_legacy):
+        result = _call_push(svc, tmp_path)
+
+    assert result.ok is True, f"Push should succeed; got error: {result.error}"
+    assert legacy_calls == [], (
+        f"_write_json_file must not be called on the success path after PR B; "
+        f"calls seen: {legacy_calls}"
+    )

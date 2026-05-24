@@ -520,3 +520,93 @@ class TestCorrectionSuppressRoute:
         resp = client.post(self.SUPPRESS_URL, headers=auth, json=self.SUPPRESS_BODY)
         assert resp.status_code == 200
         assert resp.json()["state"] == "TERMINAL_SUPPRESSED"
+
+
+# ---------------------------------------------------------------------------
+# POST correction-push-wfirma (old pre-lifecycle route) — PR B governance
+# ---------------------------------------------------------------------------
+
+class TestOldPushRouteGovernance:
+    """PR B: old push route must return 410 when lifecycle flag is enabled.
+
+    The pre-lifecycle route POST /pz/lineage/{batch_id}/correction-push-wfirma
+    and the lifecycle commit route POST /pz/lineage/{batch_id}/correction-commit
+    both call push_correction_to_wfirma.  When pz_correction_lifecycle_enabled
+    is True the old route is superseded and must return 410 Gone to prevent
+    parallel push paths that could diverge the lifecycle state machine.
+
+    When the flag is False the old route must continue to work normally
+    (returns 403 from the global-batch gate, never 410).
+    """
+
+    OLD_PUSH_URL = f"{BASE_URL}/correction-push-wfirma"
+
+    def test_old_route_returns_410_when_lifecycle_enabled(self, client, auth):
+        """Lifecycle flag ON → old push route must return 410 immediately."""
+        # enable_lifecycle autouse fixture already sets the flag to True
+        resp = client.post(
+            self.OLD_PUSH_URL,
+            headers=auth,
+            json={
+                "operator_reason":       "test",
+                "idempotency_key":       "key-001",
+                "confirm_understanding": _CONFIRM_SENTINEL,
+            },
+        )
+        assert resp.status_code == 410, (
+            f"Expected 410 when lifecycle enabled; got {resp.status_code}: {resp.json()}"
+        )
+        detail = resp.json().get("detail", "")
+        assert "superseded" in detail.lower() or "correction-commit" in detail.lower(), (
+            f"410 detail should mention 'superseded' or 'correction-commit': {detail!r}"
+        )
+
+    def test_old_route_not_410_when_lifecycle_disabled(self, client, auth, monkeypatch):
+        """Lifecycle flag OFF → old push route must NOT return 410.
+
+        With the flag off it proceeds to normal gates — the global-batch check
+        returns 403 for our test batch, which is the expected non-410 response.
+        """
+        monkeypatch.setattr(settings, "pz_correction_lifecycle_enabled", False)
+
+        with patch(MOCK_IS_GLOBAL, return_value=False):
+            resp = client.post(
+                self.OLD_PUSH_URL,
+                headers=auth,
+                json={
+                    "operator_reason":       "test",
+                    "idempotency_key":       "key-001",
+                    "confirm_understanding": _CONFIRM_SENTINEL,
+                },
+            )
+
+        # Must not be 410 — the lifecycle gate must be absent when flag is False
+        assert resp.status_code != 410, (
+            "Old push route must not return 410 when pz_correction_lifecycle_enabled=False"
+        )
+        # Global-batch gate fires next (403 is the expected response for non-global batch)
+        assert resp.status_code == 403
+
+    def test_lifecycle_commit_route_unaffected(self, client, auth):
+        """Lifecycle commit route must not be affected by the old-route gate.
+
+        The lifecycle commit route has its own independent flag check.  When
+        wfirma_correction_push_allowed=False it returns 503 (push flag gate),
+        not 410.  This confirms the 410 gate is scoped only to the old route.
+        """
+        # Lifecycle flag is ON (autouse fixture)
+        # wfirma_correction_push_allowed is False by default
+        resp = client.post(
+            f"{BASE_URL}/correction-commit",
+            headers=auth,
+            json={
+                "operator_reason":       "test",
+                "idempotency_key":       "key-001",
+                "confirm_understanding": _CONFIRM_SENTINEL,
+            },
+        )
+        # 503 from push-flag gate, NOT 410
+        assert resp.status_code == 503, (
+            f"lifecycle commit route should return 503 (push flag disabled), "
+            f"not 410; got {resp.status_code}"
+        )
