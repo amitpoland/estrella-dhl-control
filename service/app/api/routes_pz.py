@@ -874,6 +874,20 @@ def global_pz_correction_push_wfirma(
     """
     import dataclasses  # noqa: PLC0415
 
+    # Lifecycle governance gate: when the lifecycle flag is enabled, this
+    # pre-lifecycle route is superseded by the lifecycle commit flow.
+    # Returning 410 Gone prevents parallel push paths that could diverge the
+    # lifecycle state machine from the actual wFirma state.
+    if settings.pz_correction_lifecycle_enabled:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "This route has been superseded by the correction lifecycle flow. "
+                "Use POST /api/v1/pz/lineage/{batch_id}/correction-commit when "
+                "pz_correction_lifecycle_enabled=True."
+            ),
+        )
+
     if "/" in batch_id or ".." in batch_id:
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
 

@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PROJECT-STATE-UPDATE-PHASE2-DEPLOYED)Z. Origin/main HEAD: 35e2631 (chore: Phase 2 observer closure). Phase 10 DEPLOYED + SMOKE VERIFIED. AI Advisory Phase 2 DEPLOYED -- LLM FLAGS OFF -- PENDING PILOT DECISION. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). Track A SHIPPED. Track B NOT started. PZ Correction Lifecycle Phase 1 MERGED (9c45cee) -- NOT DEPLOYED.
+**Last-run-at:** 2026-05-24T(PR355-MERGE-UPDATE)Z. Origin/main HEAD: c7a29aa (fix(pz-lifecycle): PR A — sentinel, suppress route, doc corrections (#355)). Phase 10 DEPLOYED + SMOKE VERIFIED. AI Advisory Phase 2 DEPLOYED -- LLM FLAGS OFF -- PENDING PILOT DECISION. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). Track A SHIPPED. Track B PR A MERGED -- NOT DEPLOYED. PZ Correction Lifecycle Phase 1 MERGED (9c45cee) -- PR A MERGED (c7a29aa) -- NOT DEPLOYED.
 
 ---
 
@@ -84,6 +84,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ## RULE 6 visibility entries (scorecards)
 
+- **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-pz-lifecycle-pr-a-activation-blockers.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PZ Correction Lifecycle PR A (activation blockers) campaign. 5 agents scored: all EXEMPLARY. File confirmed on disk (Lesson C verified). PR #355 squash-merged SHA c7a29aa.
 - **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-phase2-advisory-llm.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 2 Advisory LLM campaign. 9 agents scored: 8 EXEMPLARY, 1 NEEDS-TUNING (deploy_git_diff_reviewer). File confirmed on disk: 17,078 bytes (Lesson C verified). Issue #353 filed for GATE 4 SCHEDULED disposition.
 
 ## Phase 2 Advisory LLM -- PRODUCTION DEPLOYMENT (2026-05-24, operator-confirmed)
@@ -106,10 +107,10 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **Operator instruction**: "Do not enable LLM yet" -- controlled pilot requires separate decision
 - **Next action**: OQ1 -- controlled live pilot decision when operator ready
 
-## PZ Correction Lifecycle -- Phase 1 (2026-05-24, PR #348 MERGED)
+## PZ Correction Lifecycle -- Phase 1 (2026-05-24, PR #348 MERGED + PR A MERGED)
 
 **Campaign type**: PZ correction lifecycle state machine + 4 gated route endpoints
-**Status**: PR #348 MERGED -- squash SHA `9c45cee` on main (2026-05-24). NOT DEPLOYED. No production impact -- feature flag defaults False.
+**Status**: PR #348 MERGED -- squash SHA `9c45cee` on main (2026-05-24). PR #355 (PR A activation blockers) MERGED -- squash SHA `c7a29aa` on main (2026-05-24). NOT DEPLOYED. No production impact -- feature flags default False.
 
 - **Commit SHA on main**: 9c45cee
 - **Files added** (5 new):
@@ -135,6 +136,12 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **No main.py change**: routes_pz.py is already registered; no router include needed
 - **PZService restart required on enable**: YES (when operator sets the flag)
 - **Rollback**: git revert 9c45cee --no-edit + robocopy + sc.exe restart (only needed if operator enables the flag and observes issues)
+- **PR #355 (PR A activation blockers) MERGED** -- squash SHA `c7a29aa` on main (2026-05-24):
+  - **Files changed** (7 files, 633 insertions): campaign memory files updated, lifecycle suppress route added, test sentinel literals corrected
+  - **10-criterion code review**: all PASS (96/96 tests, all agents EXEMPLARY)
+  - **Branch deleted**: fix/pz-lifecycle-activation-blockers-pr-a (post-merge cleanup)
+  - **GATE 2 update**: 3/3 open PRs → 2/3 open PRs (within limit)
+  - **Scorecard**: `.claude/memory/scorecards/2026-05-24-pz-lifecycle-pr-a-activation-blockers.md` (5 agents EXEMPLARY)
 - **Phase 2 (UI surface)**: not started; requires separate PR
 
 ---
@@ -2022,8 +2029,8 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ## Next 3 actions in queue
 
 1. **Phase 2 LLM controlled pilot decision** — target: operator decision whether to enable ai_advisory_llm_enabled=true for controlled live pilot — gating: Phase 2 deployed (DONE 2026-05-24), monitoring plan defined, test cases identified
-2. **File Issue #352 for deploy_git_diff_reviewer tuning** — target: GATE 4 SCHEDULED disposition for NEEDS-TUNING verdict from Phase 2 scorecard — gating: PROJECT_STATE update complete (this update)
-3. **PZ Correction Lifecycle Phase 1 deployment evaluation** — target: operator decision to deploy PR #348 (SHA 9c45cee) — gating: Phase 2 deployment stable (monitoring period)
+2. **PZ Correction Lifecycle Phase 1 deployment evaluation** — target: operator decision to deploy Phase 1 (SHA 9c45cee) + PR A fixes (SHA c7a29aa) — gating: Phase 2 deployment stable (monitoring period), both feature flags documented
+3. **PZ Correction Lifecycle PR B start decision** — target: operator instruction to begin PR B (write_json_atomic in global_pz_push.py, lifecycle flag gate on old route) — gating: Phase 1 deployment complete OR explicit operator override
 
 ## Pending next steps (added 2026-05-23)
 

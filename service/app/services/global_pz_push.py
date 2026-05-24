@@ -48,6 +48,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.config import settings
 from ..core.logging import get_logger
+from ..utils.io import write_json_atomic
 
 log = get_logger(__name__)
 
@@ -166,7 +167,7 @@ def _check_idempotency(
 
 def _write_push_record(batch_dir: Path, record: Dict[str, Any]) -> str:
     p = _push_record_path(batch_dir)
-    _write_json_file(p, record)
+    write_json_atomic(p, record)
     return str(p)
 
 
@@ -202,8 +203,8 @@ def _patch_audit_pz_doc_id(
             "pz_source":        "created_via_correction_push",
             "pz_created_at":    time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
-        # Write atomically via temp-file swap (same pattern as write_json_atomic)
-        _write_json_file(audit_path, audit)
+        # Atomic write: temp-file + os.replace() via write_json_atomic
+        write_json_atomic(audit_path, audit)
         return None
     except Exception as exc:
         return f"audit patch failed: {exc}"
