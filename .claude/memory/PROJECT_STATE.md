@@ -32,6 +32,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **PZService restart required**: YES (main.py changed)
 - **Rollback**: git revert 95fc0fe --no-edit + robocopy + sc.exe restart
 - **Phase 2 gate**: Deploy Phase 10 and smoke verify before starting Phase 2 (Advisory LLM) -- Phase 2 requires explicit operator approval
+- **Scorecard**: `.claude/memory/scorecards/2026-05-24-phase10-operations-intelligence.md` -- 13 EXEMPLARY, 0 ACCEPTABLE, 0 NEEDS-TUNING (2026-05-24)
 
 ---
 
