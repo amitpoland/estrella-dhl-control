@@ -130,6 +130,14 @@ def advisory_status() -> JSONResponse:
     else:
         active_provider = "none"
 
+    # Admin API key health check (optional — None if admin key not configured)
+    api_key_health = None
+    try:
+        from ..services import ai_gateway as gw  # noqa: PLC0415
+        api_key_health = gw.check_key_health()
+    except Exception:
+        pass
+
     generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     return JSONResponse({
@@ -149,4 +157,5 @@ def advisory_status() -> JSONResponse:
         "fallback_enabled":        fallback_enabled,
         "provider_preference":     provider_pref,
         "active_provider":         active_provider,
+        "api_key_health":          api_key_health,
     }, status_code=200)

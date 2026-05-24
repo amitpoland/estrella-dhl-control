@@ -14,6 +14,12 @@ Tests:
  10. /status endpoint returns 5 new provider fields
  11. Gateway violation rule: ai_call_ledger.py exempt from model-string test
  12. _migrate_schema() adds columns idempotently
+ 16. check_key_health() — returns None when admin key absent
+ 17. check_key_health() — returns status dict on Admin API success
+ 18. check_key_health() — error dict when Admin API call fails
+ 19. check_key_health() — TTL cache prevents duplicate calls
+ 20. is_available() — uses health check when admin key configured
+ 21. /status includes api_key_health field
 
 All tests:
   - No external network calls
@@ -41,15 +47,18 @@ from app.services import ai_gateway
 def _settings(**kwargs):
     """Build a MagicMock settings object with sane Phase-2B defaults."""
     s = MagicMock()
-    s.ai_parser_enabled          = kwargs.get("ai_parser_enabled", True)
-    s.anthropic_api_key          = kwargs.get("anthropic_api_key", "sk-test-key")
-    s.ai_cowork_enabled          = kwargs.get("ai_cowork_enabled", False)
-    s.ai_cowork_timeout_seconds  = kwargs.get("ai_cowork_timeout_seconds", 30)
-    s.ai_provider_preference     = kwargs.get("ai_provider_preference", "claude_cowork")
-    s.ai_fallback_enabled        = kwargs.get("ai_fallback_enabled", False)
+    s.ai_parser_enabled           = kwargs.get("ai_parser_enabled", True)
+    s.anthropic_api_key           = kwargs.get("anthropic_api_key", "sk-test-key")
+    s.ai_cowork_enabled           = kwargs.get("ai_cowork_enabled", False)
+    s.ai_cowork_timeout_seconds   = kwargs.get("ai_cowork_timeout_seconds", 30)
+    s.ai_provider_preference      = kwargs.get("ai_provider_preference", "claude_cowork")
+    s.ai_fallback_enabled         = kwargs.get("ai_fallback_enabled", False)
     s.ai_gateway_daily_budget_usd = kwargs.get("ai_gateway_daily_budget_usd", 0.0)
-    s.ai_gateway_max_retries     = kwargs.get("ai_gateway_max_retries", 0)
-    s.ai_gateway_timeout_seconds = kwargs.get("ai_gateway_timeout_seconds", 30)
+    s.ai_gateway_max_retries      = kwargs.get("ai_gateway_max_retries", 0)
+    s.ai_gateway_timeout_seconds  = kwargs.get("ai_gateway_timeout_seconds", 30)
+    # Admin API key health (both None by default — graceful degradation path)
+    s.anthropic_admin_api_key     = kwargs.get("anthropic_admin_api_key", None)
+    s.anthropic_api_key_id        = kwargs.get("anthropic_api_key_id", None)
     return s
 
 
@@ -651,3 +660,230 @@ def test_circuit_breaker_not_opened_by_cowork_stub():
             ai_gateway.call(system="s", user="u", task_type="t", service_name="svc")
 
     assert not ai_gateway._cb_is_open()
+
+
+# ── 16–21. Admin API key health check ────────────────────────────────────────
+
+def _admin_settings(**kwargs):
+    return _settings(
+        anthropic_admin_api_key=kwargs.get("admin_key", "sk-admin-key"),
+        anthropic_api_key_id=kwargs.get("key_id", "apikey_01TestKeyId"),
+        **{k: v for k, v in kwargs.items() if k not in ("admin_key", "key_id")},
+    )
+
+
+def _mock_httpx_response(status_code=200, json_body=None):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_body or {
+        "id":               "apikey_01TestKeyId",
+        "status":           "active",
+        "name":             "Developer Key",
+        "partial_key_hint": "sk-ant-api03-R2D...igAA",
+        "expires_at":       None,
+        "workspace_id":     "wrkspc_01Test",
+        "type":             "api_key",
+    }
+    if status_code >= 400:
+        resp.raise_for_status.side_effect = Exception(f"HTTP {status_code}")
+    else:
+        resp.raise_for_status.return_value = None
+    return resp
+
+
+def test_check_key_health_returns_none_when_no_admin_key():
+    """No admin key configured → check_key_health() returns None."""
+    settings = _settings()  # anthropic_admin_api_key=None by default
+    ai_gateway._KEY_HEALTH_CACHE.clear()
+
+    with patch("app.core.config.settings", settings):
+        result = ai_gateway.check_key_health()
+
+    assert result is None
+
+
+def test_check_key_health_returns_none_when_no_key_id():
+    """Admin key present but key_id absent → check_key_health() returns None."""
+    settings = _settings(anthropic_admin_api_key="sk-admin", anthropic_api_key_id=None)
+    ai_gateway._KEY_HEALTH_CACHE.clear()
+
+    with patch("app.core.config.settings", settings):
+        result = ai_gateway.check_key_health()
+
+    assert result is None
+
+
+def test_check_key_health_success():
+    """Admin API returns 200 → result dict with status, name, partial_key_hint."""
+    settings = _admin_settings()
+    ai_gateway._KEY_HEALTH_CACHE.clear()
+
+    mock_resp = _mock_httpx_response()
+
+    with patch("app.core.config.settings", settings), \
+         patch("httpx.get", return_value=mock_resp) as mock_get:
+
+        result = ai_gateway.check_key_health(force_refresh=True)
+
+    assert result is not None
+    assert result["status"] == "active"
+    assert result["name"]   == "Developer Key"
+    assert result["partial_key_hint"] == "sk-ant-api03-R2D...igAA"
+    assert result["error"]  is None
+
+    # Verify correct URL and headers were used
+    call_kwargs = mock_get.call_args
+    assert "apikey_01TestKeyId" in call_kwargs[0][0]
+    assert call_kwargs[1]["headers"]["X-Api-Key"] == "sk-admin-key"
+    assert call_kwargs[1]["headers"]["anthropic-version"] == "2023-06-01"
+
+
+def test_check_key_health_api_error_returns_error_dict():
+    """Admin API returns error → result dict with error set (no exception raised)."""
+    settings = _admin_settings()
+    ai_gateway._KEY_HEALTH_CACHE.clear()
+
+    with patch("app.core.config.settings", settings), \
+         patch("httpx.get", side_effect=Exception("connection refused")):
+
+        result = ai_gateway.check_key_health(force_refresh=True)
+
+    assert result is not None
+    assert result["error"] is not None
+    assert "connection refused" in result["error"]
+    assert result["status"] is None
+
+
+def test_check_key_health_ttl_cache():
+    """Second call within TTL returns cached result without hitting the API again."""
+    settings = _admin_settings()
+    ai_gateway._KEY_HEALTH_CACHE.clear()
+
+    mock_resp = _mock_httpx_response()
+
+    with patch("app.core.config.settings", settings), \
+         patch("httpx.get", return_value=mock_resp) as mock_get:
+
+        result1 = ai_gateway.check_key_health(force_refresh=True)
+        result2 = ai_gateway.check_key_health()  # should use cache
+
+    assert result1 == result2
+    assert mock_get.call_count == 1, "Admin API should be called only once (second call cached)"
+
+
+def test_check_key_health_force_refresh_bypasses_cache():
+    """force_refresh=True bypasses TTL cache and re-hits the Admin API."""
+    settings = _admin_settings()
+    ai_gateway._KEY_HEALTH_CACHE.clear()
+
+    mock_resp = _mock_httpx_response()
+
+    with patch("app.core.config.settings", settings), \
+         patch("httpx.get", return_value=mock_resp) as mock_get:
+
+        ai_gateway.check_key_health(force_refresh=True)
+        ai_gateway.check_key_health(force_refresh=True)
+
+    assert mock_get.call_count == 2
+
+
+def test_is_available_uses_key_health_when_admin_configured():
+    """is_available() returns False when Admin API says key is inactive."""
+    settings = _admin_settings(anthropic_api_key="sk-key")
+    ai_gateway._KEY_HEALTH_CACHE.clear()
+
+    inactive_resp = _mock_httpx_response(json_body={
+        "id": "apikey_01TestKeyId", "status": "expired",
+        "name": "Old Key", "partial_key_hint": "sk-...",
+        "expires_at": "2020-01-01T00:00:00Z", "workspace_id": None,
+    })
+
+    with patch("app.core.config.settings", settings), \
+         patch("httpx.get", return_value=inactive_resp):
+
+        available = ai_gateway.is_available()
+
+    assert available is False, "is_available() should be False when key status=expired"
+
+
+def test_is_available_true_when_admin_says_active():
+    """is_available() returns True when Admin API says key is active."""
+    settings = _admin_settings(anthropic_api_key="sk-key")
+    ai_gateway._KEY_HEALTH_CACHE.clear()
+
+    active_resp = _mock_httpx_response()  # status=active by default
+
+    with patch("app.core.config.settings", settings), \
+         patch("httpx.get", return_value=active_resp):
+
+        available = ai_gateway.is_available()
+
+    assert available is True
+
+
+def test_is_available_falls_back_on_admin_api_error():
+    """If Admin API call errors, is_available() falls back to key-non-empty check."""
+    settings = _admin_settings(anthropic_api_key="sk-valid-key")
+    ai_gateway._KEY_HEALTH_CACHE.clear()
+
+    with patch("app.core.config.settings", settings), \
+         patch("httpx.get", side_effect=Exception("timeout")):
+
+        available = ai_gateway.is_available()
+
+    # error path → health["error"] is set → falls back → key is non-empty → True
+    assert available is True
+
+
+def test_status_endpoint_includes_api_key_health_field():
+    """/status returns api_key_health field (None when admin key not configured)."""
+    from fastapi.testclient import TestClient
+    from app.main import app as fastapi_app
+
+    settings = _settings()  # no admin key
+
+    with patch("app.core.config.settings", settings), \
+         patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0), \
+         patch("app.services.ai_gateway.is_available", return_value=False), \
+         patch("app.services.ai_gateway.check_key_health", return_value=None):
+
+        client = TestClient(fastapi_app)
+        resp = client.get("/api/v1/ai/advisory/status", headers={"X-API-Key": ""})
+
+    if resp.status_code == 401:
+        pytest.skip("Auth enabled in test env")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "api_key_health" in body
+    assert body["api_key_health"] is None
+
+
+def test_status_endpoint_api_key_health_populated_when_admin_configured():
+    """/status api_key_health populated with status dict when Admin API succeeds."""
+    from fastapi.testclient import TestClient
+    from app.main import app as fastapi_app
+
+    settings = _admin_settings()
+    health_data = {
+        "status": "active", "name": "Developer Key",
+        "partial_key_hint": "sk-ant-...AA",
+        "expires_at": None, "workspace_id": "wrkspc_01Test",
+        "checked_at": "2026-05-24T12:00:00Z", "error": None,
+    }
+
+    with patch("app.core.config.settings", settings), \
+         patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0), \
+         patch("app.services.ai_gateway.is_available", return_value=True), \
+         patch("app.services.ai_gateway.check_key_health", return_value=health_data):
+
+        client = TestClient(fastapi_app)
+        resp = client.get("/api/v1/ai/advisory/status", headers={"X-API-Key": ""})
+
+    if resp.status_code == 401:
+        pytest.skip("Auth enabled in test env")
+
+    body = resp.json()
+    assert body["api_key_health"]["status"] == "active"
+    assert body["api_key_health"]["name"]   == "Developer Key"
+    assert body["api_key_health"]["error"]  is None

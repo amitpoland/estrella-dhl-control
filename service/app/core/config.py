@@ -98,6 +98,15 @@ class Settings(BaseSettings):
     ai_parser_model:     str           = Field(default="claude-sonnet-4-6")
     ai_parser_enabled:   bool          = Field(default=False)
 
+    # ── Anthropic Admin API (key health checks — optional) ────────────────────
+    # Admin API key is separate from anthropic_api_key. Obtain from:
+    #   console.anthropic.com → Settings → Admin API Keys
+    # api_key_id is the "apikey_01..." format ID shown in the API key list.
+    # Both must be set to enable key-health checking; if either is absent,
+    # is_available() and /status fall back to the existing "key non-empty" check.
+    anthropic_admin_api_key: Optional[str] = Field(default=None)
+    anthropic_api_key_id:    Optional[str] = Field(default=None)
+
     # ── AI Gateway (Phase 3 Proper — owns all AI execution policy) ────────────
     # 0.0 = no daily budget limit
     ai_gateway_daily_budget_usd:            float = Field(default=0.0)

@@ -178,6 +178,11 @@ def is_available() -> bool:
 
     Phase 2B: True when either the Anthropic API path is configured OR the
     Cowork provider is enabled (even as a stub).
+
+    Admin API key health: if ANTHROPIC_ADMIN_API_KEY and ANTHROPIC_API_KEY_ID
+    are both configured, this also validates that the key status is "active".
+    If the Admin API check fails or is not configured, the simpler non-empty
+    key check is used (graceful degradation — never blocks on Admin API error).
     """
     try:
         from ..core.config import settings  # noqa: PLC0415
@@ -187,9 +192,106 @@ def is_available() -> bool:
         if cowork_enabled:
             return True
         key = getattr(settings, "anthropic_api_key", None) or ""
-        return bool(key.strip())
+        if not key.strip():
+            return False
+        # Optional Admin API key health check
+        health = check_key_health()
+        if health is not None and health.get("error") is None:
+            return health.get("status") == "active"
+        # Fallback: key present = available
+        return True
     except Exception:
         return False
+
+
+# ── Admin API key health check ────────────────────────────────────────────────
+
+# Simple TTL cache: {cache_key: (result_dict, expiry_monotonic)}
+_KEY_HEALTH_CACHE: Dict[str, Tuple[dict, float]] = {}
+_KEY_HEALTH_LOCK  = threading.Lock()
+_KEY_HEALTH_TTL   = 300  # 5-minute cache
+_ADMIN_API_BASE   = "https://api.anthropic.com/v1"
+
+
+def check_key_health(*, force_refresh: bool = False) -> Optional[dict]:
+    """Check the status of the configured Anthropic API key via Admin API.
+
+    Requires settings.anthropic_admin_api_key AND settings.anthropic_api_key_id.
+    Returns None if either is absent (graceful degradation — caller falls back
+    to the legacy "key non-empty" check).
+
+    Returns a dict on success or Admin API error:
+        {
+            "status":           "active" | "inactive" | "archived" | "expired",
+            "name":             str,
+            "partial_key_hint": str,
+            "expires_at":       str (RFC 3339) | None,
+            "workspace_id":     str | None,
+            "checked_at":       str (ISO 8601 UTC),
+            "error":            str | None,   # set when Admin API call failed
+        }
+
+    Results are cached for 5 minutes. Use force_refresh=True to bypass cache.
+    Never raises.
+    """
+    try:
+        from ..core.config import settings  # noqa: PLC0415
+        admin_key = getattr(settings, "anthropic_admin_api_key", None) or ""
+        key_id    = getattr(settings, "anthropic_api_key_id",    None) or ""
+    except Exception:
+        return None
+
+    if not admin_key.strip() or not key_id.strip():
+        return None  # Admin API not configured — graceful degradation
+
+    cache_key = key_id
+    checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    with _KEY_HEALTH_LOCK:
+        if not force_refresh and cache_key in _KEY_HEALTH_CACHE:
+            cached_result, expiry = _KEY_HEALTH_CACHE[cache_key]
+            if time.monotonic() < expiry:
+                return cached_result
+
+    try:
+        import httpx  # noqa: PLC0415
+        url = f"{_ADMIN_API_BASE}/organizations/api_keys/{key_id}"
+        headers = {
+            "anthropic-version": "2023-06-01",
+            "X-Api-Key":         admin_key,
+        }
+        resp = httpx.get(url, headers=headers, timeout=10.0)
+        resp.raise_for_status()
+        data = resp.json()
+
+        result: dict = {
+            "status":           data.get("status"),
+            "name":             data.get("name"),
+            "partial_key_hint": data.get("partial_key_hint"),
+            "expires_at":       data.get("expires_at"),
+            "workspace_id":     data.get("workspace_id"),
+            "checked_at":       checked_at,
+            "error":            None,
+        }
+        log.info("[ai_gateway] key health: id=%s status=%s name=%s",
+                 key_id, result["status"], result["name"])
+
+    except Exception as exc:
+        log.warning("[ai_gateway] Admin API key health check failed: %s", exc)
+        result = {
+            "status":           None,
+            "name":             None,
+            "partial_key_hint": None,
+            "expires_at":       None,
+            "workspace_id":     None,
+            "checked_at":       checked_at,
+            "error":            str(exc),
+        }
+
+    with _KEY_HEALTH_LOCK:
+        _KEY_HEALTH_CACHE[cache_key] = (result, time.monotonic() + _KEY_HEALTH_TTL)
+
+    return result
 
 
 # ── Provider: Cowork stub (Phase 2B) ─────────────────────────────────────────
