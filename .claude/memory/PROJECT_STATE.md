@@ -4,11 +4,44 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PHASE10-MERGED)Z. Origin/main HEAD: 95fc0fe (Phase 10 Operations Intelligence -- PR #345 MERGED). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3 (GATE 2 limit: 3). Phase 10 NOT deployed yet -- operator must execute manifest windows_deploy_95fc0fe.ps1. Phase 9 DEPLOYED -- operator-confirmed 2026-05-24. Phase 2 (Advisory LLM) starts after Phase 10 deployed + smoke verified -- requires explicit operator approval.
+**Last-run-at:** 2026-05-24T(PZ-CORRECTION-PHASE1-MERGED)Z. Origin/main HEAD: 9c45cee (Phase 1 PZ Correction Lifecycle -- PR #348 MERGED). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3 (GATE 2 limit: 3). Phase 10 NOT deployed yet -- operator must execute manifest windows_deploy_95fc0fe.ps1. Phase 9 DEPLOYED -- operator-confirmed 2026-05-24. Phase 2 (Advisory LLM) starts after Phase 10 deployed + smoke verified -- requires explicit operator approval. PZ Correction Lifecycle Phase 1 MERGED (9c45cee, 2026-05-24) -- NOT DEPLOYED -- requires operator flag enable before any endpoint is active.
 
 ---
 
 # FACTS
+
+## PZ Correction Lifecycle -- Phase 1 (2026-05-24, PR #348 MERGED)
+
+**Campaign type**: PZ correction lifecycle state machine + 4 gated route endpoints
+**Status**: PR #348 MERGED -- squash SHA `9c45cee` on main (2026-05-24). NOT DEPLOYED. No production impact -- feature flag defaults False.
+
+- **Commit SHA on main**: 9c45cee
+- **Files added** (5 new):
+  - `service/app/services/pz_correction_state.py` -- CorrectionLifecycleState (7 states), VALID_TRANSITIONS table, CorrectionLifecycleRecord dataclass with to_dict/from_dict
+  - `service/app/services/pz_correction_lifecycle.py` -- PZCorrectionLifecycle class: get_or_init_state, mark_reviewed, stage_option, reset_stage, execute, suppress_terminal; write_json_atomic persistence; CANCEL_AND_RECREATE explicitly blocked
+  - `service/tests/test_pz_correction_state.py` -- 25 tests (transition table, serialisation)
+  - `service/tests/test_pz_correction_lifecycle.py` -- 26 tests (happy path, failure paths, ordering invariant)
+  - `service/tests/test_pz_correction_routes.py` -- 21 tests (all 4 routes, gate checks)
+- **Files modified** (3):
+  - `service/app/core/config.py` -- added `pz_correction_lifecycle_enabled: bool = Field(default=False)`
+  - `service/app/api/routes_pz.py` -- 4 new lifecycle endpoints (GET/POST/DELETE correction-stage, POST correction-commit)
+  - `.claude/campaigns/pz-correction-lifecycle.md` -- updated with architect review corrections
+- **Routes added** (all gated, return 503 when flag is False):
+  - GET  /api/v1/pz/lineage/{batch_id}/correction-state
+  - POST /api/v1/pz/lineage/{batch_id}/correction-stage (calls execute_correction_option → writes correction_execution_record.json)
+  - DELETE /api/v1/pz/lineage/{batch_id}/correction-stage
+  - POST /api/v1/pz/lineage/{batch_id}/correction-commit (also requires wfirma_correction_push_allowed=True)
+- **Critical ordering invariant**: stage_option() calls execute_correction_option() BEFORE transitioning to STAGED; Gate 5 of push_correction_to_wfirma() requires correction_execution_record.json on disk
+- **CANCEL_AND_RECREATE**: blocked at service layer with OQ1 reference; no wFirma delete code added
+- **Tests**: 72/72 PASS; 13/13 governance regression (test_wfirma_pz_notes_workflow_rule) PASS
+- **Merge gate**: 10/10 criteria passed; autonomous reviewer verdict GO (2026-05-24)
+- **NOT deployed**: requires operator to set PZ_CORRECTION_LIFECYCLE_ENABLED=true in .env before any endpoint activates
+- **No main.py change**: routes_pz.py is already registered; no router include needed
+- **PZService restart required on enable**: YES (when operator sets the flag)
+- **Rollback**: git revert 9c45cee --no-edit + robocopy + sc.exe restart (only needed if operator enables the flag and observes issues)
+- **Phase 2 (UI surface)**: not started; requires separate PR
+
+---
 
 ## Phase 10 -- Operations Intelligence (2026-05-24, PR #345 MERGED)
 
