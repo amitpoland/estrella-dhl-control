@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PROJECT-STATE-UPDATE-POST-PR350)Z. Origin/main HEAD: a77f399 (chore commit post-Phase 2 merge). Phase 10 DEPLOYED + HYGIENE CLEAN. AI Advisory Phase 2 MERGED (c987d8a) -- NOT YET DEPLOYED -- use windows_deploy_phase2_advisory.ps1 (7-agent gate passed). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). Track A SHIPPED. Track B NOT started. PZ Correction Lifecycle Phase 1 MERGED (9c45cee) -- NOT DEPLOYED.
+**Last-run-at:** 2026-05-24T(PROJECT-STATE-UPDATE-PHASE2-DEPLOYED)Z. Origin/main HEAD: 35e2631 (chore: Phase 2 observer closure). Phase 10 DEPLOYED + SMOKE VERIFIED. AI Advisory Phase 2 DEPLOYED -- LLM FLAGS OFF -- PENDING PILOT DECISION. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). Track A SHIPPED. Track B NOT started. PZ Correction Lifecycle Phase 1 MERGED (9c45cee) -- NOT DEPLOYED.
 
 ---
 
@@ -55,10 +55,10 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
-## AI Advisory Phase 2 -- LLM Explanation Path (2026-05-24, PR #350 MERGED)
+## AI Advisory Phase 2 -- LLM Explanation Path (2026-05-24, DEPLOYED WITH LLM OFF)
 
 **Campaign type**: Track A -- AI Roadmap Phase 2 (advisory LLM explanations)
-**Status**: PR #350 MERGED -- squash SHA `c987d8a` on main (2026-05-24). NOT YET DEPLOYED. Feature flag defaults False -- no production impact until operator deploys and enables.
+**Status**: PR #350 MERGED -- squash SHA `c987d8a` on main (2026-05-24). DEPLOYED TO PRODUCTION WITH LLM FLAGS OFF (2026-05-24).
 
 - **Commit SHA on main**: c987d8a
 - **Files modified** (2):
@@ -75,10 +75,36 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **7-agent gate**: PASSED (6/7 direct PASS; Gate 2 false positive cleared with confirmed 5-file diff)
 - **Deploy manifest**: `.claude/manifests/windows_deploy_phase2_advisory.ps1`
 - **Deploy prerequisite**: 7-agent gate must be re-run before Windows sync
+- **DEPLOYED TO PRODUCTION** (2026-05-24, operator-confirmed):
+  - **All smoke verification results**: Health 200, /status 200, /workflow-blockers 200, stderr clean startup
+  - **Safety posture confirmed**: ai_advisory_llm_enabled=false, gateway_available=false, budget_ok=true, spent_usd_today=0.0, llm_used=false, model_used=null
+  - **Operator instruction**: do not enable LLM until separate controlled pilot decision
+  - **Phase 2 gate**: CLEARED (Phase 10 deployed + Phase 2 now deployed)
+  - **LLM pilot**: PENDING -- requires separate operator decision with monitoring plan
 
 ## RULE 6 visibility entries (scorecards)
 
 - **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-phase2-advisory-llm.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 2 Advisory LLM campaign. 9 agents scored: 8 EXEMPLARY, 1 NEEDS-TUNING (deploy_git_diff_reviewer). File confirmed on disk: 17,078 bytes (Lesson C verified). Issue #353 filed for GATE 4 SCHEDULED disposition.
+
+## Phase 2 Advisory LLM -- PRODUCTION DEPLOYMENT (2026-05-24, operator-confirmed)
+
+**Deployment status**: LIVE IN PRODUCTION -- LLM FLAGS OFF -- SAFE POSTURE CONFIRMED
+- **Deploy time**: 2026-05-24
+- **Operator confirmation**: Complete smoke verification performed
+- **Safety verification results**:
+  - Health: 200 OK
+  - GET /api/v1/ai/advisory/status: 200 OK
+    - ai_advisory_llm_enabled: false ✓
+    - gateway_available: false ✓
+    - budget_ok: true ✓
+    - spent_usd_today: 0.0 ✓
+  - GET /api/v1/workflow/intelligence: 200 OK (or equivalent endpoint)
+    - llm_used: false ✓
+    - model_used: null ✓
+  - stderr: clean startup ✓
+- **Production impact**: ZERO -- all LLM paths disabled, deterministic Phase 7-10 endpoints continue functioning
+- **Operator instruction**: "Do not enable LLM yet" -- controlled pilot requires separate decision
+- **Next action**: OQ1 -- controlled live pilot decision when operator ready
 
 ## PZ Correction Lifecycle -- Phase 1 (2026-05-24, PR #348 MERGED)
 
@@ -116,7 +142,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ## Phase 10 -- Operations Intelligence (2026-05-24, PR #345 MERGED)
 
 **Campaign type**: Cross-batch operational health aggregation (read-only, no LLM, no writes)
-**Status**: PR #345 MERGED -- squash SHA `95fc0fe` on main (2026-05-24). NOT deployed yet.
+**Status**: PR #345 MERGED -- squash SHA `95fc0fe` on main (2026-05-24). DEPLOYED TO PRODUCTION (2026-05-24).
 
 - **Commit SHA on main**: 95fc0fe
 - **Files added** (2 new + 1 modified):
@@ -134,7 +160,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **Deploy prerequisite**: Phase 9 (1c6046b) deployed first (operator-confirmed 2026-05-24 -- done)
 - **PZService restart required**: YES (main.py changed)
 - **Rollback**: git revert 95fc0fe --no-edit + robocopy + sc.exe restart
-- **Phase 2 gate**: Deploy Phase 10 and smoke verify before starting Phase 2 (Advisory LLM) -- Phase 2 requires explicit operator approval
+- **Phase 2 gate**: Deploy Phase 10 and smoke verify before starting Phase 2 (Advisory LLM) -- CLEARED (Phase 10 deployed + Phase 2 deployed 2026-05-24)
 - **Scorecard**: `.claude/memory/scorecards/2026-05-24-phase10-operations-intelligence.md` -- 13 EXEMPLARY, 0 ACCEPTABLE, 0 NEEDS-TUNING (2026-05-24)
 
 ---
@@ -1995,9 +2021,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Deploy Phase 2 Advisory LLM to Windows production** — target: Windows deploy using `windows_deploy_phase2_advisory.ps1` with 7-agent gate — gating: PR #350 merged (DONE), manifest ready (DONE), operator decision to deploy
-2. **Configure Phase 2 LLM enablement** — target: operator sets AI_ADVISORY_LLM_ENABLED=True in Windows .env if desired — gating: Phase 2 deployed to production first
-3. **File Issue #352 for deploy_git_diff_reviewer tuning** — target: GATE 4 SCHEDULED disposition for NEEDS-TUNING verdict — gating: PROJECT_STATE update complete (this update)
+1. **Phase 2 LLM controlled pilot decision** — target: operator decision whether to enable ai_advisory_llm_enabled=true for controlled live pilot — gating: Phase 2 deployed (DONE 2026-05-24), monitoring plan defined, test cases identified
+2. **File Issue #352 for deploy_git_diff_reviewer tuning** — target: GATE 4 SCHEDULED disposition for NEEDS-TUNING verdict from Phase 2 scorecard — gating: PROJECT_STATE update complete (this update)
+3. **PZ Correction Lifecycle Phase 1 deployment evaluation** — target: operator decision to deploy PR #348 (SHA 9c45cee) — gating: Phase 2 deployment stable (monitoring period)
 
 ## Pending next steps (added 2026-05-23)
 
@@ -2036,7 +2062,15 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 # OPEN QUESTIONS
 
-## OQ1 -- wFirma PZ delete API existence + inventory reversal (DEFERRED/MANUAL-ONLY, 2026-05-24)
+## OQ1 -- Phase 2 Advisory LLM controlled live pilot decision (2026-05-24)
+
+- **Question**: Phase 2 Advisory LLM is deployed with ai_advisory_llm_enabled=false. When and how to enable ai_advisory_llm_enabled=true in production for a controlled live pilot?
+- **Answerer**: Operator decision with monitoring plan
+- **Impact if left unanswered**: Phase 2 LLM explanations remain dormant; no advisory LLM output available to operators; deterministic Phase 7-10 endpoints continue working but without natural-language explanations
+- **Prerequisites for enabling**: Monitoring plan, budget controls active, controlled test cases identified, rollback plan if needed
+- **Current safety**: All LLM flags OFF -- gateway_available=false, budget_ok=true, spent_usd_today=0.0
+
+## OQ2 -- wFirma PZ delete API existence + inventory reversal (DEFERRED/MANUAL-ONLY, 2026-05-24)
 
 - **Question**: Does `warehouse_document_p_z/delete/{id}` exist in the wFirma API? If so, does it reverse inventory (decrement stock)?
 - **Status**: DEFERRED/MANUAL-ONLY -- audit closed 2026-05-24. See DECISIONS "wFirma PZ Cancel/Delete Capability Audit" for full three-layer evidence chain.
