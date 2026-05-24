@@ -918,6 +918,288 @@ def global_pz_correction_push_wfirma(
     return dataclasses.asdict(result)
 
 
+# ── PZ Correction Lifecycle (gated by pz_correction_lifecycle_enabled) ────────
+
+class LifecycleStageRequest(BaseModel):
+    option_id:       str
+    operator_reason: str
+
+
+class LifecycleCommitRequest(BaseModel):
+    operator_reason:       str
+    idempotency_key:       str
+    confirm_understanding: str
+
+
+def _lifecycle_503() -> None:
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "PZ correction lifecycle is disabled. "
+            "Set pz_correction_lifecycle_enabled=true in settings to enable."
+        ),
+    )
+
+
+@router.get("/pz/lineage/{batch_id}/correction-state", dependencies=[_auth])
+def pz_correction_lifecycle_state(batch_id: str) -> Dict[str, Any]:
+    """Return the current correction lifecycle state for a batch.
+
+    Returns the CorrectionLifecycleRecord as a dict.  Creates a PROPOSED
+    record on first call if none exists.
+
+    Gate: pz_correction_lifecycle_enabled must be True.
+    Gate: Global Jewellery batches only.
+    No wFirma calls.  No writes to pz_rows.json.
+    """
+    if not settings.pz_correction_lifecycle_enabled:
+        _lifecycle_503()
+
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    if not _is_global_batch(batch_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Correction lifecycle is only available for Global Jewellery batches.",
+        )
+
+    try:
+        from ..services.pz_correction_lifecycle import PZCorrectionLifecycle  # noqa: PLC0415
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=f"lifecycle module unavailable: {exc}")
+
+    lc = PZCorrectionLifecycle(batch_id, settings.storage_root)
+    try:
+        record = lc.get_or_init_state()
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return record.to_dict()
+
+
+@router.post("/pz/lineage/{batch_id}/correction-stage", dependencies=[_auth])
+def pz_correction_lifecycle_stage(
+    batch_id: str,
+    body: LifecycleStageRequest,
+) -> Dict[str, Any]:
+    """Stage a correction option.
+
+    Calls execute_correction_option() internally to write
+    correction_execution_record.json (local only, no wFirma).
+    Transitions state OPERATOR_REVIEWED -> STAGED.
+
+    Proposed lines are re-derived server-side from source PDFs (same pattern
+    as the existing correction-execute endpoint).
+
+    If the state is PROPOSED on arrival, it is auto-advanced to
+    OPERATOR_REVIEWED before staging.
+
+    Gate: pz_correction_lifecycle_enabled must be True.
+    Gate: Global Jewellery batches only.
+    Gate: State must be OPERATOR_REVIEWED (or PROPOSED, which auto-advances).
+    CANCEL_AND_RECREATE is permanently blocked (OQ1 in PROJECT_STATE.md).
+    """
+    if not settings.pz_correction_lifecycle_enabled:
+        _lifecycle_503()
+
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    if not _is_global_batch(batch_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Correction lifecycle is only available for Global Jewellery batches.",
+        )
+
+    # Re-derive proposed_lines server-side (same pattern as correction-execute)
+    inv_pdf  = _find_source_pdf(batch_id, "invoices")
+    pack_pdf = _find_source_pdf(batch_id, "packing")
+    if not inv_pdf or not pack_pdf:
+        raise HTTPException(
+            status_code=422,
+            detail="Source PDFs not found; cannot re-derive correction proposal.",
+        )
+
+    try:
+        from ..services.global_invoice_position_parser import (  # noqa: PLC0415
+            parse_invoice_positions_from_pdf,
+        )
+        from ..services.global_packing_parser import parse_global_packing_pdf  # noqa: PLC0415
+        from ..services.global_pz_lineage import build_global_pz_lineage  # noqa: PLC0415
+        from ..services.global_pz_correction import build_correction_proposal  # noqa: PLC0415
+        from ..services.pz_correction_lifecycle import PZCorrectionLifecycle  # noqa: PLC0415
+        from ..services.pz_correction_state import (  # noqa: PLC0415
+            CorrectionLifecycleState,
+            CorrectionLifecycleTransitionError,
+        )
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=f"correction modules unavailable: {exc}")
+
+    try:
+        positions = parse_invoice_positions_from_pdf(inv_pdf)
+        pack_rows, *_ = parse_global_packing_pdf(pack_pdf)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"parse failed: {exc}")
+
+    invoice_no     = _extract_invoice_no(inv_pdf)
+    pz_rows        = _load_pz_rows_from_file(batch_id)
+    authority_rows = _load_authority_rows_from_audit(batch_id)
+    lineage_result = build_global_pz_lineage(positions, pack_rows, None, invoice_no)
+
+    proposal = build_correction_proposal(
+        batch_id=batch_id,
+        invoice_no=invoice_no,
+        lineage_result=lineage_result,
+        pz_rows=pz_rows,
+        authority_rows=authority_rows,
+    )
+
+    selected_option = next(
+        (opt for opt in proposal.options if opt.option_id == body.option_id),
+        None,
+    )
+    if selected_option is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"option_id '{body.option_id}' not found in correction proposal.",
+        )
+
+    lc = PZCorrectionLifecycle(batch_id, settings.storage_root)
+    try:
+        record = lc.get_or_init_state()
+
+        # Auto-advance PROPOSED -> OPERATOR_REVIEWED if needed
+        if record.state == CorrectionLifecycleState.PROPOSED:
+            record = lc.mark_reviewed("auto-reviewed before stage")
+
+        record = lc.stage_option(
+            option_id=body.option_id,
+            operator_reason=body.operator_reason,
+            proposed_lines=selected_option.proposed_lines,
+        )
+    except CorrectionLifecycleTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return record.to_dict()
+
+
+@router.delete("/pz/lineage/{batch_id}/correction-stage", dependencies=[_auth])
+def pz_correction_lifecycle_reset_stage(batch_id: str) -> Dict[str, Any]:
+    """Reset a staged correction option back to OPERATOR_REVIEWED.
+
+    Allows the operator to change their mind before committing.
+    Does NOT delete correction_execution_record.json from disk -- that file
+    is overwritten by the next stage_option() call via execute_correction_option()
+    idempotency.
+
+    Gate: pz_correction_lifecycle_enabled must be True.
+    Gate: State must be STAGED.
+    """
+    if not settings.pz_correction_lifecycle_enabled:
+        _lifecycle_503()
+
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    try:
+        from ..services.pz_correction_lifecycle import PZCorrectionLifecycle  # noqa: PLC0415
+        from ..services.pz_correction_state import (  # noqa: PLC0415
+            CorrectionLifecycleTransitionError,
+        )
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=f"lifecycle module unavailable: {exc}")
+
+    lc = PZCorrectionLifecycle(batch_id, settings.storage_root)
+    try:
+        record = lc.reset_stage()
+    except CorrectionLifecycleTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return record.to_dict()
+
+
+@router.post("/pz/lineage/{batch_id}/correction-commit", dependencies=[_auth])
+def pz_correction_lifecycle_commit(
+    batch_id: str,
+    body: LifecycleCommitRequest,
+) -> Dict[str, Any]:
+    """Commit a staged correction to wFirma.
+
+    Transitions STAGED -> EXECUTING -> COMPLETED | FAILED.
+    Delegates to push_correction_to_wfirma(), which requires
+    correction_execution_record.json on disk (written by stage_option
+    via execute_correction_option).  Gate 5 of the push service will
+    block if the file does not exist.
+
+    Gates (all server-side):
+      1. pz_correction_lifecycle_enabled must be True.
+      2. wfirma_correction_push_allowed must be True.
+      3. Batch must be a Global Jewellery batch.
+      4. State must be STAGED.
+      5. correction_execution_record.json must exist (enforced by push service).
+
+    confirm_understanding must be "I UNDERSTAND THE IMPLICATIONS".
+    """
+    if not settings.pz_correction_lifecycle_enabled:
+        _lifecycle_503()
+
+    if not settings.wfirma_correction_push_allowed:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "wFirma correction push is disabled. "
+                "Set wfirma_correction_push_allowed=true to enable."
+            ),
+        )
+
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    if not _is_global_batch(batch_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Correction commit is only available for Global Jewellery batches.",
+        )
+
+    try:
+        from ..services.pz_correction_lifecycle import PZCorrectionLifecycle  # noqa: PLC0415
+        from ..services.pz_correction_state import (  # noqa: PLC0415
+            CorrectionLifecycleTransitionError,
+        )
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=f"lifecycle module unavailable: {exc}")
+
+    lc = PZCorrectionLifecycle(batch_id, settings.storage_root)
+    try:
+        record = lc.execute(
+            operator_reason=body.operator_reason,
+            idempotency_key=body.idempotency_key,
+            confirm_understanding=body.confirm_understanding,
+            product_map=None,
+            contractor_id=settings.wfirma_supplier_contractor_id,
+            warehouse_id=settings.wfirma_warehouse_id,
+        )
+    except CorrectionLifecycleTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"push failed: {exc}")
+
+    if record.state.value == "FAILED":
+        raise HTTPException(
+            status_code=502,
+            detail=record.result_summary or "wFirma push failed.",
+        )
+
+    return record.to_dict()
+
+
 # ── File download ─────────────────────────────────────────────────────────────
 
 @router.get("/files/{batch_id}/source/{category}/{filename}", dependencies=[_auth])

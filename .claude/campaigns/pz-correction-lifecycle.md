@@ -1,9 +1,36 @@
 # Campaign: PZ Correction Lifecycle Authority
 ## Single-session bootstrap -- Phases 1 + 2
-## Status: READY FOR IMPLEMENTATION
+## Status: PHASE 1 COMPLETE -- OPEN PR (Phase 2 pending)
 ## Last updated: 2026-05-24
 ## Depends on: global_pz_correction.py (read-only), global_pz_push.py (write adapter)
 ## Blocked by: nothing -- CANCEL_AND_RECREATE is DEFERRED (see OQ1 below)
+
+### PHASE 1 COMPLETION RECORD (2026-05-24)
+
+Architect review corrected two design gaps before implementation:
+
+**Gap A -- Route authority**: The campaign document originally proposed creating
+`routes_pz_correction.py` with router prefix `/api/v1/upload`.  This was WRONG.
+`routes_pz.py` (prefix `/api/v1`) already owns all 3 correction routes.  The
+correct action is to EXTEND `routes_pz.py` with 4 new lifecycle endpoints.  No
+`routes_pz_correction.py` was created.  No `main.py` change required.
+
+**Gap B -- Ordering constraint**: The original design called `push_correction_to_wfirma()`
+directly.  This would always fail at Gate 5 (missing `correction_execution_record.json`).
+`stage_option()` MUST call `execute_correction_option()` first (local write, no wFirma),
+which writes `correction_execution_record.json`.  Only then does `execute()` call
+`push_correction_to_wfirma()`.
+
+**Files created/modified (Phase 1):**
+- `service/app/services/pz_correction_state.py` -- NEW (state enum, transition table, record)
+- `service/app/services/pz_correction_lifecycle.py` -- NEW (PZCorrectionLifecycle class)
+- `service/app/core/config.py` -- MODIFIED (added `pz_correction_lifecycle_enabled`)
+- `service/app/api/routes_pz.py` -- MODIFIED (4 new lifecycle endpoints added)
+- `service/tests/test_pz_correction_state.py` -- NEW (25 tests, all pass)
+- `service/tests/test_pz_correction_lifecycle.py` -- NEW (26 tests, all pass)
+- `service/tests/test_pz_correction_routes.py` -- NEW (21 tests, all pass)
+
+**NOT created**: `routes_pz_correction.py`, changes to `main.py` (not needed)
 
 ---
 
@@ -39,14 +66,18 @@ This workflow is proven, documented, and sufficient. **Move on.**
 ## 1. CAMPAIGN SCOPE
 
 ### In scope (this session only)
-- `service/app/services/pz_correction_state.py` -- NEW file
-- `service/app/services/pz_correction_lifecycle.py` -- NEW file
-- `service/app/api/routes_pz_correction.py` -- NEW file
-- `service/app/core/config.py` -- MODIFY (add 1 flag)
-- `service/app/main.py` -- MODIFY (add 1 router include)
-- `service/tests/test_pz_correction_state.py` -- NEW file
-- `service/tests/test_pz_correction_lifecycle.py` -- NEW file
-- `service/tests/test_pz_correction_routes.py` -- NEW file
+- `service/app/services/pz_correction_state.py` -- NEW file [DONE Phase 1]
+- `service/app/services/pz_correction_lifecycle.py` -- NEW file [DONE Phase 1]
+- `service/app/api/routes_pz.py` -- EXTEND (4 new endpoints) [DONE Phase 1]
+  NOTE: NOT `routes_pz_correction.py` -- see Phase 1 completion record above
+- `service/app/core/config.py` -- MODIFY (add 1 flag) [DONE Phase 1]
+- `service/tests/test_pz_correction_state.py` -- NEW file [DONE Phase 1]
+- `service/tests/test_pz_correction_lifecycle.py` -- NEW file [DONE Phase 1]
+- `service/tests/test_pz_correction_routes.py` -- NEW file [DONE Phase 1]
+
+REMOVED from scope (architect review):
+- `service/app/api/routes_pz_correction.py` -- NOT created (routes_pz.py owns authority)
+- `service/app/main.py` -- NOT modified (routes_pz.py is already registered)
 
 ### Explicitly out of scope
 - `wfirma_client.py` -- must not be touched (governance test would fail)
