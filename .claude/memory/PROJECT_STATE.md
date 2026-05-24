@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PHASE2-ADVISORY-LLM-MERGED)Z. Origin/main HEAD: c987d8a (AI Advisory Phase 2 -- PR #350 MERGED 2026-05-24). Phase 10 DEPLOYED + HYGIENE CLEAN. AI Advisory Phase 2 MERGED (c987d8a) -- NOT YET DEPLOYED -- use windows_deploy_phase2_advisory.ps1 (7-agent gate passed). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). Track A SHIPPED. Track B NOT started. PZ Correction Lifecycle Phase 1 MERGED (9c45cee) -- NOT DEPLOYED.
+**Last-run-at:** 2026-05-24T(PROJECT-STATE-UPDATE-POST-PR350)Z. Origin/main HEAD: a77f399 (chore commit post-Phase 2 merge). Phase 10 DEPLOYED + HYGIENE CLEAN. AI Advisory Phase 2 MERGED (c987d8a) -- NOT YET DEPLOYED -- use windows_deploy_phase2_advisory.ps1 (7-agent gate passed). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). Track A SHIPPED. Track B NOT started. PZ Correction Lifecycle Phase 1 MERGED (9c45cee) -- NOT DEPLOYED.
 
 ---
 
@@ -78,7 +78,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ## RULE 6 visibility entries (scorecards)
 
-- No new scorecard produced yet for Phase 2 campaign (to be produced post-session)
+- **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-phase2-advisory-llm.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 2 Advisory LLM campaign. 9 agents scored: 8 EXEMPLARY, 1 NEEDS-TUNING (deploy_git_diff_reviewer). File confirmed on disk: 17,078 bytes (Lesson C verified). Issue #353 filed for GATE 4 SCHEDULED disposition.
 
 ## PZ Correction Lifecycle -- Phase 1 (2026-05-24, PR #348 MERGED)
 
@@ -1824,6 +1824,8 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
 - **Phase 3 is a Phase 2 precondition (not a successor)** — decided 2026-05-23 consolidation campaign
 - **ai_call_ledger.py is AI infrastructure** (2026-05-23) — exempt from gateway violation model-name checks alongside ai_gateway.py and config.py
 - **patch("app.services.ai_gateway", mock, create=True) is correct mock target** (2026-05-23) — for `from . import ai_gateway` inside function bodies; NOT patch.dict("sys.modules", ...) and NOT patch("app.services.ai_customs_parser.ai_gateway", ...)
+- **deploy_git_diff_reviewer NEEDS-TUNING verdict disposition** (2026-05-24) — SCHEDULED (Issue #352). Scorecard evidence: PR #350 false-positive Gate 2 check (5-file diff ≠ 6-file expectation from naming convention). Scheduled for prompt tuning to reduce false positives on file counts.
+- **Phase 2 LLM flag deployment policy** (2026-05-24) — AI_ADVISORY_LLM_ENABLED ships OFF by default. Operator must explicitly set `AI_ADVISORY_LLM_ENABLED=True` in production .env to activate LLM path after deployment.
 
 ## Phase 4 and sequencing decisions (operator-locked 2026-05-23)
 
@@ -1993,9 +1995,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. ~~**Merge PR #312 (Phase 3 Proper AI Gateway)**~~ — **DONE 2026-05-23**: merged at SHA `bf9a9ae`. All 166 AI tests passing.
-2. ~~**Windows deploy — Phase 3 Proper**~~ — **DONE 2026-05-23**: operator-confirmed all 7 runtime files live, local health 200, public health 200, stderr clean. Manifest: `windows_deploy_617b2b7.ps1`.
-3. ~~**Production smoke validation (AI disabled)**~~ — **DONE 2026-05-23**: all 8 items PASS. Health 200, AI gateway dormant, no regressions, no errors. Phase 4 unlocked.
+1. **Deploy Phase 2 Advisory LLM to Windows production** — target: Windows deploy using `windows_deploy_phase2_advisory.ps1` with 7-agent gate — gating: PR #350 merged (DONE), manifest ready (DONE), operator decision to deploy
+2. **Configure Phase 2 LLM enablement** — target: operator sets AI_ADVISORY_LLM_ENABLED=True in Windows .env if desired — gating: Phase 2 deployed to production first
+3. **File Issue #352 for deploy_git_diff_reviewer tuning** — target: GATE 4 SCHEDULED disposition for NEEDS-TUNING verdict — gating: PROJECT_STATE update complete (this update)
 
 ## Pending next steps (added 2026-05-23)
 
@@ -2070,6 +2072,6 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Issues #58/#59/#60 override polish (cascade endpoint, request_id correlation, GET /audit endpoint)** — when do they fire? Answerer: operator scheduling. Impact: operator UX improvements on top of the predecessor-override mechanic; none currently blocking.
 - **Cumulative ADR drift work** — blocked on Issue #51 resolution. Until #51 is reconciled, downstream ADR work (e.g. ADR-018 follow-ups in Issue #42) carries semantic risk of stacking onto unreconciled successor relationships.
 - **Is the `_TOP_LEVEL_FIELDS` enforcement gap on `dhl_clearance_manifest.py` (system-architect LOW finding) acceptable to defer to P2 kickoff, or should it be addressed in a hotfix PR?** Answerer: operator. Impact: a future phase implementer could write a top-level field that bypasses the schema fence. Filed in Issue #38 as SCHEDULED for P2.
-- **Phase 2 (advisory LLM) still pending** — Phase 3 Proper complete 2026-05-23, unblocks Phase 2 work
+- ~~**Phase 2 (advisory LLM) still pending**~~ — **RESOLVED 2026-05-24**: Phase 2 MERGED at SHA c987d8a (PR #350). Deploy pending using `windows_deploy_phase2_advisory.ps1`. Feature flag defaults OFF.
 
 ---
