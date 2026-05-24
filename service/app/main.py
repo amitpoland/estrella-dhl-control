@@ -39,6 +39,7 @@ from .api.routes_mdi import router as mdi_router
 from .api.routes_search import router as search_router
 from .api.routes_intelligence_graph import router as intelligence_graph_router
 from .api.routes_workflow_intelligence import router as workflow_intelligence_router  # Phase 9
+from .api.routes_operations_intelligence import router as operations_intelligence_router  # Phase 10
 from .api.routes_settings import router as settings_router
 from .api.routes_system import router as system_router
 from .api.routes_agents import router as agents_router
@@ -370,7 +371,8 @@ app.include_router(ai_advisory_router)
 app.include_router(mdi_router)              # Phase 4: master-data intelligence (advisory, no writes)
 app.include_router(search_router)           # Phase 7: natural-language search (deterministic, no writes)
 app.include_router(intelligence_graph_router)     # Phase 8: intelligence graph (batch_id-centered, read-only)
-app.include_router(workflow_intelligence_router) # Phase 9: workflow intelligence (multi-signal, read-only)
+app.include_router(workflow_intelligence_router)      # Phase 9: workflow intelligence (multi-signal, read-only)
+app.include_router(operations_intelligence_router)    # Phase 10: operations intelligence (cross-batch, read-only)
 app.include_router(system_router)
 app.include_router(agents_router)
 app.include_router(packing_router)
