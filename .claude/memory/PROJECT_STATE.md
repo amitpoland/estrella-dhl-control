@@ -4,7 +4,52 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PZ-CORRECTION-PHASE1-MERGED)Z. Origin/main HEAD: 9c45cee (Phase 1 PZ Correction Lifecycle -- PR #348 MERGED). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3 (GATE 2 limit: 3). Phase 10 NOT deployed yet -- operator must execute manifest windows_deploy_95fc0fe.ps1. Phase 9 DEPLOYED -- operator-confirmed 2026-05-24. Phase 2 (Advisory LLM) starts after Phase 10 deployed + smoke verified -- requires explicit operator approval. PZ Correction Lifecycle Phase 1 MERGED (9c45cee, 2026-05-24) -- NOT DEPLOYED -- requires operator flag enable before any endpoint is active.
+**Last-run-at:** 2026-05-24T(PHASE10-COMPLETE-HYGIENE-CLEAN)Z. Origin/main HEAD: 9c45cee (Phase 1 PZ Correction Lifecycle -- PR #348 MERGED). Phase 10 DEPLOYED + SMOKE VERIFIED + HYGIENE CLEAN (operator-confirmed 2026-05-24). Backup: C:\PZ\backups\hygiene_phase10_20260524. OPEN PRs: #337 + #268 + #349 = 3/3 (GATE 2 at limit). Track A (AI Roadmap Phase 2 -- Advisory LLM) requires explicit operator approval before implementation. Track B (PZ Correction UI Lifecycle) NOT started -- no operator instruction. PZ Correction Lifecycle Phase 1 MERGED (9c45cee, 2026-05-24) -- NOT DEPLOYED -- requires operator flag enable.
+
+---
+
+# TRACK DEFINITIONS (READ THIS BEFORE STARTING ANY "PHASE 2" WORK)
+
+Two initiatives contain the words "Phase 2" or "correction." They are completely different. Conflating them causes wrong code to be written.
+
+---
+
+## Track A -- AI Roadmap Phase 2: Advisory LLM Explanations
+
+**What it is:**
+- The next phase of the deterministic intelligence platform (Phases 7 → 8 → 9 → 10 → **Phase 2**)
+- Adds LLM-generated natural-language explanations on top of the existing deterministic signals
+- New endpoint: `GET /api/v1/ai/advisory/workflow-blockers` (already exists as Phase 1 skeleton)
+- Feature flags deploy OFF by default: `ai_advisory_llm_enabled=False`
+- No write mutations; advisory output only
+- Uses `ai_gateway.py` architectural pattern ("Services express intent. Gateway executes policy.")
+
+**What it is NOT:**
+- NOT the PZ Correction UI workflow
+- NOT the wFirma push layer
+- NOT batch processing or shipment-level corrections
+- NOT any change to existing deterministic endpoints (Phase 7/8/9/10 remain untouched)
+
+**Current gate status:**
+- UNBLOCKED (as of 2026-05-24): Phase 10 deployed + smoke verified + hygiene clean
+- REQUIRES: explicit operator "go ahead" instruction before implementation begins
+
+---
+
+## Track B -- PZ Correction UI Lifecycle
+
+**What it is:**
+- Operational campaign to build the operator-facing UI workflow for correcting PZ data discrepancies
+- Involves `pz_correction_lifecycle.py` / `pz_correction_state.py` patterns (merged PR #348, NOT DEPLOYED)
+- Separate PRs, separate feature branch, separate approval chain
+
+**What it is NOT:**
+- NOT Track A (no LLM, no advisory endpoint, no ai_gateway)
+- NOT unblocked -- no operator instruction to start this campaign as of 2026-05-24
+
+**Current gate status:**
+- NO active operator instruction to proceed
+- DO NOT start speculatively; wait for explicit operator directive
 
 ---
 
