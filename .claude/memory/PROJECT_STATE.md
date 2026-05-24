@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-25T(LIFECYCLE-DEPLOYED)Z. Origin/main HEAD: bc661ac. Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED (LLM flags OFF). Phase 2B DEPLOYED (ALL PROVIDER FLAGS OFF). Phase 2C DEPLOYED + VERIFIED (SHA 40c30f1 — STARTUP_AI_AUDIT confirmed pz_stdout.log, all AI flags OFF — pilot NOT started; ANTHROPIC_API_KEY ROTATION REQUIRED before pilot). PZ Correction Lifecycle PR A + PR B + PR C DEPLOYED to C:\PZ\app (2026-05-25, SHA 5bcb492). Both lifecycle flags ABSENT from .env (defaults False — backend dormant). PZService RUNNING. Health 200/200. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). No AI execution flags enabled. No PZ lifecycle flags enabled.
+**Last-run-at:** 2026-05-25T(ANTHROPIC-CANARY-A-PASSED)Z. Origin/main HEAD: aa251b8 (lifecycle activation package #360). Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED. Phase 2B DEPLOYED (all provider flags were OFF). Phase 2C DEPLOYED + VERIFIED. ANTHROPIC PILOT ACTIVE: key rotated, flags ON, canary A PASSED (llm_used=true, provider_used=anthropic_api, fallback=0, cost=$0.000223). 3-state quality validation in progress (B + C pending, no broad traffic). PZ Correction Lifecycle PR A+B+C DEPLOYED (flags absent from .env, backend dormant). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear).
 
 ---
 
