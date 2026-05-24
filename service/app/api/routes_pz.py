@@ -931,6 +931,10 @@ class LifecycleCommitRequest(BaseModel):
     confirm_understanding: str
 
 
+class LifecycleSuppressRequest(BaseModel):
+    reason: str
+
+
 def _lifecycle_503() -> None:
     raise HTTPException(
         status_code=503,
@@ -1143,7 +1147,10 @@ def pz_correction_lifecycle_commit(
       4. State must be STAGED.
       5. correction_execution_record.json must exist (enforced by push service).
 
-    confirm_understanding must be "I UNDERSTAND THE IMPLICATIONS".
+    confirm_understanding must match the _CONFIRM_SENTINEL string defined in
+    global_pz_push.py (Gate 1 of push_correction_to_wfirma).  The exact value is:
+    "I confirm this will create a new wFirma PZ document and cannot be undone
+    without manual wFirma intervention".
     """
     if not settings.pz_correction_lifecycle_enabled:
         _lifecycle_503()
@@ -1196,6 +1203,53 @@ def pz_correction_lifecycle_commit(
             status_code=502,
             detail=record.result_summary or "wFirma push failed.",
         )
+
+    return record.to_dict()
+
+
+@router.post("/pz/lineage/{batch_id}/correction-suppress", dependencies=[_auth])
+def pz_correction_lifecycle_suppress(
+    batch_id: str,
+    body: LifecycleSuppressRequest,
+) -> Dict[str, Any]:
+    """Transition ANY lifecycle state -> TERMINAL_SUPPRESSED.
+
+    Used to close out a correction workflow without pushing to wFirma —
+    for example when the correction was abandoned, the batch was resolved
+    manually, or the workflow is stuck at EXECUTING after a service restart.
+
+    This is the operator recovery path for stuck EXECUTING and repeated-FAILED
+    workflows.  It does NOT create any wFirma document.
+
+    Gate: pz_correction_lifecycle_enabled must be True.
+    No global batch check — suppress must work even when source PDF detection
+    fails (e.g. after PDFs are archived or rotated).
+    State TERMINAL_SUPPRESSED cannot be suppressed again (409).
+    """
+    if not settings.pz_correction_lifecycle_enabled:
+        _lifecycle_503()
+
+    if "/" in batch_id or ".." in batch_id:
+        raise HTTPException(status_code=400, detail="Invalid batch_id.")
+
+    if not body.reason or not body.reason.strip():
+        raise HTTPException(status_code=400, detail="reason must not be empty.")
+
+    try:
+        from ..services.pz_correction_lifecycle import PZCorrectionLifecycle  # noqa: PLC0415
+        from ..services.pz_correction_state import (  # noqa: PLC0415
+            CorrectionLifecycleTransitionError,
+        )
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=f"lifecycle module unavailable: {exc}")
+
+    lc = PZCorrectionLifecycle(batch_id, settings.storage_root)
+    try:
+        record = lc.suppress_terminal(body.reason.strip())
+    except CorrectionLifecycleTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
     return record.to_dict()
 

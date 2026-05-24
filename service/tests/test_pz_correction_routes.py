@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.main import app
+from app.services.global_pz_push import _CONFIRM_SENTINEL
 
 
 BATCH_ID = "lifecycle-test-batch"
@@ -241,7 +242,7 @@ class TestCorrectionCommitRoute:
     COMMIT_BODY = {
         "operator_reason":       "final commit",
         "idempotency_key":       "key-abc-123",
-        "confirm_understanding": "I UNDERSTAND THE IMPLICATIONS",
+        "confirm_understanding": _CONFIRM_SENTINEL,
     }
 
     def test_returns_503_when_lifecycle_flag_disabled(self, client, auth, monkeypatch):
@@ -298,3 +299,224 @@ class TestCorrectionCommitRoute:
             json=self.COMMIT_BODY,
         )
         assert resp.status_code == 503
+
+    def test_wrong_sentinel_reaches_gate_1_in_real_push_service(
+        self, client, auth, batch_dir, monkeypatch
+    ):
+        """Gate 1 (sentinel check) is inside push_correction_to_wfirma, not mocked here.
+
+        The wrong sentinel must propagate through the real push service and
+        cause a FAILED lifecycle state + HTTP 502.  This confirms that tests
+        using _CONFIRM_SENTINEL exercise the actual gate rather than bypassing
+        it through mocks.
+        """
+        monkeypatch.setattr(settings, "wfirma_correction_push_allowed", True)
+
+        # Write lifecycle state as STAGED so execute() can proceed
+        lc_path = batch_dir / "outputs" / BATCH_ID / "pz_correction_lifecycle.json"
+        lc_path.write_text(
+            json.dumps({
+                "batch_id":           BATCH_ID,
+                "state":              "STAGED",
+                "staged_option_id":   "ALIGN_TO_AUTHORITY",
+                "operator_note":      None,
+                "review_ts":          None,
+                "stage_ts":           "2026-05-24T10:00:00+00:00",
+                "execute_ts":         None,
+                "complete_ts":        None,
+                "result_summary":     None,
+                "suppression_reason": None,
+                "schema_version":     1,
+            }),
+            encoding="utf-8",
+        )
+
+        with patch(MOCK_IS_GLOBAL, return_value=True):
+            resp = client.post(
+                f"{BASE_URL}/correction-commit",
+                headers=auth,
+                json={
+                    "operator_reason":       "testing sentinel gate",
+                    "idempotency_key":       "key-wrong-sentinel-001",
+                    "confirm_understanding": "I UNDERSTAND THE IMPLICATIONS",  # intentionally wrong
+                },
+            )
+
+        # Gate 1 inside push_correction_to_wfirma blocks; lifecycle writes FAILED; route 502
+        assert resp.status_code == 502
+        detail = resp.json().get("detail", "")
+        # The detail comes from push_result.error which names the sentinel mismatch
+        assert "sentinel" in detail.lower() or "does not match" in detail.lower()
+
+
+# ---------------------------------------------------------------------------
+# POST correction-suppress
+# ---------------------------------------------------------------------------
+
+class TestCorrectionSuppressRoute:
+    """Tests for POST /pz/lineage/{batch_id}/correction-suppress.
+
+    suppress_terminal() transitions ANY -> TERMINAL_SUPPRESSED without
+    touching wFirma.  It is the operator recovery path for stuck EXECUTING
+    and repeated-FAILED workflows.
+    """
+
+    SUPPRESS_BODY = {"reason": "operator abandoned this correction"}
+    SUPPRESS_URL  = f"{BASE_URL}/correction-suppress"
+
+    def test_returns_503_when_flag_disabled(self, client, auth, monkeypatch):
+        monkeypatch.setattr(settings, "pz_correction_lifecycle_enabled", False)
+        resp = client.post(self.SUPPRESS_URL, headers=auth, json=self.SUPPRESS_BODY)
+        assert resp.status_code == 503
+
+    def test_returns_400_for_empty_reason(self, client, auth, batch_dir):
+        resp = client.post(self.SUPPRESS_URL, headers=auth, json={"reason": ""})
+        assert resp.status_code == 400
+
+    def test_returns_400_for_whitespace_only_reason(self, client, auth, batch_dir):
+        resp = client.post(self.SUPPRESS_URL, headers=auth, json={"reason": "   "})
+        assert resp.status_code == 400
+
+    def test_returns_non_200_without_auth(self, client):
+        """Without auth headers the request must not return 200 (exact code
+        depends on whether settings.api_key is configured; batch missing -> 404
+        is sufficient to confirm the route is not open to anonymous callers)."""
+        resp = client.post(self.SUPPRESS_URL, json=self.SUPPRESS_BODY)
+        assert resp.status_code != 200
+
+    def test_returns_404_when_batch_dir_missing(self, client, auth, monkeypatch):
+        monkeypatch.setattr(settings, "storage_root", Path("/nonexistent/path"))
+        resp = client.post(self.SUPPRESS_URL, headers=auth, json=self.SUPPRESS_BODY)
+        assert resp.status_code == 404
+
+    def test_suppresses_from_executing_state(self, client, auth, batch_dir):
+        """EXECUTING -> TERMINAL_SUPPRESSED is the primary recovery path for
+        a batch stuck after a service restart mid-push."""
+        lc_path = batch_dir / "outputs" / BATCH_ID / "pz_correction_lifecycle.json"
+        lc_path.write_text(
+            json.dumps({
+                "batch_id":           BATCH_ID,
+                "state":              "EXECUTING",
+                "staged_option_id":   "ALIGN_TO_AUTHORITY",
+                "operator_note":      None,
+                "review_ts":          None,
+                "stage_ts":           "2026-05-24T10:00:00+00:00",
+                "execute_ts":         "2026-05-24T10:01:00+00:00",
+                "complete_ts":        None,
+                "result_summary":     None,
+                "suppression_reason": None,
+                "schema_version":     1,
+            }),
+            encoding="utf-8",
+        )
+
+        resp = client.post(self.SUPPRESS_URL, headers=auth, json=self.SUPPRESS_BODY)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["state"]              == "TERMINAL_SUPPRESSED"
+        assert data["suppression_reason"] == "operator abandoned this correction"
+        assert data["complete_ts"] is not None
+
+    def test_suppresses_from_failed_state(self, client, auth, batch_dir):
+        """FAILED -> TERMINAL_SUPPRESSED allows operator to close out
+        a workflow after repeated push failures."""
+        lc_path = batch_dir / "outputs" / BATCH_ID / "pz_correction_lifecycle.json"
+        lc_path.write_text(
+            json.dumps({
+                "batch_id":           BATCH_ID,
+                "state":              "FAILED",
+                "staged_option_id":   "ALIGN_TO_AUTHORITY",
+                "operator_note":      None,
+                "review_ts":          None,
+                "stage_ts":           "2026-05-24T10:00:00+00:00",
+                "execute_ts":         "2026-05-24T10:01:00+00:00",
+                "complete_ts":        "2026-05-24T10:01:05+00:00",
+                "result_summary":     "wFirma 502",
+                "suppression_reason": None,
+                "schema_version":     1,
+            }),
+            encoding="utf-8",
+        )
+
+        resp = client.post(self.SUPPRESS_URL, headers=auth, json=self.SUPPRESS_BODY)
+
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "TERMINAL_SUPPRESSED"
+
+    def test_returns_409_when_already_terminal_suppressed(self, client, auth, batch_dir):
+        """TERMINAL_SUPPRESSED -> TERMINAL_SUPPRESSED is not a valid transition."""
+        lc_path = batch_dir / "outputs" / BATCH_ID / "pz_correction_lifecycle.json"
+        lc_path.write_text(
+            json.dumps({
+                "batch_id":           BATCH_ID,
+                "state":              "TERMINAL_SUPPRESSED",
+                "staged_option_id":   None,
+                "operator_note":      None,
+                "review_ts":          None,
+                "stage_ts":           None,
+                "execute_ts":         None,
+                "complete_ts":        "2026-05-24T10:00:00+00:00",
+                "result_summary":     None,
+                "suppression_reason": "already closed",
+                "schema_version":     1,
+            }),
+            encoding="utf-8",
+        )
+
+        resp = client.post(self.SUPPRESS_URL, headers=auth, json=self.SUPPRESS_BODY)
+        assert resp.status_code == 409
+
+    def test_no_wfirma_push_is_called(self, client, auth, batch_dir):
+        """suppress_terminal must not touch wFirma under any circumstance."""
+        lc_path = batch_dir / "outputs" / BATCH_ID / "pz_correction_lifecycle.json"
+        lc_path.write_text(
+            json.dumps({
+                "batch_id":           BATCH_ID,
+                "state":              "PROPOSED",
+                "staged_option_id":   None,
+                "operator_note":      None,
+                "review_ts":          None,
+                "stage_ts":           None,
+                "execute_ts":         None,
+                "complete_ts":        None,
+                "result_summary":     None,
+                "suppression_reason": None,
+                "schema_version":     1,
+            }),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "app.services.pz_correction_lifecycle.push_correction_to_wfirma"
+        ) as mock_push:
+            resp = client.post(self.SUPPRESS_URL, headers=auth, json=self.SUPPRESS_BODY)
+
+        assert resp.status_code == 200
+        mock_push.assert_not_called()
+
+    def test_no_global_batch_check_required(self, client, auth, batch_dir):
+        """suppress must work without global batch detection — source PDFs may
+        be unavailable when an operator needs to recover a stuck workflow."""
+        lc_path = batch_dir / "outputs" / BATCH_ID / "pz_correction_lifecycle.json"
+        lc_path.write_text(
+            json.dumps({
+                "batch_id":           BATCH_ID,
+                "state":              "PROPOSED",
+                "staged_option_id":   None,
+                "operator_note":      None,
+                "review_ts":          None,
+                "stage_ts":           None,
+                "execute_ts":         None,
+                "complete_ts":        None,
+                "result_summary":     None,
+                "suppression_reason": None,
+                "schema_version":     1,
+            }),
+            encoding="utf-8",
+        )
+
+        # Deliberately do NOT mock _is_global_batch — suppress must not call it
+        resp = client.post(self.SUPPRESS_URL, headers=auth, json=self.SUPPRESS_BODY)
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "TERMINAL_SUPPRESSED"

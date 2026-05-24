@@ -75,7 +75,12 @@ class PZCorrectionLifecycle:
         state = lc.execute(                                    # COMPLETED
                     operator_reason="Correcting PZ",
                     idempotency_key="batch-align-20260524",
-                    confirm_understanding="I UNDERSTAND THE IMPLICATIONS",
+                    # confirm_understanding must match _CONFIRM_SENTINEL
+                    # defined in global_pz_push.py (Gate 1 of push service).
+                    confirm_understanding=(
+                        "I confirm this will create a new wFirma PZ document "
+                        "and cannot be undone without manual wFirma intervention"
+                    ),
                     product_map=None,
                     contractor_id=settings.wfirma_supplier_contractor_id,
                     warehouse_id=settings.wfirma_warehouse_id,
