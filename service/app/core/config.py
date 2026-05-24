@@ -251,6 +251,10 @@ class Settings(BaseSettings):
     # Turn back to False immediately after the push completes.
     # Requires: staged execution record + idempotency_key + confirm_understanding sentinel.
     wfirma_correction_push_allowed: bool = Field(default=False)
+    # PZ Correction Lifecycle feature gate.  Off by default.
+    # Enables GET/POST/DELETE /pz/lineage/{batch_id}/correction-{state,stage,commit}.
+    # Set True only when actively running a correction lifecycle session.
+    pz_correction_lifecycle_enabled: bool = Field(default=False)
     # Manual Proforma → final invoice conversion gate. Off by default;
     # operator flips to true only for the conversion run, then back.
     wfirma_create_invoice_allowed:  bool = Field(default=False)
