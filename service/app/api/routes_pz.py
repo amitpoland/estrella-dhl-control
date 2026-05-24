@@ -4,7 +4,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, NamedTuple, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
@@ -23,6 +23,26 @@ log = get_logger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["pz"])
 
 _auth = Depends(require_api_key)
+
+
+# ---------------------------------------------------------------------------
+# Global Jewellery batch detection — diagnostic result
+# ---------------------------------------------------------------------------
+
+class _GlobalBatchCheck(NamedTuple):
+    """Result of _check_global_batch().
+
+    ``reason`` is one of:
+        "global"         -- detected as Global Jewellery supplier
+        "not_global"     -- scanned but supplier is not Global Jewellery
+        "scan_failed"    -- required modules unavailable (pdfplumber / supplier_detect)
+        "missing_source" -- no source/ directory found for this batch
+        "no_pdf"         -- source dir found but no PDF files present
+        "parse_error"    -- PDF files found but none could be parsed
+    """
+    is_global: bool
+    reason:    str
+    detail:    str
 
 
 def _has_hard_fail(v: dict) -> bool:
@@ -467,34 +487,95 @@ async def learning_summary() -> dict:
 # dashboard can suppress the panel cleanly without a 404 branch.
 
 
-def _is_global_batch(batch_id: str) -> bool:
-    """Detect Global Jewellery supplier by scanning the first 1k chars of any
-    source PDF.  Pure read — no DB writes, no network calls."""
+def _check_global_batch(batch_id: str) -> _GlobalBatchCheck:
+    """Detect Global Jewellery supplier with diagnostic detail.
+
+    Scans the first 1 KB of any source PDF.  Pure read — no DB writes, no
+    network calls.  The returned ``reason`` distinguishes why detection failed
+    so callers can surface actionable 403 messages to operators.
+    """
     try:
         from ..services.supplier_detect import detect_supplier  # noqa: PLC0415
         import pdfplumber  # noqa: PLC0415
     except Exception:
-        return False
+        return _GlobalBatchCheck(
+            is_global=False,
+            reason="scan_failed",
+            detail=(
+                "Supplier detection modules unavailable "
+                "(pdfplumber or supplier_detect could not be imported)."
+            ),
+        )
+
+    found_source_dir = False
+    found_any_pdf    = False
+    had_parse_error  = False
+
     for sub in ("outputs", "working"):
         base = settings.storage_root / sub / batch_id / "source"
         if not base.is_dir():
             continue
+        found_source_dir = True
         for cat in ("invoices", "packing"):
             d = base / cat
             if not d.is_dir():
                 continue
             for pdf in sorted(d.glob("*.pdf")):
+                found_any_pdf = True
                 try:
                     with pdfplumber.open(str(pdf)) as p:
                         if not p.pages:
                             continue
                         head = (p.pages[0].extract_text() or "")[:1000]
                     if detect_supplier(head) == "global_jewellery":
-                        return True
+                        return _GlobalBatchCheck(
+                            is_global=True,
+                            reason="global",
+                            detail="Batch identified as Global Jewellery supplier.",
+                        )
                 except Exception:
+                    had_parse_error = True
                     continue
-        break
-    return False
+        break  # stop after the first sub-directory that contains a source dir
+
+    if not found_source_dir:
+        return _GlobalBatchCheck(
+            is_global=False,
+            reason="missing_source",
+            detail=(
+                f"No source/ directory found for batch {batch_id!r}. "
+                "Checked outputs/ and working/ subdirectories."
+            ),
+        )
+    if not found_any_pdf:
+        return _GlobalBatchCheck(
+            is_global=False,
+            reason="no_pdf",
+            detail=(
+                f"Source directory found for batch {batch_id!r} "
+                "but no PDF files are present."
+            ),
+        )
+    if had_parse_error:
+        return _GlobalBatchCheck(
+            is_global=False,
+            reason="parse_error",
+            detail=(
+                f"PDF files found for batch {batch_id!r} "
+                "but none could be parsed for supplier detection."
+            ),
+        )
+    return _GlobalBatchCheck(
+        is_global=False,
+        reason="not_global",
+        detail=f"Batch {batch_id!r} is not a Global Jewellery supplier batch.",
+    )
+
+
+def _is_global_batch(batch_id: str) -> bool:
+    """Bool wrapper around _check_global_batch.  Used by non-lifecycle callers
+    that only need a True/False answer (e.g. lineage/correction JSON routes)."""
+    return _check_global_batch(batch_id).is_global
 
 
 def _find_source_pdf(batch_id: str, category: str) -> Optional[Path]:
@@ -755,10 +836,14 @@ def global_pz_correction_execute(
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
 
     # --- Terminal-state suppression: Global supplier gate ---
-    if not _is_global_batch(batch_id):
+    _gbc = _check_global_batch(batch_id)
+    if not _gbc.is_global:
         raise HTTPException(
             status_code=403,
-            detail="Correction execution is only available for Global Jewellery batches.",
+            detail=(
+                "Correction execution is only available for Global Jewellery batches. "
+                f"[{_gbc.reason}] {_gbc.detail}"
+            ),
         )
 
     # --- Re-derive proposed_lines server-side ---
@@ -892,10 +977,14 @@ def global_pz_correction_push_wfirma(
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
 
     # Global supplier gate
-    if not _is_global_batch(batch_id):
+    _gbc = _check_global_batch(batch_id)
+    if not _gbc.is_global:
         raise HTTPException(
             status_code=403,
-            detail="Correction push is only available for Global Jewellery batches.",
+            detail=(
+                "Correction push is only available for Global Jewellery batches. "
+                f"[{_gbc.reason}] {_gbc.detail}"
+            ),
         )
 
     try:
@@ -976,10 +1065,14 @@ def pz_correction_lifecycle_state(batch_id: str) -> Dict[str, Any]:
     if "/" in batch_id or ".." in batch_id:
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
 
-    if not _is_global_batch(batch_id):
+    _gbc = _check_global_batch(batch_id)
+    if not _gbc.is_global:
         raise HTTPException(
             status_code=403,
-            detail="Correction lifecycle is only available for Global Jewellery batches.",
+            detail=(
+                "Correction lifecycle is only available for Global Jewellery batches. "
+                f"[{_gbc.reason}] {_gbc.detail}"
+            ),
         )
 
     try:
@@ -1024,10 +1117,36 @@ def pz_correction_lifecycle_stage(
     if "/" in batch_id or ".." in batch_id:
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
 
-    if not _is_global_batch(batch_id):
+    _gbc = _check_global_batch(batch_id)
+    if not _gbc.is_global:
         raise HTTPException(
             status_code=403,
-            detail="Correction lifecycle is only available for Global Jewellery batches.",
+            detail=(
+                "Correction lifecycle is only available for Global Jewellery batches. "
+                f"[{_gbc.reason}] {_gbc.detail}"
+            ),
+        )
+
+    # Early block for no-op options — no wFirma push is needed for these options.
+    # Blocked here (before PDF loading) so the error is clear before any heavy work.
+    # The same guard also lives in stage_option() for defence-in-depth.
+    if body.option_id == "KEEP_CURRENT":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "KEEP_CURRENT: the existing PZ structure is accepted as-is — "
+                "no wFirma push is needed. To close this correction workflow, "
+                f"call POST /api/v1/pz/lineage/{batch_id}/correction-suppress."
+            ),
+        )
+    if body.option_id == "NO_ACTION":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "NO_ACTION: acknowledged, no PZ document pending — "
+                "no wFirma push is needed. To close this correction workflow, "
+                f"call POST /api/v1/pz/lineage/{batch_id}/correction-suppress."
+            ),
         )
 
     # Re-derive proposed_lines server-side (same pattern as correction-execute)
@@ -1181,10 +1300,14 @@ def pz_correction_lifecycle_commit(
     if "/" in batch_id or ".." in batch_id:
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
 
-    if not _is_global_batch(batch_id):
+    _gbc = _check_global_batch(batch_id)
+    if not _gbc.is_global:
         raise HTTPException(
             status_code=403,
-            detail="Correction commit is only available for Global Jewellery batches.",
+            detail=(
+                "Correction commit is only available for Global Jewellery batches. "
+                f"[{_gbc.reason}] {_gbc.detail}"
+            ),
         )
 
     try:

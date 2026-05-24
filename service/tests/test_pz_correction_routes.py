@@ -21,11 +21,17 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.main import app
 from app.services.global_pz_push import _CONFIRM_SENTINEL
+from app.api.routes_pz import _GlobalBatchCheck
 
 
 BATCH_ID = "lifecycle-test-batch"
 BASE_URL = f"/api/v1/pz/lineage/{BATCH_ID}"
-MOCK_IS_GLOBAL = "app.api.routes_pz._is_global_batch"
+# Routes now call _check_global_batch; keep old alias for suppress tests that assert
+# _is_global_batch is NOT called (suppress route calls neither function).
+MOCK_IS_GLOBAL    = "app.api.routes_pz._is_global_batch"
+MOCK_CHECK_GLOBAL = "app.api.routes_pz._check_global_batch"
+_NOT_GLOBAL = _GlobalBatchCheck(is_global=False, reason="not_global", detail="test batch")
+_IS_GLOBAL  = _GlobalBatchCheck(is_global=True,  reason="global",     detail="test batch")
 
 
 # ---------------------------------------------------------------------------
@@ -76,12 +82,12 @@ class TestCorrectionStateRoute:
         assert resp.status_code != 200
 
     def test_returns_403_for_non_global_batch(self, client, auth):
-        with patch(MOCK_IS_GLOBAL, return_value=False):
+        with patch(MOCK_CHECK_GLOBAL, return_value=_NOT_GLOBAL):
             resp = client.get(f"{BASE_URL}/correction-state", headers=auth)
         assert resp.status_code == 403
 
     def test_returns_proposed_for_new_batch(self, client, auth, batch_dir):
-        with patch(MOCK_IS_GLOBAL, return_value=True):
+        with patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL):
             resp = client.get(f"{BASE_URL}/correction-state", headers=auth)
 
         assert resp.status_code == 200
@@ -90,7 +96,7 @@ class TestCorrectionStateRoute:
         assert data["batch_id"] == BATCH_ID
 
     def test_returns_existing_state_on_second_call(self, client, auth, batch_dir):
-        with patch(MOCK_IS_GLOBAL, return_value=True):
+        with patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL):
             client.get(f"{BASE_URL}/correction-state", headers=auth)
             resp = client.get(f"{BASE_URL}/correction-state", headers=auth)
 
@@ -99,7 +105,7 @@ class TestCorrectionStateRoute:
 
     def test_returns_404_when_batch_dir_missing(self, client, auth, monkeypatch):
         monkeypatch.setattr(settings, "storage_root", Path("/nonexistent/path"))
-        with patch(MOCK_IS_GLOBAL, return_value=True):
+        with patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL):
             resp = client.get(f"{BASE_URL}/correction-state", headers=auth)
         assert resp.status_code == 404
 
@@ -123,7 +129,7 @@ class TestCorrectionStageRoute:
         assert resp.status_code == 503
 
     def test_returns_403_for_non_global_batch(self, client, auth):
-        with patch(MOCK_IS_GLOBAL, return_value=False):
+        with patch(MOCK_CHECK_GLOBAL, return_value=_NOT_GLOBAL):
             resp = client.post(
                 f"{BASE_URL}/correction-stage",
                 headers=auth,
@@ -133,7 +139,7 @@ class TestCorrectionStageRoute:
 
     def test_returns_422_when_source_pdfs_missing(self, client, auth, batch_dir):
         with (
-            patch(MOCK_IS_GLOBAL, return_value=True),
+            patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL),
             patch("app.api.routes_pz._find_source_pdf", return_value=None),
         ):
             resp = client.post(
@@ -156,7 +162,7 @@ class TestCorrectionStageRoute:
         mock_proposal.options = [mock_option]
 
         with (
-            patch(MOCK_IS_GLOBAL, return_value=True),
+            patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL),
             patch("app.api.routes_pz._find_source_pdf", return_value=fake_pdf),
             patch("app.api.routes_pz.parse_invoice_positions_from_pdf",
                   return_value=[], create=True),
@@ -186,7 +192,7 @@ class TestCorrectionStageRoute:
         mock_proposal.options = []  # no options
 
         with (
-            patch(MOCK_IS_GLOBAL, return_value=True),
+            patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL),
             patch("app.api.routes_pz._find_source_pdf", return_value=fake_pdf),
             patch("app.api.routes_pz.parse_invoice_positions_from_pdf",
                   return_value=[], create=True),
@@ -221,7 +227,7 @@ class TestCorrectionResetStageRoute:
         reset_stage() explicitly requires state == STAGED.  Calling it from
         PROPOSED (the initial state) must return 409 Conflict.
         """
-        with patch(MOCK_IS_GLOBAL, return_value=True):
+        with patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL):
             # Init state (creates PROPOSED record on disk)
             client.get(f"{BASE_URL}/correction-state", headers=auth)
         # DELETE (reset-stage) from PROPOSED must be rejected
@@ -265,7 +271,7 @@ class TestCorrectionCommitRoute:
 
     def test_returns_403_for_non_global_batch(self, client, auth, monkeypatch):
         monkeypatch.setattr(settings, "wfirma_correction_push_allowed", True)
-        with patch(MOCK_IS_GLOBAL, return_value=False):
+        with patch(MOCK_CHECK_GLOBAL, return_value=_NOT_GLOBAL):
             resp = client.post(
                 f"{BASE_URL}/correction-commit",
                 headers=auth,
@@ -275,10 +281,7 @@ class TestCorrectionCommitRoute:
 
     def test_returns_409_when_not_staged(self, client, auth, batch_dir, monkeypatch):
         monkeypatch.setattr(settings, "wfirma_correction_push_allowed", True)
-        with (
-            patch(MOCK_IS_GLOBAL, return_value=True),
-            patch("app.api.routes_pz._is_global_batch", return_value=True),
-        ):
+        with patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL):
             # Init state to PROPOSED (not STAGED)
             client.get(f"{BASE_URL}/correction-state", headers=auth)
             resp = client.post(
@@ -331,7 +334,7 @@ class TestCorrectionCommitRoute:
             encoding="utf-8",
         )
 
-        with patch(MOCK_IS_GLOBAL, return_value=True):
+        with patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL):
             resp = client.post(
                 f"{BASE_URL}/correction-commit",
                 headers=auth,
@@ -569,7 +572,7 @@ class TestOldPushRouteGovernance:
         """
         monkeypatch.setattr(settings, "pz_correction_lifecycle_enabled", False)
 
-        with patch(MOCK_IS_GLOBAL, return_value=False):
+        with patch(MOCK_CHECK_GLOBAL, return_value=_NOT_GLOBAL):
             resp = client.post(
                 self.OLD_PUSH_URL,
                 headers=auth,
@@ -610,3 +613,139 @@ class TestOldPushRouteGovernance:
             f"lifecycle commit route should return 503 (push flag disabled), "
             f"not 410; got {resp.status_code}"
         )
+
+
+# ---------------------------------------------------------------------------
+# _check_global_batch diagnostic detail in 403 responses
+# ---------------------------------------------------------------------------
+
+class TestGlobalBatchDiagnostics:
+    """The 403 response must include diagnostic detail from _check_global_batch."""
+
+    def test_403_includes_not_global_reason(self, client, auth):
+        gbc = _GlobalBatchCheck(
+            is_global=False, reason="not_global",
+            detail="Batch 'lifecycle-test-batch' is not a Global Jewellery supplier batch.",
+        )
+        with patch(MOCK_CHECK_GLOBAL, return_value=gbc):
+            resp = client.get(f"{BASE_URL}/correction-state", headers=auth)
+        assert resp.status_code == 403
+        detail = resp.json().get("detail", "")
+        assert "[not_global]" in detail
+        assert "Global Jewellery" in detail
+
+    def test_403_includes_scan_failed_reason(self, client, auth):
+        gbc = _GlobalBatchCheck(
+            is_global=False, reason="scan_failed",
+            detail="Supplier detection modules unavailable (pdfplumber or supplier_detect).",
+        )
+        with patch(MOCK_CHECK_GLOBAL, return_value=gbc):
+            resp = client.get(f"{BASE_URL}/correction-state", headers=auth)
+        assert resp.status_code == 403
+        detail = resp.json().get("detail", "")
+        assert "[scan_failed]" in detail
+
+    def test_403_includes_missing_source_reason(self, client, auth):
+        gbc = _GlobalBatchCheck(
+            is_global=False, reason="missing_source",
+            detail="No source/ directory found for batch 'lifecycle-test-batch'.",
+        )
+        with patch(MOCK_CHECK_GLOBAL, return_value=gbc):
+            resp = client.get(f"{BASE_URL}/correction-state", headers=auth)
+        assert resp.status_code == 403
+        detail = resp.json().get("detail", "")
+        assert "[missing_source]" in detail
+
+    def test_403_includes_no_pdf_reason(self, client, auth):
+        gbc = _GlobalBatchCheck(
+            is_global=False, reason="no_pdf",
+            detail="Source directory found but no PDF files.",
+        )
+        with patch(MOCK_CHECK_GLOBAL, return_value=gbc):
+            resp = client.get(f"{BASE_URL}/correction-state", headers=auth)
+        assert resp.status_code == 403
+        detail = resp.json().get("detail", "")
+        assert "[no_pdf]" in detail
+
+    def test_403_includes_parse_error_reason(self, client, auth):
+        gbc = _GlobalBatchCheck(
+            is_global=False, reason="parse_error",
+            detail="PDF files found but none could be parsed.",
+        )
+        with patch(MOCK_CHECK_GLOBAL, return_value=gbc):
+            resp = client.get(f"{BASE_URL}/correction-state", headers=auth)
+        assert resp.status_code == 403
+        detail = resp.json().get("detail", "")
+        assert "[parse_error]" in detail
+
+
+# ---------------------------------------------------------------------------
+# KEEP_CURRENT and NO_ACTION blocking at stage level
+# ---------------------------------------------------------------------------
+
+class TestCorrectionStageNoOpOptions:
+    """KEEP_CURRENT and NO_ACTION must be blocked at the stage level (409),
+    not allowed through to execute_correction_option() and wFirma push."""
+
+    def _stage_body(self, option_id: str) -> dict:
+        return {"option_id": option_id, "operator_reason": "testing no-op block"}
+
+    def _make_pdf_patches(self, batch_dir: Path):
+        fake_pdf = batch_dir / "fake.pdf"
+        fake_pdf.write_bytes(b"PDF")
+        mock_option = MagicMock()
+        mock_option.option_id = "ALIGN_TO_AUTHORITY"
+        mock_option.proposed_lines = []
+        mock_proposal = MagicMock()
+        mock_proposal.options = [mock_option]
+        return fake_pdf, mock_proposal
+
+    def test_keep_current_returns_409(self, client, auth, batch_dir):
+        """KEEP_CURRENT must be rejected at stage level — no wFirma push needed."""
+        fake_pdf, mock_proposal = self._make_pdf_patches(batch_dir)
+        with (
+            patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL),
+            patch("app.api.routes_pz._find_source_pdf", return_value=fake_pdf),
+            patch("app.api.routes_pz.parse_invoice_positions_from_pdf",
+                  return_value=[], create=True),
+            patch("app.api.routes_pz.parse_global_packing_pdf",
+                  return_value=([], None), create=True),
+            patch("app.api.routes_pz.build_global_pz_lineage",
+                  return_value=MagicMock(), create=True),
+            patch("app.api.routes_pz.build_correction_proposal",
+                  return_value=mock_proposal, create=True),
+        ):
+            resp = client.post(
+                f"{BASE_URL}/correction-stage",
+                headers=auth,
+                json=self._stage_body("KEEP_CURRENT"),
+            )
+        assert resp.status_code == 409
+        detail = resp.json().get("detail", "")
+        assert "KEEP_CURRENT" in detail
+        assert "correction-suppress" in detail
+
+    def test_no_action_returns_409(self, client, auth, batch_dir):
+        """NO_ACTION must be rejected at stage level — no wFirma push needed."""
+        fake_pdf, mock_proposal = self._make_pdf_patches(batch_dir)
+        with (
+            patch(MOCK_CHECK_GLOBAL, return_value=_IS_GLOBAL),
+            patch("app.api.routes_pz._find_source_pdf", return_value=fake_pdf),
+            patch("app.api.routes_pz.parse_invoice_positions_from_pdf",
+                  return_value=[], create=True),
+            patch("app.api.routes_pz.parse_global_packing_pdf",
+                  return_value=([], None), create=True),
+            patch("app.api.routes_pz.build_global_pz_lineage",
+                  return_value=MagicMock(), create=True),
+            patch("app.api.routes_pz.build_correction_proposal",
+                  return_value=mock_proposal, create=True),
+        ):
+            resp = client.post(
+                f"{BASE_URL}/correction-stage",
+                headers=auth,
+                json=self._stage_body("NO_ACTION"),
+            )
+        assert resp.status_code == 409
+        detail = resp.json().get("detail", "")
+        assert "NO_ACTION" in detail
+        assert "correction-suppress" in detail

@@ -187,6 +187,106 @@ class TestStageOption:
         with pytest.raises(CorrectionLifecycleTransitionError, match="CANCEL_AND_RECREATE"):
             lc.stage_option("CANCEL_AND_RECREATE", "reason", [])
 
+    # ── B.5 service-layer guard: KEEP_CURRENT and NO_ACTION ──────────────────
+
+    def test_keep_current_raises_transition_error(self, storage_root):
+        """KEEP_CURRENT must raise CorrectionLifecycleTransitionError at the
+        service layer — no execution record written, no state change."""
+        lc = make_lc(storage_root)
+        lc.get_or_init_state()
+        lc.mark_reviewed("ok")
+
+        with pytest.raises(CorrectionLifecycleTransitionError, match="KEEP_CURRENT"):
+            lc.stage_option("KEEP_CURRENT", "operator accepted existing PZ", [])
+
+    def test_keep_current_state_remains_operator_reviewed(self, storage_root):
+        """After KEEP_CURRENT block, lifecycle state must remain OPERATOR_REVIEWED."""
+        lc = make_lc(storage_root)
+        lc.get_or_init_state()
+        lc.mark_reviewed("ok")
+
+        with pytest.raises(CorrectionLifecycleTransitionError):
+            lc.stage_option("KEEP_CURRENT", "reason", [])
+
+        data = json.loads(state_file(storage_root).read_text(encoding="utf-8"))
+        assert data["state"] == "OPERATOR_REVIEWED", (
+            "State must remain OPERATOR_REVIEWED after KEEP_CURRENT block"
+        )
+
+    def test_keep_current_does_not_write_execution_record(self, storage_root):
+        """KEEP_CURRENT must not write correction_execution_record.json."""
+        lc = make_lc(storage_root)
+        lc.get_or_init_state()
+        lc.mark_reviewed("ok")
+
+        with pytest.raises(CorrectionLifecycleTransitionError):
+            lc.stage_option("KEEP_CURRENT", "reason", [])
+
+        exec_record = storage_root / "outputs" / BATCH_ID / "correction_execution_record.json"
+        assert not exec_record.exists(), (
+            "correction_execution_record.json must not be written when KEEP_CURRENT is staged"
+        )
+
+    def test_no_action_raises_transition_error(self, storage_root):
+        """NO_ACTION must raise CorrectionLifecycleTransitionError at the
+        service layer — no execution record written, no state change."""
+        lc = make_lc(storage_root)
+        lc.get_or_init_state()
+        lc.mark_reviewed("ok")
+
+        with pytest.raises(CorrectionLifecycleTransitionError, match="NO_ACTION"):
+            lc.stage_option("NO_ACTION", "no PZ document pending", [])
+
+    def test_no_action_state_remains_operator_reviewed(self, storage_root):
+        """After NO_ACTION block, lifecycle state must remain OPERATOR_REVIEWED."""
+        lc = make_lc(storage_root)
+        lc.get_or_init_state()
+        lc.mark_reviewed("ok")
+
+        with pytest.raises(CorrectionLifecycleTransitionError):
+            lc.stage_option("NO_ACTION", "reason", [])
+
+        data = json.loads(state_file(storage_root).read_text(encoding="utf-8"))
+        assert data["state"] == "OPERATOR_REVIEWED", (
+            "State must remain OPERATOR_REVIEWED after NO_ACTION block"
+        )
+
+    def test_no_action_does_not_write_execution_record(self, storage_root):
+        """NO_ACTION must not write correction_execution_record.json."""
+        lc = make_lc(storage_root)
+        lc.get_or_init_state()
+        lc.mark_reviewed("ok")
+
+        with pytest.raises(CorrectionLifecycleTransitionError):
+            lc.stage_option("NO_ACTION", "reason", [])
+
+        exec_record = storage_root / "outputs" / BATCH_ID / "correction_execution_record.json"
+        assert not exec_record.exists(), (
+            "correction_execution_record.json must not be written when NO_ACTION is staged"
+        )
+
+    def test_keep_current_error_message_contains_suppress_guidance(self, storage_root):
+        """Error message must guide operator to correction-suppress."""
+        lc = make_lc(storage_root)
+        lc.get_or_init_state()
+        lc.mark_reviewed("ok")
+
+        with pytest.raises(CorrectionLifecycleTransitionError) as exc_info:
+            lc.stage_option("KEEP_CURRENT", "reason", [])
+
+        assert "correction-suppress" in str(exc_info.value)
+
+    def test_no_action_error_message_contains_suppress_guidance(self, storage_root):
+        """Error message must guide operator to correction-suppress."""
+        lc = make_lc(storage_root)
+        lc.get_or_init_state()
+        lc.mark_reviewed("ok")
+
+        with pytest.raises(CorrectionLifecycleTransitionError) as exc_info:
+            lc.stage_option("NO_ACTION", "reason", [])
+
+        assert "correction-suppress" in str(exc_info.value)
+
     def test_cannot_stage_from_proposed_directly(self, storage_root):
         """PROPOSED -> STAGED is not a valid transition (must review first)."""
         lc = make_lc(storage_root)

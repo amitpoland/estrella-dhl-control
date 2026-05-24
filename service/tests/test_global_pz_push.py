@@ -21,6 +21,12 @@ Coverage:
   16. Warnings: partially unmapped rows (some resolved, some skipped)
   17. No routes_* import (no circular dependency)
   18. Push record format: all required keys present
+  19. write_json_atomic imported (PR B)
+  20. Push record uses write_json_atomic (PR B)
+  21. Audit patch uses write_json_atomic (PR B)
+  22. _write_json_file not called on success path (PR B)
+  23. Blocked: blank contractor_id (Gate 4a)
+  24. Blocked: blank warehouse_id (Gate 4a)
 """
 from __future__ import annotations
 
@@ -624,3 +630,81 @@ def test_22_write_json_file_not_called_on_success_path(svc, tmp_path):
         f"_write_json_file must not be called on the success path after PR B; "
         f"calls seen: {legacy_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 23 — Blocked: blank contractor_id (Gate 4a)
+# ---------------------------------------------------------------------------
+
+def test_23_blank_contractor_id_blocks_before_wfirma(svc, tmp_path):
+    """Gate 4a: empty contractor_id must block before any wFirma API call.
+
+    The check fires before batch-dir lookup and wFirma client calls, so
+    no batch dir is needed and the wFirma client must not be invoked.
+    """
+    mock_settings = MagicMock()
+    mock_settings.wfirma_correction_push_allowed = True
+    mock_settings.storage_root                   = tmp_path
+
+    wfirma_calls: List[Any] = []
+
+    with (
+        patch.object(svc, "settings", mock_settings),
+        patch(
+            "service.app.services.wfirma_client.create_warehouse_pz",
+            side_effect=lambda *a, **kw: wfirma_calls.append((a, kw)) or None,
+        ),
+    ):
+        result = svc.push_correction_to_wfirma(
+            batch_id="BATCH_001",
+            execution_record_id="BATCH_001",
+            operator_reason="test",
+            idempotency_key="idem-blank-contractor",
+            confirm_understanding=_CONFIRM_SENTINEL,
+            storage_root=tmp_path,
+            contractor_id="",          # ← blank
+            warehouse_id="WH_001",
+        )
+
+    assert result.ok is False
+    assert result.status == "blocked"
+    assert "contractor_id" in (result.error or "").lower()
+    assert "WFIRMA_SUPPLIER_CONTRACTOR_ID" in (result.error or "")
+    assert wfirma_calls == [], "wFirma client must not be called when contractor_id is blank"
+
+
+# ---------------------------------------------------------------------------
+# 24 — Blocked: blank warehouse_id (Gate 4a)
+# ---------------------------------------------------------------------------
+
+def test_24_blank_warehouse_id_blocks_before_wfirma(svc, tmp_path):
+    """Gate 4a: empty warehouse_id must block before any wFirma API call."""
+    mock_settings = MagicMock()
+    mock_settings.wfirma_correction_push_allowed = True
+    mock_settings.storage_root                   = tmp_path
+
+    wfirma_calls: List[Any] = []
+
+    with (
+        patch.object(svc, "settings", mock_settings),
+        patch(
+            "service.app.services.wfirma_client.create_warehouse_pz",
+            side_effect=lambda *a, **kw: wfirma_calls.append((a, kw)) or None,
+        ),
+    ):
+        result = svc.push_correction_to_wfirma(
+            batch_id="BATCH_001",
+            execution_record_id="BATCH_001",
+            operator_reason="test",
+            idempotency_key="idem-blank-warehouse",
+            confirm_understanding=_CONFIRM_SENTINEL,
+            storage_root=tmp_path,
+            contractor_id="CONTRACTOR_999",
+            warehouse_id="   ",        # ← whitespace-only
+        )
+
+    assert result.ok is False
+    assert result.status == "blocked"
+    assert "warehouse_id" in (result.error or "").lower()
+    assert "WFIRMA_WAREHOUSE_ID" in (result.error or "")
+    assert wfirma_calls == [], "wFirma client must not be called when warehouse_id is blank"

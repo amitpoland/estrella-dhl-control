@@ -187,6 +187,23 @@ class PZCorrectionLifecycle:
                 "Status: DEFERRED/MANUAL-ONLY. Contact wFirma support at pomoc@wfirma.pl."
             )
 
+        # KEEP_CURRENT / NO_ACTION guard -- no wFirma push needed for these options.
+        # Staging them would write a correction_execution_record.json that then triggers
+        # a wFirma PZ create in commit -- which is the opposite of what the operator wants.
+        # Direct the operator to correction-suppress to close the workflow cleanly.
+        if option_id == "KEEP_CURRENT":
+            raise CorrectionLifecycleTransitionError(
+                "KEEP_CURRENT: the existing PZ structure is accepted as-is — "
+                "no wFirma push is needed. To close this correction workflow, "
+                "call POST /api/v1/pz/lineage/{batch_id}/correction-suppress."
+            )
+        if option_id == "NO_ACTION":
+            raise CorrectionLifecycleTransitionError(
+                "NO_ACTION: acknowledged, no PZ document pending — "
+                "no wFirma push is needed. To close this correction workflow, "
+                "call POST /api/v1/pz/lineage/{batch_id}/correction-suppress."
+            )
+
         exec_result = execute_correction_option(
             batch_id=self.batch_id,
             option_id=option_id,
