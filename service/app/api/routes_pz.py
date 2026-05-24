@@ -1136,7 +1136,7 @@ def pz_correction_lifecycle_stage(
             detail=(
                 "KEEP_CURRENT: the existing PZ structure is accepted as-is — "
                 "no wFirma push is needed. To close this correction workflow, "
-                "call POST /api/v1/pz/lineage/{batch_id}/correction-suppress."
+                f"call POST /api/v1/pz/lineage/{batch_id}/correction-suppress."
             ),
         )
     if body.option_id == "NO_ACTION":
@@ -1145,7 +1145,7 @@ def pz_correction_lifecycle_stage(
             detail=(
                 "NO_ACTION: acknowledged, no PZ document pending — "
                 "no wFirma push is needed. To close this correction workflow, "
-                "call POST /api/v1/pz/lineage/{batch_id}/correction-suppress."
+                f"call POST /api/v1/pz/lineage/{batch_id}/correction-suppress."
             ),
         )
 
