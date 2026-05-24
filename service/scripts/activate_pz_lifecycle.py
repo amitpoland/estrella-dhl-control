@@ -40,6 +40,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -54,6 +55,7 @@ import httpx  # already in requirements.txt (used by existing scripts)
 # ---------------------------------------------------------------------------
 
 ENV_PATH          = Path(r"C:\PZ\.env")
+CHECKPOINT_DIR    = Path(r"C:\PZ\env-checkpoints")
 AUDIT_LOG_PATH    = Path(r"C:\PZ\logs\activation_audit.jsonl")
 SERVICE_NAME      = "PZService"
 BASE_URL          = "http://127.0.0.1:47213"
@@ -150,6 +152,43 @@ def _get_api_key() -> str:
     if not key:
         raise ValueError("AUTH_SECRET_KEY not found in .env — cannot authenticate")
     return key
+
+
+def _create_checkpoint(dry_run: bool) -> Path:
+    """Save a timestamped copy of .env before any mutation.
+
+    M1 fix: pre-write checkpoint must exist before PZ_CORRECTION_LIFECYCLE_ENABLED
+    is changed.  Matches the PowerShell convention:
+        C:\\PZ\\env-checkpoints\\env-checkpoint-YYYYMMDD-HHMMSS.bak
+
+    Secrets are never printed — only the destination path is logged.
+    In dry-run mode the checkpoint is NOT written (idempotent with dry-run contract),
+    but the intended path is logged so the operator can verify it would be correct.
+    """
+    stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    dest  = CHECKPOINT_DIR / f"env-checkpoint-{stamp}.bak"
+    _audit("checkpoint", {"path": str(dest)}, dry_run=dry_run)
+    if dry_run:
+        print(f"  [DRY-RUN] Would save checkpoint -> {dest}", flush=True)
+        return dest
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ENV_PATH, dest)
+    print(f"  [CHECKPOINT] Saved -> {dest}", flush=True)
+    return dest
+
+
+def _get_git_sha() -> str:
+    """Return the current short git SHA, or 'unknown' if git is unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -253,10 +292,15 @@ def _assert_push_flag_not_set() -> None:
 # ---------------------------------------------------------------------------
 
 def step1_enable_lifecycle_flag(dry_run: bool) -> None:
-    """Step 1: Set PZ_CORRECTION_LIFECYCLE_ENABLED=true in .env."""
+    """Step 1: Set PZ_CORRECTION_LIFECYCLE_ENABLED=true in .env.
+
+    M1 fix: checkpoint is created before any write so the operator can restore
+    the previous .env if Step 2 or later fails unexpectedly.
+    """
     print("\n[STEP 1] Enable lifecycle flag (correction-state/stage/reset/suppress)", flush=True)
     print(f"  Target: {ENV_PATH}", flush=True)
     print(f"  Flag:   {FLAG_LIFECYCLE}=true", flush=True)
+    _create_checkpoint(dry_run)  # M1: checkpoint before mutation
     _set_flag(FLAG_LIFECYCLE, "true", dry_run)
     print("  [OK] Flag written" if not dry_run else "  [DRY-RUN] Would write flag", flush=True)
 
@@ -380,10 +424,10 @@ def step7_decision_gate() -> None:
         "=" * 70 + "\n"
         "\n"
         "Lifecycle routes are now ACTIVE:\n"
-        "  GET  /pz/lineage/{batch_id}/correction-state  → live\n"
-        "  POST /pz/lineage/{batch_id}/correction-stage  → live\n"
-        "  DEL  /pz/lineage/{batch_id}/correction-stage  → live\n"
-        "  POST /pz/lineage/{batch_id}/correction-suppress → live\n"
+        "  GET  /pz/lineage/{batch_id}/correction-state   -> live\n"
+        "  POST /pz/lineage/{batch_id}/correction-stage   -> live\n"
+        "  DEL  /pz/lineage/{batch_id}/correction-stage   -> live\n"
+        "  POST /pz/lineage/{batch_id}/correction-suppress -> live\n"
         "\n"
         "Correction-commit is still BLOCKED:\n"
         f"  WFIRMA_CORRECTION_PUSH_ALLOWED is OFF — no wFirma write path reachable.\n"
@@ -407,9 +451,14 @@ def step7_decision_gate() -> None:
 # ---------------------------------------------------------------------------
 
 def _rollback(dry_run: bool) -> None:
-    """Revert lifecycle flag to false and restart service."""
+    """Revert lifecycle flag to false and restart service.
+
+    M1 fix: checkpoint created before reverting the flag, matching the same
+    pre-write discipline as the activation path.
+    """
     print("\n[ROLLBACK] Reverting PZ_CORRECTION_LIFECYCLE_ENABLED to false …", flush=True)
     _audit("rollback_start", {}, dry_run=dry_run)
+    _create_checkpoint(dry_run)  # M1: checkpoint before rollback write
     _set_flag(FLAG_LIFECYCLE, "false", dry_run)
     _restart_service(dry_run)
     _audit("rollback_complete", {}, dry_run=dry_run)
@@ -440,8 +489,17 @@ def main() -> None:
         metavar="BATCH_ID",
         help="Batch ID to use in the correction-state smoke test.",
     )
+    parser.add_argument(
+        "--sha",
+        default="",
+        metavar="SHA",
+        help="Git SHA for audit log entries (default: auto-detected via git rev-parse).",
+    )
     args = parser.parse_args()
     dry_run = not args.execute
+
+    # L3 fix: resolve SHA at runtime instead of hardcoding
+    sha = args.sha or _get_git_sha()
 
     if dry_run and not args.rollback:
         print(
@@ -450,8 +508,10 @@ def main() -> None:
             flush=True,
         )
 
-    # Hard safety guard — push flag must not already be set
-    _assert_push_flag_not_set()
+    # M2 fix: push-flag guard applies to activation only, never to rollback.
+    # Rollback is unconditionally safe regardless of push flag state.
+    if not args.rollback:
+        _assert_push_flag_not_set()
 
     if args.rollback:
         _rollback(dry_run=dry_run)
@@ -461,7 +521,7 @@ def main() -> None:
     api_key = _get_api_key()
 
     # Gate sequence
-    _audit("activation_start", {"sha": "5bcb492", "dry_run": dry_run})
+    _audit("activation_start", {"sha": sha, "dry_run": dry_run})
 
     step1_enable_lifecycle_flag(dry_run)
     step2_restart_service(dry_run)
@@ -480,7 +540,7 @@ def main() -> None:
     step6_assert_push_still_off(dry_run)
     step7_decision_gate()
 
-    _audit("activation_complete", {"sha": "5bcb492", "dry_run": dry_run})
+    _audit("activation_complete", {"sha": sha, "dry_run": dry_run})
 
 
 if __name__ == "__main__":

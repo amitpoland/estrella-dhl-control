@@ -1,7 +1,7 @@
 # PZ Correction Lifecycle — Phase 1 Activation Runbook
 
-**Document version:** 1.0  
-**Produced:** 2026-05-25  
+**Document version:** 1.1  
+**Produced:** 2026-05-25 (v1.0) — updated 2026-05-25 (v1.1: M3 fix — Step 4b correct endpoint)  
 **Author:** Deployment automation pipeline (session 2398098c)  
 **Status:** READY — all backend blockers resolved (PR C merged SHA `9d044c5`, deployed SHA `5bcb492`)
 
@@ -324,9 +324,12 @@ Invoke-WebRequest `
 ### 4b. Reset back to OPERATOR_REVIEWED
 
 ```powershell
+# M3 fix (runbook v1.1): reset is DELETE on /correction-stage — NOT POST /correction-reset.
+# The path /correction-reset does not exist in the backend (returns 404).
+# Correct backend route: DELETE /api/v1/pz/lineage/{batch_id}/correction-stage
 Invoke-WebRequest `
-    -Uri "http://127.0.0.1:47213/api/v1/pz/lineage/$batch_id/correction-reset" `
-    -Method POST -Headers @{"X-API-Key"=$k} -UseBasicParsing
+    -Uri "http://127.0.0.1:47213/api/v1/pz/lineage/$batch_id/correction-stage" `
+    -Method DELETE -Headers @{"X-API-Key"=$k} -UseBasicParsing
 ```
 
 **Expected:** HTTP 200, state transitions back to `OPERATOR_REVIEWED`.
