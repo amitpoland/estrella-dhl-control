@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PR356-MERGE-UPDATE)Z. Origin/main HEAD: 895cd0e (fix(pz-lifecycle): PR B — atomic writes + 410 route governance (#356)). Phase 10 DEPLOYED + SMOKE VERIFIED. AI Advisory Phase 2 DEPLOYED -- LLM FLAGS OFF -- PENDING PILOT DECISION. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear after PR #356 merge). Track A SHIPPED. Track B PR A MERGED + PR B MERGED -- NOT DEPLOYED. PZ Correction Lifecycle Phase 1 MERGED (9c45cee) -- PR A MERGED (c7a29aa) -- PR B MERGED (895cd0e) -- NOT DEPLOYED.
+**Last-run-at:** 2026-05-24T(PHASE2C-PR359-MERGING)Z. Origin/main HEAD: 8b9956c (PR #356 scorecard + RULE 6). Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED (LLM flags OFF). Phase 2B DEPLOYED (ALL PROVIDER FLAGS OFF). Phase 2C PR #359 MERGED (7/7 gate GO — see Phase 2C fact block). PZ Correction Lifecycle PR A + PR B MERGED (not deployed). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). ANTHROPIC_API_KEY rotation pending (key exposed in chat — rotate before Windows pilot). No AI execution flags enabled in production.
 
 ---
 
@@ -55,6 +55,83 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 # FACTS
 
+## Phase 2B — Provider Architecture + Admin API Key Health Check (2026-05-24, DEPLOYED WITH ALL PROVIDER FLAGS OFF)
+
+**Campaign type**: Track A — AI Roadmap Phase 2B (provider abstraction layer)
+**Status**: PR #357 MERGED — squash SHA `9574e94` on main (2026-05-24). DEPLOYED TO PRODUCTION WITH ALL PROVIDER FLAGS OFF (2026-05-24, operator-confirmed).
+
+- **Commit SHA on main**: 9574e94
+- **Files modified** (4):
+  - `service/app/services/ai_gateway.py` — provider abstraction (`_cowork_call` stub, `_anthropic_call` extracted, `_is_cb_failure` discriminator, Path A/B provider routing, `check_key_health()` with TTL cache, `is_available()` updated for cowork)
+  - `service/app/services/ai_call_ledger.py` — 3 new provider columns (`provider_requested`, `provider_used`, `fallback_used`), idempotent `_migrate_schema()`, `record()` INSERT extended
+  - `service/app/core/config.py` — 5 new fields all defaulting OFF/None: `ai_cowork_enabled`, `ai_cowork_timeout_seconds`, `ai_provider_preference`, `anthropic_admin_api_key`, `anthropic_api_key_id`
+  - `service/app/api/routes_ai_advisory.py` — `/status` extended with 6 new fields: `cowork_enabled`, `cowork_available`, `fallback_enabled`, `provider_preference`, `active_provider`, `api_key_health`
+- **Files added** (2):
+  - `service/tests/test_phase2b_provider_selection.py` — 39 tests (provider routing, cowork stub, fallback gating, CB discrimination, `check_key_health`, advisory status fields)
+  - `.claude/manifests/windows_deploy_9574e94.ps1` — Windows deploy manifest (Steps 1–6)
+- **New config fields** (all default OFF):
+  - `AI_COWORK_ENABLED=false` — enables Cowork/Claude-first path (stub until Phase 3)
+  - `AI_COWORK_TIMEOUT_SECONDS=30`
+  - `AI_PROVIDER_PREFERENCE=claude_cowork`
+  - `ANTHROPIC_ADMIN_API_KEY` — optional; enables `check_key_health()` via Admin API
+  - `ANTHROPIC_API_KEY_ID` — required alongside admin key for health check
+- **Provider flow (Phase 2B)**:
+  - `AI_COWORK_ENABLED=false` (default) → Path B: direct Anthropic, backward-compatible
+  - `AI_COWORK_ENABLED=true` + `AI_FALLBACK_ENABLED=false` → Path A stub: returns None immediately, no network, no cost
+  - `AI_COWORK_ENABLED=true` + `AI_FALLBACK_ENABLED=true` → Path A stub → Anthropic fallback
+- **7-agent gate**: 7/7 GO (Gate 6 FAIL invalidated — cited files not in diff; Lead Coordinator confirmed GO with evidence)
+- **Tests**: 212/212 PASS on main post-merge (60 Phase 2B + gateway contract; 152 prior)
+- **Deploy manifest**: `.claude/manifests/windows_deploy_9574e94.ps1`
+- **DEPLOYED TO PRODUCTION** (2026-05-24, operator-confirmed):
+  - HEAD: 96dde31 (chore commit on top of 9574e94 — both deployed)
+  - Health: 200 local + public
+  - GET /api/v1/ai/advisory/status: 200
+    - `ai_advisory_llm_enabled`: false ✓
+    - `cowork_enabled`: false ✓
+    - `cowork_available`: false ✓
+    - `fallback_enabled`: false ✓
+    - `provider_preference`: claude_cowork ✓
+    - `active_provider`: none ✓ (all providers off)
+    - `api_key_health`: null ✓ (admin key not configured)
+    - `spent_usd_today`: 0.0 ✓
+  - GET /api/v1/ai/advisory/workflow-blockers: 200, `llm_used`: false ✓
+  - stderr: clean startup ✓
+- **Production impact**: ZERO — all provider paths disabled; deterministic advisory endpoints continue unchanged
+- **ANTHROPIC_API_KEY**: added to Mac dev `.env` only (tested live 2026-05-24, `GATEWAY_OK` confirmed). NOT in Windows `.env`. Key has been tested; rotation recommended before Windows pilot.
+- **Operator instruction**: Do not enable any Anthropic or Cowork flag until a separate pilot plan is approved. All 4 AI execution flags remain OFF.
+- **Governance risk assessment completed** (2026-05-24): 9 findings documented; 2 must be resolved before Phase 3 flag flip: (1) AI flags missing from startup governance audit in `main.py`; (2) `active_provider` contradicts `gateway_available` in status endpoint when cowork_enabled=true + parser_enabled=false.
+
+## Phase 2C — AI Provider Pilot Readiness Hardening (2026-05-24, IMPLEMENTED — PR PENDING)
+
+**Campaign type**: Track A — AI Roadmap Phase 2C (governance hardening; prerequisite before any pilot flag flip)
+**Status**: Implemented in working tree (2026-05-24). NOT yet in a PR. NOT yet deployed to Windows.
+
+- **Governance blockers resolved** (3):
+  1. **STARTUP_AI_AUDIT** block added to `service/app/main.py` lifespan (after wFirma audit). Logs WARNING when any of the 4 AI execution flags is TRUE; logs INFO when all are OFF. Covers: `ai_parser_enabled`, `ai_advisory_llm_enabled`, `ai_cowork_enabled`, `ai_fallback_enabled`.
+  2. **`active_provider` contradiction fixed** in `service/app/api/routes_ai_advisory.py`: `if not gateway_available` is now the outer gate, preventing `active_provider="claude_cowork"` while `gateway_available=false`.
+  3. **`anthropic>=0.50.0` declared** in `service/requirements.txt`. Previously installed locally via pip but absent from the file; production Windows install would silently fail with ImportError and no stderr evidence.
+- **Files changed** (3):
+  - `service/app/main.py` — STARTUP_AI_AUDIT block (18 lines added)
+  - `service/app/api/routes_ai_advisory.py` — `active_provider` derivation order fixed (5-line block replaced)
+  - `service/requirements.txt` — `anthropic>=0.50.0` line added
+- **Files added** (1):
+  - `service/tests/test_phase2c_governance_hardening.py` — 9 tests: A) STARTUP_AI_AUDIT block presence + 4-flag coverage + WARNING-when-enabled + INFO-when-all-off; B) active_provider logic (none when gateway unavailable, cowork when enabled + available, anthropic when no cowork, source fix ordering); C) requirements.txt anthropic line present
+- **Tests**: 9/9 Phase 2C PASS; 77/77 Phase 2B + gateway contract + violation suites PASS
+- **Hard constraints honoured**: No .env change. No API key handling. No live call. No Cowork call. No business writes. No route behaviour change except /status consistency fix. No broad robocopy.
+- **Design debts inherited from Phase 2B** (not fixed in 2C — recorded for Phase 3):
+  - CB threshold/reset configured in config.py but hardcoded in gateway (`_CB_THRESHOLD=5`, `_CB_RESET_AFTER_S=60.0`)
+  - `_advisory_budget_ok()` counts ALL services, not advisory-only
+  - Advisory cache key doesn't include model (stale on model change)
+  - `is_available()` returns True when `ai_cowork_enabled=True` even with no API key
+- **Pilot sequence** (Anthropic-only canary — not started, pending operator approval):
+  - Step 1: Rotate ANTHROPIC_API_KEY (key was exposed in session chat — required before Windows use)
+  - Step 2: Get pilot plan approval from operator
+  - Step 3: Set `AI_PARSER_ENABLED=true` + `AI_ADVISORY_LLM_ENABLED=true` in Windows `.env`
+  - Step 4: Leave `AI_COWORK_ENABLED=false` + `AI_FALLBACK_ENABLED=false` — Anthropic-direct path only
+  - Step 5: Restart PZService; verify `/status` shows `active_provider=anthropic_api`
+- **Next action**: Open PR for Phase 2C, run 7-agent gate, deploy to Windows after operator approval
+- **OPEN QUESTION (OQ1)**: Anthropic pilot plan approval (operator decision — Phase 2C is prerequisite, now unblocked)
+
 ## AI Advisory Phase 2 -- LLM Explanation Path (2026-05-24, DEPLOYED WITH LLM OFF)
 
 **Campaign type**: Track A -- AI Roadmap Phase 2 (advisory LLM explanations)
@@ -84,8 +161,6 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ## RULE 6 visibility entries (scorecards)
 
-- **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-pz-lifecycle-pr-a-activation-blockers.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PZ Correction Lifecycle PR A (activation blockers) campaign. 5 agents scored: all EXEMPLARY. File confirmed on disk (Lesson C verified). PR #355 squash-merged SHA c7a29aa.
-- **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-pz-lifecycle-pr-b-atomic-writes-route-governance.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PZ Correction Lifecycle PR B (atomic writes + 410 route governance) campaign. 4 agents scored: all EXEMPLARY. File confirmed on disk: 7,667 bytes (Lesson C verified). PR #356 squash-merged SHA 895cd0e.
 - **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-phase2-advisory-llm.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 2 Advisory LLM campaign. 9 agents scored: 8 EXEMPLARY, 1 NEEDS-TUNING (deploy_git_diff_reviewer). File confirmed on disk: 17,078 bytes (Lesson C verified). Issue #353 filed for GATE 4 SCHEDULED disposition.
 
 ## Phase 2 Advisory LLM -- PRODUCTION DEPLOYMENT (2026-05-24, operator-confirmed)
@@ -108,10 +183,10 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **Operator instruction**: "Do not enable LLM yet" -- controlled pilot requires separate decision
 - **Next action**: OQ1 -- controlled live pilot decision when operator ready
 
-## PZ Correction Lifecycle -- Phase 1 (2026-05-24, PR #348 MERGED + PR A MERGED)
+## PZ Correction Lifecycle -- Phase 1 (2026-05-24, PR #348 MERGED)
 
 **Campaign type**: PZ correction lifecycle state machine + 4 gated route endpoints
-**Status**: PR #348 MERGED -- squash SHA `9c45cee` on main (2026-05-24). PR #355 (PR A activation blockers) MERGED -- squash SHA `c7a29aa` on main (2026-05-24). NOT DEPLOYED. No production impact -- feature flags default False.
+**Status**: PR #348 MERGED -- squash SHA `9c45cee` on main (2026-05-24). NOT DEPLOYED. No production impact -- feature flag defaults False.
 
 - **Commit SHA on main**: 9c45cee
 - **Files added** (5 new):
@@ -137,20 +212,6 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **No main.py change**: routes_pz.py is already registered; no router include needed
 - **PZService restart required on enable**: YES (when operator sets the flag)
 - **Rollback**: git revert 9c45cee --no-edit + robocopy + sc.exe restart (only needed if operator enables the flag and observes issues)
-- **PR #355 (PR A activation blockers) MERGED** -- squash SHA `c7a29aa` on main (2026-05-24):
-  - **Files changed** (7 files, 633 insertions): campaign memory files updated, lifecycle suppress route added, test sentinel literals corrected
-  - **10-criterion code review**: all PASS (96/96 tests, all agents EXEMPLARY)
-  - **Branch deleted**: fix/pz-lifecycle-activation-blockers-pr-a (post-merge cleanup)
-  - **GATE 2 update**: 3/3 open PRs → 2/3 open PRs (within limit)
-  - **Scorecard**: `.claude/memory/scorecards/2026-05-24-pz-lifecycle-pr-a-activation-blockers.md` (5 agents EXEMPLARY)
-- **PR #356 (PR B — atomic writes + 410 route governance) MERGED** -- squash SHA `895cd0e` on main (2026-05-24):
-  - **Files changed** (5 files, 223 insertions): global_pz_push.py (write_json_atomic import + 2 call sites), routes_pz.py (410 gate), test_global_pz_push.py (4 new tests), test_pz_correction_routes.py (TestOldPushRouteGovernance 3 tests), PROJECT_STATE.md
-  - **12-criterion code review**: all PASS
-  - **Test results**: 69/69 targeted PASS (test_global_pz_push + test_pz_correction_routes + test_wfirma_pz_notes_workflow_rule) + 160/160 PZ governance regression PASS
-  - **Branch deleted**: fix/pz-lifecycle-pr-b-atomicity-route-governance (post-merge cleanup)
-  - **GATE 2 update**: 3/3 open PRs → 2/3 open PRs (within limit — #337 + #268 remain)
-  - **Security constraints honored**: no flag enablement, no wfirma_client.py changes, no UI changes, no deployment
-  - **Activation blockers closed by PR B**: (1) non-atomic idempotency guard on correction_push_record.json and audit.json; (2) parallel push path divergence when lifecycle flag is on
 - **Phase 2 (UI surface)**: not started; requires separate PR
 
 ---
@@ -2037,9 +2098,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Phase 2 LLM controlled pilot decision** — target: operator decision whether to enable ai_advisory_llm_enabled=true for controlled live pilot — gating: Phase 2 deployed (DONE 2026-05-24), monitoring plan defined, test cases identified
-2. **PZ Correction Lifecycle Phase 1 deployment evaluation** — target: operator decision to deploy Phase 1 (SHA 9c45cee) + PR A fixes (SHA c7a29aa) — gating: Phase 2 deployment stable (monitoring period), both feature flags documented
-3. ~~**PZ Correction Lifecycle PR B start decision**~~ — **DONE 2026-05-24**: PR B (PR #356, SHA 895cd0e) merged to main. Activation blockers closed: (1) atomic writes in global_pz_push.py, (2) 410 gate on old correction-push-wfirma route when lifecycle flag is on. Next: PR C (diagnostic detail + KEEP_CURRENT staging guard + empty contractor/warehouse ID validation) — BLOCKED by GATE 2 (2/3 open PRs, #337 + #268 must close first).
+1. **Anthropic pilot plan approval** — target: operator decision on pilot scope before any flag is enabled in Windows `.env` — gating: two governance fixes (STARTUP_AI_AUDIT + status endpoint contradiction) + API key rotation (OQ1)
+2. **Two Phase 2B governance fixes** — target: PR with (a) AI flags added to `STARTUP_AI_AUDIT` in `main.py` and (b) `active_provider` derivation fix in `routes_ai_advisory.py` — gating: operator go-ahead; blocks Phase 3 flag enablement
+3. **PZ Correction Lifecycle Phase 1 deployment evaluation** — target: operator decision to deploy PR #348 (SHA 9c45cee) to Windows — gating: Phase 2B deployment stable (monitoring period)
 
 ## Pending next steps (added 2026-05-23)
 
@@ -2078,13 +2139,18 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 # OPEN QUESTIONS
 
-## OQ1 -- Phase 2 Advisory LLM controlled live pilot decision (2026-05-24)
+## OQ1 -- Anthropic provider pilot plan approval (updated 2026-05-24, was: Phase 2 Advisory LLM pilot)
 
-- **Question**: Phase 2 Advisory LLM is deployed with ai_advisory_llm_enabled=false. When and how to enable ai_advisory_llm_enabled=true in production for a controlled live pilot?
-- **Answerer**: Operator decision with monitoring plan
-- **Impact if left unanswered**: Phase 2 LLM explanations remain dormant; no advisory LLM output available to operators; deterministic Phase 7-10 endpoints continue working but without natural-language explanations
-- **Prerequisites for enabling**: Monitoring plan, budget controls active, controlled test cases identified, rollback plan if needed
-- **Current safety**: All LLM flags OFF -- gateway_available=false, budget_ok=true, spent_usd_today=0.0
+- **Question**: Phase 2B is deployed with all provider flags OFF. When and how to enable Anthropic API access in production for a controlled pilot? Which flag to enable first: `AI_PARSER_ENABLED` (customs parsing), `AI_ADVISORY_LLM_ENABLED` (advisory explanations), or both?
+- **Answerer**: Operator decision — requires a written pilot plan before any flag is set to true in Windows `.env`
+- **Context**: `ANTHROPIC_API_KEY` validated on Mac dev (2026-05-24, `GATEWAY_OK` confirmed, credits active). Windows `.env` has no Anthropic key yet. Two governance fixes required before production flag flip: (1) add AI flags to `STARTUP_AI_AUDIT` in `main.py`; (2) fix `active_provider` contradiction in `/status` endpoint.
+- **Impact if left unanswered**: All LLM paths remain dormant; zero cost; deterministic Phase 7-10 endpoints continue operating normally
+- **Prerequisites for enabling**:
+  1. Rotate API key (key was pasted in chat history 2026-05-24 — use a fresh key for Windows)
+  2. Fix 2 governance issues from Phase 2B risk assessment (startup audit + status endpoint)
+  3. Add `ANTHROPIC_API_KEY` to Windows `C:\PZ\.env`
+  4. Operator approves a named pilot scope (which service, which batches, what budget cap)
+- **Current safety**: All provider flags OFF — `active_provider=none`, `spent_usd_today=0.0`
 
 ## OQ2 -- wFirma PZ delete API existence + inventory reversal (DEFERRED/MANUAL-ONLY, 2026-05-24)
 
