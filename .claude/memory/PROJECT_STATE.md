@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-25T(PHASE2C-MERGED)Z. Origin/main HEAD: 40c30f1 (Phase 2C — AI provider pilot readiness hardening, PR #359). Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED (LLM flags OFF). Phase 2B DEPLOYED (ALL PROVIDER FLAGS OFF). Phase 2C MERGED (squash 40c30f1, 7/7 gate GO) — NOT YET DEPLOYED TO WINDOWS. PZ Correction Lifecycle PR A + PR B MERGED (not deployed). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). ANTHROPIC_API_KEY rotation pending (key exposed in chat — rotate before Windows pilot). No AI execution flags enabled in production.
+**Last-run-at:** 2026-05-25T(PR358-MERGED)Z. Origin/main HEAD: 9d044c5 (PR C — diagnostics, no-op guards, empty-ID gate, #358). Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED (LLM flags OFF). Phase 2B DEPLOYED (ALL PROVIDER FLAGS OFF). Phase 2C MERGED (squash 40c30f1) — NOT YET DEPLOYED TO WINDOWS. PZ Correction Lifecycle PR A + PR B + PR C ALL MERGED (not deployed, flags off). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear — slot available). ANTHROPIC_API_KEY rotation pending (key exposed in chat — rotate before Windows pilot). No AI execution flags enabled in production. No PZ lifecycle flags enabled.
 
 ---
 
@@ -213,6 +213,38 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **PZService restart required on enable**: YES (when operator sets the flag)
 - **Rollback**: git revert 9c45cee --no-edit + robocopy + sc.exe restart (only needed if operator enables the flag and observes issues)
 - **Phase 2 (UI surface)**: not started; requires separate PR
+
+### PR A — Activation Blockers (PR #355, MERGED 2026-05-24)
+
+- **Commit SHA on main**: `c7a29aa` (squash)
+- **Files changed** (7): campaign memory, lifecycle suppress route, test sentinel literals corrected
+- **10-criterion code review**: all PASS; 96/96 tests; 5 agents EXEMPLARY
+- **Scorecard**: `.claude/memory/scorecards/2026-05-24-pz-lifecycle-pr-a-activation-blockers.md`
+- **GATE 2 update**: 3/3 → 2/3 (within limit)
+
+### PR B — Atomic Writes + 410 Route Governance (PR #356, MERGED 2026-05-24)
+
+- **Commit SHA on main**: `895cd0e` (squash)
+- **Files changed** (5): `global_pz_push.py` (write_json_atomic import + 2 call sites), `routes_pz.py` (410 gate), `test_global_pz_push.py` (4 tests), `test_pz_correction_routes.py` (TestOldPushRouteGovernance 3 tests), PROJECT_STATE.md
+- **12-criterion code review**: all PASS; 69/69 targeted + 160/160 governance regression PASS
+- **Activation blockers closed**: (1) non-atomic idempotency guard on correction_push_record.json and audit.json; (2) parallel push path divergence when lifecycle flag is on
+- **Security**: no flag enablement, no wfirma_client.py changes, no UI changes, no deployment
+
+### PR C — Diagnostics, No-Op Guards, Empty-ID Gate (PR #358, MERGED 2026-05-25)
+
+- **Commit SHA on main**: `9d044c5` (squash)
+- **Files changed** (7): `routes_pz.py`, `pz_correction_lifecycle.py`, `global_pz_push.py`, `test_pz_correction_routes.py`, `test_pz_correction_lifecycle.py`, `test_global_pz_push.py`, PROJECT_STATE.md
+- **Changes**:
+  - `_GlobalBatchCheck` NamedTuple + `_check_global_batch()` — all 5 correction-* routes return structured `[reason]` in 403 responses (reason codes: not_global / scan_failed / missing_source / no_pdf / parse_error)
+  - KEEP_CURRENT / NO_ACTION blocked at route level (409) before PDF loading; f-string ensures actual `batch_id` in suppress URL
+  - Matching KEEP_CURRENT / NO_ACTION guard in `stage_option()` for defence-in-depth (raises `CorrectionLifecycleTransitionError`)
+  - Gate 4a in `global_pz_push.py` — blank `contractor_id` / `warehouse_id` blocks before wFirma API call; error names the `.env` variable
+  - `TestGlobalBatchDiagnostics` (5 tests), `TestCorrectionStageNoOpOptions` (2 tests), test_23/test_24 blank-ID gate, 8 service-layer tests in `TestStageOption`
+- **13/13 verification items**: PASS | **100/100 tests**: PASS
+- **Activation blockers closed by PR C**: (3) non-diagnostic 403 when supplier detection fails; (4) KEEP_CURRENT/NO_ACTION incorrectly flowing to FAILED lifecycle state; (5) blank contractor_id/warehouse_id reaching wFirma create
+- **Security**: no CANCEL_AND_RECREATE, no wfirma_client.py changes, no UI changes, no flags enabled, not deployed
+- **GATE 2 update**: 3/3 → 2/3 (PR #358 merged; #337 + #268 remain open; slot available)
+- **ALL PRs A+B+C MERGED** — backend activation blockers 1–5 all closed; Phase 1 ready for activation when operator decides
 
 ---
 
