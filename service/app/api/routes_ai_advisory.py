@@ -122,13 +122,18 @@ def advisory_status() -> JSONResponse:
 
     budget_ok = (budget <= 0) or (spent_today < budget)
 
-    # Compute active provider based on config
-    if cowork_enabled and provider_pref == "claude_cowork":
-        active_provider = "claude_cowork"
-    elif gateway_available:
-        active_provider = "anthropic_api"
-    else:
+    # Compute active provider based on config.
+    # Rule: gateway_available is the outer gate.  A provider can only be
+    # "active" if the gateway itself is usable (enabled + API key present).
+    # Checking cowork_enabled BEFORE gateway_available produced the
+    # contradiction where active_provider="claude_cowork" while
+    # gateway_available=false — fixed here.
+    if not gateway_available:
         active_provider = "none"
+    elif cowork_enabled and provider_pref == "claude_cowork":
+        active_provider = "claude_cowork"
+    else:
+        active_provider = "anthropic_api"
 
     # Admin API key health check (optional — None if admin key not configured)
     api_key_health = None

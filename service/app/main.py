@@ -206,6 +206,28 @@ async def lifespan(app: FastAPI):
     else:
         log.info("STARTUP_GOVERNANCE_AUDIT: all wFirma write flags are FALSE (safe defaults).")
 
+    # ── AI execution flag audit at startup ──────────────────────────────────
+    # AI flags are env-var-only and default OFF.  Any TRUE value means a live
+    # LLM call may be attempted at runtime.  Emit the live values so operators
+    # can detect an accidental enable (e.g. a .env edit applied on a dev box
+    # but not intended for this deployment, or an NSSM restart that re-read a
+    # stale .env).
+    _ai_flags = {
+        "ai_parser_enabled":       getattr(settings, "ai_parser_enabled",       False),
+        "ai_advisory_llm_enabled": getattr(settings, "ai_advisory_llm_enabled", False),
+        "ai_cowork_enabled":       getattr(settings, "ai_cowork_enabled",        False),
+        "ai_fallback_enabled":     getattr(settings, "ai_fallback_enabled",      False),
+    }
+    _ai_enabled = [k for k, v in _ai_flags.items() if v]
+    if _ai_enabled:
+        log.warning(
+            "STARTUP_AI_AUDIT: the following AI execution flags are TRUE "
+            "(env-var-only — verify .env is intentional): %s",
+            _ai_enabled,
+        )
+    else:
+        log.info("STARTUP_AI_AUDIT: all AI execution flags are OFF (safe defaults).")
+
     log.info("Starting Estrella PZ Service  [env=%s]", settings.environment)
     log.info("Engine dir: %s", settings.engine_dir)
 
