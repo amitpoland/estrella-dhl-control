@@ -378,6 +378,24 @@ def push_correction_to_wfirma(
             error="Invalid batch_id: path traversal characters not allowed.",
         )
 
+    # ── Gate 4a: contractor and warehouse ID validation ───────────────────────
+    if not str(contractor_id).strip():
+        return PushResult(
+            ok=False, batch_id=batch_id, status="blocked",
+            error=(
+                "contractor_id is empty — cannot create PZ document. "
+                "Set WFIRMA_SUPPLIER_CONTRACTOR_ID in .env."
+            ),
+        )
+    if not str(warehouse_id).strip():
+        return PushResult(
+            ok=False, batch_id=batch_id, status="blocked",
+            error=(
+                "warehouse_id is empty — cannot create PZ document. "
+                "Set WFIRMA_WAREHOUSE_ID in .env."
+            ),
+        )
+
     # ── Find batch storage ────────────────────────────────────────────────────
     bdir = _batch_dir(batch_id, storage_root)
     if bdir is None:
