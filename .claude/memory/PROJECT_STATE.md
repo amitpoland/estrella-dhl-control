@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PR355-MERGE-UPDATE)Z. Origin/main HEAD: c7a29aa (fix(pz-lifecycle): PR A — sentinel, suppress route, doc corrections (#355)). Phase 10 DEPLOYED + SMOKE VERIFIED. AI Advisory Phase 2 DEPLOYED -- LLM FLAGS OFF -- PENDING PILOT DECISION. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). Track A SHIPPED. Track B PR A MERGED -- NOT DEPLOYED. PZ Correction Lifecycle Phase 1 MERGED (9c45cee) -- PR A MERGED (c7a29aa) -- NOT DEPLOYED.
+**Last-run-at:** 2026-05-24T(PR356-MERGE-UPDATE)Z. Origin/main HEAD: 895cd0e (fix(pz-lifecycle): PR B — atomic writes + 410 route governance (#356)). Phase 10 DEPLOYED + SMOKE VERIFIED. AI Advisory Phase 2 DEPLOYED -- LLM FLAGS OFF -- PENDING PILOT DECISION. OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear after PR #356 merge). Track A SHIPPED. Track B PR A MERGED + PR B MERGED -- NOT DEPLOYED. PZ Correction Lifecycle Phase 1 MERGED (9c45cee) -- PR A MERGED (c7a29aa) -- PR B MERGED (895cd0e) -- NOT DEPLOYED.
 
 ---
 
@@ -142,6 +142,14 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
   - **Branch deleted**: fix/pz-lifecycle-activation-blockers-pr-a (post-merge cleanup)
   - **GATE 2 update**: 3/3 open PRs → 2/3 open PRs (within limit)
   - **Scorecard**: `.claude/memory/scorecards/2026-05-24-pz-lifecycle-pr-a-activation-blockers.md` (5 agents EXEMPLARY)
+- **PR #356 (PR B — atomic writes + 410 route governance) MERGED** -- squash SHA `895cd0e` on main (2026-05-24):
+  - **Files changed** (5 files, 223 insertions): global_pz_push.py (write_json_atomic import + 2 call sites), routes_pz.py (410 gate), test_global_pz_push.py (4 new tests), test_pz_correction_routes.py (TestOldPushRouteGovernance 3 tests), PROJECT_STATE.md
+  - **12-criterion code review**: all PASS
+  - **Test results**: 69/69 targeted PASS (test_global_pz_push + test_pz_correction_routes + test_wfirma_pz_notes_workflow_rule) + 160/160 PZ governance regression PASS
+  - **Branch deleted**: fix/pz-lifecycle-pr-b-atomicity-route-governance (post-merge cleanup)
+  - **GATE 2 update**: 3/3 open PRs → 2/3 open PRs (within limit — #337 + #268 remain)
+  - **Security constraints honored**: no flag enablement, no wfirma_client.py changes, no UI changes, no deployment
+  - **Activation blockers closed by PR B**: (1) non-atomic idempotency guard on correction_push_record.json and audit.json; (2) parallel push path divergence when lifecycle flag is on
 - **Phase 2 (UI surface)**: not started; requires separate PR
 
 ---
@@ -2030,7 +2038,7 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 1. **Phase 2 LLM controlled pilot decision** — target: operator decision whether to enable ai_advisory_llm_enabled=true for controlled live pilot — gating: Phase 2 deployed (DONE 2026-05-24), monitoring plan defined, test cases identified
 2. **PZ Correction Lifecycle Phase 1 deployment evaluation** — target: operator decision to deploy Phase 1 (SHA 9c45cee) + PR A fixes (SHA c7a29aa) — gating: Phase 2 deployment stable (monitoring period), both feature flags documented
-3. **PZ Correction Lifecycle PR B start decision** — target: operator instruction to begin PR B (write_json_atomic in global_pz_push.py, lifecycle flag gate on old route) — gating: Phase 1 deployment complete OR explicit operator override
+3. ~~**PZ Correction Lifecycle PR B start decision**~~ — **DONE 2026-05-24**: PR B (PR #356, SHA 895cd0e) merged to main. Activation blockers closed: (1) atomic writes in global_pz_push.py, (2) 410 gate on old correction-push-wfirma route when lifecycle flag is on. Next: PR C (diagnostic detail + KEEP_CURRENT staging guard + empty contractor/warehouse ID validation) — BLOCKED by GATE 2 (2/3 open PRs, #337 + #268 must close first).
 
 ## Pending next steps (added 2026-05-23)
 
