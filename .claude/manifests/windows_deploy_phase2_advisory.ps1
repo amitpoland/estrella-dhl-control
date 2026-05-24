@@ -1,6 +1,6 @@
 # ============================================================
 # Windows Production Deploy Script — Phase 2 Advisory LLM
-# Origin/main target: #TBD_SHA  (fill after PR merges)
+# Origin/main target: c987d8a  (PR #350, merged 2026-05-24)
 # Campaign: AI Governance Phase 2
 #   - service/app/services/ai_advisory.py (MODIFIED — LLM path added)
 #   - service/app/api/routes_ai_advisory.py (MODIFIED — /status endpoint added)
@@ -46,10 +46,12 @@ git fetch origin
 git pull --ff-only origin main
 $headSha = git rev-parse --short HEAD
 Write-Host "HEAD after pull: $headSha" -ForegroundColor Green
-# Note: replace #TBD_SHA below once PR merges
-# if ($headSha -ne "#TBD_SHA") {
-#     Write-Host "NOTE: HEAD is $headSha (expected #TBD_SHA). If Phase 2 SHA is ancestor, fine." -ForegroundColor Yellow
-# }
+# Verify HEAD matches Phase 2 SHA or is a descendant
+if ($headSha -ne "c987d8a") {
+    Write-Host "NOTE: HEAD is $headSha (Phase 2 SHA is c987d8a). If Phase 2 is an ancestor, fine." -ForegroundColor Yellow
+} else {
+    Write-Host "HEAD matches Phase 2 SHA c987d8a" -ForegroundColor Green
+}
 
 # ── STEP 2: Confirm service directories exist ────────────────
 Write-Host "`n=== STEP 2: Ensure target directories exist ===" -ForegroundColor Cyan

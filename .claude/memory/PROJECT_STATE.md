@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PHASE10-COMPLETE-HYGIENE-CLEAN)Z. Origin/main HEAD: 9c45cee (Phase 1 PZ Correction Lifecycle -- PR #348 MERGED). Phase 10 DEPLOYED + SMOKE VERIFIED + HYGIENE CLEAN (operator-confirmed 2026-05-24). Backup: C:\PZ\backups\hygiene_phase10_20260524. OPEN PRs: #337 + #268 + #349 = 3/3 (GATE 2 at limit). Track A (AI Roadmap Phase 2 -- Advisory LLM) requires explicit operator approval before implementation. Track B (PZ Correction UI Lifecycle) NOT started -- no operator instruction. PZ Correction Lifecycle Phase 1 MERGED (9c45cee, 2026-05-24) -- NOT DEPLOYED -- requires operator flag enable.
+**Last-run-at:** 2026-05-24T(PHASE2-ADVISORY-LLM-MERGED)Z. Origin/main HEAD: c987d8a (AI Advisory Phase 2 -- PR #350 MERGED 2026-05-24). Phase 10 DEPLOYED + HYGIENE CLEAN. AI Advisory Phase 2 MERGED (c987d8a) -- NOT YET DEPLOYED -- use windows_deploy_phase2_advisory.ps1 (7-agent gate passed). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). Track A SHIPPED. Track B NOT started. PZ Correction Lifecycle Phase 1 MERGED (9c45cee) -- NOT DEPLOYED.
 
 ---
 
@@ -54,6 +54,31 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## AI Advisory Phase 2 -- LLM Explanation Path (2026-05-24, PR #350 MERGED)
+
+**Campaign type**: Track A -- AI Roadmap Phase 2 (advisory LLM explanations)
+**Status**: PR #350 MERGED -- squash SHA `c987d8a` on main (2026-05-24). NOT YET DEPLOYED. Feature flag defaults False -- no production impact until operator deploys and enables.
+
+- **Commit SHA on main**: c987d8a
+- **Files modified** (2):
+  - `service/app/services/ai_advisory.py` -- Phase 2 LLM path: TTL cache, budget guard, `_synthesise_via_llm()` via `ai_gateway.call()`, deterministic fallback; new fields: `generated_at`, `model_used`, `source`
+  - `service/app/api/routes_ai_advisory.py` -- new `GET /api/v1/ai/advisory/status` endpoint
+- **Files added** (3):
+  - `service/tests/test_phase2_advisory_llm.py` -- 43 tests (flag paths, budget, cache, no-write, Phase 1 regression)
+  - `.claude/manifests/windows_deploy_phase2_advisory.ps1` -- Windows deploy script (11 steps, SHA c987d8a)
+  - `docs/ai-governance/ai-capability-map.md` -- Phase 2 status updated
+- **Feature flag**: `AI_ADVISORY_LLM_ENABLED=False` (deploy OFF; set True in .env to enable)
+- **Config keys added**: `ai_advisory_llm_enabled`, `ai_advisory_model`, `ai_advisory_budget_usd_per_day`, `ai_advisory_cache_ttl_seconds`
+- **New endpoint**: `GET /api/v1/ai/advisory/status` (returns flag state, model, budget, daily spend)
+- **Governance**: Class R (read-only), all LLM calls via `ai_gateway.call()`, no forbidden symbols
+- **7-agent gate**: PASSED (6/7 direct PASS; Gate 2 false positive cleared with confirmed 5-file diff)
+- **Deploy manifest**: `.claude/manifests/windows_deploy_phase2_advisory.ps1`
+- **Deploy prerequisite**: 7-agent gate must be re-run before Windows sync
+
+## RULE 6 visibility entries (scorecards)
+
+- No new scorecard produced yet for Phase 2 campaign (to be produced post-session)
 
 ## PZ Correction Lifecycle -- Phase 1 (2026-05-24, PR #348 MERGED)
 
