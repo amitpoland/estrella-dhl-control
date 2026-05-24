@@ -114,6 +114,14 @@ class Settings(BaseSettings):
     # Phase 2 LLM advisory — must be explicitly enabled via .env; never True in code defaults.
     ai_advisory_llm_enabled:        bool          = Field(default=False)
     ai_fallback_enabled:            bool          = Field(default=False)
+
+    # ── AI Provider selection (Phase 2B — all defaults OFF) ──────────────────
+    # Primary provider: Claude/Cowork (stub; no live calls until P3 implementation)
+    # Anthropic API is governed fallback only when ai_fallback_enabled=True.
+    # None of these are ever True/active by default.
+    ai_cowork_enabled:          bool = Field(default=False)
+    ai_cowork_timeout_seconds:  int  = Field(default=30)
+    ai_provider_preference:     str  = Field(default="claude_cowork")
     ai_advisory_max_tokens_per_call: int          = Field(default=1000)
     ai_advisory_budget_usd_per_day: float         = Field(default=1.0)
     ai_advisory_cache_ttl_seconds:  int           = Field(default=300)

@@ -33,11 +33,24 @@ FORBIDDEN — gateway violation rule (PR-review gate):
     ...must be blocked at PR review, unless it is a test proving the
     violation is forbidden, or a config/docs file.
 
-Claude-first rule:
-    Claude Code / Claude Work is the primary reasoning path.
+Claude-first rule (Phase 2B — provider abstraction):
+    Claude Code / Claude Work (Cowork) is the primary reasoning path.
     Anthropic API is the fallback only, invoked through this gateway when
     Claude-first execution is unavailable, times out, or returns low
-    confidence. No service may call Anthropic directly.
+    confidence.  No service may call Anthropic directly.
+
+    Provider selection policy:
+      1. If ai_cowork_enabled=True AND ai_provider_preference="claude_cowork":
+             → try _cowork_call() first (stub in 2B; live in Phase 3)
+             → if cowork returns None AND ai_fallback_enabled=True:
+                 → try _anthropic_call() as governed fallback
+             → if cowork returns None AND ai_fallback_enabled=False:
+                 → return None (no fallback allowed)
+      2. Otherwise (cowork disabled or preference != claude_cowork):
+             → _anthropic_call() directly (backward-compatible path)
+
+    provider_requested / provider_used / fallback_used are recorded in
+    ai_call_ledger on every call attempt, regardless of outcome.
 """
 from __future__ import annotations
 
@@ -59,6 +72,11 @@ _TIER_NAMES: Dict[str, str] = {
     _MODEL_SONNET: "sonnet",
     _MODEL_OPUS:   "opus",
 }
+
+# ── Provider constants (Phase 2B) ─────────────────────────────────────────────
+
+_PROVIDER_COWORK    = "claude_cowork"
+_PROVIDER_ANTHROPIC = "anthropic_api"
 
 
 # ── Circuit breaker ───────────────────────────────────────────────────────────
@@ -156,15 +174,140 @@ def _select_model(
 # ── Gateway availability ──────────────────────────────────────────────────────
 
 def is_available() -> bool:
-    """Return True iff the gateway can make API calls."""
+    """Return True iff the gateway can make API calls.
+
+    Phase 2B: True when either the Anthropic API path is configured OR the
+    Cowork provider is enabled (even as a stub).
+    """
     try:
         from ..core.config import settings  # noqa: PLC0415
         if not getattr(settings, "ai_parser_enabled", False):
             return False
+        cowork_enabled = bool(getattr(settings, "ai_cowork_enabled", False))
+        if cowork_enabled:
+            return True
         key = getattr(settings, "anthropic_api_key", None) or ""
         return bool(key.strip())
     except Exception:
         return False
+
+
+# ── Provider: Cowork stub (Phase 2B) ─────────────────────────────────────────
+
+def _cowork_call(
+    *,
+    system: str,
+    user: str,
+    selected_model: str,
+    max_tokens: int,
+    timeout_s: int,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Cowork / Claude-first provider call.
+
+    Phase 2B: stub implementation.  Returns (None, "cowork_not_implemented").
+    Does NOT make any network calls.
+    Does NOT increment the circuit breaker (logical gate, not a network failure).
+
+    Phase 3 will replace this body with real Cowork/Claude API integration.
+
+    Returns:
+        (raw_text, error_type) — raw_text is None on any failure/stub.
+    """
+    log.debug("[ai_gateway] Cowork provider: stub — not yet implemented")
+    return None, "cowork_not_implemented"
+
+
+# ── Provider: Anthropic API ───────────────────────────────────────────────────
+
+def _anthropic_call(
+    *,
+    api_key: str,
+    system: str,
+    user: str,
+    selected_model: str,
+    max_tokens: int,
+    max_retries: int,
+    timeout_s: int,
+    ledger: Any,
+) -> Tuple[Optional[str], Optional[int], Optional[int], Optional[float], Optional[str]]:
+    """Execute call via Anthropic API with retry logic.
+
+    Returns:
+        (raw_text, actual_in, actual_out, actual_cost_val, error_type)
+        raw_text is None on failure.
+    """
+    try:
+        import anthropic  # noqa: PLC0415
+    except ImportError:
+        log.error("[ai_gateway] anthropic package not installed — pip install anthropic")
+        return None, None, None, None, "ImportError"
+
+    client = anthropic.Anthropic(api_key=api_key, timeout=float(timeout_s))
+
+    raw_text:        Optional[str]   = None
+    actual_in:       Optional[int]   = None
+    actual_out:      Optional[int]   = None
+    actual_cost_val: Optional[float] = None
+    last_exc_type:   Optional[str]   = None
+
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            backoff = 2 ** (attempt - 1)  # 1s, 2s, 4s
+            log.info("[ai_gateway] retry %d/%d after %ds", attempt, max_retries, backoff)
+            time.sleep(backoff)
+
+        try:
+            response = client.messages.create(
+                model=selected_model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+            raw_text = (response.content[0].text or "").strip()
+
+            # Capture actual usage if reported
+            usage = getattr(response, "usage", None)
+            if usage:
+                actual_in  = getattr(usage, "input_tokens",  None)
+                actual_out = getattr(usage, "output_tokens", None)
+                if actual_in is not None and actual_out is not None:
+                    actual_cost_val = ledger.estimate_cost(selected_model, actual_in, actual_out)
+
+            last_exc_type = None
+            _cb_record_success()
+            break
+
+        except Exception as exc:
+            exc_type = type(exc).__name__
+            last_exc_type = exc_type
+
+            retryable = _is_retryable(exc)
+            log.warning("[ai_gateway] attempt %d failed (%s): %s", attempt + 1, exc_type, exc)
+
+            if not retryable or attempt >= max_retries:
+                _cb_record_failure()
+                break
+
+    return raw_text, actual_in, actual_out, actual_cost_val, last_exc_type
+
+
+# ── Circuit-breaker failure discriminator ─────────────────────────────────────
+
+def _is_cb_failure(error_type: Optional[str]) -> bool:
+    """Return True only for real network/API failures that should trip the CB.
+
+    Logical gate outcomes (cowork_not_implemented, budget_exhausted, cb_open,
+    disabled, ImportError) must NOT increment the circuit breaker — they signal
+    configuration or policy decisions, not external service degradation.
+    """
+    _LOGICAL_GATES = {
+        "cowork_not_implemented",
+        "budget_exhausted",
+        "cb_open",
+        "disabled",
+        "ImportError",
+    }
+    return bool(error_type) and error_type not in _LOGICAL_GATES
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -187,10 +330,11 @@ def call(
 
     Returns the raw model response text, or None when:
     - ai_parser_enabled=False (config disabled)
-    - API key missing
+    - API key missing (and cowork not enabled)
     - Daily budget exceeded
     - Circuit breaker open
     - All retries exhausted
+    - Cowork unavailable AND fallback disabled
     - Any other error
 
     Never raises.
@@ -200,20 +344,32 @@ def call(
 
     t_start = time.monotonic()
 
-    # ── Gate 1: config enabled + key present ─────────────────────────────────
+    # ── Gate 1: config enabled ────────────────────────────────────────────────
     try:
         from ..core.config import settings  # noqa: PLC0415
     except Exception as exc:
         log.error("[ai_gateway] config import failed: %s", exc)
         return None
 
-    api_key = getattr(settings, "anthropic_api_key", None) or ""
-    if not api_key.strip():
-        log.debug("[ai_gateway] no API key — skipping")
-        return None
-
     if not getattr(settings, "ai_parser_enabled", False):
         log.debug("[ai_gateway] ai_parser_enabled=False — skipping")
+        return None
+
+    # Read provider config
+    cowork_enabled      = bool(getattr(settings, "ai_cowork_enabled", False))
+    cowork_timeout_s    = int(getattr(settings, "ai_cowork_timeout_seconds", 30))
+    provider_preference = str(getattr(settings, "ai_provider_preference", _PROVIDER_COWORK))
+    fallback_enabled    = bool(getattr(settings, "ai_fallback_enabled", False))
+
+    api_key = getattr(settings, "anthropic_api_key", None) or ""
+
+    # Determine intended provider path
+    use_cowork_first = cowork_enabled and (provider_preference == _PROVIDER_COWORK)
+    provider_requested = _PROVIDER_COWORK if use_cowork_first else _PROVIDER_ANTHROPIC
+
+    # If not using cowork: Anthropic API key is required
+    if not use_cowork_first and not api_key.strip():
+        log.debug("[ai_gateway] no API key and cowork not enabled — skipping")
         return None
 
     # ── Gate 2: circuit breaker ───────────────────────────────────────────────
@@ -248,78 +404,116 @@ def call(
     est_out = max_tokens // 2  # conservative
     est_cost = ledger.estimate_cost(selected_model, est_in, est_out)
 
-    # ── Call with retry ───────────────────────────────────────────────────────
+    # ── Provider call settings ────────────────────────────────────────────────
     max_retries = max(0, getattr(settings, "ai_gateway_max_retries", 3))
     timeout_s   = getattr(settings, "ai_gateway_timeout_seconds", 30)
 
-    raw_text:         Optional[str] = None
-    actual_in:        Optional[int] = None
-    actual_out:       Optional[int] = None
+    # ── Provider execution ────────────────────────────────────────────────────
+    raw_text:         Optional[str]   = None
+    actual_in:        Optional[int]   = None
+    actual_out:       Optional[int]   = None
     actual_cost_val:  Optional[float] = None
-    success           = False
-    error_type:       Optional[str] = None
+    success                           = False
+    error_type:       Optional[str]   = None
+    provider_used:    Optional[str]   = None
+    fallback_used:    bool            = False
 
-    try:
-        import anthropic  # noqa: PLC0415
-    except ImportError:
-        log.error("[ai_gateway] anthropic package not installed — pip install anthropic")
-        _ledger_write(
-            ledger=ledger,
-            task_type=task_type, service_name=service_name, object_id=object_id,
-            requested_model=operator_override_model, selected_model=selected_model,
-            model_tier=model_tier, selection_reason=selection_reason,
-            escalation_reason=escalation_reason, confidence_score=confidence_score,
-            p_hash=p_hash, est_in=est_in, est_out=est_out, est_cost=est_cost,
-            actual_in=None, actual_out=None, actual_cost_val=None,
-            latency_ms=int((time.monotonic() - t_start) * 1000),
-            success=False, fallback_reason=None, error_type="ImportError",
+    if use_cowork_first:
+        # ── Path A: Cowork primary ────────────────────────────────────────────
+        cowork_text, cowork_err = _cowork_call(
+            system=system_clean,
+            user=user_clean,
+            selected_model=selected_model,
+            max_tokens=max_tokens,
+            timeout_s=cowork_timeout_s,
         )
-        return None
 
-    client = anthropic.Anthropic(api_key=api_key, timeout=float(timeout_s))
+        if cowork_text is not None:
+            raw_text     = cowork_text
+            success      = True
+            provider_used = _PROVIDER_COWORK
+            fallback_used = False
+            error_type   = None
+        else:
+            # Cowork did not return a result
+            if not fallback_enabled:
+                # No fallback allowed — log and return None
+                log.debug("[ai_gateway] cowork returned None; fallback disabled (reason=%s)", cowork_err)
+                _ledger_write(
+                    ledger=ledger,
+                    task_type=task_type, service_name=service_name, object_id=object_id,
+                    requested_model=operator_override_model, selected_model=selected_model,
+                    model_tier=model_tier, selection_reason=selection_reason,
+                    escalation_reason=escalation_reason, confidence_score=confidence_score,
+                    p_hash=p_hash, est_in=est_in, est_out=est_out, est_cost=est_cost,
+                    actual_in=None, actual_out=None, actual_cost_val=None,
+                    latency_ms=int((time.monotonic() - t_start) * 1000),
+                    success=False, fallback_reason=cowork_err, error_type=cowork_err,
+                    provider_requested=provider_requested, provider_used=None,
+                    fallback_used=False,
+                )
+                return None
 
-    last_exc_type: Optional[str] = None
-    for attempt in range(max_retries + 1):
-        if attempt > 0:
-            backoff = 2 ** (attempt - 1)  # 1s, 2s, 4s
-            log.info("[ai_gateway] retry %d/%d after %ds", attempt, max_retries, backoff)
-            time.sleep(backoff)
+            # ── Path A → fallback: Anthropic API ─────────────────────────────
+            if not api_key.strip():
+                log.debug("[ai_gateway] cowork failed; fallback enabled but no API key")
+                _ledger_write(
+                    ledger=ledger,
+                    task_type=task_type, service_name=service_name, object_id=object_id,
+                    requested_model=operator_override_model, selected_model=selected_model,
+                    model_tier=model_tier, selection_reason=selection_reason,
+                    escalation_reason=escalation_reason, confidence_score=confidence_score,
+                    p_hash=p_hash, est_in=est_in, est_out=est_out, est_cost=est_cost,
+                    actual_in=None, actual_out=None, actual_cost_val=None,
+                    latency_ms=int((time.monotonic() - t_start) * 1000),
+                    success=False, fallback_reason="no_api_key", error_type="no_api_key",
+                    provider_requested=provider_requested, provider_used=None,
+                    fallback_used=True,
+                )
+                return None
 
-        try:
-            response = client.messages.create(
-                model=selected_model,
-                max_tokens=max_tokens,
+            log.info("[ai_gateway] cowork unavailable (reason=%s); trying Anthropic fallback", cowork_err)
+            fallback_used = True
+            ant_text, ant_in, ant_out, ant_cost, ant_err = _anthropic_call(
+                api_key=api_key,
                 system=system_clean,
-                messages=[{"role": "user", "content": user_clean}],
+                user=user_clean,
+                selected_model=selected_model,
+                max_tokens=max_tokens,
+                max_retries=max_retries,
+                timeout_s=timeout_s,
+                ledger=ledger,
             )
-            raw_text = (response.content[0].text or "").strip()
+            raw_text        = ant_text
+            actual_in       = ant_in
+            actual_out      = ant_out
+            actual_cost_val = ant_cost
+            error_type      = ant_err
+            success         = ant_text is not None
+            provider_used   = _PROVIDER_ANTHROPIC if success else None
 
-            # Capture actual usage if reported
-            usage = getattr(response, "usage", None)
-            if usage:
-                actual_in  = getattr(usage, "input_tokens",  None)
-                actual_out = getattr(usage, "output_tokens", None)
-                if actual_in is not None and actual_out is not None:
-                    actual_cost_val = ledger.estimate_cost(selected_model, actual_in, actual_out)
+    else:
+        # ── Path B: Direct Anthropic (backward-compatible) ────────────────────
+        ant_text, ant_in, ant_out, ant_cost, ant_err = _anthropic_call(
+            api_key=api_key,
+            system=system_clean,
+            user=user_clean,
+            selected_model=selected_model,
+            max_tokens=max_tokens,
+            max_retries=max_retries,
+            timeout_s=timeout_s,
+            ledger=ledger,
+        )
+        raw_text        = ant_text
+        actual_in       = ant_in
+        actual_out      = ant_out
+        actual_cost_val = ant_cost
+        error_type      = ant_err
+        success         = ant_text is not None
+        provider_used   = _PROVIDER_ANTHROPIC if success else None
+        fallback_used   = False
 
-            success = True
-            last_exc_type = None
-            _cb_record_success()
-            break
-
-        except Exception as exc:
-            exc_type = type(exc).__name__
-            last_exc_type = exc_type
-
-            # Retry only on rate-limit or 5xx server errors
-            retryable = _is_retryable(exc)
-            log.warning("[ai_gateway] attempt %d failed (%s): %s", attempt + 1, exc_type, exc)
-
-            if not retryable or attempt >= max_retries:
-                _cb_record_failure()
-                break
-
-    error_type = last_exc_type
+    # ── Ledger write ──────────────────────────────────────────────────────────
     latency_ms = int((time.monotonic() - t_start) * 1000)
 
     _ledger_write(
@@ -332,15 +526,17 @@ def call(
         actual_in=actual_in, actual_out=actual_out, actual_cost_val=actual_cost_val,
         latency_ms=latency_ms,
         success=success, fallback_reason=None, error_type=error_type,
+        provider_requested=provider_requested, provider_used=provider_used,
+        fallback_used=fallback_used,
     )
 
     if success:
-        log.info("[ai_gateway] %s/%s OK model=%s latency=%dms",
-                 service_name, task_type, selected_model, latency_ms)
+        log.info("[ai_gateway] %s/%s OK model=%s provider=%s fallback=%s latency=%dms",
+                 service_name, task_type, selected_model, provider_used, fallback_used, latency_ms)
         return raw_text
 
-    log.error("[ai_gateway] %s/%s FAILED after %d attempts model=%s",
-              service_name, task_type, max_retries + 1, selected_model)
+    log.error("[ai_gateway] %s/%s FAILED model=%s provider_requested=%s",
+              service_name, task_type, selected_model, provider_requested)
     return None
 
 
@@ -373,6 +569,9 @@ def _ledger_write(
     actual_in: Optional[int], actual_out: Optional[int],
     actual_cost_val: Optional[float], latency_ms: int,
     success: bool, fallback_reason: Optional[str], error_type: Optional[str],
+    provider_requested: Optional[str] = None,
+    provider_used: Optional[str] = None,
+    fallback_used: bool = False,
 ) -> None:
     ledger.record({
         "timestamp":               time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -396,4 +595,7 @@ def _ledger_write(
         "success":                 success,
         "fallback_reason":         fallback_reason,
         "error_type":              error_type,
+        "provider_requested":      provider_requested,
+        "provider_used":           provider_used,
+        "fallback_used":           fallback_used,
     })
