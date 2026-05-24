@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PHASE2C-PR359-MERGING)Z. Origin/main HEAD: 8b9956c (PR #356 scorecard + RULE 6). Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED (LLM flags OFF). Phase 2B DEPLOYED (ALL PROVIDER FLAGS OFF). Phase 2C PR #359 MERGED (7/7 gate GO — see Phase 2C fact block). PZ Correction Lifecycle PR A + PR B MERGED (not deployed). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). ANTHROPIC_API_KEY rotation pending (key exposed in chat — rotate before Windows pilot). No AI execution flags enabled in production.
+**Last-run-at:** 2026-05-25T(PHASE2C-MERGED)Z. Origin/main HEAD: 40c30f1 (Phase 2C — AI provider pilot readiness hardening, PR #359). Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED (LLM flags OFF). Phase 2B DEPLOYED (ALL PROVIDER FLAGS OFF). Phase 2C MERGED (squash 40c30f1, 7/7 gate GO) — NOT YET DEPLOYED TO WINDOWS. PZ Correction Lifecycle PR A + PR B MERGED (not deployed). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). ANTHROPIC_API_KEY rotation pending (key exposed in chat — rotate before Windows pilot). No AI execution flags enabled in production.
 
 ---
 
@@ -104,7 +104,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ## Phase 2C — AI Provider Pilot Readiness Hardening (2026-05-24, IMPLEMENTED — PR PENDING)
 
 **Campaign type**: Track A — AI Roadmap Phase 2C (governance hardening; prerequisite before any pilot flag flip)
-**Status**: Implemented in working tree (2026-05-24). NOT yet in a PR. NOT yet deployed to Windows.
+**Status**: PR #359 MERGED — squash SHA `40c30f1` on main (2026-05-25). 7/7 gate GO. NOT YET DEPLOYED to Windows. Deploy manifest: `.claude/manifests/windows_deploy_40c30f1.ps1`.
 
 - **Governance blockers resolved** (3):
   1. **STARTUP_AI_AUDIT** block added to `service/app/main.py` lifespan (after wFirma audit). Logs WARNING when any of the 4 AI execution flags is TRUE; logs INFO when all are OFF. Covers: `ai_parser_enabled`, `ai_advisory_llm_enabled`, `ai_cowork_enabled`, `ai_fallback_enabled`.
