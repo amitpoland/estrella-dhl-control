@@ -4,16 +4,16 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PHASE9-MERGED)Z. Origin/main HEAD: 1c6046b (Phase 9 Workflow Intelligence -- PR #342 MERGED). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3 (GATE 2 limit: 3). Phase 9 NOT deployed yet -- operator must execute manifest windows_deploy_1c6046b.ps1. Phase 8 ALL 4 sprints confirmed deployed. Phase 10 (Operations Intelligence) starts after Phase 9 deployed + smoke verified.
+**Last-run-at:** 2026-05-24T(PHASE9-DEPLOYED)Z. Origin/main HEAD: 1c6046b (Phase 9 Workflow Intelligence -- PR #342 MERGED + DEPLOYED). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3 (GATE 2 limit: 3). Phase 9 DEPLOYED -- operator-confirmed 2026-05-24. Health 200/200. llm_used=false. No regressions. Phase 10 (Operations Intelligence) gate CLEARED.
 
 ---
 
 # FACTS
 
-## Phase 9 -- Workflow Intelligence Foundation (2026-05-24, PR #342 MERGED)
+## Phase 9 -- Workflow Intelligence Foundation (2026-05-24, COMPLETE + DEPLOYED)
 
 **Campaign type**: Multi-signal workflow aggregation (read-only, no LLM, no writes)
-**Status**: PR #342 MERGED -- squash SHA `1c6046b` on main (2026-05-24). NOT deployed yet.
+**Status**: PR #342 MERGED -- squash SHA `1c6046b` on main (2026-05-24). DEPLOYED to Windows production -- operator-confirmed 2026-05-24. Health 200/200. PZService RUNNING. stderr clean. llm_used=false. No regressions. Note: manifest windows_deploy_1c6046b.ps1 printed PowerShell exception text for expected 422/404 smoke calls (Invoke-WebRequest throws on non-2xx without -ErrorAction SilentlyContinue); backend responded correctly -- not a service failure.
 
 - **Commit SHA on main**: 1c6046b
 - **Files added** (2 new + 1 modified):
@@ -32,7 +32,7 @@ Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Las
 - **Deploy prerequisite**: Phase 8 all 4 sprints (c9c8418 -> 24bc62f -> 6995f48 -> 12f3f90) deployed first
 - **PZService restart required**: YES (main.py changed)
 - **Rollback**: git revert 1c6046b --no-edit + robocopy + sc.exe restart
-- **Phase 10 gate**: Deploy Phase 9 and smoke verify before starting Phase 10
+- **Phase 10 gate**: CLEARED -- Phase 9 deployed and smoke verified 2026-05-24
 
 ---
 
