@@ -98,6 +98,15 @@ class Settings(BaseSettings):
     ai_parser_model:     str           = Field(default="claude-sonnet-4-6")
     ai_parser_enabled:   bool          = Field(default=False)
 
+    # ── Anthropic Admin API (key health checks — optional) ────────────────────
+    # Admin API key is separate from anthropic_api_key. Obtain from:
+    #   console.anthropic.com → Settings → Admin API Keys
+    # api_key_id is the "apikey_01..." format ID shown in the API key list.
+    # Both must be set to enable key-health checking; if either is absent,
+    # is_available() and /status fall back to the existing "key non-empty" check.
+    anthropic_admin_api_key: Optional[str] = Field(default=None)
+    anthropic_api_key_id:    Optional[str] = Field(default=None)
+
     # ── AI Gateway (Phase 3 Proper — owns all AI execution policy) ────────────
     # 0.0 = no daily budget limit
     ai_gateway_daily_budget_usd:            float = Field(default=0.0)
@@ -114,6 +123,14 @@ class Settings(BaseSettings):
     # Phase 2 LLM advisory — must be explicitly enabled via .env; never True in code defaults.
     ai_advisory_llm_enabled:        bool          = Field(default=False)
     ai_fallback_enabled:            bool          = Field(default=False)
+
+    # ── AI Provider selection (Phase 2B — all defaults OFF) ──────────────────
+    # Primary provider: Claude/Cowork (stub; no live calls until P3 implementation)
+    # Anthropic API is governed fallback only when ai_fallback_enabled=True.
+    # None of these are ever True/active by default.
+    ai_cowork_enabled:          bool = Field(default=False)
+    ai_cowork_timeout_seconds:  int  = Field(default=30)
+    ai_provider_preference:     str  = Field(default="claude_cowork")
     ai_advisory_max_tokens_per_call: int          = Field(default=1000)
     ai_advisory_budget_usd_per_day: float         = Field(default=1.0)
     ai_advisory_cache_ttl_seconds:  int           = Field(default=300)

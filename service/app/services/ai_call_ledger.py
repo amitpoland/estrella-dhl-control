@@ -43,7 +43,10 @@ CREATE TABLE IF NOT EXISTS ai_calls (
     latency_ms              INTEGER,
     success                 INTEGER NOT NULL,
     fallback_reason         TEXT,
-    error_type              TEXT
+    error_type              TEXT,
+    provider_requested      TEXT,
+    provider_used           TEXT,
+    fallback_used           INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_ai_calls_timestamp ON ai_calls(timestamp);
 CREATE INDEX IF NOT EXISTS idx_ai_calls_service   ON ai_calls(service);
@@ -70,6 +73,31 @@ def _db_path() -> Path:
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_CREATE_SQL)
     conn.commit()
+    _migrate_schema(conn)
+
+
+# ── Phase 2B — idempotent column migration ────────────────────────────────────
+# Columns added after initial schema creation.  ALTER TABLE is safe to re-run:
+# sqlite3.OperationalError("duplicate column name") is swallowed silently.
+_PROVIDER_COLUMNS = [
+    ("provider_requested", "TEXT"),
+    ("provider_used",      "TEXT"),
+    ("fallback_used",      "INTEGER DEFAULT 0"),
+]
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Add Phase 2B provider columns to an existing ai_calls table.
+
+    Idempotent — silently skips columns that already exist.
+    Called automatically by _ensure_schema after every table creation.
+    """
+    for col_name, col_def in _PROVIDER_COLUMNS:
+        try:
+            conn.execute(f"ALTER TABLE ai_calls ADD COLUMN {col_name} {col_def}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 def estimate_tokens(text: str) -> int:
@@ -111,7 +139,8 @@ def record(entry: Dict[str, Any]) -> None:
                         prompt_hash,
                         estimated_input_tokens, estimated_output_tokens, estimated_cost,
                         actual_input_tokens, actual_output_tokens, actual_cost,
-                        latency_ms, success, fallback_reason, error_type
+                        latency_ms, success, fallback_reason, error_type,
+                        provider_requested, provider_used, fallback_used
                     ) VALUES (
                         :timestamp, :service, :object_id, :task_type,
                         :requested_model, :selected_model, :model_tier,
@@ -119,7 +148,8 @@ def record(entry: Dict[str, Any]) -> None:
                         :prompt_hash,
                         :estimated_input_tokens, :estimated_output_tokens, :estimated_cost,
                         :actual_input_tokens, :actual_output_tokens, :actual_cost,
-                        :latency_ms, :success, :fallback_reason, :error_type
+                        :latency_ms, :success, :fallback_reason, :error_type,
+                        :provider_requested, :provider_used, :fallback_used
                     )
                     """,
                     {
@@ -144,6 +174,9 @@ def record(entry: Dict[str, Any]) -> None:
                         "success":                 1 if entry.get("success") else 0,
                         "fallback_reason":         entry.get("fallback_reason"),
                         "error_type":              entry.get("error_type"),
+                        "provider_requested":      entry.get("provider_requested"),
+                        "provider_used":           entry.get("provider_used"),
+                        "fallback_used":           1 if entry.get("fallback_used") else 0,
                     },
                 )
                 conn.commit()

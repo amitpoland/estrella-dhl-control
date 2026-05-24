@@ -27,6 +27,11 @@ def _settings(enabled=True, api_key="sk-test-key-abc123456789", budget=0.0):
     s.ai_gateway_timeout_seconds   = 30
     s.ai_gateway_max_retries       = 3
     s.storage_root                 = "/tmp/test_storage"
+    # Phase 2B fields — explicitly False so MagicMock doesn't return truthy objects
+    s.ai_cowork_enabled           = False
+    s.ai_cowork_timeout_seconds   = 30
+    s.ai_provider_preference      = "claude_cowork"
+    s.ai_fallback_enabled         = False
     return s
 
 

@@ -96,13 +96,21 @@ def advisory_status() -> JSONResponse:
     budget = float(getattr(settings, "ai_advisory_budget_usd_per_day", 1.0))
     cache_ttl = int(getattr(settings, "ai_advisory_cache_ttl_seconds", 300))
 
-    # Gateway availability: checks api key + ai_parser_enabled
+    # Phase 2B provider fields
+    cowork_enabled    = bool(getattr(settings, "ai_cowork_enabled", False))
+    fallback_enabled  = bool(getattr(settings, "ai_fallback_enabled", False))
+    provider_pref     = str(getattr(settings, "ai_provider_preference", "claude_cowork"))
+
+    # Gateway availability: checks api key + ai_parser_enabled (or cowork enabled)
     gateway_available = False
     try:
         from ..services import ai_gateway as gw  # noqa: PLC0415
         gateway_available = gw.is_available()
     except Exception:
         pass
+
+    # Cowork availability: enabled (stub is always "available" when enabled)
+    cowork_available = cowork_enabled
 
     # Today's spend from ledger
     spent_today = 0.0
@@ -113,6 +121,22 @@ def advisory_status() -> JSONResponse:
         pass
 
     budget_ok = (budget <= 0) or (spent_today < budget)
+
+    # Compute active provider based on config
+    if cowork_enabled and provider_pref == "claude_cowork":
+        active_provider = "claude_cowork"
+    elif gateway_available:
+        active_provider = "anthropic_api"
+    else:
+        active_provider = "none"
+
+    # Admin API key health check (optional — None if admin key not configured)
+    api_key_health = None
+    try:
+        from ..services import ai_gateway as gw  # noqa: PLC0415
+        api_key_health = gw.check_key_health()
+    except Exception:
+        pass
 
     generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -128,4 +152,10 @@ def advisory_status() -> JSONResponse:
         "budget_ok":               budget_ok,
         "cache_ttl_seconds":       cache_ttl,
         "generated_at":            generated_at,
+        "cowork_enabled":          cowork_enabled,
+        "cowork_available":        cowork_available,
+        "fallback_enabled":        fallback_enabled,
+        "provider_preference":     provider_pref,
+        "active_provider":         active_provider,
+        "api_key_health":          api_key_health,
     }, status_code=200)
