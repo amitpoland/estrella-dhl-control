@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-25T(PR358-MERGED)Z. Origin/main HEAD: 9d044c5 (PR C — diagnostics, no-op guards, empty-ID gate, #358). Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED (LLM flags OFF). Phase 2B DEPLOYED (ALL PROVIDER FLAGS OFF). Phase 2C MERGED (squash 40c30f1) — NOT YET DEPLOYED TO WINDOWS. PZ Correction Lifecycle PR A + PR B + PR C ALL MERGED (not deployed, flags off). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear — slot available). ANTHROPIC_API_KEY rotation pending (key exposed in chat — rotate before Windows pilot). No AI execution flags enabled in production. No PZ lifecycle flags enabled.
+**Last-run-at:** 2026-05-25T(PHASE2C-DEPLOYED-VERIFIED)Z. Origin/main HEAD: 5bcb492 (PR C record + GATE 2 update). Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED (LLM flags OFF). Phase 2B DEPLOYED (ALL PROVIDER FLAGS OFF). Phase 2C DEPLOYED + VERIFIED (SHA 40c30f1 — STARTUP_AI_AUDIT confirmed pz_stdout.log, all AI flags OFF, /status healthy — pilot NOT started). PZ Correction Lifecycle PR A + PR B + PR C ALL MERGED (not deployed, flags off). OPEN PRs: #337 + #268 = 2/3 (GATE 2 clear). ANTHROPIC_API_KEY ROTATION REQUIRED before pilot (key exposed in chat). Pilot plan documented — Anthropic-only canary, pending key rotation + operator go.
 
 ---
 
