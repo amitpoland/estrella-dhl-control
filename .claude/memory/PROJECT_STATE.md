@@ -4,11 +4,37 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PHASE8-ALL-SPRINTS-MERGED+MANIFESTS-READY)Z. Origin/main HEAD: 12f3f90 (Phase 8 Sprint 4 search enrich merged). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3. CRITICAL: Phase 8 Sprints 1-4 all merged to main. NOT deployed yet -- operator must execute manifests in order: c9c8418 -> 24bc62f -> 6995f48 -> 12f3f90.
+**Last-run-at:** 2026-05-24T(PHASE8-COMPLETE+DEPLOYED)Z. Origin/main HEAD: 12f3f90 (Phase 8 Sprint 4 search enrich -- DEPLOYED). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3. Phase 8 ALL 4 sprints DEPLOYED to Windows production -- operator-confirmed 2026-05-24. Health 200/200. PZService RUNNING. stderr clean. llm_used=false across all new endpoints. No regressions. Phase 9 (Workflow Intelligence Foundation) is next.
 
 ---
 
 # FACTS
+
+## Phase 8 Campaign -- Intelligence Graph (2026-05-24, COMPLETE + ALL 4 SPRINTS DEPLOYED)
+
+**Campaign type**: Read-only intelligence graph platform (no LLM, no writes, no wFirma/DHL/customs mutation)
+**Status**: COMPLETE + DEPLOYED -- all 4 sprints confirmed in production 2026-05-24.
+
+### Phase 8 deployment confirmation (operator-confirmed 2026-05-24)
+
+| Sprint | SHA | Feature | Deployed | Health | llm_used | stderr |
+|--------|-----|---------|---------|--------|----------|--------|
+| Sprint 1 | c9c8418 | intelligence_graph.py -- 4 read-only graph builders | YES | 200/200 | false | clean |
+| Sprint 2 | 24bc62f | GET /api/v1/intelligence/graph route | YES | 200/200 | false | clean |
+| Sprint 3 | 6995f48 | MDI graph domain + GET /master-data/intelligence/graph | YES | 200/200 | false | clean |
+| Sprint 4 | 12f3f90 | GET /api/v1/search?enrich=true graph_enrichment | YES | 200/200 | false | clean |
+
+- **Deploy method**: manifests `.claude/manifests/windows_deploy_{sha}.ps1` executed in order c9c8418 -> 24bc62f -> 6995f48 -> 12f3f90 via standard robocopy `service/app -> C:\PZ\app`
+- **PZService**: RUNNING after each restart
+- **Regression check**: All Phase 7+8 suite (264 tests) PASS; no regressions on prior endpoints
+- **No writes**: no INSERT/UPDATE/DELETE; PRAGMA query_only=ON enforced across all 4 sprints
+- **No LLM**: llm_used=False hardcoded in all new service functions; no ai_gateway calls
+- **Governance**: 7-agent gate passed (6/7 GO on Sprint 4 release-manager -- deploy-sequencing concern only, not code quality); all merges via PRs #331/#335/#338/#339
+- **Scorecard (merge/implementation)**: `.claude/memory/scorecards/2026-05-24-phase8-intelligence-graph-campaign.md` -- EXEMPLARY verdict, 264/264 tests, 27/28 gate GO
+- **Scorecard (final deployment)**: `.claude/memory/scorecards/2026-05-24-phase8-deploy-final.md` -- EXEMPLARY; all 4 sprints deployed confirmed; 0 regressions; 0 writes; 0 LLM calls
+- **Phase 9 gate**: OPEN -- Phase 8 complete + deployed. Phase 9 (Workflow Intelligence Foundation) is cleared to start.
+
+---
 
 ## wFirma Push Layer — Global PZ Correction Push to wFirma (2026-05-24, DEPLOYED)
 
@@ -115,7 +141,7 @@ The commit title `"(PR#1)"` implied a PR had been created. No PR exists. Mislead
 ## Phase 8 Sprint 4 -- Search Graph Enrichment (2026-05-24, PR #339 MERGED)
 
 **Campaign type**: Search result enrichment with graph metadata (read-only, no LLM, no writes)
-**Status**: PR #339 MERGED -- squash SHA `12f3f90` on main (2026-05-24). NOT deployed (pending Sprint 1-3 deploy sequence).
+**Status**: PR #339 MERGED -- squash SHA `12f3f90` on main (2026-05-24). DEPLOYED to Windows production -- operator-confirmed 2026-05-24. Health 200/200. PZService RUNNING. stderr clean. llm_used=false. No regressions.
 
 - **Commit SHA on main**: 12f3f90
 - **Files modified**: search_engine.py (SearchHit.graph_enrichment, execute_search enrich=, _enrich_hits, _resolve_batch_ids_for_hit), routes_search.py (enrich query param)
@@ -135,7 +161,7 @@ The commit title `"(PR#1)"` implied a PR had been created. No PR exists. Mislead
 ## Phase 8 Sprint 3 -- MDI Graph Domain (2026-05-24, PR #338 MERGED)
 
 **Campaign type**: Master Data Intelligence graph domain addition (read-only, no LLM, no writes)
-**Status**: PR #338 MERGED -- squash SHA `6995f48` on main (2026-05-24). NOT deployed (pending Sprint 1-2 deploy sequence).
+**Status**: PR #338 MERGED -- squash SHA `6995f48` on main (2026-05-24). DEPLOYED to Windows production -- operator-confirmed 2026-05-24. Health 200/200. PZService RUNNING. stderr clean. llm_used=false. No regressions.
 
 - **Commit SHA on main**: 6995f48
 - **Files modified**: master_data_intelligence.py (graph DomainScore, _score_graph(), 7-domain weights [0.22, 0.20, 0.16, 0.11, 0.12, 0.09, 0.10]=1.00), routes_mdi.py ("graph" added to _VALID_DOMAINS)
@@ -155,7 +181,7 @@ The commit title `"(PR#1)"` implied a PR had been created. No PR exists. Mislead
 ## Phase 8 Sprint 2 -- Intelligence Graph Route (2026-05-24, PR #335 MERGED)
 
 **Campaign type**: REST route exposing intelligence graph builders (read-only, no LLM, no writes)
-**Status**: PR #335 MERGED -- squash SHA `24bc62f` on main (2026-05-24). NOT deployed (pending Sprint 1 deploy).
+**Status**: PR #335 MERGED -- squash SHA `24bc62f` on main (2026-05-24). DEPLOYED to Windows production -- operator-confirmed 2026-05-24. Health 200/200. PZService RUNNING. stderr clean. llm_used=false. No regressions.
 
 - **Commit SHA on main**: 24bc62f
 - **Files modified**: intelligence_graph.py (to_dict() on GraphResult), main.py (import + include_router intelligence_graph_router)
@@ -174,7 +200,7 @@ The commit title `"(PR#1)"` implied a PR had been created. No PR exists. Mislead
 ## Phase 8 Sprint 1 -- Intelligence Graph Foundation (2026-05-24, PR #331 MERGED)
 
 **Campaign type**: Read-only batch_id-centered relationship resolver (no LLM, no writes, no routes)
-**Status**: PR #331 MERGED -- squash SHA `c9c8418` on main (2026-05-24). NOT deployed (deploy separately instructed). Sprint 2 route work must NOT begin until Sprint 1 is deployed.
+**Status**: PR #331 MERGED -- squash SHA `c9c8418` on main (2026-05-24). DEPLOYED to Windows production -- operator-confirmed 2026-05-24. Health 200/200. PZService RUNNING. stderr clean. llm_used=false. No regressions.
 
 ### Phase 8 Sprint 1 implementation facts (2026-05-24)
 
@@ -199,8 +225,8 @@ The commit title `"(PR#1)"` implied a PR had been created. No PR exists. Mislead
 - **Lesson J compliant**: both files within service/app/** standard robocopy path
 - **PZService restart required**: NO (no main.py, no route changes)
 - **Rollback**: git revert f749bb7 --no-edit + standard robocopy (safe -- no schema, no startup deps)
-- **Sprint 2 prerequisite**: PR #331 merged to main [DONE] + Sprint 1 deployed to production [PENDING operator instruction]
-- **Sprint 2 gate**: No Sprint 2 route work until Sprint 1 deployed. Explicitly enforced.
+- **Sprint 2 prerequisite**: PR #331 merged to main [DONE] + Sprint 1 deployed to production [DONE -- 2026-05-24]
+- **Sprint 2 gate**: CLEARED -- Sprint 1 deployed, Sprint 2 deployed, full Phase 8 deployed.
 - **Rollback SHA correction**: rollback SHA on main is c9c8418 (squash SHA), not f749bb7 (branch SHA)
 - **Deploy manifest**: `.claude/manifests/windows_deploy_c9c8418.ps1` -- generated 2026-05-24, awaiting operator execution
 - **Scorecard (implementation)**: `.claude/memory/scorecards/2026-05-24-phase8-sprint1-intelligence-graph.md` -- 6 EXEMPLARY (2026-05-24)
