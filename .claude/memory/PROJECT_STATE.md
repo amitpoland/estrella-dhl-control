@@ -4,11 +4,36 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-24T(PHASE9-DEPLOYED)Z. Origin/main HEAD: 1c6046b (Phase 9 Workflow Intelligence -- PR #342 MERGED + DEPLOYED). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3 (GATE 2 limit: 3). Phase 9 DEPLOYED -- operator-confirmed 2026-05-24. Health 200/200. llm_used=false. No regressions. Phase 10 (Operations Intelligence) gate CLEARED.
+**Last-run-at:** 2026-05-24T(PHASE10-MERGED)Z. Origin/main HEAD: 95fc0fe (Phase 10 Operations Intelligence -- PR #345 MERGED). OPEN PRs: #337 (doc fix) + #268 (docs) = 2/3 (GATE 2 limit: 3). Phase 10 NOT deployed yet -- operator must execute manifest windows_deploy_95fc0fe.ps1. Phase 9 DEPLOYED -- operator-confirmed 2026-05-24. Phase 2 (Advisory LLM) starts after Phase 10 deployed + smoke verified -- requires explicit operator approval.
 
 ---
 
 # FACTS
+
+## Phase 10 -- Operations Intelligence (2026-05-24, PR #345 MERGED)
+
+**Campaign type**: Cross-batch operational health aggregation (read-only, no LLM, no writes)
+**Status**: PR #345 MERGED -- squash SHA `95fc0fe` on main (2026-05-24). NOT deployed yet.
+
+- **Commit SHA on main**: 95fc0fe
+- **Files added** (2 new + 1 modified):
+  - `service/app/services/operations_intelligence.py` -- NEW: OperationsIntelligenceResult dataclass; get_operations_intelligence(period, domain, *, doc_db, batch_limit)
+  - `service/app/api/routes_operations_intelligence.py` -- NEW: GET /api/v1/operations/intelligence
+  - `service/app/main.py` -- +2 lines: import + include_router
+  - `service/tests/test_phase10_operations_intelligence.py` -- NEW: 70 tests
+- **Route**: GET /api/v1/operations/intelligence?period=today|7d|30d[&domain=warehouse|sales|wfirma|dhl|graph|readiness]
+- **Metrics**: total_batches, blocked_batches, incomplete_batches, ready_batches, document_coverage_score, master_data_score, graph_completeness_score, workflow_risk_summary, top_missing_evidence, top_master_data_gaps
+- **Period filter**: batches enumerated from documents.db (shipment_documents.created_at >= cutoff)
+- **Invariants**: PRAGMA query_only=ON, no writes, llm_used=False, no ai_gateway, Lesson J compliant
+- **Tests**: 70/70 PASS; 390/390 Phase 7+8+9+10 suite PASS
+- **7-agent gate**: 7/7 GO
+- **Deploy manifest**: `.claude/manifests/windows_deploy_95fc0fe.ps1`
+- **Deploy prerequisite**: Phase 9 (1c6046b) deployed first (operator-confirmed 2026-05-24 -- done)
+- **PZService restart required**: YES (main.py changed)
+- **Rollback**: git revert 95fc0fe --no-edit + robocopy + sc.exe restart
+- **Phase 2 gate**: Deploy Phase 10 and smoke verify before starting Phase 2 (Advisory LLM) -- Phase 2 requires explicit operator approval
+
+---
 
 ## Phase 9 -- Workflow Intelligence Foundation (2026-05-24, COMPLETE + DEPLOYED)
 
