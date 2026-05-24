@@ -45,14 +45,24 @@ STDERR_LOG      = Path(r"C:\PZ\logs\pz_stderr.log")
 HTTP_TIMEOUT    = 10
 
 ENDPOINTS = {
-    "health":          "/api/v1/health",
-    "correction_state":  "/api/v1/pz/lineage/{batch_id}/correction-state",
-    "correction_stage":  "/api/v1/pz/lineage/{batch_id}/correction-stage",
-    "correction_reset":  "/api/v1/pz/lineage/{batch_id}/correction-stage",
+    "health":              "/api/v1/health",
+    "correction_state":    "/api/v1/pz/lineage/{batch_id}/correction-state",
+    "correction_stage":    "/api/v1/pz/lineage/{batch_id}/correction-stage",
+    # M3 fix: reset is DELETE on /correction-stage (same path, different method).
+    # There is NO /correction-reset path — that path does not exist in the backend.
+    # Using the same constant as correction_stage here is intentional and documents
+    # the contract: reset == DELETE /correction-stage.
+    "correction_reset":    "/api/v1/pz/lineage/{batch_id}/correction-stage",
     "correction_suppress": "/api/v1/pz/lineage/{batch_id}/correction-suppress",
-    "correction_commit": "/api/v1/pz/lineage/{batch_id}/correction-commit",
-    "push_wfirma":       "/api/v1/pz/lineage/{batch_id}/correction-push-wfirma",
+    "correction_commit":   "/api/v1/pz/lineage/{batch_id}/correction-commit",
+    "push_wfirma":         "/api/v1/pz/lineage/{batch_id}/correction-push-wfirma",
 }
+
+# M3 contract assertion (static): reset method must be DELETE, not POST.
+# This constant is used by test_correction_reset_uses_delete_not_post to confirm
+# no phantom /correction-reset path is accidentally relied upon.
+_RESET_METHOD = "DELETE"
+_RESET_PATH_KEY = "correction_stage"  # same URL as stage; distinguished by method only
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +245,26 @@ def test_correction_commit_503_when_push_off(api_key: str, batch_id: str = "SMOK
                        "Check WFIRMA_CORRECTION_PUSH_ALLOWED in .env immediately.",
                 duration_ms=ms,
             )
+    # M4 fix: detect network error and unexpected codes instead of silently passing.
+    # Previously any code not matched above (including -1 network error and 2xx when
+    # lifecycle is OFF) fell through here and returned PASS, hiding real failures.
+    if code == -1:
+        return SmokeResult(
+            test="correction_commit_push_gate",
+            verdict="FAIL", code=code, expected=503,
+            detail=f"Network error — cannot verify push gate is holding: {body.get('error', 'unknown')}",
+            duration_ms=ms,
+        )
+    if code in (200, 201, 202):
+        # Catches the lifecycle-OFF branch falling through with a 2xx (shouldn't happen,
+        # but if it does the gate must not silently pass).
+        return SmokeResult(
+            test="correction_commit_push_gate",
+            verdict="FAIL", code=code, expected=503,
+            detail="CRITICAL: commit returned 2xx — wFirma write may have been attempted. "
+                   "Check WFIRMA_CORRECTION_PUSH_ALLOWED in .env immediately.",
+            duration_ms=ms,
+        )
     return SmokeResult(test="correction_commit_push_gate",
                        verdict="PASS", code=code, expected=503,
                        detail="push gate holding", duration_ms=ms)
@@ -257,6 +287,71 @@ def test_old_push_route_410_or_503(api_key: str, batch_id: str = "SMOKE-TEST") -
         test="old_push_route_gated",
         verdict="FAIL", code=code, expected=410,
         detail=f"Old route returned unexpected {code}: {body}", duration_ms=ms,
+    )
+
+
+def test_correction_reset_uses_delete_not_post(
+    api_key: str, batch_id: str = "SMOKE-TEST"
+) -> SmokeResult:
+    """M3 regression: reset MUST be DELETE /correction-stage, not POST /correction-reset.
+
+    Runbook v1.0 Step 4b had:  POST  /correction-reset   (WRONG — path does not exist)
+    Correct backend route:     DELETE /correction-stage  (router.delete in routes_pz.py)
+
+    This test asserts the contract in two ways:
+      1. POST /correction-reset must return 404 or 405 — the phantom path must not exist.
+      2. DELETE /correction-stage must NOT return 405 — the real DELETE route must be registered.
+
+    Expected outcomes by service state:
+      - Lifecycle OFF: DELETE /correction-stage → 503 (lifecycle_disabled, correct)
+      - Lifecycle ON, batch exists in STAGED: DELETE /correction-stage → 200
+      - Lifecycle ON, batch not found or wrong state: 404 or 409
+      All of the above are acceptable — 405 is the only failure signal here.
+    """
+    # Assert 1: phantom path /correction-reset must NOT exist
+    phantom_path = f"/api/v1/pz/lineage/{batch_id}/correction-reset"
+    code_phantom, _, ms_phantom = _request("POST", phantom_path, api_key)
+    if code_phantom not in (404, 405):
+        return SmokeResult(
+            test="reset_method_path_contract",
+            verdict="FAIL", code=code_phantom, expected=404,
+            detail=(
+                f"POST /correction-reset returned {code_phantom} — phantom route may exist. "
+                "Expected 404 (route not registered). Check routes_pz.py."
+            ),
+            duration_ms=ms_phantom,
+        )
+
+    # Assert 2: real route DELETE /correction-stage must be registered (must not return 405)
+    real_path = ENDPOINTS[_RESET_PATH_KEY].format(batch_id=batch_id)
+    code_real, body_real, ms_real = _request(_RESET_METHOD, real_path, api_key)
+    if code_real == 405:
+        return SmokeResult(
+            test="reset_method_path_contract",
+            verdict="FAIL", code=code_real, expected=503,
+            detail=(
+                "DELETE /correction-stage returned 405 Method Not Allowed — "
+                "the DELETE route is not registered. Check @router.delete in routes_pz.py."
+            ),
+            duration_ms=ms_real,
+        )
+    if code_real == -1:
+        return SmokeResult(
+            test="reset_method_path_contract",
+            verdict="FAIL", code=code_real, expected=503,
+            detail=f"Network error reaching DELETE /correction-stage: {body_real.get('error', 'unknown')}",
+            duration_ms=ms_real,
+        )
+
+    # Both assertions passed
+    return SmokeResult(
+        test="reset_method_path_contract",
+        verdict="PASS", code=code_real, expected=503,
+        detail=(
+            f"POST /correction-reset → {code_phantom} (phantom path absent, correct); "
+            f"DELETE /correction-stage → {code_real} (route registered, correct)"
+        ),
+        duration_ms=ms_real,
     )
 
 
@@ -384,6 +479,17 @@ def run_full_lifecycle_flow(api_key: str, batch_id: str) -> list[SmokeResult]:
         ))
 
     # Step D: suppress (TERMINAL_SUPPRESSED)
+    # L2 warning: suppress transitions the batch to TERMINAL_SUPPRESSED — this state
+    # is terminal and cannot be reversed.  --full-lifecycle is only safe to run on
+    # dedicated test batches.  Do NOT run this against a production batch you intend
+    # to resume through the normal PZ workflow.
+    print(
+        f"\n[WARN] --full-lifecycle Step D will move batch {batch_id!r} to "
+        "TERMINAL_SUPPRESSED.\n"
+        "       This is an irreversible terminal state.\n"
+        "       Only proceed if this is a dedicated test batch.",
+        flush=True,
+    )
     path_suppress = ENDPOINTS["correction_suppress"].format(batch_id=batch_id)
     code, body, ms = _request(
         "POST", path_suppress, api_key,
@@ -419,6 +525,7 @@ def run_suite(batch_id: str, full_lifecycle: bool) -> list[SmokeResult]:
     results.append(test_correction_state_200_or_404_when_on(key, batch_id))
     results.append(test_correction_commit_503_when_push_off(key, batch_id))
     results.append(test_old_push_route_410_or_503(key, batch_id))
+    results.append(test_correction_reset_uses_delete_not_post(key, batch_id))  # M3 regression
 
     if full_lifecycle:
         results.extend(run_full_lifecycle_flow(key, batch_id))
@@ -462,7 +569,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="PZ Lifecycle activation smoke tests")
     parser.add_argument("--batch", default="SMOKE-TEST", help="Batch ID for lifecycle tests")
     parser.add_argument("--full-lifecycle", action="store_true",
-                        help="Run full stage→reset→suppress flow (requires lifecycle ON)")
+                        help="Run full stage->reset->suppress flow (requires lifecycle ON)")
     parser.add_argument("--json-metrics", action="store_true",
                         help="Emit results as JSON metrics")
     parser.add_argument("--watch", action="store_true",
