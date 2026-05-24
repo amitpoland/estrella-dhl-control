@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.services.global_pz_push import _CONFIRM_SENTINEL
 from app.services.pz_correction_state import (
     CorrectionLifecycleState,
     CorrectionLifecycleTransitionError,
@@ -264,7 +265,7 @@ class TestExecute:
         self._stage(lc)
 
         with patch(PATCH_PUSH, return_value=make_push_ok()):
-            record = lc.execute("commit", "key-1", "I UNDERSTAND THE IMPLICATIONS",
+            record = lc.execute("commit", "key-1", _CONFIRM_SENTINEL,
                                   None, "c1", "w1")
 
         assert record.state        == CorrectionLifecycleState.COMPLETED
@@ -276,7 +277,7 @@ class TestExecute:
         self._stage(lc)
 
         with patch(PATCH_PUSH, return_value=make_push_fail("wFirma 502")):
-            record = lc.execute("commit", "key-1", "I UNDERSTAND THE IMPLICATIONS",
+            record = lc.execute("commit", "key-1", _CONFIRM_SENTINEL,
                                   None, "c1", "w1")
 
         assert record.state == CorrectionLifecycleState.FAILED
@@ -295,7 +296,7 @@ class TestExecute:
             return make_push_ok()
 
         with patch(PATCH_PUSH, side_effect=_push):
-            lc.execute("commit", "key-1", "I UNDERSTAND THE IMPLICATIONS",
+            lc.execute("commit", "key-1", _CONFIRM_SENTINEL,
                        None, "c1", "w1")
 
         assert "EXECUTING" in seen_states
@@ -306,7 +307,7 @@ class TestExecute:
 
         with patch(PATCH_PUSH, side_effect=RuntimeError("network timeout")):
             with pytest.raises(RuntimeError, match="network timeout"):
-                lc.execute("commit", "key-1", "I UNDERSTAND THE IMPLICATIONS",
+                lc.execute("commit", "key-1", _CONFIRM_SENTINEL,
                             None, "c1", "w1")
 
         data = json.loads(state_file(storage_root).read_text(encoding="utf-8"))
@@ -317,14 +318,14 @@ class TestExecute:
         lc = make_lc(storage_root)
         lc.get_or_init_state()
         with pytest.raises(CorrectionLifecycleTransitionError):
-            lc.execute("r", "k", "I UNDERSTAND THE IMPLICATIONS", None, "c", "w")
+            lc.execute("r", "k", _CONFIRM_SENTINEL, None, "c", "w")
 
     def test_cannot_execute_from_operator_reviewed(self, storage_root):
         lc = make_lc(storage_root)
         lc.get_or_init_state()
         lc.mark_reviewed("ok")
         with pytest.raises(CorrectionLifecycleTransitionError):
-            lc.execute("r", "k", "I UNDERSTAND THE IMPLICATIONS", None, "c", "w")
+            lc.execute("r", "k", _CONFIRM_SENTINEL, None, "c", "w")
 
 
 # ---------------------------------------------------------------------------

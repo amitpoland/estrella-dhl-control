@@ -1,7 +1,7 @@
 # Campaign: PZ Correction Lifecycle Authority
 ## Single-session bootstrap -- Phases 1 + 2
-## Status: PHASE 1 COMPLETE -- OPEN PR (Phase 2 pending)
-## Last updated: 2026-05-24
+## Status: PHASE 1 COMPLETE + PR A APPLIED (Phase 2 pending operator approval)
+## Last updated: 2026-05-24 (PR A — sentinel fix, suppress route, doc corrections)
 ## Depends on: global_pz_correction.py (read-only), global_pz_push.py (write adapter)
 ## Blocked by: nothing -- CANCEL_AND_RECREATE is DEFERRED (see OQ1 below)
 
@@ -31,6 +31,24 @@ which writes `correction_execution_record.json`.  Only then does `execute()` cal
 - `service/tests/test_pz_correction_routes.py` -- NEW (21 tests, all pass)
 
 **NOT created**: `routes_pz_correction.py`, changes to `main.py` (not needed)
+
+**DEPLOYED**: 2026-05-24 — 7-agent governance gate (all CLEAR, Lead Coordinator: READY-TO-DEPLOY).
+Robocopy synced 20 files to C:\PZ\app. PZService restarted. Smoke tests:
+- Local health: 200 ✓
+- Public health: 200 ✓
+- GET /correction-state: 503 ✓ (flag off)
+- pz_correction_lifecycle_enabled=False confirmed in deployed config ✓
+- No startup errors in pz_stderr.log ✓
+
+**PZ regression**: 160/160 ✓ | **Carrier suite**: 381/381 ✓
+
+**PR A (activation blocker fixes) — 2026-05-24:**
+- Sentinel mismatch corrected: tests import `_CONFIRM_SENTINEL`, docstrings updated
+- suppress_terminal route added: POST `/pz/lineage/{batch_id}/correction-suppress`
+- Documentation sentinel value corrected in both phase1 memory files
+- 9 new tests added (suppress route + wrong-sentinel gate test via real push service)
+- Total lifecycle tests: 81 (was 72)
+- PR B (atomicity hardening + parallel push deprecation) still required before flag activation
 
 ---
 
