@@ -85,6 +85,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ## RULE 6 visibility entries (scorecards)
 
 - **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-pz-lifecycle-pr-a-activation-blockers.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PZ Correction Lifecycle PR A (activation blockers) campaign. 5 agents scored: all EXEMPLARY. File confirmed on disk (Lesson C verified). PR #355 squash-merged SHA c7a29aa.
+- **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-pz-lifecycle-pr-b-atomic-writes-route-governance.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PZ Correction Lifecycle PR B (atomic writes + 410 route governance) campaign. 4 agents scored: all EXEMPLARY. File confirmed on disk: 7,667 bytes (Lesson C verified). PR #356 squash-merged SHA 895cd0e.
 - **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-phase2-advisory-llm.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 2 Advisory LLM campaign. 9 agents scored: 8 EXEMPLARY, 1 NEEDS-TUNING (deploy_git_diff_reviewer). File confirmed on disk: 17,078 bytes (Lesson C verified). Issue #353 filed for GATE 4 SCHEDULED disposition.
 
 ## Phase 2 Advisory LLM -- PRODUCTION DEPLOYMENT (2026-05-24, operator-confirmed)
