@@ -1579,6 +1579,78 @@ def _ensure_polish_description(audit_path: Path, audit: Dict[str, Any]) -> Dict[
     return out
 
 
+# ── F4-FIX: Agency package status reconciliation ─────────────────────────────
+
+def _reconcile_agency_package_status(
+    audit_path: Path, audit: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Reconcile audit.agency_reply_package.status against email_queue.json.
+
+    When the agency email was sent (email_queue shows status=sent) but the
+    audit still shows status=queued (send callback missed), this function
+    repairs the discrepancy and logs a timeline event.
+
+    Safe: no-op if already sent, no email_id, or email not found in queue.
+    Never sends email. Never modifies financial fields.
+    """
+    out: Dict[str, Any] = {}
+    arp = (audit.get("agency_reply_package") or {})
+    arp_status = arp.get("status")
+    email_id = arp.get("email_id")
+
+    if not email_id or arp_status in ("sent", "failed"):
+        return out  # nothing to reconcile
+
+    try:
+        from .email_service import get_all_emails
+        for entry in get_all_emails(limit=1000):
+            if entry.get("id") != email_id:
+                continue
+            eq_status = entry.get("status")
+            if eq_status == "sent":
+                sent_at     = entry.get("sent_at") or datetime.now(timezone.utc).isoformat()
+                provider_id = entry.get("provider_message_id") or ""
+                arp["status"]        = "sent"
+                arp["sent_at"]       = sent_at
+                arp["send_verified"] = True
+                if provider_id:
+                    arp["provider_message_id"] = provider_id
+                arp["reconciled_by"] = "monitor_reconciliation"
+                audit["agency_reply_package"] = arp
+                cs = audit.get("clearance_status") or ""
+                if cs in ("agency_email_queued", "dsk_generated", ""):
+                    audit["clearance_status"] = "agency_email_sent"
+                write_json_atomic(audit_path, audit)
+                try:
+                    tl.log_event(
+                        audit_path,
+                        tl.EV_AGENCY_EMAIL_SENT,
+                        "monitor",
+                        "active_shipment_monitor",
+                        detail={
+                            "queue_id":            email_id,
+                            "sent_at":             sent_at,
+                            "provider_message_id": provider_id,
+                            "reconciled":          True,
+                        },
+                    )
+                except Exception:
+                    pass
+                out["reconciled"] = True
+                out["email_id"]   = email_id
+                out["sent_at"]    = sent_at
+            elif eq_status == "failed":
+                out["reconciled"] = False
+                out["eq_status"]  = "failed"
+                out["email_id"]   = email_id
+            break
+    except Exception as exc:
+        out["error"] = str(exc)
+
+    return out
+
+
 def _ensure_agency_forward_after_dhl(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
     """
     Auto-forward DHL-received customs documents to the agency (Piotr @ ACS,
@@ -2172,7 +2244,13 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
         action["sla"] = _evaluate_sla(audit)
 
         # 3. Tracking triggers (customs activity → email scan now)
-        tr_events = (audit.get("tracking") or {}).get("events") or []
+        # RC3-FIX: prefer authoritative tracking_events array; fall back to
+        # stale summary (audit.tracking.events) only when absent.
+        tr_events = (
+            audit.get("tracking_events")
+            or (audit.get("tracking") or {}).get("events")
+            or []
+        )
         triggers  = detect_tracking_triggers(tr_events, audit) if tr_events else []
         action["triggers"] = triggers
 
@@ -2346,6 +2424,17 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
                 action["agency_forward_after_dhl"] = fwd_result
         except Exception as exc:
             action["agency_forward_after_dhl_error"] = str(exc)
+
+        # 5d-bis. F4-FIX: Agency package status reconciliation.
+        # Syncs audit.agency_reply_package.status from email_queue.json when
+        # the send callback was missed (audit stuck at "queued" despite sent email).
+        try:
+            audit_rec = json.loads(audit_path.read_text(encoding="utf-8"))
+            rec_result = _reconcile_agency_package_status(audit_path, audit_rec)
+            if rec_result.get("reconciled") or rec_result.get("error"):
+                action["agency_package_reconciliation"] = rec_result
+        except Exception as exc:
+            action["agency_package_reconciliation_error"] = str(exc)
 
         # 5e. Agency SLA — start 2h after agency forward sent; stop on docs received
         # Guard: skip entirely only when SLA is fully complete (started AND stopped).

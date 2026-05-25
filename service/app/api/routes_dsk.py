@@ -233,10 +233,15 @@ async def generate_dsk_endpoint(body: DskRequest) -> DskResponse:
                         _audit["dsk_path"] = str(_output_path)
                     _audit["dsk_status"]     = "generated"
                     _audit["clearance_status"] = "dsk_generated"
+                    # F3-FIX: write canonical pointer that _compute_dhl_action_state reads.
+                    # dashboard reads audit["customs_package_generated_at"]; dsk_meta.generated_at
+                    # alone is not enough — write both so legacy and new paths agree.
+                    _now_iso = datetime.now(timezone.utc).isoformat()
+                    _audit["customs_package_generated_at"] = _now_iso
                     _audit["dsk_meta"] = {
                         "value_usd":    value_usd,
                         "value_source": value_source,
-                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "generated_at": _now_iso,
                     }
                     write_json_atomic(_audit_path, _audit)
                     tl.log_event(

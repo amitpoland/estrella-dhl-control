@@ -131,6 +131,27 @@ def save_email_scan_result(
         ([audit.get("batch_id")] if (audit and audit.get("batch_id")) else [])
     ))
 
+    # F6-FIX: deduplicate emails by stable message_id before storing.
+    # Emails without a message_id are labeled "unverified" — they may be
+    # duplicate representations of the same message from different search passes.
+    _seen_msg_ids: set = set()
+    _emails_deduped: List[Dict[str, Any]] = []
+    for _em in (scan_results.get("emails", []) or []):
+        _mid = (
+            _em.get("message_id")
+            or _em.get("messageId")
+            or _em.get("id")
+        )
+        if _mid:
+            if _mid in _seen_msg_ids:
+                _em = {**_em, "dedup_status": "duplicate", "dedup_key": _mid}
+            else:
+                _seen_msg_ids.add(_mid)
+                _em = {**_em, "dedup_status": "unique", "dedup_key": _mid}
+        else:
+            _em = {**_em, "dedup_status": "unverified"}
+        _emails_deduped.append(_em)
+
     record: Dict[str, Any] = {
         "awb":                     awb,
         "invoice_numbers":         invoice_numbers,
@@ -139,7 +160,7 @@ def save_email_scan_result(
         "matched":                 int(scan_results.get("matched", 0) or 0),
         "confidence":              scan_results.get("confidence", ""),
         "threads":                 scan_results.get("threads", []) or [],
-        "emails":                  scan_results.get("emails", []) or [],
+        "emails":                  _emails_deduped,
         "derived_events":          scan_results.get("derived_events", []) or [],
         "recommended_next_action": scan_results.get("recommended_next_action", ""),
         "search_unreliable":       bool(scan_results.get("search_unreliable", False)),

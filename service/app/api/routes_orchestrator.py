@@ -32,6 +32,37 @@ router = APIRouter(prefix="/api/v1/orchestrator", tags=["orchestrator"])
 _auth  = Depends(require_api_key)
 
 
+def _monitor_state(audit: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    F1/F5-FIX: Compute monitor block state for operator visibility.
+
+    Surfaces why the monitor hasn't swept and what the safe remediation
+    action is.  Read-only — no writes, no side effects.
+    """
+    auto_sweep    = bool(getattr(settings, "dhl_orch_auto_monitor_sweep", False))
+    auto_followup = bool(getattr(settings, "dhl_orch_auto_send_dhl_followup", False))
+    shadow        = bool(getattr(settings, "dhl_orch_shadow_mode", True))
+
+    ei = audit.get("email_ingestion") or {}
+    last_scan_at = ei.get("last_scan_at")
+
+    blocked_reason: str | None = None
+    if not auto_sweep:
+        blocked_reason = "manual_monitor_required"
+
+    return {
+        "auto_monitor_sweep":     auto_sweep,
+        "auto_send_dhl_followup": auto_followup,
+        "shadow_mode":            shadow,
+        "last_scan_at":           last_scan_at,
+        "blocked_reason":         blocked_reason,
+        "safe_operator_action":   (
+            "POST /api/v1/monitor/active-shipments/run"
+            if blocked_reason else None
+        ),
+    }
+
+
 def _attachment_readiness(audit: Dict[str, Any]) -> Dict[str, Any]:
     """Read-only summary of what attachments would be available."""
     dsk          = (audit.get("dsk_path") or "").strip()
@@ -113,6 +144,7 @@ async def get_orchestrator_state(batch_id: str) -> Dict[str, Any]:
         "attachment_readiness": _attachment_readiness(audit),
         "email_readiness":      _email_readiness(audit),
         "safety_flags":         flags,
+        "monitor_state":        _monitor_state(audit),
     }
 
 
