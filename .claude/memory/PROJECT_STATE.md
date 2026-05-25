@@ -193,7 +193,8 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - AWB 4789974092 also auto-reconciled (collateral benefit) ✅
 
 **Lesson D JSONL**: appended to `.claude/memory/local-commit-deploys.jsonl` (status: MERGED — push reconciliation complete)  
-**15/15 new tests** in `test_dhl_monitor_fixes.py` — all pass
+**15/15 new tests** in `test_dhl_monitor_fixes.py` — all pass  
+**Scorecard**: `.claude/memory/scorecards/2026-05-25-dhl-monitor-fixes-5c19c1c-deploy.md` — ALL 6 agents EXEMPLARY, no GATE 4 salvage findings
 
 ---
 

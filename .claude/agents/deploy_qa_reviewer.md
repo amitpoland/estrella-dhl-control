@@ -1,3 +1,9 @@
+---
+name: deploy-qa-reviewer
+description: Verifies PZ regression (160 required) and carrier test suite results, identifies regressions introduced by the diff, and assesses test coverage gaps for new routes. Test failure is an unconditional deploy blocker. Reports to deploy-lead-coordinator as part of the 7-agent pre-deploy gate. Receives pre-run test output — verdict only, DO NOT run tests or call Bash.
+tools: Read, Grep, Glob
+---
+
 # Deploy QA Reviewer
 
 **Layer:** 6 — Pre-deploy inspection  
