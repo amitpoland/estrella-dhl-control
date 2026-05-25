@@ -33,21 +33,28 @@ FORBIDDEN — gateway violation rule (PR-review gate):
     ...must be blocked at PR review, unless it is a test proving the
     violation is forbidden, or a config/docs file.
 
-Claude-first rule (Phase 2B — provider abstraction):
-    Claude Code / Claude Work (Cowork) is the primary reasoning path.
-    Anthropic API is the fallback only, invoked through this gateway when
-    Claude-first execution is unavailable, times out, or returns low
-    confidence.  No service may call Anthropic directly.
+Provider lock-down (ADR-020 — 2026-05-25):
+    Anthropic Claude API is the sole approved runtime AI provider.
+    All production calls use Path B: _anthropic_call() directly via
+    settings.anthropic_api_key.  No service may call Anthropic directly
+    (all calls must go through this gateway).
 
-    Provider selection policy:
-      1. If ai_cowork_enabled=True AND ai_provider_preference="claude_cowork":
-             → try _cowork_call() first (stub in 2B; live in Phase 3)
-             → if cowork returns None AND ai_fallback_enabled=True:
+    Cowork path (ai_cowork_enabled) is DEPRECATED as of 2026-05-25.
+    The cowork code (_cowork_call, _cowork_cb_*, ai_cowork_api_key) is
+    retained in the repository and is dormant — future-optional but not
+    production-authorised.  AI_COWORK_ENABLED must remain false in all
+    environments.  Activating it without a new ADR superseding ADR-020
+    and explicit operator approval is a governance violation.
+
+    Effective provider selection policy (ADR-020):
+      1. If ai_cowork_enabled=True (deprecated path — must not activate):
+             → try _cowork_call() first
+             → if cowork fails AND ai_fallback_enabled=True:
                  → try _anthropic_call() as governed fallback
-             → if cowork returns None AND ai_fallback_enabled=False:
+             → if cowork fails AND ai_fallback_enabled=False:
                  → return None (no fallback allowed)
-      2. Otherwise (cowork disabled or preference != claude_cowork):
-             → _anthropic_call() directly (backward-compatible path)
+      2. Otherwise (ai_cowork_enabled=False — the only authorised path):
+             → _anthropic_call() directly (sole production path)
 
     provider_requested / provider_used / fallback_used are recorded in
     ai_call_ledger on every call attempt, regardless of outcome.

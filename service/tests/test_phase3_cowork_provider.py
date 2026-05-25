@@ -158,16 +158,19 @@ def test_cowork_success_records_provider_used():
     mock_anthropic_mod = MagicMock()
     mock_anthropic_mod.Anthropic = mock_anthropic_cls
 
-    ledger = _mock_ledger()
     mock_redactor = MagicMock()
     mock_redactor.redact_pair.side_effect = lambda s, u: (s, u)
 
     with patch.dict("sys.modules", {
         "app.core.config": config_mod,
         "anthropic": mock_anthropic_mod,
-        "app.services.ai_call_ledger": ledger,
         "app.services.ai_redactor": mock_redactor,
-    }):
+    }), \
+    patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0), \
+    patch("app.services.ai_call_ledger.record") as mock_record, \
+    patch("app.services.ai_call_ledger.estimate_tokens", return_value=50), \
+    patch("app.services.ai_call_ledger.estimate_cost", return_value=0.0001), \
+    patch("app.services.ai_call_ledger.prompt_hash", return_value="testhash"):
         result = ai_gateway.call(
             system="sys", user="usr",
             task_type="test", service_name="test_svc",
@@ -175,8 +178,8 @@ def test_cowork_success_records_provider_used():
 
     assert result == "cowork answer"
     # Verify ledger.record was called with provider_used=claude_cowork
-    assert ledger.record.called
-    record_args = ledger.record.call_args[0][0]
+    assert mock_record.called
+    record_args = mock_record.call_args[0][0]
     assert record_args["provider_used"] == "claude_cowork"
     assert record_args["fallback_used"] is False
     assert record_args["success"] is True
@@ -212,16 +215,19 @@ def test_fallback_fires_when_cowork_fails():
     mock_anthropic_mod = MagicMock()
     mock_anthropic_mod.Anthropic = mock_anthropic_cls
 
-    ledger = _mock_ledger()
     mock_redactor = MagicMock()
     mock_redactor.redact_pair.side_effect = lambda s, u: (s, u)
 
     with patch.dict("sys.modules", {
         "app.core.config": config_mod,
         "anthropic": mock_anthropic_mod,
-        "app.services.ai_call_ledger": ledger,
         "app.services.ai_redactor": mock_redactor,
-    }):
+    }), \
+    patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0), \
+    patch("app.services.ai_call_ledger.record") as mock_record, \
+    patch("app.services.ai_call_ledger.estimate_tokens", return_value=50), \
+    patch("app.services.ai_call_ledger.estimate_cost", return_value=0.0001), \
+    patch("app.services.ai_call_ledger.prompt_hash", return_value="testhash"):
         result = ai_gateway.call(
             system="sys", user="usr",
             task_type="test", service_name="test_svc",
@@ -229,7 +235,7 @@ def test_fallback_fires_when_cowork_fails():
 
     assert result == "fallback answer"
     # fallback_used must be True
-    record_args = ledger.record.call_args[0][0]
+    record_args = mock_record.call_args[0][0]
     assert record_args["fallback_used"] is True
     assert record_args["provider_used"] == "anthropic_api"
 
@@ -304,23 +310,26 @@ def test_fallback_blocked_when_anthropic_cb_open():
     mock_anthropic_mod = MagicMock()
     mock_anthropic_mod.Anthropic = mock_anthropic_cls
 
-    ledger = _mock_ledger()
     mock_redactor = MagicMock()
     mock_redactor.redact_pair.side_effect = lambda s, u: (s, u)
 
     with patch.dict("sys.modules", {
         "app.core.config": config_mod,
         "anthropic": mock_anthropic_mod,
-        "app.services.ai_call_ledger": ledger,
         "app.services.ai_redactor": mock_redactor,
-    }):
+    }), \
+    patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0), \
+    patch("app.services.ai_call_ledger.record") as mock_record, \
+    patch("app.services.ai_call_ledger.estimate_tokens", return_value=50), \
+    patch("app.services.ai_call_ledger.estimate_cost", return_value=0.0001), \
+    patch("app.services.ai_call_ledger.prompt_hash", return_value="testhash"):
         result = ai_gateway.call(
             system="sys", user="usr",
             task_type="test", service_name="test_svc",
         )
 
     assert result is None
-    record_args = ledger.record.call_args[0][0]
+    record_args = mock_record.call_args[0][0]
     assert record_args["error_type"] == "anthropic_cb_open"
 
     ai_gateway.reset_circuit_breaker()

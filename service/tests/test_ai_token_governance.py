@@ -43,9 +43,10 @@ def test_token_budget_policy_contains_required_rules() -> None:
 def clean_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     monkeypatch.setenv("PZ_STORAGE_ROOT", str(tmp_path))
-    # No AI-related env vars — pure defaults
-    for key in ("ANTHROPIC_API_KEY", "AI_ADVISORY_LLM_ENABLED",
-                "AI_FALLBACK_ENABLED", "AI_PARSER_ENABLED"):
+    # Set ANTHROPIC_API_KEY to empty string — pydantic-settings reads .env files
+    # directly, so delenv() is insufficient; setenv("", ...) forces empty override.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    for key in ("AI_ADVISORY_LLM_ENABLED", "AI_FALLBACK_ENABLED", "AI_PARSER_ENABLED"):
         monkeypatch.delenv(key, raising=False)
     from app.core.config import Settings
     return Settings()

@@ -1,8 +1,8 @@
 # API Fallback Policy — EJ Dashboard Portal
 
-**Status**: ACTIVE (Phase 1B)  
+**Status**: ACTIVE (Phase 2 — Anthropic API sole provider 2026-05-25)  
 **Paired with**: `token-budget-policy.md` §6-7  
-**Last revised**: 2026-05-23
+**Last revised**: 2026-05-25
 
 This document defines how the optional runtime AI API fallback behaves,
 when it is allowed to fire, and how it is safely disabled by default.
@@ -73,3 +73,29 @@ Phase 2 advisory calls MUST use:
 
 The advisory model may NOT be `claude-opus-*` without explicit operator
 approval and a cost-impact note in the PR description.
+
+---
+
+## 6. Provider architecture (locked 2026-05-25)
+
+**Anthropic Claude API is the sole approved runtime AI provider.**
+
+Full rationale and gate requirements: `docs/ai-governance/ai-capability-map.md` §10.
+ADR: `.claude/adr/ADR-020-anthropic-api-sole-provider.md`.
+
+| Path | Provider | Status |
+|---|---|---|
+| `ai_gateway.call()` Path B (default) | Anthropic API via `anthropic.Anthropic` | **ACTIVE** |
+| `ai_gateway.call()` Path A (cowork, `AI_COWORK_ENABLED`) | Cowork stub — Anthropic SDK alias | **DEPRECATED — flag must stay false** |
+| `ai_bridge.py` file coordination | Operator-assisted, file-based only | Operator-assist tool, not in-app LLM |
+| Claude Code CLI | Engineering-time tool | Developer-only, not in-app LLM |
+
+### Production config (live as of 2026-05-25)
+
+```
+AI_COWORK_ENABLED=false          # deprecated — must remain false
+AI_FALLBACK_ENABLED=false        # deterministic path is default
+AI_GATEWAY_DAILY_BUDGET_USD=2.00 # operator override from default $1.00
+```
+
+No second provider may be introduced without a new ADR superseding ADR-020 and explicit operator approval. This applies even if the cowork code path still exists in `ai_gateway.py` — existence in code does not equal authorization to activate.

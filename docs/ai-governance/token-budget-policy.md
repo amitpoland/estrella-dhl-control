@@ -1,8 +1,8 @@
 # Token Budget Policy — EJ Dashboard Portal
 
-**Status**: ACTIVE (Phase 1B)  
+**Status**: ACTIVE (Phase 2 — Anthropic API sole provider 2026-05-25)  
 **Enforced by**: `test_ai_token_governance.py`  
-**Last revised**: 2026-05-23
+**Last revised**: 2026-05-25
 
 This document defines the mandatory token-control rules for every AI surface
 in this codebase. It supplements `ai-capability-map.md`. These rules bind
@@ -81,8 +81,9 @@ Never call `Read(file)` on a static HTML file > 300 LOC without a specific
 See `api-fallback-policy.md` for the full stop-condition matrix.  
 Summary:
 - `ai_advisory_max_tokens_per_call`: 1000 (config, hard-enforced at call site)
-- `ai_advisory_budget_usd_per_day`: 1.00 (config, trip-wire — stops further calls)
+- `ai_advisory_budget_usd_per_day`: 1.00 (config default) — **production override: $2.00/day** (set in Windows `.env` as of 2026-05-25; canary burn rate $0.000372/call avg → ~5,376 calls before $2.00 ceiling)
 - `ai_fallback_enabled`: False by default — must be explicitly set True in `.env`
+- Provider: Anthropic API only (sole provider as of 2026-05-25 — see `api-fallback-policy.md` §6)
 
 ---
 
