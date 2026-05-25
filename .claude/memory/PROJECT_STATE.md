@@ -244,9 +244,9 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ## Current Origin/Main HEAD Status (2026-05-26)
 
-- **Current SHA**: `91cea4b` — "chore: record DHL monitor governance scorecards"
-- **Previous SHA**: `a9dfbd6` — "chore: PROJECT_STATE — record DEPLOY-AGENT-REGISTRATION-REPAIR + OQ6 resolved"
-- **Before that**: `4366b0f` — "fix(agents): add YAML frontmatter to all 7 deploy agent files"
+- **Current SHA**: `7352152` — "chore: record DHL dev automation enablement (2026-05-26)"
+- **Previous SHA**: `695d21c` — "chore: record AI advisory pilot closure + OQ1 resolution"
+- **Before that**: `91cea4b` — "chore: record DHL monitor governance scorecards"
 - **Status**: Clean — no open PRs, no pending conflicts, no governance ambiguity
 - **Production status**: C:\PZ **DEPLOYED at `5c19c1c`** (2026-05-25T22:57Z). F1–F6 DHL monitor fixes live. Commits `835056f`→`a9dfbd6`→`91cea4b` are governance/`.claude`-only — no robocopy needed.
 
@@ -2376,6 +2376,12 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
 - **Scorecard**: `.claude/memory/scorecards/2026-05-25-dhl-monitor-fixes-f1-f6.md` — 7 agents scored, ALL EXEMPLARY.
 - **Recommended operator action for AWB 9198333502**: After deploying 5c19c1c + restarting PZService, run `POST /api/v1/monitor/active-shipments/run` to trigger F4 reconciliation (agency_reply_package.status → sent) and F2-based follow-up initialization.
 - **GATE 2**: 0/3 open PRs — 5c19c1c was committed directly to main (no PR opened); commit is on main and ready for deploy.
+
+## Scorecards (2026-05-26)
+
+- **DHL Dev Automation Enablement Scorecard** (2026-05-26): `.claude/memory/scorecards/2026-05-26-dhl-automation-enablement.md` — 6/6 EXEMPLARY (chief-orchestrator, deployment-windows-ops, backend-api, backend-safety-reviewer, assumption-builder, flow-context-keeper). Campaign: DHL dev automation flows enabled; all AUTO_SEND_* flags remain blocked; shadow_mode=false; health verified.
+
+- **Agent Performance Observer Self-Evaluation** (2026-05-26): `.claude/memory/scorecards/self-eval-2026-05-26.md` — 7-day calendar cadence trigger (self-eval-2026-05-19.md was 7 days old). Finding: Evidence quality regression (3/5 → 4/5 improved); Priority 1 action item for next observer run.
 
 ---
 
