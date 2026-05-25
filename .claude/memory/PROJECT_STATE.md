@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25.
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25 (post-PR-364).
 
-**Last-run-at:** 2026-05-25T(STAGE-2-4-COMPLETE)Z. Origin/main HEAD: 74d1e07 (post-master-bootstrap). MASTER BOOTSTRAP COMPLETE: ALL 3 PRs MERGED — #337, #268, #361. GATE 2: 0/3 (fully clear). ACTIVATION GATE: 3/3 UNBLOCKED. ANTHROPIC PILOT: 3-canary quality validation COMPLETE. Spend $0.001116/$2.00 (0.056%). Monitoring window open — broad traffic gate pending explicit operator go. PROVIDER LOCK-DOWN: Anthropic API sole provider. Cowork DEPRECATED. ADR-020 created. STAGE-2-4: AI posture locked. 142/142 AI tests pass. Docstring contradictions corrected (comments only). 3 cowork test mocks fixed (sys.modules→patch). Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
+**Last-run-at:** 2026-05-25T(PR-364-MERGED)Z. Origin/main HEAD: efba905 (GlobalPZCorrectionProposalCard lifecycle UI). PR #364 MERGED: 36/36 gate items PASS. GATE 2: 0/3 (fully clear). LIFECYCLE UI: merged but dormant (pz_correction_lifecycle_enabled=false). ANTHROPIC PILOT: 3-canary quality validation COMPLETE. Spend $0.001116/$2.00 (0.056%). Monitoring window open — broad traffic gate pending explicit operator go. PROVIDER LOCK-DOWN: Anthropic API sole provider. Cowork DEPRECATED. ADR-020 created. STAGE-2-4: AI posture locked. 142/142 AI tests pass. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
 
 ---
 
@@ -75,11 +75,35 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ---
 
+## PR #364 — GlobalPZCorrectionProposalCard Lifecycle UI (2026-05-25, MERGED)
+
+**Campaign type**: UI lifecycle integration (V1 exception under Lesson F)  
+**Status**: PR #364 MERGED — squash SHA `efba905` on main (2026-05-25). NOT DEPLOYED. No production impact — lifecycle endpoints gated by `pz_correction_lifecycle_enabled=false`.
+
+- **Commit SHA on main**: efba905 — "feat(ui): GlobalPZCorrectionProposalCard — lifecycle-aware 4-endpoint upgrade (#364)"
+- **Merge timestamp**: 2026-05-25
+- **PR**: #364 — lifecycle-aware UI card with 4-endpoint integration
+- **Branch**: feat/global-pz-correction-lifecycle-ui (deleted after merge)
+- **Files changed** (2):
+  - `service/app/static/shipment-detail.html` — GlobalPZCorrectionProposalCard component with lifecycle state integration
+  - `service/tests/test_global_pz_correction_proposal_card.py` — 76 backend route/lifecycle tests
+- **5 lifecycle endpoints integrated**: correction-state GET, correction-stage POST/DELETE, correction-suppress POST, correction-commit POST
+- **Tests**: 130/130 passing (54 source-grep + 76 backend route/lifecycle tests)
+- **7-agent gate**: 36/36 verification items PASS (Section A-G: UI authority, lifecycle wiring, wFirma safety, option safety, state UX, tests, governance)
+- **GATE 2**: 1/3 → 0/3 (PR #364 was the only open PR; now fully clear after merge)
+- **Security posture**: commit button gated by `lifecycleEnabled && isStaged`; no direct wFirma calls in static code; CANCEL_AND_RECREATE option filtered client-side
+- **Lesson F exception documented**: PR body declared Lesson F exception with justification (UI lifecycle integration requires V1 modification); only 2 files changed; no backend write logic modified
+- **Feature flag status**: `PZ_CORRECTION_LIFECYCLE_ENABLED=false` (default) → lifecycle routes return 503; UI falls back to read-only display
+- **Scorecard**: `.claude/memory/scorecards/2026-05-25-global-pz-correction-lifecycle-ui.md`
+
+---
+
 ## Current Origin/Main HEAD Status (2026-05-25)
 
-- **Current SHA**: `74d1e07` — "chore: master bootstrap campaign COMPLETE — 3 PRs merged, GATE 2 clear, activation unblocked (2026-05-25)"
+- **Current SHA**: `efba905` — "feat(ui): GlobalPZCorrectionProposalCard — lifecycle-aware 4-endpoint upgrade (#364)"  
+- **Previous SHA**: `74d1e07` — "chore: master bootstrap campaign COMPLETE — 3 PRs merged, GATE 2 clear, activation unblocked (2026-05-25)"
 - **Status**: Clean — no open PRs, no pending conflicts, no governance ambiguity
-- **Production gap**: Single file difference in `service/app/api/routes_search.py` (OpenAPI descriptions only; zero logic)
+- **Production gap**: Now 2 differences vs production: (1) `service/app/api/routes_search.py` (OpenAPI descriptions only; zero logic) + (2) full PR #364 UI/test changes (lifecycle gated by flag=false)
 
 ---
 
@@ -352,6 +376,8 @@ Remove 6 pilot `.env` lines → restart PZService → confirm `active_provider=n
 
 ## RULE 6 visibility entries (scorecards)
 
+- **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-global-pz-correction-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PR #364 GlobalPZCorrectionProposalCard lifecycle UI campaign. 11 agents scored: all verdicts pending review. File confirmed on disk (Lesson C verified). GATE 4 dispositions logged in this session.
+- **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-phase2b-phase3-isolation-hotfix.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). AI governance Stage 2-4 campaign. Parallel merge alongside PR #364. File confirmed on disk (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-master-bootstrap-campaign.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Master Bootstrap Campaign. 11 agents scored: 10 EXEMPLARY, 1 ACCEPTABLE (deploy_lead_coordinator substitution disclosure gap). File confirmed on disk: 3,744 bytes (Lesson C verified). No GATE 4 salvage required.
 - **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-phase2-advisory-llm.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 2 Advisory LLM campaign. 9 agents scored: 8 EXEMPLARY, 1 NEEDS-TUNING (deploy_git_diff_reviewer). File confirmed on disk: 17,078 bytes (Lesson C verified). Issue #353 filed for GATE 4 SCHEDULED disposition.
 
@@ -2343,8 +2369,19 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ## Next 3 actions in queue
 
 1. **AI advisory monitoring window check** — target: operator runs 7-condition check after 24-48h monitoring window — gating: circuit breaker warnings, error patterns, budget burn rate assessment — outcome: broad traffic enablement decision (OQ1)
-2. **Pre-existing test failure disposition** — target: operator provides GATE 4 disposition (SCHEDULED / ISSUE / REJECTED) for 1,033 pre-existing test failures — gating: governance compliance per GATE 4 rules (OQ4)
-3. **Routes search OpenAPI deploy** — target: routine 7-agent gate sync of SHA 74d1e07 to production — gating: none (safe deploy, description strings only) — outcome: production OpenAPI docs updated (OQ3)
+2. **Pre-existing test failure disposition** — target: operator provides GATE 4 disposition (SCHEDULED / ISSUE / REJECTED) for 1,033 pre-existing test failures — gating: governance compliance per GATE 4 rules (OQ4)  
+3. **Routes search OpenAPI deploy** — target: routine 7-agent gate sync of SHA efba905 to production — gating: none (safe deploy, includes PR #364 + OpenAPI updates) — outcome: production deployment with lifecycle UI (flags remain off)
+
+## PR #364 governance decisions (2026-05-25)
+
+- **PR #364 review verdict: APPROVED** — all 36 checklist items PASS. Merged as `efba905`. (2026-05-25)
+- **GATE 6 (browser verification) deferred for PR #364** — lifecycle endpoints gated by `pz_correction_lifecycle_enabled=false`; source-grep + backend integration tests substitute. When lifecycle flag is activated, browser verification becomes mandatory before any wFirma commit action is exercised. (2026-05-25)
+
+## GATE 4 dispositions completed in this session (2026-05-25)
+
+- **OQ3 (empty-key fallback in _cowork_call)**: → ISSUE #365 filed on GitHub
+- **OQ4 (1,033 pre-existing test failures)**: → ISSUE #366 filed on GitHub (SCHEDULED triage)  
+- **OQ6 (GATE 5 agent substitution disclosure)**: → SCHEDULED — process rule added: future implementation sessions continuing from prior context MUST fire gap-detection + reviewer-challenge before any code change
 
 ## Pending next steps (added 2026-05-23)
 
