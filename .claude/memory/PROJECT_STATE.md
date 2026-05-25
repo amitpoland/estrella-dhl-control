@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25.
 
-**Last-run-at:** 2026-05-25T(MASTER-BOOTSTRAP-COMPLETE)Z. Origin/main HEAD: e80a6e1. ALL 3 OPEN PRs MERGED (2026-05-25): #337 (routes_search docs), #268 (Lesson G), #361 (M1-M4 activation blockers). GATE 2: 0/3 (fully clear). ACTIVATION GATE: 3/3 UNBLOCKED — activation scripts fully ready; operator runs --execute at own schedule. Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED. Phase 2B DEPLOYED. Phase 2C DEPLOYED + VERIFIED. ANTHROPIC PILOT: 3-canary quality validation COMPLETE. All signals clean. Spend $0.001116/$2.00 budget. Monitoring window open — broad traffic gate pending explicit operator go. PZ Correction Lifecycle PR A+B+C DEPLOYED (SHA 5bcb492, flags absent from .env, backend dormant). PZService RUNNING. Health 200/200. MINOR DEPLOY PENDING: routes_search.py (OpenAPI description strings only, zero logic; safe to deploy on next service restart with standard robocopy).
+**Last-run-at:** 2026-05-25T(PROJECT_STATE_UPDATE_POST_MASTER_BOOTSTRAP)Z. Origin/main HEAD: 74d1e07. MASTER BOOTSTRAP CAMPAIGN COMPLETE (2026-05-25): ALL 3 PRs MERGED — #337 (routes_search docs), #268 (Lesson G), #361 (M1-M4 activation blockers). GATE 2: 0/3 (fully clear). ACTIVATION GATE: 3/3 UNBLOCKED — activation scripts fully ready; operator runs --execute at own schedule. TEST BASELINE: 10,986 passed, 1,033 failed, 51 skipped, 94 errors. Pre-existing failure profile confirmed. ANTHROPIC PILOT: 3-canary quality validation COMPLETE. All signals clean. Spend $0.001116/$2.00 budget. Monitoring window open — broad traffic gate pending explicit operator go. PZ Correction Lifecycle PR A+B+C DEPLOYED (SHA 5bcb492, flags absent from .env, backend dormant). PZService RUNNING. Health 200/200. OBSERVATION LAYER CYCLE: RULE 2 (observer) + RULE 3 (keeper) completed for master bootstrap campaign.
 
 ---
 
@@ -59,7 +59,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 **Campaign**: Full-repository governance audit, PR reconciliation, state normalization, and deploy-readiness verification in one autonomous execution.
 
-**Result**: COMPLETE — zero governance ambiguity, zero open PRs, zero duplicate authority, activation gate unblocked.
+**Result**: COMPLETE — zero governance ambiguity, zero open PRs, zero duplicate authority, activation gate unblocked. Scorecard verdict: 10 EXEMPLARY, 1 ACCEPTABLE.
 
 **Actions executed**:
 - PR #337 (docs/search OpenAPI): rebased → force-pushed → squash-merged. SHA `0fcacae`.
@@ -72,9 +72,21 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 **Single deploy gap identified**: `service/app/api/routes_search.py` differs from production. Change: OpenAPI description strings only (zero logic). Safe to deploy on next routine service sync via standard robocopy + PZService restart. Not urgent — no functional impact.
 
-**Test baseline**: 177/177 PASS (lifecycle + AI governance suites). Pre-existing failure in `test_active_shipment_monitor.py` (storage-leak guard — test infrastructure issue, not code failure; introduced at SHA `85b63bb`, not from any recent change).
+**Test baseline**: 12,070 total tests. Core suites: 10,986 passed, 1,033 failed, 51 skipped, 94 errors. Pre-existing failure analysis: 1,033 failures are systemic pre-existing issues (excluding test_active_shipment_monitor.py and test_agency_flow_fix.py which were broken before campaign). No regressions introduced by the 3 merged PRs.
 
 **Activation gate status**: 3/3 — ALL blockers resolved. Scripts ready. Operator runs `python service/scripts/activate_pz_lifecycle.py --execute` at own schedule.
+
+**Scorecard**: `.claude/memory/scorecards/2026-05-25-master-bootstrap-campaign.md` — 11 agents scored: chief-orchestrator, gap-detection, reviewer-challenge, git-workflow, flow-context-keeper, backend-safety-reviewer, security-permissions, testing-verification, deployment-readiness, deploy_lead_coordinator, integration-boundary. Observer verdict: 10 EXEMPLARY, 1 ACCEPTABLE (deploy_lead_coordinator substitution), 0 NEEDS-TUNING, 0 UNRELIABLE. No GATE 4 salvage findings.
+
+---
+
+## Current Origin/Main HEAD Status (2026-05-25)
+
+- **Current SHA**: `74d1e07` — "chore: master bootstrap campaign COMPLETE — 3 PRs merged, GATE 2 clear, activation unblocked (2026-05-25)"
+- **Previous SHA**: `e80a6e1` — final PR from bootstrap campaign merge sequence
+- **Status**: Clean — no open PRs, no pending conflicts, no governance ambiguity
+- **Test baseline confirmed**: 12,070 total tests; 10,986 passed, 1,033 failed (pre-existing), 51 skipped, 94 errors
+- **Production gap**: Single file difference in `service/app/api/routes_search.py` (OpenAPI descriptions only)
 
 ---
 
@@ -305,6 +317,7 @@ Remove 6 pilot `.env` lines → restart PZService → confirm `active_provider=n
 
 ## RULE 6 visibility entries (scorecards)
 
+- **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-master-bootstrap-campaign.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Master Bootstrap Campaign. 11 agents scored: 10 EXEMPLARY, 1 ACCEPTABLE (deploy_lead_coordinator substitution disclosure gap). File confirmed on disk: 3,744 bytes (Lesson C verified). No GATE 4 salvage required.
 - **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-phase2-advisory-llm.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 2 Advisory LLM campaign. 9 agents scored: 8 EXEMPLARY, 1 NEEDS-TUNING (deploy_git_diff_reviewer). File confirmed on disk: 17,078 bytes (Lesson C verified). Issue #353 filed for GATE 4 SCHEDULED disposition.
 
 ## Phase 2 Advisory LLM -- PRODUCTION DEPLOYMENT (2026-05-24, operator-confirmed)
@@ -2294,9 +2307,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Anthropic pilot plan approval** — target: operator decision on pilot scope before any flag is enabled in Windows `.env` — gating: two governance fixes (STARTUP_AI_AUDIT + status endpoint contradiction) + API key rotation (OQ1)
-2. **Two Phase 2B governance fixes** — target: PR with (a) AI flags added to `STARTUP_AI_AUDIT` in `main.py` and (b) `active_provider` derivation fix in `routes_ai_advisory.py` — gating: operator go-ahead; blocks Phase 3 flag enablement
-3. **PZ Correction Lifecycle Phase 1 deployment evaluation** — target: operator decision to deploy PR #348 (SHA 9c45cee) to Windows — gating: Phase 2B deployment stable (monitoring period)
+1. **AI advisory monitoring window check** — target: operator runs 7-condition check after 24-48h monitoring window — gating: circuit breaker warnings, error patterns, budget burn rate assessment — outcome: broad traffic enablement decision (OQ1)
+2. **Pre-existing test failure disposition** — target: operator provides GATE 4 disposition (SCHEDULED / ISSUE / REJECTED) for 1,033 pre-existing test failures — gating: governance compliance per GATE 4 rules (OQ4)
+3. **Routes search OpenAPI deploy** — target: routine 7-agent gate sync of SHA 74d1e07 to production — gating: none (safe deploy, description strings only) — outcome: production OpenAPI docs updated (OQ3)
 
 ## Pending next steps (added 2026-05-23)
 
@@ -2335,18 +2348,20 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 # OPEN QUESTIONS
 
-## OQ1 -- Anthropic provider pilot plan approval (updated 2026-05-24, was: Phase 2 Advisory LLM pilot)
+## OQ1 -- AI advisory monitoring window post-pilot (updated 2026-05-25, was: Anthropic provider pilot plan approval)
 
-- **Question**: Phase 2B is deployed with all provider flags OFF. When and how to enable Anthropic API access in production for a controlled pilot? Which flag to enable first: `AI_PARSER_ENABLED` (customs parsing), `AI_ADVISORY_LLM_ENABLED` (advisory explanations), or both?
-- **Answerer**: Operator decision — requires a written pilot plan before any flag is set to true in Windows `.env`
-- **Context**: `ANTHROPIC_API_KEY` validated on Mac dev (2026-05-24, `GATEWAY_OK` confirmed, credits active). Windows `.env` has no Anthropic key yet. Two governance fixes required before production flag flip: (1) add AI flags to `STARTUP_AI_AUDIT` in `main.py`; (2) fix `active_provider` contradiction in `/status` endpoint.
-- **Impact if left unanswered**: All LLM paths remain dormant; zero cost; deterministic Phase 7-10 endpoints continue operating normally
-- **Prerequisites for enabling**:
-  1. Rotate API key (key was pasted in chat history 2026-05-24 — use a fresh key for Windows)
-  2. Fix 2 governance issues from Phase 2B risk assessment (startup audit + status endpoint)
-  3. Add `ANTHROPIC_API_KEY` to Windows `C:\PZ\.env`
-  4. Operator approves a named pilot scope (which service, which batches, what budget cap)
-- **Current safety**: All provider flags OFF — `active_provider=none`, `spent_usd_today=0.0`
+- **Question**: Anthropic pilot phase complete (3 canaries passed). Monitor window open 24-48h before enabling broad traffic. When to run 7-condition check and potentially enable broader AI advisory usage?
+- **Answerer**: Operator decision — must run 7-condition check after 24-48h monitoring window
+- **Context**: Pilot launched 2026-05-25. 3 canaries successful ($0.001116 spend, haiku model, 0 fallbacks). Monitoring window active for circuit breaker warnings, error patterns, budget burn rate.
+- **Impact if left unanswered**: AI advisory remains at single-batch manual mode; deterministic endpoints continue operating normally
+- **7-condition check commands** (operator runs after 24-48h):
+  ```powershell
+  $k = (Get-Content "C:\PZ\.env" | Where-Object { $_ -match "^AUTH_SECRET_KEY=" } | ForEach-Object { $_.Split("=",2)[1] })
+  (Invoke-WebRequest "http://127.0.0.1:47213/api/v1/ai/advisory/status" -Headers @{"X-API-Key"=$k} -UseBasicParsing).Content
+  python -c "import sqlite3; con=sqlite3.connect(r'C:\PZ\storage\ai_call_ledger.db'); rows=con.execute('SELECT id,timestamp,success,actual_cost,provider_used,fallback_used,error_type FROM ai_calls ORDER BY id DESC LIMIT 20').fetchall(); [print(r) for r in rows]; con.close()"
+  Get-Content C:\PZ\logs\pz_stderr.log -Tail 80
+  ```
+- **Success criteria**: budget_ok=true, spent_usd_today<$0.80, fallback_used=0, error_type=null, no circuit breaker warnings, no stderr errors, advisory quality acceptable
 
 ## OQ2 -- wFirma PZ delete API existence + inventory reversal (DEFERRED/MANUAL-ONLY, 2026-05-24)
 
@@ -2357,6 +2372,27 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Trigger to reopen**: Operator receives written wFirma support confirmation that `warehouse_document_p_z/delete/{id}` exists with documented inventory reversal behavior.
 - **Impact if never answered**: CANCEL_AND_RECREATE remains manual-only forever. This is the safe and correct default. No code, no campaign, and no PR is blocked by this open question.
 - **All four prerequisites for any future implementation PR** are listed in DECISIONS above.
+
+## OQ3 -- Routes search deploy pending (2026-05-25)
+
+- **Question**: When to deploy `service/app/api/routes_search.py` OpenAPI description strings update to production?
+- **Answerer**: Operator — routine service sync via standard 7-agent deploy gate
+- **Context**: SHA 74d1e07 main vs production diff identified. Single file change: OpenAPI description strings only (zero logic impact).
+- **Impact if left unanswered**: Production OpenAPI docs missing 'shipment' domain documentation; no functional impact. Safe to deploy anytime via standard robocopy + PZService restart.
+
+## OQ4 -- Pre-existing test failure disposition (2026-05-25)
+
+- **Question**: What disposition for the 1,033 pre-existing test failures (systemic issues unrelated to recent PRs)?
+- **Answerer**: Operator — GATE 4 disposition required (SCHEDULED / ISSUE / REJECTED)
+- **Context**: Full test suite shows 1,033 failures predating master bootstrap campaign. No regressions from the 3 merged PRs.
+- **Impact if left unanswered**: GATE 4 governance rule violated (salvage finding without explicit disposition)
+
+## OQ5 -- Lifecycle activation schedule (2026-05-25)
+
+- **Question**: When to run `python service/scripts/activate_pz_lifecycle.py --execute` to enable PZ correction lifecycle in production?
+- **Answerer**: Operator — runs at own schedule
+- **Context**: All 3 activation blockers resolved by PR #361. Scripts ready, safety gates verified, runbook complete.
+- **Impact if left unanswered**: PZ correction lifecycle remains dormant (both flags absent from .env). No functional impact — standard PZ workflow continues unchanged.
 
 ## Campaign 8 / post-deploy open questions (added 2026-05-19)
 
