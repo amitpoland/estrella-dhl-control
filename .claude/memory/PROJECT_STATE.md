@@ -2560,9 +2560,11 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Deploy DHL Monitor Fixes** — target: deploy SHA 5c19c1c to C:\PZ production + restart PZService — gating: DHL Monitor F1–F6 fixes ready on main — outcome: activate fixes for AWB 9198333502 reconciliation and future monitor reliability (OQ-NEW-1)
-2. **Trigger AWB 9198333502 reconciliation** — target: after deploy, run `POST /api/v1/monitor/active-shipments/run` to trigger F4 reconciliation — gating: SHA 5c19c1c deployed + PZService restarted — outcome: agency_reply_package.status → sent + F2-based follow-up initialization
-3. **AI advisory monitoring window check** — target: operator runs 7-condition check after 24-48h monitoring window — gating: circuit breaker warnings, error patterns, budget burn rate assessment — outcome: broad traffic enablement decision (OQ1)
+1. **PZ correction workflow suppression (operator action)** — RECOMMENDED: operator calls `POST /api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-suppress` to close the correction workflow cleanly. Gate 8 permanently blocks automated push; suppression is the correct closure. Optional pre-step: manually update product codes in wFirma PZ 9/5/2026 if needed.
+2. **Deploy DHL Monitor Fixes** — target: deploy SHA 5c19c1c to C:\PZ production + restart PZService (now unblocked — 7-agent gate is executable in fresh session using registered deploy-* agents) — outcome: activate F1-F6 fixes, trigger AWB 9198333502 reconciliation.
+3. **AI advisory monitoring window check** — target: operator runs 7-condition check after 24-48h monitoring window — outcome: broad traffic enablement decision (OQ1).
+
+**DEPLOY-AGENT-REGISTRATION-REPAIR COMPLETE (2026-05-25, SHA 4366b0f)**: All 7 deploy agent files now have valid YAML frontmatter and are registered as dispatchable subagents. Names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Tools: Read, Grep, Glob (review-only). Takes effect in next fresh Claude Code session (Lesson B). OQ6 resolved — see below.
 
 ## PR #364 governance decisions (2026-05-25)
 
@@ -2664,12 +2666,11 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - ~~**Context**: All 3 activation blockers resolved by PR #361. Scripts ready, safety gates verified, runbook complete. Lifecycle UI now live in production but dormant (flags absent from .env).~~ → **Evidence**: GET `/api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-state` → 200 response with state="PROPOSED"
 - ~~**Impact if left unanswered**: PZ correction lifecycle remains dormant (both flags absent from .env). No functional impact — standard PZ workflow continues unchanged.~~
 
-## OQ6 -- GATE 5 FleetView registry repair (2026-05-25, PARTIALLY RESOLVED)
+~~## OQ6 -- GATE 5 FleetView registry repair (2026-05-25, PARTIALLY RESOLVED)~~ — **FULLY RESOLVED 2026-05-25 (SHA 4366b0f)**
 
-- **Question**: When to update FleetView `subagent_type` registry to include project-local deploy agents?
-- **Answerer**: Operator — FleetView registry administration
-- **Context**: GATE 5 disclosure completed today — all 7 project-local `.claude/agents/deploy_*.md` agents substituted with capability-equivalent disclosure per Lesson B. Registry repair SCHEDULED.
-- **Impact if left unanswered**: Future deployment sessions continue substitution pattern; governance compliant but not optimal
+- ~~**Question**: When to update FleetView `subagent_type` registry to include project-local deploy agents?~~
+- **Resolution**: DEPLOY-AGENT-REGISTRATION-REPAIR campaign complete. Root cause was missing YAML frontmatter in all 7 `.claude/agents/deploy_*.md` files — they were documentation files, not registered agents. Fix: added valid YAML frontmatter (`name`, `description`, `tools`) to all 7 files. Registered names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Takes effect in next fresh Claude Code session (Lesson B). No FleetView action needed — the files now register themselves via their `name` field.
+- **Impact**: 7-agent deploy gate is now fully executable as canonical dispatched subagents.
 
 ## OQ-NEW-1 -- DHL Monitor Fixes Deployment Method (2026-05-25, NEW)
 
