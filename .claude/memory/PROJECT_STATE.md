@@ -107,6 +107,31 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ---
 
+## Advisory Governance Docs — Publish-Ready Corrections (2026-05-25, COMPLETE)
+
+**Date**: 2026-05-25  
+**Type**: Documentation only — no runtime code changed, no flags changed, no .env changes.  
+**PR**: docs/workflow-advisory-governance branch → PR pending merge
+
+**Three advisory governance deliverables created** (all six editorial corrections applied):
+- `docs/ai-governance/workflow-advisory-runbook.md` — operator guide, trust boundary section, CB config params, domain reference tables
+- `docs/ai-governance/workflow-advisory-monitoring.md` — M1–M8 SQL queries, deterministic M7 sampling, ADR-020 provider rule, percentage budget thresholds, CB state machine
+- `docs/ai-governance/workflow-advisory-checkpoints.md` — 3 checkpoint schedule, trust boundary invariants, percentage thresholds, test scope notes, deterministic quality sample note
+
+**Six corrections applied (all verified by grep)**:
+1. **Test metric scope**: "142/142 AI subsystem tests" — explicitly labeled as subsystem-only; PZ (160) + Carrier (381) on Windows host are separate deploy gates
+2. **Deterministic sampling**: M7 query uses ROW_NUMBER() OVER (ORDER BY rowid ASC), step_n = max(1, floor(total/10)); audit record requires week_start, total_rows, step_n, first_sampled_rowid
+3. **Budget thresholds**: WARNING=75% and CRITICAL=90% of `ai_advisory_budget_usd_per_day`; dollar examples labeled "currently $X at $2.00 ceiling"
+4. **Provider rule**: references ADR-020 as authority; SQL comment "ADR-020 sole provider; expand only when superseding ADR approves new provider"
+5. **Circuit breaker**: references `ai_gateway_circuit_breaker_threshold` (default 5) and `ai_gateway_circuit_breaker_reset_s` (default 60); not hardcoded values
+6. **Trust boundary section**: added to runbook — advisory explains but does not determine workflow truth; `get_batch_readiness()` owns truth; advisory_class="R" hardcoded; engine is not a write path; test_ai_advisory_no_writes.py must not be deleted
+
+**Grep verification**: zero stale phrases (random samples, hardcoded provider check without ADR ref, config values without parameter names)
+
+**Runtime files touched**: NONE
+
+---
+
 ## Stage 2-4 — AI Runtime Posture Observation (2026-05-25, COMPLETE)
 
 **Date**: 2026-05-25  
