@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by the agent on initialisation, 2026-05-13.
 
-**Last-run-at:** 2026-05-25T(PR-361-OPEN+ACTIVATION-GATE-3-OF-3)Z. Origin/main HEAD: 9f5c32f. Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED. Phase 2B DEPLOYED. Phase 2C DEPLOYED + VERIFIED (SHA 40c30f1). ANTHROPIC PILOT: 3-canary quality validation COMPLETE. All signals clean. Advisory state-sensitive confirmed (canary C surfaced DHL as 4th domain, ranked first). Spend $0.001116/$1.00 (0.11%). Monitoring window open — broad traffic gate pending explicit operator go (24-48h check). Activation package PR #360 MERGED (SHA aa251b8). PR #361 OPEN — M1+M2+M3+M4+L2+L3 all fixed; activation gate 3/3 pending merge. PZ Correction Lifecycle PR A+B+C DEPLOYED (SHA 5bcb492, flags absent from .env, backend dormant). PZService RUNNING. Health 200/200. OPEN PRs: #337 + #268 + #361 = 3/3 (GATE 2 AT LIMIT — no new PRs until one closes).
+**Last-run-at:** 2026-05-25T(MASTER-BOOTSTRAP-COMPLETE)Z. Origin/main HEAD: e80a6e1. ALL 3 OPEN PRs MERGED (2026-05-25): #337 (routes_search docs), #268 (Lesson G), #361 (M1-M4 activation blockers). GATE 2: 0/3 (fully clear). ACTIVATION GATE: 3/3 UNBLOCKED — activation scripts fully ready; operator runs --execute at own schedule. Phase 10 DEPLOYED. AI Advisory Phase 2 DEPLOYED. Phase 2B DEPLOYED. Phase 2C DEPLOYED + VERIFIED. ANTHROPIC PILOT: 3-canary quality validation COMPLETE. All signals clean. Spend $0.001116/$2.00 budget. Monitoring window open — broad traffic gate pending explicit operator go. PZ Correction Lifecycle PR A+B+C DEPLOYED (SHA 5bcb492, flags absent from .env, backend dormant). PZService RUNNING. Health 200/200. MINOR DEPLOY PENDING: routes_search.py (OpenAPI description strings only, zero logic; safe to deploy on next service restart with standard robocopy).
 
 ---
 
@@ -54,6 +54,29 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## Master Bootstrap Campaign (2026-05-25, COMPLETE)
+
+**Campaign**: Full-repository governance audit, PR reconciliation, state normalization, and deploy-readiness verification in one autonomous execution.
+
+**Result**: COMPLETE — zero governance ambiguity, zero open PRs, zero duplicate authority, activation gate unblocked.
+
+**Actions executed**:
+- PR #337 (docs/search OpenAPI): rebased → force-pushed → squash-merged. SHA `0fcacae`.
+- PR #268 (Lesson G — generated artifact stale display): rebased → conflict-resolved (Lesson G inserted before Lesson H in engineering_lessons.md, before Lesson K in CLAUDE.md) → force-pushed → squash-merged. SHA `8ea8a26`.
+- PR #361 (M1-M4 activation blockers): rebased → force-pushed → squash-merged. SHA `e80a6e1`.
+- GATE 2: 3/3 → 0/3 (fully clear).
+- PROJECT_STATE.md updated on main.
+
+**Production hash comparison (10 key service files)**: ALL MATCH.
+
+**Single deploy gap identified**: `service/app/api/routes_search.py` differs from production. Change: OpenAPI description strings only (zero logic). Safe to deploy on next routine service sync via standard robocopy + PZService restart. Not urgent — no functional impact.
+
+**Test baseline**: 177/177 PASS (lifecycle + AI governance suites). Pre-existing failure in `test_active_shipment_monitor.py` (storage-leak guard — test infrastructure issue, not code failure; introduced at SHA `85b63bb`, not from any recent change).
+
+**Activation gate status**: 3/3 — ALL blockers resolved. Scripts ready. Operator runs `python service/scripts/activate_pz_lifecycle.py --execute` at own schedule.
+
+---
 
 ## Activation Package — PR #360 (2026-05-25, MERGED — DEPLOY BLOCKED)
 
