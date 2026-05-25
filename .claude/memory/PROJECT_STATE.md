@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25 (post-PR-364).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25 (post-LIFECYCLE-PHASE1-SMOKE).
 
-**Last-run-at:** 2026-05-25T(PR368-MERGED)Z. Advisory governance package CLOSED. SHA 542bbd0. GATE 2: 0/3.
+**Last-run-at:** 2026-05-25T(PR369-MERGED)Z. Origin/main HEAD: 521031e (chore: PROJECT_STATE — record PR #368 advisory governance closeout). PR #364 DEPLOYED to production C:\PZ at SHA 2980712. PR #368/#369 docs-only — no deploy required. GATE 2: 0/3 (fully clear). LIFECYCLE UI: LIVE with Phase 1 smoke PASSED — Global batch `SHIPMENT_4789974092_2026-05_999deef1` in PROPOSED state ready for operator browser review. ANTHROPIC PILOT: 3-canary quality validation COMPLETE. Spend $0.001116/$2.00 (0.056%). Monitoring window open — broad traffic gate pending explicit operator go. PROVIDER LOCK-DOWN: Anthropic API sole provider. Cowork DEPRECATED. ADR-020 created. STAGE-2-4: AI posture locked. 142/142 AI tests pass. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
 
 ---
 
@@ -78,7 +78,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ## PR #364 — GlobalPZCorrectionProposalCard Lifecycle UI (2026-05-25, MERGED)
 
 **Campaign type**: UI lifecycle integration (V1 exception under Lesson F)  
-**Status**: PR #364 MERGED — squash SHA `efba905` on main (2026-05-25). NOT DEPLOYED. No production impact — lifecycle endpoints gated by `pz_correction_lifecycle_enabled=false`.
+**Status**: PR #364 DEPLOYED — squash SHA `efba905` on main (2026-05-25). DEPLOYED to production at SHA `2980712` (2026-05-25). Lifecycle endpoints live but dormant — graceful 503 degradation when flags OFF.
 
 - **Commit SHA on main**: efba905 — "feat(ui): GlobalPZCorrectionProposalCard — lifecycle-aware 4-endpoint upgrade (#364)"
 - **Merge timestamp**: 2026-05-25
@@ -96,14 +96,44 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **Feature flag status**: `PZ_CORRECTION_LIFECYCLE_ENABLED=false` (default) → lifecycle routes return 503; UI falls back to read-only display
 - **Scorecard**: `.claude/memory/scorecards/2026-05-25-global-pz-correction-lifecycle-ui.md`
 
+## PR #364 Production Deployment (2026-05-25, COMPLETE)
+
+**Campaign type**: Windows production sync — GlobalPZCorrectionProposalCard lifecycle UI deployment  
+**Status**: COMPLETE — SHA `2980712` deployed to production C:\PZ. All lifecycle features live but dormant with graceful 503 degradation.
+
+- **Deploy SHA**: `2980712` — "chore: PROJECT_STATE — record PR #364 merge (efba905), 36-point review PASS, GATE 4 dispositions OQ3/OQ4/OQ6"
+- **Target SHA**: `efba905` — "feat(ui): GlobalPZCorrectionProposalCard — lifecycle-aware 4-endpoint upgrade (#364)" (contained in 2980712)
+- **Deploy timestamp**: 2026-05-25
+- **Files deployed** (3):
+  - `service/app/static/shipment-detail.html` — GlobalPZCorrectionProposalCard lifecycle UI component
+  - `service/app/core/config.py` — configuration updates  
+  - `service/app/services/ai_gateway.py` — Stage 2-4 AI posture corrections
+- **7-agent gate**: 7/7 GO (GATE 5 disclosure: project-local deploy agents not in FleetView registry; substitutes used with capability-equivalence disclosure per Lesson B)
+- **Robocopy result**: Exit code 3 (success) — 66 files copied to C:\PZ\app
+- **PZService status**: RUNNING (PID 15580 post-restart)
+- **Health verification**: Local 200 ✅ | Public 200 ✅ 
+- **Content verification**: 
+  - All 10 UI lifecycle markers present in deployed `shipment-detail.html` ✅
+  - `correction-execute` (old broken endpoint) confirmed absent ✅
+  - Stage 2-4 AI posture corrections in deployed `ai_gateway.py` ✅
+- **Feature flag status**: 
+  - `PZ_CORRECTION_LIFECYCLE_ENABLED` ABSENT from .env → defaults False ✅
+  - `WFIRMA_CORRECTION_PUSH_ALLOWED` ABSENT from .env → defaults False ✅
+- **Endpoint verification**: `GET /api/v1/pz/lineage/TEST-BATCH-001/correction-state` → 503 while flags off ✅
+- **Carrier gate verification**: POST to `/api/v1/pz/corrections/carrier-gate` → 503 (gate closed as required) ✅
+- **Stderr status**: Clean startup only ✅
+- **Rollback command**: `git revert 2980712 efba905 09106eb --no-edit` + robocopy + sc.exe restart
+- **Activation readiness**: ALL lifecycle features now live in production code with graceful 503 degradation. Next activation step (when ordered): set `PZ_CORRECTION_LIFECYCLE_ENABLED=true` in C:\PZ\.env and restart PZService.
+
 ---
 
 ## Current Origin/Main HEAD Status (2026-05-25)
 
-- **Current SHA**: `542bbd0` — "docs(ai-governance): publish-ready workflow advisory governance deliverables"  
-- **Previous SHA**: `efba905` — "feat(ui): GlobalPZCorrectionProposalCard — lifecycle-aware 4-endpoint upgrade (#364)"
+- **Current SHA**: `521031e` — "chore: PROJECT_STATE — record PR #368 advisory governance closeout (#369)"
+- **Previous SHA**: `542bbd0` — "docs(ai-governance): publish-ready workflow advisory governance deliverables (#368)"
+- **Before that**: `2980712` — "chore: PROJECT_STATE — record PR #364 merge (efba905), 36-point review PASS"
 - **Status**: Clean — no open PRs, no pending conflicts, no governance ambiguity
-- **Production gap**: Still includes PR #364 UI/test changes (lifecycle gated by flag=false). AI governance docs published. No runtime code changes in PR #368.
+- **Production status**: C:\PZ deployed at `2980712`. PRs #368/#369 are docs-only — no deploy required or executed. Production runtime unchanged.
 
 ---
 
@@ -402,10 +432,24 @@ Remove 6 pilot `.env` lines → restart PZService → confirm `active_provider=n
 
 ## RULE 6 visibility entries (scorecards)
 
+- **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-deploy-pr364-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PR #364 production deployment campaign. 5 agents EXEMPLARY, 2 agents ACCEPTABLE, 0 NEEDS-TUNING, 0 UNRELIABLE. File confirmed on disk (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-global-pz-correction-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PR #364 GlobalPZCorrectionProposalCard lifecycle UI campaign. 11 agents scored: all verdicts pending review. File confirmed on disk (Lesson C verified). GATE 4 dispositions logged in this session.
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-phase2b-phase3-isolation-hotfix.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). AI governance Stage 2-4 campaign. Parallel merge alongside PR #364. File confirmed on disk (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-master-bootstrap-campaign.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Master Bootstrap Campaign. 11 agents scored: 10 EXEMPLARY, 1 ACCEPTABLE (deploy_lead_coordinator substitution disclosure gap). File confirmed on disk: 3,744 bytes (Lesson C verified). No GATE 4 salvage required.
 - **2026-05-24** — Scorecard recorded: `.claude/memory/scorecards/2026-05-24-phase2-advisory-llm.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Phase 2 Advisory LLM campaign. 9 agents scored: 8 EXEMPLARY, 1 NEEDS-TUNING (deploy_git_diff_reviewer). File confirmed on disk: 17,078 bytes (Lesson C verified). Issue #353 filed for GATE 4 SCHEDULED disposition.
+
+## Lifecycle Phase 1 Smoke Test Results (2026-05-25, PASSED)
+
+- **LIFECYCLE SMOKE TEST PASSED** (2026-05-25):
+  - Endpoint: GET `/api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-state`
+  - Response: **200** `{"batch_id":"SHIPMENT_4789974092_2026-05_999deef1","state":"PROPOSED","staged_option_id":null,...,"schema_version":1}`
+  - Lifecycle is ACTIVE and correctly returns state for Global Jewellery batches
+  - Non-Global batches correctly rejected: `SHIPMENT_1196338404_2026-05_48f86046` → 403 "not a Global Jewellery supplier batch"
+  - `WFIRMA_CORRECTION_PUSH_ALLOWED` confirmed absent throughout
+
+- **Real Global batch confirmed**: `SHIPMENT_4789974092_2026-05_999deef1` (AWB 4789974092) is in state `PROPOSED` — has a correction proposal available for operator review in the UI.
+
+- **Correction-commit remains blocked**: No wFirma write path reachable. Phase 2 (wFirma push) requires separate controlled session per `activate_pz_lifecycle.py` exit gate.
 
 ## Phase 2 Advisory LLM -- PRODUCTION DEPLOYMENT (2026-05-24, operator-confirmed)
 
@@ -2395,13 +2439,20 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ## Next 3 actions in queue
 
 1. **AI advisory monitoring window check** — target: operator runs 7-condition check after 24-48h monitoring window — gating: circuit breaker warnings, error patterns, budget burn rate assessment — outcome: broad traffic enablement decision (OQ1)
-2. **Pre-existing test failure disposition** — target: operator provides GATE 4 disposition (SCHEDULED / ISSUE / REJECTED) for 1,033 pre-existing test failures — gating: governance compliance per GATE 4 rules (OQ4)  
-3. **Routes search + lifecycle UI deploy** — target: routine 7-agent gate sync of SHA 542bbd0 to production — gating: none (safe deploy, docs + lifecycle UI with flags off) — outcome: production deployment current with main
+2. **PZ correction lifecycle browser review** — target: operator browser review of `SHIPMENT_4789974092_2026-05_999deef1` correction UI in production — gating: lifecycle UI deployed, smoke tests passed, batch in PROPOSED state ready for review — outcome: UI validation before any wFirma push consideration  
+3. **Pre-existing test failure disposition** — target: operator provides GATE 4 disposition (SCHEDULED / ISSUE / REJECTED) for 1,033 pre-existing test failures — gating: governance compliance per GATE 4 rules (OQ4)  
+4. **GATE 5 registry repair** — target: update FleetView registry to include `.claude/agents/deploy_*.md` project-local agents — gating: repeated substitution disclosure per Lesson B — outcome: future deployment sessions dispatch registered agents directly
 
 ## PR #364 governance decisions (2026-05-25)
 
 - **PR #364 review verdict: APPROVED** — all 36 checklist items PASS. Merged as `efba905`. (2026-05-25)
+- **PR #364 deployed to production** — SHA `2980712` contains PR #364 (`efba905`) + Stage 2-4 AI posture + PROJECT_STATE updates. All lifecycle UI now live but dormant with flags OFF → graceful 503 degradation. Next activation step (when ordered): set `PZ_CORRECTION_LIFECYCLE_ENABLED=true` in C:\PZ\.env and restart PZService. (2026-05-25)
 - **GATE 6 (browser verification) deferred for PR #364** — lifecycle endpoints gated by `pz_correction_lifecycle_enabled=false`; source-grep + backend integration tests substitute. When lifecycle flag is activated, browser verification becomes mandatory before any wFirma commit action is exercised. (2026-05-25)
+
+## Lifecycle Phase 1 activation decisions (2026-05-25)
+
+- **Lifecycle Phase 1 activation complete and smoke-verified**. Ready for operator browser review of `SHIPMENT_4789974092_2026-05_999deef1` correction UI.
+- **Phase 2 (`WFIRMA_CORRECTION_PUSH_ALLOWED`) NOT enabled**. Requires: full-lifecycle smoke test, at least one stage+suppress cycle verified, then separate controlled activation window.
 
 ## GATE 4 dispositions completed in this session (2026-05-25)
 
@@ -2471,26 +2522,33 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Impact if never answered**: CANCEL_AND_RECREATE remains manual-only forever. This is the safe and correct default. No code, no campaign, and no PR is blocked by this open question.
 - **All four prerequisites for any future implementation PR** are listed in DECISIONS above.
 
-## OQ3 -- Routes search deploy pending (2026-05-25)
+## OQ3 -- Empty-key fallback in ai_gateway._cowork_call() (2026-05-25, ISSUE FILED)
 
-- **Question**: When to deploy `service/app/api/routes_search.py` OpenAPI description strings update to production?
-- **Answerer**: Operator — routine service sync via standard 7-agent deploy gate
-- **Context**: SHA 74d1e07 main vs production diff identified. Single file change: OpenAPI description strings only (zero logic impact).
-- **Impact if left unanswered**: Production OpenAPI docs missing 'shipment' domain documentation; no functional impact. Safe to deploy anytime via standard robocopy + PZService restart.
+- **Question**: Should `_cowork_call()` handle empty-key scenario gracefully or raise immediately?
+- **Answerer**: Operator — architectural decision on fallback behavior  
+- **Context**: GitHub Issue #365 filed for GATE 4 disposition. Stage 2-4 AI posture corrections include this gap.
+- **Impact if left unanswered**: Edge-case error handling remains ambiguous; no functional impact while `AI_COWORK_ENABLED=false`
 
-## OQ4 -- Pre-existing test failure disposition (2026-05-25)
+## OQ4 -- Pre-existing test failure disposition (2026-05-25, ISSUE FILED)
 
 - **Question**: What disposition for the 1,033 pre-existing test failures (systemic issues unrelated to recent PRs)?
 - **Answerer**: Operator — GATE 4 disposition required (SCHEDULED / ISSUE / REJECTED)
-- **Context**: Full test suite shows 1,033 failures predating master bootstrap campaign. No regressions from the 3 merged PRs.
+- **Context**: GitHub Issue #366 filed for GATE 4 disposition. Full test suite shows 1,033 failures predating master bootstrap campaign. No regressions from the 3 merged PRs.
 - **Impact if left unanswered**: GATE 4 governance rule violated (salvage finding without explicit disposition)
 
-## OQ5 -- Lifecycle activation schedule (2026-05-25)
+~~## OQ5 -- Lifecycle activation schedule (2026-05-25)~~ — **RESOLVED YES** (2026-05-25)
 
-- **Question**: When to run `python service/scripts/activate_pz_lifecycle.py --execute` to enable PZ correction lifecycle in production?
-- **Answerer**: Operator — runs at own schedule
-- **Context**: All 3 activation blockers resolved by PR #361. Scripts ready, safety gates verified, runbook complete.
-- **Impact if left unanswered**: PZ correction lifecycle remains dormant (both flags absent from .env). No functional impact — standard PZ workflow continues unchanged.
+- ~~**Question**: When to run `python service/scripts/activate_pz_lifecycle.py --execute` to enable PZ correction lifecycle in production?~~ → **RESOLVED**: Lifecycle Phase 1 activation complete and smoke-verified. `SHIPMENT_4789974092_2026-05_999deef1` in PROPOSED state ready for operator browser review.
+- ~~**Answerer**: Operator — runs at own schedule~~ → **Outcome**: smoke passed, batch in PROPOSED state, UI deployed and flags active.
+- ~~**Context**: All 3 activation blockers resolved by PR #361. Scripts ready, safety gates verified, runbook complete. Lifecycle UI now live in production but dormant (flags absent from .env).~~ → **Evidence**: GET `/api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-state` → 200 response with state="PROPOSED"
+- ~~**Impact if left unanswered**: PZ correction lifecycle remains dormant (both flags absent from .env). No functional impact — standard PZ workflow continues unchanged.~~
+
+## OQ6 -- GATE 5 FleetView registry repair (2026-05-25, PARTIALLY RESOLVED)
+
+- **Question**: When to update FleetView `subagent_type` registry to include project-local deploy agents?
+- **Answerer**: Operator — FleetView registry administration
+- **Context**: GATE 5 disclosure completed today — all 7 project-local `.claude/agents/deploy_*.md` agents substituted with capability-equivalent disclosure per Lesson B. Registry repair SCHEDULED.
+- **Impact if left unanswered**: Future deployment sessions continue substitution pattern; governance compliant but not optimal
 
 ## Campaign 8 / post-deploy open questions (added 2026-05-19)
 
