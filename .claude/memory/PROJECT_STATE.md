@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25.
 
-**Last-run-at:** 2026-05-25T(PROJECT_STATE_UPDATE_POST_MASTER_BOOTSTRAP)Z. Origin/main HEAD: 74d1e07. MASTER BOOTSTRAP CAMPAIGN COMPLETE (2026-05-25): ALL 3 PRs MERGED — #337 (routes_search docs), #268 (Lesson G), #361 (M1-M4 activation blockers). GATE 2: 0/3 (fully clear). ACTIVATION GATE: 3/3 UNBLOCKED — activation scripts fully ready; operator runs --execute at own schedule. TEST BASELINE: 10,986 passed, 1,033 failed, 51 skipped, 94 errors. Pre-existing failure profile confirmed. ANTHROPIC PILOT: 3-canary quality validation COMPLETE. All signals clean. Spend $0.001116/$2.00 budget. Monitoring window open — broad traffic gate pending explicit operator go. PZ Correction Lifecycle PR A+B+C DEPLOYED (SHA 5bcb492, flags absent from .env, backend dormant). PZService RUNNING. Health 200/200. OBSERVATION LAYER CYCLE: RULE 2 (observer) + RULE 3 (keeper) completed for master bootstrap campaign.
+**Last-run-at:** 2026-05-25T(STAGE-2-4-COMPLETE)Z. Origin/main HEAD: 74d1e07 (post-master-bootstrap). MASTER BOOTSTRAP COMPLETE: ALL 3 PRs MERGED — #337, #268, #361. GATE 2: 0/3 (fully clear). ACTIVATION GATE: 3/3 UNBLOCKED. ANTHROPIC PILOT: 3-canary quality validation COMPLETE. Spend $0.001116/$2.00 (0.056%). Monitoring window open — broad traffic gate pending explicit operator go. PROVIDER LOCK-DOWN: Anthropic API sole provider. Cowork DEPRECATED. ADR-020 created. STAGE-2-4: AI posture locked. 142/142 AI tests pass. Docstring contradictions corrected (comments only). 3 cowork test mocks fixed (sys.modules→patch). Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
 
 ---
 
@@ -63,30 +63,65 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 **Actions executed**:
 - PR #337 (docs/search OpenAPI): rebased → force-pushed → squash-merged. SHA `0fcacae`.
-- PR #268 (Lesson G — generated artifact stale display): rebased → conflict-resolved (Lesson G inserted before Lesson H in engineering_lessons.md, before Lesson K in CLAUDE.md) → force-pushed → squash-merged. SHA `8ea8a26`.
+- PR #268 (Lesson G — generated artifact stale display): rebased → conflict-resolved → squash-merged. SHA `8ea8a26`.
 - PR #361 (M1-M4 activation blockers): rebased → force-pushed → squash-merged. SHA `e80a6e1`.
 - GATE 2: 3/3 → 0/3 (fully clear).
-- PROJECT_STATE.md updated on main.
 
-**Production hash comparison (10 key service files)**: ALL MATCH.
+**Test baseline**: 12,070 total tests; 10,986 passed, 1,033 failed (pre-existing), 51 skipped, 94 errors.
 
-**Single deploy gap identified**: `service/app/api/routes_search.py` differs from production. Change: OpenAPI description strings only (zero logic). Safe to deploy on next routine service sync via standard robocopy + PZService restart. Not urgent — no functional impact.
+**Activation gate status**: 3/3 — ALL blockers resolved. Operator runs `python service/scripts/activate_pz_lifecycle.py --execute` at own schedule.
 
-**Test baseline**: 12,070 total tests. Core suites: 10,986 passed, 1,033 failed, 51 skipped, 94 errors. Pre-existing failure analysis: 1,033 failures are systemic pre-existing issues (excluding test_active_shipment_monitor.py and test_agency_flow_fix.py which were broken before campaign). No regressions introduced by the 3 merged PRs.
-
-**Activation gate status**: 3/3 — ALL blockers resolved. Scripts ready. Operator runs `python service/scripts/activate_pz_lifecycle.py --execute` at own schedule.
-
-**Scorecard**: `.claude/memory/scorecards/2026-05-25-master-bootstrap-campaign.md` — 11 agents scored: chief-orchestrator, gap-detection, reviewer-challenge, git-workflow, flow-context-keeper, backend-safety-reviewer, security-permissions, testing-verification, deployment-readiness, deploy_lead_coordinator, integration-boundary. Observer verdict: 10 EXEMPLARY, 1 ACCEPTABLE (deploy_lead_coordinator substitution), 0 NEEDS-TUNING, 0 UNRELIABLE. No GATE 4 salvage findings.
+**Scorecard**: `.claude/memory/scorecards/2026-05-25-master-bootstrap-campaign.md`
 
 ---
 
 ## Current Origin/Main HEAD Status (2026-05-25)
 
 - **Current SHA**: `74d1e07` — "chore: master bootstrap campaign COMPLETE — 3 PRs merged, GATE 2 clear, activation unblocked (2026-05-25)"
-- **Previous SHA**: `e80a6e1` — final PR from bootstrap campaign merge sequence
 - **Status**: Clean — no open PRs, no pending conflicts, no governance ambiguity
-- **Test baseline confirmed**: 12,070 total tests; 10,986 passed, 1,033 failed (pre-existing), 51 skipped, 94 errors
-- **Production gap**: Single file difference in `service/app/api/routes_search.py` (OpenAPI descriptions only)
+- **Production gap**: Single file difference in `service/app/api/routes_search.py` (OpenAPI descriptions only; zero logic)
+
+---
+
+## Stage 2-4 — AI Runtime Posture Observation (2026-05-25, COMPLETE)
+
+**Date**: 2026-05-25  
+**Type**: Observation + test fix + comment correction. No runtime logic changed. No flags changed.
+
+**Production evidence** (from 3-canary validation on Windows production host):
+- 3 canaries: `provider_used=anthropic_api` on every row. `fallback_used=0` on every row.
+- Total spend: $0.001116 (3 calls avg $0.000372). Budget: $2.00/day. Burn rate: 0.056%.
+- Production config confirmed: `AI_PARSER_ENABLED=true`, `AI_ADVISORY_LLM_ENABLED=true`, `AI_COWORK_ENABLED=false`, `AI_FALLBACK_ENABLED=false`.
+
+**Authority sanity check** — 2 contradictions found and corrected (comments only, no logic change):
+- `service/app/services/ai_gateway.py` docstring: described Anthropic as "fallback only" and cowork as "primary" — updated to reflect ADR-020.
+- `service/app/core/config.py` comment: described "Primary provider: Claude/Cowork" — updated to "Sole production provider: Anthropic Claude API; cowork DEPRECATED 2026-05-25 per ADR-020."
+- Cosmetic gap retained (not a defect): `routes_ai_advisory.py` line 113 `cowork_available = cowork_enabled` doesn't check key presence.
+
+**Test results** (all 7 AI test files): 142 passed, 0 failed, 0 errors
+
+**3 test fixes applied** in `tests/test_phase3_cowork_provider.py`:
+- Root cause: `patch.dict("sys.modules", {"app.services.ai_call_ledger": mock})` doesn't intercept `from . import ai_call_ledger` lazy relative imports in already-loaded packages.
+- Fix: switched to `patch("app.services.ai_call_ledger.record") as mock_record` + individual function patches.
+
+**Verdict**: READY FOR CONTROLLED NORMAL ADVISORY USE
+
+---
+
+## Provider Lock-Down Decision (2026-05-25, GOVERNANCE DOCS COMPLETE)
+
+**Date**: 2026-05-25  
+**Type**: Governance documentation — no runtime code change, no flag change.
+
+**Decision**: Anthropic Claude API is the sole approved runtime AI provider for all phases.
+
+- Production config (live on Windows): `AI_PARSER_ENABLED=true`, `AI_ADVISORY_LLM_ENABLED=true`, `AI_COWORK_ENABLED=false`, `AI_FALLBACK_ENABLED=false`, `AI_GATEWAY_DAILY_BUDGET_USD=2.00`
+- Cowork path (`AI_COWORK_ENABLED`) is **DEPRECATED**. Flag must remain false. Code path remains in `ai_gateway.py` but is dormant.
+- Claude Code CLI / Max plan = developer/operator engineering-time tool only. Not a runtime AI provider.
+
+**ADR**: `.claude/adr/ADR-020-anthropic-api-sole-provider.md` (created 2026-05-25)
+
+**Docs updated (2026-05-25)**: ai-capability-map §10, api-fallback-policy §6, token-budget-policy Rule 6 ($2.00/day), ai-consolidation-inventory §1D, ai-roadmap-phase2-to-phase10 (Phase 3 cowork CANCELLED), ADR-020 created.
 
 ---
 

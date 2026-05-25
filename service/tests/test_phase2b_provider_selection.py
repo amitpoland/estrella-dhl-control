@@ -59,6 +59,10 @@ def _settings(**kwargs):
     # Admin API key health (both None by default — graceful degradation path)
     s.anthropic_admin_api_key     = kwargs.get("anthropic_admin_api_key", None)
     s.anthropic_api_key_id        = kwargs.get("anthropic_api_key_id", None)
+    # Phase 3: cowork key + CB settings (must be typed, not MagicMock, to avoid TypeError)
+    s.ai_cowork_api_key                    = kwargs.get("ai_cowork_api_key", None)
+    s.ai_gateway_circuit_breaker_threshold = kwargs.get("ai_gateway_circuit_breaker_threshold", 5)
+    s.ai_gateway_circuit_breaker_reset_s   = kwargs.get("ai_gateway_circuit_breaker_reset_s", 60)
     return s
 
 
@@ -111,28 +115,43 @@ def test_provider_constants_defined():
 # ── 2. _cowork_call() stub ────────────────────────────────────────────────────
 
 def test_cowork_call_returns_none_and_reason():
-    text, err = ai_gateway._cowork_call(
-        system="sys", user="usr", selected_model="m", max_tokens=100, timeout_s=30
+    """Phase 3: _cowork_call() with empty api_key returns cowork_bridge_unavailable."""
+    ai_gateway.reset_cowork_circuit_breaker()
+    ledger = _mock_ledger()
+    raw, tok_in, tok_out, cost, err = ai_gateway._cowork_call(
+        api_key="",
+        system="sys", user="usr",
+        selected_model="claude-haiku-4-5-20251001",
+        max_tokens=100, max_retries=0, timeout_s=10,
+        ledger=ledger,
     )
-    assert text is None
-    assert err == "cowork_not_implemented"
+    assert raw is None
+    assert err == "cowork_bridge_unavailable"
+    ai_gateway.reset_cowork_circuit_breaker()
 
 
 def test_cowork_call_makes_no_network_calls():
-    """_cowork_call() must not attempt any socket/HTTP connection."""
+    """_cowork_call() with empty api_key must not attempt any socket/HTTP connection."""
     import socket
     original_connect = socket.socket.connect
 
     def fail_if_called(*a, **kw):
-        raise AssertionError("_cowork_call made a real network call — forbidden in Phase 2B stub")
+        raise AssertionError("_cowork_call made a real network call — forbidden when no key configured")
 
     socket.socket.connect = fail_if_called
     try:
+        ai_gateway.reset_cowork_circuit_breaker()
+        ledger = _mock_ledger()
         ai_gateway._cowork_call(
-            system="sys", user="usr", selected_model="m", max_tokens=100, timeout_s=30
+            api_key="",  # empty key → returns early before any network attempt
+            system="sys", user="usr",
+            selected_model="claude-haiku-4-5-20251001",
+            max_tokens=100, max_retries=0, timeout_s=10,
+            ledger=ledger,
         )
     finally:
         socket.socket.connect = original_connect
+        ai_gateway.reset_cowork_circuit_breaker()
 
 
 # ── 3. _is_cb_failure() ───────────────────────────────────────────────────────
@@ -154,23 +173,25 @@ def test_cb_failure_real_errors_are_failures():
 # ── 4. call() — cowork primary, fallback disabled ─────────────────────────────
 
 def test_call_cowork_primary_stub_no_fallback_returns_none():
-    """Cowork enabled, fallback disabled → None (stub returns nothing)."""
+    """Cowork enabled, fallback disabled → None when cowork returns no result."""
     ai_gateway.reset_circuit_breaker()
+    ai_gateway.reset_cowork_circuit_breaker()
     settings = _settings(ai_cowork_enabled=True, ai_fallback_enabled=False)
-    ledger   = _mock_ledger()
-    redactor = _mock_redactor()
 
-    with patch("app.services.ai_gateway.settings", settings, create=True), \
-         patch("app.services.ai_gateway._cowork_call", return_value=(None, "cowork_not_implemented")), \
-         patch("app.core.config.settings", settings, create=True), \
-         patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0):
+    with patch("app.core.config.settings", settings), \
+         patch("app.services.ai_gateway._cowork_call",
+               return_value=(None, None, None, None, "cowork_bridge_unavailable")), \
+         patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0), \
+         patch("app.services.ai_call_ledger.record"), \
+         patch("app.services.ai_call_ledger.prompt_hash", return_value="h"), \
+         patch("app.services.ai_call_ledger.estimate_tokens", return_value=10), \
+         patch("app.services.ai_call_ledger.estimate_cost", return_value=0.0), \
+         patch("app.services.ai_redactor.redact_pair", return_value=("sys", "usr")):
 
-        with patch("app.services.ai_gateway.call.__globals__", {}) if False else \
-             patch("builtins.__import__", side_effect=_selective_import(settings, ledger, redactor)):
-            result = ai_gateway.call(
-                system="sys", user="usr", task_type="test",
-                service_name="svc", object_id="obj1",
-            )
+        result = ai_gateway.call(
+            system="sys", user="usr", task_type="test",
+            service_name="svc", object_id="obj1",
+        )
 
     assert result is None
 
@@ -276,8 +297,9 @@ def test_call_cowork_stub_cb_not_incremented():
 # ── 6. call() with cowork + fallback → Anthropic succeeds ─────────────────────
 
 def test_call_cowork_stub_fallback_to_anthropic():
-    """Cowork enabled + fallback enabled → falls through to Anthropic on success."""
+    """Cowork enabled + fallback enabled → falls through to Anthropic when cowork fails."""
     ai_gateway.reset_circuit_breaker()
+    ai_gateway.reset_cowork_circuit_breaker()
     settings = _settings(
         ai_cowork_enabled=True,
         ai_fallback_enabled=True,
@@ -287,6 +309,8 @@ def test_call_cowork_stub_fallback_to_anthropic():
     ant_mod = _fake_anthropic_module(_mock_anthropic_response("advisory text from anthropic"))
 
     with patch("app.core.config.settings", settings), \
+         patch("app.services.ai_gateway._cowork_call",
+               return_value=(None, None, None, None, "cowork_bridge_unavailable")), \
          patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0), \
          patch("app.services.ai_call_ledger.record") as mock_record, \
          patch("app.services.ai_call_ledger.prompt_hash", return_value="h"), \
@@ -311,6 +335,7 @@ def test_call_cowork_stub_fallback_to_anthropic():
 def test_call_cowork_fallback_no_api_key_returns_none():
     """Cowork enabled + fallback enabled but no API key → None."""
     ai_gateway.reset_circuit_breaker()
+    ai_gateway.reset_cowork_circuit_breaker()
     settings = _settings(
         ai_cowork_enabled=True,
         ai_fallback_enabled=True,
@@ -431,10 +456,11 @@ def test_call_parser_disabled_returns_none_no_ledger():
 # ── 10. is_available() — Phase 2B behaviour ───────────────────────────────────
 
 def test_is_available_cowork_enabled_no_key():
-    """Cowork enabled → is_available=True even without Anthropic key."""
-    settings = _settings(ai_parser_enabled=True, ai_cowork_enabled=True, anthropic_api_key="")
+    """Cowork enabled but no key → is_available=False (Phase 3: real key required)."""
+    settings = _settings(ai_parser_enabled=True, ai_cowork_enabled=True,
+                         anthropic_api_key="", ai_cowork_api_key=None)
     with patch("app.core.config.settings", settings):
-        assert ai_gateway.is_available() is True
+        assert ai_gateway.is_available() is False
 
 
 def test_is_available_cowork_disabled_with_key():

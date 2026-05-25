@@ -1,10 +1,15 @@
 # AI Consolidation Inventory — EJ Dashboard Portal
 
-**Status**: ACTIVE (Phase 1 close / Phase 2 pre-requisite)
+**Status**: UPDATED (Phase 2 SHIPPED — Anthropic API sole provider locked 2026-05-25)
 **Owner**: orchestrator + security-permissions
-**Last revised**: 2026-05-23
+**Last revised**: 2026-05-25
 **Purpose**: Complete platform-wide inventory of every AI/LLM execution path, governance
 gaps, and the migration work required before Phase 2 ships.
+
+> **Provider lock-down note (2026-05-25)**: Phase 2, Phase 2B, Phase 2C shipped and deployed.
+> 3-canary quality validation complete. Anthropic Claude API confirmed as sole production
+> runtime AI provider. Cowork path (Phase 2B stub) is DEPRECATED — `AI_COWORK_ENABLED` must
+> remain false. See `ai-capability-map.md` §10 and ADR-020 for full rationale.
 
 This document is the discovery output of the AI Consolidation Campaign
 (2026-05-23). It supersedes any informal understanding of "what uses AI."
@@ -55,10 +60,13 @@ Neither service sends raw binary, images, or full document blobs to Anthropic.
 
 ### 1D — External API Inventory (all AI)
 
-| Provider | API client | Auth | Services using it |
-|---|---|---|---|
-| Anthropic | `anthropic.Anthropic` (direct) | `settings.anthropic_api_key` | `ai_customs_parser`, `ai_customs_evidence` |
-| OpenAI | None | — | No OpenAI usage anywhere in codebase |
+| Provider | API client | Auth | Services using it | Status |
+|---|---|---|---|---|
+| Anthropic | `anthropic.Anthropic` (direct) + via `ai_gateway.py` | `settings.anthropic_api_key` | `ai_customs_parser`, `ai_customs_evidence`, `ai_advisory` | **SOLE PROVIDER — ACTIVE** |
+| Cowork (Phase 2B stub) | `anthropic.Anthropic` (separate key slot) | `settings.ai_cowork_api_key` | None (stub, never used in production) | **DEPRECATED 2026-05-25** |
+| OpenAI | None | — | No OpenAI usage anywhere in codebase | Not used |
+
+**Provider decision (2026-05-25)**: Anthropic Claude API is confirmed as the only runtime AI provider after 3-canary validation. The cowork path in `ai_gateway.py` (Path A, `AI_COWORK_ENABLED`) is deprecated. The flag defaults False and must not be flipped. ADR-020 records the formal decision.
 
 ---
 

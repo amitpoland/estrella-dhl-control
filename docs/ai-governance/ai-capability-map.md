@@ -1,8 +1,8 @@
 # AI Capability Map — EJ Dashboard Portal
 
-**Status**: ACTIVE (Phase 2)
+**Status**: ACTIVE (Phase 2 — Anthropic API sole provider locked 2026-05-25)
 **Owner**: orchestrator + reviewer-challenge
-**Last revised**: 2026-05-24
+**Last revised**: 2026-05-25
 
 This document is the single source of truth for *where AI may run* inside the
 EJ Dashboard Portal, *what class of AI each insertion point is*, and *what
@@ -70,14 +70,22 @@ source files.
 | `service/app/api/routes_ai_advisory.py` | R | Exposes `GET /api/v1/ai/advisory/workflow-blockers/{batch_id}`. | No |
 | `service/app/static/ai-advisory-v2.html` | R | Standalone V2-aligned page rendering the explanation. NOT a modification to V1. | No |
 
-**Phase 2 additions (PR #TBD, 2026-05-24):**
+**Phase 2 additions (PR #350, merged 2026-05-24, SHA c987d8a):**
 
 | Path | Class | What it does | Touches `/execute`? |
 |---|---|---|---|
 | `service/app/services/ai_advisory.py` | R | Phase 2 upgrade: opt-in LLM synthesis via `ai_gateway.call()`. Flag: `ai_advisory_llm_enabled` (default False). Deterministic fallback preserved. | No |
 | `service/app/api/routes_ai_advisory.py` | R | New: `GET /api/v1/ai/advisory/status` — observability endpoint for flag state, budget, gateway health. | No |
 
-Phase 2 LLM call parameters: `task_type="advisory_explanation"`, `service_name="ai_advisory"`, `complexity="simple"`, `risk_level="low"`. Budget ceiling: `ai_advisory_budget_usd_per_day` (default $1.00/day). TTL cache: `ai_advisory_cache_ttl_seconds` (default 300s). Response field `llm_used=True` only when LLM call succeeded; `source="batch_readiness+llm"` distinguishes from Phase 1 deterministic path (`source="batch_readiness"`). All Phase 1 contracts unchanged.
+Phase 2 LLM call parameters: `task_type="advisory_explanation"`, `service_name="ai_advisory"`, `complexity="simple"`, `risk_level="low"`. Budget ceiling: `ai_advisory_budget_usd_per_day` (default $1.00/day, production override $2.00/day). TTL cache: `ai_advisory_cache_ttl_seconds` (default 300s). Response field `llm_used=True` only when LLM call succeeded; `source="batch_readiness+llm"` distinguishes from Phase 1 deterministic path (`source="batch_readiness"`). All Phase 1 contracts unchanged.
+
+**Phase 2B additions (PR #357, merged 2026-05-24, SHA 9574e94):**
+
+Provider abstraction layer. `ai_gateway.py` extended with two call paths: Path A (Cowork primary → optional Anthropic fallback) and Path B (Anthropic direct). All new provider flags deploy OFF. `ai_call_ledger.py` extended with `provider_requested`, `provider_used`, `fallback_used` columns. `/status` endpoint extended with provider observability fields. **Cowork path (Path A) is DEPRECATED as of 2026-05-25 — see §10.**
+
+**Phase 2C additions (PR #359, merged 2026-05-25, SHA 40c30f1):**
+
+Governance hardening prerequisite. Startup AI audit added to `main.py` lifespan (all 4 AI flags logged at startup). `active_provider` contradiction fix in `/status`. `anthropic>=0.50.0` declared in `requirements.txt`.
 
 **Pre-existing LLM services (retroactively classified 2026-05-23):**
 
@@ -181,8 +189,11 @@ Phase 2 ships with an LLM call in `ai_advisory.py`. The posture is now active:
 Full roadmap detail: `docs/ai-governance/ai-roadmap-phase2-to-phase10.md`
 
 - **Phase 1 — CLOSED, live on production** (SHA 74ff7a8, 2026-05-23). Capability map, advisory skeleton, read-only endpoint, V2 page, no-write tests, token-budget policy, API fallback policy.
-- **Phase 2 — SHIPPED (2026-05-24, PR #TBD)**. LLM wired into `ai_advisory.explain_workflow_blockers()` via `ai_gateway.call()`. Feature flag `ai_advisory_llm_enabled` (default False). `ai_call_ledger` logging. `GET /api/v1/ai/advisory/status` endpoint. 25 new tests (82 total advisory). All flags deploy OFF. Deploy manifest: `.claude/manifests/windows_deploy_phase2_advisory.ps1`.
-- **Phase 3** — Centralize call-log into `ai_call_ledger.py`. Retrofit pre-existing LLM services (ai_customs_parser, ai_customs_evidence). In-process cache.
+- **Phase 2 — CLOSED, live on production** (SHA c987d8a, PR #350, 2026-05-24). LLM wired into `ai_advisory.explain_workflow_blockers()` via `ai_gateway.call()`. Feature flag `ai_advisory_llm_enabled`. `ai_call_ledger` logging. `GET /api/v1/ai/advisory/status` endpoint. All flags deploy OFF.
+- **Phase 2B — CLOSED, live on production** (SHA 9574e94, PR #357, 2026-05-24). Provider abstraction layer. Cowork path stub (now DEPRECATED — §10). All provider flags deploy OFF.
+- **Phase 2C — CLOSED, live on production** (SHA 40c30f1, PR #359, 2026-05-25). Governance hardening: startup AI audit, `active_provider` fix, `anthropic` in requirements.
+- **Canary validation — COMPLETE** (PR #360, 2026-05-25). 3-canary quality validation on real batches. Anthropic API confirmed as sole production runtime AI provider. Spend $0.001116 across 3 calls. See §10.
+- **Phase 3** — Centralize call-log into `ai_call_ledger.py`. Retrofit pre-existing LLM services (ai_customs_parser, ai_customs_evidence). In-process cache. **Note: cowork consolidation sub-task CANCELLED — cowork path deprecated (§10). Phase 3 scope is ledger + cache + retrofit of ai_customs_parser / ai_customs_evidence only.**
 - **Phase 4** — Customer Master Intelligence. VAT/EU VAT advisory, completeness scoring, duplicate candidate detection. Class-A, new V2 page.
 - **Phase 5** — Product / Finishing Intelligence. Description quality, missing metal/stone/carat fields, wfirma_product_id sync gaps. Class-A.
 - **Phase 6** — Document Intelligence. Invoice/packing mismatch advisory, SAD/ZC429 gap explanation. Extends ai_customs_*. Class-R+A. Rule 9 (no raw PDF) mandatory.
@@ -193,3 +204,63 @@ Full roadmap detail: `docs/ai-governance/ai-roadmap-phase2-to-phase10.md`
 
 No phase relaxes §6.
 Each phase ships disabled-by-default, behind a config flag, with its own PR and 7-agent deploy gate.
+
+---
+
+## 10. Provider Lock-Down Decision (2026-05-25)
+
+**Decision date**: 2026-05-25  
+**ADR**: `.claude/adr/ADR-020-anthropic-api-sole-provider.md`  
+**Status**: LOCKED — Anthropic Claude API is the sole approved runtime AI provider for all phases.
+
+### What was decided
+
+After 3-canary quality validation on 2026-05-25, the provider architecture is locked as follows:
+
+| Provider | Runtime role | Status |
+|---|---|---|
+| Anthropic Claude API (`anthropic.Anthropic`) | Sole production runtime AI provider | **ACTIVE** |
+| Cowork path (`ai_gateway.py` Path A) | Phase 2B stub — never used in production | **DEPRECATED** |
+| Claude Code / Max plan | Developer and operator assist tool (engineering time only) | Developer-only |
+| `ai_bridge.py` file coordination | Operator-assisted task integration (file-based, no live LLM calls in-app) | Operator-assist only |
+
+### Rationale
+
+1. **Canary validation complete**: 3 real production batches processed via Anthropic API (Path B direct). All signals clean. Quality confirmed. Spend $0.001116 total.
+2. **Cowork path was a stub**: The Phase 2B "cowork" path (`AI_COWORK_ENABLED`) was built as a stub pointing to an Anthropic SDK alias with a separate key slot. It was never activated, never validated, and carries Python 3.10+ requirement against a Python 3.9.6 production service.
+3. **Billing clarity**: Anthropic API uses per-token billing that maps directly to `ai_advisory_budget_usd_per_day`. Claude Code/Max plan uses monthly subscription credits that are not trackable via `ai_call_ledger.py`.
+4. **Simplicity**: One provider. One key slot. One circuit breaker. Cowork complexity adds no value for current Phase 2–6 scope.
+
+### Production config (live on Windows as of 2026-05-25)
+
+```
+AI_PARSER_ENABLED=true
+AI_ADVISORY_LLM_ENABLED=true
+AI_COWORK_ENABLED=false          # deprecated, must remain false
+AI_FALLBACK_ENABLED=false
+AI_GATEWAY_DAILY_BUDGET_USD=2.00
+```
+
+### What is NOT changing
+
+- `ai_gateway.py` cowork code paths remain in the codebase (removing them is a code change, outside this documentation task). They are disabled by default and the config flag must never be flipped to true.
+- All AI governance rules (§1–§9) apply unchanged to Anthropic API calls.
+- Phases 3–10 all use Anthropic API via `ai_gateway.call()`. No phase introduces a second provider without a new ADR and operator approval.
+
+### Developer tooling boundary
+
+Claude Code (the CLI, running on operator Mac or developer machines) is an **engineering-time** tool. It is NOT a runtime AI provider for the in-app service. The following are operator or developer instruments only:
+
+- Claude Code CLI (`claude` command)
+- Max plan / Pro plan subscription
+- `ai_bridge.py` file coordination layer (routes external AI task results back into the service — never a live LLM call from within the service itself)
+
+These tools may assist with code generation, architecture, and analysis but are categorically separate from the in-app `ai_gateway.py` call path. Confusing them violates the §2 engineering-time vs runtime boundary.
+
+### Gate requirement for any future provider addition
+
+Any PR that introduces a second runtime AI provider (OpenAI, Gemini, Cohere, or reactivation of the cowork path) MUST:
+1. File a new ADR superseding ADR-020.
+2. Pass a 3-canary quality validation equivalent to the 2026-05-25 validation.
+3. Resolve billing predictability for the new provider against `ai_advisory_budget_usd_per_day`.
+4. Get explicit operator written approval before the gate opens.

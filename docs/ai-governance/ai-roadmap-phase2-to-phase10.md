@@ -1,11 +1,12 @@
 # AI Maturity Roadmap — EJ Dashboard Portal
 # Phases 2 to 10
 
-**Status**: PLANNING (2026-05-23)
-**Authority**: docs/ai-governance/ai-capability-map.md §1 (class definitions), §6 (forbidden-action list)
+**Status**: ACTIVE — Phase 2 SHIPPED (2026-05-25). Anthropic API confirmed as sole production provider.
+**Authority**: docs/ai-governance/ai-capability-map.md §1 (class definitions), §6 (forbidden-action list), §10 (provider lock-down)
 **Token governance**: docs/ai-governance/token-budget-policy.md (binding on every phase)
 **API fallback**: docs/ai-governance/api-fallback-policy.md (binding on every phase)
 **Paired with**: Lesson E (email automation safety), Lesson F (V2 authority isolation)
+**Provider ADR**: `.claude/adr/ADR-020-anthropic-api-sole-provider.md`
 
 This document is the single source of truth for the phased AI maturity plan.
 No phase relaxes capability-map §6. Every phase ships disabled-by-default.
@@ -76,6 +77,8 @@ of why a batch is blocked. No change to authority structure.
 ---
 
 ## Phase 3 — AI Call Ledger and Caching
+
+**Provider note**: All Phase 3 LLM calls use Anthropic Claude API exclusively (Path B direct via `ai_gateway.py`). The cowork path (`AI_COWORK_ENABLED`) is deprecated as of 2026-05-25. The cowork consolidation sub-task originally planned for Phase 3 is CANCELLED. Phase 3 scope: ledger + cache + retrofit of `ai_customs_parser.py` / `ai_customs_evidence.py` only.
 
 **Goal**: Centralize the Rule 8 call-log requirement into a shared `ai_call_ledger.py`
 service. Retrofit ai_customs_parser.py and ai_customs_evidence.py (pre-existing LLM calls)

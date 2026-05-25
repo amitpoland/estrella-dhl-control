@@ -124,9 +124,9 @@ class Settings(BaseSettings):
     ai_advisory_llm_enabled:        bool          = Field(default=False)
     ai_fallback_enabled:            bool          = Field(default=False)
 
-    # ── AI Provider selection (Phase 2B — all defaults OFF) ──────────────────
-    # Primary provider: Claude/Cowork (stub; no live calls until P3 implementation)
-    # Anthropic API is governed fallback only when ai_fallback_enabled=True.
+    # ── AI Provider selection (ADR-020 — all defaults OFF) ───────────────────
+    # Sole production provider: Anthropic Claude API (direct, Path B in ai_gateway.py).
+    # Cowork path (ai_cowork_enabled) is DEPRECATED 2026-05-25 per ADR-020; must stay False.
     # None of these are ever True/active by default.
     ai_cowork_enabled:          bool          = Field(default=False)
     ai_cowork_timeout_seconds:  int           = Field(default=30)
