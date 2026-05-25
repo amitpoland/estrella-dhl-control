@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -11542,61 +11542,160 @@ function GlobalPZLineageCard({ batchId, onToast }) {
 // No POST. No wFirma calls. No PZ mutation.
 
 function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
-  const [data, setData]               = React.useState(null);
+  // Proposal data (always loaded — no feature flag required)
+  const [proposal, setProposal]       = React.useState(null);
   const [loading, setLoading]         = React.useState(true);
   const [error, setError]             = React.useState('');
-  const [confirmOpt, setConfirmOpt]   = React.useState(null); // option_id pending confirmation
+
+  // Lifecycle state (null when flag disabled, record object when enabled)
+  const [lcState, setLcState]         = React.useState(null);
+  const [lifecycleEnabled, setLifecycleEnabled] = React.useState(false);
+
+  // Stage UI
+  const [confirmOpt, setConfirmOpt]   = React.useState(null);
   const [reason, setReason]           = React.useState('');
   const [executing, setExecuting]     = React.useState(false);
-  const [execResult, setExecResult]   = React.useState(null); // last execution result
+  const [execResult, setExecResult]   = React.useState(null);
+
+  // Suppress UI
+  const [showSuppress, setShowSuppress]     = React.useState(false);
+  const [suppressReason, setSuppressReason] = React.useState('');
+
+  // Commit UI
+  const [showCommit, setShowCommit]         = React.useState(false);
+  const [commitReason, setCommitReason]     = React.useState('');
 
   const refresh = React.useCallback(async () => {
     if (!batchId) return;
-    setLoading(true); setError(''); setConfirmOpt(null); setReason(''); setExecResult(null);
+    setLoading(true); setError('');
+    setConfirmOpt(null); setReason(''); setExecResult(null);
+    setShowSuppress(false); setSuppressReason('');
+    setShowCommit(false); setCommitReason('');
     try {
-      const r = await fetch(
-        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-proposal`,
-        { headers: window.__apiHeaders ? window.__apiHeaders() : {} },
-      );
-      if (!r.ok) { setError(`HTTP ${r.status}`); setData(null); }
-      else        { setData(await r.json()); }
-    } catch (e) { setError(String(e)); setData(null); }
+      const hdrs = window.__apiHeaders ? window.__apiHeaders() : {};
+      // Load correction-proposal and correction-state concurrently.
+      // correction-state returns 503 when pz_correction_lifecycle_enabled=false — that is
+      // treated as "lifecycle disabled" and is not an error for the proposal view.
+      const [propResp, lcResp] = await Promise.all([
+        fetch(`/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-proposal`, { headers: hdrs }),
+        fetch(`/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-state`,    { headers: hdrs }),
+      ]);
+      if (!propResp.ok) { setError(`HTTP ${propResp.status}`); setProposal(null); }
+      else              { setProposal(await propResp.json()); }
+
+      if (lcResp.status === 503 || lcResp.status === 403) {
+        // Flag off or non-global — lifecycle unavailable; show read-only proposal
+        setLifecycleEnabled(false); setLcState(null);
+      } else if (lcResp.ok) {
+        setLifecycleEnabled(true); setLcState(await lcResp.json());
+      } else {
+        setLifecycleEnabled(false); setLcState(null);
+      }
+    } catch (e) { setError(String(e)); setProposal(null); }
     finally     { setLoading(false); }
   }, [batchId]);
 
   React.useEffect(() => { refresh(); }, [refresh]);
 
-  const handleExecute = React.useCallback(async () => {
+  // ── Stage action — POST correction-stage ─────────────────────────
+  const handleStage = React.useCallback(async () => {
     if (!confirmOpt || !reason.trim()) return;
     setExecuting(true);
     try {
       const r = await fetch(
-        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-execute`,
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-stage`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(window.__apiHeaders ? window.__apiHeaders() : {}),
-          },
+          headers: { 'Content-Type': 'application/json', ...(window.__apiHeaders ? window.__apiHeaders() : {}) },
           body: JSON.stringify({ option_id: confirmOpt, operator_reason: reason.trim() }),
         },
       );
       const json = await r.json();
       if (!r.ok) {
         setExecResult({ ok: false, error: json.detail || `HTTP ${r.status}` });
-        onToast && onToast('error', `Execution failed: ${json.detail || r.status}`);
+        onToast && onToast('error', `Stage failed: ${json.detail || r.status}`);
       } else {
-        setExecResult(json);
-        onToast && onToast('success', `Correction executed: ${confirmOpt}`);
+        // lifecycle record returned — adapt to execResult shape for result banner
+        setExecResult({ ok: true, option_id: confirmOpt, already_executed: false,
+                        pre_line_count: null, post_line_count: null });
+        setLcState(json);
+        onToast && onToast('success', `Staged: ${confirmOpt}`);
         setConfirmOpt(null); setReason('');
       }
     } catch (e) {
       setExecResult({ ok: false, error: String(e) });
-      onToast && onToast('error', `Execution error: ${e}`);
-    } finally {
-      setExecuting(false);
-    }
+      onToast && onToast('error', `Stage error: ${e}`);
+    } finally { setExecuting(false); }
   }, [batchId, confirmOpt, reason, onToast]);
+
+  // ── Reset stage — DELETE correction-stage ────────────────────────
+  const handleResetStage = React.useCallback(async () => {
+    setExecuting(true);
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-stage`,
+        { method: 'DELETE', headers: { ...(window.__apiHeaders ? window.__apiHeaders() : {}) } },
+      );
+      const json = await r.json();
+      if (!r.ok) { onToast && onToast('error', `Reset failed: ${json.detail || r.status}`); }
+      else        { setLcState(json); onToast && onToast('info', 'Stage reset — choose a different option'); }
+    } catch (e) { onToast && onToast('error', `Reset error: ${e}`); }
+    finally     { setExecuting(false); }
+  }, [batchId, onToast]);
+
+  // ── Suppress — POST correction-suppress ──────────────────────────
+  const handleSuppress = React.useCallback(async () => {
+    if (!suppressReason.trim()) return;
+    setExecuting(true);
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-suppress`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(window.__apiHeaders ? window.__apiHeaders() : {}) },
+          body: JSON.stringify({ reason: suppressReason.trim() }),
+        },
+      );
+      const json = await r.json();
+      if (!r.ok) { onToast && onToast('error', `Suppress failed: ${json.detail || r.status}`); }
+      else {
+        setLcState(json); setShowSuppress(false); setSuppressReason('');
+        onToast && onToast('success', 'Correction workflow closed (suppressed)');
+      }
+    } catch (e) { onToast && onToast('error', `Suppress error: ${e}`); }
+    finally     { setExecuting(false); }
+  }, [batchId, suppressReason, onToast]);
+
+  // ── Commit — POST correction-commit (wFirma push) ────────────────
+  // Sentinel must match global_pz_push._CONFIRM_SENTINEL exactly.
+  const _CONFIRM_SENTINEL = "I confirm this will create a new wFirma PZ document and cannot be undone without manual wFirma intervention";
+  const handleCommit = React.useCallback(async () => {
+    if (!commitReason.trim()) return;
+    setExecuting(true);
+    try {
+      const r = await fetch(
+        `/api/v1/pz/lineage/${encodeURIComponent(batchId)}/correction-commit`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(window.__apiHeaders ? window.__apiHeaders() : {}) },
+          body: JSON.stringify({
+            operator_reason:       commitReason.trim(),
+            idempotency_key:       `${batchId}-${Date.now()}`,
+            confirm_understanding: _CONFIRM_SENTINEL,
+          }),
+        },
+      );
+      const json = await r.json();
+      if (!r.ok) {
+        setExecResult({ ok: false, error: json.detail || `HTTP ${r.status}` });
+        onToast && onToast('error', `Commit failed: ${json.detail || r.status}`);
+      } else {
+        setLcState(json); setShowCommit(false); setCommitReason('');
+        onToast && onToast('success', `PZ committed to wFirma (state: ${json.state})`);
+      }
+    } catch (e) { onToast && onToast('error', `Commit error: ${e}`); }
+    finally     { setExecuting(false); }
+  }, [batchId, commitReason, onToast]);
 
   // ── Style atoms ──────────────────────────────────────────────────
   const card = {
@@ -11628,12 +11727,21 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
     return { bg: '#fef3c7', color: '#b45309', label: optionId };
   };
 
-  // ── Button label per option ──────────────────────────────────────
+  const stateColors = {
+    PROPOSED:            { bg: '#f3f4f6', color: '#374151' },
+    OPERATOR_REVIEWED:   { bg: '#eff6ff', color: '#1d4ed8' },
+    STAGED:              { bg: '#fef3c7', color: '#b45309' },
+    EXECUTING:           { bg: '#fff7ed', color: '#c2410c' },
+    COMPLETED:           { bg: '#dcfce7', color: '#15803d' },
+    FAILED:              { bg: '#fee2e2', color: '#991b1b' },
+    TERMINAL_SUPPRESSED: { bg: '#f3f4f6', color: '#6b7280' },
+  };
+
   const optionButtonLabel = (opt) => {
-    if (opt.option_id === 'KEEP_CURRENT')       return 'Accept recommendation';
-    if (opt.option_id === 'ALIGN_TO_AUTHORITY') return 'Align to authority';
+    if (opt.option_id === 'KEEP_CURRENT')         return 'Close (keep current)';
+    if (opt.option_id === 'ALIGN_TO_AUTHORITY')   return 'Align to authority';
     if (opt.option_id === 'SPLIT_TO_STYLE_LEVEL') return 'Split to style level';
-    if (opt.option_id === 'NO_ACTION')          return 'No action needed';
+    if (opt.option_id === 'NO_ACTION')            return 'Close (no action)';
     return opt.option_id;
   };
 
@@ -11660,11 +11768,17 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
   }
 
   // ── Supplier gate — suppress for Estrella + all non-Global ───────
-  if (!data || !data.is_global_supplier) return null;
+  if (!proposal || !proposal.is_global_supplier) return null;
 
-  const rec     = data.recommended_option || 'KEEP_CURRENT';
+  const rec     = proposal.recommended_option || 'KEEP_CURRENT';
   const recS    = recStyle(rec);
-  const options = (data.options || []).filter(o => o.option_id !== 'CANCEL_AND_RECREATE');
+  const options = (proposal.options || []).filter(o => o.option_id !== 'CANCEL_AND_RECREATE');
+  const lcSt    = lcState ? lcState.state : null;
+  const scol    = lcSt ? (stateColors[lcSt] || stateColors.PROPOSED) : null;
+
+  const isTerminal = lcSt === 'COMPLETED' || lcSt === 'TERMINAL_SUPPRESSED';
+  const isStaged   = lcSt === 'STAGED';
+  const isFailed   = lcSt === 'FAILED';
 
   return (
     <div style={card} data-testid="global-pz-correction-card">
@@ -11677,20 +11791,38 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
               data-testid="global-pz-correction-recommended-badge">
           {recS.label}
         </span>
+        {lifecycleEnabled && lcSt && (
+          <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 8,
+                         fontSize: 11, fontWeight: 600,
+                         background: scol.bg, color: scol.color }}
+                data-testid="global-pz-correction-lifecycle-state">
+            {lcSt}
+          </span>
+        )}
         <span style={{ fontSize: 11, color: 'var(--text-2,#6b7280)', fontWeight: 400 }}
               data-testid="global-pz-correction-readonly-label">
           No wFirma mutation · local staging only
         </span>
       </div>
 
+      {/* ── Lifecycle disabled notice ── */}
+      {!lifecycleEnabled && (
+        <div style={{ padding: '7px 10px', borderRadius: 6, fontSize: 11, marginBottom: 12,
+                      background: '#fff7ed', color: '#c2410c', border: '1px solid #fed7aa' }}
+             data-testid="global-pz-correction-lifecycle-disabled">
+          Lifecycle mode not enabled. Stage/commit actions unavailable.
+          Set <code>pz_correction_lifecycle_enabled=true</code> in .env to enable.
+        </div>
+      )}
+
       {/* ── Summary stats ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8,
                     fontSize: 11, marginBottom: 14, padding: 8,
                     background: 'var(--bg-subtle,#f9fafb)', borderRadius: 4 }}
            data-testid="global-pz-correction-stats">
-        <div>Current PZ lines: <strong>{data.current_pz_line_count ?? '—'}</strong></div>
-        <div>Authority rows: <strong>{data.authority_row_count ?? '—'}</strong></div>
-        <div>Lineage links: <strong>{data.lineage_link_count ?? '—'}</strong></div>
+        <div>Current PZ lines: <strong>{proposal.current_pz_line_count ?? '—'}</strong></div>
+        <div>Authority rows: <strong>{proposal.authority_row_count ?? '—'}</strong></div>
+        <div>Lineage links: <strong>{proposal.lineage_link_count ?? '—'}</strong></div>
       </div>
 
       {/* ── KEEP_CURRENT affirmative notice ── */}
@@ -11703,7 +11835,48 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
         </div>
       )}
 
-      {/* ── Execution result banner ── */}
+      {/* ── Lifecycle terminal banner ── */}
+      {isTerminal && (
+        <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
+                      background: lcSt === 'COMPLETED' ? '#f0fdf4' : '#f3f4f6',
+                      color: lcSt === 'COMPLETED' ? '#15803d' : '#6b7280',
+                      border: `1px solid ${lcSt === 'COMPLETED' ? '#bbf7d0' : '#e5e7eb'}` }}
+             data-testid="global-pz-correction-terminal-banner">
+          {lcSt === 'COMPLETED'
+            ? `✓ Correction complete. wFirma PZ created.${lcState.result_summary ? ` (${lcState.result_summary})` : ''}`
+            : `Correction workflow closed (suppressed). Reason: ${lcState.suppression_reason || '—'}`}
+        </div>
+      )}
+
+      {/* ── STAGED banner ── */}
+      {isStaged && (
+        <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
+                      background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e' }}
+             data-testid="global-pz-correction-staged-banner">
+          Staged option: <strong>{lcState.staged_option_id}</strong> · Ready to commit to wFirma or reset.
+        </div>
+      )}
+
+      {/* ── EXECUTING banner ── */}
+      {lcSt === 'EXECUTING' && (
+        <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
+                      background: '#fff7ed', border: '1px solid #fed7aa', color: '#c2410c' }}
+             data-testid="global-pz-correction-executing-banner">
+          ⏳ wFirma push in progress… Refresh to check status.
+        </div>
+      )}
+
+      {/* ── FAILED banner ── */}
+      {isFailed && (
+        <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
+                      background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b' }}
+             data-testid="global-pz-correction-failed-banner">
+          Push failed: {lcState.result_summary || 'unknown error'}.
+          Reset stage to retry with a different option, or suppress to close.
+        </div>
+      )}
+
+      {/* ── Stage result banner ── */}
       {execResult && (
         <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, marginBottom: 12,
                       background: execResult.ok ? '#f0fdf4' : '#fef2f2',
@@ -11713,117 +11886,264 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
           {execResult.ok ? (
             execResult.already_executed
               ? 'Already executed — returning existing record.'
-              : `Executed: ${execResult.option_id}. Lines: ${execResult.pre_line_count} → ${execResult.post_line_count}.`
+              : `Staged: ${execResult.option_id}. Lines: ${execResult.pre_line_count ?? '—'} → ${execResult.post_line_count ?? '—'}.`
           ) : (
-            `Execution failed: ${execResult.error}`
+            `Stage failed: ${execResult.error}`
           )}
         </div>
       )}
 
-      {/* ── Options list ── */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
-           data-testid="global-pz-correction-options">
-        {options.map((opt) => {
-          const lbl   = optionButtonLabel(opt);
-          const isRec = opt.option_id === rec;
-          const isPending = confirmOpt === opt.option_id;
-          return (
-            <div key={opt.option_id}
-                 style={{ padding: '8px 10px', borderRadius: 6,
-                          border: `1px solid ${isPending ? '#93c5fd' : 'var(--border,#e5e7eb)'}`,
-                          background: isPending ? '#eff6ff' : (isRec ? 'var(--bg-subtle,#f9fafb)' : 'transparent') }}
-                 data-testid={`global-pz-correction-option-${opt.option_id}`}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700 }}>{opt.label}</span>
-                    {isRec && (
-                      <span style={{ fontSize: 10, background: '#dcfce7', color: '#15803d',
-                                     borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>
-                        Recommended
+      {/* ── Options list (hidden when terminal, staged, or executing) ── */}
+      {!isTerminal && !isStaged && lcSt !== 'EXECUTING' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+             data-testid="global-pz-correction-options">
+          {options.map((opt) => {
+            const lbl    = optionButtonLabel(opt);
+            const isRec  = opt.option_id === rec;
+            const isPending = confirmOpt === opt.option_id;
+            const isNoOp = opt.option_id === 'KEEP_CURRENT' || opt.option_id === 'NO_ACTION';
+            return (
+              <div key={opt.option_id}
+                   style={{ padding: '8px 10px', borderRadius: 6,
+                            border: `1px solid ${isPending ? '#93c5fd' : 'var(--border,#e5e7eb)'}`,
+                            background: isPending ? '#eff6ff' : (isRec ? 'var(--bg-subtle,#f9fafb)' : 'transparent') }}
+                   data-testid={`global-pz-correction-option-${opt.option_id}`}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700 }}>{opt.label}</span>
+                      {isRec && (
+                        <span style={{ fontSize: 10, background: '#dcfce7', color: '#15803d',
+                                       borderRadius: 4, padding: '1px 5px', fontWeight: 600 }}>
+                          Recommended
+                        </span>
+                      )}
+                      <span style={riskStyle(opt.risk_level)}
+                            data-testid={`global-pz-correction-risk-${opt.option_id}`}>
+                        {opt.risk_level || 'NONE'}
                       </span>
-                    )}
-                    <span style={riskStyle(opt.risk_level)}
-                          data-testid={`global-pz-correction-risk-${opt.option_id}`}>
-                      {opt.risk_level || 'NONE'}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
-                    {opt.description}
-                  </div>
-                  {(opt.notes || []).length > 0 && (
-                    <div style={{ fontSize: 10, color: '#b45309', marginTop: 3 }}>
-                      {opt.notes.map((n, i) => <div key={i}>{n}</div>)}
                     </div>
-                  )}
+                    <div style={{ fontSize: 11, color: 'var(--text-2,#6b7280)' }}>
+                      {opt.description}
+                    </div>
+                    {(opt.notes || []).length > 0 && (
+                      <div style={{ fontSize: 10, color: '#b45309', marginTop: 3 }}>
+                        {opt.notes.map((n, i) => <div key={i}>{n}</div>)}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ flexShrink: 0 }}>
+                    {isNoOp ? (
+                      /* KEEP_CURRENT / NO_ACTION → open suppress panel directly */
+                      <button
+                        onClick={() => { setShowSuppress(true); setSuppressReason(`Operator chose ${opt.option_id} — no wFirma push needed`); }}
+                        disabled={executing || !lifecycleEnabled}
+                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                                 cursor: (executing || !lifecycleEnabled) ? 'not-allowed' : 'pointer',
+                                 border: '1px solid var(--border,#e5e7eb)',
+                                 background: 'var(--bg,#fff)', color: 'var(--text,#111)',
+                                 opacity: (executing || !lifecycleEnabled) ? 0.6 : 1 }}
+                        data-testid={`global-pz-correction-btn-${opt.option_id}`}>
+                        {lbl}
+                      </button>
+                    ) : (
+                      /* ALIGN_TO_AUTHORITY / SPLIT_TO_STYLE_LEVEL → open stage confirmation */
+                      <button
+                        onClick={() => setConfirmOpt(isPending ? null : opt.option_id)}
+                        disabled={executing || !lifecycleEnabled}
+                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                                 cursor: (executing || !lifecycleEnabled) ? 'not-allowed' : 'pointer',
+                                 border: `1px solid ${isPending ? '#3b82f6' : 'var(--border,#e5e7eb)'}`,
+                                 background: isPending ? '#3b82f6' : 'var(--bg,#fff)',
+                                 color: isPending ? '#fff' : 'var(--text,#111)',
+                                 opacity: (executing || !lifecycleEnabled) ? 0.6 : 1 }}
+                        data-testid={`global-pz-correction-btn-${opt.option_id}`}>
+                        {isPending ? 'Cancel' : lbl}
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div style={{ flexShrink: 0 }}>
-                  <button
-                    onClick={() => setConfirmOpt(isPending ? null : opt.option_id)}
-                    disabled={executing}
-                    style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
-                             cursor: executing ? 'not-allowed' : 'pointer',
-                             border: `1px solid ${isPending ? '#3b82f6' : 'var(--border,#e5e7eb)'}`,
-                             background: isPending ? '#3b82f6' : 'var(--bg,#fff)',
-                             color: isPending ? '#fff' : 'var(--text,#111)',
-                             opacity: executing ? 0.6 : 1 }}
-                    data-testid={`global-pz-correction-btn-${opt.option_id}`}>
-                    {isPending ? 'Cancel' : lbl}
-                  </button>
-                </div>
+
+                {/* ── Inline stage confirmation panel ── */}
+                {isPending && !isNoOp && (
+                  <div style={{ marginTop: 10, padding: '10px 12px', background: '#fff',
+                                borderRadius: 6, border: '1px solid #bfdbfe' }}
+                       data-testid="global-pz-correction-confirm-modal">
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                      Confirm stage: {opt.option_id}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#374151', marginBottom: 8 }}>
+                      This will write to local <code>pz_rows.json</code> only.
+                      No wFirma calls. wFirma push is a separate operator step.
+                      A backup will be created automatically.
+                    </div>
+                    <textarea
+                      placeholder="Operator reason (required)…"
+                      value={reason}
+                      onChange={e => setReason(e.target.value)}
+                      rows={2}
+                      style={{ width: '100%', fontSize: 11, padding: '4px 6px',
+                               borderRadius: 4, border: '1px solid #d1d5db',
+                               resize: 'vertical', boxSizing: 'border-box' }}
+                      data-testid="global-pz-correction-reason-input"
+                    />
+                    <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                      <button
+                        onClick={handleStage}
+                        disabled={executing || !reason.trim()}
+                        style={{ fontSize: 11, padding: '4px 12px', borderRadius: 4,
+                                 cursor: (executing || !reason.trim()) ? 'not-allowed' : 'pointer',
+                                 background: '#2563eb', color: '#fff',
+                                 border: 'none', opacity: (executing || !reason.trim()) ? 0.5 : 1 }}
+                        data-testid="global-pz-correction-confirm-btn">
+                        {executing ? 'Staging…' : 'Confirm stage'}
+                      </button>
+                      <button
+                        onClick={() => { setConfirmOpt(null); setReason(''); }}
+                        disabled={executing}
+                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                                 cursor: 'pointer', border: '1px solid var(--border,#e5e7eb)',
+                                 background: 'var(--bg,#fff)' }}
+                        data-testid="global-pz-correction-cancel-btn">
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
+            );
+          })}
+        </div>
+      )}
 
-              {/* ── Inline confirmation panel ── */}
-              {isPending && (
-                <div style={{ marginTop: 10, padding: '10px 12px', background: '#fff',
-                              borderRadius: 6, border: '1px solid #bfdbfe' }}
-                     data-testid="global-pz-correction-confirm-modal">
-                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
-                    Confirm: {opt.option_id}
-                  </div>
-                  <div style={{ fontSize: 11, color: '#374151', marginBottom: 8 }}>
-                    This will write to local <code>pz_rows.json</code> only.
-                    No wFirma calls. wFirma push is a separate operator step.
-                    A backup will be created automatically.
-                  </div>
-                  <textarea
-                    placeholder="Operator reason (required)…"
-                    value={reason}
-                    onChange={e => setReason(e.target.value)}
-                    rows={2}
-                    style={{ width: '100%', fontSize: 11, padding: '4px 6px',
-                             borderRadius: 4, border: '1px solid #d1d5db',
-                             resize: 'vertical', boxSizing: 'border-box' }}
-                    data-testid="global-pz-correction-reason-input"
-                  />
-                  <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                    <button
-                      onClick={handleExecute}
-                      disabled={executing || !reason.trim()}
-                      style={{ fontSize: 11, padding: '4px 12px', borderRadius: 4,
-                               cursor: (executing || !reason.trim()) ? 'not-allowed' : 'pointer',
-                               background: '#2563eb', color: '#fff',
-                               border: 'none', opacity: (executing || !reason.trim()) ? 0.5 : 1 }}
-                      data-testid="global-pz-correction-confirm-btn">
-                      {executing ? 'Executing…' : 'Confirm execution'}
-                    </button>
-                    <button
-                      onClick={() => { setConfirmOpt(null); setReason(''); }}
-                      disabled={executing}
-                      style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
-                               cursor: 'pointer', border: '1px solid var(--border,#e5e7eb)',
-                               background: 'var(--bg,#fff)' }}
-                      data-testid="global-pz-correction-cancel-btn">
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
+      {/* ── Staged actions: Reset + Commit ── */}
+      {lifecycleEnabled && isStaged && (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}
+             data-testid="global-pz-correction-staged-actions">
+
+          {/* Commit to wFirma */}
+          {!showCommit ? (
+            <button
+              onClick={() => setShowCommit(true)}
+              disabled={executing}
+              style={{ fontSize: 11, padding: '6px 14px', borderRadius: 4, cursor: 'pointer',
+                       background: '#15803d', color: '#fff', border: 'none',
+                       opacity: executing ? 0.5 : 1 }}
+              data-testid="global-pz-correction-commit-btn">
+              Commit to wFirma…
+            </button>
+          ) : (
+            <div style={{ padding: '10px 12px', background: '#f0fdf4', borderRadius: 6,
+                          border: '1px solid #bbf7d0' }}
+                 data-testid="global-pz-correction-commit-panel">
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#166534' }}>
+                Commit staged correction to wFirma
+              </div>
+              <div style={{ fontSize: 11, color: '#374151', marginBottom: 6, background: '#fef3c7',
+                            padding: '6px 8px', borderRadius: 4, border: '1px solid #fde68a' }}>
+                ⚠ This will create a new wFirma PZ document. This cannot be undone without manual wFirma intervention.
+              </div>
+              <textarea
+                placeholder="Operator reason (required)…"
+                value={commitReason}
+                onChange={e => setCommitReason(e.target.value)}
+                rows={2}
+                style={{ width: '100%', fontSize: 11, padding: '4px 6px', borderRadius: 4,
+                         border: '1px solid #d1d5db', resize: 'vertical', boxSizing: 'border-box' }}
+                data-testid="global-pz-correction-commit-reason-input"
+              />
+              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <button
+                  onClick={handleCommit}
+                  disabled={executing || !commitReason.trim()}
+                  style={{ fontSize: 11, padding: '4px 12px', borderRadius: 4,
+                           cursor: (executing || !commitReason.trim()) ? 'not-allowed' : 'pointer',
+                           background: '#15803d', color: '#fff', border: 'none',
+                           opacity: (executing || !commitReason.trim()) ? 0.5 : 1 }}
+                  data-testid="global-pz-correction-commit-confirm-btn">
+                  {executing ? 'Committing…' : 'Confirm commit to wFirma'}
+                </button>
+                <button
+                  onClick={() => { setShowCommit(false); setCommitReason(''); }}
+                  disabled={executing}
+                  style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
+                           border: '1px solid var(--border,#e5e7eb)', background: 'var(--bg,#fff)' }}
+                  data-testid="global-pz-correction-commit-cancel-btn">
+                  Cancel
+                </button>
+              </div>
             </div>
-          );
-        })}
-      </div>
+          )}
 
+          {/* Reset stage */}
+          <button
+            onClick={handleResetStage}
+            disabled={executing}
+            style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
+                     border: '1px solid var(--border,#e5e7eb)', background: 'var(--bg,#fff)',
+                     opacity: executing ? 0.5 : 1 }}
+            data-testid="global-pz-correction-reset-stage-btn">
+            ← Change option (reset stage)
+          </button>
+        </div>
+      )}
+
+      {/* ── Suppress panel — close workflow without wFirma push ── */}
+      {lifecycleEnabled && !isTerminal && (
+        <div style={{ marginTop: 10 }}>
+          {!showSuppress ? (
+            <button
+              onClick={() => setShowSuppress(true)}
+              disabled={executing}
+              style={{ fontSize: 10, padding: '3px 8px', cursor: 'pointer',
+                       border: '1px solid var(--border,#e5e7eb)', borderRadius: 4,
+                       background: 'var(--bg,#fff)', color: 'var(--text-2,#6b7280)',
+                       opacity: executing ? 0.5 : 1 }}
+              data-testid="global-pz-correction-suppress-btn">
+              Close workflow without wFirma push…
+            </button>
+          ) : (
+            <div style={{ padding: '10px 12px', background: '#fef2f2', borderRadius: 6,
+                          border: '1px solid #fecaca' }}
+                 data-testid="global-pz-correction-suppress-panel">
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#991b1b' }}>
+                Close correction workflow (no wFirma push)
+              </div>
+              <textarea
+                placeholder="Reason for closing (required)…"
+                value={suppressReason}
+                onChange={e => setSuppressReason(e.target.value)}
+                rows={2}
+                style={{ width: '100%', fontSize: 11, padding: '4px 6px', borderRadius: 4,
+                         border: '1px solid #fca5a5', resize: 'vertical', boxSizing: 'border-box' }}
+                data-testid="global-pz-correction-suppress-reason-input"
+              />
+              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <button
+                  onClick={handleSuppress}
+                  disabled={executing || !suppressReason.trim()}
+                  style={{ fontSize: 11, padding: '4px 12px', borderRadius: 4,
+                           cursor: (executing || !suppressReason.trim()) ? 'not-allowed' : 'pointer',
+                           background: '#dc2626', color: '#fff', border: 'none',
+                           opacity: (executing || !suppressReason.trim()) ? 0.5 : 1 }}
+                  data-testid="global-pz-correction-suppress-confirm-btn">
+                  {executing ? 'Closing…' : 'Confirm close'}
+                </button>
+                <button
+                  onClick={() => { setShowSuppress(false); setSuppressReason(''); }}
+                  disabled={executing}
+                  style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
+                           border: '1px solid var(--border,#e5e7eb)', background: 'var(--bg,#fff)' }}
+                  data-testid="global-pz-correction-suppress-cancel-btn">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Footer ── */}
       <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
         <button onClick={refresh}
                 style={{ fontSize: 11, padding: '3px 8px', cursor: 'pointer',
@@ -11840,17 +12160,6 @@ function GlobalPZCorrectionProposalCard({ batchId, onToast }) {
     </div>
   );
 }
-
-
-// ════════════════════════════════════════════════════════════════════
-// ZC429 / SAD EVIDENCE CARD  (read-only legal-evidence chain)
-// ════════════════════════════════════════════════════════════════════
-//
-// Shown BEFORE PZ creation so the operator can verify the inbound
-// DHL ZC429 email, every attachment, classification counts, processing
-// history, and linked timeline events. Read-only:
-//   GET /dashboard/batches/{batchId}/zc429-lineage
-// No writes, no reclassification, no deletion, no PZ creation.
 
 function ZC429EvidenceCard({ batchId, onToast }) {
   const [data, setData]       = React.useState(null);
