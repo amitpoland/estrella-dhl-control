@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25 (post-BROWSER-VERIFICATION).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25 (post-DHL-MONITOR-FIXES-COMPLETE).
 
-**Last-run-at:** 2026-05-25T(BROWSER-VERIFICATION-COMPLETE)Z. Origin/main HEAD: 521031e (chore: PROJECT_STATE — record PR #368 advisory governance closeout). PR #364 DEPLOYED to production C:\PZ at SHA 2980712. PR #368/#369 docs-only — no deploy required. GATE 2: 0/3 (fully clear). LIFECYCLE UI: BROWSER VERIFICATION COMPLETE — GlobalPZCorrectionProposalCard full workflow tested on `SHIPMENT_4789974092_2026-05_999deef1`. All lifecycle states verified (PROPOSED → STAGED → OPERATOR_REVIEWED). Phase 2 activation READY when operator starts controlled session. ANTHROPIC PILOT: 3-canary quality validation COMPLETE. Spend $0.001116/$2.00 (0.056%). Monitoring window open — broad traffic gate pending explicit operator go. PROVIDER LOCK-DOWN: Anthropic API sole provider. Cowork DEPRECATED. ADR-020 created. STAGE-2-4: AI posture locked. 142/142 AI tests pass. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
+**Last-run-at:** 2026-05-25T(AWB-9198333502-DHL-MONITOR-FIXES-COMPLETE)Z. Origin/main HEAD: 5c19c1c. PR #364 DEPLOYED to C:\PZ at SHA 2980712. GATE 2: 0/3 (fully clear). DHL MONITOR FIXES: AWB 9198333502 campaign COMPLETE (F1–F6), SHA 5c19c1c ready for deploy. 6 root causes fixed: RC1-RC6 confirmed, 5 files changed, 15/15 tests pass, ALL EXEMPLARY scorecard. LIFECYCLE: Phase 2 push readiness COMPLETE but GATE 8 BLOCKED. ANTHROPIC PILOT: monitoring window open. PROVIDER LOCK-DOWN: Anthropic API sole provider. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
 
 ---
 
@@ -54,6 +54,49 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## Phase 2 — Global PZ wFirma Push Readiness Campaign (2026-05-25, COMPLETE — GATE 8 HARD BLOCK)
+
+**Campaign**: Full lifecycle readiness audit and controlled push decision for batch `SHIPMENT_4789974092_2026-05_999deef1`.
+
+**Result**: NOT READY — Gate 8 hard block. Controlled push NOT executed. No wFirma documents created or modified.
+
+**Phases completed**: A (Readiness Audit) ✅ B (Lifecycle Dry-Run) ✅ C (Gate Matrix) ✅ D (wFirma Safety) ✅ E (Verdict: NOT READY) ✅ F (BLOCKED — not executed) G/H (Governance + Closure) ✅
+
+**Gate 8 finding (permanent)**:
+- `audit.json` timeline for batch contains TWO `wfirma_pz_created` events:
+  - 2026-05-21T23:28:47 → wfirma_pz_doc_id=185704611 (PZ 9/5/2026)
+  - 2026-05-22T08:43:31 → wfirma_pz_doc_id=185759075 (PZ 9/5/2026, current)
+- `_has_terminal_pz_event()` in `global_pz_push.py` returns "wfirma_pz_created" immediately
+- Gate 8 blocks with "A wFirma PZ document already exists for this batch"
+- **This block is PERMANENT** — audit timeline is append-only; no code path can clear it
+- Enabling `WFIRMA_CORRECTION_PUSH_ALLOWED=true` would result in Gate 8 FAILED state, not a successful push
+
+**Proposal state change (discovered during audit)**:
+- Phase 1 browser verification execution staged ALIGN_TO_AUTHORITY and rewrote `pz_rows.json` to INV-NN format
+- Current correction proposal: `product_code_format_mismatch=false` → ALIGN_TO_AUTHORITY no longer available
+- Available options now: NO_ACTION (primary), SPLIT_TO_STYLE_LEVEL
+- SPLIT_TO_STYLE_LEVEL stages/resets correctly (verified in Phase B dry-run) but would also be blocked by Gate 8 at commit
+
+**Test results**:
+- PZ regression: 160/160 PASS
+- Correction lifecycle + push tests: 59/59 PASS
+- Carrier tests (4 key files): 53/53 PASS
+- Smoke tests: 6 PASS, 1 FAIL (pre-existing: `old_push_route_gated` Pydantic 422 before 410 gate), 1 WARN, 1 SKIP
+
+**Production state (UNCHANGED by this campaign)**:
+- Lifecycle state: OPERATOR_REVIEWED (no staged option)
+- WFIRMA_CORRECTION_PUSH_ALLOWED: ABSENT (unchanged)
+- pz_rows.json: product codes already in INV-NN format (from Phase 1 execution)
+- pz_correction_lifecycle.json: OPERATOR_REVIEWED, stage_ts=null
+
+**Recommended operator action**: `POST /api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-suppress` with reason "PZ 9/5/2026 (doc_id 185759075) exists in wFirma. Gate 8 prevents duplicate creation. Product codes corrected locally. Closing workflow." Optional: manually edit product codes in wFirma PZ 9/5/2026 before suppressing.
+
+**GATE 4 salvage finding**: `old_push_route_gated` smoke test → SCHEDULED (fix test to send valid body or accept 422 as valid outcome; minor maintenance item).
+
+**Scorecard**: `.claude/memory/scorecards/2026-05-25-phase2-push-readiness-campaign.md` (EXEMPLARY, chief-orchestrator, 35/35)
+
+---
 
 ## Master Bootstrap Campaign (2026-05-25, COMPLETE)
 
@@ -127,13 +170,40 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ---
 
+## DHL Monitor Fixes Deploy (5c19c1c) — 2026-05-25T22:57Z, COMPLETE
+
+**Deploy type**: LOCAL-COMMIT-ONLY (Lesson D) — operator-acknowledged disclosure; 5c19c1c pushed to origin/main at 2026-05-25T22:58Z (reconciliation complete)  
+**SHA deployed**: `5c19c1c` — "fix(dhl-monitor): harden monitor/followup/DSK/tracking/email-queue pipeline (F1-F6)"  
+**Files deployed** (4): `routes_dsk.py`, `routes_orchestrator.py`, `active_shipment_monitor.py`, `email_intelligence_store.py`
+
+**7-agent gate**: 5/6 PASS inline; release_manager BLOCK (LOCAL-COMMIT-ONLY Lesson D) — operator acknowledged, disclosure filed, deploy proceeded. GATE 5: project-local `deploy_*.md` agents substituted with FleetView equivalents per Lesson B.
+
+**Deploy verification** (all passed):
+- Robocopy exit code 3 (success) — 4 runtime files synced to `C:\PZ\app`
+- PZService STATE=RUNNING (PID 15564 post-restart)
+- Local health: `{"status":"ok","engine":"ok","environment":"prod"}` ✅
+- Public health: `{"status":"ok","engine":"ok","environment":"prod"}` ✅
+- All 4 file SHA256 hashes MATCH source ✅
+
+**Live verification of fixes**:
+- F1/F5: `monitor_state.blocked_reason = manual_monitor_required`, `safe_operator_action` surfaced in orchestrator state ✅
+- F2 (tracking authority): `DESTINATION_COUNTRY_REACHED` trigger fired at WARSAW for AWB 9198333502 ✅
+- F4 (Case C reconciliation): AWB 9198333502 — `agency_reply_package.status → sent`, `reconciled_by: monitor_reconciliation`, `sent_at: 2026-05-22T00:20:37` ✅
+- No unexpected live emails sent during sweep ✅
+- AWB 4789974092 also auto-reconciled (collateral benefit) ✅
+
+**Lesson D JSONL**: appended to `.claude/memory/local-commit-deploys.jsonl` (status: MERGED — push reconciliation complete)  
+**15/15 new tests** in `test_dhl_monitor_fixes.py` — all pass
+
+---
+
 ## Current Origin/Main HEAD Status (2026-05-25)
 
-- **Current SHA**: `521031e` — "chore: PROJECT_STATE — record PR #368 advisory governance closeout (#369)"
-- **Previous SHA**: `542bbd0` — "docs(ai-governance): publish-ready workflow advisory governance deliverables (#368)"
-- **Before that**: `2980712` — "chore: PROJECT_STATE — record PR #364 merge (efba905), 36-point review PASS"
+- **Current SHA**: `5c19c1c` — "fix(dhl-monitor): harden monitor/followup/DSK/tracking/email-queue pipeline (F1-F6)"
+- **Previous SHA**: `0e5190f` — "chore: record browser verification complete + lifecycle scorecard (GATE 6)"
+- **Before that**: `521031e` — "chore: PROJECT_STATE — record PR #368 advisory governance closeout (#369)"
 - **Status**: Clean — no open PRs, no pending conflicts, no governance ambiguity
-- **Production status**: C:\PZ deployed at `2980712`. PRs #368/#369 are docs-only — no deploy required or executed. Production runtime unchanged.
+- **Production status**: C:\PZ **DEPLOYED at `5c19c1c`** (2026-05-25T22:57Z). F1–F6 DHL monitor fixes live. See DHL Monitor Fixes Deploy entry below.
 
 ---
 
@@ -432,6 +502,7 @@ Remove 6 pilot `.env` lines → restart PZService → confirm `active_provider=n
 
 ## RULE 6 visibility entries (scorecards)
 
+- **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-dhl-monitor-fixes-f1-f6.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). AWB 9198333502 DHL Monitor/Follow-up/DSK/Tracking/Email-Queue Hardening Campaign. 7 agents scored, ALL EXEMPLARY. File confirmed on disk (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-browser-verify-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Browser verification session for GlobalPZCorrectionProposalCard lifecycle UI on SHIPMENT_4789974092_2026-05_999deef1. File confirmed on disk (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-deploy-pr364-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PR #364 production deployment campaign. 5 agents EXEMPLARY, 2 agents ACCEPTABLE, 0 NEEDS-TUNING, 0 UNRELIABLE. File confirmed on disk (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-global-pz-correction-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PR #364 GlobalPZCorrectionProposalCard lifecycle UI campaign. 11 agents scored: all verdicts pending review. File confirmed on disk (Lesson C verified). GATE 4 dispositions logged in this session.
@@ -2221,6 +2292,31 @@ Corrected total confirmed scorecards on disk: **6** — (1) `2026-05-13-w5-p0-ad
 - **Per-phase `threading.Lock` correctness on single-process NSSM**: VERIFIED by PR #57 merge + 204/204 test panel green. The 4 phase-scoped locks correctly serialize concurrent validator entries within the single PZService process; cross-worker safety remains an open concern tracked under Issue #53 only if/when the deployment shifts off single-process.
 - **Override-flag predecessor chain semantics (P3→P2, P4→P3, P5→P4)**: VERIFIED by PR #61 merge + override-bypass audit-log entry exercised in regression suite.
 
+## AWB 9198333502 DHL Monitor Fix Campaign (2026-05-25, COMPLETE)
+
+**Campaign type**: DHL Monitor/Follow-up/DSK/Tracking/Email-Queue Hardening (F1–F6)  
+**Status**: COMPLETE — SHA `5c19c1c` on main (2026-05-25). NOT YET deployed to C:\PZ. All 6 root causes confirmed and fixed.
+
+- **Commit SHA on main**: `5c19c1c` — "fix(dhl-monitor): harden monitor/followup/DSK/tracking/email-queue pipeline (F1-F6)" — 2026-05-25
+- **F4 email_queue finding (permanent)**: `email_id = 2b848b9b-6c5b-46c5-aea7-50b411d9ee97` for AWB 9198333502 has `status = sent`, `sent_at = 2026-05-22T00:20:37.920132+00:00`. Case C confirmed. Audit stuck at "queued" due to missed send callback.
+- **Six root causes confirmed (RC1–RC6)**:
+  - RC1: Monitor manual-invocation-only (auto_monitor_sweep=False by design)
+  - RC2: dhl_followup never initialized (no monitor sweep = no start trigger)
+  - RC3: active_shipment_monitor.py:2175 used stale audit.tracking.events — FIXED F2
+  - RC4: customs_package_generated_at never written by DSK generation — FIXED F3
+  - RC5: Orchestrator shadow mode by design (not a failure)
+  - RC6: agency_reply_package.status stuck at "queued" despite email sent — FIXED F4
+- **Five files changed**:
+  - `service/app/services/active_shipment_monitor.py` — F2 tracking authority + F4 _reconcile_agency_package_status() + step 5d-bis
+  - `service/app/api/routes_dsk.py` — F3 customs_package_generated_at write at generation time
+  - `service/app/api/routes_orchestrator.py` — F1/F5 _monitor_state() helper in state endpoint
+  - `service/app/services/email_intelligence_store.py` — F6 message_id dedup labeling
+  - `service/tests/test_dhl_monitor_fixes.py` — 15 new tests (15/15 pass)
+- **Test results**: 15/15 new tests pass. 3 pre-existing errors in test_active_shipment_monitor.py (STORAGE LEAK, unrelated).
+- **Scorecard**: `.claude/memory/scorecards/2026-05-25-dhl-monitor-fixes-f1-f6.md` — 7 agents scored, ALL EXEMPLARY.
+- **Recommended operator action for AWB 9198333502**: After deploying 5c19c1c + restarting PZService, run `POST /api/v1/monitor/active-shipments/run` to trigger F4 reconciliation (agency_reply_package.status → sent) and F2-based follow-up initialization.
+- **GATE 2**: 0/3 open PRs — 5c19c1c was committed directly to main (no PR opened); commit is on main and ready for deploy.
+
 ---
 
 # DECISIONS
@@ -2463,10 +2559,9 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **AI advisory monitoring window check** — target: operator runs 7-condition check after 24-48h monitoring window — gating: circuit breaker warnings, error patterns, budget burn rate assessment — outcome: broad traffic enablement decision (OQ1)
-2. **PZ correction lifecycle browser review** — target: operator browser review of `SHIPMENT_4789974092_2026-05_999deef1` correction UI in production — gating: lifecycle UI deployed, smoke tests passed, batch in PROPOSED state ready for review — outcome: UI validation before any wFirma push consideration  
-3. **Pre-existing test failure disposition** — target: operator provides GATE 4 disposition (SCHEDULED / ISSUE / REJECTED) for 1,033 pre-existing test failures — gating: governance compliance per GATE 4 rules (OQ4)  
-4. **GATE 5 registry repair** — target: update FleetView registry to include `.claude/agents/deploy_*.md` project-local agents — gating: repeated substitution disclosure per Lesson B — outcome: future deployment sessions dispatch registered agents directly
+1. **Deploy DHL Monitor Fixes** — target: deploy SHA 5c19c1c to C:\PZ production + restart PZService — gating: DHL Monitor F1–F6 fixes ready on main — outcome: activate fixes for AWB 9198333502 reconciliation and future monitor reliability (OQ-NEW-1)
+2. **Trigger AWB 9198333502 reconciliation** — target: after deploy, run `POST /api/v1/monitor/active-shipments/run` to trigger F4 reconciliation — gating: SHA 5c19c1c deployed + PZService restarted — outcome: agency_reply_package.status → sent + F2-based follow-up initialization
+3. **AI advisory monitoring window check** — target: operator runs 7-condition check after 24-48h monitoring window — gating: circuit breaker warnings, error patterns, budget burn rate assessment — outcome: broad traffic enablement decision (OQ1)
 
 ## PR #364 governance decisions (2026-05-25)
 
@@ -2574,6 +2669,20 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Answerer**: Operator — FleetView registry administration
 - **Context**: GATE 5 disclosure completed today — all 7 project-local `.claude/agents/deploy_*.md` agents substituted with capability-equivalent disclosure per Lesson B. Registry repair SCHEDULED.
 - **Impact if left unanswered**: Future deployment sessions continue substitution pattern; governance compliant but not optimal
+
+## OQ-NEW-1 -- DHL Monitor Fixes Deployment Method (2026-05-25, NEW)
+
+- **Question**: Should 5c19c1c be deployed via PR or direct robocopy? (changes are backend service files only — standard robocopy sufficient)
+- **Answerer**: Operator — deployment method decision
+- **Context**: AWB 9198333502 DHL Monitor Fix Campaign complete with SHA 5c19c1c on main. All fixes are backend service files (`active_shipment_monitor.py`, `routes_dsk.py`, `routes_orchestrator.py`, `email_intelligence_store.py`, `test_dhl_monitor_fixes.py`). No UI changes, no .env changes, no database schema changes.
+- **Impact if left unanswered**: F1–F6 fixes remain undeployed; AWB 9198333502 reconciliation remains unexecuted; future AWBs continue with pre-fix behavior
+
+## OQ-NEW-2 -- DHL Monitor Auto-Sweep Policy (2026-05-25, NEW)
+
+- **Question**: After deploy, should `dhl_orch_auto_monitor_sweep` be enabled for future AWBs, or will the operator continue running the monitor manually?
+- **Answerer**: Operator — operational policy decision
+- **Context**: RC1 confirmed: Monitor manual-invocation-only (auto_monitor_sweep=False by design). F1/F5 fixes allow monitor state visibility but don't change the manual-only policy. Operator currently runs `POST /api/v1/monitor/active-shipments/run` manually.
+- **Impact if left unanswered**: DHL monitor continues manual-only mode; no automated sweep triggering follow-up workflows
 
 ## Campaign 8 / post-deploy open questions (added 2026-05-19)
 
