@@ -6,7 +6,8 @@ Coverage:
   - Component defined in shipment-detail.html
   - Component rendered in PZ / Accounting tab, after GlobalPZLineageCard
   - Proposal endpoint path is GET (correction-proposal)
-  - Execution endpoint path is POST (correction-execute)
+  - Stage endpoint path is POST (correction-stage); DELETE for reset
+  - Lifecycle endpoints present: correction-state, correction-suppress, correction-commit
   - data-testid attributes present for all key UI elements
   - "No wFirma mutation" label present (no direct wFirma calls)
   - Action buttons are enabled with onClick handlers (not statically disabled)
@@ -85,22 +86,22 @@ def test_correction_proposal_endpoint_path():
     )
 
 
-def test_correction_execute_endpoint_path():
+def test_correction_stage_endpoint_path():
     body = _card_body()
-    assert "/correction-execute" in body, (
-        "Component must POST to /api/v1/pz/lineage/{batchId}/correction-execute"
+    assert "/correction-stage" in body, (
+        "Component must POST to /api/v1/pz/lineage/{batchId}/correction-stage"
     )
 
 
-def test_correction_execute_uses_post_method():
-    """Execution fetch must use POST method."""
+def test_correction_stage_uses_post_method():
+    """Stage fetch must use POST method."""
     body = _card_body()
-    exec_idx = body.find("/correction-execute")
-    assert exec_idx > 0, "correction-execute endpoint not found"
-    # Inspect the window around the execute fetch call
-    window = body[max(0, exec_idx - 300): exec_idx + 100]
+    stage_idx = body.find("/correction-stage")
+    assert stage_idx > 0, "correction-stage endpoint not found"
+    # Inspect the window around the stage fetch call (POST comes before the URL)
+    window = body[max(0, stage_idx - 300): stage_idx + 100]
     assert "POST" in window, (
-        "Fetch to correction-execute must use method: 'POST'"
+        "Fetch to correction-stage must use method: 'POST'"
     )
 
 
@@ -208,10 +209,10 @@ def test_correction_proposal_buttons_have_onclick():
     )
 
 
-def test_correction_proposal_confirm_btn_calls_handleExecute():
+def test_correction_proposal_confirm_btn_calls_handleStage():
     body = _card_body()
-    assert "onClick={handleExecute}" in body, (
-        "Confirm execution button must call handleExecute"
+    assert "onClick={handleStage}" in body, (
+        "Confirm stage button must call handleStage"
     )
 
 
@@ -383,4 +384,143 @@ def test_correction_proposal_confirm_explains_backup():
     body = _card_body()
     assert "backup" in body.lower(), (
         "Confirmation panel must mention automatic backup"
+    )
+
+
+# ── 15. Lifecycle endpoints ──────────────────────────────────────────────────
+
+def test_correction_state_endpoint_present():
+    """correction-state must be loaded concurrently with correction-proposal."""
+    body = _card_body()
+    assert "/correction-state" in body, (
+        "Component must fetch /correction-state to read lifecycle state"
+    )
+
+
+def test_correction_suppress_endpoint_present():
+    body = _card_body()
+    assert "/correction-suppress" in body, (
+        "Component must POST to /correction-suppress to close the workflow"
+    )
+
+
+def test_correction_commit_endpoint_present():
+    body = _card_body()
+    assert "/correction-commit" in body, (
+        "Component must POST to /correction-commit to push to wFirma"
+    )
+
+
+def test_correction_reset_uses_delete_method():
+    """Reset-stage fetch must use DELETE method (not POST)."""
+    body = _card_body()
+    # handleResetStage defines method: 'DELETE' on the /correction-stage URL.
+    # Find the DELETE method declaration, then look backward for the URL.
+    method_delete = "method: 'DELETE'"
+    delete_idx = body.find(method_delete)
+    assert delete_idx > 0, "method: 'DELETE' not found in component — handleResetStage must use DELETE"
+    # Look backward from DELETE up to 300 chars to find the correction-stage URL
+    window = body[max(0, delete_idx - 300): delete_idx + len(method_delete)]
+    assert "correction-stage" in window, (
+        "DELETE method must be used on the /correction-stage fetch (handleResetStage)"
+    )
+
+
+def test_correction_commit_uses_post_method():
+    body = _card_body()
+    commit_idx = body.find("/correction-commit")
+    assert commit_idx > 0, "correction-commit endpoint not found"
+    window = body[max(0, commit_idx - 300): commit_idx + 100]
+    assert "POST" in window, (
+        "Fetch to correction-commit must use method: 'POST'"
+    )
+
+
+# ── 16. Lifecycle UI testids ─────────────────────────────────────────────────
+
+def test_lifecycle_state_badge_testid():
+    body = _card_body()
+    assert 'data-testid="global-pz-correction-lifecycle-state"' in body, (
+        "Lifecycle state badge must have data-testid='global-pz-correction-lifecycle-state'"
+    )
+
+
+def test_lifecycle_disabled_notice_testid():
+    body = _card_body()
+    assert 'data-testid="global-pz-correction-lifecycle-disabled"' in body, (
+        "Lifecycle-disabled notice must have data-testid='global-pz-correction-lifecycle-disabled'"
+    )
+
+
+def test_staged_banner_testid():
+    body = _card_body()
+    assert 'data-testid="global-pz-correction-staged-banner"' in body, (
+        "Staged banner must have data-testid='global-pz-correction-staged-banner'"
+    )
+
+
+def test_staged_actions_testid():
+    body = _card_body()
+    assert 'data-testid="global-pz-correction-staged-actions"' in body, (
+        "Staged actions block must have data-testid='global-pz-correction-staged-actions'"
+    )
+
+
+def test_commit_btn_testid():
+    body = _card_body()
+    assert 'data-testid="global-pz-correction-commit-btn"' in body, (
+        "Commit button must have data-testid='global-pz-correction-commit-btn'"
+    )
+
+
+def test_reset_stage_btn_testid():
+    body = _card_body()
+    assert 'data-testid="global-pz-correction-reset-stage-btn"' in body, (
+        "Reset stage button must have data-testid='global-pz-correction-reset-stage-btn'"
+    )
+
+
+def test_suppress_btn_testid():
+    body = _card_body()
+    assert 'data-testid="global-pz-correction-suppress-btn"' in body, (
+        "Suppress button must have data-testid='global-pz-correction-suppress-btn'"
+    )
+
+
+def test_suppress_panel_testid():
+    body = _card_body()
+    assert 'data-testid="global-pz-correction-suppress-panel"' in body, (
+        "Suppress panel must have data-testid='global-pz-correction-suppress-panel'"
+    )
+
+
+# ── 17. Lifecycle safety properties ─────────────────────────────────────────
+
+def test_confirm_sentinel_hardcoded():
+    """Component must hardcode the exact wFirma confirmation sentinel string."""
+    body = _card_body()
+    assert "_CONFIRM_SENTINEL" in body, (
+        "Component must define _CONFIRM_SENTINEL"
+    )
+    assert "cannot be undone without manual wFirma intervention" in body, (
+        "Sentinel text must include the 'cannot be undone' wording"
+    )
+
+
+def test_idempotency_key_in_commit():
+    """Commit payload must include an idempotency_key to prevent double-push."""
+    body = _card_body()
+    assert "idempotency_key" in body, (
+        "Commit payload must include idempotency_key"
+    )
+
+
+def test_state_503_graceful_fallback():
+    """503 from correction-state must result in lifecycle-disabled mode, not a crash."""
+    body = _card_body()
+    assert "503" in body, (
+        "Component must handle 503 from correction-state (flag disabled case)"
+    )
+    assert "lifecycleEnabled" in body, (
+        "Component must track lifecycleEnabled state driven by correction-state response"
     )
