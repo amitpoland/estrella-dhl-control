@@ -11,6 +11,76 @@ if str(_cli_root) not in sys.path:
     sys.path.insert(0, str(_cli_root))
 
 
+# ── ai_gateway isolation fixture ──────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _isolate_ai_gateway():
+    """Prevent ai_gateway global state from leaking between tests.
+
+    Two isolation problems are addressed:
+
+    1. Circuit-breaker pollution — Phase 2B tests that call ai_gateway.call()
+       with a real (unmocked) _cowork_call() trip the cowork CB.  Phase 3 tests
+       reset CBs at the start of each test, but this fixture guarantees isolation
+       regardless of execution order.
+
+    2. Lazy-import module-attribute caching — Python's _handle_fromlist shortcut
+       checks hasattr(package, 'submod') first.  If True, it returns the cached
+       package attribute WITHOUT consulting sys.modules.  This means
+       ``patch.dict("sys.modules", {"app.services.ai_call_ledger": mock})``
+       is silently ignored when Phase 2B tests have already set the package
+       attribute by patching functions on the real module.
+
+       Fix: before each test, save then remove the submodule from BOTH the
+       package's __dict__ AND sys.modules.  This forces the next import (whether
+       via patch._importer or via 'from . import') to go through
+       _find_and_load_unlocked, which re-consults sys.modules and re-sets the
+       package attribute — so any active patch.dict mock is honoured correctly.
+
+    This fixture is a no-op for tests that have not imported app.services,
+    so it does not slow down the 10,000+ non-gateway tests.
+    """
+    # Submodules whose cached package-attribute must be cleared each test
+    _SUBMODULES = ('ai_call_ledger', 'ai_redactor')
+
+    svc = sys.modules.get('app.services')
+    gw  = sys.modules.get('app.services.ai_gateway')
+
+    # Save and evict: remove from both the package __dict__ and sys.modules
+    saved: dict = {}
+    if svc is not None:
+        for name in _SUBMODULES:
+            full = f'app.services.{name}'
+            attr_val = svc.__dict__.pop(name, None)      # package attribute
+            mod_val  = sys.modules.pop(full, None)       # sys.modules entry
+            saved[name] = (attr_val, mod_val)
+
+    # Reset both circuit breakers
+    if gw is not None:
+        gw.reset_circuit_breaker()
+        gw.reset_cowork_circuit_breaker()
+
+    yield
+
+    # Teardown: restore what we saved so non-ai-gateway tests see a clean state
+    svc = sys.modules.get('app.services')
+    if svc is not None:
+        for name, (attr_val, mod_val) in saved.items():
+            full = f'app.services.{name}'
+            # Restore sys.modules entry (real module — any test-time mock is gone)
+            if mod_val is not None:
+                sys.modules[full] = mod_val
+            # Restore package attribute
+            if attr_val is not None:
+                svc.__dict__[name] = attr_val
+
+    # Reset CBs again for the next test
+    gw = sys.modules.get('app.services.ai_gateway')
+    if gw is not None:
+        gw.reset_circuit_breaker()
+        gw.reset_cowork_circuit_breaker()
+
+
 # ── Safety fixture: prevent tests from writing to live storage ───────────────
 
 # Paths that tests must NEVER write new files into.
