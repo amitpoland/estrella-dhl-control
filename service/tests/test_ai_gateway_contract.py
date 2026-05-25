@@ -26,12 +26,17 @@ def _settings(enabled=True, api_key="sk-test-key-abc123456789", budget=0.0):
     s.ai_gateway_daily_budget_usd  = budget
     s.ai_gateway_timeout_seconds   = 30
     s.ai_gateway_max_retries       = 3
+    # Phase 3: CB settings wired from config (must be int/float, not MagicMock)
+    s.ai_gateway_circuit_breaker_threshold = 5
+    s.ai_gateway_circuit_breaker_reset_s   = 60
     s.storage_root                 = "/tmp/test_storage"
     # Phase 2B fields — explicitly False so MagicMock doesn't return truthy objects
     s.ai_cowork_enabled           = False
     s.ai_cowork_timeout_seconds   = 30
     s.ai_provider_preference      = "claude_cowork"
     s.ai_fallback_enabled         = False
+    # Phase 3: cowork key (None by default — tests that need it set it explicitly)
+    s.ai_cowork_api_key           = None
     return s
 
 
