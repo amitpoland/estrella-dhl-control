@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25 (post-LIFECYCLE-PHASE1-SMOKE).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25 (post-BROWSER-VERIFICATION).
 
-**Last-run-at:** 2026-05-25T(PR369-MERGED)Z. Origin/main HEAD: 521031e (chore: PROJECT_STATE — record PR #368 advisory governance closeout). PR #364 DEPLOYED to production C:\PZ at SHA 2980712. PR #368/#369 docs-only — no deploy required. GATE 2: 0/3 (fully clear). LIFECYCLE UI: LIVE with Phase 1 smoke PASSED — Global batch `SHIPMENT_4789974092_2026-05_999deef1` in PROPOSED state ready for operator browser review. ANTHROPIC PILOT: 3-canary quality validation COMPLETE. Spend $0.001116/$2.00 (0.056%). Monitoring window open — broad traffic gate pending explicit operator go. PROVIDER LOCK-DOWN: Anthropic API sole provider. Cowork DEPRECATED. ADR-020 created. STAGE-2-4: AI posture locked. 142/142 AI tests pass. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
+**Last-run-at:** 2026-05-25T(BROWSER-VERIFICATION-COMPLETE)Z. Origin/main HEAD: 521031e (chore: PROJECT_STATE — record PR #368 advisory governance closeout). PR #364 DEPLOYED to production C:\PZ at SHA 2980712. PR #368/#369 docs-only — no deploy required. GATE 2: 0/3 (fully clear). LIFECYCLE UI: BROWSER VERIFICATION COMPLETE — GlobalPZCorrectionProposalCard full workflow tested on `SHIPMENT_4789974092_2026-05_999deef1`. All lifecycle states verified (PROPOSED → STAGED → OPERATOR_REVIEWED). Phase 2 activation READY when operator starts controlled session. ANTHROPIC PILOT: 3-canary quality validation COMPLETE. Spend $0.001116/$2.00 (0.056%). Monitoring window open — broad traffic gate pending explicit operator go. PROVIDER LOCK-DOWN: Anthropic API sole provider. Cowork DEPRECATED. ADR-020 created. STAGE-2-4: AI posture locked. 142/142 AI tests pass. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
 
 ---
 
@@ -432,6 +432,7 @@ Remove 6 pilot `.env` lines → restart PZService → confirm `active_provider=n
 
 ## RULE 6 visibility entries (scorecards)
 
+- **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-browser-verify-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Browser verification session for GlobalPZCorrectionProposalCard lifecycle UI on SHIPMENT_4789974092_2026-05_999deef1. File confirmed on disk (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-deploy-pr364-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PR #364 production deployment campaign. 5 agents EXEMPLARY, 2 agents ACCEPTABLE, 0 NEEDS-TUNING, 0 UNRELIABLE. File confirmed on disk (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-global-pz-correction-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PR #364 GlobalPZCorrectionProposalCard lifecycle UI campaign. 11 agents scored: all verdicts pending review. File confirmed on disk (Lesson C verified). GATE 4 dispositions logged in this session.
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-phase2b-phase3-isolation-hotfix.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). AI governance Stage 2-4 campaign. Parallel merge alongside PR #364. File confirmed on disk (Lesson C verified).
@@ -553,6 +554,30 @@ Remove 6 pilot `.env` lines → restart PZService → confirm `active_provider=n
 - **Stderr**: clean (no new tracebacks) ✅
 - **Rollback command**: `git revert 5bcb492 --no-edit` + robocopy + sc.exe restart
 - **Activation**: NOT started — both flags off; operator must explicitly set `PZ_CORRECTION_LIFECYCLE_ENABLED=true` in C:\PZ\.env and restart PZService to activate
+
+## Browser Verification — GlobalPZCorrectionProposalCard Lifecycle UI (2026-05-25, COMPLETE)
+
+**Campaign type**: End-to-end browser verification of deployed lifecycle UI (Phase 1 smoke + UI workflow validation)  
+**Status**: COMPLETE — all lifecycle UI components verified working on SHIPMENT_4789974092_2026-05_999deef1. Scorecard: `.claude/memory/scorecards/2026-05-25-browser-verify-lifecycle-ui.md`
+
+- **Target batch**: SHIPMENT_4789974092_2026-05_999deef1 (Global Jewellery AWB 4789974092)
+- **Verification timestamp**: 2026-05-25
+- **Browser**: End-to-end UI workflow tested through deployed production system
+- **All lifecycle UI checks PASSED**:
+  - **Card renders correctly**: GlobalPZCorrectionProposalCard displays with PROPOSED state on fresh page load ✅
+  - **Correction-proposal endpoint**: GET `/api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-proposal` → 200 (initial 503 was from pre-activation page load) ✅
+  - **Stage flow**: POST `/api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-stage` → 200 → STAGED state with "Changes staged" banner ✅
+  - **Commit gate verification**: POST `/api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-commit` → 503 when `WFIRMA_CORRECTION_PUSH_ALLOWED` absent (server-side gate confirmed working) ✅
+  - **Reset stage**: DELETE `/api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-stage` → 200 → OPERATOR_REVIEWED state ✅
+  - **CANCEL_AND_RECREATE option filtering**: Option correctly absent from UI (client-side filtering confirmed) ✅
+  - **No wFirma calls made**: During entire verification session (no external API mutations) ✅
+- **Final lifecycle state**: OPERATOR_REVIEWED, staged_option_id=null (clean state, not suppressed)
+- **Phase 2 gate status**: READY TO INITIATE when operator explicitly starts a new session with controlled environment
+- **Phase 2 prerequisites** (recorded, NOT yet completed):
+  - Run `lifecycle_smoke_tests.py --full-lifecycle`
+  - Confirm at least one stage+suppress cycle
+  - Explicitly set `WFIRMA_CORRECTION_PUSH_ALLOWED=true` in controlled environment
+- **Suppress testing**: INTENTIONALLY SKIPPED per operator safety instruction ("test cycle only if ready to close that lifecycle record")
 
 ---
 

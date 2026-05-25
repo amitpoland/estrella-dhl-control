@@ -42,6 +42,7 @@ service/.claude/snapshots/
 # Local runtime / generated artefacts
 .claude/settings.local.json
 service/MagicMock/
+MagicMock/
 service/packing.db
 outputs/
 storage/
