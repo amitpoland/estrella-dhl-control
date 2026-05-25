@@ -115,11 +115,109 @@
     return { ...base, save, saving };
   }
 
+  // ── PZ Correction lifecycle → operator UI phase ───────────────────────────
+  //
+  // SOLE AUTHORITY for lifecycle-state-to-operator-phase mapping.
+  // No other module is permitted to read lcState.state to choose presentation
+  // (test_single_renderer_authority.py enforces this with source-grep).
+  //
+  // This function does NOT decide legality. Legality is owned by
+  // service/app/services/pz_correction_state.py VALID_TRANSITIONS.
+  // This function chooses what operator-facing phase to render.
+  //
+  // Inputs (all backend-sourced — frontend never invents):
+  //   proposal:               GET /correction-proposal response  | null
+  //   lcState:                GET /correction-state response     | null
+  //   lifecycleEnabled:       true / false / null (== unknown)
+  //   pushDisabledDetected:   true after the backend has returned 503 on a
+  //                           commit attempt for the current decision; null
+  //                           or false otherwise. Defense-in-depth: if the
+  //                           backend rejects the push, V2 stays in
+  //                           push-disabled UX rather than re-offering the
+  //                           commit button.
+  //
+  // Output: one of:
+  //   'not-enabled' | 'review' | 'accepted' | 'push-enabled' | 'push-disabled'
+  //   | 'working' | 'done' | 'needs-attention' | 'closed' | null
+  function correctionUiPhase({ proposal, lcState, lifecycleEnabled, pushDisabledDetected }) {
+    if (lifecycleEnabled === false) return 'not-enabled';
+    if (!proposal) return null;
+    if (!proposal.is_global_supplier) return null;
+    if (!lcState) return 'review';
+    const s = lcState.state;
+    if (s === 'PROPOSED')            return 'review';
+    if (s === 'OPERATOR_REVIEWED')   return 'accepted';
+    if (s === 'STAGED')              return pushDisabledDetected ? 'push-disabled' : 'push-enabled';
+    if (s === 'EXECUTING')           return 'working';
+    if (s === 'COMPLETED')           return 'done';
+    if (s === 'FAILED')              return 'needs-attention';
+    if (s === 'TERMINAL_SUPPRESSED') return 'closed';
+    return 'review';
+  }
+
+  // ── useCorrectionData ─────────────────────────────────────────────────────
+  // Parallel-fetches /correction-proposal and /correction-state for a batch.
+  // Detects lifecycleEnabled by inspecting the state response status:
+  //   200 → lifecycleEnabled = true, lcState = response
+  //   503 → lifecycleEnabled = false, lcState = null
+  //   403 → lifecycleEnabled = null (non-Global; proposal returns is_global_supplier=false)
+  //   404 / network → lifecycleEnabled = null, error surfaced
+  //
+  // Returns { proposal, lcState, lifecycleEnabled, loading, error, reload }
+  function useCorrectionData(batchId) {
+    const [data, setData] = useState({
+      proposal: null,
+      lcState: null,
+      lifecycleEnabled: null,
+      loading: true,
+      error: null,
+    });
+    const mountedRef = useRef(true);
+
+    const run = useCallback(async () => {
+      if (!batchId) {
+        setData({ proposal: null, lcState: null, lifecycleEnabled: null, loading: false, error: null });
+        return;
+      }
+      setData(d => ({ ...d, loading: true, error: null }));
+      const [propRes, stateRes] = await Promise.all([
+        window.PzApi.getCorrectionProposal(batchId),
+        window.PzApi.getCorrectionState(batchId),
+      ]);
+      if (!mountedRef.current) return;
+      let lifecycleEnabled = null;
+      let lcState = null;
+      if (stateRes.ok) {
+        lifecycleEnabled = true;
+        lcState = stateRes.data;
+      } else if (stateRes.status === 503) {
+        lifecycleEnabled = false;
+      } else if (stateRes.status === 403) {
+        lifecycleEnabled = null;
+      } else {
+        lifecycleEnabled = null;
+      }
+      const proposal = propRes.ok ? propRes.data : null;
+      const error = (!propRes.ok && propRes.status !== 404) ? (propRes.error || 'load failed') : null;
+      setData({ proposal, lcState, lifecycleEnabled, loading: false, error });
+    }, [batchId]);
+
+    useEffect(() => {
+      mountedRef.current = true;
+      run();
+      return () => { mountedRef.current = false; };
+    }, [run]);
+
+    return { ...data, reload: run };
+  }
+
   // ── Export ────────────────────────────────────────────────────────────────
   window.PzState = Object.freeze({
     useProformaDrafts,
     useProformaPreview,
     useDraft,
     useCustomerMaster,
+    correctionUiPhase,
+    useCorrectionData,
   });
 })();

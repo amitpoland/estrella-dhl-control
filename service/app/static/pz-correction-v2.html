@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PZ Correction — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    :root {
+      --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+      --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+      --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+      --shadow: rgba(27,37,56,0.06); --shadow-heavy: rgba(27,37,56,0.16);
+      --accent: #B89968; --accent-light: #D4B884; --accent-text: #1B2538;
+      --accent-subtle: #F8EFD8; --accent-border: #CFB178;
+      --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+      --badge-blue-bg: #E8EFF8;   --badge-blue-text: #1A4A90;   --badge-blue-border: #AABEE0;
+      --badge-amber-bg: #FBF5E0;  --badge-amber-text: #805A00;  --badge-amber-border: #DEC870;
+      --badge-orange-bg: #FBF0E4; --badge-orange-text: #804000; --badge-orange-border: #DEB870;
+      --badge-green-bg: #E8F5EE;  --badge-green-text: #186838;  --badge-green-border: #96CCA8;
+      --badge-red-bg: #FBE8E6;    --badge-red-text: #902018;    --badge-red-border: #E0A8A0;
+      --badge-purple-bg: #EEE8F8; --badge-purple-text: #481898; --badge-purple-border: #BEA4E8;
+      --badge-accent-bg: #1E2D4A; --badge-accent-text: #C9A456; --badge-accent-border: #C9A456;
+      --sidebar-bg: #131C2E; --sidebar-border: #25334C;
+      --sidebar-active: #1F2A42; --sidebar-hover: #1A2438;
+      --sidebar-text: #F2EBD9; --sidebar-text-muted: #7C89A3; --sidebar-icon: #B89968;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+        --row-hover: #223040; --border: #2C3C54; --border-subtle: #243050;
+        --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+        --shadow: rgba(0,0,0,0.3); --shadow-heavy: rgba(0,0,0,0.5);
+        --accent: #D4AA5C; --accent-light: #ECC870; --accent-text: #111928;
+        --accent-subtle: #1E2808; --accent-border: #5A4A18;
+        --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+        --badge-blue-bg: #0E1E38;   --badge-blue-text: #80AAEE;   --badge-blue-border: #1E3A64;
+        --badge-amber-bg: #20180A;  --badge-amber-text: #E8C040;  --badge-amber-border: #584010;
+        --badge-orange-bg: #201008; --badge-orange-text: #E89860; --badge-orange-border: #582010;
+        --badge-green-bg: #0E2018;  --badge-green-text: #68CC88;  --badge-green-border: #1A4830;
+        --badge-red-bg: #200E10;    --badge-red-text: #EE8880;    --badge-red-border: #581018;
+        --badge-purple-bg: #160E28; --badge-purple-text: #AA88EE; --badge-purple-border: #341860;
+        --badge-accent-bg: #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border: #5A4A18;
+        --sidebar-bg: #0E1A30; --sidebar-border: #1A2840;
+        --sidebar-active: #1A2E48; --sidebar-hover: #162438;
+        --sidebar-text: #EEE8DC; --sidebar-text-muted: #566478; --sidebar-icon: #6A7A96;
+      }
+    }
+
+    body {
+      margin: 0; padding: 0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; font-size: 13px;
+    }
+
+    #root { display: flex; flex-direction: column; min-height: 100vh; }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="env,react" src="/dashboard/dashboard-shared.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-components.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+
+  // PZ Correction V2 — single-purpose standalone page.
+  // Single authority for the PZ Correction workflow. All rendering happens
+  // inside PzComponents.PZCorrectionV2Container. This file is a thin shell.
+
+  const _sp = new URLSearchParams(window.location.search);
+  const URL_BATCH_ID = (_sp.get('batch_id') || '').trim();
+
+  const { EstrellaMark, SessionBanner, EmptyState, Card } = window.EstrellaShared;
+  const { PZCorrectionV2Container } = window.PzComponents;
+
+  function PZCorrectionV2Root() {
+    const [sessionError, setSessionError] = React.useState(null);
+
+    if (!URL_BATCH_ID) {
+      return (
+        <div style={{ padding: 40, textAlign: 'center' }}>
+          <EmptyState state="error" message="Missing batch_id in URL. Use ?batch_id=SHIPMENT_..." />
+        </div>
+      );
+    }
+
+    return (
+      <div data-testid="pz-correction-v2-root" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+        {sessionError && (
+          <SessionBanner type={sessionError} onDismiss={() => setSessionError(null)} />
+        )}
+
+        <header style={{
+          background: 'var(--sidebar-bg)', borderBottom: '1px solid var(--sidebar-border)',
+          padding: '0 20px', height: 52, display: 'flex', alignItems: 'center', gap: 12,
+          flexShrink: 0,
+        }}>
+          <EstrellaMark size={28} />
+          <span style={{ color: 'var(--sidebar-text)', fontWeight: 700, fontSize: 13, letterSpacing: '0.04em' }}>
+            Estrella Atlas
+          </span>
+          <span style={{ color: 'var(--sidebar-text-muted)', fontSize: 11, marginLeft: 4 }}>
+            / PZ Correction
+          </span>
+          <div style={{ flex: 1 }} />
+          <a
+            href={`/dashboard/shipment-detail.html?id=${encodeURIComponent(URL_BATCH_ID)}`}
+            style={{ fontSize: 11, color: 'var(--sidebar-text-muted)', textDecoration: 'none' }}
+            data-testid="back-to-shipment-link"
+          >
+            ← Shipment
+          </a>
+        </header>
+
+        <main style={{ flex: 1, padding: '20px 24px', maxWidth: 820, width: '100%', margin: '0 auto' }}>
+          <div data-testid="batch-crumb" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-2)' }}>Batch:</span>
+            <span style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+              {URL_BATCH_ID}
+            </span>
+          </div>
+
+          <Card style={{ padding: '16px 18px' }}>
+            <PZCorrectionV2Container batchId={URL_BATCH_ID} />
+          </Card>
+        </main>
+
+        <footer style={{ borderTop: '1px solid var(--border)', padding: '8px 24px', fontSize: 10, color: 'var(--text-3)', display: 'flex', justifyContent: 'space-between' }}>
+          <span>Estrella Atlas · PZ Correction V2</span>
+          <span>Batch: {URL_BATCH_ID}</span>
+        </footer>
+      </div>
+    );
+  }
+
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<PZCorrectionV2Root />);
+})();
+</script>
+</body>
+</html>

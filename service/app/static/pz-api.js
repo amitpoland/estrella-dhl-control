@@ -16,6 +16,56 @@
 (function () {
   'use strict';
 
+  // ── PZ Correction wFirma confirmation sentinel ────────────────────────────
+  // Must match _CONFIRM_SENTINEL in service/app/services/global_pz_push.py
+  // (lines 76-79) byte-for-byte. Backend Gate 1 enforces exact-match at
+  // line 348 of global_pz_push.py.
+  //
+  // SYNTHESISE-ONLY constant. Never render this string as visible DOM text;
+  // it ships in the POST body of correction-commit and nowhere else.
+  // Operator-language gate G3 source-greps JSX text nodes to catch
+  // accidental rendering.
+  const _CONFIRM_SENTINEL =
+    "I confirm this will create a new wFirma PZ document and cannot be undone " +
+    "without manual wFirma intervention";
+
+  // ── buildCommitIdempotencyKey ─────────────────────────────────────────────
+  // Stable 32-hex key per (batch_id, staged_option_id, decision_ts) tuple.
+  //
+  // Server Gate 6 (global_pz_push.py, per routes_pz.py:945) enforces
+  // (idempotency_key, option_id) must not match an existing push record.
+  // This client key is defense-in-depth: a double-click during slow
+  // network would otherwise send two distinct keys and produce two
+  // attempted pushes — Gate 6 catches them, but the second one wastes a
+  // round-trip and surfaces a 409 to the operator. A stable key avoids
+  // even that.
+  //
+  // Uses Web Crypto SHA-256; falls back to a deterministic 32-hex hash
+  // when crypto.subtle is unavailable (very old browsers / non-HTTPS dev).
+  async function buildCommitIdempotencyKey(batchId, stagedOptionId, decisionTs) {
+    const payload = `${batchId || ''}|${stagedOptionId || ''}|${decisionTs || ''}`;
+    if (window.crypto && window.crypto.subtle && window.TextEncoder) {
+      try {
+        const buf = new TextEncoder().encode(payload);
+        const hashBuf = await window.crypto.subtle.digest('SHA-256', buf);
+        const hex = Array.from(new Uint8Array(hashBuf))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+        return hex.slice(0, 32);
+      } catch (_) { /* fall through to fallback */ }
+    }
+    // Fallback: deterministic FNV-1a 64-bit expanded to 32 hex chars.
+    // Not cryptographic, but stable across (batch_id, option_id, ts).
+    let h1 = 0xcbf29ce4, h2 = 0x84222325;
+    for (let i = 0; i < payload.length; i++) {
+      const c = payload.charCodeAt(i);
+      h1 ^= c; h1 = (h1 * 16777619) >>> 0;
+      h2 ^= (c << 1); h2 = (h2 * 16777619) >>> 0;
+    }
+    const part = (n) => n.toString(16).padStart(8, '0');
+    return (part(h1) + part(h2) + part(h1 ^ h2) + part(~h1 >>> 0)).slice(0, 32);
+  }
+
   // Lazy accessor — EstrellaShared is set by dashboard-shared.js IIFE which
   // runs before this one due to document order.
   function _apiFetch(url, opts) {
@@ -206,5 +256,67 @@
     saveCustomerMaster: (clientKey, body) =>
       _put(`${BASE}/customer-master/${encodeURIComponent(clientKey)}`, body),
 
+    // ── PZ Correction — read ─────────────────────────────────────────
+    // 8 endpoints under /api/v1/pz/lineage/{batch_id}/correction-*
+    // Backend authority: service/app/api/routes_pz.py lines 739–1346.
+    // Frontend never decides legality or write-permission; it reads
+    // backend responses and maps to operator-friendly UX phases via
+    // PzState.correctionUiPhase().
+
+    // GET /api/v1/pz/lineage/{batch_id}/correction-proposal
+    // Returns CorrectionProposal as dict. is_global_supplier=false when not Global.
+    getCorrectionProposal: (batchId) =>
+      _get(`${BASE}/pz/lineage/${encodeURIComponent(batchId)}/correction-proposal`),
+
+    // GET /api/v1/pz/lineage/{batch_id}/correction-state
+    // Returns CorrectionLifecycleRecord as dict.
+    // 503 when pz_correction_lifecycle_enabled=false — V2 maps to 'not-enabled' UX.
+    // 403 for non-Global batches.
+    getCorrectionState: (batchId) =>
+      _get(`${BASE}/pz/lineage/${encodeURIComponent(batchId)}/correction-state`),
+
+    // ── PZ Correction — write ────────────────────────────────────────
+
+    // POST /api/v1/pz/lineage/{batch_id}/correction-execute
+    // Legacy execute path (pre-lifecycle); included for completeness.
+    postCorrectionExecute: (batchId, body) =>
+      _postM(`${BASE}/pz/lineage/${encodeURIComponent(batchId)}/correction-execute`, body || {}),
+
+    // POST /api/v1/pz/lineage/{batch_id}/correction-push-wfirma
+    // Legacy push path; included for completeness.
+    postCorrectionPushWfirma: (batchId, body) =>
+      _postM(`${BASE}/pz/lineage/${encodeURIComponent(batchId)}/correction-push-wfirma`, body || {}),
+
+    // POST /api/v1/pz/lineage/{batch_id}/correction-stage
+    // Stages a correction option locally. No wFirma write.
+    // Body: { option_id, operator_reason }
+    // Returns updated lifecycle record.
+    postCorrectionStage: (batchId, body) =>
+      _postM(`${BASE}/pz/lineage/${encodeURIComponent(batchId)}/correction-stage`, body),
+
+    // DELETE /api/v1/pz/lineage/{batch_id}/correction-stage
+    // Resets STAGED → OPERATOR_REVIEWED so operator can choose different option.
+    deleteCorrectionStage: (batchId) =>
+      _del(`${BASE}/pz/lineage/${encodeURIComponent(batchId)}/correction-stage`),
+
+    // POST /api/v1/pz/lineage/{batch_id}/correction-commit
+    // FINAL wFirma push. Server enforces:
+    //  Gate 1: confirm_understanding === _CONFIRM_SENTINEL (exact match)
+    //  Gate 6: idempotency_key + option_id has no prior push record
+    // 503 when wfirma_correction_push_allowed=false — V2 surfaces this as
+    // 'push-disabled' UX (amber, not red).
+    // Body: { operator_reason, idempotency_key, confirm_understanding }
+    postCorrectionCommit: (batchId, body) =>
+      _postM(`${BASE}/pz/lineage/${encodeURIComponent(batchId)}/correction-commit`, body),
+
+    // POST /api/v1/pz/lineage/{batch_id}/correction-suppress
+    // Closes the workflow into TERMINAL_SUPPRESSED. No wFirma write.
+    // Body: { reason }
+    postCorrectionSuppress: (batchId, body) =>
+      _postM(`${BASE}/pz/lineage/${encodeURIComponent(batchId)}/correction-suppress`, body),
+
+    // ── Exposed primitives for tests / advanced callers ──────────────
+    _CONFIRM_SENTINEL,
+    buildCommitIdempotencyKey,
   });
 })();
