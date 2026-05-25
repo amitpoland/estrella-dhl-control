@@ -198,13 +198,13 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ---
 
-## Current Origin/Main HEAD Status (2026-05-25)
+## Current Origin/Main HEAD Status (2026-05-26)
 
-- **Current SHA**: `5c19c1c` — "fix(dhl-monitor): harden monitor/followup/DSK/tracking/email-queue pipeline (F1-F6)"
-- **Previous SHA**: `0e5190f` — "chore: record browser verification complete + lifecycle scorecard (GATE 6)"
-- **Before that**: `521031e` — "chore: PROJECT_STATE — record PR #368 advisory governance closeout (#369)"
+- **Current SHA**: `91cea4b` — "chore: record DHL monitor governance scorecards"
+- **Previous SHA**: `a9dfbd6` — "chore: PROJECT_STATE — record DEPLOY-AGENT-REGISTRATION-REPAIR + OQ6 resolved"
+- **Before that**: `4366b0f` — "fix(agents): add YAML frontmatter to all 7 deploy agent files"
 - **Status**: Clean — no open PRs, no pending conflicts, no governance ambiguity
-- **Production status**: C:\PZ **DEPLOYED at `5c19c1c`** (2026-05-25T22:57Z). F1–F6 DHL monitor fixes live. See DHL Monitor Fixes Deploy entry below.
+- **Production status**: C:\PZ **DEPLOYED at `5c19c1c`** (2026-05-25T22:57Z). F1–F6 DHL monitor fixes live. Commits `835056f`→`a9dfbd6`→`91cea4b` are governance/`.claude`-only — no robocopy needed.
 
 ---
 
@@ -326,18 +326,33 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **Activation gate status**: **3/3** — all blockers resolved. Pending PR #361 merge. No further code changes required before first `--execute` run.
 - **Next required action**: Merge PR #361. Then activation is unblocked on operator's schedule.
 
-## AI Pilot Monitoring Gate — 24-48h Check (2026-05-25, OPEN)
+## AI Pilot Monitoring Gate — 24-48h Check (2026-05-26, CLOSED)
 
-**Status**: 3/3 canaries passed. Monitoring window open. Broad traffic held.
+**Status**: All 7 gate conditions MET (2026-05-26). Advisory live and healthy. Broad shipment-detail.html traffic **NOT enabled — blocked by Lesson F** (see below).
 
-**7 gate conditions for broad traffic enablement** (operator runs 24-48h check):
-1. `budget_ok=true`
-2. `spent_usd_today` safely below cap (< $0.80/day target)
-3. `fallback_used=0` on all recent ledger rows
-4. `error_type` empty/null on recent rows
-5. No circuit breaker warnings in stdout log
-6. No new ERROR lines in stderr
-7. Advisory quality acceptable (accurate summaries, no hallucinated data)
+**7 gate conditions verified (2026-05-26)**:
+1. `budget_ok=true` ✅
+2. `spent_usd_today=$0.000189` (row 7, today only) — well below $0.80 target ✅
+3. `fallback_used=0` on all rows (rows 1–7) ✅
+4. `error_type=None` on all rows ✅
+5. No circuit breaker warnings in stderr ✅
+6. No ERROR lines in stderr (startup INFO only) ✅
+7. Advisory quality verified: row 7 haiku call, accurate 3-domain summary, no hallucinated data ✅
+
+**Ledger row 7 (verification call, 2026-05-26)**:
+- `service=ai_advisory`, `task_type=advisory_explanation`
+- `selected_model=claude-haiku-4-5-20251001`, `model_tier=haiku`
+- `actual_input_tokens=276`, `actual_output_tokens=96`, `actual_cost=$0.000189`
+- `success=1`, `fallback_used=0`, `error_type=None`
+
+**Advisory exposure state (2026-05-26, FINAL)**:
+- **Live surface**: `ai-advisory-v2.html` (standalone operator page, calls workflow-blockers directly)
+- **shipment-detail.html**: NO advisory caller. Page calls `/api/v1/agents/decision/` (Phase 3.6 decision engine) — a different endpoint.
+- **Broad traffic to shipment-detail.html**: BLOCKED — adding a `workflow-blockers` fetch to `shipment-detail.html` is a new feature on a frozen V1 page (Lesson F). Requires explicit Lesson F exception or V2 migration.
+- **No `advisory_traffic_enabled` flag exists** in config.py — there is no toggle; the UI must be wired explicitly.
+- **Future path**: Lesson F exception (operator-declared, critical-fix justification) → UI PR → GATE 1 full run → deploy. OR: build into a V2 page when V2 migration reaches that domain.
+
+**OQ1 disposition**: RESOLVED — see OPEN QUESTIONS § OQ1.
 
 **Check commands** (provided by operator, 2026-05-25):
 ```powershell
@@ -2561,8 +2576,8 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ## Next 3 actions in queue
 
 1. **PZ correction workflow suppression (operator action)** — RECOMMENDED: operator calls `POST /api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-suppress` to close the correction workflow cleanly. Gate 8 permanently blocks automated push; suppression is the correct closure. Optional pre-step: manually update product codes in wFirma PZ 9/5/2026 if needed.
-2. **Deploy DHL Monitor Fixes** — target: deploy SHA 5c19c1c to C:\PZ production + restart PZService (now unblocked — 7-agent gate is executable in fresh session using registered deploy-* agents) — outcome: activate F1-F6 fixes, trigger AWB 9198333502 reconciliation.
-3. **AI advisory monitoring window check** — target: operator runs 7-condition check after 24-48h monitoring window — outcome: broad traffic enablement decision (OQ1).
+2. ~~**Deploy DHL Monitor Fixes**~~ — **DONE 2026-05-25**: SHA `5c19c1c` deployed to C:\PZ. F1–F6 live. AWB 9198333502 reconciled.
+3. ~~**AI advisory monitoring window check**~~ — **DONE 2026-05-26**: All 7 conditions met. Advisory live on `ai-advisory-v2.html`. Broad `shipment-detail.html` traffic blocked by Lesson F. OQ1 resolved.
 
 **DEPLOY-AGENT-REGISTRATION-REPAIR COMPLETE (2026-05-25, SHA 4366b0f)**: All 7 deploy agent files now have valid YAML frontmatter and are registered as dispatchable subagents. Names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Tools: Read, Grep, Glob (review-only). Takes effect in next fresh Claude Code session (Lesson B). OQ6 resolved — see below.
 
@@ -2620,20 +2635,12 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 # OPEN QUESTIONS
 
-## OQ1 -- AI advisory monitoring window post-pilot (updated 2026-05-25, was: Anthropic provider pilot plan approval)
+## OQ1 -- AI advisory monitoring window post-pilot (RESOLVED 2026-05-26)
 
-- **Question**: Anthropic pilot phase complete (3 canaries passed). Monitor window open 24-48h before enabling broad traffic. When to run 7-condition check and potentially enable broader AI advisory usage?
-- **Answerer**: Operator decision — must run 7-condition check after 24-48h monitoring window
-- **Context**: Pilot launched 2026-05-25. 3 canaries successful ($0.001116 spend, haiku model, 0 fallbacks). Monitoring window active for circuit breaker warnings, error patterns, budget burn rate.
-- **Impact if left unanswered**: AI advisory remains at single-batch manual mode; deterministic endpoints continue operating normally
-- **7-condition check commands** (operator runs after 24-48h):
-  ```powershell
-  $k = (Get-Content "C:\PZ\.env" | Where-Object { $_ -match "^AUTH_SECRET_KEY=" } | ForEach-Object { $_.Split("=",2)[1] })
-  (Invoke-WebRequest "http://127.0.0.1:47213/api/v1/ai/advisory/status" -Headers @{"X-API-Key"=$k} -UseBasicParsing).Content
-  python -c "import sqlite3; con=sqlite3.connect(r'C:\PZ\storage\ai_call_ledger.db'); rows=con.execute('SELECT id,timestamp,success,actual_cost,provider_used,fallback_used,error_type FROM ai_calls ORDER BY id DESC LIMIT 20').fetchall(); [print(r) for r in rows]; con.close()"
-  Get-Content C:\PZ\logs\pz_stderr.log -Tail 80
-  ```
-- **Success criteria**: budget_ok=true, spent_usd_today<$0.80, fallback_used=0, error_type=null, no circuit breaker warnings, no stderr errors, advisory quality acceptable
+- **Question**: ~~Anthropic pilot phase complete (3 canaries passed). Monitor window open 24-48h before enabling broad traffic. When to run 7-condition check and potentially enable broader AI advisory usage?~~
+- **Resolution (2026-05-26)**: All 7 conditions verified PASS. Advisory endpoint live and healthy on `ai-advisory-v2.html`. Broad `shipment-detail.html` traffic is NOT enabled and is blocked by Lesson F (frozen V1 page; adding a new `workflow-blockers` fetch is a new feature, not a critical fix). No `advisory_traffic_enabled` config flag exists — routing requires explicit UI code change + Lesson F exception or V2 migration.
+- **Advisory exposure state (permanent until Lesson F exception or V2)**: `ai-advisory-v2.html` only. Endpoint ungated and healthy. 7 total calls, all `service=ai_advisory` except row 6 (`ai_customs_evidence` — separate service, Sonnet, expected). No new actions needed for advisory itself.
+- **Future path to shipment-detail.html**: Operator declares Lesson F exception → UI PR → GATE 1 full run → 7-agent deploy. OR: build into V2 page under Atlas-V2 campaign.
 
 ## OQ2 -- wFirma PZ delete API existence + inventory reversal (DEFERRED/MANUAL-ONLY, 2026-05-24)
 
