@@ -169,12 +169,21 @@ def run_ingestion_cycle(
         # adapt its signature so the rest of this worker is unchanged.
         try:
             from .email_evidence_ingestor import scan_and_ingest as _evi_scan
-            def scan_fn(token, account_id, target_awb, limit, api_base, **_):  # type: ignore
-                # Ingestor expects (awb, batch_id, audit_path, audit, *, limit).
+            def scan_fn(target_awb=None, limit=50, api_base=None,
+                         token_provider=None, dhl_ticket=None,
+                         token=None, account_id=None, **_):  # type: ignore
+                # Ingestor expects (awb, batch_id, audit_path, audit, *, limit,
+                # token_provider, scan_fn). The token is threaded via
+                # token_provider (a lambda returning the pre-refreshed token);
+                # account_id is read by the underlying scanner from settings.
                 # We don't have a batch_id at scan-fn level; the per-shipment
                 # caller above already loops batches and calls scan_fn per AWB,
                 # so an empty batch_id is acceptable for the broad scan path.
-                return _evi_scan(target_awb or "", "", None, {}, limit=limit)
+                return _evi_scan(
+                    target_awb or "", "", None, {},
+                    limit=limit,
+                    token_provider=token_provider,
+                )
         except Exception as exc:
             log.warning("[ingest] in-tree scanner unavailable: %s", exc)
             return {"ok": False, "error": "scan_fn_unavailable"}
