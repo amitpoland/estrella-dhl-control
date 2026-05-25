@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25 (post-PR-364).
 
-**Last-run-at:** 2026-05-25T(PR-364-MERGED)Z. Origin/main HEAD: efba905 (GlobalPZCorrectionProposalCard lifecycle UI). PR #364 MERGED: 36/36 gate items PASS. GATE 2: 0/3 (fully clear). LIFECYCLE UI: merged but dormant (pz_correction_lifecycle_enabled=false). ANTHROPIC PILOT: 3-canary quality validation COMPLETE. Spend $0.001116/$2.00 (0.056%). Monitoring window open — broad traffic gate pending explicit operator go. PROVIDER LOCK-DOWN: Anthropic API sole provider. Cowork DEPRECATED. ADR-020 created. STAGE-2-4: AI posture locked. 142/142 AI tests pass. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
+**Last-run-at:** 2026-05-25T(PR368-MERGED)Z. Advisory governance package CLOSED. SHA 542bbd0. GATE 2: 0/3.
 
 ---
 
@@ -100,25 +100,26 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ## Current Origin/Main HEAD Status (2026-05-25)
 
-- **Current SHA**: `efba905` — "feat(ui): GlobalPZCorrectionProposalCard — lifecycle-aware 4-endpoint upgrade (#364)"  
-- **Previous SHA**: `74d1e07` — "chore: master bootstrap campaign COMPLETE — 3 PRs merged, GATE 2 clear, activation unblocked (2026-05-25)"
+- **Current SHA**: `542bbd0` — "docs(ai-governance): publish-ready workflow advisory governance deliverables"  
+- **Previous SHA**: `efba905` — "feat(ui): GlobalPZCorrectionProposalCard — lifecycle-aware 4-endpoint upgrade (#364)"
 - **Status**: Clean — no open PRs, no pending conflicts, no governance ambiguity
-- **Production gap**: Now 2 differences vs production: (1) `service/app/api/routes_search.py` (OpenAPI descriptions only; zero logic) + (2) full PR #364 UI/test changes (lifecycle gated by flag=false)
+- **Production gap**: Still includes PR #364 UI/test changes (lifecycle gated by flag=false). AI governance docs published. No runtime code changes in PR #368.
 
 ---
 
-## Advisory Governance Docs — Publish-Ready Corrections (2026-05-25, COMPLETE)
+## PR #368 — AI Advisory Governance Package Docs (2026-05-25, MERGED)
 
 **Date**: 2026-05-25  
+**PR**: #368 — squash-merged to main at SHA `542bbd0`  
 **Type**: Documentation only — no runtime code changed, no flags changed, no .env changes.  
-**PR**: docs/workflow-advisory-governance branch → PR pending merge
+**Branch**: docs/workflow-advisory-governance (deleted after merge)
 
-**Three advisory governance deliverables created** (all six editorial corrections applied):
+**Three AI advisory governance deliverables published** (all six editorial corrections applied):
 - `docs/ai-governance/workflow-advisory-runbook.md` — operator guide, trust boundary section, CB config params, domain reference tables
 - `docs/ai-governance/workflow-advisory-monitoring.md` — M1–M8 SQL queries, deterministic M7 sampling, ADR-020 provider rule, percentage budget thresholds, CB state machine
 - `docs/ai-governance/workflow-advisory-checkpoints.md` — 3 checkpoint schedule, trust boundary invariants, percentage thresholds, test scope notes, deterministic quality sample note
 
-**Six corrections applied (all verified by grep)**:
+**Six editorial corrections applied (all verified by grep)**:
 1. **Test metric scope**: "142/142 AI subsystem tests" — explicitly labeled as subsystem-only; PZ (160) + Carrier (381) on Windows host are separate deploy gates
 2. **Deterministic sampling**: M7 query uses ROW_NUMBER() OVER (ORDER BY rowid ASC), step_n = max(1, floor(total/10)); audit record requires week_start, total_rows, step_n, first_sampled_rowid
 3. **Budget thresholds**: WARNING=75% and CRITICAL=90% of `ai_advisory_budget_usd_per_day`; dollar examples labeled "currently $X at $2.00 ceiling"
@@ -126,9 +127,9 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 5. **Circuit breaker**: references `ai_gateway_circuit_breaker_threshold` (default 5) and `ai_gateway_circuit_breaker_reset_s` (default 60); not hardcoded values
 6. **Trust boundary section**: added to runbook — advisory explains but does not determine workflow truth; `get_batch_readiness()` owns truth; advisory_class="R" hardcoded; engine is not a write path; test_ai_advisory_no_writes.py must not be deleted
 
-**Grep verification**: zero stale phrases (random samples, hardcoded provider check without ADR ref, config values without parameter names)
-
-**Runtime files touched**: NONE
+**Status**: COMPLETE. AI advisory governance package documentation published on main.  
+**Production impact**: None — documentation only.  
+**GATE 2**: 0/3 open PRs (fully clear after merge)
 
 ---
 
@@ -2395,7 +2396,7 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 1. **AI advisory monitoring window check** — target: operator runs 7-condition check after 24-48h monitoring window — gating: circuit breaker warnings, error patterns, budget burn rate assessment — outcome: broad traffic enablement decision (OQ1)
 2. **Pre-existing test failure disposition** — target: operator provides GATE 4 disposition (SCHEDULED / ISSUE / REJECTED) for 1,033 pre-existing test failures — gating: governance compliance per GATE 4 rules (OQ4)  
-3. **Routes search OpenAPI deploy** — target: routine 7-agent gate sync of SHA efba905 to production — gating: none (safe deploy, includes PR #364 + OpenAPI updates) — outcome: production deployment with lifecycle UI (flags remain off)
+3. **Routes search + lifecycle UI deploy** — target: routine 7-agent gate sync of SHA 542bbd0 to production — gating: none (safe deploy, docs + lifecycle UI with flags off) — outcome: production deployment current with main
 
 ## PR #364 governance decisions (2026-05-25)
 
