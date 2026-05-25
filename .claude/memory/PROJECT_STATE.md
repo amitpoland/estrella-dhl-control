@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-25 (post-DHL-MONITOR-FIXES-COMPLETE).
 
-**Last-run-at:** 2026-05-25T(AWB-9198333502-DHL-MONITOR-FIXES-COMPLETE)Z. Origin/main HEAD: 5c19c1c. PR #364 DEPLOYED to C:\PZ at SHA 2980712. GATE 2: 0/3 (fully clear). DHL MONITOR FIXES: AWB 9198333502 campaign COMPLETE (F1–F6), SHA 5c19c1c ready for deploy. 6 root causes fixed: RC1-RC6 confirmed, 5 files changed, 15/15 tests pass, ALL EXEMPLARY scorecard. LIFECYCLE: Phase 2 push readiness COMPLETE but GATE 8 BLOCKED. ANTHROPIC PILOT: monitoring window open. PROVIDER LOCK-DOWN: Anthropic API sole provider. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
+**Last-run-at:** 2026-05-26T01:19Z. Origin/main HEAD: 91cea4b. Production: SHA 5c19c1c deployed at C:\PZ. GATE 2: 0/3 (fully clear). DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). email_ingestion_worker scan_fn bug surfaced (pre-existing, non-blocking). LIFECYCLE: Phase 2 push readiness COMPLETE but GATE 8 BLOCKED. ANTHROPIC PILOT: monitoring window open. PROVIDER LOCK-DOWN: Anthropic API sole provider. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
 
 ---
 
@@ -54,6 +54,50 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## DHL Dev Automation Enablement (2026-05-26, COMPLETE)
+
+**Date**: 2026-05-26T01:19Z  
+**Type**: Runtime config change — `.env` edit + PZService restart. No code changed.
+
+**Operator directive**: "Enable DHL automation flows for development phase unless inspection proves a specific technical failure or unsafe external write risk."
+
+**Flags changed in `C:\PZ\.env`**:
+
+| Flag | Before | After | Reason |
+|------|--------|-------|--------|
+| `DHL_ORCH_SHADOW_MODE` | `true` | `false` | Enable execution (not just decision logging) |
+| `DHL_ORCH_AUTO_REFRESH_TRACKING` | absent (false) | `true` | Live DHL tracking reads — read-only API |
+| `DHL_ORCH_AUTO_MONITOR_SWEEP` | absent (false) | `true` | Active shipment monitor — no external sends |
+| `DHL_ORCH_AUTO_EMAIL_INGEST` | absent (false) | `true` | Read Zoho inbox for DHL customs emails |
+| `DHL_ORCH_AUTO_REFRESH_PROPOSALS` | absent (false) | `true` | Refresh document proposals — no external sends |
+| `DHL_ORCH_AUTO_BUILD_PACKAGES` | absent (false) | `true` | Build reply packages — no external sends |
+| `DHL_ORCH_AUTO_SEND_AGENCY` | absent (false) | `false` (explicit) | External SMTP — kept blocked |
+| `DHL_ORCH_AUTO_SEND_DHL_REPLY` | absent (false) | `false` (explicit) | External SMTP — kept blocked |
+| `DHL_ORCH_AUTO_SEND_AGENCY_ADVANCE` | absent (false) | `false` (explicit) | External SMTP — kept blocked |
+| `DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP` | absent (false) | `false` (explicit) | External SMTP — kept blocked |
+
+**PZService**: Restarted. STATE=RUNNING. PID 3728.
+
+**Verification results**:
+- Health: `{"status":"ok","engine":"ok","environment":"prod"}` ✅
+- Orchestrator dry-run: `shadow_mode: false` confirmed in all 24 decisions ✅
+- Orchestrator live tick: `persisted: true, dry_run: false, shadow_mode: false` ✅ — all AUTO_SEND_* = false ✅
+- Monitor sweep: `scanned=24 active=15 actions=15` ✅ — AWB 9198333502 SLA trigger active ✅
+- Email queue: 5 total, **0 pending** — no emails queued or staged ✅
+- DHL tracking API live call: `GET api-eu.dhl.com/track/shipments?trackingNumber=9198333502 → 200 OK` ✅
+- Orchestrator loop confirmed started with `shadow=False` in pz_stdout.log ✅
+
+**Pre-existing WARNING surfaced** (non-blocking):
+`email_ingestion_worker`: `scan_fn() missing 2 required positional arguments: 'token' and 'account_id'` — Zoho OAuth token refresh succeeds but the scan_fn call-site doesn't thread token/account_id through. Ingest cycle completes gracefully (`shipments_with_events=0`). Chip spawned for separate fix. Does NOT affect monitor sweep, proposal refresh, package build, or tracking refresh.
+
+**Blocked flows (require explicit operator approval before enabling)**:
+- `DHL_ORCH_AUTO_SEND_AGENCY`: agency email SMTP send
+- `DHL_ORCH_AUTO_SEND_DHL_REPLY`: DHL reply SMTP send
+- `DHL_ORCH_AUTO_SEND_AGENCY_ADVANCE`: pre-arrival advance SMTP send
+- `DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP`: post-arrival follow-up SMTP send
+
+---
 
 ## Phase 2 — Global PZ wFirma Push Readiness Campaign (2026-05-25, COMPLETE — GATE 8 HARD BLOCK)
 
