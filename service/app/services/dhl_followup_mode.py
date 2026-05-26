@@ -60,6 +60,19 @@ def is_automatic(audit: Dict[str, Any]) -> bool:
     return get_mode(audit) == "automatic"
 
 
+def is_mode_explicit(audit: Dict[str, Any]) -> bool:
+    """Return True iff audit.followup.mode is explicitly set to a valid value.
+
+    Distinguishes operator-set ``manual`` from default-fallback ``manual``.
+    This is an introspection of the same authority field — NOT a second
+    authority. UIs should use this to render "Manual" (operator-set) vs
+    "Default" (no decision yet) without re-deriving mode independently.
+    """
+    fu = (audit or {}).get("followup") or {}
+    mode = str(fu.get("mode") or "").strip().lower()
+    return mode in VALID_MODES
+
+
 def set_mode(
     audit_path: Path,
     audit: Dict[str, Any],
