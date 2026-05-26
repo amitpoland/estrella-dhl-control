@@ -30,6 +30,7 @@ from .api.routes_ai_bridge import router as ai_bridge_router
 from .api.routes_monitor import router as monitor_router
 from .api.routes_orchestrator import router as orchestrator_router
 from .api.routes_dhl_followup import router as dhl_followup_router
+from .api.routes_dhl_followup_status import router as dhl_followup_status_router
 from .api.routes_dhl_documents import router as dhl_documents_router
 from .api.routes_lifecycle import router as lifecycle_router
 from .api.routes_intake import router as intake_router
@@ -385,6 +386,7 @@ app.include_router(ai_bridge_router)
 app.include_router(monitor_router)
 app.include_router(orchestrator_router)
 app.include_router(dhl_followup_router)
+app.include_router(dhl_followup_status_router)
 app.include_router(dhl_documents_router)
 app.include_router(lifecycle_router)
 app.include_router(intake_router)

@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DHL Follow-up Automation (V2)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg:         #fafafa;
+      --surface:    #ffffff;
+      --text:       #1f2328;
+      --muted:      #6b7280;
+      --border:     #e5e7eb;
+      --accent:     #2563eb;
+      --badge-ok:   #10b981;
+      --badge-warn: #f59e0b;
+      --badge-bad:  #ef4444;
+      --badge-mute: #9ca3af;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; font-family: -apple-system, system-ui, sans-serif;
+           background: var(--bg); color: var(--text); }
+    .container { max-width: 1080px; margin: 0 auto; }
+    h1 { font-size: 22px; margin: 0 0 4px 0; }
+    .subtitle { color: var(--muted); margin: 0 0 20px 0; font-size: 13px; }
+    .readonly-banner {
+      background: #f0f9ff; border: 1px solid #bae6fd; color: #075985;
+      padding: 8px 12px; border-radius: 6px; font-size: 12px; margin-bottom: 16px;
+    }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 12px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 16px;
+    }
+    .card h2 { font-size: 14px; margin: 0 0 12px 0; color: var(--muted); text-transform: uppercase;
+               letter-spacing: 0.5px; }
+    .big-num { font-size: 32px; font-weight: 700; line-height: 1; }
+    .big-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .row { display: flex; justify-content: space-between; align-items: center;
+           padding: 6px 0; font-size: 14px; border-bottom: 1px solid var(--border); }
+    .row:last-child { border-bottom: 0; }
+    .row .k { color: var(--muted); }
+    .row .v { font-weight: 500; }
+    .badge {
+      display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px;
+      font-weight: 600; color: white;
+    }
+    .badge-ok   { background: var(--badge-ok); }
+    .badge-warn { background: var(--badge-warn); }
+    .badge-bad  { background: var(--badge-bad); }
+    .badge-mute { background: var(--badge-mute); }
+    .badge-blue { background: var(--accent); }
+    .traffic {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;
+    }
+    .traffic .tile {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 14px; text-align: center;
+    }
+    .traffic .tile .dot {
+      display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+      vertical-align: middle; margin-right: 6px;
+    }
+    .tile.ready    { border-left: 4px solid var(--badge-ok); }
+    .tile.waiting  { border-left: 4px solid var(--badge-warn); }
+    .tile.problems { border-left: 4px solid var(--badge-bad); }
+    .tile.ready    .dot { background: var(--badge-ok); }
+    .tile.waiting  .dot { background: var(--badge-warn); }
+    .tile.problems .dot { background: var(--badge-bad); }
+    .tile-label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+                  letter-spacing: 0.5px; }
+    .tile-num { font-size: 24px; font-weight: 700; margin-top: 4px; }
+    .tile-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase;
+         letter-spacing: 0.5px; }
+    td.awb { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    td.muted { color: var(--muted); }
+    .empty { color: var(--muted); font-style: italic; }
+    .error { color: var(--badge-bad); }
+    .meta { font-size: 11px; color: var(--muted); margin-top: 12px; }
+    button.refresh {
+      padding: 6px 12px; background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px; font-size: 12px; cursor: pointer;
+    }
+    button.refresh:hover { background: var(--bg); }
+    .toolbar { display: flex; justify-content: space-between; align-items: center;
+               margin-bottom: 8px; }
+    .clickable { cursor: pointer; }
+    .clickable:hover { background: var(--bg); }
+    .open-link {
+      color: var(--accent); text-decoration: none; font-size: 12px;
+    }
+    .open-link:hover { text-decoration: underline; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>DHL Follow-up Automation</h1>
+    <p class="subtitle">
+      Read-only view over <code>dhl_followup</code> state + timeline events.
+      Aggregated by the backend projector; no second authority.
+    </p>
+    <div class="readonly-banner" data-testid="readonly-banner">
+      Visibility only — this page never sends, queues, or modifies anything.
+      Sending is governed by the auto-follow-up flag and the guard module.
+    </div>
+
+    <div class="toolbar">
+      <div id="statusBadgeHost" data-testid="status-badge-host"></div>
+      <button class="refresh" id="refreshBtn" data-testid="refresh-btn">Refresh</button>
+    </div>
+
+    <div id="trafficLight" class="traffic" data-testid="traffic-light"></div>
+    <div id="topCard" data-testid="top-card"></div>
+    <div id="metricsRow" data-testid="metrics-row"></div>
+
+    <div class="card" style="margin-top:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <h2 style="margin:0;">Active Shipments</h2>
+        <span id="shipmentCount" class="meta" data-testid="shipment-count"></span>
+      </div>
+      <div id="shipmentTable" data-testid="shipment-table"></div>
+    </div>
+
+    <div class="meta" id="generatedAt" data-testid="generated-at"></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function escapeHtml(s) {
+      return String(s ?? '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function badgeForStatus(label) {
+      const lbl = String(label || '').toUpperCase();
+      if (lbl === 'ACTIVE')   return '<span class="badge badge-ok" data-testid="status-badge">ACTIVE</span>';
+      if (lbl === 'DISABLED') return '<span class="badge badge-mute" data-testid="status-badge">DISABLED</span>';
+      return '<span class="badge badge-mute" data-testid="status-badge">' + escapeHtml(lbl) + '</span>';
+    }
+
+    function badgeForRowStatus(status) {
+      const m = {
+        'Eligible':    'badge-warn',
+        'Monitoring':  'badge-blue',
+        'Waiting':     'badge-mute',
+        'Suppressed':  'badge-warn',
+        'Failed':      'badge-bad',
+        'Stopped':     'badge-mute',
+        'Inactive':    'badge-mute',
+      };
+      const cls = m[status] || 'badge-mute';
+      return '<span class="badge ' + cls + '">' + escapeHtml(status) + '</span>';
+    }
+
+    function renderTopCard(d) {
+      let html = '';
+      html += '<div class="grid-3">';
+
+      html += '<div class="card"><h2>Active Shipments</h2>';
+      html += '<div class="big-num" data-testid="kpi-active">' + (d.active_shipments | 0) + '</div>';
+      html += '<div class="big-label">Monitored by automation</div>';
+      html += '</div>';
+
+      html += '<div class="card"><h2>Eligible Now</h2>';
+      html += '<div class="big-num" data-testid="kpi-eligible">' + (d.eligible_now | 0) + '</div>';
+      html += '<div class="big-label">Next due ≤ now</div>';
+      html += '</div>';
+
+      html += '<div class="card"><h2>Monitoring</h2>';
+      html += '<div class="big-num" data-testid="kpi-monitoring">' + (d.monitoring | 0) + '</div>';
+      html += '<div class="big-label">Next due in future</div>';
+      html += '</div>';
+
+      html += '</div>';
+
+      // Next due card + Last events row
+      html += '<div class="grid-2">';
+      html += '<div class="card"><h2>Next Due</h2>';
+      if (d.next_due) {
+        html += '<div class="row"><span class="k">AWB</span><span class="v">' +
+                escapeHtml(d.next_due.awb || '—') + '</span></div>';
+        html += '<div class="row"><span class="k">Due in</span><span class="v">' +
+                escapeHtml(d.next_due.due_in_human || '—') + '</span></div>';
+        html += '<div class="row"><span class="k">Due at</span><span class="v">' +
+                escapeHtml(d.next_due.due_at || '—') + '</span></div>';
+      } else {
+        html += '<div class="empty" data-testid="next-due-empty">None scheduled</div>';
+      }
+      html += '</div>';
+
+      html += '<div class="card"><h2>Last Activity</h2>';
+      html += renderLastEvent('Last Auto Send', d.last_sent);
+      html += renderLastEvent('Last Suppression', d.last_suppressed);
+      html += renderLastEvent('Last Failure', d.last_failure);
+      html += '</div>';
+
+      html += '</div>';
+
+      $('topCard').innerHTML = html;
+    }
+
+    function renderLastEvent(label, evt) {
+      let html = '<div class="row"><span class="k">' + escapeHtml(label) + '</span>';
+      if (evt && evt.ts) {
+        html += '<span class="v">' + escapeHtml(evt.awb || '—') + ' · ' +
+                escapeHtml(evt.ts) + '</span>';
+      } else {
+        html += '<span class="v empty">None</span>';
+      }
+      html += '</div>';
+      return html;
+    }
+
+    function renderMetrics(d) {
+      let html = '<div class="grid-3" style="margin-top:12px;">';
+      html += '<div class="card"><h2>Sent Today</h2>'
+            + '<div class="big-num" data-testid="kpi-sent-today">' + (d.sent_today | 0) + '</div>'
+            + '</div>';
+      html += '<div class="card"><h2>Suppressed Today</h2>'
+            + '<div class="big-num" data-testid="kpi-suppressed-today">' + (d.suppressed_today | 0) + '</div>'
+            + '</div>';
+      html += '<div class="card"><h2>AI / Fallback Today</h2>'
+            + '<div class="big-num" data-testid="kpi-ai-today">' + (d.ai_used_today | 0)
+            + ' <span style="font-size:14px;color:var(--muted);">/ '
+            + (d.ai_fallback_today | 0) + '</span></div>'
+            + '<div class="big-label">AI-enhanced / deterministic fallback</div>'
+            + '</div>';
+      html += '</div>';
+      $('metricsRow').innerHTML = html;
+    }
+
+    function renderTrafficLight(tl) {
+      if (!tl) tl = {ready:0, waiting:0, problems:0};
+      let html = '';
+      html += '<div class="tile ready" data-testid="tile-ready">'
+            + '<div class="tile-label"><span class="dot"></span>Ready</div>'
+            + '<div class="tile-num">' + (tl.ready|0) + '</div>'
+            + '<div class="tile-sub">eligible</div></div>';
+      html += '<div class="tile waiting" data-testid="tile-waiting">'
+            + '<div class="tile-label"><span class="dot"></span>Waiting</div>'
+            + '<div class="tile-num">' + (tl.waiting|0) + '</div>'
+            + '<div class="tile-sub">monitoring</div></div>';
+      html += '<div class="tile problems" data-testid="tile-problems">'
+            + '<div class="tile-label"><span class="dot"></span>Problems</div>'
+            + '<div class="tile-num">' + (tl.problems|0) + '</div>'
+            + '<div class="tile-sub">failed + suppressed</div></div>';
+      $('trafficLight').innerHTML = html;
+    }
+
+    function renderShipmentTable(rows) {
+      if (!rows || rows.length === 0) {
+        $('shipmentTable').innerHTML =
+          '<div class="empty" data-testid="shipment-table-empty">No active shipments.</div>';
+        $('shipmentCount').textContent = '';
+        return;
+      }
+      let html = '<table><thead><tr>'
+        + '<th>AWB</th><th>Mode</th><th>Status</th>'
+        + '<th>Next Due</th><th>Last Scan</th><th>Last Event</th><th>Action</th>'
+        + '</tr></thead><tbody>';
+      for (const r of rows) {
+        html += '<tr>';
+        html += '<td class="awb">' + escapeHtml(r.awb || '—') + '</td>';
+        html += '<td>' + escapeHtml(r.mode || '—') + '</td>';
+        html += '<td>' + badgeForRowStatus(r.status) + '</td>';
+        html += '<td class="muted">' + escapeHtml(r.next_due_human || '—') + '</td>';
+        html += '<td class="muted">' + escapeHtml(r.last_scan_human || '—') + '</td>';
+        html += '<td class="muted">' + escapeHtml(r.last_event_type || '—') + '</td>';
+        if (r.batch_id) {
+          html += '<td><a class="open-link" href="/dashboard/shipment-detail.html?batch_id='
+                + encodeURIComponent(r.batch_id) + '" data-testid="row-open-link">Open</a></td>';
+        } else {
+          html += '<td class="muted">—</td>';
+        }
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      $('shipmentTable').innerHTML = html;
+      $('shipmentCount').textContent = rows.length + ' shipment' + (rows.length === 1 ? '' : 's');
+    }
+
+    function renderError(where, msg) {
+      where.innerHTML = '<div class="card error">' + escapeHtml(msg) + '</div>';
+    }
+
+    async function loadAll() {
+      $('statusBadgeHost').innerHTML = '<span class="badge badge-mute">Loading…</span>';
+      try {
+        const [statusR, shipmentsR] = await Promise.all([
+          fetch('/api/v1/dhl/followup-automation/status'),
+          fetch('/api/v1/dhl/followup-automation/shipments'),
+        ]);
+        if (!statusR.ok) {
+          renderError($('topCard'), 'Status endpoint failed: ' + statusR.status);
+          return;
+        }
+        const status = await statusR.json();
+        const shipments = shipmentsR.ok ? await shipmentsR.json() : {rows: []};
+
+        $('statusBadgeHost').innerHTML = badgeForStatus(status.status_label);
+        renderTrafficLight(status.traffic_light);
+        renderTopCard(status);
+        renderMetrics(status);
+        renderShipmentTable(shipments.rows || []);
+        $('generatedAt').textContent = 'Generated at ' + (status.generated_at || '—');
+      } catch (e) {
+        renderError($('topCard'), 'Network error: ' + e.message);
+      }
+    }
+
+    $('refreshBtn').addEventListener('click', loadAll);
+    loadAll();
+  </script>
+</body>
+</html>

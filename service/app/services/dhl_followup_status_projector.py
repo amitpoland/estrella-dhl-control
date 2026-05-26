@@ -1,0 +1,451 @@
+"""
+dhl_followup_status_projector.py — Read-only projection over DHL follow-up state.
+
+PURE READ ONLY.  No writes.  No new authority.  Aggregates existing
+``dhl_followup`` state, timeline events, and orchestrator flags into a
+shape suitable for a visibility dashboard card and drill-down table.
+
+Lesson F compliance — single domain authority (DHL follow-up automation).
+Backend produces the authoritative shape; the V2 page is a dumb renderer.
+
+Lesson E compliance — this module CANNOT send, queue, or schedule emails.
+It only reads existing state.  Importable with zero side effects.
+
+Public API:
+  project_automation_status() -> dict
+      Top-card shape: flag state, counters, traffic-light, last events,
+      today's metrics.
+
+  project_shipment_rows() -> list[dict]
+      Per-shipment drill-down rows: AWB, mode, status, next_due, last_scan.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+log = logging.getLogger(__name__)
+
+# Statuses for the drill-down rows.
+ST_ELIGIBLE     = "Eligible"
+ST_MONITORING   = "Monitoring"
+ST_WAITING      = "Waiting"
+ST_SUPPRESSED   = "Suppressed"
+ST_FAILED       = "Failed"
+ST_INACTIVE     = "Inactive"
+ST_STOPPED      = "Stopped"
+
+# Follow-up-related timeline event types we project from.
+EV_SENT        = "dhl_followup_sent"
+EV_SUPPRESSED  = "dhl_followup_suppressed"
+EV_FAILED      = "dhl_followup_send_failed"
+EV_STOPPED     = "dhl_followup_stopped"
+
+
+# ── Internal helpers ─────────────────────────────────────────────────────────
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso(s: Any) -> Optional[datetime]:
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _audit_paths() -> List[Path]:
+    """Enumerate audit.json files under storage_root/outputs.  Read-only."""
+    try:
+        from ..core.config import settings
+        base = settings.storage_root / "outputs"
+    except Exception as exc:
+        log.warning("status_projector: settings load failed: %s", exc)
+        return []
+    if not base.exists():
+        return []
+    out: List[Path] = []
+    for p in base.glob("SHIPMENT_*/audit.json"):
+        if "backup_before_regen" in str(p):
+            continue
+        out.append(p)
+    return out
+
+
+def _read_audit(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("status_projector: cannot read %s: %s", path, exc)
+        return None
+
+
+def _flag_on() -> bool:
+    try:
+        from ..core.config import settings
+        return bool(getattr(settings, "dhl_orch_auto_send_dhl_followup", False))
+    except Exception:
+        return False
+
+
+def _is_active(audit: Dict[str, Any]) -> Tuple[bool, str]:
+    """Delegate to orchestrator authority — never duplicate the rule."""
+    try:
+        from .dhl_orchestrator import is_active_shipment
+        return is_active_shipment(audit)
+    except Exception as exc:
+        log.warning("status_projector: is_active_shipment failed: %s", exc)
+        return False, f"active_check_error:{exc!s}"[:80]
+
+
+def _awb_of(audit: Dict[str, Any]) -> str:
+    return str(audit.get("awb") or audit.get("tracking_no") or "").strip()
+
+
+def _has_send_intent(state: Dict[str, Any]) -> bool:
+    """Auto mode = follow-up state initialised AND not manually stopped."""
+    return bool(state.get("active")) and not state.get("stopped_at")
+
+
+def _shipment_status(
+    audit:    Dict[str, Any],
+    active:   bool,
+    state:    Dict[str, Any],
+    now:      datetime,
+) -> Tuple[str, Optional[datetime]]:
+    """Compute drill-down status + next_due datetime.
+
+    Status precedence:
+      1. INACTIVE — shipment is not active (delivered / terminal / missing AWB)
+      2. STOPPED  — dhl_followup.stopped_at present
+      3. FAILED   — last followup event was a failure (most recent of the 3)
+      4. SUPPRESSED — last followup event was a suppression
+      5. ELIGIBLE — active + next_followup_at <= now
+      6. MONITORING — active + next_followup_at > now
+      7. WAITING  — active but no next_followup_at scheduled yet
+    """
+    next_due = _parse_iso(state.get("next_followup_at"))
+    if not active:
+        return ST_INACTIVE, next_due
+    if state.get("stopped_at"):
+        return ST_STOPPED, next_due
+
+    # Look at last followup-related timeline event for failure/suppression flag
+    last_evt = _latest_followup_event(audit)
+    if last_evt:
+        ev = last_evt.get("event") or ""
+        if ev == EV_FAILED:
+            return ST_FAILED, next_due
+        if ev == EV_SUPPRESSED:
+            return ST_SUPPRESSED, next_due
+
+    if next_due is None:
+        return ST_WAITING, None
+    if next_due <= now:
+        return ST_ELIGIBLE, next_due
+    return ST_MONITORING, next_due
+
+
+def _latest_followup_event(audit: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    tl = audit.get("timeline") or []
+    if not isinstance(tl, list):
+        return None
+    for evt in reversed(tl):
+        if not isinstance(evt, dict):
+            continue
+        if evt.get("event") in (EV_SENT, EV_SUPPRESSED, EV_FAILED, EV_STOPPED):
+            return evt
+    return None
+
+
+def _latest_event_of_type(
+    audits: List[Dict[str, Any]],
+    event_type: str,
+) -> Optional[Dict[str, Any]]:
+    """Find the most recent event of a given type across all audits.
+
+    Returns a dict {ts, awb, batch_id, detail} or None.
+    """
+    best: Optional[Dict[str, Any]] = None
+    best_ts: Optional[datetime] = None
+    for audit in audits:
+        tl = audit.get("timeline") or []
+        if not isinstance(tl, list):
+            continue
+        for evt in tl:
+            if not isinstance(evt, dict):
+                continue
+            if evt.get("event") != event_type:
+                continue
+            ts = _parse_iso(evt.get("ts"))
+            if ts is None:
+                continue
+            if best_ts is None or ts > best_ts:
+                best_ts = ts
+                best = {
+                    "ts":       evt.get("ts"),
+                    "awb":      _awb_of(audit),
+                    "batch_id": str(audit.get("batch_id") or ""),
+                    "actor":    evt.get("actor"),
+                    "detail":   evt.get("detail") or {},
+                }
+    return best
+
+
+def _count_events_today(
+    audits: List[Dict[str, Any]],
+    event_type: str,
+    now: datetime,
+) -> int:
+    """Count events of a type whose ts >= start-of-day-UTC."""
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    n = 0
+    for audit in audits:
+        tl = audit.get("timeline") or []
+        if not isinstance(tl, list):
+            continue
+        for evt in tl:
+            if not isinstance(evt, dict):
+                continue
+            if evt.get("event") != event_type:
+                continue
+            ts = _parse_iso(evt.get("ts"))
+            if ts is None:
+                continue
+            if ts >= start_of_day:
+                n += 1
+    return n
+
+
+def _count_ai_used_today(audits: List[Dict[str, Any]], now: datetime) -> Tuple[int, int]:
+    """Return (ai_used_count, ai_fallback_count) for today's followup sends."""
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    ai_used = 0
+    fallback = 0
+    for audit in audits:
+        tl = audit.get("timeline") or []
+        if not isinstance(tl, list):
+            continue
+        for evt in tl:
+            if not isinstance(evt, dict):
+                continue
+            if evt.get("event") != EV_SENT:
+                continue
+            ts = _parse_iso(evt.get("ts"))
+            if ts is None or ts < start_of_day:
+                continue
+            detail = evt.get("detail") or {}
+            if detail.get("ai_used") is True:
+                ai_used += 1
+            elif detail.get("ai_used") is False:
+                fallback += 1
+    return ai_used, fallback
+
+
+def _humanise_age(ts: Optional[datetime], now: datetime) -> Optional[str]:
+    """Return human-readable age like '5 min ago', '2h 14m ago'.  None if ts is None."""
+    if ts is None:
+        return None
+    delta = now - ts
+    secs = int(delta.total_seconds())
+    if secs < 0:
+        # Future timestamp — use 'in Xm' framing
+        secs = -secs
+        if secs < 60:
+            return f"in {secs}s"
+        mins = secs // 60
+        if mins < 60:
+            return f"in {mins}m"
+        hours = mins // 60
+        rem_m = mins % 60
+        return f"in {hours}h {rem_m}m"
+    if secs < 60:
+        return f"{secs}s ago"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins} min ago"
+    hours = mins // 60
+    rem_m = mins % 60
+    if hours < 24:
+        return f"{hours}h {rem_m}m ago"
+    days = hours // 24
+    return f"{days}d ago"
+
+
+# ── Public API ───────────────────────────────────────────────────────────────
+
+def project_automation_status(*, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Aggregate top-card shape.
+
+    Returns dict with keys:
+      flag_on:               bool
+      status_label:          "ACTIVE" | "DISABLED"
+      active_shipments:      int
+      monitoring:            int  (active AND next_due in future)
+      eligible_now:          int  (active AND next_due <= now)
+      next_due:              {awb, batch_id, due_at, due_in_human} | None
+      last_sent:             {ts, awb, batch_id, detail} | None
+      last_suppressed:       {ts, awb, batch_id, detail} | None
+      last_failure:          {ts, awb, batch_id, detail} | None
+      sent_today:            int
+      suppressed_today:      int
+      failed_today:          int
+      ai_used_today:         int
+      ai_fallback_today:     int
+      traffic_light:         {ready, waiting, problems}
+      generated_at:          ISO8601
+    """
+    if now is None:
+        now = _now_utc()
+
+    flag_on = _flag_on()
+    paths = _audit_paths()
+    audits: List[Dict[str, Any]] = []
+    for p in paths:
+        a = _read_audit(p)
+        if a is not None:
+            audits.append(a)
+
+    active_count    = 0
+    monitoring      = 0
+    eligible_now    = 0
+    suppressed_now  = 0
+    failed_now      = 0
+    next_due_pick:  Optional[Tuple[datetime, str, str]] = None  # (dt, awb, batch_id)
+
+    for audit in audits:
+        active, _why = _is_active(audit)
+        if not active:
+            continue
+        active_count += 1
+        state = audit.get("dhl_followup") or {}
+        status, next_dt = _shipment_status(audit, active, state, now)
+        if status == ST_MONITORING:
+            monitoring += 1
+            if next_dt and (next_due_pick is None or next_dt < next_due_pick[0]):
+                next_due_pick = (
+                    next_dt,
+                    _awb_of(audit),
+                    str(audit.get("batch_id") or ""),
+                )
+        elif status == ST_ELIGIBLE:
+            eligible_now += 1
+        elif status == ST_SUPPRESSED:
+            suppressed_now += 1
+        elif status == ST_FAILED:
+            failed_now += 1
+
+    last_sent       = _latest_event_of_type(audits, EV_SENT)
+    last_suppressed = _latest_event_of_type(audits, EV_SUPPRESSED)
+    last_failure    = _latest_event_of_type(audits, EV_FAILED)
+
+    sent_today       = _count_events_today(audits, EV_SENT, now)
+    suppressed_today = _count_events_today(audits, EV_SUPPRESSED, now)
+    failed_today     = _count_events_today(audits, EV_FAILED, now)
+    ai_used_today, ai_fallback_today = _count_ai_used_today(audits, now)
+
+    next_due_obj: Optional[Dict[str, Any]] = None
+    if next_due_pick:
+        dt, awb, bid = next_due_pick
+        next_due_obj = {
+            "awb":           awb,
+            "batch_id":      bid,
+            "due_at":        dt.isoformat(),
+            "due_in_human":  _humanise_age(dt, now),  # negative-age -> 'in Xh Ym'
+        }
+
+    return {
+        "flag_on":           flag_on,
+        "status_label":      "ACTIVE" if flag_on else "DISABLED",
+        "active_shipments":  active_count,
+        "monitoring":        monitoring,
+        "eligible_now":      eligible_now,
+        "next_due":          next_due_obj,
+        "last_sent":         last_sent,
+        "last_suppressed":   last_suppressed,
+        "last_failure":      last_failure,
+        "sent_today":        sent_today,
+        "suppressed_today":  suppressed_today,
+        "failed_today":      failed_today,
+        "ai_used_today":     ai_used_today,
+        "ai_fallback_today": ai_fallback_today,
+        "traffic_light": {
+            "ready":    eligible_now,
+            "waiting":  monitoring,
+            "problems": failed_now + suppressed_now,
+        },
+        "generated_at":      now.isoformat(),
+    }
+
+
+def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Per-shipment drill-down rows (active shipments only).
+
+    Each row:
+      {
+        awb, batch_id, mode, status, next_due_at, next_due_human,
+        last_scan_at, last_scan_human, last_event_ts, last_event_type
+      }
+
+    Mode:
+      "Auto"   if dhl_followup state has active=True AND not stopped
+      "Manual" otherwise (or if explicitly stopped)
+    """
+    if now is None:
+        now = _now_utc()
+
+    rows: List[Dict[str, Any]] = []
+    for p in _audit_paths():
+        audit = _read_audit(p)
+        if audit is None:
+            continue
+        active, _why = _is_active(audit)
+        if not active:
+            continue
+        state = audit.get("dhl_followup") or {}
+        status, next_dt = _shipment_status(audit, active, state, now)
+        mode = "Auto" if _has_send_intent(state) else "Manual"
+
+        last_scan_dt = _parse_iso((audit.get("email_ingestion") or {}).get("last_scan_at"))
+        last_evt = _latest_followup_event(audit)
+        last_evt_ts   = last_evt.get("ts") if last_evt else None
+        last_evt_type = last_evt.get("event") if last_evt else None
+
+        rows.append({
+            "awb":             _awb_of(audit),
+            "batch_id":        str(audit.get("batch_id") or ""),
+            "mode":            mode,
+            "status":          status,
+            "next_due_at":     next_dt.isoformat() if next_dt else None,
+            "next_due_human":  _humanise_age(next_dt, now) if next_dt else None,
+            "last_scan_at":    last_scan_dt.isoformat() if last_scan_dt else None,
+            "last_scan_human": _humanise_age(last_scan_dt, now),
+            "last_event_ts":   last_evt_ts,
+            "last_event_type": last_evt_type,
+        })
+
+    # Sort: ELIGIBLE first, then MONITORING by next_due asc, then others.
+    status_order = {
+        ST_ELIGIBLE:    0,
+        ST_FAILED:      1,
+        ST_SUPPRESSED:  2,
+        ST_MONITORING:  3,
+        ST_WAITING:     4,
+        ST_STOPPED:     5,
+        ST_INACTIVE:    6,
+    }
+    rows.sort(key=lambda r: (
+        status_order.get(r["status"], 99),
+        r.get("next_due_at") or "9999-99-99",
+        r.get("awb") or "",
+    ))
+    return rows
