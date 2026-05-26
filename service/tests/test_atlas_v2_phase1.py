@@ -142,7 +142,7 @@ class TestAtlasFilesExist:
     def test_atlas_shared_js_exists(self):
         f = ATLAS_DIR / "atlas-shared.js"
         assert f.is_file(), "atlas-shared.js missing"
-        content = f.read_text()
+        content = f.read_text(encoding='utf-8')
         # Must surface AtlasShared on window
         assert "window.AtlasShared" in content
         # Required atoms
@@ -154,7 +154,7 @@ class TestAtlasFilesExist:
     def test_page_exists(self, page):
         f = ATLAS_DIR / page
         assert f.is_file(), f"Atlas page missing: {page}"
-        content = f.read_text()
+        content = f.read_text(encoding='utf-8')
         # Must load atlas-shared.js
         assert "/dashboard/atlas/atlas-shared.js" in content, \
             f"{page} does not load atlas-shared.js"
@@ -172,7 +172,7 @@ class TestAtlasFilesExist:
 class TestAtlasTestIds:
     @pytest.mark.parametrize("page,testids", list(PAGE_REQUIRED_TESTIDS.items()))
     def test_page_contains_required_testids(self, page, testids):
-        content = (ATLAS_DIR / page).read_text()
+        content = (ATLAS_DIR / page).read_text(encoding='utf-8')
         missing = [t for t in testids if f'"{t}"' not in content
                                        and f"'{t}'" not in content
                                        and f"`{t}`" not in content
@@ -187,14 +187,14 @@ class TestAtlasTestIds:
 class TestDynamicTestIds:
     @pytest.mark.parametrize("page,spec", list(DYNAMIC_TESTIDS.items()))
     def test_template_pattern_present(self, page, spec):
-        content = (ATLAS_DIR / page).read_text()
+        content = (ATLAS_DIR / page).read_text(encoding='utf-8')
         assert spec["pattern"] in content, (
             f"{page} missing dynamic testid pattern {spec['pattern']!r}"
         )
 
     @pytest.mark.parametrize("page,spec", list(DYNAMIC_TESTIDS.items()))
     def test_ids_listed_in_source(self, page, spec):
-        content = (ATLAS_DIR / page).read_text()
+        content = (ATLAS_DIR / page).read_text(encoding='utf-8')
         for tok in spec["ids"]:
             # The id must appear as an `id:` field value in the JS data array
             assert (
@@ -213,7 +213,7 @@ class TestDisabledButtonsHaveTooltips:
 
     @pytest.mark.parametrize("page", ATLAS_PAGES)
     def test_disabled_buttons_have_titles(self, page):
-        content = (ATLAS_DIR / page).read_text()
+        content = (ATLAS_DIR / page).read_text(encoding='utf-8')
         # Find every `disabled` button declaration and ensure it has `title=`
         # within the same component invocation (rough heuristic — count
         # `disabled` keyword and `title=` near it).
@@ -240,7 +240,7 @@ STUB_PAGES = ["inbox-v2.html", "shipments-v2.html", "documents-v2.html",
 class TestStubBanners:
     @pytest.mark.parametrize("page", STUB_PAGES)
     def test_stub_has_tier_banner(self, page):
-        content = (ATLAS_DIR / page).read_text()
+        content = (ATLAS_DIR / page).read_text(encoding='utf-8')
         assert "TierBanner" in content or "tier-banner" in content, \
             f"Stub page {page} missing TierBanner"
 
@@ -255,7 +255,7 @@ class TestV1FreezeRespected:
     def test_dashboard_shared_js_untouched(self):
         # dashboard-shared.js's exported atom list at line 510 must still
         # match what V1 + proforma-v2 + dashboard-v2 (root) expect.
-        content = (STATIC_DIR / "dashboard-shared.js").read_text()
+        content = (STATIC_DIR / "dashboard-shared.js").read_text(encoding='utf-8')
         assert "window.EstrellaShared = Object.freeze({" in content
         for atom in ("Badge", "Card", "Btn", "Sel", "Toast",
                      "SessionBanner", "EstrellaMark", "SubTabStrip",
@@ -272,7 +272,7 @@ class TestV1FreezeRespected:
         # Lower bound = 15,000 lines (V1 inventory at audit time was
         # ~20,287 lines; allow shrinkage if someone legitimately trims it,
         # but not a wholesale rewrite).
-        lines = f.read_text().count("\n")
+        lines = f.read_text(encoding='utf-8').count("\n")
         assert lines >= 15000, \
             f"dashboard.html shrank from ~20K LOC to {lines} — likely modified"
 
@@ -285,7 +285,7 @@ class TestV1FreezeRespected:
         assert live.is_file()
         assert atlas.is_file()
         # They must be distinct files
-        assert live.read_text() != atlas.read_text(), \
+        assert live.read_text(encoding='utf-8') != atlas.read_text(encoding='utf-8'), \
             "atlas/proforma-v2.html accidentally identical to live page"
 
 
@@ -301,7 +301,7 @@ class TestAuthorityDiscipline:
     def test_no_local_storage_writes(self, page):
         """Atlas pages must not stash business state in localStorage —
         backend is the only source of truth."""
-        content = (ATLAS_DIR / page).read_text()
+        content = (ATLAS_DIR / page).read_text(encoding='utf-8')
         forbidden = ("localStorage.setItem", "sessionStorage.setItem")
         for token in forbidden:
             assert token not in content, \
@@ -311,7 +311,7 @@ class TestAuthorityDiscipline:
     def test_no_write_methods_to_authority_routes(self, page):
         """Phase One is read-only. PUT/POST/DELETE to authority routes
         is forbidden in any atlas/*.html page."""
-        content = (ATLAS_DIR / page).read_text()
+        content = (ATLAS_DIR / page).read_text(encoding='utf-8')
         # Match `method: 'POST'` etc. patterns in fetch options
         write_patterns = [
             r"method:\s*['\"]POST['\"]",
@@ -335,7 +335,7 @@ class TestAtlasSharedLessonF:
     PZ readiness, wFirma semantics)."""
 
     def test_atlas_shared_has_no_domain_tokens(self):
-        content = (ATLAS_DIR / "atlas-shared.js").read_text()
+        content = (ATLAS_DIR / "atlas-shared.js").read_text(encoding='utf-8')
         domain_forbidden = [
             "clearance_status", "sad_status", "pz_status", "tracking_status_key",
             "wfirma_correction_push_allowed", "pz_correction_lifecycle_enabled",
@@ -349,7 +349,7 @@ class TestAtlasSharedLessonF:
 
     def test_atlas_shared_has_no_fetch_calls(self):
         """Visual atoms do not fetch. They render what consumers pass in."""
-        content = (ATLAS_DIR / "atlas-shared.js").read_text()
+        content = (ATLAS_DIR / "atlas-shared.js").read_text(encoding='utf-8')
         assert "fetch(" not in content
         assert "XMLHttpRequest" not in content
 
@@ -363,11 +363,11 @@ class TestNavStripConsistency:
 
     @pytest.mark.parametrize("page", ATLAS_PAGES)
     def test_page_uses_nav_strip(self, page):
-        content = (ATLAS_DIR / page).read_text()
+        content = (ATLAS_DIR / page).read_text(encoding='utf-8')
         assert "NavStrip" in content, f"{page} does not render NavStrip"
 
     def test_nav_strip_has_all_10_pages(self):
-        content = (ATLAS_DIR / "atlas-shared.js").read_text()
+        content = (ATLAS_DIR / "atlas-shared.js").read_text(encoding='utf-8')
         for page_id in ("dashboard", "inbox", "shipments", "documents",
                         "pz", "proforma", "accounting", "ledgers",
                         "search", "api_status"):
