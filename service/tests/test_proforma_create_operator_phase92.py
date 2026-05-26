@@ -52,8 +52,10 @@ def _stub_legacy_create_path(monkeypatch, db_path: Path):
     monkeypatch.setattr(
         rp, "_build_preview",
         lambda bid, cn: {
+            "draft_ready":      True,
             "ready":            True,
             "blocking_reasons": [],
+            "export_blockers":  [],
             "currency":         "EUR",
             "exchange_rate":    None,
             "client_name":      cn,

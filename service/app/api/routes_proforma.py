@@ -916,8 +916,14 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     # (The early-exit path above sets can_preview=False when no sales rows exist.)
     can_preview = True
 
-    # ready: full gate for proforma create/export — all blockers must be clear.
-    ready = not blocking_reasons and not export_blockers
+    # draft_ready: commercial-data gate for local draft persistence.
+    # Requires only sales packing list + customer match + product resolution.
+    # Does NOT require wFirma PZ or SAD — those are export/customs gates.
+    draft_ready = not blocking_reasons
+
+    # ready: full gate for live proforma issuance to wFirma.
+    # Both commercial data AND export prerequisites (wFirma PZ) must be clear.
+    ready = draft_ready and not export_blockers
 
     return {
         "ok":               True,
@@ -926,6 +932,7 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         "currency":         currency,
         "exchange_rate":    exchange_rate,
         "can_preview":      can_preview,
+        "draft_ready":      draft_ready,
         "ready":            ready,
         "blocking_reasons": blocking_reasons,
         "export_blockers":  export_blockers,
@@ -1351,20 +1358,21 @@ def proforma_create(
             "draft_id":            existing.id,
         })
 
-    # ── 2. Preview must be ready (independent of settings gate) ─────────────
-    # ready = not blocking_reasons AND not export_blockers.
-    # Export blockers (wFirma PZ required) are separated from warehouse/customer
-    # blockers so preview can show data before PZ exists; create requires both.
-    if not preview.get("ready"):
+    # ── 2. Commercial readiness gate (warehouse + customer + stock) ──────────
+    # draft_ready = not blocking_reasons (product/customer/stock/price).
+    # Export blockers (wFirma PZ required for live issuance) are checked
+    # separately after the local draft is saved — they do NOT block draft
+    # persistence, only live wFirma issuance.
+    if not preview.get("draft_ready"):
         return JSONResponse({
             "ok":               False,
-            "status":            "blocked",
-            "batch_id":          batch_id,
-            "client_name":       cn,
-            "blocking_reasons":  preview.get("blocking_reasons", []),
-            "export_blockers":   preview.get("export_blockers", []),
-            "currency":          preview.get("currency"),
-            "exchange_rate":     preview.get("exchange_rate"),
+            "status":           "blocked",
+            "batch_id":         batch_id,
+            "client_name":      cn,
+            "blocking_reasons": preview.get("blocking_reasons", []),
+            "export_blockers":  preview.get("export_blockers", []),
+            "currency":         preview.get("currency"),
+            "exchange_rate":    preview.get("exchange_rate"),
         })
 
     # ── 3a. Service-charge snapshot (Phase 6D) ──────────────────────────
@@ -1461,6 +1469,29 @@ def proforma_create(
             source_lines_json     = source_lines_json,
             service_charges_json  = _service_charges_json_snapshot,
         )
+
+    # ── 4b. Export gate — wFirma PZ required for live issuance ──────────────
+    # The local draft has been persisted as pending_local. Live issuance to
+    # wFirma defers until wFirma PZ is created. Operator can see the draft
+    # in the dashboard now and proceed to PZ creation, then retry /create.
+    _export_blockers = preview.get("export_blockers") or []
+    if _export_blockers:
+        return JSONResponse({
+            "ok":              True,
+            "status":          "pending_local",
+            "draft_saved":     True,
+            "export_blocked":  True,
+            "batch_id":        batch_id,
+            "client_name":     cn,
+            "draft_id":        draft.id,
+            "export_blockers": _export_blockers,
+            "currency":        preview.get("currency"),
+            "exchange_rate":   preview.get("exchange_rate"),
+            "note": (
+                "Draft saved locally. Proforma issuance to wFirma requires "
+                "wFirma PZ — run PZ create then retry this endpoint."
+            ),
+        })
 
     # ── 5. Live wFirma call (only path with external write) ────────────────
     # _build_proforma_request resolves wfirma_customer_id + per-line
