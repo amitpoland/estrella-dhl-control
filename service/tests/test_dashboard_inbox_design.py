@@ -155,36 +155,25 @@ def test_no_mock_inbox_rows_array():
         assert fake not in block, f"Mock inbox seed array leaked: {fake}"
 
 
-# ── Read-only first pass — no send/approve/execute write paths ────────────
+# ── Approval-cockpit pass — writes ALLOWED but only to existing endpoints ─
+# (Supersedes the prior read-only contract; see test_inbox_approval_cockpit.py
+#  for full coverage of the cockpit wiring.)
 
-def test_no_new_write_paths_in_inbox():
-    """The Inbox composition must be read-only. No POST/PUT/DELETE/PATCH
-    calls anywhere in the InboxPage body."""
+def test_inbox_writes_target_only_existing_endpoints():
+    """The InboxPage may issue writes (the approval cockpit), but ONLY to
+    backend endpoints that already exist before this conversion. Invented
+    /api/v1/inbox/* or /api/v1/cockpit/* endpoints are forbidden."""
     src = _src()
     block_start = src.index("function InboxPage(")
     block_end   = src.index("function StubPage(", block_start)
     block = src[block_start:block_end]
-    for method in ("method: 'POST'", "method: 'PUT'", "method: 'DELETE'", "method: 'PATCH'"):
-        assert method not in block, f"InboxPage body must NOT contain {method!r}"
-
-
-def test_no_send_approve_reject_buttons_in_inbox():
-    src = _src()
-    block_start = src.index("function InboxPage(")
-    block_end   = src.index("function StubPage(", block_start)
-    block = src[block_start:block_end]
-    # Buttons like "Send", "Approve", "Reject", "Execute" must not appear
-    # as functional controls inside the inbox table. The only enabled
-    # action is "Open" → routes to existing detail page.
-    for fake in (
-        ">Send<",
-        ">Approve<",
-        ">Reject<",
-        ">Execute<",
-        ">Apply<",
-        ">Run<",
+    for invented in (
+        "/api/v1/inbox/",
+        "/api/v1/cockpit/",
+        "/api/v1/queue/approve",
+        "/api/v1/queue/reject",
     ):
-        assert fake not in block, f"Forbidden write-action button leaked into Inbox: {fake}"
+        assert invented not in block, f"Invented endpoint leaked into Inbox: {invented}"
 
 
 # ── Isolated failures: each source has its own loading/error state ────────

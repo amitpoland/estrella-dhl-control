@@ -128,6 +128,65 @@ def send_now_endpoint(batch_id: str, body: SendNowReq) -> Dict[str, Any]:
     return {"ok": out.get("ok"), "send_result": out, "state": audit.get("dhl_followup")}
 
 
+# ── Auto-send preview + run (Phase 3) ────────────────────────────────────────
+
+@router.get("/{batch_id}/auto/preview", dependencies=[_auth])
+def auto_preview_endpoint(batch_id: str) -> Dict[str, Any]:
+    """Evaluate auto-send gates AND build the draft body without sending.
+
+    Powers the Inbox preview modal. Read-only — never sends, never writes.
+    Returns the same shape as try_auto_send but with decision='preview' and
+    no queue_id / no audit mutation.
+    """
+    from ..services.dhl_followup_auto_sender import evaluate_gates, draft_followup
+
+    p = _audit_path(batch_id)
+    audit = json.loads(p.read_text(encoding="utf-8"))
+    verdict = evaluate_gates(p, audit)
+    try:
+        pkg = draft_followup(audit, batch_id, use_ai=True)
+        preview_pkg = {
+            "to":           pkg.get("to"),
+            "cc":           pkg.get("cc"),
+            "subject":      pkg.get("subject"),
+            "body_text":    pkg.get("body_text"),
+            "followup_seq": pkg.get("followup_seq"),
+            "draft_source": pkg.get("draft_source"),
+        }
+    except Exception as exc:
+        preview_pkg = {"error": f"draft_failed: {exc}"}
+    return {
+        "decision":   "preview",
+        "gates":      verdict["gates"],
+        "first_failed": verdict["first_failed"],
+        "package":    preview_pkg,
+        "evidence":   {g["name"]: g["evidence"] for g in verdict["gates"]},
+    }
+
+
+class AutoRunReq(BaseModel):
+    operator:  Optional[str] = None
+    force_sla: bool          = False
+
+
+@router.post("/{batch_id}/auto/run", dependencies=[_auth])
+def auto_run_endpoint(batch_id: str, body: AutoRunReq = AutoRunReq()) -> Dict[str, Any]:
+    """Run the autonomous send pipeline NOW for one batch.
+
+    Operator-triggered manual variant of the monitor sweep behavior.
+    Enforces the same seven gates. `force_sla=True` permits skipping the
+    SLA wait gate only — every other gate (active/ingest/evidence/safe/
+    package/idempotency) remains enforced.
+    """
+    from ..services.dhl_followup_auto_sender import try_auto_send
+
+    p = _audit_path(batch_id)
+    audit = json.loads(p.read_text(encoding="utf-8"))
+    op = (body.operator or "operator_inbox").strip() or "operator_inbox"
+    result = try_auto_send(p, audit, operator=op, force_sla=bool(body.force_sla))
+    return result
+
+
 # ── Recalculate ──────────────────────────────────────────────────────────────
 
 @router.post("/{batch_id}/recalculate", dependencies=[_auth])

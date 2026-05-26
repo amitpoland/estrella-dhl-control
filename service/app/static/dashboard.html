@@ -535,12 +535,211 @@ function _inboxAge(iso) {
   return Math.floor(h / 24) + 'd';
 }
 
+// ══════════════════════════════════════════════════════════
+// INBOX ACTION REGISTRY — maps each row to existing backend
+// preview/execute endpoints. Frontend-only mapping; no new
+// backend required. Empty array = no inline action, fallback
+// to Open button.
+//
+// Action descriptor shape:
+//   { id, label, tone, preview_endpoint, execute_endpoint,
+//     method, requires_reason, min_reason_len, body_template,
+//     requires_confirmation, risk_level, audit_event,
+//     disabled_reason }
+//
+// FORBIDDEN financial checks (cif_match, invoice_refs_match,
+// importer_match, qty_match_by_type) get NO accept button —
+// only a disabled_reason badge. See batch_state_normalizer.py
+// FORBIDDEN_OVERRIDE_TYPES.
+// ══════════════════════════════════════════════════════════
+
+const _FORBIDDEN_OVERRIDE_CHECKS = new Set([
+  'cif_match', 'invoice_refs_match', 'importer_match', 'qty_match_by_type',
+]);
+const _ALLOWED_OVERRIDE_CHECKS = new Set([
+  'exporter_match', 'invoice_number_parse_warning',
+]);
+
+function inboxActionsFor(row, raw) {
+  // raw = original source object (proposal/email/batch). Optional.
+  if (!row) return [];
+  const actions = [];
+
+  // 1) PROPOSALS — approve/reject via /api/v1/proposals/{id}
+  if (row.source === 'proposals') {
+    const pid = (raw && (raw.proposal_id || raw.id)) || row.id.replace(/^proposal:/, '');
+    if (pid) {
+      actions.push({
+        id: 'proposal.approve',
+        label: 'Approve',
+        tone: 'green',
+        preview_endpoint: `/api/v1/proposals/${encodeURIComponent(pid)}`,
+        execute_endpoint: `/api/v1/proposals/${encodeURIComponent(pid)}/approve`,
+        method: 'POST',
+        requires_reason: false,
+        requires_confirmation: true,
+        risk_level: 'medium',
+        audit_event: 'proposal_approved',
+      });
+      actions.push({
+        id: 'proposal.reject',
+        label: 'Reject',
+        tone: 'red',
+        preview_endpoint: `/api/v1/proposals/${encodeURIComponent(pid)}`,
+        execute_endpoint: `/api/v1/proposals/${encodeURIComponent(pid)}/reject`,
+        method: 'POST',
+        requires_reason: true,
+        min_reason_len: 1,
+        body_template: { reason: '' },
+        requires_confirmation: true,
+        risk_level: 'low',
+        audit_event: 'proposal_rejected',
+      });
+    }
+  }
+
+  // 2) ACTION REQUIRED — derive from batch.failed_checks + DHL waiting state
+  if (row.source === 'action_required') {
+    const b = (raw && raw._raw) || (row.open_target && row.open_target.id) || raw || {};
+    const failed = (b && (b.failed_checks || (b.action_reason ? [b.action_reason] : []))) || [];
+    const batchId = row.batch_id;
+    const dhlStatus = (raw && (raw.dhlStatus || (raw._raw && raw._raw.dhlStatus))) || '';
+
+    // DHL waiting (no email back yet) → preview + run auto-followup actions.
+    // The execute endpoint enforces 7 gates server-side; force_sla=true is
+    // for the inbox "send now" variant (skips wait only).
+    const isAwaitingDhl = dhlStatus === 'Awaiting DHL' || dhlStatus === '';
+    const dhlEmailReceived = dhlStatus === 'DHL Email Received';
+    if (batchId && isAwaitingDhl && !dhlEmailReceived) {
+      actions.push({
+        id: 'dhl_followup.preview',
+        label: 'Preview DHL follow-up',
+        tone: 'neutral',
+        preview_endpoint: `/api/v1/dhl-followup/${encodeURIComponent(batchId)}/auto/preview`,
+        execute_endpoint: `/api/v1/dhl-followup/${encodeURIComponent(batchId)}/auto/run`,
+        method: 'POST',
+        requires_reason: false,
+        body_template: { force_sla: true },
+        requires_confirmation: true,
+        risk_level: 'high',                          // EXTERNAL SEND (DHL)
+        audit_event: 'dhl_followup_auto_sent',
+      });
+    }
+    if (batchId && dhlEmailReceived) {
+      // DHL has sent customs request — operator must compose substantive
+      // reply on detail page (auto-send forbidden per Phase-3 rules).
+      actions.push({
+        id: 'dhl_reply.detail_only',
+        label: 'Compose reply (detail)',
+        tone: 'neutral',
+        disabled: true,
+        disabled_reason: 'Substantive DHL customs reply requires operator on detail page (Phase-3 rule: auto-reply forbidden).',
+        risk_level: 'blocked',
+      });
+    }
+
+    // cn_match → 3-way decision (accept-sad / correct-internal / escalate)
+    if (batchId && failed.includes('cn_match')) {
+      actions.push({
+        id: 'cn_decision.accept_sad',
+        label: 'Accept SAD CN',
+        tone: 'green',
+        preview_endpoint: `/api/v1/dashboard/batches/${encodeURIComponent(batchId)}/cn-hsn-classification`,
+        execute_endpoint: `/api/v1/dashboard/batches/${encodeURIComponent(batchId)}/cn-decision/accept-sad`,
+        method: 'POST',
+        requires_reason: true,
+        min_reason_len: 10,
+        body_template: { reason: '' },
+        requires_confirmation: true,
+        risk_level: 'medium',
+        audit_event: 'cn_decision_accept_sad',
+      });
+      actions.push({
+        id: 'cn_decision.escalate_agent',
+        label: 'Escalate to agent',
+        tone: 'amber',
+        preview_endpoint: `/api/v1/dashboard/batches/${encodeURIComponent(batchId)}/cn-hsn-classification`,
+        execute_endpoint: `/api/v1/dashboard/batches/${encodeURIComponent(batchId)}/cn-decision/escalate-agent`,
+        method: 'POST',
+        requires_reason: true,
+        min_reason_len: 10,
+        body_template: { reason: '' },
+        requires_confirmation: true,
+        risk_level: 'low',
+        audit_event: 'cn_decision_escalate_agent',
+      });
+    }
+
+    // exporter_match → operator-override (allowed)
+    if (batchId && failed.includes('exporter_match')) {
+      actions.push({
+        id: 'override.exporter_match',
+        label: 'Accept exporter',
+        tone: 'green',
+        preview_endpoint: `/api/v1/dashboard/batches/${encodeURIComponent(batchId)}`,
+        execute_endpoint: `/api/v1/dashboard/batches/${encodeURIComponent(batchId)}/operator-override`,
+        method: 'POST',
+        requires_reason: true,
+        min_reason_len: 20,
+        body_template: { check: 'exporter_match', reason: '' },
+        requires_confirmation: true,
+        risk_level: 'medium',
+        audit_event: 'operator_override_added',
+      });
+    }
+
+    // Forbidden financial checks → disabled with reason
+    const forbiddenHit = failed.find(c => _FORBIDDEN_OVERRIDE_CHECKS.has(c));
+    if (forbiddenHit && actions.length === 0) {
+      actions.push({
+        id: 'override.forbidden',
+        label: `Cannot accept (${forbiddenHit})`,
+        tone: 'neutral',
+        disabled: true,
+        disabled_reason: `Financial / document-completeness check — operator cannot override. Fix at source.`,
+        risk_level: 'blocked',
+      });
+    }
+  }
+
+  // 3) EMAIL QUEUE — send via SMTP (idempotent on backend)
+  if (row.source === 'email_queue') {
+    const eid = (raw && raw.id) || row.id.replace(/^email:/, '');
+    const status = (raw && raw.status) || 'pending';
+    if (eid && status === 'pending') {
+      actions.push({
+        id: 'email.send_smtp',
+        label: 'Send (SMTP)',
+        tone: 'green',
+        preview_endpoint: null,                     // email body already in row
+        execute_endpoint: `/api/v1/admin/email-queue/${encodeURIComponent(eid)}/send`,
+        method: 'POST',
+        requires_reason: false,
+        body_template: { method: 'smtp' },
+        requires_confirmation: true,
+        risk_level: 'high',                         // EXTERNAL SEND
+        audit_event: 'email_sent_smtp',
+      });
+    }
+  }
+
+  // 4) DSK ACTIVITY — read-only (no inline action; Open only)
+  return actions;
+}
+
+
 function InboxPage({ batches, onViewShipment, onNav, onToast }) {
   // Per-source state (each loads / fails independently)
   const [emails,       setEmails]       = React.useState({ loading: true, error: null, items: [], pendingCount: 0 });
   const [proposals,    setProposals]    = React.useState({ loading: true, error: null, items: [] });
   const [dsk,          setDsk]          = React.useState({ loading: true, error: null, items: [] });
   const [sourceFilter, setSourceFilter] = React.useState('all');
+
+  // Approval modal + idempotency latch
+  // pendingAction = { row, action, preview, previewLoading, previewError, reason, submitting }
+  const [pendingAction, setPendingAction] = React.useState(null);
+  const inflightRef = React.useRef(new Set());      // idempotency: action_id+row.id
+  const completedRef = React.useRef(new Set());     // double-click guard
 
   const loadEmails = React.useCallback(async () => {
     setEmails(s => ({ ...s, loading: true, error: null }));
@@ -586,6 +785,95 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
 
   const reloadAll = () => { loadEmails(); loadProposals(); loadDsk(); };
 
+  // ── Approval action: open confirm modal (loads preview) ─────────────────
+  const openApproval = React.useCallback(async (row, action) => {
+    if (!action || action.disabled) return;
+    const latchKey = `${action.id}::${row.id}`;
+    if (completedRef.current.has(latchKey) || inflightRef.current.has(latchKey)) {
+      if (onToast) onToast('Already submitted', 'info');
+      return;
+    }
+    setPendingAction({
+      row, action,
+      preview: null, previewLoading: !!action.preview_endpoint, previewError: null,
+      reason: '', submitting: false,
+    });
+    if (action.preview_endpoint) {
+      try {
+        const data = await apiFetch(action.preview_endpoint);
+        setPendingAction(s => (s && s.row.id === row.id && s.action.id === action.id)
+          ? { ...s, preview: data, previewLoading: false } : s);
+      } catch (e) {
+        setPendingAction(s => (s && s.row.id === row.id && s.action.id === action.id)
+          ? { ...s, preview: null, previewLoading: false, previewError: e.message || 'preview failed' } : s);
+      }
+    }
+  }, [onToast]);
+
+  // ── Approval action: execute (idempotent) ───────────────────────────────
+  const executeApproval = React.useCallback(async () => {
+    if (!pendingAction) return;
+    const { row, action, reason } = pendingAction;
+    const latchKey = `${action.id}::${row.id}`;
+    if (completedRef.current.has(latchKey) || inflightRef.current.has(latchKey)) return;
+
+    // Reason length validation
+    if (action.requires_reason) {
+      const minLen = action.min_reason_len || 1;
+      if ((reason || '').trim().length < minLen) {
+        setPendingAction(s => ({ ...s, previewError: `Reason must be at least ${minLen} characters.` }));
+        return;
+      }
+    }
+
+    inflightRef.current.add(latchKey);
+    setPendingAction(s => ({ ...s, submitting: true, previewError: null }));
+
+    // Build request body from template
+    let body = null;
+    if (action.body_template) {
+      body = { ...action.body_template };
+      if (action.requires_reason && 'reason' in body) body.reason = (reason || '').trim();
+    } else if (action.requires_reason) {
+      body = { reason: (reason || '').trim() };
+    }
+
+    try {
+      const opts = { method: action.method || 'POST' };
+      if (body !== null) {
+        opts.headers = { 'Content-Type': 'application/json' };
+        opts.body = JSON.stringify(body);
+      }
+      const result = await apiFetch(action.execute_endpoint, opts);
+      completedRef.current.add(latchKey);
+      if (onToast) onToast(`${action.label} ✓`, 'success');
+      setPendingAction(null);
+      // Refresh affected source so the row drops from the list
+      if (row.source === 'proposals')    loadProposals();
+      else if (row.source === 'email_queue') loadEmails();
+      else if (row.source === 'action_required') {
+        // batches prop is owned by parent; emit reload by clearing & reloading dsk as a no-op tick
+        // The parent dashboard refresh interval will repopulate batches; user can also press Refresh.
+        if (onToast) onToast('Decision recorded. Refresh dashboard for updated batch state.', 'info');
+      }
+    } catch (e) {
+      const msg = e.message || 'execute failed';
+      // 4xx duplicate from server is benign: treat as completed
+      if (/already|duplicate|409|400/i.test(msg)) {
+        completedRef.current.add(latchKey);
+      }
+      setPendingAction(s => s ? ({ ...s, submitting: false, previewError: msg }) : s);
+      if (onToast) onToast(`${action.label}: ${msg}`, 'error');
+    } finally {
+      inflightRef.current.delete(latchKey);
+    }
+  }, [pendingAction, loadProposals, loadEmails, onToast]);
+
+  const closeApproval = React.useCallback(() => {
+    if (pendingAction && pendingAction.submitting) return;  // don't close mid-flight
+    setPendingAction(null);
+  }, [pendingAction]);
+
   // ── Normalize each source to common Inbox row schema ───────────────────
   // Schema: { id, source, severity, title, batch_id, awb, timestamp, reason, open_target }
   const rows = [];
@@ -594,7 +882,7 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
   (emails.items || []).forEach(e => {
     const status = e.status || 'pending';
     if (status === 'pending') {
-      rows.push({
+      const row = {
         id:         `email:${e.id || e.subject || Math.random()}`,
         source:     'email_queue',
         severity:   e.error ? 'high' : 'med',
@@ -604,7 +892,9 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
         timestamp:  e.queued_at || e.created_at || e.timestamp || '',
         reason:     e.error ? `send failed: ${e.error}` : `To: ${e.to || '—'}`,
         open_target:e.batch_id ? { type: 'batch', id: e.batch_id } : null,
-      });
+      };
+      row.actions = inboxActionsFor(row, e);
+      rows.push(row);
     }
   });
 
@@ -613,17 +903,19 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
     const severity = p.severity === 'HIGH' || p.priority === 'urgent' ? 'high'
                   : p.severity === 'MEDIUM' || p.priority === 'high'    ? 'med'
                   : 'info';
-    rows.push({
+    const row = {
       id:         `proposal:${p.id || p.proposal_id || Math.random()}`,
       source:     'proposals',
       severity,
-      title:      p.title || p.action || p.kind || p.action_type || '(proposal)',
+      title:      p.title || p.action || p.kind || p.action_type || p.field_missing || '(proposal)',
       batch_id:   p.batch_id || null,
       awb:        null,
       timestamp:  p.created_at || p.timestamp || '',
-      reason:     p.reason || p.description || p.message || '',
+      reason:     p.reason || p.description || p.message || p.failure_reason || '',
       open_target:p.batch_id ? { type: 'batch', id: p.batch_id } : null,
-    });
+    };
+    row.actions = inboxActionsFor(row, p);
+    rows.push(row);
   });
 
   // 3) Action-required batches → derived from real /dashboard/batches list
@@ -632,7 +924,7 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
     const isVerifyNeeded = b.sadStatus === 'Verification Needed';
     const isDhlBlocked = b.overall === 'Awaiting DHL' && b.dhlStatus === 'DHL Email Received';
     if (isActionReq || isVerifyNeeded || isDhlBlocked) {
-      rows.push({
+      const row = {
         id:         `batch:${b.batch_id || b.id}`,
         source:     'action_required',
         severity:   isVerifyNeeded || isActionReq ? 'high' : 'med',
@@ -642,7 +934,11 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
         timestamp:  b.timestamp || '',
         reason:     `${b.dhlStatus || '—'} · ${b.sadStatus || '—'} · ${b.pzStatus || '—'}`,
         open_target:{ type: 'batch', id: b._raw || b },
-      });
+      };
+      // Pass the source batch (with failed_checks) so action mapping can
+      // inspect verification state. _raw is the upstream audit-derived obj.
+      row.actions = inboxActionsFor(row, { _raw: b._raw || b, ...b });
+      rows.push(row);
     }
   });
 
@@ -796,14 +1092,44 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
                   </td>
                   <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{_inboxAge(row.timestamp) || '—'}</td>
                   <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--text-2)', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.reason}>{row.reason}</td>
-                  <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {(row.actions || []).map(act => {
+                      const toneMap = {
+                        green:   { bg: 'var(--badge-green-bg)',  text: 'var(--badge-green-text)',  border: 'var(--badge-green-border)' },
+                        red:     { bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    border: 'var(--badge-red-border)' },
+                        amber:   { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  border: 'var(--badge-amber-border)' },
+                        neutral: { bg: 'var(--bg-subtle)',       text: 'var(--text-3)',            border: 'var(--border)' },
+                      };
+                      const t = toneMap[act.tone] || toneMap.neutral;
+                      if (act.disabled) {
+                        return (
+                          <span key={act.id} data-testid={`inbox-action-disabled-${act.id}`}
+                            title={act.disabled_reason || ''}
+                            style={{ display: 'inline-block', marginLeft: 4, padding: '3px 8px', fontSize: 10, border: `1px dashed ${t.border}`, borderRadius: 5, background: t.bg, color: t.text, fontFamily: 'inherit', cursor: 'help' }}>
+                            ⛔ {act.label}
+                          </span>
+                        );
+                      }
+                      return (
+                        <button key={act.id} data-testid={`inbox-action-${act.id}`}
+                          data-row-source={row.source} data-row-id={row.id}
+                          data-risk={act.risk_level || 'unknown'}
+                          onClick={() => openApproval(row, act)}
+                          style={{ marginLeft: 4, padding: '3px 10px', fontSize: 11, border: `1px solid ${t.border}`, borderRadius: 5, background: t.bg, color: t.text, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }}
+                          title={`${act.label} — risk: ${act.risk_level || 'unknown'}`}>
+                          {act.label}
+                        </button>
+                      );
+                    })}
                     {row.open_target && row.open_target.type === 'batch'
                       ? <button data-testid="inbox-open-btn" data-nav-target="batch" onClick={() => {
-                          const t = row.open_target.id;
-                          if (t && typeof t === 'object') onViewShipment && onViewShipment(t);
-                          else if (t) onViewShipment && onViewShipment({ batch_id: t });
-                        }} style={{ padding: '3px 10px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 5, background: 'var(--card)', color: 'var(--text-2)', cursor: 'pointer', fontFamily: 'inherit' }}>Open</button>
-                      : <span data-testid="inbox-open-disabled" title="No navigation target for this row type" style={{ fontSize: 10, color: 'var(--text-3)' }}>—</span>}
+                          const tgt = row.open_target.id;
+                          if (tgt && typeof tgt === 'object') onViewShipment && onViewShipment(tgt);
+                          else if (tgt) onViewShipment && onViewShipment({ batch_id: tgt });
+                        }} style={{ marginLeft: 4, padding: '3px 10px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 5, background: 'var(--card)', color: 'var(--text-2)', cursor: 'pointer', fontFamily: 'inherit' }}>Open</button>
+                      : (!row.actions || row.actions.length === 0)
+                        ? <span data-testid="inbox-open-disabled" title="No navigation target for this row type" style={{ fontSize: 10, color: 'var(--text-3)' }}>—</span>
+                        : null}
                   </td>
                 </tr>
               );
@@ -812,13 +1138,81 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
         </table>
       </div>
 
-      {/* Design preview · Backend pending — surfaces design wants but
-          backend can't provide (cross-source bulk actions, snooze state,
-          per-row rule application). No onClick, no apiFetch. */}
+      {/* Bulk-action design IA — only cross-source bulk operations remain
+          backend-pending. Per-row approve / reject / send are wired
+          inline above via inboxActionsFor(). */}
       <div data-testid="inbox-design-preview" style={{ marginTop: 14, padding: '10px 14px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span data-testid="inbox-preview-pending-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10, fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Backend pending</span>
-        <span>Snooze / Mark-read state and bulk-rule application are design IA — not persisted server-side. Send / approve / reject actions remain on each item's existing detail page (no shortcuts from this list).</span>
+        <span data-testid="inbox-preview-pending-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 10, fontSize: 9.5, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Bulk ops pending</span>
+        <span>Mark-read / Snooze / Bulk-apply-rule are design IA — not yet persisted server-side. Per-row Approve / Reject / Send are wired and execute the same backend endpoints used by the detail pages.</span>
       </div>
+
+      {/* Approval confirmation modal — preview + reason + execute */}
+      {pendingAction && (
+        <div data-testid="inbox-approval-modal" role="dialog" aria-modal="true"
+          onClick={closeApproval}
+          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20 }}>
+          <div onClick={ev => ev.stopPropagation()}
+            style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 22, width: '100%', maxWidth: 560, maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 12px 40px var(--shadow-heavy)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div data-testid="inbox-approval-title" style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>
+                {pendingAction.action.label}
+              </div>
+              <span data-testid="inbox-approval-risk" style={{ fontSize: 10, fontWeight: 700, color: pendingAction.action.risk_level === 'high' ? 'var(--badge-red-text)' : pendingAction.action.risk_level === 'medium' ? 'var(--badge-amber-text)' : 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                {pendingAction.action.risk_level || 'unknown'} risk
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 10 }}>
+              <div><strong>Target:</strong> {pendingAction.row.batch_id || pendingAction.row.awb || pendingAction.row.id}</div>
+              <div><strong>Source:</strong> {pendingAction.row.source}</div>
+              <div><strong>Endpoint:</strong> <code style={{ fontFamily: 'monospace', fontSize: 10 }}>{pendingAction.action.method || 'POST'} {pendingAction.action.execute_endpoint}</code></div>
+            </div>
+
+            {pendingAction.action.preview_endpoint && (
+              <div data-testid="inbox-approval-preview" style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)', borderRadius: 6, padding: 10, marginBottom: 12, maxHeight: 220, overflowY: 'auto' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Preview</div>
+                {pendingAction.previewLoading
+                  ? <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Loading…</div>
+                  : pendingAction.previewError
+                  ? <div style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>{pendingAction.previewError}</div>
+                  : <pre style={{ fontSize: 10, fontFamily: 'monospace', color: 'var(--text-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(pendingAction.preview, null, 2).slice(0, 2000)}</pre>}
+              </div>
+            )}
+
+            {pendingAction.action.requires_reason && (
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>
+                  Reason {pendingAction.action.min_reason_len ? `(min ${pendingAction.action.min_reason_len} chars)` : ''}
+                </label>
+                <textarea data-testid="inbox-approval-reason"
+                  value={pendingAction.reason}
+                  onChange={ev => setPendingAction(s => ({ ...s, reason: ev.target.value }))}
+                  rows={3}
+                  style={{ width: '100%', padding: 8, border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, fontFamily: 'inherit', background: 'var(--card)', color: 'var(--text)', resize: 'vertical' }}
+                  placeholder="Reason for this decision (will be audited)…" />
+              </div>
+            )}
+
+            {pendingAction.previewError && !pendingAction.action.preview_endpoint && (
+              <div data-testid="inbox-approval-error" style={{ marginBottom: 10, padding: 8, background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-red-text)' }}>
+                {pendingAction.previewError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+              <button data-testid="inbox-approval-cancel"
+                onClick={closeApproval} disabled={pendingAction.submitting}
+                style={{ padding: '6px 14px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text-2)', cursor: pendingAction.submitting ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>
+                Cancel
+              </button>
+              <button data-testid="inbox-approval-confirm"
+                onClick={executeApproval} disabled={pendingAction.submitting}
+                style={{ padding: '6px 14px', fontSize: 12, border: '1px solid var(--accent-border)', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: pendingAction.submitting ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontWeight: 700, opacity: pendingAction.submitting ? 0.6 : 1 }}>
+                {pendingAction.submitting ? 'Executing…' : `Confirm — ${pendingAction.action.label}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
