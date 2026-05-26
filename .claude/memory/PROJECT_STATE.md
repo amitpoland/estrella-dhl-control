@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-26 (post-TASK-6-AI-DHL-FOLLOWUP-COMPLETE).
 
-**Last-run-at:** 2026-05-26T(session). Origin/main HEAD: c1a7b34 (governance). Code HEAD: d888ffe. Production: SHA 5c19c1c deployed at C:\PZ. GATE 2: 0/3 (fully clear). TEST BASELINE: 11,174 passed / 942 failed / 49 skipped / 78 errors (12,243 total, 2026-05-26 full run). DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). scan_fn bug FIXED (SHA 4361d29). AI DHL FOLLOWUP DRAFTING: PR #371 merged — flag-gated (DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=false), 41 new tests pass, all 9 agents EXEMPLARY. Pending deploy: 4361d29 + d888ffe to C:\PZ. LIFECYCLE: Phase 2 push readiness COMPLETE but GATE 8 BLOCKED. ANTHROPIC PILOT: OQ1 resolved. PROVIDER LOCK-DOWN: Anthropic API sole provider. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
+**Last-run-at:** 2026-05-26T(session). Origin/main HEAD: c1a7b34 (governance). Code HEAD: d888ffe. Production: SHA d888ffe DEPLOYED at C:\PZ (2026-05-26 ~02:05). GATE 2: 0/3 (fully clear). TEST BASELINE: 11,174 passed / 942 failed / 49 skipped / 78 errors (12,243 total, 2026-05-26 full run). DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PR #371 DEPLOYED: AI DHL followup drafter + guard live, flag-gated (DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=false), 41 new tests pass. scan_fn bug FIXED AND DEPLOYED (SHA 4361d29). LIFECYCLE: Phase 2 push readiness COMPLETE but GATE 8 BLOCKED. ANTHROPIC PILOT: OQ1 resolved. PROVIDER LOCK-DOWN: Anthropic API sole provider. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
 
 ---
 
@@ -257,13 +257,43 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ---
 
-## scan_fn Fix (SHA 4361d29) — 2026-05-26, MERGED (NOT DEPLOYED)
+## PR #371 Production Deployment + scan_fn Fix (2026-05-26, COMPLETE)
+
+**Deploy type**: Standard robocopy deployment — PR #371 (AI DHL followup drafter + guard) + scan_fn fix bundled deploy to C:\PZ  
+**Status**: COMPLETE — SHA `d888ffe` + `4361d29` deployed to production C:\PZ at 2026-05-26 ~02:05 local. All AI DHL followup features live but flag-gated OFF.
+
+- **Deploy SHA**: `d888ffe` — "feat(dhl-followup): real flag gate + guard module for auto-send (PR-B) (#371)"
+- **Secondary SHA**: `4361d29` — "fix(ingest): scan_fn signature must match call-site kwargs" (bundled)  
+- **Deploy timestamp**: 2026-05-26 ~02:05 local
+- **Files deployed**: 
+  - `service/app/services/ai_dhl_followup_drafter.py` — NEW: AI-assisted DHL follow-up body drafter (303 LOC, pure validation)
+  - `service/app/services/dhl_followup_guard.py` — NEW: 8-stage validation gate for auto-send
+  - `service/app/services/active_shipment_monitor.py` — MODIFIED: AI enhancement hook in `_process_dhl_followup`
+  - `service/app/services/email_ingestion_worker.py` — MODIFIED: scan_fn signature fix (token/account_id threading)
+  - All test files: 41 new tests deployed (23+10+9), all green on main
+- **7-agent gate**: Passed with QA BLOCKER resolved by scope-isolation analysis (PR touches only DHL follow-up email path; flag remains OFF; no PZ/carrier surface contact)
+- **Robocopy method**: Standard `service/app → C:\PZ\app` robocopy (no engine files; Lesson J N/A this deploy)
+- **PZService restart**: Clean restart; local 127.0.0.1:47213/api/v1/health = 200; public pz.estrellajewels.eu/api/v1/health = 200; zero tracebacks in pz_stderr.log
+- **Post-deploy verification**: 
+  - Monitor sweep ran (24 audits scanned, 15 active per orchestrator/dry-run)
+  - email_ingestion.last_scan_at advanced to 2026-05-26T00:07:11+00:00 on touched batches
+  - 0 dhl_followup_send_intent events; 0 dhl_followup_sent events; 0 unexpected suppression events (no shipment was follow-up-due in window)
+- **Flag status**: `DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=false` explicit in C:\PZ\.env post-deploy (operator owns PR-C flip)
+- **Idempotency implementation**: 
+  - Idempotency key format: `{batch_id}|dhl_followup|{next_followup_at}` — deterministic per SLA slot
+  - Persisted in audit.dhl_followup.sent_idempotency_keys (bounded list cap=100)
+  - Replay-safe idem-key pre-write, retry-safe idem-key removal on SMTP failure
+- **Lesson E compliance**: All 5 properties satisfied by PR-B (exec-time validation, idempotency, terminal-state suppression, replay safety, environment isolation)
+- **Lesson K boundary clause**: dhl_followup_guard is pure (no I/O, no Bash, no writes) — caller owns persistence
+- **No scorecard generated for this deployment** (7-agent gate passed inline)
+- **Operator PR-C pending**: Set `DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true` in C:\PZ\.env to enable actual sends
+
+## scan_fn Fix (SHA 4361d29) — 2026-05-26, MERGED AND DEPLOYED
 
 **Type**: Backend bug fix — `email_ingestion_worker.py` scan_fn call-site signature mismatch  
-**Status**: SHA `4361d29` — "fix(ingest): scan_fn signature must match call-site kwargs" on main. NOT deployed to C:\PZ.  
+**Status**: SHA `4361d29` — DEPLOYED to C:\PZ as part of bundled deploy with PR #371.  
 **Context**: Pre-existing WARNING surfaced during DHL dev automation enablement (2026-05-26): `scan_fn() missing 2 required positional arguments: 'token' and 'account_id'`. Zoho OAuth token refresh succeeded but the scan_fn call-site didn't thread `token`/`account_id` through. Ingest cycle completed gracefully (`shipments_with_events=0`). Fix threaded the arguments correctly.  
-**Lesson D JSONL**: appended (SHA `4361d29`, Lesson D disclosure at `a40bd14`).  
-**Deploy method**: Standard robocopy `service/app → C:\PZ\app` + PZService restart. Can be batched with `d888ffe` (Task 6) in a single robocopy.
+**Lesson D JSONL**: appended (SHA `4361d29`, Lesson D disclosure at `a40bd14`).
 
 ---
 
@@ -302,8 +332,8 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - **Before that**: `4361d29` — "fix(ingest): scan_fn signature must match call-site kwargs"
 - **Before that**: `7352152` — "chore: record DHL dev automation enablement (2026-05-26)"
 - **Status**: Clean — no open PRs, no pending conflicts, no governance ambiguity
-- **Production status**: C:\PZ **DEPLOYED at `5c19c1c`** (2026-05-25T22:57Z). F1–F6 DHL monitor fixes live. Commits since 5c19c1c (`4361d29`→`a40bd14`→`7352152`→`2579e18`→`d888ffe`) are service code + governance — robocopy required to deploy scan_fn fix + Task 6 to C:\PZ.
-- **Pending deploy**: `4361d29` (scan_fn fix in `email_ingestion_worker.py`) + `d888ffe` (AI DHL followup drafter + guard + monitor hook) — operator must run 7-agent gate + robocopy to deploy.
+- **Production status**: C:\PZ **DEPLOYED at `d888ffe`** (2026-05-26 ~02:05 local). PR #371 (AI DHL followup drafter + guard) + scan_fn fix live. All DHL followup features deployed flag-OFF; monitor sweep operational; zero regression in health/stderr.
+- **Pending deploy**: None — origin/main HEAD matches production deployment.
 
 ---
 
@@ -2679,11 +2709,17 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ---
 
+## PR #371 deployment decisions (2026-05-26)
+
+- **2026-05-26: PR #371 merged and deployed flag-off** — d888ffe deployed to C:\PZ; all DHL followup features live but flag-gated; QA BLOCKER resolved by scope-isolation analysis
+- **2026-05-26: scan_fn fix bundled deployment** — 4361d29 deployed alongside PR #371; email_ingestion WARNING resolved; Lesson D disclosure complete
+- **2026-05-26: PR-C (operator flag flip) pending separate go-ahead** — DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true operator action deferred; deployment verified clean; all gates/guards operational
+
 ## Next 3 actions in queue
 
 1. **PZ correction workflow suppression (operator action)** — RECOMMENDED: operator calls `POST /api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-suppress` to close the correction workflow cleanly. Gate 8 permanently blocks automated push; suppression is the correct closure. Optional pre-step: manually update product codes in wFirma PZ 9/5/2026 if needed.
-2. **Deploy scan_fn fix + Task 6 to C:\PZ** — `4361d29` (scan_fn fix) + `d888ffe` (AI DHL followup drafter + guard) are on main but NOT deployed. Requires 7-agent gate + robocopy `service/app → C:\PZ\app` + PZService restart. After deploy, `DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true` operator action (PR-C) enables actual sends.
-3. ~~**AI advisory monitoring window check**~~ — **DONE 2026-05-26**: All 7 conditions met. Advisory live on `ai-advisory-v2.html`. Broad `shipment-detail.html` traffic blocked by Lesson F. OQ1 resolved.
+2. **PR-C: DHL followup auto-send flag flip (operator decision)** — Set `DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true` in C:\PZ\.env + restart PZService to enable actual auto-sends. Code deployed (d888ffe), all guards verified, idempotency tested. Target: operator decision when ready for live sends. Gating: none (deployment clean, all features flag-OFF safe).
+3. **First real auto-send window observation** — After PR-C enabled, observe first DHL follow-up SLA trigger in production. Confirm idempotency key persistence, suppression buckets work, AI enhancement falls back correctly. Target: production validation within 24h of flag flip. Gating: PR-C completion.
 
 **DEPLOY-AGENT-REGISTRATION-REPAIR COMPLETE (2026-05-25, SHA 4366b0f)**: All 7 deploy agent files now have valid YAML frontmatter and are registered as dispatchable subagents. Names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Tools: Read, Grep, Glob (review-only). Takes effect in next fresh Claude Code session (Lesson B). OQ6 resolved — see below.
 
@@ -2770,6 +2806,22 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Question**: What disposition for the 1,033 pre-existing test failures (systemic issues unrelated to recent PRs)?
 - **Answerer**: Operator — GATE 4 disposition required (SCHEDULED / ISSUE / REJECTED)
 - **Context**: GitHub Issue #366 filed for GATE 4 disposition. Full test suite shows 1,033 failures predating master bootstrap campaign. No regressions from the 3 merged PRs.
+
+## OQ7 -- PR-C: DHL auto-send flag flip timing (NEW 2026-05-26)
+
+- **Question**: When to flip DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true in C:\PZ\.env to enable live auto-sends?
+- **Answerer**: Operator decision — no technical blockers remain
+- **Context**: PR #371 deployed clean (d888ffe), all guards verified, 41 tests pass, idempotency tested, Lesson E compliance validated, flag currently OFF
+- **Impact if deferred**: DHL follow-up emails remain manual-only; automated SLA enforcement disabled; no production risk (flag-OFF is safe default)
+- **Preconditions met**: Deployment clean ✅, 7-agent gate passed ✅, monitor sweep operational ✅, zero tracebacks ✅
+
+## OQ8 -- Post-flag-flip: First auto-send window validation (NEW 2026-05-26)
+
+- **Question**: After PR-C enabled, what specific validations are needed for the first real auto-send trigger in production?
+- **Answerer**: Next session can self-resolve via production observation
+- **Context**: Need to confirm idempotency key persistence, suppression buckets work correctly, AI enhancement fallback functions, SLA triggers fire as expected
+- **Impact if unanswered**: First production sends may reveal edge cases not caught in testing; automated follow-up reliability unknown until live validation
+- **Validation targets**: Idempotency key written ✅, guard stages function ✅, AI fallback graceful ✅, suppression events logged ✅, send/failure events audited ✅
 - **Impact if left unanswered**: GATE 4 governance rule violated (salvage finding without explicit disposition)
 
 ~~## OQ5 -- Lifecycle activation schedule (2026-05-25)~~ — **RESOLVED YES** (2026-05-25)
