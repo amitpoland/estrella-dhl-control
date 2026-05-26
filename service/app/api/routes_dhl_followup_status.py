@@ -19,6 +19,7 @@ import logging
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 
 from ..core.security import require_api_key
 from ..services.dhl_followup_status_projector import (
@@ -31,24 +32,37 @@ router = APIRouter(prefix="/api/v1/dhl/followup-automation",
                    tags=["dhl-followup-status"])
 _auth  = Depends(require_api_key)
 
+# Operator-fresh data: every load must reflect the latest audit state.
+# A cached "ACTIVE" badge after a flag toggle would mislead the operator.
+_NO_STORE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma":        "no-cache",
+    "Expires":       "0",
+}
+
 
 @router.get("/status", dependencies=[_auth])
-def get_followup_automation_status() -> Dict[str, Any]:
+def get_followup_automation_status() -> JSONResponse:
     """Read-only top-card payload.
 
     Aggregates flag state, active/monitoring/eligible counts, next-due
     shipment, last sent/suppressed/failure events, today's metrics,
     traffic-light summary.  Pure projection — never raises.
+
+    Cache-Control: no-store — operator must see flag flips and recent
+    timeline events immediately, not a stale browser copy.
     """
-    return project_automation_status()
+    return JSONResponse(content=project_automation_status(),
+                        headers=_NO_STORE_HEADERS)
 
 
 @router.get("/shipments", dependencies=[_auth])
-def get_followup_automation_shipments() -> Dict[str, Any]:
+def get_followup_automation_shipments() -> JSONResponse:
     """Read-only drill-down rows for active shipments.
 
     Each row contains AWB, mode, status, next_due, last scan, last
     followup event.  Sorted by status priority (eligible first).
     """
     rows: List[Dict[str, Any]] = project_shipment_rows()
-    return {"rows": rows, "count": len(rows)}
+    return JSONResponse(content={"rows": rows, "count": len(rows)},
+                        headers=_NO_STORE_HEADERS)

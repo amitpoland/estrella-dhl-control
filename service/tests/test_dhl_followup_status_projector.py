@@ -270,7 +270,80 @@ def test_shipment_rows_sort_order(patch_storage, monkeypatch):
     assert [r["awb"] for r in rows] == ["MON_SOONER", "MON_LATER"]
 
 
-# ── 12. humanise_age handles past / present / future ─────────────────────────
+# ── 12. ST_FAILED row status when last followup event is a failure ──────────
+
+def test_shipment_row_status_failed_when_last_event_is_failure(patch_storage, monkeypatch):
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    older = (_NOW - timedelta(hours=4)).isoformat()
+    newer = (_NOW - timedelta(hours=1)).isoformat()
+    patch_storage.append(_audit(
+        awb="FAILED_AWB",
+        followup={"active": True, "next_followup_at": (_NOW + timedelta(hours=2)).isoformat()},
+        timeline=[
+            {"event": "dhl_followup_sent",        "ts": older, "detail": {}},
+            {"event": "dhl_followup_send_failed", "ts": newer, "detail": {"error": "smtp"}},
+        ],
+    ))
+    rows = proj.project_shipment_rows(now=_NOW)
+    assert len(rows) == 1
+    assert rows[0]["status"] == proj.ST_FAILED
+
+
+# ── 13. ST_SUPPRESSED row status when last followup event is a suppression ───
+
+def test_shipment_row_status_suppressed_when_last_event_is_suppressed(patch_storage, monkeypatch):
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    patch_storage.append(_audit(
+        awb="SUPP_AWB",
+        followup={"active": True, "next_followup_at": (_NOW + timedelta(hours=2)).isoformat()},
+        timeline=[
+            {"event": "dhl_followup_suppressed", "ts": (_NOW - timedelta(minutes=10)).isoformat(),
+             "detail": {"reason": "duplicate_idempotency_key"}},
+        ],
+    ))
+    rows = proj.project_shipment_rows(now=_NOW)
+    assert len(rows) == 1
+    assert rows[0]["status"] == proj.ST_SUPPRESSED
+
+
+# ── 14. Status precedence: failed beats suppressed when failed is more recent ─
+
+def test_shipment_row_status_failed_beats_older_suppressed(patch_storage, monkeypatch):
+    """When the same shipment has both events, the most recent wins."""
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    suppressed_old = (_NOW - timedelta(hours=8)).isoformat()
+    failed_new     = (_NOW - timedelta(hours=1)).isoformat()
+    patch_storage.append(_audit(
+        awb="MIXED_AWB",
+        followup={"active": True},
+        timeline=[
+            {"event": "dhl_followup_suppressed", "ts": suppressed_old, "detail": {}},
+            {"event": "dhl_followup_send_failed", "ts": failed_new,    "detail": {}},
+        ],
+    ))
+    rows = proj.project_shipment_rows(now=_NOW)
+    assert rows[0]["status"] == proj.ST_FAILED
+
+
+# ── 15. dhl_followup_stopped in timeline does NOT change status ─────────────
+
+def test_shipment_row_status_ignores_stopped_event_when_state_not_stopped(patch_storage, monkeypatch):
+    """A stopped-event in timeline without state.stopped_at means status is
+    driven by next_followup_at, not the timeline event."""
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    patch_storage.append(_audit(
+        awb="HISTORY_AWB",
+        followup={"active": True, "next_followup_at": (_NOW + timedelta(hours=3)).isoformat()},
+        timeline=[
+            {"event": "dhl_followup_stopped", "ts": (_NOW - timedelta(hours=5)).isoformat(),
+             "detail": {"reason": "manual"}},
+        ],
+    ))
+    rows = proj.project_shipment_rows(now=_NOW)
+    assert rows[0]["status"] == proj.ST_MONITORING
+
+
+# ── 16. humanise_age handles past / present / future ─────────────────────────
 
 def test_humanise_age_variants():
     now = _NOW

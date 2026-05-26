@@ -145,6 +145,20 @@ def test_shipments_rows_exclude_inactive(client, tmp_storage):
     assert body["count"] == 1
 
 
+# ── 5a. Cache-Control: no-store on both endpoints ────────────────────────────
+
+def test_endpoints_emit_no_store_cache_headers(client, tmp_storage):
+    """Operator must see flag flips and recent events immediately, not stale."""
+    for url in (
+        "/api/v1/dhl/followup-automation/status",
+        "/api/v1/dhl/followup-automation/shipments",
+    ):
+        r = client.get(url)
+        assert r.status_code == 200
+        cc = r.headers.get("cache-control", "").lower()
+        assert "no-store" in cc, f"missing no-store on {url}: {cc!r}"
+
+
 # ── 5. Endpoints are read-only (POST not registered) ─────────────────────────
 
 def test_endpoints_are_get_only(client, tmp_storage):
