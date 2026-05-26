@@ -2111,8 +2111,99 @@ def _process_dhl_followup(
             from .email_sender                import send_queued_email, _smtp_configured
 
             pkg = build_dhl_followup_email(audit, audit_path.parent.name)
+
+            # ── AI draft enhancement (optional; falls back to deterministic) ──
+            # Active-shipment guard is already satisfied: _process_dhl_followup
+            # is only called for active batches (_is_active gate in scan loop).
+            # Terminal-state suppression is enforced by queue_email's delivered
+            # guard (Lesson E property 3) — not by the drafter itself.
+            _ai_used:  bool          = False
+            _ai_model: Optional[str] = None
+            try:
+                from .ai_dhl_followup_drafter import enhance_email_body as _enhance_body
+                _draft    = _enhance_body(audit, audit_path.parent.name, pkg)
+                pkg       = {**pkg, **_draft["pkg_updates"]}
+                _ai_used  = _draft["ai_used"]
+                _ai_model = _draft.get("model_used")
+            except Exception as _ai_exc:
+                log.warning(
+                    "[monitor] ai_dhl_followup_drafter non-fatal (deterministic fallback): %s",
+                    _ai_exc,
+                )
+            # ─────────────────────────────────────────────────────────────────
+
+            # ── PR-B guard: execution-time validation + idempotency ─────────
+            # The flag DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP gates the actual send.
+            # Five hard-suppression buckets: flag-off, not-active, missing
+            # AWB/batch, unsafe recipient, invalid package, stale ingest,
+            # duplicate idem key.  See dhl_followup_guard for full rules.
+            from .dhl_followup_guard import (
+                validate_followup_send_preconditions,
+                record_idempotency_key_into_audit,
+            )
+            guard = validate_followup_send_preconditions(audit, pkg)
+            if not guard.ok:
+                # Suppression path — write timeline event and bail without
+                # touching email_queue.  No risk-flag mutation: the suppress
+                # is a normal outcome, not an error condition.
+                try:
+                    tl.log_event(audit_path, "dhl_followup_suppressed", "monitor",
+                                 "active_shipment_monitor",
+                                 detail={"reason":          guard.reason,
+                                         "primary_to":      guard.primary_to,
+                                         "idempotency_key": guard.idempotency_key,
+                                         "sla_age_min":     guard.sla_age_min,
+                                         "ingest_age_min":  guard.ingest_age_min,
+                                         "ai_draft_used":   _ai_used})
+                except Exception:
+                    pass
+                log.info(
+                    "[monitor] dhl_followup suppressed batch=%s reason=%s",
+                    audit_path.parent.name, guard.reason,
+                )
+                out["suppressed_reason"]   = guard.reason
+                out["idempotency_key"]     = guard.idempotency_key
+                out["state_after"]         = audit.get("dhl_followup")
+                return out
+
+            # Intent event BEFORE any external side-effect.  Records WHAT
+            # we intend to send so a post-mortem can reconstruct the
+            # decision even if the SMTP call hangs.
+            try:
+                tl.log_event(audit_path, "dhl_followup_send_intent", "monitor",
+                             "active_shipment_monitor",
+                             detail={"idempotency_key": guard.idempotency_key,
+                                     "primary_to":      guard.primary_to,
+                                     "cc_count":        guard.cc_count,
+                                     "attach_count":    guard.attach_count,
+                                     "sla_age_min":     guard.sla_age_min,
+                                     "ingest_age_min":  guard.ingest_age_min,
+                                     "subject":         pkg.get("subject", ""),
+                                     "ai_draft_used":   _ai_used,
+                                     "ai_draft_model":  _ai_model})
+                # tl.log_event writes to disk by re-reading audit.json; refresh
+                # the in-memory timeline so the next write_json_atomic below
+                # does NOT overwrite the intent event we just persisted.
+                try:
+                    _disk = json.loads(audit_path.read_text(encoding="utf-8"))
+                    audit["timeline"] = _disk.get("timeline", audit.get("timeline", []))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
             existing = [a for a in pkg.get("attachments", [])
                         if Path(a.get("path", "")).is_file()]
+
+            # Replay safety (Lesson E §4): append the idempotency key to
+            # audit and persist BEFORE the queue/send call.  If the
+            # process crashes mid-SMTP, the next sweep sees the key
+            # already in sent_idempotency_keys and the duplicate guard
+            # blocks a re-send.  Net effect on a crash: at-most-one
+            # delivery, never two.
+            record_idempotency_key_into_audit(audit, guard.idempotency_key)
+            write_json_atomic(audit_path, audit)
+
             email_id = queue_email(
                 to=pkg["to"], subject=pkg["subject"],
                 body_html=pkg["body_html"], body_text=pkg["body_text"],
@@ -2142,17 +2233,52 @@ def _process_dhl_followup(
                                  "active_shipment_monitor",
                                  detail={"email_id":            email_id,
                                          "provider_message_id": send_outcome.get("provider_message_id"),
+                                         "idempotency_key":     guard.idempotency_key,
+                                         "primary_to":          guard.primary_to,
+                                         "sla_age_min":         guard.sla_age_min,
                                          "followup_count":      audit["dhl_followup"]["followup_count"],
-                                         "next_followup_at":    audit["dhl_followup"]["next_followup_at"]})
+                                         "next_followup_at":    audit["dhl_followup"]["next_followup_at"],
+                                         "ai_draft_used":       _ai_used,
+                                         "ai_draft_model":      _ai_model})
                 except Exception:
                     pass
                 out["sent"]                = True
                 out["email_id"]            = email_id
                 out["provider_message_id"] = send_outcome.get("provider_message_id")
+                out["idempotency_key"]     = guard.idempotency_key
+                out["ai_draft_used"]       = _ai_used
+                out["ai_draft_model"]      = _ai_model
                 out["state_after"]         = audit["dhl_followup"]
             else:
-                out["error"] = (send_outcome or {}).get("error", "smtp_not_configured")
-                # Don't advance next_followup_at — operator/SMTP fix needed first
+                # Send did not succeed.  Remove the pre-written idempotency
+                # key so the next sweep can retry the same SLA slot after
+                # the operator fixes SMTP / network.  next_followup_at is
+                # NOT advanced (record_followup_sent skipped) so the slot
+                # remains due.  The crash-between-SMTP-success-and-audit-
+                # write window stays protected because that path takes the
+                # success branch which keeps the key.
+                err = (send_outcome or {}).get("error", "smtp_not_configured")
+                try:
+                    _state = audit.get("dhl_followup") or {}
+                    _keys  = _state.get("sent_idempotency_keys") or []
+                    if isinstance(_keys, list) and guard.idempotency_key in _keys:
+                        _keys = [k for k in _keys if k != guard.idempotency_key]
+                        _state["sent_idempotency_keys"] = _keys
+                        audit["dhl_followup"] = _state
+                        write_json_atomic(audit_path, audit)
+                except Exception:
+                    pass
+                out["error"]           = err
+                out["idempotency_key"] = guard.idempotency_key
+                try:
+                    tl.log_event(audit_path, "dhl_followup_send_failed", "monitor",
+                                 "active_shipment_monitor",
+                                 detail={"idempotency_key": guard.idempotency_key,
+                                         "primary_to":      guard.primary_to,
+                                         "error":           err,
+                                         "email_id":        email_id})
+                except Exception:
+                    pass
         except Exception as exc:
             out["error"] = f"followup_send_failed: {exc}"
 
