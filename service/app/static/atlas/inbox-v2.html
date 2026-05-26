@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inbox — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react" src="/dashboard/atlas/atlas-shared.js"></script>
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { PageHeader, NavStrip, TierBanner, Btn, Badge, Kpi, Empty, SectionTitle } = window.AtlasShared;
+
+  const FILTERS = [
+    { id: 'all',      label: 'All',                   tone: 'neutral' },
+    { id: 'email',    label: 'Awaiting DHL Email',    tone: 'amber' },
+    { id: 'sad',      label: 'SAD Pending',           tone: 'red' },
+    { id: 'action',   label: 'Action Required',       tone: 'orange' },
+    { id: 'approval', label: 'Awaiting Approval',     tone: 'purple' },
+  ];
+
+  function App() {
+    const [filter, setFilter] = React.useState('all');
+    const actions = (
+      <>
+        <Btn variant="outline" small disabled testid="inbox-sync-btn"
+             title="Unified sync endpoint not yet implemented. Sprint 02 (Inbox V2) backend.">↻ Sync now</Btn>
+        <Btn variant="outline" small disabled testid="inbox-rules-btn"
+             title="Routing-rule editor not yet built. Sprint 02 follow-up.">⚙ Rules</Btn>
+      </>
+    );
+    return (
+      <>
+        <PageHeader title="Inbox"
+          subtitle="Unified queue — emails · proposals · approvals · reservations · customs holds"
+          actions={actions} />
+        <NavStrip current="inbox" />
+        <div className="atlas-content">
+          <TierBanner testid="inbox-tier-banner">
+            <strong>Visual shell — Phase One stub.</strong> Unified inbox endpoint (<code>GET /api/v1/inbox</code>) does not exist yet. Inbox combines three backend domains (email queue, action proposals, customs-pending shipments). Sprint 02 owner. Buttons are placeholders.
+          </TierBanner>
+
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+            {FILTERS.map(f => (
+              <button key={f.id} data-testid={`inbox-filter-${f.id}`}
+                disabled
+                title="Filter pills wired once the unified inbox endpoint exists."
+                style={{
+                  padding: '5px 10px', borderRadius: 999,
+                  background: filter === f.id ? `var(--badge-${f.tone}-bg)` : 'var(--card)',
+                  border: '1px solid ' + (filter === f.id ? `var(--badge-${f.tone}-border)` : 'var(--border)'),
+                  color: filter === f.id ? `var(--badge-${f.tone}-text)` : 'var(--text-2)',
+                  fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.65,
+                }}>{f.label}</button>
+            ))}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 18 }} className="atlas-grid-4">
+            <Kpi testid="inbox-kpi-total" label="Total"           value="—" hint="awaits backend" />
+            <Kpi testid="inbox-kpi-urgent" label="Urgent"         value="—" hint="customs holds" accent="var(--badge-red-text)" />
+            <Kpi testid="inbox-kpi-approval" label="Approvals"    value="—" hint="awaiting action" />
+            <Kpi testid="inbox-kpi-today" label="Today"           value="—" hint="last 24h" />
+          </div>
+
+          <SectionTitle>Queue</SectionTitle>
+          <Empty testid="inbox-empty">
+            Inbox queue endpoint pending. While shell is live:<br />
+            – Email queue: <code>/api/v1/admin/email-queue</code> (read exists, not aggregated here yet)<br />
+            – Action proposals: <code>routes_action_proposals.py</code><br />
+            – Customs holds: <code>/dashboard/batches</code> filtered by clearance_status<br />
+            Sprint 02 aggregates these into a single feed.
+          </Empty>
+
+          <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+            <Btn variant="outline" small disabled testid="inbox-retry-btn"
+                 title="Retry-failed write endpoint not exposed yet.">Retry Failed</Btn>
+            <Btn variant="outline" small disabled testid="inbox-refresh-btn"
+                 title="Backend feed not yet wired.">↻ Refresh</Btn>
+          </div>
+        </div>
+      </>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

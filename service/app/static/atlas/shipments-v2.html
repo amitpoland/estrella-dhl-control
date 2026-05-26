@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shipments — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react" src="/dashboard/atlas/atlas-shared.js"></script>
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { PageHeader, NavStrip, TierBanner, Btn, Badge, Empty, Loading, ErrorBanner, SectionTitle, ageStr, shortId } = window.AtlasShared;
+
+  function statusBadgeTone(status) {
+    switch ((status || '').toLowerCase()) {
+      case 'success':  return 'green';
+      case 'partial':  return 'amber';
+      case 'blocked':  return 'red';
+      case 'failed':   return 'red';
+      case 'draft':    return 'neutral';
+      case 'ready':    return 'purple';
+      case 'processing': return 'blue';
+      case 'in_preparation': return 'amber';
+      default:         return 'neutral';
+    }
+  }
+
+  function useBatches() {
+    const [data, setData] = React.useState(null);
+    const [error, setError] = React.useState(null);
+    const [loading, setL] = React.useState(true);
+    React.useEffect(() => {
+      let cancelled = false;
+      (async () => {
+        try {
+          const res = await fetch('/dashboard/batches', { credentials: 'include' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const json = await res.json();
+          if (!cancelled) setData(Array.isArray(json.batches) ? json.batches : []);
+        } catch (e) { if (!cancelled) setError(e.message || String(e)); }
+        finally { if (!cancelled) setL(false); }
+      })();
+      return () => { cancelled = true; };
+    }, []);
+    return { data, error, loading };
+  }
+
+  function App() {
+    const { data: batches, error, loading } = useBatches();
+    const all = batches || [];
+
+    const actions = (
+      <>
+        <Btn variant="outline" small disabled testid="ship-api-checklist-btn"
+             title="API Checklist available in V1 only (Sprint 11).">API Checklist</Btn>
+        <Btn variant="outline" small disabled testid="ship-export-btn"
+             title="Batch-list CSV export endpoint pending (Sprint 14).">↓ Export CSV</Btn>
+        <Btn variant="primary" small disabled testid="ship-new-btn"
+             title="NewShipmentModal is V1 only; ships in Sprint 03.">+ New Shipment</Btn>
+      </>
+    );
+
+    return (
+      <>
+        <PageHeader title="Shipments" subtitle="All shipments · read-only Atlas view · click any row to open detail" actions={actions} />
+        <NavStrip current="shipments" />
+        <div className="atlas-content">
+          <TierBanner testid="shipments-tier-banner">
+            <strong>Read-only Atlas view.</strong> All writes (delete file, regenerate, send DHL, create PZ) stay on the V1 detail page. Sprint 03 builds the dedicated shipment-v2 detail with V2 write surfaces.
+          </TierBanner>
+
+          {error && <ErrorBanner testid="ship-error">Could not load shipments: {error}</ErrorBanner>}
+          {loading && <Loading testid="ship-loading">Loading…</Loading>}
+
+          {!loading && !error && all.length === 0 && <Empty testid="ship-empty">No shipments.</Empty>}
+
+          {!loading && !error && all.length > 0 && (
+            <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+              <table className="atlas-table" data-testid="ship-table">
+                <thead>
+                  <tr>
+                    <th>AWB / Batch</th>
+                    <th>Doc</th>
+                    <th>Carrier</th>
+                    <th>Status</th>
+                    <th>Clearance</th>
+                    <th>PZ</th>
+                    <th style={{textAlign:'right'}}>Net</th>
+                    <th>Age</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {all.slice(0, 200).map(b => (
+                    <tr key={b.batch_id} data-testid={`ship-row-${b.batch_id}`}
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => window.location.href = `/dashboard/shipment-detail.html?batch_id=${encodeURIComponent(b.batch_id)}`}>
+                      <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{shortId(b.batch_id, b.tracking_no)}</td>
+                      <td>{b.doc_no || '—'}</td>
+                      <td>{b.carrier || '—'}</td>
+                      <td><Badge tone={statusBadgeTone(b.status)}>{b.status || 'unknown'}</Badge></td>
+                      <td>{b.clearance_status ? <Badge tone={b.clearance_status === 'cleared' ? 'green' : 'amber'}>{b.clearance_status}</Badge> : '—'}</td>
+                      <td>{b.pz_status ? <Badge tone={b.pz_status === 'confirmed' ? 'green' : 'neutral'}>{b.pz_status}</Badge> : '—'}</td>
+                      <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{b.net != null ? b.net : '—'}</td>
+                      <td style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{ageStr(b.timestamp)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

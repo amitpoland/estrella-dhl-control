@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PZ — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react" src="/dashboard/atlas/atlas-shared.js"></script>
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { PageHeader, NavStrip, TierBanner, Btn, Badge, Empty, SectionTitle } = window.AtlasShared;
+
+  function App() {
+    const actions = (
+      <>
+        <Btn variant="outline" small disabled testid="pz-api-checklist-btn"
+             title="API Checklist V1 only (Sprint 11).">API Checklist</Btn>
+        <Btn variant="primary" small disabled testid="pz-create-btn"
+             title="wFirma PZ create owned by routes_wfirma.py pz_create / pz_adopt / pz_confirm. V2 surface ships in Sprint 07 + pz-correction-v2 collision resolved.">+ Create PZ</Btn>
+      </>
+    );
+
+    return (
+      <>
+        <PageHeader title="PZ — Goods Receipts"
+          subtitle="wFirma PZ creation · correction lifecycle · adopt / confirm flows — Atlas shell, writes deferred"
+          actions={actions} />
+        <NavStrip current="pz" />
+        <div className="atlas-content">
+          <TierBanner testid="pz-tier-banner">
+            <strong>Visual shell — Phase One stub.</strong> PZ list endpoint does not exist publicly (today exposed only per-batch via <code>/api/v1/pz/lineage/&#123;batch_id&#125;</code>). Sprint 07 owner. Also: <code>pz-correction-v2-uxmod</code> campaign overlaps with this surface — collision resolution required before Sprint 07 fires (see PHASE_0_AUDIT.md §C.6).
+          </TierBanner>
+
+          <SectionTitle>Recent PZ activity</SectionTitle>
+          <Empty testid="pz-empty">
+            PZ list endpoint not yet implemented. To work with a specific PZ today:<br />
+            1. Open the shipment from the <a href="/dashboard/atlas/shipments-v2.html" style={{ color: 'var(--accent)' }}>Shipments</a> page.<br />
+            2. Use the V1 PZ panel on shipment-detail.html.<br />
+            3. PZ correction workflow lives on the same V1 page until Sprint 07 + pz-correction-v2 cutover.
+          </Empty>
+
+          <SectionTitle>Actions</SectionTitle>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Btn variant="outline" small disabled testid="pz-preview-btn"
+                 title="PZ preview reads exist per-batch; aggregator pending Sprint 07.">Preview</Btn>
+            <Btn variant="outline" small disabled testid="pz-adopt-btn"
+                 title="wFirma PZ adopt is a backend write owned by global_pz_push.py. No V2 surface yet. Sprint 07.">Adopt</Btn>
+            <Btn variant="outline" small disabled testid="pz-confirm-btn"
+                 title="wFirma PZ confirm is a backend write. No V2 surface yet. Sprint 07.">Confirm</Btn>
+            <Btn variant="outline" small disabled testid="pz-export-btn"
+                 title="PZ export endpoint not yet exposed. Sprint 07.">↓ Export</Btn>
+            <Btn variant="outline" small disabled testid="pz-correction-btn"
+                 title="PZ Correction lifecycle is owned by pz-correction-v2-uxmod campaign — collision must be resolved before this surfaces here.">Correction</Btn>
+          </div>
+        </div>
+      </>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

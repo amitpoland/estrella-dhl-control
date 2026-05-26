@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ledgers — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react" src="/dashboard/atlas/atlas-shared.js"></script>
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { PageHeader, NavStrip, Btn, Badge, Kpi, Empty, Loading, ErrorBanner, SectionTitle, fmtMoney } = window.AtlasShared;
+
+  function useClients() {
+    const [data, setData] = React.useState(null);
+    const [error, setError] = React.useState(null);
+    const [loading, setL] = React.useState(true);
+    React.useEffect(() => {
+      let cancelled = false;
+      (async () => {
+        try {
+          const res = await fetch('/api/v1/customer-master/', { credentials: 'include' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const json = await res.json();
+          if (!cancelled) {
+            // routes_customer_master returns one of: {customers: [...]} or array
+            const list = Array.isArray(json) ? json :
+                         Array.isArray(json.customers) ? json.customers :
+                         Array.isArray(json.items) ? json.items : [];
+            setData(list);
+          }
+        } catch (e) { if (!cancelled) setError(e.message || String(e)); }
+        finally { if (!cancelled) setL(false); }
+      })();
+      return () => { cancelled = true; };
+    }, []);
+    return { data, error, loading };
+  }
+
+  function useStatement(contractorId) {
+    const [data, setData] = React.useState(null);
+    const [error, setError] = React.useState(null);
+    const [loading, setL] = React.useState(false);
+    React.useEffect(() => {
+      if (!contractorId) { setData(null); return; }
+      let cancelled = false;
+      setL(true);
+      (async () => {
+        try {
+          const res = await fetch(`/api/v1/ledgers/clients/${encodeURIComponent(contractorId)}/statement.json`, { credentials: 'include' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const json = await res.json();
+          if (!cancelled) { setData(json); setError(null); }
+        } catch (e) { if (!cancelled) setError(e.message || String(e)); }
+        finally { if (!cancelled) setL(false); }
+      })();
+      return () => { cancelled = true; };
+    }, [contractorId]);
+    return { data, error, loading };
+  }
+
+  function ClientList({ clients, selected, onSelect }) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: '70vh', overflowY: 'auto' }} data-testid="ledger-client-list">
+        {clients.map(c => {
+          const id = c.contractor_id || c.id;
+          const name = c.name || c.client_name || c.business_name || id;
+          const isSelected = id === selected;
+          return (
+            <button key={id}
+              data-testid={`ledger-client-${id}`}
+              onClick={() => onSelect(id)}
+              style={{
+                textAlign: 'left', padding: '8px 12px',
+                background: isSelected ? 'var(--accent-subtle)' : 'var(--card)',
+                border: '1px solid ' + (isSelected ? 'var(--accent-border)' : 'var(--border)'),
+                borderRadius: 6, cursor: 'pointer', font: 'inherit',
+              }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace' }}>{id}</div>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function StatementPanel({ contractorId }) {
+    const { data, error, loading } = useStatement(contractorId);
+    if (!contractorId) return <Empty testid="ledger-no-selection">Select a client from the list to view their statement.</Empty>;
+    if (loading) return <Loading testid="ledger-statement-loading">Loading statement…</Loading>;
+    if (error) return <ErrorBanner testid="ledger-statement-error">Statement load failed: {error}</ErrorBanner>;
+    if (!data) return <Empty>No statement data.</Empty>;
+
+    const rows = data.lines || data.transactions || data.entries || [];
+    const balance = data.balance ?? data.total_balance ?? data.outstanding;
+    const currency = data.currency || 'PLN';
+
+    return (
+      <div data-testid="ledger-statement">
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div>
+            <h2 className="atlas-h2">{data.client_name || data.contractor_name || contractorId}</h2>
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-3)' }}>Source · wFirma · read-only</p>
+          </div>
+          <Btn variant="primary" small testid="ledger-download-pdf"
+               title="Statement PDF download. Lesson G: backend sets Cache-Control: no-store."
+               onClick={() => window.open(`/api/v1/ledgers/clients/${encodeURIComponent(contractorId)}/statement.pdf`, '_blank')}>
+            ↓ Statement PDF
+          </Btn>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 14 }}>
+          <Kpi testid="ledger-kpi-balance" label="Balance" value={balance != null ? fmtMoney(balance, currency) : '—'} hint="from wFirma" accent="var(--accent)" />
+          <Kpi testid="ledger-kpi-lines" label="Entries" value={rows.length} hint="transactions" />
+          <Kpi testid="ledger-kpi-currency" label="Currency" value={currency} hint="ledger denomination" />
+        </div>
+
+        <SectionTitle>Transactions</SectionTitle>
+        {rows.length === 0 ? <Empty>No transactions in this statement.</Empty> : (
+          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+            <table className="atlas-table">
+              <thead>
+                <tr><th>Date</th><th>Doc</th><th>Description</th><th style={{textAlign:'right'}}>Debit</th><th style={{textAlign:'right'}}>Credit</th><th style={{textAlign:'right'}}>Balance</th></tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, 200).map((r, i) => (
+                  <tr key={i} data-testid={`ledger-row-${i}`}>
+                    <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{r.date || r.document_date || '—'}</td>
+                    <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{r.doc_no || r.document_number || r.ref || '—'}</td>
+                    <td>{r.description || r.title || r.kind || '—'}</td>
+                    <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{r.debit != null ? fmtMoney(r.debit, '') : ''}</td>
+                    <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{r.credit != null ? fmtMoney(r.credit, '') : ''}</td>
+                    <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{r.balance != null ? fmtMoney(r.balance, '') : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function App() {
+    const { data: clients, error, loading } = useClients();
+    const [selected, setSelected] = React.useState(null);
+    const [tab, setTab] = React.useState('clients'); // 'clients' | 'suppliers'
+
+    const actions = (
+      <>
+        <Btn variant="outline" small disabled testid="ledger-export-btn"
+             title="CSV export endpoint pending (Sprint 15 backend).">↓ Export CSV</Btn>
+      </>
+    );
+
+    return (
+      <>
+        <PageHeader title="Ledgers"
+          subtitle="Client and supplier statements · source: wFirma · read-only · statement PDF cached per Lesson G"
+          actions={actions} />
+        <NavStrip current="ledgers" />
+        <div className="atlas-content">
+
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+            <Btn variant={tab === 'clients' ? 'primary' : 'outline'} small testid="ledger-tab-clients"
+                 onClick={() => setTab('clients')}>Clients</Btn>
+            <Btn variant="outline" small disabled testid="ledger-tab-suppliers"
+                 title="Supplier-ledger endpoint not yet implemented. Will ship in Sprint 15.">Suppliers</Btn>
+          </div>
+
+          {error && <ErrorBanner testid="ledger-error">Could not load clients: {error}</ErrorBanner>}
+          {loading && <Loading testid="ledger-loading">Loading clients…</Loading>}
+
+          {!loading && !error && tab === 'clients' && (
+            <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16 }} className="atlas-grid-2">
+              {clients?.length === 0 ? (
+                <Empty>No clients found.</Empty>
+              ) : (
+                <ClientList clients={clients || []} selected={selected} onSelect={setSelected} />
+              )}
+              <StatementPanel contractorId={selected} />
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

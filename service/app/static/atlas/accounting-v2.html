@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Accounting — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react" src="/dashboard/atlas/atlas-shared.js"></script>
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { PageHeader, NavStrip, TierBanner, Btn, Badge, Empty, SectionTitle } = window.AtlasShared;
+
+  // Each section maps to an existing per-domain V1/V2 surface — no consolidated
+  // reader exists yet (Sprint 14 owner). Stubs show deep-link to current home.
+  const SECTIONS = [
+    { id: 'pi',   label: 'Proforma',         tone: 'blue',    code: 'PI',   home: '/dashboard/proforma-v2.html', homeLabel: 'Open Proforma V2' },
+    { id: 'inv',  label: 'Invoice',          tone: 'green',   code: 'INV',  home: '/dashboard/dashboard.html#documents', homeLabel: 'Open V1 Documents' },
+    { id: 'cn',   label: 'Credit Note',      tone: 'amber',   code: 'CN',   home: '/dashboard/dashboard.html#documents', homeLabel: 'Open V1 Documents' },
+    { id: 'wz',   label: 'WZ — Outbound',    tone: 'purple',  code: 'WZ',   home: '/dashboard/dashboard.html#documents', homeLabel: 'Open V1 Documents' },
+    { id: 'pz',   label: 'PZ — Inbound',     tone: 'accent',  code: 'PZ',   home: '/dashboard/atlas/pz-v2.html', homeLabel: 'Open PZ shell' },
+    { id: 'pw',   label: 'PW — Internal in', tone: 'blue',    code: 'PW',   home: '/dashboard/dashboard.html#documents', homeLabel: 'Open V1 Documents' },
+    { id: 'rw',   label: 'RW — Internal out',tone: 'red',     code: 'RW',   home: '/dashboard/dashboard.html#documents', homeLabel: 'Open V1 Documents' },
+    { id: 'mm',   label: 'MM — Transfer',    tone: 'neutral', code: 'MM',   home: '/dashboard/dashboard.html#documents', homeLabel: 'Open V1 Documents' },
+    { id: 'bal',  label: 'Client Balance',   tone: 'green',   code: 'BAL',  home: '/dashboard/atlas/ledgers-v2.html', homeLabel: 'Open Ledgers' },
+    { id: 'cled', label: 'Client Ledger',    tone: 'blue',    code: 'CL',   home: '/dashboard/atlas/ledgers-v2.html', homeLabel: 'Open Ledgers' },
+    { id: 'sled', label: 'Supplier Ledger',  tone: 'purple',  code: 'SL',   home: null, homeLabel: 'Supplier ledger endpoint pending' },
+    { id: 'wf',   label: 'wFirma Sync',      tone: 'amber',   code: 'WF',   home: '/dashboard/dashboard.html#wfirma_setup', homeLabel: 'Open V1 wFirma Setup' },
+  ];
+
+  function App() {
+    const actions = (
+      <>
+        <Btn variant="outline" small disabled testid="acc-api-checklist-btn"
+             title="API Checklist V1 only.">API Checklist</Btn>
+        <Btn variant="outline" small disabled testid="acc-sync-wfirma-btn"
+             title="wFirma sync trigger is a backend write owned by routes_wfirma.py — no V2 trigger yet (Sprint 14).">↻ Sync wFirma</Btn>
+        <Btn variant="outline" small disabled testid="acc-export-btn"
+             title="Consolidated accounting export pending (Sprint 14).">↓ Export</Btn>
+      </>
+    );
+
+    return (
+      <>
+        <PageHeader title="Accounting"
+          subtitle="Proforma · Invoice · Credit · WZ · PZ · PW · RW · MM · Client Balance · Client Ledger · Supplier Ledger · wFirma Sync"
+          actions={actions} />
+        <NavStrip current="accounting" />
+        <div className="atlas-content">
+          <TierBanner testid="acc-tier-banner">
+            <strong>Visual shell — Phase One stub.</strong> No consolidated accounting reader exists today. Data spans 6 backend route files (<code>routes_proforma</code>, <code>routes_wfirma</code>, <code>routes_sales</code>, <code>routes_finance_postings</code>, <code>routes_suppliers</code>, <code>routes_ledgers</code>). Sprint 14 builds the aggregator. Each section below deep-links to its current home.
+          </TierBanner>
+
+          <SectionTitle>Document types</SectionTitle>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }} className="atlas-grid-3">
+            {SECTIONS.map(s => (
+              <div key={s.id} className="atlas-card" data-testid={`acc-section-${s.id}`}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>{s.label}</span>
+                  <Badge tone={s.tone === 'accent' ? 'amber' : s.tone}>{s.code}</Badge>
+                </div>
+                {s.home ? (
+                  <Btn variant="outline" small testid={`acc-open-${s.id}`}
+                       onClick={() => window.location.href = s.home}
+                       title={`Deep-link to ${s.homeLabel}`}>
+                    {s.homeLabel} →
+                  </Btn>
+                ) : (
+                  <Btn variant="outline" small disabled testid={`acc-open-${s.id}`}
+                       title={s.homeLabel}>
+                    {s.homeLabel}
+                  </Btn>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <SectionTitle>Quick actions</SectionTitle>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Btn variant="outline" small disabled testid="acc-filter-btn"
+                 title="Cross-doc filter pending Sprint 14 aggregator.">Filter</Btn>
+            <Btn variant="outline" small disabled testid="acc-period-btn"
+                 title="Period selector pending Sprint 14 aggregator.">Period</Btn>
+            <Btn variant="outline" small disabled testid="acc-party-btn"
+                 title="Party search pending Sprint 14 aggregator.">Party</Btn>
+          </div>
+        </div>
+      </>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Search — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react" src="/dashboard/atlas/atlas-shared.js"></script>
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { PageHeader, NavStrip, Btn, Badge, Empty, Loading, ErrorBanner, SectionTitle } = window.AtlasShared;
+
+  const TYPE_TONES = {
+    customer:  'blue',  supplier: 'purple', product:  'amber',
+    document:  'green', shipment: 'accent', batch:    'neutral',
+  };
+
+  function useSearch(q) {
+    const [data, setData] = React.useState(null);
+    const [error, setError] = React.useState(null);
+    const [loading, setL] = React.useState(false);
+
+    React.useEffect(() => {
+      if (!q || q.length < 2) { setData(null); setError(null); return; }
+      let cancelled = false;
+      setL(true);
+      const t = setTimeout(async () => {
+        try {
+          const res = await fetch(`/api/v1/search?q=${encodeURIComponent(q)}`, { credentials: 'include' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const json = await res.json();
+          if (!cancelled) { setData(json); setError(null); }
+        } catch (e) { if (!cancelled) setError(e.message || String(e)); }
+        finally { if (!cancelled) setL(false); }
+      }, 300); // debounce
+      return () => { clearTimeout(t); cancelled = true; };
+    }, [q]);
+
+    return { data, error, loading };
+  }
+
+  function ResultRow({ row }) {
+    const tone = TYPE_TONES[row.type] || 'neutral';
+    return (
+      <div data-testid={`search-result-${row.id || row.label}`} className="atlas-card"
+        style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, cursor: row.href ? 'pointer' : 'default' }}
+        onClick={() => row.href && (window.location.href = row.href)}>
+        <Badge tone={tone}>{row.type || '—'}</Badge>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {row.label || row.title || row.name || row.id || '(no label)'}
+          </div>
+          {row.sub && <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{row.sub}</div>}
+        </div>
+        {row.href && <span style={{ fontSize: 16, color: 'var(--text-3)' }}>→</span>}
+      </div>
+    );
+  }
+
+  function App() {
+    const [q, setQ] = React.useState('');
+    const { data, error, loading } = useSearch(q);
+
+    // Backend returns one of:
+    //   { results: [...] }  | { items: [...] }  | array of rows
+    // Normalize defensively without inventing fields.
+    let rows = [];
+    if (Array.isArray(data)) rows = data;
+    else if (Array.isArray(data?.results)) rows = data.results;
+    else if (Array.isArray(data?.items)) rows = data.items;
+
+    return (
+      <>
+        <PageHeader title="Search" subtitle="Search across customers · suppliers · products · documents · shipments — backend authority via /api/v1/search" />
+        <NavStrip current="search" />
+        <div className="atlas-content">
+          <input
+            type="text"
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            placeholder="Type to search (min 2 chars)…"
+            data-testid="search-input"
+            style={{
+              width: '100%', padding: '12px 16px', fontSize: 14,
+              background: 'var(--card)', color: 'var(--text)',
+              border: '1px solid var(--border)', borderRadius: 8,
+              fontFamily: 'inherit', marginBottom: 16,
+            }}
+            autoFocus />
+
+          {error && <ErrorBanner testid="search-error">Search failed: {error}</ErrorBanner>}
+          {loading && <Loading testid="search-loading">Searching…</Loading>}
+
+          {!loading && !error && q.length < 2 && (
+            <Empty testid="search-empty-prompt">
+              Type at least 2 characters to begin.<br />
+              <span style={{ fontSize: 10.5 }}>Recent searches will appear here once Sprint 18 ships the recents endpoint.</span>
+            </Empty>
+          )}
+
+          {!loading && !error && q.length >= 2 && rows.length === 0 && (
+            <Empty testid="search-empty-results">No results for "{q}"</Empty>
+          )}
+
+          {!loading && !error && rows.length > 0 && (
+            <div data-testid="search-results">
+              <SectionTitle>{rows.length} result{rows.length === 1 ? '' : 's'}</SectionTitle>
+              {rows.slice(0, 100).map((row, i) => (
+                <ResultRow key={(row.id || row.label || i) + '-' + i} row={row} />
+              ))}
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>
