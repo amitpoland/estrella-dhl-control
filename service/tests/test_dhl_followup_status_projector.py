@@ -244,9 +244,12 @@ def test_shipment_rows_inactive_excluded_eligible_first(patch_storage, monkeypat
     assert rows[1]["status"] == proj.ST_MONITORING
 
 
-# ── 10. drill-down rows: mode = Manual when stopped_at present ───────────────
+# ── 10. drill-down rows: mode_state="unset" when no shipment-level mode set ──
 
-def test_shipment_row_mode_manual_when_stopped(patch_storage, monkeypatch):
+def test_shipment_row_mode_unset_when_no_authority_field(patch_storage, monkeypatch):
+    """A stopped shipment with no audit.followup.mode set MUST render as
+    "unset" / "Default (Global on)" — NOT silently as "Manual".  The
+    projector does not re-derive mode from dhl_followup.stopped_at."""
     monkeypatch.setattr(proj, "_flag_on", lambda: True)
     patch_storage.append(_audit(
         awb="STOPPED_AWB",
@@ -254,7 +257,8 @@ def test_shipment_row_mode_manual_when_stopped(patch_storage, monkeypatch):
     ))
     rows = proj.project_shipment_rows(now=_NOW)
     assert len(rows) == 1
-    assert rows[0]["mode"] == "Manual"
+    assert rows[0]["mode_state"] == "unset"
+    assert rows[0]["mode_label"] == "Default (Global on)"
     assert rows[0]["status"] == proj.ST_STOPPED
 
 
@@ -355,9 +359,9 @@ def test_humanise_age_variants():
     assert proj._humanise_age(now - timedelta(days=3), now).endswith("d ago")
 
 
-# ── 17. mode authority delegation: followup.mode="automatic" → Auto ──────────
+# ── 17. mode authority delegation: followup.mode="automatic" → Automatic ─────
 
-def test_shipment_row_mode_auto_when_authority_says_automatic(patch_storage, monkeypatch):
+def test_shipment_row_mode_automatic_when_authority_says_automatic(patch_storage, monkeypatch):
     """The projector MUST consume audit.followup.mode (PR #373 single authority).
     It must NOT re-derive mode from dhl_followup.active/stopped_at."""
     monkeypatch.setattr(proj, "_flag_on", lambda: True)
@@ -366,18 +370,99 @@ def test_shipment_row_mode_auto_when_authority_says_automatic(patch_storage, mon
     patch_storage.append(a)
     rows = proj.project_shipment_rows(now=_NOW)
     assert len(rows) == 1
-    assert rows[0]["mode"] == "Auto"
+    assert rows[0]["mode_state"] == "automatic"
+    assert rows[0]["mode_label"] == "Automatic"
+    assert rows[0]["mode"] == "Automatic"  # back-compat alias
 
 
-# ── 18. mode authority default: missing followup.mode → Manual ───────────────
+# ── 18. mode authority explicit-manual: followup.mode="manual" → Manual ──────
 
-def test_shipment_row_mode_manual_when_authority_default(patch_storage, monkeypatch):
-    """No audit.followup.mode means default 'manual' per dhl_followup_mode.
-    Even if dhl_followup.active=True (old inference), mode must be Manual."""
+def test_shipment_row_mode_manual_when_authority_explicit_manual(patch_storage, monkeypatch):
+    """When the operator has explicitly set mode="manual", the row renders
+    "Manual" — distinct from the default-fallback "Default" state."""
     monkeypatch.setattr(proj, "_flag_on", lambda: True)
-    a = _audit(awb="DEFAULT_AWB", followup={"active": True})
-    # NOTE: no audit['followup'] block set → authority default = manual
+    a = _audit(awb="EXPLICIT_MANUAL_AWB", followup={"active": True})
+    a["followup"] = {"mode": "manual"}
     patch_storage.append(a)
     rows = proj.project_shipment_rows(now=_NOW)
     assert len(rows) == 1
-    assert rows[0]["mode"] == "Manual"
+    assert rows[0]["mode_state"] == "manual"
+    assert rows[0]["mode_label"] == "Manual"
+
+
+# ── 19. mode authority default + flag-on → "Default (Global on)" ─────────────
+
+def test_shipment_row_mode_unset_default_global_on(patch_storage, monkeypatch):
+    """No audit.followup.mode + global flag ON must render "Default (Global on)"
+    — the mode-wording fix that prevents missing mode from impersonating
+    operator-set "Manual"."""
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    a = _audit(awb="DEFAULT_ON_AWB", followup={"active": True})
+    # No audit['followup'] block set.
+    patch_storage.append(a)
+    rows = proj.project_shipment_rows(now=_NOW)
+    assert len(rows) == 1
+    assert rows[0]["mode_state"] == "unset"
+    assert rows[0]["mode_label"] == "Default (Global on)"
+
+
+# ── 20. mode authority default + flag-off → "Default" ────────────────────────
+
+def test_shipment_row_mode_unset_default_global_off(patch_storage, monkeypatch):
+    """No audit.followup.mode + global flag OFF renders plain "Default"."""
+    monkeypatch.setattr(proj, "_flag_on", lambda: False)
+    a = _audit(awb="DEFAULT_OFF_AWB", followup={"active": True})
+    patch_storage.append(a)
+    rows = proj.project_shipment_rows(now=_NOW)
+    assert len(rows) == 1
+    assert rows[0]["mode_state"] == "unset"
+    assert rows[0]["mode_label"] == "Default"
+
+
+# ── 21. mode_distribution aggregates across active shipments ─────────────────
+
+def test_mode_distribution_aggregation(patch_storage, monkeypatch):
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    a1 = _audit(awb="AUTO_1", followup={"active": True}); a1["followup"] = {"mode": "automatic"}
+    a2 = _audit(awb="AUTO_2", followup={"active": True}); a2["followup"] = {"mode": "automatic"}
+    a3 = _audit(awb="MAN_1",  followup={"active": True}); a3["followup"] = {"mode": "manual"}
+    a4 = _audit(awb="UNSET_1", followup={"active": True})   # no followup.mode
+    a5 = _audit(awb="UNSET_2", followup={"active": True})
+    patch_storage.extend([a1, a2, a3, a4, a5])
+    out = proj.project_automation_status(now=_NOW)
+    assert out["mode_distribution"] == {"automatic": 2, "manual": 1, "unset": 2}
+
+
+# ── 22. missing_shipment_mode_warning truth table ────────────────────────────
+
+def test_missing_shipment_mode_warning_true_when_all_unset_and_flag_on(patch_storage, monkeypatch):
+    """The misleading-UI canary: global flag ON, active shipments > 0, but
+    none have an explicit shipment-level mode set."""
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    patch_storage.append(_audit(awb="X1", followup={"active": True}))
+    patch_storage.append(_audit(awb="X2", followup={"active": True}))
+    out = proj.project_automation_status(now=_NOW)
+    assert out["missing_shipment_mode_warning"] is True
+
+
+def test_missing_shipment_mode_warning_false_when_any_explicit(patch_storage, monkeypatch):
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    a = _audit(awb="EXPLICIT", followup={"active": True}); a["followup"] = {"mode": "automatic"}
+    patch_storage.append(a)
+    patch_storage.append(_audit(awb="DEFAULT_X", followup={"active": True}))
+    out = proj.project_automation_status(now=_NOW)
+    assert out["missing_shipment_mode_warning"] is False
+
+
+def test_missing_shipment_mode_warning_false_when_flag_off(patch_storage, monkeypatch):
+    monkeypatch.setattr(proj, "_flag_on", lambda: False)
+    patch_storage.append(_audit(awb="X1", followup={"active": True}))
+    out = proj.project_automation_status(now=_NOW)
+    assert out["missing_shipment_mode_warning"] is False
+
+
+def test_missing_shipment_mode_warning_false_when_no_active(patch_storage, monkeypatch):
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    patch_storage.append(_audit(awb="DEL", delivered=True))  # excluded from active
+    out = proj.project_automation_status(now=_NOW)
+    assert out["missing_shipment_mode_warning"] is False

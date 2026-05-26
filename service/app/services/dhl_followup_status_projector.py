@@ -111,22 +111,42 @@ def _awb_of(audit: Dict[str, Any]) -> str:
     return str(audit.get("awb") or audit.get("tracking_no") or "").strip()
 
 
-def _mode_label(audit: Dict[str, Any]) -> str:
-    """Read shipment-level follow-up mode from the SINGLE authority.
+def _mode_fields(audit: Dict[str, Any], flag_on: bool) -> Dict[str, str]:
+    """Read shipment-level follow-up mode from the SINGLE authority and
+    produce truthful UI fields.
 
-    Delegates to ``dhl_followup_mode.get_mode(audit)`` (PR #373 single-authority
-    rule). NEVER re-derive mode from ``dhl_followup.active``/``stopped_at`` —
-    that would create a second authority and violates the operator's hard rule
-    against authority duplication.
+    Delegates to ``dhl_followup_mode.get_mode`` + ``is_mode_explicit`` (PR #373
+    single-authority rule). NEVER re-derive mode from ``dhl_followup.active`` /
+    ``stopped_at`` — that would create a second authority.
 
-    Returns "Auto" when authority says "automatic", else "Manual".
+    State matrix (truth-table for the UI):
+
+      | mode field on audit | global flag | mode_state    | mode_label              |
+      |---------------------|-------------|---------------|-------------------------|
+      | "automatic"         | any         | "automatic"   | "Automatic"             |
+      | "manual" (explicit) | any         | "manual"      | "Manual"                |
+      | missing / invalid   | true        | "unset"       | "Default (Global on)"   |
+      | missing / invalid   | false       | "unset"       | "Default"               |
+
+    The "unset" state is the critical fix: previously this was silently
+    rendered as "Manual", making the default look like an operator decision.
     """
     try:
-        from .dhl_followup_mode import get_mode
-        return "Auto" if get_mode(audit) == "automatic" else "Manual"
+        from .dhl_followup_mode import get_mode, is_mode_explicit
+        explicit = is_mode_explicit(audit)
+        if explicit:
+            resolved = get_mode(audit)  # "manual" or "automatic"
+            if resolved == "automatic":
+                return {"mode_state": "automatic", "mode_label": "Automatic"}
+            return {"mode_state": "manual", "mode_label": "Manual"}
+        # Not explicitly set on the audit — show truthful "Default" rather
+        # than impersonating an operator-set "Manual".
+        if flag_on:
+            return {"mode_state": "unset", "mode_label": "Default (Global on)"}
+        return {"mode_state": "unset", "mode_label": "Default"}
     except Exception as exc:
-        log.warning("status_projector: dhl_followup_mode.get_mode failed: %s", exc)
-        return "Manual"
+        log.warning("status_projector: dhl_followup_mode lookup failed: %s", exc)
+        return {"mode_state": "unset", "mode_label": "Default"}
 
 
 def _shipment_status(
@@ -333,6 +353,9 @@ def project_automation_status(*, now: Optional[datetime] = None) -> Dict[str, An
     eligible_now    = 0
     suppressed_now  = 0
     failed_now      = 0
+    mode_automatic  = 0
+    mode_manual     = 0
+    mode_unset      = 0
     next_due_pick:  Optional[Tuple[datetime, str, str]] = None  # (dt, awb, batch_id)
 
     for audit in audits:
@@ -342,6 +365,14 @@ def project_automation_status(*, now: Optional[datetime] = None) -> Dict[str, An
         active_count += 1
         state = audit.get("dhl_followup") or {}
         status, next_dt = _shipment_status(audit, active, state, now)
+        mf = _mode_fields(audit, flag_on)
+        ms = mf["mode_state"]
+        if ms == "automatic":
+            mode_automatic += 1
+        elif ms == "manual":
+            mode_manual += 1
+        else:
+            mode_unset += 1
         if status == ST_MONITORING:
             monitoring += 1
             if next_dt and (next_due_pick is None or next_dt < next_due_pick[0]):
@@ -396,6 +427,20 @@ def project_automation_status(*, now: Optional[datetime] = None) -> Dict[str, An
             "waiting":  monitoring,
             "problems": failed_now + suppressed_now,
         },
+        "mode_distribution": {
+            "automatic": mode_automatic,
+            "manual":    mode_manual,
+            "unset":     mode_unset,
+        },
+        # True iff global auto-send is on, there ARE active shipments,
+        # but NONE of them have an explicit shipment-level mode set.
+        # This is the "all-Manual looks like operator decision but is
+        # actually default" misleading-UI condition.
+        "missing_shipment_mode_warning": bool(
+            flag_on
+            and active_count > 0
+            and (mode_automatic + mode_manual) == 0
+        ),
         "generated_at":      now.isoformat(),
     }
 
@@ -410,13 +455,20 @@ def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, A
       }
 
     Mode:
-      Delegates to ``dhl_followup_mode.get_mode(audit)`` (PR #373 single
-      authority). "Auto" iff authority returns "automatic", else "Manual".
+      Delegates to ``dhl_followup_mode.get_mode`` + ``is_mode_explicit``
+      (PR #373 single authority). Each row exposes BOTH:
+
+        - ``mode_state``: machine-readable ``"automatic" | "manual" | "unset"``
+        - ``mode_label``: human-readable; truthfully distinguishes
+          operator-set "Manual" from default-fallback "Default".
+
       The projector NEVER re-derives mode from active/stopped flags.
+      ``mode`` is preserved as a back-compat alias for ``mode_label``.
     """
     if now is None:
         now = _now_utc()
 
+    flag_on = _flag_on()
     rows: List[Dict[str, Any]] = []
     for p in _audit_paths():
         audit = _read_audit(p)
@@ -427,7 +479,7 @@ def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, A
             continue
         state = audit.get("dhl_followup") or {}
         status, next_dt = _shipment_status(audit, active, state, now)
-        mode = _mode_label(audit)
+        mf = _mode_fields(audit, flag_on)
 
         last_scan_dt = _parse_iso((audit.get("email_ingestion") or {}).get("last_scan_at"))
         last_evt = _latest_followup_event(audit)
@@ -437,7 +489,9 @@ def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, A
         rows.append({
             "awb":             _awb_of(audit),
             "batch_id":        str(audit.get("batch_id") or ""),
-            "mode":            mode,
+            "mode":            mf["mode_label"],  # back-compat alias
+            "mode_label":      mf["mode_label"],
+            "mode_state":      mf["mode_state"],
             "status":          status,
             "next_due_at":     next_dt.isoformat() if next_dt else None,
             "next_due_human":  _humanise_age(next_dt, now) if next_dt else None,

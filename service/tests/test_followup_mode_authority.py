@@ -33,7 +33,7 @@ from app.services.dhl_followup_guard import (
     record_idempotency_key_into_audit,
 )
 from app.services.dhl_followup_mode import (
-    get_mode, set_mode, is_automatic, DEFAULT_MODE,
+    get_mode, set_mode, is_automatic, is_mode_explicit, DEFAULT_MODE,
 )
 
 
@@ -179,6 +179,41 @@ def test_default_mode_is_manual_when_unset():
     assert get_mode(a) == "manual"
     assert is_automatic(a) is False
     assert DEFAULT_MODE == "manual"
+
+
+# ── is_mode_explicit — distinguish operator-set from default-fallback ────────
+
+def test_is_mode_explicit_true_when_authority_set_to_manual():
+    a = _base_audit()
+    a["followup"] = {"mode": "manual"}
+    assert is_mode_explicit(a) is True
+
+
+def test_is_mode_explicit_true_when_authority_set_to_automatic():
+    a = _base_audit()  # fixture default sets mode="automatic"
+    assert is_mode_explicit(a) is True
+
+
+def test_is_mode_explicit_false_when_followup_block_missing():
+    a = _base_audit()
+    a.pop("followup", None)
+    assert is_mode_explicit(a) is False
+    # And get_mode still returns the safe default
+    assert get_mode(a) == "manual"
+
+
+def test_is_mode_explicit_false_when_mode_field_missing():
+    a = _base_audit()
+    a["followup"] = {}  # block present, but mode field absent
+    assert is_mode_explicit(a) is False
+
+
+def test_is_mode_explicit_false_when_mode_invalid():
+    a = _base_audit()
+    a["followup"] = {"mode": "garbage"}
+    assert is_mode_explicit(a) is False
+    # get_mode falls back to default
+    assert get_mode(a) == "manual"
 
 
 # ── 6. Duplicate send impossible (idempotency key reuse blocked) ────────────
