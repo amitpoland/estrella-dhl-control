@@ -1,9 +1,12 @@
 """
-routes_dhl_followup.py — Manual control over DHL follow-up SLA per batch.
+routes_dhl_followup.py — DHL follow-up control per batch (single-authority).
 
 Endpoints:
+  GET  /api/v1/dhl-followup/{batch_id}/mode          — read current follow-up mode + telemetry
+  POST /api/v1/dhl-followup/{batch_id}/mode          — set follow-up mode {manual|automatic}
+  GET  /api/v1/dhl-followup/{batch_id}/auto/preview  — preview gates + draft body (read-only)
   POST /api/v1/dhl-followup/{batch_id}/stop          — operator stops SLA
-  POST /api/v1/dhl-followup/{batch_id}/send-now      — fire a follow-up now
+  POST /api/v1/dhl-followup/{batch_id}/send-now      — fire a follow-up now (operator-explicit)
   POST /api/v1/dhl-followup/{batch_id}/recalculate   — recompute next_followup_at
 """
 from __future__ import annotations
@@ -128,63 +131,119 @@ def send_now_endpoint(batch_id: str, body: SendNowReq) -> Dict[str, Any]:
     return {"ok": out.get("ok"), "send_result": out, "state": audit.get("dhl_followup")}
 
 
-# ── Auto-send preview + run (Phase 3) ────────────────────────────────────────
+# ── Mode authority (single-authority model, 2026-05-26) ─────────────────────
+# Shipment-level follow-up mode is the sole switch between manual and
+# automatic. The global DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP env flag remains
+# the emergency kill-all. When the global flag is OFF, no shipment auto-
+# sends regardless of mode. When ON, only shipments with mode=automatic
+# may auto-send (subject to all canonical guard gates). The Inbox toggles
+# this state; the monitor reads it via dhl_followup_guard.
+
+class SetModeReq(BaseModel):
+    mode:     str
+    operator: Optional[str] = None
+
+
+@router.get("/{batch_id}/mode", dependencies=[_auth])
+def get_mode_endpoint(batch_id: str) -> Dict[str, Any]:
+    """Return current follow-up mode + UI telemetry (last scan, next due)."""
+    from ..services.dhl_followup_mode import mode_telemetry
+    p = _audit_path(batch_id)
+    audit = json.loads(p.read_text(encoding="utf-8"))
+    return mode_telemetry(audit)
+
+
+@router.post("/{batch_id}/mode", dependencies=[_auth])
+def set_mode_endpoint(batch_id: str, body: SetModeReq) -> Dict[str, Any]:
+    """Persist a new follow-up mode on the shipment. Audited.
+
+    Valid modes: 'manual', 'automatic'. Setting the same mode is a no-op.
+    Operator name is recorded in the timeline event 'dhl_followup_mode_changed'.
+    """
+    from ..services.dhl_followup_mode import set_mode
+    p = _audit_path(batch_id)
+    audit = json.loads(p.read_text(encoding="utf-8"))
+    op = (body.operator or "operator_inbox").strip() or "operator_inbox"
+    try:
+        result = set_mode(p, audit, body.mode, operator=op)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, **result}
+
+
+# ── Preview (read-only — uses canonical guard + deterministic builder) ──────
 
 @router.get("/{batch_id}/auto/preview", dependencies=[_auth])
 def auto_preview_endpoint(batch_id: str) -> Dict[str, Any]:
-    """Evaluate auto-send gates AND build the draft body without sending.
+    """Evaluate the canonical follow-up guard AND build the draft body
+    without sending. Read-only — never sends, never writes.
 
-    Powers the Inbox preview modal. Read-only — never sends, never writes.
-    Returns the same shape as try_auto_send but with decision='preview' and
-    no queue_id / no audit mutation.
+    Single-authority guarantee: uses the SAME guard that the monitor
+    sweep calls (``dhl_followup_guard.validate_followup_send_preconditions``).
+    What you see in preview is exactly what the monitor would (or would
+    not) send.
+
+    AI polish is opportunistic — handled by
+    ``ai_dhl_followup_drafter.enhance_email_body`` when available; falls
+    back silently to the deterministic body on any error.
     """
-    from ..services.dhl_followup_auto_sender import evaluate_gates, draft_followup
+    from ..services.dhl_followup_email_builder import build_dhl_followup_email
+    from ..services.dhl_followup_guard         import validate_followup_send_preconditions
+    from ..services.dhl_followup_mode          import get_mode, mode_telemetry
 
     p = _audit_path(batch_id)
     audit = json.loads(p.read_text(encoding="utf-8"))
-    verdict = evaluate_gates(p, audit)
+
+    # Build deterministic package + optional AI polish (same code path as monitor)
+    ai_used = False
+    ai_model: Optional[str] = None
+    pkg: Dict[str, Any]
     try:
-        pkg = draft_followup(audit, batch_id, use_ai=True)
-        preview_pkg = {
+        pkg = build_dhl_followup_email(audit, batch_id)
+        try:
+            from ..services.ai_dhl_followup_drafter import enhance_email_body
+            draft = enhance_email_body(audit, batch_id, pkg)
+            pkg = {**pkg, **draft.get("pkg_updates", {})}
+            ai_used  = bool(draft.get("ai_used"))
+            ai_model = draft.get("model_used")
+        except Exception as exc:
+            log.debug("[preview] ai_dhl_followup_drafter non-fatal: %s", exc)
+    except Exception as exc:
+        return {
+            "ok":      False,
+            "error":   f"build_failed: {exc}",
+            "mode":    get_mode(audit),
+            "telemetry": mode_telemetry(audit),
+        }
+
+    # Canonical guard — same call the monitor makes.
+    guard = validate_followup_send_preconditions(audit, pkg)
+
+    return {
+        "ok":        True,
+        "decision":  "preview",
+        "mode":      get_mode(audit),
+        "guard": {
+            "ok":              guard.ok,
+            "reason":          guard.reason,
+            "idempotency_key": guard.idempotency_key,
+            "primary_to":      guard.primary_to,
+            "cc_count":        guard.cc_count,
+            "attach_count":    guard.attach_count,
+            "sla_age_min":     guard.sla_age_min,
+            "ingest_age_min":  guard.ingest_age_min,
+        },
+        "package": {
             "to":           pkg.get("to"),
             "cc":           pkg.get("cc"),
             "subject":      pkg.get("subject"),
             "body_text":    pkg.get("body_text"),
             "followup_seq": pkg.get("followup_seq"),
-            "draft_source": pkg.get("draft_source"),
-        }
-    except Exception as exc:
-        preview_pkg = {"error": f"draft_failed: {exc}"}
-    return {
-        "decision":   "preview",
-        "gates":      verdict["gates"],
-        "first_failed": verdict["first_failed"],
-        "package":    preview_pkg,
-        "evidence":   {g["name"]: g["evidence"] for g in verdict["gates"]},
+            "ai_used":      ai_used,
+            "ai_model":     ai_model,
+        },
+        "telemetry": mode_telemetry(audit),
     }
-
-
-class AutoRunReq(BaseModel):
-    operator:  Optional[str] = None
-    force_sla: bool          = False
-
-
-@router.post("/{batch_id}/auto/run", dependencies=[_auth])
-def auto_run_endpoint(batch_id: str, body: AutoRunReq = AutoRunReq()) -> Dict[str, Any]:
-    """Run the autonomous send pipeline NOW for one batch.
-
-    Operator-triggered manual variant of the monitor sweep behavior.
-    Enforces the same seven gates. `force_sla=True` permits skipping the
-    SLA wait gate only — every other gate (active/ingest/evidence/safe/
-    package/idempotency) remains enforced.
-    """
-    from ..services.dhl_followup_auto_sender import try_auto_send
-
-    p = _audit_path(batch_id)
-    audit = json.loads(p.read_text(encoding="utf-8"))
-    op = (body.operator or "operator_inbox").strip() or "operator_inbox"
-    result = try_auto_send(p, audit, operator=op, force_sla=bool(body.force_sla))
-    return result
 
 
 # ── Recalculate ──────────────────────────────────────────────────────────────

@@ -605,35 +605,84 @@ function inboxActionsFor(row, raw) {
     const batchId = row.batch_id;
     const dhlStatus = (raw && (raw.dhlStatus || (raw._raw && raw._raw.dhlStatus))) || '';
 
-    // DHL waiting (no email back yet) → preview + run auto-followup actions.
-    // The execute endpoint enforces 7 gates server-side; force_sla=true is
-    // for the inbox "send now" variant (skips wait only).
+    // DHL waiting → single-authority mode model (2026-05-26):
+    //   audit.followup.mode ∈ {manual, automatic}, default manual.
+    //   Inbox surfaces preview (read-only, always),
+    //     mode toggle (manual ↔ automatic),
+    //     send-now (manual mode only).
+    //   Monitor reads the same audit.followup.mode via dhl_followup_guard.
+    //   Global emergency switch DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP must be ON
+    //   for any auto-send; mode=automatic alone is not sufficient.
     const isAwaitingDhl = dhlStatus === 'Awaiting DHL' || dhlStatus === '';
     const dhlEmailReceived = dhlStatus === 'DHL Email Received';
+    const followupMode = (raw && raw.followup_mode) || (b && (b.followup && b.followup.mode)) || 'manual';
     if (batchId && isAwaitingDhl && !dhlEmailReceived) {
+      // 1) Preview (read-only) — uses canonical guard; always available
       actions.push({
         id: 'dhl_followup.preview',
-        label: 'Preview DHL follow-up',
+        label: 'Preview',
         tone: 'neutral',
         preview_endpoint: `/api/v1/dhl-followup/${encodeURIComponent(batchId)}/auto/preview`,
-        execute_endpoint: `/api/v1/dhl-followup/${encodeURIComponent(batchId)}/auto/run`,
-        method: 'POST',
-        requires_reason: false,
-        body_template: { force_sla: true },
-        requires_confirmation: true,
-        risk_level: 'high',                          // EXTERNAL SEND (DHL)
-        audit_event: 'dhl_followup_auto_sent',
+        // No execute — pure read. Modal "Confirm" button is suppressed because
+        // execute_endpoint is empty; preview-only flow.
+        method: 'GET',
+        read_only: true,
+        requires_confirmation: false,
+        risk_level: 'low',
       });
+      // 2) Mode toggle — distinct action per current mode for clarity
+      if (followupMode === 'automatic') {
+        actions.push({
+          id: 'dhl_followup.set_manual',
+          label: 'Disable auto',
+          tone: 'amber',
+          execute_endpoint: `/api/v1/dhl-followup/${encodeURIComponent(batchId)}/mode`,
+          method: 'POST',
+          body_template: { mode: 'manual', operator: 'operator_inbox' },
+          requires_confirmation: true,
+          risk_level: 'low',
+          audit_event: 'dhl_followup_mode_changed',
+        });
+      } else {
+        actions.push({
+          id: 'dhl_followup.set_automatic',
+          label: 'Enable auto',
+          tone: 'green',
+          preview_endpoint: `/api/v1/dhl-followup/${encodeURIComponent(batchId)}/auto/preview`,
+          execute_endpoint: `/api/v1/dhl-followup/${encodeURIComponent(batchId)}/mode`,
+          method: 'POST',
+          body_template: { mode: 'automatic', operator: 'operator_inbox' },
+          requires_confirmation: true,
+          risk_level: 'medium',                       // enrolls shipment in auto-send
+          audit_event: 'dhl_followup_mode_changed',
+        });
+      }
+      // 3) Manual send (only in manual mode — operator-explicit; no force-SLA gimmick)
+      if (followupMode !== 'automatic') {
+        actions.push({
+          id: 'dhl_followup.send_now',
+          label: 'Send follow-up',
+          tone: 'red',
+          preview_endpoint: `/api/v1/dhl-followup/${encodeURIComponent(batchId)}/auto/preview`,
+          execute_endpoint: `/api/v1/dhl-followup/${encodeURIComponent(batchId)}/send-now`,
+          method: 'POST',
+          body_template: { approved_by: 'operator_inbox' },
+          requires_confirmation: true,
+          risk_level: 'high',                          // EXTERNAL SEND (DHL)
+          audit_event: 'dhl_followup_sent',
+        });
+      }
     }
     if (batchId && dhlEmailReceived) {
       // DHL has sent customs request — operator must compose substantive
-      // reply on detail page (auto-send forbidden per Phase-3 rules).
+      // reply on detail page. Single-authority rule: auto-reply forbidden
+      // for any substantive customs response.
       actions.push({
         id: 'dhl_reply.detail_only',
         label: 'Compose reply (detail)',
         tone: 'neutral',
         disabled: true,
-        disabled_reason: 'Substantive DHL customs reply requires operator on detail page (Phase-3 rule: auto-reply forbidden).',
+        disabled_reason: 'Substantive DHL customs reply requires operator on detail page. Auto-reply forbidden.',
         risk_level: 'blocked',
       });
     }
@@ -1204,11 +1253,13 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
                 style={{ padding: '6px 14px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text-2)', cursor: pendingAction.submitting ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>
                 Cancel
               </button>
-              <button data-testid="inbox-approval-confirm"
-                onClick={executeApproval} disabled={pendingAction.submitting}
-                style={{ padding: '6px 14px', fontSize: 12, border: '1px solid var(--accent-border)', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: pendingAction.submitting ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontWeight: 700, opacity: pendingAction.submitting ? 0.6 : 1 }}>
-                {pendingAction.submitting ? 'Executing…' : `Confirm — ${pendingAction.action.label}`}
-              </button>
+              {pendingAction.action.execute_endpoint && (
+                <button data-testid="inbox-approval-confirm"
+                  onClick={executeApproval} disabled={pendingAction.submitting}
+                  style={{ padding: '6px 14px', fontSize: 12, border: '1px solid var(--accent-border)', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: pendingAction.submitting ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontWeight: 700, opacity: pendingAction.submitting ? 0.6 : 1 }}>
+                  {pendingAction.submitting ? 'Executing…' : `Confirm — ${pendingAction.action.label}`}
+                </button>
+              )}
             </div>
           </div>
         </div>

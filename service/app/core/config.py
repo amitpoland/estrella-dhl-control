@@ -367,23 +367,13 @@ class Settings(BaseSettings):
     # Phase B3 — DHL follow-up SLA (post-arrival)
     dhl_orch_auto_send_dhl_followup:   bool = Field(default=False)
 
-    # ── Phase 3 — Auto DHL follow-up sender ──────────────────────────────
-    # Master enable for autonomous follow-up send (default OFF — preserves
-    # operator-explicit behavior). When True, the engine in
-    # dhl_followup_auto_sender.py may send a DHL follow-up email WITHOUT
-    # operator click IF and ONLY IF all seven gates pass:
-    #   1. shipment active (non-terminal, non-delivered)
-    #   2. SLA elapsed (next_followup_at <= now in Poland working window)
-    #   3. fresh email ingest (audit.email_ingestion.last_scan_at is recent)
-    #   4. no DHL or agency email evidence
-    #   5. recipient on safe-list (DHL_TO only)
-    #   6. follow-up package builds successfully (AWB resolvable)
-    #   7. idempotency latch not held for (batch, followup_seq)
-    # AI is permitted to polish wording only; deterministic fallback always
-    # available. Never affects regulatory/financial writes.
-    dhl_auto_followup_enabled:                 bool = Field(default=False)
-    dhl_auto_followup_max_ingest_age_minutes:  int  = Field(default=30)
-    dhl_auto_followup_use_ai_draft:            bool = Field(default=True)
+    # Note (single-authority consolidation, 2026-05-26): the prior
+    # dhl_auto_followup_* flags introduced by an earlier draft engine
+    # have been REMOVED. The single emergency switch for autonomous
+    # follow-up send is dhl_orch_auto_send_dhl_followup (above). Per-
+    # shipment opt-in is now governed by audit.followup.mode and read
+    # by dhl_followup_guard. There is exactly one execution path and
+    # one set of flags.
     dhl_orch_tracking_cooldown_min:    int  = Field(default=30)
     dhl_orch_monitor_cooldown_min:     int  = Field(default=30)
     dhl_orch_email_ingest_cooldown_min: int = Field(default=60)
