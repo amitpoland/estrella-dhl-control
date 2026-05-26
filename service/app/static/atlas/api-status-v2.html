@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API Status — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react" src="/dashboard/atlas/atlas-shared.js"></script>
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { PageHeader, NavStrip, Btn, Badge, Kpi, Empty, Loading, ErrorBanner, SectionTitle } = window.AtlasShared;
+
+  // Read-only health probes. Each card uses ONE endpoint; aggregation
+  // happens client-side because no aggregated endpoint exists (gap noted
+  // in PHASE_1_PLAN.md §4 — to be added in Sprint 22).
+  const PROBES = [
+    { id: 'version',  label: 'Service version',  url: '/api/v1/system/version',       group: 'Internal' },
+    { id: 'health',   label: 'Health (full)',    url: '/api/v1/debug/health-full',    group: 'Internal' },
+    { id: 'storage',  label: 'Storage health',   url: '/api/v1/debug/storage/health', group: 'Internal' },
+    { id: 'locks',    label: 'Storage locks',    url: '/api/v1/debug/storage/locks',  group: 'Internal' },
+  ];
+
+  function useProbe(url) {
+    const [data, setData]   = React.useState(null);
+    const [error, setError] = React.useState(null);
+    const [loading, setL]   = React.useState(true);
+    React.useEffect(() => {
+      let cancelled = false;
+      (async () => {
+        try {
+          const res = await fetch(url, { credentials: 'include' });
+          const txt = await res.text();
+          let json; try { json = JSON.parse(txt); } catch { json = { raw: txt }; }
+          if (!cancelled) {
+            if (!res.ok) setError(`HTTP ${res.status}`);
+            else setData(json);
+          }
+        } catch (e) { if (!cancelled) setError(e.message || String(e)); }
+        finally { if (!cancelled) setL(false); }
+      })();
+      return () => { cancelled = true; };
+    }, [url]);
+    return { data, error, loading };
+  }
+
+  // ── Per-probe rollup tone (visual only; backend remains authoritative) ─
+  function probeTone({ loading, error, data }) {
+    if (loading) return 'neutral';
+    if (error) return 'red';
+    // Storage locks endpoint returns an array of locks — non-empty = warning
+    if (Array.isArray(data?.locks) && data.locks.length > 0) return 'amber';
+    // Health-full may include "status" or "ok"
+    if (data && (data.status === 'ok' || data.ok === true || data.healthy === true)) return 'green';
+    if (data && (data.status === 'degraded')) return 'amber';
+    if (data && (data.status === 'down' || data.status === 'error')) return 'red';
+    // Default: assume green if we got 200 + json
+    return 'green';
+  }
+
+  function ProbeCard({ probe }) {
+    const result = useProbe(probe.url);
+    const tone = probeTone(result);
+    const toneLabel = tone === 'green' ? 'Healthy' : tone === 'amber' ? 'Degraded' : tone === 'red' ? 'Error' : 'Loading';
+    return (
+      <div className="atlas-card" data-testid={`probe-card-${probe.id}`} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>{probe.label}</div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace', marginTop: 2 }}>{probe.url}</div>
+          </div>
+          <Badge tone={tone} testid={`probe-badge-${probe.id}`}>{toneLabel}</Badge>
+        </div>
+        <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)', borderRadius: 4, padding: 8, fontSize: 10.5, fontFamily: 'monospace', maxHeight: 160, overflow: 'auto', whiteSpace: 'pre-wrap', color: 'var(--text-2)' }}>
+          {result.loading ? 'loading…' :
+           result.error ? `error: ${result.error}` :
+           JSON.stringify(result.data, null, 2).slice(0, 1200)}
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <Btn variant="outline" small disabled testid={`probe-reprobe-${probe.id}`}
+               title="Synthetic re-probe POST endpoint pending. Will ship in Sprint 22 (API Status V2 backend aggregator).">
+            ↻ Re-probe
+          </Btn>
+        </div>
+      </div>
+    );
+  }
+
+  function App() {
+    const actions = (
+      <>
+        <Btn variant="outline" small disabled testid="api-checklist-btn"
+             title="API Checklist available in V1 only; migrates to Admin V2 (Sprint 11).">API Checklist</Btn>
+        <Btn variant="outline" small disabled testid="reprobe-all-btn"
+             title="Synthetic probe POST endpoints not yet implemented. Sprint 22 owner.">↻ Re-probe All</Btn>
+      </>
+    );
+    return (
+      <>
+        <PageHeader title="API Status"
+          subtitle="Consolidated health for every backend integration · read-only probes · synthetic-probe writes deferred to Sprint 22"
+          actions={actions} />
+        <NavStrip current="api_status" />
+        <div className="atlas-content">
+          <SectionTitle>Internal services</SectionTitle>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 18 }} className="atlas-grid-2">
+            {PROBES.map(p => <ProbeCard key={p.id} probe={p} />)}
+          </div>
+
+          <SectionTitle>Carriers · wFirma · DHL</SectionTitle>
+          <Empty testid="api-status-external-empty">
+            Per-integration aggregated health endpoint not yet implemented.<br />
+            Sprint 22 (API Status V2) adds <code>GET /api/v1/admin/api-status</code> + <code>/endpoints</code> + <code>/errors</code> + <code>/incidents</code>.
+          </Empty>
+        </div>
+      </>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

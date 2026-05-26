@@ -228,7 +228,11 @@ Each page owns exactly one domain. Crossing this boundary is a GATE 1 block.
 
 ---
 
-## 9. Sprint Sequence (13 sprints, operator-priority order)
+## 9. Sprint Sequence (23 sprints — operator-priority order)
+
+Expanded 2026-05-26 from 13 → 23 sprints to cover the full design bundle in
+`origin/atlas-v2/source-bundle:design-files/`. Sprints 14–23 added to map every
+remaining JSX design source to a V2 surface.
 
 | Sprint | Page | Branch | Dependency | Sprint file |
 |--------|------|--------|------------|-------------|
@@ -244,7 +248,22 @@ Each page owns exactly one domain. Crossing this boundary is a GATE 1 block.
 | 10 | Batch V2 | `atlas-v2/sprint-10-batch-v2` | Sprint 09 merged | `atlas-v2/sprint-10-batch-v2.md` |
 | 11 | Admin V2 | `atlas-v2/sprint-11-admin-v2` | Sprint 10 merged | `atlas-v2/sprint-11-admin-v2.md` |
 | 12 | Auth V2 | `atlas-v2/sprint-12-auth-v2` | Sprint 11 merged | `atlas-v2/sprint-12-auth-v2.md` |
-| 13 | Dashboard V2 | `atlas-v2/sprint-13-dashboard-v2` | Sprint 12 merged | `atlas-v2/sprint-13-dashboard-v2.md` |
+| 14 | Accounting Hub V2 | `atlas-v2/sprint-14-accounting-hub-v2` | Sprint 02 merged | `atlas-v2/sprint-14-accounting-hub-v2.md` |
+| 15 | Ledgers V2 | `atlas-v2/sprint-15-ledgers-v2` | Sprint 14 merged | `atlas-v2/sprint-15-ledgers-v2.md` |
+| 16 | Carriers V2 | `atlas-v2/sprint-16-carriers-v2` | Sprint 02 merged | `atlas-v2/sprint-16-carriers-v2.md` |
+| 17 | Shipping Ops V2 | `atlas-v2/sprint-17-shipping-ops-v2` | Sprint 16 merged | `atlas-v2/sprint-17-shipping-ops-v2.md` |
+| 18 | Global Search V2 | `atlas-v2/sprint-18-global-search-v2` | Sprints 02/03/04/05 merged | `atlas-v2/sprint-18-global-search-v2.md` |
+| 19 | Dashboard Kanban V2 | `atlas-v2/sprint-19-dashboard-kanban-v2` | Sprints 02 + 03 merged | `atlas-v2/sprint-19-dashboard-kanban-v2.md` |
+| 20 | Ops Cell V2 | `atlas-v2/sprint-20-ops-cell-v2` | Sprints 08 + 11 merged | `atlas-v2/sprint-20-ops-cell-v2.md` |
+| 21 | Client KYC + Consignment V2 | `atlas-v2/sprint-21-client-kyc-consignment-v2` | Sprints 05 + 09 merged | `atlas-v2/sprint-21-client-kyc-consignment-v2.md` |
+| 22 | API Status V2 | `atlas-v2/sprint-22-api-status-v2` | Sprints 11 + 16 merged | `atlas-v2/sprint-22-api-status-v2.md` |
+| 13 | Dashboard V2 (aggregator) | `atlas-v2/sprint-13-dashboard-v2` | ALL domain sprints merged | `atlas-v2/sprint-13-dashboard-v2.md` |
+| 23 | Documents Suite V2 (final) | `atlas-v2/sprint-23-docs-suite-v2` | Sprints 01/04/14/15 merged | `atlas-v2/sprint-23-docs-suite-v2.md` |
+
+**Ordering note:** Sprint 13 (Dashboard V2) is the aggregator — it depends on all
+domain pages being stable, so it executes near the end. Sprints 14–22 can run in
+parallel-eligible windows once their named dependencies merge, but GATE 2 still
+limits to ≤ 3 simultaneously open PRs. Sprint 23 is the final closing sprint.
 
 ---
 

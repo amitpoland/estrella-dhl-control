@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Proforma — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react" src="/dashboard/atlas/atlas-shared.js"></script>
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { PageHeader, NavStrip, TierBanner, Btn, Badge, Empty, SectionTitle } = window.AtlasShared;
+
+  function App() {
+    const actions = (
+      <>
+        <Btn variant="outline" small disabled testid="prof-export-btn"
+             title="Proforma list CSV export pending.">↓ Export CSV</Btn>
+        <Btn variant="primary" small
+             testid="prof-open-live-btn"
+             title="Open the live working Proforma V2 page (already in production)."
+             onClick={() => window.location.href = '/dashboard/proforma-v2.html'}>
+          Open live Proforma V2 →
+        </Btn>
+      </>
+    );
+
+    return (
+      <>
+        <PageHeader title="Proforma"
+          subtitle="Draft proforma invoices · convert to invoice when ready — Atlas shell · live page at /dashboard/proforma-v2.html"
+          actions={actions} />
+        <NavStrip current="proforma" />
+        <div className="atlas-content">
+          <TierBanner testid="prof-tier-banner">
+            <strong>Atlas shell — live page lives at <code>/dashboard/proforma-v2.html</code>.</strong> A working V2 Proforma page is already in production (Sprint 01 hardening complete). This Atlas shell is a preview wrapper for the future Atlas-styled Proforma. <strong>For real operator work, use the live page.</strong>
+          </TierBanner>
+
+          <SectionTitle>What this shell shows</SectionTitle>
+          <Empty testid="prof-empty">
+            The Atlas-skinned Proforma replaces this shell once the live page is re-themed to match the Atlas design tokens.<br />
+            Until then, all real proforma operations (draft, approve, cancel, convert) happen on the existing <code>/dashboard/proforma-v2.html</code> page.
+          </Empty>
+
+          <SectionTitle>Quick actions</SectionTitle>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Btn variant="outline" small
+                 testid="prof-link-live"
+                 onClick={() => window.location.href = '/dashboard/proforma-v2.html'}
+                 title="Open the live working Proforma V2 page (Sprint 01).">
+              Open live Proforma V2
+            </Btn>
+            <Btn variant="outline" small disabled testid="prof-new-draft-btn"
+                 title="New-draft creation lives on the live Proforma V2 page (sales-packing upload triggers draft creation).">+ New draft</Btn>
+            <Btn variant="outline" small disabled testid="prof-convert-btn"
+                 title="Proforma→Invoice conversion lives on the live Proforma V2 page; Atlas re-skin pending.">Convert to Invoice</Btn>
+          </div>
+        </div>
+      </>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

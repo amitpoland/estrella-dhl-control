@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react" src="/dashboard/atlas/atlas-shared.js"></script>
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { PageHeader, NavStrip, Btn, Badge, Kpi, Empty, Loading, ErrorBanner,
+          SectionTitle, ageStr, shortId, valueK } = window.AtlasShared;
+
+  const LANES = [
+    { id: 'new',     label: 'New / Drafting',     hint: 'no PI yet',                 tone: 'neutral' },
+    { id: 'docs',    label: 'Awaiting Documents', hint: 'PI · INV · PZ pending',     tone: 'amber' },
+    { id: 'customs', label: 'Customs Clearance',  hint: 'SAD · ZC429 in progress',   tone: 'red' },
+    { id: 'ready',   label: 'Ready to Ship',      hint: 'cleared · awaiting label',  tone: 'purple' },
+    { id: 'transit', label: 'In Transit',         hint: 'with carrier',              tone: 'blue' },
+    { id: 'done',    label: 'Delivered',          hint: 'closed · last 7 days',      tone: 'green' },
+  ];
+
+  // Lane-tone → CSS variable accessor (used for lane header colors)
+  function toneVars(tone) {
+    return {
+      color: `var(--badge-${tone}-text)`,
+      bg:    `var(--badge-${tone}-bg)`,
+      border:`var(--badge-${tone}-border)`,
+    };
+  }
+
+  const QUICK_FLOWS = [
+    { id: 'inbound',  icon: '\u{1F4E5}', label: 'Receive shipment',         hint: 'Inbound · PZ · SAD',     tone: 'blue' },
+    { id: 'outbound', icon: '\u{1F4E4}', label: 'Create outbound shipment', hint: 'Order → INV → Label',    tone: 'accent' },
+    { id: 'email',    icon: '✉',         label: 'Process new email',        hint: 'Parse · Match · Action', tone: 'purple' },
+    { id: 'order',    icon: '\u{1F6D2}', label: 'Customer order',           hint: 'Order → Invoice → Ship', tone: 'green' },
+  ];
+
+  // ── Authority-preserved lane derivation. Reads only backend-derived
+  //    fields. Backend (_derive_status / _derive_clearance_status etc.) is
+  //    the truth source.
+  function deriveLane(b) {
+    const status     = (b.status || '').toLowerCase();
+    const clearance  = (b.clearance_status || '').toLowerCase();
+    const sad        = (b.sad_status || '').toLowerCase();
+    const pz         = (b.pz_status || '').toLowerCase();
+    const tracking   = (b.tracking_status_key || '').toLowerCase();
+    if (tracking === 'delivered') return 'done';
+    if (tracking === 'in_transit' || tracking === 'arrived_at_destination' ||
+        tracking === 'with_delivery_courier' || tracking === 'transit') return 'transit';
+    if (clearance && clearance !== 'cleared' && clearance !== 'none') return 'customs';
+    if (sad === 'pending' || sad === 'missing') return 'customs';
+    if (status === 'success' && (pz === 'confirmed' || b.pz_confirmed)) return 'ready';
+    if (status === 'partial' || status === 'blocked' || status === 'in_preparation') return 'docs';
+    return 'new';
+  }
+  function derivePriority(b) {
+    const status    = (b.status || '').toLowerCase();
+    const clearance = (b.clearance_status || '').toLowerCase();
+    const sad       = (b.sad_status || '').toLowerCase();
+    const fc        = b.failed_checks || [];
+    if (status === 'blocked' || (fc && fc.length > 0)) return 'urgent';
+    if (clearance && clearance !== 'cleared' && clearance !== 'none') return 'urgent';
+    if (sad === 'missing') return 'urgent';
+    if (status === 'partial') return 'high';
+    return 'normal';
+  }
+  function deriveFlag(b) {
+    const status    = (b.status || '').toLowerCase();
+    const clearance = (b.clearance_status || '').toLowerCase();
+    const sad       = (b.sad_status || '').toLowerCase();
+    const pz        = (b.pz_status || '').toLowerCase();
+    if (b.action_reason) return b.action_reason.slice(0, 28);
+    if (sad === 'missing' || sad === 'pending') return 'SAD pending';
+    if (clearance && clearance !== 'cleared' && clearance !== 'none') return 'customs hold';
+    if (pz && pz !== 'confirmed' && status === 'partial') return 'awaiting PZ';
+    if (status === 'blocked') return 'verification needed';
+    return null;
+  }
+
+  function useBatches() {
+    const [data, setData] = React.useState(null);
+    const [error, setError] = React.useState(null);
+    const [loading, setLoading] = React.useState(true);
+    React.useEffect(() => {
+      let cancelled = false;
+      (async () => {
+        try {
+          const res = await fetch('/dashboard/batches', { credentials: 'include' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const json = await res.json();
+          if (!cancelled) {
+            setData(Array.isArray(json.batches) ? json.batches : []);
+            setError(null);
+          }
+        } catch (e) {
+          if (!cancelled) setError(e.message || String(e));
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+      return () => { cancelled = true; };
+    }, []);
+    return { data, error, loading };
+  }
+
+  function QuickFlow({ flow, disabled, disabledReason, onClick }) {
+    const v = toneVars(flow.tone === 'accent' ? 'amber' : flow.tone);
+    const accentBg = flow.tone === 'accent' ? 'var(--accent-subtle)' : v.bg;
+    const accentBorder = flow.tone === 'accent' ? 'var(--accent-border)' : v.border;
+    const accentColor = flow.tone === 'accent' ? 'var(--accent)' : v.color;
+    return (
+      <button
+        data-testid={`quick-flow-${flow.id}`}
+        disabled={disabled}
+        title={disabled ? disabledReason : flow.hint}
+        onClick={() => !disabled && onClick && onClick()}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px',
+          background: accentBg, border: `1px solid ${accentBorder}`,
+          borderRadius: 8, cursor: disabled ? 'not-allowed' : 'pointer',
+          textAlign: 'left', width: '100%', opacity: disabled ? 0.55 : 1,
+        }}>
+        <span style={{ fontSize: 22 }}>{flow.icon}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>{flow.label}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{disabled ? disabledReason : flow.hint}</div>
+        </div>
+        <span style={{ fontSize: 14, color: accentColor }}>{disabled ? '×' : '→'}</span>
+      </button>
+    );
+  }
+
+  function KanbanCard({ batch, onClick }) {
+    const priority = derivePriority(batch);
+    const flag = deriveFlag(batch);
+    const isUrgent = priority === 'urgent';
+    const isHigh = priority === 'high';
+    const valK = valueK(batch.gross || batch.net);
+    const docs = (batch.has_sad ? 1 : 0) + (batch.pz_confirmed ? 1 : 0) +
+                 (batch.tracking_no ? 1 : 0) + (batch.doc_no ? 1 : 0);
+    const direction = (batch.batch_id || '').startsWith('SHIPMENT_') ? 'in' : 'out';
+    return (
+      <button data-testid={`kanban-card-${batch.batch_id}`} onClick={onClick}
+        style={{
+          background: 'var(--card)', border: '1px solid var(--border)',
+          borderRadius: 5, padding: '8px 10px', cursor: 'pointer', textAlign: 'left',
+          borderLeft: isUrgent ? '3px solid var(--badge-red-text)' :
+                      isHigh   ? '3px solid var(--badge-amber-text)' :
+                                 '1px solid var(--border)',
+          display: 'flex', flexDirection: 'column', gap: 4, width: '100%',
+        }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Badge tone={direction === 'in' ? 'blue' : 'purple'}>{direction === 'in' ? 'IN' : 'OUT'}</Badge>
+          <span style={{ fontSize: 10.5, fontFamily: 'monospace', fontWeight: 600 }}>{shortId(batch.batch_id, batch.tracking_no)}</span>
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 9.5, color: 'var(--text-3)' }}>{ageStr(batch.timestamp)}</span>
+        </div>
+        <div style={{ fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {batch.doc_no || batch.invoice_refs?.[0] || batch.batch_id}
+        </div>
+        <div style={{ display: 'flex', gap: 8, fontSize: 9.5, color: 'var(--text-3)' }}>
+          <span style={{ fontFamily: 'monospace' }}>{batch.carrier || '—'}</span>
+          <span>·</span>
+          <span>{docs}/4 docs</span>
+          {valK && <><span>·</span><span style={{ fontFamily: 'monospace' }}>EUR {valK}</span></>}
+        </div>
+        {flag && (
+          <div style={{ fontSize: 9.5, fontWeight: 600,
+            color: isUrgent ? 'var(--badge-red-text)' : 'var(--badge-amber-text)' }}>
+            {isUrgent ? '⚠' : '◐'} {flag}
+          </div>
+        )}
+      </button>
+    );
+  }
+
+  function KanbanLane({ lane, batches, onCardClick }) {
+    const v = toneVars(lane.tone);
+    return (
+      <div data-testid={`kanban-lane-${lane.id}`}
+        style={{ display: 'flex', flexDirection: 'column', minWidth: 220,
+                 background: 'var(--bg-subtle)', borderRadius: 8, border: '1px solid var(--border)' }}>
+        <div style={{ padding: '10px 12px', borderBottom: `2px solid ${v.border}`,
+                      background: v.bg, borderRadius: '8px 8px 0 0' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: v.color }}>{lane.label}</span>
+            <span data-testid={`kanban-lane-${lane.id}-count`}
+              style={{ fontSize: 12, fontWeight: 700, color: v.color, fontFamily: 'monospace' }}>{batches.length}</span>
+          </div>
+          <div style={{ fontSize: 9.5, color: v.color, opacity: 0.75, marginTop: 2 }}>{lane.hint}</div>
+        </div>
+        <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 6, minHeight: 200 }}>
+          {batches.length === 0 && (
+            <div style={{ padding: 16, textAlign: 'center', fontSize: 10.5, color: 'var(--text-3)', fontStyle: 'italic' }}>—</div>
+          )}
+          {batches.map(b => <KanbanCard key={b.batch_id} batch={b} onClick={() => onCardClick(b)} />)}
+        </div>
+      </div>
+    );
+  }
+
+  function App() {
+    const { data: batches, error, loading } = useBatches();
+    const all = batches || [];
+    const lanes = LANES.map(l => ({ lane: l, batches: all.filter(b => deriveLane(b) === l.id) }));
+    const active = all.filter(b => deriveLane(b) !== 'done');
+    const urgent = active.filter(b => derivePriority(b) === 'urgent').length;
+    const inbound = active.filter(b => (b.batch_id || '').startsWith('SHIPMENT_')).length;
+    const outbound = active.length - inbound;
+    const totalValue = active.reduce((sum, b) => sum + (Number(b.gross) || 0), 0);
+
+    const openShipment = (b) => {
+      window.location.href = `/dashboard/shipment-detail.html?batch_id=${encodeURIComponent(b.batch_id)}`;
+    };
+
+    const navTo = (path) => { window.location.href = path; };
+
+    const handleQuickFlow = (id) => {
+      if (id === 'inbound')  navTo('/dashboard/atlas/shipments-v2.html');
+      else if (id === 'email') navTo('/dashboard/atlas/inbox-v2.html');
+      else if (id === 'order') navTo('/dashboard/atlas/documents-v2.html');
+    };
+
+    const subtitle = `${new Date().toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} · Pipeline view — every active shipment, one glance`;
+
+    const actions = (
+      <>
+        <Btn variant="outline" small disabled testid="api-checklist-btn"
+             title="API Checklist available in V1 only; will migrate to Admin V2 (Sprint 11).">
+          API Checklist
+        </Btn>
+        <Btn variant="outline" small disabled testid="export-csv-btn"
+             title="Batch-list CSV export endpoint pending. Will ship with Accounting Hub V2 (Sprint 14).">
+          ↓ Export CSV
+        </Btn>
+      </>
+    );
+
+    return (
+      <>
+        <PageHeader title="Dashboard" subtitle={subtitle} actions={actions} />
+        <NavStrip current="dashboard" />
+        <div className="atlas-content" data-testid="dashboard-v2-content">
+          {error && <ErrorBanner testid="dashboard-v2-error">Could not load shipments: {error}</ErrorBanner>}
+          {loading && !batches && <Loading testid="dashboard-v2-loading">Loading pipeline…</Loading>}
+          {!loading && (
+            <>
+              <SectionTitle>Start a workflow</SectionTitle>
+              <div className="atlas-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 18 }}>
+                {QUICK_FLOWS.map(f => (
+                  <QuickFlow key={f.id} flow={f}
+                    disabled={f.id === 'outbound'}
+                    disabledReason={f.id === 'outbound' ? 'New Shipment modal lives in V1 dashboard (Sprint 03)' : null}
+                    onClick={() => handleQuickFlow(f.id)} />
+                ))}
+              </div>
+
+              <div className="atlas-kpi-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 18 }}>
+                <Kpi testid="kpi-active"   label="Active shipments" value={active.length} hint="in pipeline" />
+                <Kpi testid="kpi-urgent"   label="Urgent"           value={urgent}        hint="customs / docs blocked" accent="var(--badge-red-text)" />
+                <Kpi testid="kpi-inbound"  label="Inbound"          value={inbound}       hint="being received" />
+                <Kpi testid="kpi-outbound" label="Outbound"         value={outbound}      hint="being shipped" />
+                <Kpi testid="kpi-value"    label="Total value"      value={`€${(totalValue/1000).toFixed(0)}K`} hint="pipeline · mixed FX" accent="var(--accent)" />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <h2 className="atlas-h2">Pipeline</h2>
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-3)' }}>
+                    Click a card to open shipment detail — lane membership derived from backend state
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <Btn variant="outline" small disabled testid="search-btn"
+                       title="Global ⌘K search ships in Sprint 18">⌕ Search ⌘K</Btn>
+                  <Btn variant="outline" small testid="list-view-btn"
+                       onClick={() => navTo('/dashboard/dashboard.html')}
+                       title="Open the existing V1 list view">⊡ List view</Btn>
+                </div>
+              </div>
+
+              {!error && all.length === 0 && <Empty testid="dashboard-v2-empty">No shipments in the pipeline.</Empty>}
+              {!error && all.length > 0 && (
+                <div data-testid="kanban-board" style={{
+                  display: 'grid', gridTemplateColumns: 'repeat(6, minmax(220px, 1fr))',
+                  gap: 12, overflowX: 'auto', paddingBottom: 4,
+                }}>
+                  {lanes.map(({ lane, batches: laneBatches }) => (
+                    <KanbanLane key={lane.id} lane={lane} batches={laneBatches} onCardClick={openShipment} />
+                  ))}
+                </div>
+              )}
+
+              <div data-testid="dashboard-v2-helper" style={{
+                marginTop: 18, padding: 12, background: 'var(--bg-subtle)',
+                border: '1px dashed var(--border)', borderRadius: 6, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.55,
+              }}>
+                <strong style={{ color: 'var(--text)' }}>How this works:</strong> shipments move left-to-right as they progress. Urgent items (red flag, ⚠ icon) need your attention now — usually customs holds or missing docs. Lane membership is backend-derived; to advance a shipment, open its detail and complete the required action.
+              </div>
+            </>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

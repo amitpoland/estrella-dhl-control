@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Documents — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react" src="/dashboard/atlas/atlas-shared.js"></script>
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { PageHeader, NavStrip, TierBanner, Btn, Badge, Empty, SectionTitle } = window.AtlasShared;
+
+  const DOC_TYPES = [
+    { id: 'proforma', label: 'Proforma',      tone: 'blue' },
+    { id: 'invoice',  label: 'Invoice',       tone: 'green' },
+    { id: 'pz',       label: 'PZ',            tone: 'accent' },
+    { id: 'sad',      label: 'SAD',           tone: 'red' },
+    { id: 'cmr',      label: 'CMR',           tone: 'purple' },
+    { id: 'email',    label: 'Email',         tone: 'amber' },
+    { id: 'packing',  label: 'Packing list',  tone: 'neutral' },
+  ];
+
+  function App() {
+    const [type, setType] = React.useState('proforma');
+
+    const actions = (
+      <>
+        <Btn variant="outline" small disabled testid="docs-export-btn"
+             title="Cross-document CSV export not yet implemented (Sprint 04).">⬇ Export CSV</Btn>
+        <Btn variant="primary" small disabled testid="docs-new-btn"
+             title="Generic document creation is owned per doc type (Proforma → proforma-v2; PZ → pz-v2; etc.).">+ New Document</Btn>
+      </>
+    );
+
+    return (
+      <>
+        <PageHeader title="Documents"
+          subtitle="Unified workspace · Proforma · Invoice · PZ · SAD · CMR · Email · Packing list — view & download"
+          actions={actions} />
+        <NavStrip current="documents" />
+        <div className="atlas-content">
+          <TierBanner testid="docs-tier-banner">
+            <strong>Visual shell — Phase One stub.</strong> Cross-batch documents endpoint (<code>GET /api/v1/documents</code>) does not exist yet. Today, documents are reachable per-batch via <code>/dashboard/batches/&#123;id&#125;/files</code>. Sprint 04 owner.
+          </TierBanner>
+
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+            {DOC_TYPES.map(d => (
+              <button key={d.id}
+                data-testid={`docs-tab-${d.id}`}
+                disabled
+                title="Per-doc-type listing wired in Sprint 04."
+                style={{
+                  padding: '6px 12px', borderRadius: 6,
+                  background: type === d.id ? `var(--badge-${d.tone === 'accent' ? 'amber' : d.tone}-bg)` : 'var(--card)',
+                  border: '1px solid ' + (type === d.id ? `var(--badge-${d.tone === 'accent' ? 'amber' : d.tone}-border)` : 'var(--border)'),
+                  color: 'var(--text-2)',
+                  fontSize: 12, fontWeight: 600, cursor: 'not-allowed', opacity: 0.65,
+                }}>{d.label}</button>
+            ))}
+          </div>
+
+          <SectionTitle>{DOC_TYPES.find(d => d.id === type)?.label}</SectionTitle>
+          <Empty testid="docs-empty">
+            Document listing per type ships in Sprint 04 (Documents V2 backend).<br />
+            For now, open a shipment from the <a href="/dashboard/atlas/shipments-v2.html" style={{ color: 'var(--accent)' }}>Shipments</a> page to see its document set on the V1 detail screen.
+          </Empty>
+
+          <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+            <Btn variant="outline" small disabled testid="docs-view-btn" title="View action wired per-document in Sprint 04.">View</Btn>
+            <Btn variant="outline" small disabled testid="docs-download-btn" title="Download endpoints exist per doc; this hub aggregator ships in Sprint 04.">↓ Download</Btn>
+            <Btn variant="outline" small disabled testid="docs-delete-btn" title="Document deletion gated by audit policy; deferred to Sprint 04 + security-review.">Delete</Btn>
+          </div>
+        </div>
+      </>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>
