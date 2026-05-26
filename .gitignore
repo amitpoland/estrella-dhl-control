@@ -52,3 +52,6 @@ PZ_READY_*.json
 
 # C15A: deploy validation scripts generated per-campaign (SHA-suffixed, not for tracking)
 validate_deploy_*.sh
+
+# Local runtime databases
+service/proforma_links.db
