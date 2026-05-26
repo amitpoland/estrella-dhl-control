@@ -157,6 +157,20 @@ def validate_followup_send_preconditions(
     if not flag_on:
         return FollowupGuardResult(ok=False, reason="auto_send_dhl_followup_flag_off")
 
+    # ── 1.5. Shipment-level mode authority ──────────────────────────────────
+    # Single-authority model (operator directive 2026-05-26): each shipment
+    # carries its own followup.mode ∈ {manual, automatic}. Default = manual.
+    # Only shipments explicitly enrolled in automatic may auto-send, even
+    # when the global flag is ON. This is the shipment-level inverse of the
+    # global emergency switch above: global flag = kill-all, mode = enroll-one.
+    try:
+        from .dhl_followup_mode import get_mode
+        mode = get_mode(audit)
+    except Exception as exc:
+        return FollowupGuardResult(ok=False, reason=f"mode_check_error:{exc!s}"[:120])
+    if mode != "automatic":
+        return FollowupGuardResult(ok=False, reason=f"manual_mode")
+
     # ── 2. Active shipment ───────────────────────────────────────────────────
     try:
         from .dhl_orchestrator import is_active_shipment

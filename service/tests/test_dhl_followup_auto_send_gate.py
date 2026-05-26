@@ -80,6 +80,9 @@ def _base_audit(batch_id: str, awb: str, *, ingest_age_min: int = 5) -> dict:
             "stop_reason":       None,
             "sent_idempotency_keys": [],
         },
+        # Single-authority mode (2026-05-26): default is manual; tests that
+        # exercise the canonical guard's positive path enroll automatic.
+        "followup": {"mode": "automatic"},
     }
 
 

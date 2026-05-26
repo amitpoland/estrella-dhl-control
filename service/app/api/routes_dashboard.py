@@ -412,6 +412,12 @@ def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
         "mrn":                   mrn,
         "failed_checks":         _derive_failed_checks(a),
         "action_reason":         _derive_action_reason(a),
+        # Single-authority DHL follow-up mode (2026-05-26).
+        # Read straight from audit.followup.mode; default "manual" when
+        # the shipment has never been enrolled. Used by the Inbox to
+        # render the mode selector + correct action set per row.
+        "followup_mode":         ((a.get("followup") or {}).get("mode")
+                                  or "manual"),
         "invoice_refs":          invoice_refs,
         "run_count":             1,   # populated by dedup logic
         "has_sad":               _derive_sad_status(a) != "missing",

@@ -185,37 +185,66 @@ def test_cn_decision_reason_min_present():
     assert "min_reason_len: 10" in src
 
 
-# ── Phase 3: DHL auto-followup actions wired into Inbox ──────────────────────
+# ── Single-authority mode model (2026-05-26 consolidation) ──────────────────
 
-def test_dhl_followup_preview_action_wired():
+def test_dhl_followup_preview_is_read_only_get():
+    """Preview action must be a read-only GET against the canonical guard
+    endpoint — never the prior /auto/run POST that PR #372 added."""
     src = _src()
-    # GET endpoint
+    # Read-only preview wired
     assert "/api/v1/dhl-followup/${encodeURIComponent(batchId)}/auto/preview" in src
-    # POST execute endpoint
-    assert "/api/v1/dhl-followup/${encodeURIComponent(batchId)}/auto/run" in src
+    # The OLD POST /auto/run endpoint is removed entirely
+    assert "/auto/run" not in src, "Auto/run endpoint must be removed — single-authority"
 
 
-def test_dhl_followup_action_marked_high_risk():
+def test_dhl_followup_preview_descriptor_is_read_only():
     src = _src()
-    # External send must be flagged high risk so the confirm modal warns
     assert "id: 'dhl_followup.preview'" in src
-    # The descriptor declares high risk
     block_start = src.index("id: 'dhl_followup.preview'")
     block_end   = src.index("});", block_start)
     block = src[block_start:block_end]
+    assert "read_only: true" in block
+    # Read-only previews carry no execute_endpoint
+    assert "execute_endpoint:" not in block
+
+
+def test_dhl_followup_mode_toggle_actions_wired():
+    """Inbox surfaces explicit Enable/Disable auto buttons (mode-aware)."""
+    src = _src()
+    # Both directions exist and POST to the new /mode endpoint
+    assert "id: 'dhl_followup.set_automatic'" in src
+    assert "id: 'dhl_followup.set_manual'" in src
+    assert "/api/v1/dhl-followup/${encodeURIComponent(batchId)}/mode" in src
+    # Bodies are explicit and minimal — no force_sla, no hidden auto-send
+    assert "mode: 'automatic'" in src
+    assert "mode: 'manual'" in src
+
+
+def test_dhl_followup_manual_send_uses_existing_send_now_endpoint():
+    """Manual send must call the existing /send-now route — not a new path."""
+    src = _src()
+    assert "id: 'dhl_followup.send_now'" in src
+    # The existing operator-explicit endpoint is the canonical manual path
+    assert "/api/v1/dhl-followup/${encodeURIComponent(batchId)}/send-now" in src
+    block_start = src.index("id: 'dhl_followup.send_now'")
+    block_end   = src.index("});", block_start)
+    block = src[block_start:block_end]
+    # Carries approved_by per existing send-now contract
+    assert "approved_by: 'operator_inbox'" in block
+    # High-risk because external email
     assert "risk_level: 'high'" in block
 
 
 def test_dhl_followup_substantive_reply_stays_disabled():
     src = _src()
-    # Phase-3 rule: substantive customs reply must NOT auto-send
+    # Substantive customs reply must NOT auto-send (operator on detail page)
     assert "id: 'dhl_reply.detail_only'" in src
-    assert "auto-reply forbidden" in src
+    assert "Auto-reply forbidden" in src
     assert "disabled: true" in src
 
 
 def test_no_agency_auto_action_in_inbox():
-    """Agency auto-send is forbidden in Phase 3 — no inbox action for it."""
+    """Agency auto-send is forbidden — no inbox action for it."""
     src = _src()
     block_start = src.index("function inboxActionsFor(row, raw)")
     block_end   = src.index("// ══════════", block_start + 50)
@@ -226,3 +255,16 @@ def test_no_agency_auto_action_in_inbox():
         "/api/v1/dhl-followup/agency",
     ):
         assert forbidden not in block, f"Forbidden agency auto-send leaked: {forbidden}"
+
+
+def test_no_redundant_auto_engine_referenced():
+    """The deleted PR #372 engine must not be referenced anywhere in the UI."""
+    src = _src()
+    for ghost in (
+        "/auto/run",
+        "dhl_auto_followup_enabled",          # deleted flag
+        "force_sla",                          # deleted bypass
+        "dhl_followup_auto_sent",             # deleted event name
+        "dhl_followup_auto_suppressed",       # deleted event name
+    ):
+        assert ghost not in src, f"Reference to deleted engine surface: {ghost}"

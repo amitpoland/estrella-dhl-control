@@ -51,6 +51,10 @@ def _make_audit(**overrides: Any) -> Dict[str, Any]:
             "last_followup_at":  None,
         },
         "email_ingestion":   {"last_scan_at": _iso(now - timedelta(minutes=5))},
+        # 2026-05-26 single-authority mode model: default is manual. Tests
+        # that exercise the canonical guard's positive path must enroll
+        # the shipment in automatic explicitly. Override per-test as needed.
+        "followup":          {"mode": "automatic"},
     }
     base.update(overrides)
     return base
