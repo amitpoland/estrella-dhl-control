@@ -353,3 +353,31 @@ def test_humanise_age_variants():
     assert proj._humanise_age(now - timedelta(hours=2, minutes=14), now) == "2h 14m ago"
     assert proj._humanise_age(now + timedelta(hours=2, minutes=14), now) == "in 2h 14m"
     assert proj._humanise_age(now - timedelta(days=3), now).endswith("d ago")
+
+
+# ── 17. mode authority delegation: followup.mode="automatic" → Auto ──────────
+
+def test_shipment_row_mode_auto_when_authority_says_automatic(patch_storage, monkeypatch):
+    """The projector MUST consume audit.followup.mode (PR #373 single authority).
+    It must NOT re-derive mode from dhl_followup.active/stopped_at."""
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    a = _audit(awb="AUTO_AWB", followup={"active": True})
+    a["followup"] = {"mode": "automatic"}
+    patch_storage.append(a)
+    rows = proj.project_shipment_rows(now=_NOW)
+    assert len(rows) == 1
+    assert rows[0]["mode"] == "Auto"
+
+
+# ── 18. mode authority default: missing followup.mode → Manual ───────────────
+
+def test_shipment_row_mode_manual_when_authority_default(patch_storage, monkeypatch):
+    """No audit.followup.mode means default 'manual' per dhl_followup_mode.
+    Even if dhl_followup.active=True (old inference), mode must be Manual."""
+    monkeypatch.setattr(proj, "_flag_on", lambda: True)
+    a = _audit(awb="DEFAULT_AWB", followup={"active": True})
+    # NOTE: no audit['followup'] block set → authority default = manual
+    patch_storage.append(a)
+    rows = proj.project_shipment_rows(now=_NOW)
+    assert len(rows) == 1
+    assert rows[0]["mode"] == "Manual"

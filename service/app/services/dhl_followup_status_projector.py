@@ -111,9 +111,22 @@ def _awb_of(audit: Dict[str, Any]) -> str:
     return str(audit.get("awb") or audit.get("tracking_no") or "").strip()
 
 
-def _has_send_intent(state: Dict[str, Any]) -> bool:
-    """Auto mode = follow-up state initialised AND not manually stopped."""
-    return bool(state.get("active")) and not state.get("stopped_at")
+def _mode_label(audit: Dict[str, Any]) -> str:
+    """Read shipment-level follow-up mode from the SINGLE authority.
+
+    Delegates to ``dhl_followup_mode.get_mode(audit)`` (PR #373 single-authority
+    rule). NEVER re-derive mode from ``dhl_followup.active``/``stopped_at`` —
+    that would create a second authority and violates the operator's hard rule
+    against authority duplication.
+
+    Returns "Auto" when authority says "automatic", else "Manual".
+    """
+    try:
+        from .dhl_followup_mode import get_mode
+        return "Auto" if get_mode(audit) == "automatic" else "Manual"
+    except Exception as exc:
+        log.warning("status_projector: dhl_followup_mode.get_mode failed: %s", exc)
+        return "Manual"
 
 
 def _shipment_status(
@@ -397,8 +410,9 @@ def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, A
       }
 
     Mode:
-      "Auto"   if dhl_followup state has active=True AND not stopped
-      "Manual" otherwise (or if explicitly stopped)
+      Delegates to ``dhl_followup_mode.get_mode(audit)`` (PR #373 single
+      authority). "Auto" iff authority returns "automatic", else "Manual".
+      The projector NEVER re-derives mode from active/stopped flags.
     """
     if now is None:
         now = _now_utc()
@@ -413,7 +427,7 @@ def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, A
             continue
         state = audit.get("dhl_followup") or {}
         status, next_dt = _shipment_status(audit, active, state, now)
-        mode = "Auto" if _has_send_intent(state) else "Manual"
+        mode = _mode_label(audit)
 
         last_scan_dt = _parse_iso((audit.get("email_ingestion") or {}).get("last_scan_at"))
         last_evt = _latest_followup_event(audit)
