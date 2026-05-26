@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-26 (post-TASK-6-AI-DHL-FOLLOWUP-COMPLETE).
 
-**Last-run-at:** 2026-05-26T(session). Origin/main HEAD: d888ffe. Production: SHA 5c19c1c deployed at C:\PZ. GATE 2: 0/3 (fully clear). DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). scan_fn bug FIXED (SHA 4361d29). AI DHL FOLLOWUP DRAFTING: PR #371 merged — flag-gated (DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=false), 41 new tests pass. LIFECYCLE: Phase 2 push readiness COMPLETE but GATE 8 BLOCKED. ANTHROPIC PILOT: monitoring window closed, OQ1 resolved. PROVIDER LOCK-DOWN: Anthropic API sole provider. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
+**Last-run-at:** 2026-05-26T(session). Origin/main HEAD: c1a7b34 (governance). Code HEAD: d888ffe. Production: SHA 5c19c1c deployed at C:\PZ. GATE 2: 0/3 (fully clear). TEST BASELINE: 11,174 passed / 942 failed / 49 skipped / 78 errors (12,243 total, 2026-05-26 full run). DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). scan_fn bug FIXED (SHA 4361d29). AI DHL FOLLOWUP DRAFTING: PR #371 merged — flag-gated (DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=false), 41 new tests pass, all 9 agents EXEMPLARY. Pending deploy: 4361d29 + d888ffe to C:\PZ. LIFECYCLE: Phase 2 push readiness COMPLETE but GATE 8 BLOCKED. ANTHROPIC PILOT: OQ1 resolved. PROVIDER LOCK-DOWN: Anthropic API sole provider. Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE.
 
 ---
 
@@ -217,7 +217,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ## Task 6 — AI-Assisted DHL Follow-Up Drafting (2026-05-26, COMPLETE — PR #371 MERGED)
 
 **Campaign type**: AI body drafting for active-shipment DHL follow-up emails (flag-gated, fallback-safe)  
-**Status**: PR #371 MERGED — squash SHA `d888ffe` on main (2026-05-26). NOT DEPLOYED to C:\PZ yet.  
+**Status**: PR #371 MERGED — squash SHA `d888ffe` on main (2026-05-26). DEPLOYED to C:\PZ at 2026-05-26 ~02:05 local.  
 **Operator PR-C required**: Set `DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true` in C:\PZ\.env to enable actual sends.
 
 **Files changed** (3 modified + 2 new):
@@ -249,7 +249,7 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - Lesson K: `_SYSTEM_PROMPT` contains explicit negative-scope language listing 7 forbidden actions (adds/changes facts, HTML, markdown, etc.)
 - task_type: `"dhl_followup_draft"`, service_name: `"ai_dhl_followup_drafter"`
 
-**Test baseline after PR #371**: ~11,027+ passing (pre-existing 10,986 + 41 new), same 1,033 pre-existing failures, same 51 skipped, same 94 errors. No regressions from new tests.
+**Test baseline after PR #371 (full suite 2026-05-26, 988.97s)**: 11,174 passed (+188 vs prior 10,986 baseline), 942 failed (DOWN from 1,033 — no new regressions), 49 skipped, 78 errors (down from 94), 24 warnings. Total: ~12,243 tests. All 41 Task 6 tests confirmed passing. No regressions introduced.
 
 **Production flag status (UNCHANGED)**: `DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=false` explicit in C:\PZ\.env. No emails sent until operator explicitly sets this flag.
 
@@ -617,7 +617,7 @@ Remove 6 pilot `.env` lines → restart PZService → confirm `active_provider=n
 
 ## RULE 6 visibility entries (scorecards)
 
-- **2026-05-26** — Scorecard pending: `.claude/memory/scorecards/2026-05-26-task6-ai-dhl-followup-drafting.md` — observer: `agent-performance-observer` (RULE 2 auto-fire post-PR-#371). Task 6 AI-assisted DHL follow-up drafting campaign. To be produced this session.
+- **2026-05-26** — Scorecard recorded: `.claude/memory/scorecards/2026-05-26-task6-ai-dhl-followup-drafting.md` — observer: `agent-performance-observer` (RULE 2 auto-fire post-PR-#371). Task 6 AI-assisted DHL follow-up drafting campaign. 9 agents scored — ALL EXEMPLARY. File confirmed on disk: 6,186 bytes (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-dhl-monitor-fixes-f1-f6.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). AWB 9198333502 DHL Monitor/Follow-up/DSK/Tracking/Email-Queue Hardening Campaign. 7 agents scored, ALL EXEMPLARY. File confirmed on disk (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-browser-verify-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). Browser verification session for GlobalPZCorrectionProposalCard lifecycle UI on SHIPMENT_4789974092_2026-05_999deef1. File confirmed on disk (Lesson C verified).
 - **2026-05-25** — Scorecard recorded: `.claude/memory/scorecards/2026-05-25-deploy-pr364-lifecycle-ui.md` — observer: `agent-performance-observer` (RULE 2 auto-fire). PR #364 production deployment campaign. 5 agents EXEMPLARY, 2 agents ACCEPTABLE, 0 NEEDS-TUNING, 0 UNRELIABLE. File confirmed on disk (Lesson C verified).
