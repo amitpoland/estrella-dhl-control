@@ -149,6 +149,19 @@ def _mode_fields(audit: Dict[str, Any], flag_on: bool) -> Dict[str, str]:
         return {"mode_state": "unset", "mode_label": "Default"}
 
 
+def _sad_phase(audit: Dict[str, Any], now: datetime) -> Dict[str, Any]:
+    """Delegate to the SLA's pure derivation. Returns the SAD-phase dict
+    even on error (status "None") so callers never branch on exceptions."""
+    try:
+        from .dhl_followup_sla import derive_sad_followup_status
+        return derive_sad_followup_status(audit, now)
+    except Exception as exc:
+        log.warning("status_projector: sad-phase derivation failed: %s", exc)
+        return {"phase": "none", "status": "None", "next_due_at": None,
+                "eligible": False, "waiting_for": None,
+                "dsk_received_at": None, "reason": f"derive_error:{exc!s}"[:80]}
+
+
 def _shipment_status(
     audit:    Dict[str, Any],
     active:   bool,
@@ -157,7 +170,7 @@ def _shipment_status(
 ) -> Tuple[str, Optional[datetime]]:
     """Compute drill-down status + next_due datetime.
 
-    Status precedence:
+    Status precedence (dhl phase):
       1. INACTIVE — shipment is not active (delivered / terminal / missing AWB)
       2. STOPPED  — dhl_followup.stopped_at present
       3. FAILED   — last followup event was a failure (most recent of the 3)
@@ -165,11 +178,25 @@ def _shipment_status(
       5. ELIGIBLE — active + next_followup_at <= now
       6. MONITORING — active + next_followup_at > now
       7. WAITING  — active but no next_followup_at scheduled yet
+
+    SAD-phase override:
+      When the shipment is still active AND the dhl-phase status is
+      STOPPED or WAITING AND the SAD-phase derivation reports phase
+      "sad_followup", the row reports the SAD-phase status (eligible
+      or monitoring) with the SAD-phase next_due. This prevents the
+      silent Waiting / Stopped state when DSK has arrived but SAD/ZC429
+      is still missing and follow-up IS required.
     """
     next_due = _parse_iso(state.get("next_followup_at"))
     if not active:
         return ST_INACTIVE, next_due
     if state.get("stopped_at"):
+        # Original dhl phase is closed. Check whether the SAD phase
+        # should take over for this row's status surface.
+        sad = _sad_phase(audit, now)
+        if sad.get("phase") == "sad_followup":
+            sad_due = _parse_iso(sad.get("next_due_at"))
+            return (ST_ELIGIBLE if sad.get("eligible") else ST_MONITORING), sad_due
         return ST_STOPPED, next_due
 
     # Look at last followup-related timeline event for failure/suppression flag
@@ -182,6 +209,14 @@ def _shipment_status(
             return ST_SUPPRESSED, next_due
 
     if next_due is None:
+        # No dhl-phase schedule yet. SAD phase may still apply when DSK
+        # arrived without ever running the dhl-phase SLA (manual upload,
+        # backfill, evidence-only). Surface SAD eligibility instead of a
+        # silent Waiting.
+        sad = _sad_phase(audit, now)
+        if sad.get("phase") == "sad_followup":
+            sad_due = _parse_iso(sad.get("next_due_at"))
+            return (ST_ELIGIBLE if sad.get("eligible") else ST_MONITORING), sad_due
         return ST_WAITING, None
     if next_due <= now:
         return ST_ELIGIBLE, next_due
@@ -486,6 +521,7 @@ def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, A
         last_evt_ts   = last_evt.get("ts") if last_evt else None
         last_evt_type = last_evt.get("event") if last_evt else None
 
+        sad = _sad_phase(audit, now)
         rows.append({
             "awb":             _awb_of(audit),
             "batch_id":        str(audit.get("batch_id") or ""),
@@ -499,6 +535,13 @@ def project_shipment_rows(*, now: Optional[datetime] = None) -> List[Dict[str, A
             "last_scan_human": _humanise_age(last_scan_dt, now),
             "last_event_ts":   last_evt_ts,
             "last_event_type": last_evt_type,
+            # SAD-phase surface (visibility only — operator-actionable truth
+            # when DSK is in but SAD/ZC429 still pending). Read-only fields:
+            # the V2 page renders them but never sends.
+            "phase":               "sad_followup" if sad.get("phase") == "sad_followup" else "dhl_followup",
+            "sad_followup_reason": sad.get("reason"),
+            "waiting_for":         sad.get("waiting_for"),
+            "dsk_received_at":     sad.get("dsk_received_at"),
         })
 
     # Sort: ELIGIBLE first, then MONITORING by next_due asc, then others.

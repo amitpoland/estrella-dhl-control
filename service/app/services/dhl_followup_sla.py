@@ -234,6 +234,160 @@ def stop_followup(
     return state
 
 
+# ── SAD follow-up phase (post-DSK chase for SAD/ZC429) ──────────────────────
+#
+# After DHL responds with DSK/cesja, the follow-up SLA stops with
+# stop_reason=dhl_email_received. But the workflow is not over — the
+# customs agency (or DHL in self-clearance) still owes us the SAD/ZC429.
+# Without this phase the operator's "Automatic" mode silently drops to
+# Waiting with no next_due, even though follow-up IS required.
+#
+# This phase is a PURE DERIVATION over existing audit fields. It writes
+# nothing, sends nothing, queues nothing. The projector surfaces it as
+# eligible/monitoring; operator action remains backend-governed.
+#
+# Eligibility window: SAD_FOLLOWUP_WAIT_HOURS after DSK receipt.
+
+SAD_FOLLOWUP_WAIT_HOURS = 4
+
+# SAD-phase statuses (mirror the dhl-phase status strings for projector reuse)
+SAD_PHASE_INACTIVE   = "Inactive"
+SAD_PHASE_NONE       = "None"        # no DSK yet → not in SAD phase
+SAD_PHASE_RECEIVED   = "Stopped"     # SAD already received → terminal
+SAD_PHASE_MONITORING = "Monitoring"
+SAD_PHASE_ELIGIBLE   = "Eligible"
+
+
+def _dsk_received_at(audit: Dict[str, Any]) -> Optional[datetime]:
+    """Resolve the DSK-received timestamp from any of the available audit
+    surfaces. Returns the earliest timestamp found, or None if no DSK
+    evidence is present.
+
+    Authority order (most → least specific):
+      1. audit["dsk_received_at"]
+      2. timeline event "dsk_received" ts
+      3. audit["dhl_email"]["received_at"] when audit["dsk_received"] is True
+    """
+    raw = audit.get("dsk_received_at")
+    ts = _try_parse_iso(raw) if raw else None
+    if ts is not None:
+        return ts
+
+    tl = audit.get("timeline") or []
+    if isinstance(tl, list):
+        for evt in tl:
+            if not isinstance(evt, dict):
+                continue
+            if evt.get("event") == "dsk_received":
+                ts = _try_parse_iso(evt.get("ts"))
+                if ts is not None:
+                    return ts
+
+    if audit.get("dsk_received"):
+        ts = _try_parse_iso((audit.get("dhl_email") or {}).get("received_at"))
+        if ts is not None:
+            return ts
+
+    return None
+
+
+def _sad_received(audit: Dict[str, Any]) -> bool:
+    """True when SAD / ZC429 / customs docs have been received.
+
+    Reads the same authority surfaces the monitor uses to STOP the dhl-phase
+    SLA via STOP_CUSTOMS_DOCS_RECEIVED: audit.customs_docs.received and
+    audit.sad_received / audit.sad_filename. Keeps the two phases in sync.
+    """
+    if (audit.get("customs_docs") or {}).get("received"):
+        return True
+    if audit.get("sad_received"):
+        return True
+    if (audit.get("sad_filename") or "").strip():
+        return True
+    return False
+
+
+def _try_parse_iso(s: Any) -> Optional[datetime]:
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=POLAND_TZ)
+        return dt
+    except Exception:
+        return None
+
+
+def derive_sad_followup_status(
+    audit: Dict[str, Any],
+    now:   Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Pure derivation of the SAD-phase follow-up state.
+
+    Returns a dict with keys:
+      phase            — "sad_followup" when in this phase, else "none"
+      status           — one of SAD_PHASE_*
+      next_due_at      — ISO8601 string when SAD follow-up is due, else None
+      eligible         — True iff status == SAD_PHASE_ELIGIBLE
+      waiting_for      — "customs_agency" | None
+      dsk_received_at  — ISO8601 string when DSK was received, else None
+      reason           — short human-readable reason for the status
+
+    Trigger conditions (workflow class):
+      DSK received  (any authority surface)
+      AND no SAD / customs docs yet
+      AND shipment still active (caller responsibility)
+      → SAD-phase phase. next_due_at = dsk_received_at + SAD_FOLLOWUP_WAIT_HOURS,
+        clamped to the next working window.
+        now >= next_due_at  → Eligible
+        now <  next_due_at  → Monitoring
+
+    Skip:
+      no DSK evidence   → phase "none"  (caller falls back to dhl phase)
+      SAD already in    → phase "none", status Stopped, reason customs_docs_received
+    """
+    if now is None:
+        now = datetime.now(POLAND_TZ)
+
+    dsk_ts = _dsk_received_at(audit)
+    if dsk_ts is None:
+        return {
+            "phase":           "none",
+            "status":          SAD_PHASE_NONE,
+            "next_due_at":     None,
+            "eligible":        False,
+            "waiting_for":     None,
+            "dsk_received_at": None,
+            "reason":          "no_dsk_evidence",
+        }
+
+    if _sad_received(audit):
+        return {
+            "phase":           "none",
+            "status":          SAD_PHASE_RECEIVED,
+            "next_due_at":     None,
+            "eligible":        False,
+            "waiting_for":     None,
+            "dsk_received_at": dsk_ts.isoformat(),
+            "reason":          "customs_docs_received",
+        }
+
+    next_due = next_working_time(
+        _to_poland(dsk_ts) + timedelta(hours=SAD_FOLLOWUP_WAIT_HOURS)
+    )
+    eligible = _to_poland(now) >= next_due
+    return {
+        "phase":           "sad_followup",
+        "status":          SAD_PHASE_ELIGIBLE if eligible else SAD_PHASE_MONITORING,
+        "next_due_at":     next_due.isoformat(),
+        "eligible":        eligible,
+        "waiting_for":     "customs_agency",
+        "dsk_received_at": dsk_ts.isoformat(),
+        "reason":          "dsk_received_sad_pending",
+    }
+
+
 def is_due(state: Dict[str, Any], now: Optional[datetime] = None) -> bool:
     """True if current time is at-or-past next_followup_at AND state is active."""
     if not state.get("active"):
