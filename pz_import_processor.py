@@ -1631,7 +1631,8 @@ def parse_invoice(pdf_path: str, corrections_log: list) -> dict:
     exporter_tax_id  = exp["exporter_tax_id"]
 
     # ── Consignee & Buyer ─────────────────────────────────────────────────────
-    # Estrella invoices: "Consignee:" = warehouse; "Buyer:" = legal importer
+    # Estrella invoices: "Consignee:" = warehouse or legal importer
+    # "Buyer:" / "Bill To:" / "TO:" = explicit legal importer label
     cb = _parse_consignee_buyer(
         lines, text,
         consignee_labels=("Consignee",),
@@ -1642,6 +1643,15 @@ def parse_invoice(pdf_path: str, corrections_log: list) -> dict:
     buyer_name        = cb["buyer_name"]
     buyer_address     = cb["buyer_address"]
     importer_vat      = cb["importer_vat"]
+
+    # EJL invoices sometimes omit the "Buyer:" label and only carry "Consignee:".
+    # In that layout, Consignee = legal importer, so fall back for compliance evidence.
+    if not buyer_name and consignee_name:
+        buyer_name = consignee_name
+        corrections_log.append(
+            f"[{fname}] 'Buyer:' block absent in EJL invoice; "
+            f"using Consignee block as importer fallback: '{consignee_name}'"
+        )
 
     # ── Conversion rate (Conv Rt) — invoice INR/USD rate ─────────────────────
     conv_rate = 0.0

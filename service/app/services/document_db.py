@@ -1013,6 +1013,50 @@ def store_awb_document(
     return row_id
 
 
+def get_awb_document(batch_id: str) -> Optional[Dict[str, Any]]:
+    """Return AWB structured fields for compliance_resolver consumption, or None.
+
+    The stored raw_json column holds the awb_data dict (keyed consignee_name /
+    shipper_name).  This function normalises the output to receiver_name /
+    shipper_name so callers match the awb_parser.parse_awb_pdf() contract.
+    """
+    if _db_path is None:
+        return None
+    with _connect() as con:
+        row = con.execute(
+            """SELECT raw_json FROM awb_documents
+               WHERE batch_id=? ORDER BY updated_at DESC LIMIT 1""",
+            (batch_id,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        outer = json.loads(row["raw_json"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(outer, dict):
+        return None
+    result: Dict[str, Any] = {
+        "receiver_name": outer.get("consignee_name", ""),
+        "shipper_name":  outer.get("shipper_name", ""),
+        "awb_number":    outer.get("awb", ""),
+        "carrier":       outer.get("carrier", ""),
+    }
+    # Prefer inner awb_parser fields when the nested raw_json string is present
+    inner_raw = outer.get("raw_json")
+    if inner_raw:
+        try:
+            inner = json.loads(inner_raw)
+            if isinstance(inner, dict):
+                if inner.get("receiver_name"):
+                    result["receiver_name"] = inner["receiver_name"]
+                if inner.get("shipper_name"):
+                    result["shipper_name"] = inner["shipper_name"]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return result
+
+
 # ── PZ documents ───────────────────────────────────────────────────────────────
 
 def store_pz_document(
