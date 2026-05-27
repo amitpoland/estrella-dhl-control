@@ -170,7 +170,7 @@ def test_projector_surfaces_sad_eligible_when_dhl_stopped(patched_projector):
     assert len(rows) == 1
     row = rows[0]
     assert row["awb"]                == "9198333502"
-    assert row["mode"]               == "Auto"
+    assert row["mode"]               == "Automatic"
     assert row["status"]             == proj.ST_ELIGIBLE
     assert row["phase"]              == "sad_followup"
     assert row["next_due_at"]        is not None
