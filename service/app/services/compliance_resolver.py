@@ -1,289 +1,229 @@
-"""compliance_resolver.py — secondary compliance authority (read-time).
+"""compliance_resolver.py — derive compliance intelligence from audit fields.
 
-Mirrors the sad_invoice_authority pattern. Produces a parallel structured
-authority object that the dashboard consumes ALONGSIDE audit.verification.
+Secondary read-only authority for compliance badge states.  Consumed ONLY when
+``compliance_intelligence_resolver_enabled`` is True in settings (default: False).
 
-Contract
---------
-- Pure function. No I/O. No mutation of the input audit dict.
-- Read-time only. Result is injected on dashboard detail read; never persisted.
-- Operates on three target checks for v1: importer_match, exporter_match,
-  qty_match_by_type. The deterministic engine already populates each as
-  True/False/None plus rich provenance fields (nip_source, exporter_source,
-  qty_status, master-NIP master fallback, etc.).
-- Does NOT change True/False outcomes. Only upgrades None ("verify manually")
-  into "verified" or "review" when the available evidence chain supports it
-  with at least high confidence. Medium/low confidence keeps the manual
-  warning intact (rules from task brief).
-- Never rewrites SAD/invoice values. Never touches financial fields. Never
-  emits an override entry.
+States
+------
+engine_verified        audit.verification[field] is True  (deterministic engine pass)
+intelligence_resolved  field is None AND high-confidence contextual evidence found
+gap                    field is None AND evidence absent or confidence too low
+failed                 audit.verification[field] is False (deterministic engine fail)
 
-Output shape
-------------
-{
-  "<check_key>": {
-     "resolver":     "intelligence" | "manual_required",
-     "status":       "verified" | "review",
-     "confidence":   "exact" | "high" | "medium" | "low",
-     "evidence":     [{"source": "...", "value": "...", "doc_ref": "..."}],
-     "resolved_by":  "compliance_resolver.v1",
-     "resolved_at":  "<iso8601 utc>",
-     "reason":       "<operator-facing short reason>"
-  },
-  ...
-}
+The resolver NEVER mutates audit.json or audit.verification.  It produces a
+``compliance_resolution`` object that routes_dashboard injects at read-time.
 
-Checks that are already True or False in verification are skipped — the
-deterministic authority stands; we do not annotate it.
+Intelligence is sourced exclusively from already-parsed fields inside the audit
+dict (customs_declaration, verification, zc429, awb_fields).  No external calls,
+no AI, no I/O.
+
+Confidence levels
+-----------------
+deterministic  Direct engine verdict from audit.verification.
+high           Two independent name sources extracted; Jaccard token overlap ≥ 0.4.
+medium         Single source present only; no second source to compare against.
+weak           Both sources present but overlap is 0.10–0.39.
+none           No relevant evidence found.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+import re
+from typing import Optional
 
-RESOLVER_VERSION = "compliance_resolver.v1"
+# ── Token matching ─────────────────────────────────────────────────────────────
 
-TARGET_CHECKS = ("importer_match", "exporter_match", "qty_match_by_type")
+# Legal-form suffixes and stop-words that add noise to entity comparison.
+_NOISE_TOKENS: frozenset[str] = frozenset({
+    "ltd", "pvt", "llc", "inc", "gmbh", "sp", "z", "o", "s", "oo", "sa", "co",
+    "corp", "limited", "private", "public", "the", "and", "of", "for",
+})
+
+_HIGH_THRESHOLD:   float = 0.40
+_MEDIUM_THRESHOLD: float = 0.10
+
+_COMPLIANCE_FIELDS = ("importer_match", "exporter_match", "qty_match_by_type", "vat_match")
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _tokenize(name: Optional[str]) -> frozenset[str]:
+    """Return a frozenset of lower-case alpha tokens after stripping punctuation."""
+    if not name:
+        return frozenset()
+    tokens = {
+        t.strip(".,()/-") for t in re.split(r"[\s/]+", name.lower())
+        if len(t.strip(".,()/-")) > 1
+    }
+    return frozenset(tokens - _NOISE_TOKENS)
 
 
-def _intelligence(status: str, confidence: str, reason: str,
-                  evidence: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _name_state(
+    sad_name: Optional[str],
+    inv_name: Optional[str],
+    field: str,
+) -> dict:
+    """Derive a per-field resolution result from two name strings."""
+    if not sad_name and not inv_name:
+        return {
+            "state":      "gap",
+            "confidence": "none",
+            "evidence":   None,
+            "source":     None,
+        }
+    if sad_name and not inv_name:
+        return {
+            "state":      "gap",
+            "confidence": "medium",
+            "evidence":   f"SAD name extracted ({sad_name!r}); no invoice name available to compare.",
+            "source":     "sad_only",
+        }
+    if not sad_name and inv_name:
+        return {
+            "state":      "gap",
+            "confidence": "medium",
+            "evidence":   f"Invoice name extracted ({inv_name!r}); no SAD name available to compare.",
+            "source":     "invoice_only",
+        }
+    # Both present — compute overlap.
+    score = _jaccard(_tokenize(sad_name), _tokenize(inv_name))
+    if score >= _HIGH_THRESHOLD:
+        return {
+            "state":      "intelligence_resolved",
+            "confidence": "high",
+            "evidence": (
+                f"SAD {field.replace('_match','')} {sad_name!r} and invoice name "
+                f"{inv_name!r} share sufficient token overlap ({score:.2f})."
+            ),
+            "source":     "sad+invoice",
+        }
+    if score >= _MEDIUM_THRESHOLD:
+        return {
+            "state":      "gap",
+            "confidence": "weak",
+            "evidence": (
+                f"SAD name {sad_name!r} and invoice name {inv_name!r} have "
+                f"low overlap ({score:.2f}); manual review recommended."
+            ),
+            "source":     "sad+invoice",
+        }
     return {
-        "resolver":    "intelligence",
-        "status":      status,
-        "confidence":  confidence,
-        "evidence":    evidence,
-        "resolved_by": RESOLVER_VERSION,
-        "resolved_at": _now_iso(),
-        "reason":      reason,
+        "state":      "gap",
+        "confidence": "weak",
+        "evidence": (
+            f"SAD name {sad_name!r} and invoice name {inv_name!r} have "
+            f"insufficient overlap ({score:.2f})."
+        ),
+        "source":     "sad+invoice",
     }
 
 
-def _manual(reason: str, evidence: Optional[List[Dict[str, Any]]] = None,
-            confidence: str = "low") -> Dict[str, Any]:
+# ── Per-field resolvers ───────────────────────────────────────────────────────
+
+def _resolve_importer(audit: dict) -> dict:
+    cd       = audit.get("customs_declaration") or {}
+    ver      = audit.get("verification") or {}
+    zc429    = audit.get("zc429") or {}
+    awb      = audit.get("awb_fields") or {}
+
+    sad_name = cd.get("importer_name") or None
+    inv_name = (
+        ver.get("invoice_importer_name")
+        or zc429.get("consignee")
+        or awb.get("receiver_name")
+        or None
+    )
+    return _name_state(sad_name, inv_name, "importer_match")
+
+
+def _resolve_exporter(audit: dict) -> dict:
+    cd    = audit.get("customs_declaration") or {}
+    ver   = audit.get("verification") or {}
+    zc429 = audit.get("zc429") or {}
+    awb   = audit.get("awb_fields") or {}
+
+    sad_name = cd.get("exporter_name") or None
+    inv_name = (
+        ver.get("invoice_exporter_name")
+        or zc429.get("exporter_name")
+        or zc429.get("exporter")
+        or awb.get("shipper_name")
+        or None
+    )
+    return _name_state(sad_name, inv_name, "exporter_match")
+
+
+def _resolve_qty(audit: dict) -> dict:
+    """qty_match_by_type requires per-category quantity comparison.
+
+    Without structured category breakdowns from both invoice and SAD sides,
+    no reliable intelligence resolution is possible.  Always returns gap.
+    """
+    cd    = audit.get("customs_declaration") or {}
+    zc429 = audit.get("zc429") or {}
+
+    has_sad_qty = bool(cd.get("total_pieces") or zc429.get("total_net_weight"))
     return {
-        "resolver":    "manual_required",
-        "status":      "review",
-        "confidence":  confidence,
-        "evidence":    evidence or [],
-        "resolved_by": RESOLVER_VERSION,
-        "resolved_at": _now_iso(),
-        "reason":      reason,
+        "state":      "gap",
+        "confidence": "weak" if has_sad_qty else "none",
+        "evidence": (
+            "SAD quantity data present but per-type breakdown unavailable for comparison."
+            if has_sad_qty else None
+        ),
+        "source": "sad_qty_only" if has_sad_qty else None,
     }
 
 
-# ── per-check resolvers ──────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────
 
-def _resolve_importer(ver: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Upgrade null importer_match using the NIP/master-fallback chain.
+def resolve_compliance(audit: dict) -> dict:
+    """Derive compliance_resolution from a loaded audit dict.
 
-    The engine already attempts a name-overlap match, falls back to NIP, and
-    further falls back to the known Estrella master NIP (RECIPIENT). When
-    those upper layers leave the field null, the supporting fields tell us
-    whether evidence is sufficient.
+    Pure function — no I/O, no side effects.  Never mutates ``audit``.
+
+    Returns a dict keyed by compliance field name.  Each value has keys:
+      state        engine_verified | intelligence_resolved | gap | failed
+      confidence   deterministic | high | medium | weak | none
+      evidence     human-readable string or None
+      source       evidence source identifier or None
+
+    Callers must wrap in try/except — any failure should be non-fatal.
     """
-    nip_match  = ver.get("nip_match")
-    nip_source = ver.get("nip_source")
-    sad_imp    = ver.get("sad_importer_name") or ""
-    inv_imp    = ver.get("invoice_importer_name") or ""
-    inv_vat    = ver.get("invoice_vat") or ""
+    ver = audit.get("verification") or {}
+    out: dict = {}
 
-    # Master-NIP fallback: invoice missing NIP, SAD declared the known master.
-    if nip_match is True and nip_source == "sad_and_master":
-        return _intelligence(
-            status="verified",
-            confidence="high",
-            reason="Importer confirmed via master contractor NIP "
-                   "(invoice omitted VAT; SAD declares the registered "
-                   "Estrella NIP).",
-            evidence=[
-                {"source": "verification.nip_source", "value": nip_source},
-                {"source": "verification.nip_match",  "value": True},
-                {"source": "verification.sad_importer_name",
-                 "value": sad_imp},
-            ],
-        )
+    for field in _COMPLIANCE_FIELDS:
+        v = ver.get(field)
 
-    # NIP matches on both sides but engine name-overlap heuristic returned
-    # None (e.g. one side missing parsed name string). NIP equality is a
-    # stronger identity proof than name overlap.
-    if nip_match is True and nip_source == "invoice_and_sad":
-        return _intelligence(
-            status="verified",
-            confidence="high",
-            reason="Importer VAT/NIP matches between invoice and SAD.",
-            evidence=[
-                {"source": "verification.nip_match",  "value": True},
-                {"source": "verification.nip_source", "value": nip_source},
-                {"source": "verification.invoice_vat", "value": inv_vat},
-            ],
-        )
-
-    # Insufficient evidence — keep the manual warning.
-    return _manual(
-        reason="Importer identity could not be confirmed from available "
-               "evidence. Manual review required.",
-        evidence=[
-            {"source": "verification.nip_source",
-             "value": nip_source or "unknown"},
-            {"source": "verification.sad_importer_name", "value": sad_imp},
-            {"source": "verification.invoice_importer_name", "value": inv_imp},
-        ],
-        confidence="low",
-    )
-
-
-def _resolve_exporter(ver: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Upgrade null exporter_match using parsed exporter source provenance.
-
-    Engine sets exporter_source to one of:
-      invoice_and_sad / invoice_only / sad_only / neither
-    SAD truncation of a known legal entity is the canonical reason
-    exporter_match is null while invoice carries the full name.
-    """
-    src         = ver.get("exporter_source")
-    sad_exp     = ver.get("sad_exporter_name") or ver.get("zc429_exporter_name") or ""
-    # The engine writes invoice_exporter only into the invoice record, but it
-    # populates _exporter_label, exporter_source — those are sufficient signal.
-    label       = ver.get("exporter_label") or ver.get("_exporter_label") or ""
-
-    if src == "invoice_only":
-        return _intelligence(
-            status="verified",
-            confidence="high",
-            reason="Exporter parsed from invoice; SAD omits the exporter "
-                   "block (common SAD truncation pattern).",
-            evidence=[
-                {"source": "verification.exporter_source", "value": src},
-                {"source": "verification.exporter_label",  "value": label},
-            ],
-        )
-
-    if src == "sad_only":
-        # Lower confidence — only SAD parsed exporter; invoice side empty.
-        # Operator must confirm against the invoice document.
-        return _manual(
-            reason="Exporter present only in SAD; invoice exporter not "
-                   "parsed. Cross-check against the invoice document.",
-            evidence=[
-                {"source": "verification.exporter_source", "value": src},
-                {"source": "verification.sad_exporter_name", "value": sad_exp},
-            ],
-            confidence="medium",
-        )
-
-    # invoice_and_sad here implies engine already returned True/False — we
-    # would not be called. neither / unknown → low signal.
-    return _manual(
-        reason="Exporter identity unverified — neither invoice nor SAD "
-               "exporter block parsed cleanly.",
-        evidence=[
-            {"source": "verification.exporter_source",
-             "value": src or "unknown"},
-        ],
-        confidence="low",
-    )
-
-
-def _resolve_qty_by_type(ver: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Upgrade null qty_match_by_type when SAD uses an aggregated combined
-    line AND the cif reconciliation independently confirms the total.
-
-    qty_status == "partial_aggregated_sad" means SAD declares a single
-    aggregated description (engine could not slice per-type), but the SAD
-    is internally consistent. When the CIF totals also match between
-    invoice and SAD, the qty-per-type gap is a SAD formatting artifact,
-    not a discrepancy. That is enough for an intelligence upgrade.
-    """
-    qty_status = ver.get("qty_status")
-    cif_match  = ver.get("cif_match")
-
-    if qty_status == "partial_aggregated_sad" and cif_match is True:
-        return _intelligence(
-            status="verified",
-            confidence="high",
-            reason="SAD uses an aggregated combined-description line and "
-                   "the CIF total reconciles against the invoices. Per-type "
-                   "qty cannot be sliced from SAD, but the aggregate is "
-                   "consistent.",
-            evidence=[
-                {"source": "verification.qty_status",  "value": qty_status},
-                {"source": "verification.cif_match",   "value": True},
-            ],
-        )
-
-    if qty_status == "partial_aggregated_sad":
-        # SAD aggregated but CIF not independently verified — medium signal.
-        return _manual(
-            reason="SAD uses combined description; CIF reconciliation not "
-                   "available to corroborate the aggregate.",
-            evidence=[
-                {"source": "verification.qty_status", "value": qty_status},
-                {"source": "verification.cif_match",
-                 "value": cif_match if cif_match is not None else "unknown"},
-            ],
-            confidence="medium",
-        )
-
-    return _manual(
-        reason="Quantity-by-type could not be reconciled from available "
-               "evidence.",
-        evidence=[
-            {"source": "verification.qty_status",
-             "value": qty_status or "unknown"},
-        ],
-        confidence="low",
-    )
-
-
-_DISPATCH = {
-    "importer_match":    _resolve_importer,
-    "exporter_match":    _resolve_exporter,
-    "qty_match_by_type": _resolve_qty_by_type,
-}
-
-
-# ── public entry point ───────────────────────────────────────────────────────
-
-def resolve_compliance(audit: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """Derive compliance_resolution for an audit dict.
-
-    Pure function. Does NOT mutate the input. Returns a dict keyed by the
-    verification check name. Only checks that are currently null in
-    audit.verification are evaluated — True/False outcomes from the
-    deterministic engine are left untouched and are not present in the
-    returned dict.
-    """
-    ver = (audit or {}).get("verification") or {}
-    out: Dict[str, Dict[str, Any]] = {}
-
-    for key in TARGET_CHECKS:
-        # Only upgrade null states. Never re-decide True/False engine output.
-        if key not in ver:
-            continue
-        current = ver.get(key)
-        if current is True or current is False:
-            continue
-        resolver_fn = _DISPATCH.get(key)
-        if resolver_fn is None:
-            continue
-        try:
-            out[key] = resolver_fn(ver)
-        except Exception as exc:  # noqa: BLE001
-            # Degrade safely — never raise out of the resolver.
-            out[key] = {
-                "resolver":    "manual_required",
-                "status":      "review",
-                "confidence":  "low",
-                "evidence":    [],
-                "resolved_by": RESOLVER_VERSION,
-                "resolved_at": _now_iso(),
-                "reason":      f"Resolver error (degraded to manual): "
-                               f"{type(exc).__name__}",
+        if v is True:
+            out[field] = {
+                "state":      "engine_verified",
+                "confidence": "deterministic",
+                "evidence":   None,
+                "source":     "verification",
+            }
+        elif v is False:
+            out[field] = {
+                "state":      "failed",
+                "confidence": "deterministic",
+                "evidence":   None,
+                "source":     "verification",
+            }
+        elif field == "importer_match":
+            out[field] = _resolve_importer(audit)
+        elif field == "exporter_match":
+            out[field] = _resolve_exporter(audit)
+        elif field == "qty_match_by_type":
+            out[field] = _resolve_qty(audit)
+        else:
+            out[field] = {
+                "state":      "gap",
+                "confidence": "none",
+                "evidence":   None,
+                "source":     None,
             }
 
     return out
