@@ -842,6 +842,23 @@ def batch_detail(batch_id: str) -> Dict[str, Any]:
             "review_reason":       "Authority derivation error.",
         }
 
+    # Compliance intelligence resolver (read-time, feature-flagged, default OFF).
+    # Produces a parallel authority object (audit["compliance_resolution"]) that
+    # the dashboard renders alongside the deterministic verification checks.
+    # NEVER mutates audit["verification"] and never persists. When the flag is
+    # off the field is absent and the frontend falls back to existing manual
+    # warning rendering.
+    try:
+        from ..core.config import settings as _cfg
+        if getattr(_cfg, "compliance_intelligence_resolver_enabled", False):
+            from ..services.compliance_resolver import resolve_compliance
+            audit["compliance_resolution"] = resolve_compliance(audit)
+    except Exception as _cr_err:  # noqa: BLE001
+        log.warning("[%s] compliance_resolution derivation failed: %s",
+                    batch_id, _cr_err)
+        # Degrade safely — omit the field; UI falls back to manual warnings.
+        audit.pop("compliance_resolution", None)
+
     return audit
 
 

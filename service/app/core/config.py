@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     # canonical configuration lives in one place.
     audit_hardening_enabled: bool = False
 
+    # ── Compliance intelligence resolver (feature-flagged, default OFF) ──────
+    # When True (env: COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=1), the dashboard
+    # detail read injects audit["compliance_resolution"] derived by
+    # services.compliance_resolver. The resolver is a pure, read-time secondary
+    # authority that upgrades null verification checks (importer_match,
+    # exporter_match, qty_match_by_type) into "verified" or "review" when
+    # confidence supports it. It NEVER mutates audit.verification, never touches
+    # SAD/invoice values, and never writes to wFirma. Default False so the
+    # existing "verify manually" UI behaviour is preserved until ops sign-off.
+    compliance_intelligence_resolver_enabled: bool = False
+
     # ── Zoho WorkDrive TrueSync (optional mirror — not used for PZ upload) ───────
     # Kept for reference / convenience mirror only. Never used as upload or
     # success condition for PZ output.
