@@ -51,6 +51,7 @@ from ..services.wfirma_pz_notes import build_wfirma_pz_notes
 from ..services import description_engine as deng
 from ..services import wfirma_client
 from ..services import wfirma_db
+from ..services import suppliers_db as _sdb
 from ..utils.io import write_json_atomic
 
 log    = get_logger(__name__)
@@ -443,6 +444,72 @@ def _resolve_supplier(audit: dict) -> tuple[str, str, list[str]]:
 
     risks.append("supplier_missing_for_wfirma")
     return "UNKNOWN_SUPPLIER", "fallback", risks
+
+
+def resolve_supplier_contractor_id_for_batch(
+    audit: dict,
+) -> "tuple[str, str, str, list[str]]":
+    """
+    Resolve the wFirma contractor_id for the import supplier for this batch.
+
+    Resolution order
+    ----------------
+    1. Audit supplier name  →  supplier master (suppliers.sqlite) wfirma_id
+       Match is name-normalised (case + punctuation insensitive).
+    2. If not in master     →  settings.wfirma_supplier_contractor_id (legacy
+       env fallback; risk flag ``supplier_from_env_fallback`` added).
+    3. If neither           →  return ("", name, "SUPPLIER_NOT_RESOLVED", risks)
+       Callers MUST block PZ preview/create when contractor_id is empty.
+
+    Returns
+    -------
+    (contractor_id, display_name, resolution_source, risk_flags)
+
+    contractor_id:       wFirma contractor_id string, or "" if unresolved
+    display_name:        human-readable supplier name resolved from audit
+    resolution_source:   "supplier_master" | "env_fallback" | "SUPPLIER_NOT_RESOLVED"
+    risk_flags:          list of advisory risk strings (may be empty)
+
+    Governance
+    ----------
+    - No silent fallback to env when audit supplier is present and resolvable.
+    - Env fallback only triggers when supplier_master lookup returns None
+      (supplier not yet enrolled) — this prevents silent wrong-supplier PZs.
+    - "SUPPLIER_NOT_RESOLVED" means the PZ MUST be blocked; the operator
+      must add the supplier to the master with a valid wfirma_id.
+    """
+    from pathlib import Path as _Path
+
+    supplier_name, _audit_source, risks = _resolve_supplier(audit)
+
+    # 1. Supplier master lookup (name-normalised)
+    db_path = _Path(settings.storage_root) / "suppliers.sqlite"
+    record  = _sdb.find_by_name_normalized(db_path, supplier_name)
+    if record is not None and (record.wfirma_id or "").strip():
+        return (
+            record.wfirma_id.strip(),
+            record.name,
+            "supplier_master",
+            list(risks),
+        )
+
+    # 2. Legacy env fallback (only when supplier NOT in master)
+    env_id = (getattr(settings, "wfirma_supplier_contractor_id", None) or "").strip()
+    if env_id:
+        return (
+            env_id,
+            supplier_name,
+            "env_fallback",
+            list(risks) + ["supplier_from_env_fallback"],
+        )
+
+    # 3. Unresolved — caller must block
+    return (
+        "",
+        supplier_name,
+        "SUPPLIER_NOT_RESOLVED",
+        list(risks) + ["SUPPLIER_NOT_RESOLVED"],
+    )
 
 
 def _build_uwagi(row: dict, awb: str, mrn: str, nbp_rate: float, settlement_mode: str = "standard") -> str:
@@ -1506,10 +1573,9 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
     clearance_date = cd.get("clearance_date", "") or audit.get("timestamp", "")[:10]
 
     # ── Resolve supplier contractor ───────────────────────────────────────────
-    supplier_wfirma_id = (settings.wfirma_supplier_contractor_id or "").strip()
-    supplier, supplier_source, risk_flags = _resolve_supplier(audit)
-    if not supplier_wfirma_id:
-        risk_flags.append("WFIRMA_SUPPLIER_CONTRACTOR_ID not configured — set in .env")
+    supplier_wfirma_id, supplier, supplier_source, risk_flags = \
+        resolve_supplier_contractor_id_for_batch(audit)
+    supplier_resolved = bool(supplier_wfirma_id)
 
     warehouse_id = (settings.wfirma_warehouse_id or "").strip()
 
@@ -1579,21 +1645,30 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         batch_id, result.ready, len(result.unresolved_codes), len(result.price_conflicts),
     )
 
+    # Preview blockers — supplier not resolved blocks PZ creation
+    preview_blockers: list[dict] = []
+    if not supplier_resolved:
+        preview_blockers.append({
+            "code":    "SUPPLIER_NOT_RESOLVED",
+            "message": f"Supplier {supplier!r} not found in supplier master with a wfirma_id. "
+                       "Add this supplier to the supplier master before creating a PZ.",
+        })
+
     lock_status = _compute_pz_lock_status(
         audit,
         preview_ready=result.ready,
-        supplier_configured=bool(supplier_wfirma_id),
+        supplier_configured=supplier_resolved,
         warehouse_configured=bool(warehouse_id),
     )
     # Single PZ lifecycle authority — UI consumes ONLY this field.
     pz_lifecycle = _compute_pz_lifecycle_state(
         audit,
         preview_ready=result.ready,
-        supplier_configured=bool(supplier_wfirma_id),
+        supplier_configured=supplier_resolved,
         warehouse_configured=bool(warehouse_id),
         create_allowed=bool(getattr(settings, "wfirma_create_pz_allowed", False)),
         duplicate_owner_batch_id=None,    # no doc_id on this build path
-        blocker_codes=[],
+        blocker_codes=[b["code"] for b in preview_blockers],
     )
 
     eff_status, status_normalized = _compute_effective_pz_status(audit)
@@ -1603,9 +1678,9 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         "wfirma_pz_doc_id":         None,
         "wfirma_pz_fullnumber":     None,
         "wfirma_pz_view_url":       None,
-        "would_create_pz":          result.ready and bool(supplier_wfirma_id) and bool(warehouse_id),
+        "would_create_pz":          result.ready and supplier_resolved and bool(warehouse_id),
         "ready":                    result.ready,
-        "blockers":                 [],
+        "blockers":                 preview_blockers,
         "engine_error":             None,
         "pz_lifecycle":             pz_lifecycle,
         "unresolved_product_codes": result.unresolved_codes,
@@ -1613,6 +1688,7 @@ async def wfirma_pz_preview(batch_id: str) -> JSONResponse:
         "supplier_wfirma_id":       supplier_wfirma_id,
         "supplier_name":            supplier,
         "supplier_source":          supplier_source,
+        "supplier_resolution_source": supplier_source,
         "warehouse_id":             warehouse_id,
         "mrn":                      mrn,
         "clearance_date":           clearance_date,
@@ -2369,17 +2445,26 @@ async def wfirma_pz_create(
         )
 
     # ── Guard 4: supplier + warehouse configured ──────────────────────────────
-    supplier_wfirma_id = (getattr(settings, "wfirma_supplier_contractor_id", None) or "").strip()
-    warehouse_id       = (getattr(settings, "wfirma_warehouse_id", None) or "").strip()
+    supplier_wfirma_id, _sup_display, _sup_res_src, _sup_risks = \
+        resolve_supplier_contractor_id_for_batch(audit)
+    warehouse_id = (getattr(settings, "wfirma_warehouse_id", None) or "").strip()
     if not supplier_wfirma_id:
         raise HTTPException(
             status_code=422,
             detail={
                 "guard": "pz_create",
-                "error": "WFIRMA_SUPPLIER_CONTRACTOR_ID not configured.",
-                "code":  "PZ_CREATE_NO_SUPPLIER",
+                "error": (
+                    f"Supplier could not be resolved to a wFirma contractor ID. "
+                    f"Audit supplier: {_sup_display!r}. "
+                    f"Add this supplier to the supplier master with a wfirma_id set."
+                ),
+                "code":  "PZ_CREATE_SUPPLIER_NOT_RESOLVED",
             },
         )
+    log.info(
+        "[%s] pz_create: supplier resolved %r → contractor_id=%s (source=%s)",
+        batch_id, _sup_display, supplier_wfirma_id, _sup_res_src,
+    )
     if not warehouse_id:
         raise HTTPException(
             status_code=422,
@@ -3132,13 +3217,18 @@ async def wfirma_pz_document_pdf(batch_id: str) -> Response:
 
     doc.build(story)
     safe_num = "".join(c if (c.isalnum() or c in "._- ") else "_" for c in pz_num)
-    filename  = f"{safe_num}.pdf"
+    filename  = f"{safe_num}_GENERATED_PREVIEW.pdf"
     log.info("[%s] pz_document_pdf: generated %d-line PDF for PZ %s",
              batch_id, len(lines), pz_doc_id)
     return Response(
         content=buf.getvalue(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-PZ-PDF-Source":     "generated-from-api-data",
+            "X-PZ-Doc-ID":         pz_doc_id,
+            "Cache-Control":       "no-store, no-cache, must-revalidate, max-age=0",
+        },
     )
 
 

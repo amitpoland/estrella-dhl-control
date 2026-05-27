@@ -24,8 +24,10 @@ from typing import Any, Dict, Iterable, List, Optional
 
 # ── Domain ────────────────────────────────────────────────────────────────────
 
-_ISO_ALPHA2_RE = re.compile(r"^[A-Z]{2}$")
-_EMAIL_RE      = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_ISO_ALPHA2_RE  = re.compile(r"^[A-Z]{2}$")
+_EMAIL_RE       = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PUNCT_RE       = re.compile(r"[^\w\s]")   # for name normalization
+_MULTI_SPACE_RE = re.compile(r"\s+")
 
 
 @dataclass
@@ -365,6 +367,59 @@ def delete_supplier(db_path: Path, supplier_id: int) -> bool:
             return cur.rowcount > 0
         except sqlite3.OperationalError:
             return False
+
+
+# ── Name-normalised lookup ─────────────────────────────────────────────────────
+
+def _normalize_name(name: str) -> str:
+    """Lower-case, strip punctuation, collapse whitespace.
+
+    Used for fuzzy supplier name matching between audit-resolved names
+    (e.g. "Estrella Jewels LLP") and master-data canonical names
+    (e.g. "ESTRELLA JEWELS LLP.").  Removes trailing periods and other
+    punctuation so both normalise to "estrella jewels llp".
+    """
+    if not name:
+        return ""
+    s = name.lower().strip()
+    s = _PUNCT_RE.sub(" ", s)
+    s = _MULTI_SPACE_RE.sub(" ", s).strip()
+    return s
+
+
+def find_by_name_normalized(db_path: Path, name: str) -> Optional[Supplier]:
+    """Return the first *active* supplier whose normalised name matches ``name``.
+
+    Matching is case- and punctuation-insensitive (see ``_normalize_name``).
+    Returns ``None`` when:
+      - ``name`` is blank
+      - the DB file does not exist
+      - no active supplier matches
+    Never raises; returns ``None`` on any DB error.
+    """
+    if not (name or "").strip():
+        return None
+    target = _normalize_name(name)
+    if not target:
+        return None
+
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT * FROM suppliers WHERE active = 1 ORDER BY id"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return None
+
+    for row in rows:
+        if _normalize_name(row["name"] or "") == target:
+            return _row_to_supplier(row)
+    return None
 
 
 # ── B0 (MDOC-cache) — wFirma identity sync ────────────────────────────────────
