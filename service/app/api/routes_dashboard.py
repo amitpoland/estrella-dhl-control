@@ -842,6 +842,19 @@ def batch_detail(batch_id: str) -> Dict[str, Any]:
             "review_reason":       "Authority derivation error.",
         }
 
+    # AWB structured fields — injected from documents DB at read-time (never persisted).
+    # Gives compliance_resolver access to receiver_name (importer) and
+    # shipper_name (exporter) from the waybill parsed at intake time.
+    # Only runs when the resolver flag is active to avoid unnecessary DB queries.
+    if settings.compliance_intelligence_resolver_enabled and "awb_fields" not in audit:
+        try:
+            from ..services import document_db as _ddb
+            _awb = _ddb.get_awb_document(batch_id)
+            if _awb:
+                audit["awb_fields"] = _awb
+        except Exception as _awb_inj_err:
+            log.debug("[%s] awb_fields injection (non-fatal): %s", batch_id, _awb_inj_err)
+
     # Compliance intelligence resolution — derived on read, never persisted.
     # audit.verification is NEVER mutated here. The compliance_resolution object
     # is a projection-only layer injected when the feature flag is enabled.
@@ -854,6 +867,7 @@ def batch_detail(batch_id: str) -> Dict[str, Any]:
         except Exception as _cr_err:
             log.warning("[%s] compliance_resolution derivation failed (non-fatal): %s",
                         batch_id, _cr_err)
+            audit.pop("compliance_resolution", None)
 
     return audit
 

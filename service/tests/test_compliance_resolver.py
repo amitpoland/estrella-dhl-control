@@ -325,3 +325,48 @@ def test_four_state_renderer_in_shipment_detail():
     assert "resolved" in renderer_section, (
         "stateColor constant must handle 'resolved' state"
     )
+
+
+# ── 14. AWB receiver_name path (importer) ────────────────────────────────────
+
+def test_importer_resolves_with_awb_receiver_name():
+    """SAD importer + AWB receiver_name with sufficient overlap → intelligence_resolved."""
+    a = _audit(sad_importer="Estrella Jewels Sp. z o.o. Sp.k.")
+    a.setdefault("awb_fields", {})["receiver_name"] = "Estrella Jewels Sp. z o.o., Sp. k."
+    r = resolve_compliance(a)
+    assert r["importer_match"]["state"] == "intelligence_resolved"
+    assert r["importer_match"]["confidence"] == "high"
+
+
+def test_importer_awb_receiver_gap_when_no_overlap():
+    """AWB receiver with poor name overlap stays gap, not resolved."""
+    a = _audit(sad_importer="Estrella Jewels Sp. z o.o.")
+    a.setdefault("awb_fields", {})["receiver_name"] = "Totally Different Company"
+    r = resolve_compliance(a)
+    assert r["importer_match"]["state"] == "gap"
+
+
+def test_importer_awb_receiver_used_only_as_fallback():
+    """AWB receiver_name is not used when invoice_importer_name already provides evidence."""
+    a = _audit(
+        sad_importer="Estrella Jewels Sp. z o.o.",
+        inv_importer="Estrella Jewels",
+    )
+    a.setdefault("awb_fields", {})["receiver_name"] = "Some Other Name"
+    r = resolve_compliance(a)
+    # invoice path takes priority over AWB; both SAD+invoice have overlap → resolved
+    assert r["importer_match"]["state"] == "intelligence_resolved"
+
+
+# ── 15. Source-grep: AWB fields injected in routes_dashboard ─────────────────
+
+def test_awb_fields_injected_before_compliance_resolution():
+    from pathlib import Path
+    src = (Path(__file__).parent.parent / "app" / "api" / "routes_dashboard.py"
+           ).read_text(encoding="utf-8")
+    assert "get_awb_document" in src, (
+        "routes_dashboard.py must call get_awb_document to inject awb_fields"
+    )
+    assert "awb_fields" in src, (
+        "routes_dashboard.py must inject awb_fields into audit before compliance resolution"
+    )
