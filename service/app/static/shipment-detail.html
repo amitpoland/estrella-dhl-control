@@ -7996,26 +7996,83 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                       {VER_GROUPS.map((group, groupIdx) => {
                         const visibleChecks = group.checks.filter(check => check.key in ver);
                         if (visibleChecks.length === 0) return null;
+                        // Compliance resolution authority — read-time injection by
+                        // routes_dashboard when COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED.
+                        // Consulted only for gap (null) checks; never overrides ok/error
+                        // outcomes from the deterministic engine.
+                        const cres = audit.compliance_resolution || {};
                         return (
                           <div key={group.label}>
                             <div style={{ fontSize: 9, fontWeight: 700, color: group.color, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4, marginTop: groupIdx > 0 ? 12 : 0 }}>{group.label}</div>
                             {visibleChecks.map(check => {
                               const v = ver[check.key];
-                              const state = v === true ? 'ok' : v === false ? 'error' : 'gap';
+                              // Authority discipline: deterministic engine truth
+                              // (state='engine_verified' | 'failed') is never reassigned.
+                              // Intelligence resolution is a DISTINCT state that must
+                              // never visually collapse into engine_verified.
+                              let state = v === true ? 'engine_verified'
+                                        : v === false ? 'failed'
+                                        : 'gap';
+                              const resolution = (state === 'gap') ? cres[check.key] : null;
+                              const intelligenceResolved =
+                                resolution &&
+                                resolution.status === 'verified' &&
+                                (resolution.confidence === 'exact' || resolution.confidence === 'high');
+                              if (intelligenceResolved) state = 'intelligence_resolved';
+                              const resolvedReview =
+                                resolution &&
+                                resolution.status === 'review' &&
+                                resolution.resolver === 'manual_required';
+                              // Icons + colours are deliberately different per state.
+                              // engine_verified  → green ✓ (deterministic truth)
+                              // intelligence_resolved → blue ◎ (advisory — review evidence)
+                              // gap              → amber ⚠ (manual review required)
+                              // failed           → red ✗ (engine confirmed mismatch)
+                              const stateIcon =
+                                state === 'engine_verified'      ? '✓' :
+                                state === 'intelligence_resolved' ? '◎' :
+                                state === 'failed'               ? '✗' :
+                                                                   '⚠';
+                              const stateColor =
+                                state === 'engine_verified'      ? 'var(--badge-green-text)' :
+                                state === 'intelligence_resolved' ? 'var(--badge-blue-text)'  :
+                                state === 'failed'               ? 'var(--badge-red-text)'   :
+                                                                   'var(--badge-amber-text)';
                               return (
-                                <div key={check.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 11, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                                <div key={check.key}
+                                     data-testid={`ver-check-${check.key}`}
+                                     data-state={state}
+                                     data-resolver={resolution ? resolution.resolver : ''}
+                                     data-confidence={resolution ? resolution.confidence : ''}
+                                     style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 11, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)' }}>
                                   <span style={{
                                     fontSize: 12, fontWeight: 700, flexShrink: 0, marginTop: 1,
-                                    color: state === 'ok' ? 'var(--badge-green-text)' : state === 'error' ? 'var(--badge-red-text)' : 'var(--badge-amber-text)'
+                                    color: stateColor,
                                   }}>
-                                    {state === 'ok' ? '✓' : state === 'error' ? '✗' : '⚠'}
+                                    {stateIcon}
                                   </span>
                                   <div>
-                                    <span style={{ fontWeight: 600, color: state === 'error' ? 'var(--badge-red-text)' : 'var(--text)' }}>{check.label}</span>
-                                    {(state === 'gap' && check.nullHint) && (
+                                    <span style={{ fontWeight: 600, color: state === 'failed' ? 'var(--badge-red-text)' : 'var(--text)' }}>{check.label}</span>
+                                    {state === 'intelligence_resolved' && (
+                                      <span data-testid={`intelligence-resolved-${check.key}`}
+                                            style={{ color: 'var(--badge-blue-text)', marginLeft: 6 }}>
+                                        — Intelligence resolved
+                                        {resolution.reason ? ` — ${resolution.reason}` : ''}
+                                        {' '}
+                                        <span style={{ color: 'var(--text-3)', fontStyle: 'italic' }}>
+                                          Review evidence before filing.
+                                        </span>
+                                      </span>
+                                    )}
+                                    {state === 'gap' && resolvedReview && (
+                                      <span style={{ color: 'var(--badge-amber-text)', marginLeft: 6 }}>
+                                        — Manual review required: {resolution.reason || check.nullHint}
+                                      </span>
+                                    )}
+                                    {state === 'gap' && !resolvedReview && check.nullHint && (
                                       <span style={{ color: 'var(--text-3)', marginLeft: 6 }}>— {check.nullHint}</span>
                                     )}
-                                    {state === 'error' && (
+                                    {state === 'failed' && (
                                       <span style={{ color: 'var(--badge-red-text)', marginLeft: 6 }}>— {check.falseHint}</span>
                                     )}
                                   </div>
