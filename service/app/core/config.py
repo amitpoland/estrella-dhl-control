@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     # Default True (live refresh on stale cache) — set False to skip live fetch.
     series_bootstrap_enabled: bool = True
 
+    # ── Compliance intelligence resolver (feature-flagged, default OFF) ─────────
+    # When True (env: COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=1), the batch
+    # detail endpoint injects a read-time ``compliance_resolution`` object that
+    # maps each compliance check to one of four states:
+    #   engine_verified | intelligence_resolved | gap | failed
+    # audit.verification is NEVER mutated — this is a projection-only layer.
+    # The frontend renders the new "intelligence_resolved" (blue) badge state
+    # only when this object is present in the response.
+    # Default False — do NOT enable in production without operator sign-off.
+    compliance_intelligence_resolver_enabled: bool = False
+
     # ── Audit hardening (feature-flagged) ─────────────────────────────────────
     # When True (env: AUDIT_HARDENING_ENABLED=1), audit_scoring.score_batch
     # emits the categorical `status` taxonomy (VERIFIED / PARTIAL /
