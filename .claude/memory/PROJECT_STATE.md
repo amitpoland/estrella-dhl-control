@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-28 (compliance resolver production enablement + OQ12 closure).
 
-**Last-run-at:** 2026-05-28T03:10Z. Origin/main HEAD: a993eef (PR #385 — OQ12 stale injection tests). Code HEAD: a993eef. Production: SHA **c7dbf3e DEPLOYED** at C:\PZ (static + engine files) + `a993eef` is test-only (no deploy needed) — **NO DRIFT**. GATE 2: 1/3 open PRs (PR #370 pz-correction). TEST BASELINE: 160/160 PZ regression, 381/381 carrier — all green at deploy time. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ISSUE #378: wFirma product gate bug filed (GATE 4 disposition). Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE. SUPPLIER AUTHORITY: per-shipment resolution deployed and verified. ATLAS-V2 SPRINT 01: DEPLOYED c7dbf3e — Sprint 02 UNBLOCKED (pending browser smoke confirmation). COMPLIANCE RESOLVER: LIVE — `COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true` in C:\PZ\.env — AWB 9198333502 visual verification COMPLETE (4/4 badge states correct).
+**Last-run-at:** 2026-05-28T(post-Sprint01-deploy). Origin/main HEAD: da854e3 (chore: PROJECT_STATE memory commit). Code HEAD: da854e3. Production: SHA **da854e3 DEPLOYED** at C:\PZ — 2026-05-28 7-agent gate READY-TO-DEPLOY → robocopy exit 2 (all current) + engine exit 0 + PZService RUNNING (PID 18460) + health 200 local + 200 public + carrier pending + gate POST 503 + stderr CLEAN. GATE 2: 1/3 open PRs (PR #370 pz-correction). TEST BASELINE: 160/160 PZ + 381/381 carrier green. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ISSUE #378: wFirma product gate bug filed (GATE 4 disposition). Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE. SUPPLIER AUTHORITY: per-shipment resolution deployed and verified. ATLAS-V2 SPRINT 01: DEPLOYED — Sprint 02 UNBLOCKED (pending operator directive). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true).
 
 ---
 
@@ -3132,6 +3132,31 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **2026-05-26: scan_fn fix bundled deployment** — 4361d29 deployed alongside PR #371; email_ingestion WARNING resolved; Lesson D disclosure complete
 - **2026-05-26: PR-C (operator flag flip) pending separate go-ahead** — DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true operator action deferred; deployment verified clean; all gates/guards operational
 - **2026-05-26: Visibility-only authority** — the DHL follow-up status projector is read-only and consumes existing authorities (`dhl_followup_mode` for mode, `orchestrator.is_active_shipment` for active state, timeline events for sent/suppressed/failed). It MUST NEVER acquire derivation logic that creates a second authority.
+
+## Intelligence Overlay Architecture Pattern (2026-05-28, OPERATOR-DECLARED)
+
+**Authority**: Operator directive, 2026-05-28 post-compliance-resolver-rollout closure.
+
+**Decision**: The compliance resolver governance pattern is promoted to **platform architecture**. It is not a shipment-specific feature. All future intelligence overlays in this system MUST conform to the following invariants:
+
+1. **Deterministic engine authority is canonical.** Engine-verified outcomes (`v===true`, `v===false`) cannot be overridden or softened by any intelligence layer.
+2. **Intelligence is secondary advisory reconciliation only.** It fills `null` gaps; it never replaces confirmed verdicts.
+3. **Confidence thresholds gate all upgrades.** No intelligence overlay may produce a non-`gap` state without meeting an explicit threshold (e.g., Jaccard ≥ 0.40 for token overlap; exact match for identity fields).
+4. **Unresolved or one-sided evidence remains amber.** If evidence is partial, missing, or below threshold, the state MUST remain `gap` — never quietly promoted.
+5. **All intelligence overlays are read-time and reversible.** No intelligence output is ever persisted to audit truth. Feature flags default OFF. Disabling a flag instantly reverts to deterministic-only rendering with no data loss.
+6. **Audit truth is immutable.** `audit.verification` is never mutated by the intelligence layer. Resolvers receive a copy; they return a separate dict.
+
+**Approved future application surfaces:**
+- SAD/VAT reconciliation
+- Customs amendment advisory checks
+- Duty-rate advisory signals
+- Supplier identity normalization
+- Proforma/PZ anomaly overlays
+- Carrier discrepancy analysis
+
+**Implementation requirement for any new overlay surface**: must pass a source-grep test asserting (a) `audit["verification"]` is not mutated, (b) the overlay is injected at read-time only, (c) the feature flag defaults `False`, and (d) deterministic `True`/`False` outcomes precede the intelligence branch in the rendering chain.
+
+**Reference**: Compliance resolver rollout campaign (2026-05-28), FACTS § "Compliance Intelligence Resolver — Production Enablement", scorecard `.claude/memory/scorecards/2026-05-28-compliance-resolver-production-rollout.md`.
 
 ## Next 3 actions in queue
 
