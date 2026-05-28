@@ -30,12 +30,11 @@ Rules
 """
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..utils.io import write_json_atomic
+from ..utils.io import write_json_atomic, read_json
 from ..core import timeline as tl
 
 
@@ -55,10 +54,17 @@ EV_WFIRMA_PZ_MAPPING_REFRESHED      = "wfirma_pz_mapping_refreshed"
 # ── Internal I/O ─────────────────────────────────────────────────────────────
 
 def _load(audit_path: Path) -> Optional[Dict[str, Any]]:
+    """
+    Read and return audit.json as a dict, or None on any failure.
+
+    Uses ``read_json`` (utf-8-sig) so a UTF-8 BOM introduced by PowerShell
+    or another non-Python tool is silently stripped and a WARNING is logged
+    directing the operator to re-save the file with ``write_json_atomic``.
+    """
     if not audit_path.exists():
         return None
     try:
-        return json.loads(audit_path.read_text(encoding="utf-8"))
+        return read_json(audit_path)
     except Exception as exc:
         log.warning("audit_persist._load failed for %s: %s", audit_path, exc)
         return None

@@ -760,3 +760,56 @@ Detection signal: a download endpoint or generation path without a regression te
 Do not solve future stale-output bugs by manual file deletion only. The deletion masks the symptom; the cache / atomicity gap remains. Apply Properties 1–5 systematically.
 
 **Reference**: Global Jewellery AWB 4789974092 incident chain (2026-05-21); PR #260 (audit purge — wrong layer), PR #261 (packing reparse — wrong layer), PR #265 (cache headers + validate-then-rollback — the actual fix); `routes_dhl_clearance.py` `download_dhl_file` + `generate_description` validator block; `service/tests/test_polish_desc_cache_and_overwrite.py` (11 tests pinning the contract).
+
+---
+
+## Lesson L — Never patch JSON files with PowerShell default text output (2026-05-28)
+
+**Origin**: AWB 4183498255 audit.json repair incident. After the PZ engine failed with WinError 5
+(transient PermissionError on `os.replace()`), the audit.json was manually patched via PowerShell
+to clear `engine_error` and fix `clearance_status`. PowerShell's default `Set-Content` / `Out-File`
+and even `Get-Content -Raw | ... | Set-Content` write files with a **UTF-8 BOM** (bytes EF BB BF)
+when targeting UTF-8. Python's `json.load()` opens files in plain `utf-8` mode and raises:
+
+```
+JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig)
+```
+
+This caused the `/wfirma/pz_preview` endpoint to return `{"detail":"audit.json unreadable: ..."}`,
+which caused the UI to show stale cached data: `already_created: true`, `Creation enabled: false`,
+`PZ preview ready: false` — all contradicting the actual (correct) state.
+
+**Binding rule** — When manually patching any JSON file in the PZ storage layer:
+
+1. **Prefer Python rewrite** — always the safe path:
+   ```python
+   import json, pathlib
+   p = pathlib.Path(r"C:\PZ\storage\outputs\...\audit.json")
+   data = json.loads(p.read_text(encoding="utf-8-sig"))  # handles BOM if present
+   data["engine_error"] = None
+   p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+   ```
+
+2. **If PowerShell is unavoidable**, use the explicit no-BOM writer:
+   ```powershell
+   [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+   ```
+   Never use `Set-Content -Encoding utf8`, `Out-File -Encoding utf8`, or the default
+   `Get-Content | Set-Content` pipeline — all produce UTF-8 WITH BOM in Windows PowerShell 5.1.
+
+3. **Detect existing BOM before any patch** — check `$bytes[0] -eq 239` before editing.
+
+4. **After any manual patch, verify** the endpoint that reads the file returns valid JSON
+   (not `{"detail":"... unreadable ..."}`) before concluding the patch is complete.
+
+**Detection signal**: A UI showing contradictory states (e.g. `already_created: true` alongside
+`PZ preview ready: false` and no wFirma doc in the timeline) when a JSON audit file was recently
+hand-edited. Always inspect the raw file bytes first, not just the content.
+
+**Where it binds**: every manual patch of `audit.json`, `packing.json`, or any other JSON file in
+`C:\PZ\storage\outputs\*`; every production incident playbook; every deploy runbook that involves
+a data-repair step.
+
+**Reference**: AWB 4183498255, 2026-05-28; `write_json_atomic()` retry fix in `utils/io.py`
+(commit on `feat/master-ref-carrier-integrity`); BOM repair via
+`[System.IO.File]::WriteAllText(..., UTF8Encoding($false))`.
