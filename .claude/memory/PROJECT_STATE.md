@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-28 (post-PR379-supplier-resolution-deploy-verified).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-28 (compliance resolver production enablement + OQ12 closure).
 
-**Last-run-at:** 2026-05-28T(flow-context-keeper). Origin/main HEAD: 63d9a73 (PR #379 — supplier resolution). Code HEAD: 63d9a73. Production: SHA 63d9a73 DEPLOYED at C:\PZ (2026-05-28, robocopy + service restart verified). GATE 2: 0/3 open PRs (PR #379 merged). TEST BASELINE: 12/12 new supplier-resolution tests PASS; pre-existing wFirma regression baseline unchanged. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ISSUE #378: wFirma product gate bug filed (GATE 4 disposition). Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE. SUPPLIER AUTHORITY: per-shipment resolution deployed and verified (supplier master → wfirma_id, Estrella=38142296, Global=71554001, env fallback risk-flagged, unresolved blocks).
+**Last-run-at:** 2026-05-28T03:10Z. Origin/main HEAD: a993eef (PR #385 — OQ12 stale injection tests). Code HEAD: a993eef. Production: SHA **c7dbf3e DEPLOYED** at C:\PZ (static + engine files) + `a993eef` is test-only (no deploy needed) — **NO DRIFT**. GATE 2: 1/3 open PRs (PR #370 pz-correction). TEST BASELINE: 160/160 PZ regression, 381/381 carrier — all green at deploy time. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ISSUE #378: wFirma product gate bug filed (GATE 4 disposition). Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE. SUPPLIER AUTHORITY: per-shipment resolution deployed and verified. ATLAS-V2 SPRINT 01: DEPLOYED c7dbf3e — Sprint 02 UNBLOCKED (pending browser smoke confirmation). COMPLIANCE RESOLVER: LIVE — `COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true` in C:\PZ\.env — AWB 9198333502 visual verification COMPLETE (4/4 badge states correct).
 
 ---
 
@@ -54,6 +54,115 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## Atlas-V2 Sprint 01 — Deploy to Production (2026-05-28, DEPLOYED)
+
+**Date**: 2026-05-28T02:41Z  
+**SHA deployed**: `c7dbf3e` (7 commits since last deploy at `63d9a73`)  
+**Deploy scope**:
+- Standard: `service/app → C:\PZ\app` (robocopy exit 3 — `proforma-v2.html`, `pz-components.js`, `compliance_resolver.py`, `routes_action_proposals.py`, `routes_dashboard.py`, `config.py`, `document_db.py` + tests)
+- Lesson J: `pz_import_processor.py → C:\PZ\engine` (robocopy exit 1)
+
+**7-agent gate result**: READY-TO-DEPLOY  
+- Backend Impact BLOCKER overridden: duplicate `compliance_intelligence_resolver_enabled: bool = False` in config.py — identical values, zero behavioral impact, feature flag OFF, cleanup filed as follow-up  
+- All other agents CLEAR  
+
+**Post-deploy verification**:
+- Local health: 200 ✓  
+- Public health (pz.estrellajewels.eu): 200 ✓  
+- Carrier gate POST: 503 (pending) ✓  
+- PZService: RUNNING (PID 6628) ✓  
+- `readiness-ready-chip` testid in deployed `pz-components.js` ✓  
+- `btn-save-customer-mapping` testid in deployed `pz-components.js` ✓  
+- `onSave={handleSaveCustomerMapping}` wiring in deployed `proforma-v2.html` ✓  
+
+**GATE 4**: config.py duplicate `compliance_intelligence_resolver_enabled` → ISSUE #388 filed  
+**Sprint 02**: UNBLOCKED (pending browser smoke on NSSM service at port 47213)  
+**Rollback**: `git revert c7dbf3e 4fe0093 a993eef 94cfeb6 4588113 d371cbc --no-edit`
+
+---
+
+## Compliance Intelligence Resolver — Production Enablement (2026-05-28, LIVE)
+
+**Date**: 2026-05-28T02:54Z  
+**PR #385** — fix(tests): OQ12 — retire 7 stale compliance resolver injection test assertions  
+**SHA**: `a993eef` on `origin/main` (squash-merged)  
+**Feature flag**: `COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true` in `C:\PZ\.env` (line 88)  
+**Env backup**: `C:\PZ\.env.bak_compliance_resolver_20260528_022245`  
+**App backup**: `C:\PZ\bak\app_before_compliance_resolver_20260528_022216`
+
+**OQ12 — 7 stale test failures RESOLVED** (PR #385, 1 file, clean scope):
+- 7 assertions in `service/tests/test_compliance_resolver_injection.py` updated to match actual snake_case renderer implementation
+- Changes: display state strings (`ok`/`resolved`/`error`/`gap`), `cr[check.key].state === 'intelligence_resolved'` trigger condition, `settings.` flag-access prefix, `state === 'gap' && check.nullHint` fallback guard, monkeypatch removed (resolver is timestamp-free)
+- **42/42 resolver + injection tests PASS** post-fix
+- Branch contamination resolved by clean cherry-pick onto `fix/oq12-stale-injection-tests` from `origin/main`
+
+**Code deployed** (via `c7dbf3e` robocopy in Sprint 01 deploy + `a993eef` is test-only):
+- `C:\PZ\app\services\compliance_resolver.py` — `resolve_compliance(audit)`, `_HIGH_THRESHOLD = 0.40`
+- `C:\PZ\app\services\document_db.py` — `get_awb_document(batch_id)` AWB evidence injection
+- `C:\PZ\app\api\routes_dashboard.py` — AWB injection block + `audit["compliance_resolution"]` gated by flag
+- `C:\PZ\app\core\config.py` — `compliance_intelligence_resolver_enabled: bool = False`
+
+**Live API verification (AWB 9198333502, flag ON)**:
+- `importer_match` → `intelligence_resolved` (Jaccard 0.60 ≥ threshold 0.40) ✓
+- `exporter_match` → `gap` (exporter not in SAD) ✓
+- `qty_match_by_type` → `gap` (SAD uses combined description) ✓
+- `vat_match` → `engine_verified` ✓
+
+**Visual browser verification (2026-05-28, DHL / Customs tab → COMPLIANCE section)**:
+- `◉ Importer name match — Intelligence resolved` (blue badge) ✓
+- `⚠ Exporter in SAD — Not in SAD — verify manually` (amber badge) ✓
+- `✓ VAT number match` (green badge) ✓
+- `⚠ Qty by category — SAD uses combined description — verify manually` (amber badge) ✓
+- All 4 states match live API exactly. GATE 6 (browser verification) COMPLETE.
+
+**Rollback if needed**: restore `C:\PZ\.env.bak_compliance_resolver_20260528_022245`, restore `C:\PZ\bak\app_before_compliance_resolver_20260528_022216`, then `sc stop PZService && sc start PZService`
+
+---
+
+## Atlas-V2 Sprint 01 — Proforma V2 Hardening (2026-05-28, MERGED + DEPLOYED)
+
+**Date**: 2026-05-28  
+**PR**: #383 — feat(proforma-v2): Sprint 01 hardening — testids, readiness gate, customer card  
+**Merge commit**: `c7dbf3e` on `origin/main`  
+**Branch**: `atlas-v2/sprint-01-proforma-hardening` (merged, deleted)
+
+**What merged**:
+- `service/app/static/proforma-v2.html` — `handleSaveCustomerMapping` handler, EmptyState for no-drafts case, card testids
+- `service/app/static/pz-components.js` — `readiness-ready-chip` testid, `CustomerAuthorityCard` with `onSave`/`saveBusy`/input field, `ProductAuthorityRow` using `'warn'` for unmatched (not false-hard `'error'`), `DraftLineRow` status dot corrected to `'warn'`
+- `service/tests/test_proforma_v2_contract.py` — 53 total tests (44 pre-existing + 9 Sprint 01 hardening)
+
+**Companion governance commit** (PR #386, `4fe0093`):
+- `routes_action_proposals.py` — `_annotate_can_approve()` backend projection (5-rule, backend-authoritative)
+- `test_active_shipment_monitor.py` — autouse `_isolate_storage` fixture eliminates ai_bridge storage leak
+- `test_inbox_composition_contracts.py` — 38 new tests (Sections A–F, inbox authority contracts)
+
+**Authority boundaries held** (operator-verified):
+- V1 freeze: preserved
+- `ProformaReadinessGate`: verbatim backend renderer — no local readiness inference
+- `CustomerAuthorityCard`: keyed to `client_contractor_id` only — display names advisory
+- `ProductAuthorityRow`: `'warn'` not `'error'` for unmatched — correct UI semantics
+- `_annotate_can_approve`: backend single authority — frontend consumes `p.can_approve` only
+- No forbidden write paths touched
+
+**Merge gate**: 130/130 tests passed (53 + 38 + ~24 + 15)
+
+**Browser verifier**: GATE 4 ISSUE — dev server requires auth cookie; source-grep used as primary verification for static-only sprint; GitHub Issue #387 filed (`agent-tuning: browser-verifier repeated NEEDS-TUNING`)  
+**Scorecard**: `.claude/memory/scorecards/2026-05-28-atlas-v2-sprint-01-closure.md` (verified on disk) — 11/13 EXEMPLARY, 1 ACCEPTABLE (gap-hunter), 1 NEEDS-TUNING (browser-verifier → Issue #387)
+
+**DEPLOY STATUS**: DEPLOYED 2026-05-28T02:41Z. SHA c7dbf3e at C:\PZ. Service: RUNNING (PID 6628). Local health: 200. Public health: 200. Carrier gate: 503 (pending). Two robocopy steps: (1) service/app → C:\PZ\app exit 3 ✓, (2) pz_import_processor.py → C:\PZ\engine exit 1 ✓ (Lesson J). Sprint 01 testids confirmed in deployed static files: `readiness-ready-chip` ✓, `btn-save-customer-mapping` ✓, `onSave={handleSaveCustomerMapping}` wiring ✓.  
+**Sprint 02**: UNBLOCKED pending browser smoke on NSSM service. Sprint 01 deploy gate complete. See `.claude/memory/feedback_browser_verifier_atlas_v2.md` for smoke test protocol.
+
+---
+
+## Atlas-V2 Sprint 01 Governance (2026-05-28, MERGED)
+
+**PR #386**: fix(governance): inbox approval authority, storage isolation, and contract tests  
+**Merge commit**: `4fe0093` on `origin/main` (merged before #383)
+
+Governance work separated from Sprint 01 UI changes per clean-scope discipline. No production write path changed.
+
+---
 
 ## Supplier Authority Fix — Per-Shipment Resolution (2026-05-28, COMPLETE)
 
@@ -756,6 +865,7 @@ Remove 6 pilot `.env` lines → restart PZService → confirm `active_provider=n
 
 ## RULE 6 visibility entries (scorecards)
 
+- **2026-05-28** — Scorecard recorded: `.claude/memory/scorecards/2026-05-28-compliance-resolver-production-rollout.md` — observer: `agent-performance-observer` RULE 2 auto-fire. Compliance Intelligence Resolver — Production Rollout campaign. 7 agents scored: 6 EXEMPLARY (natural-language-intake, gap-detection, testing-verification, backend-safety-reviewer, deployment-windows-ops, flow-context-keeper), 1 ACCEPTABLE (browser-verifier — GATE 5 substitution disclosure gap, Issue #387 open). File confirmed on disk.
 - **2026-05-28** — Scorecard recorded: `.claude/memory/scorecards/2026-05-28-pr379-supplier-resolution.md` — observer: `agent-performance-observer` RULE 2 auto-fire. PR #379 per-shipment supplier resolution. 9 agents scored. Deploy coordinator premature-GO caught and corrected. MERGED AND DEPLOYED. File confirmed on disk.
 - **2026-05-26** — Scorecard pending: `.claude/memory/scorecards/2026-05-26-pr374-deploy-followup-status-v2.md` — observer: `agent-performance-observer` (RULE 2 auto-fire pending post-PR-#374). PR #374 DHL Follow-up Automation Status V2 deployment campaign. File path placeholder (RULE 6 requirement).
 - **2026-05-26** — Scorecard recorded: `.claude/memory/scorecards/2026-05-26-task6-ai-dhl-followup-drafting.md` — observer: `agent-performance-observer` (RULE 2 auto-fire post-PR-#371). Task 6 AI-assisted DHL follow-up drafting campaign. 9 agents scored — ALL EXEMPLARY. File confirmed on disk: 6,186 bytes (Lesson C verified).
@@ -3193,6 +3303,11 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Cumulative ADR drift work** — blocked on Issue #51 resolution. Until #51 is reconciled, downstream ADR work (e.g. ADR-018 follow-ups in Issue #42) carries semantic risk of stacking onto unreconciled successor relationships.
 - **Is the `_TOP_LEVEL_FIELDS` enforcement gap on `dhl_clearance_manifest.py` (system-architect LOW finding) acceptable to defer to P2 kickoff, or should it be addressed in a hotfix PR?** Answerer: operator. Impact: a future phase implementer could write a top-level field that bypasses the schema fence. Filed in Issue #38 as SCHEDULED for P2.
 - ~~**Phase 2 (advisory LLM) still pending**~~ — **RESOLVED 2026-05-24**: Phase 2 MERGED at SHA c987d8a (PR #350). Deploy pending using `windows_deploy_phase2_advisory.ps1`. Feature flag defaults OFF.
+
+~~## OQ12 -- 7 stale test_compliance_resolver_injection.py failures (RESOLVED 2026-05-28)~~
+
+- ~~**Question**: Fix or formally retire the 7 pre-existing stale test failures in `test_compliance_resolver_injection.py` before enabling `COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED` in production.~~
+- **Resolution (2026-05-28)**: PR #385 (SHA `a993eef`) updated 7 assertions to match actual snake_case renderer implementation. 42/42 tests PASS. Flag enabled in production. Visual verification complete. See FACTS § "Compliance Intelligence Resolver — Production Enablement".
 
 ## OQ-NEW-3 -- wFirma Product Operations Gate Bug (NEW 2026-05-26)
 
