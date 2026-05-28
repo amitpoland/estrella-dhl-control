@@ -1,0 +1,1637 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Master Data V2 — Estrella PZ</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!--
+    master-data-v2.html — Master Data V2 page (Lesson F discipline).
+
+    Authority isolation:
+      - One page, one domain: master data ONLY
+      - No proforma, PZ, DHL, customs, wFirma writes, FX engine, or
+        production environment logic is invoked from this page.
+      - All API calls are restricted to /api/v1/{entity}/ and
+        /api/v1/master/audit/.
+      - dashboard-shared.js is used for visual primitives only
+        (Btn/Badge/Card/Sel/Toast). NO domain props are passed in.
+
+    Backend contract for each entity:
+      - Today (post-Phase-1): every write produces a master_audit row.
+      - DELETE is HARD delete. UI surfaces this explicitly.
+      - Soft-delete and Restore are NOT yet supported by the backend,
+        so this page does NOT render those buttons. They will appear in
+        the V2 page once Phase 4 lands.
+
+    Phase 3 entities (metals, stones, warehouses) are surfaced as
+    "Coming in next release" cards. The nav entry is visible so the
+    operator knows the shape of the catalog, but no broken API call
+    is issued.
+  -->
+  <style>
+    :root {
+      --bg:           #f6f7f9;
+      --panel:        #ffffff;
+      --text:         #1a1f29;
+      --text-dim:     #5b6573;
+      --text-soft:    #8a93a0;
+      --border:       #e3e6eb;
+      --border-soft:  #eef0f3;
+      --accent:       #1f6feb;
+      --accent-soft:  #e8f0fe;
+      --danger:       #c0392b;
+      --danger-soft:  #fdecea;
+      --warning:      #b7791f;
+      --warning-soft: #fff8e1;
+      --ok:           #1e7e3d;
+      --ok-soft:      #e6f4ea;
+      --badge-ref-bg:#eaf1ff;
+      --badge-ref-fg:#1f3c7a;
+      --badge-auth-bg:#fff4d6;
+      --badge-auth-fg:#7a5a00;
+      --shadow:       0 1px 2px rgba(0,0,0,.04), 0 4px 12px rgba(0,0,0,.05);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px; line-height: 1.45;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    .layout       { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+    .sidebar      { background: #11151c; color: #d6dbe3; padding: 16px 0; }
+    .sidebar h1   { margin: 0 16px 16px; font-size: 14px;
+                    color: #8a93a0; text-transform: uppercase;
+                    letter-spacing: .5px; font-weight: 600; }
+    .nav-item     { display: flex; align-items: center; justify-content: space-between;
+                    padding: 8px 16px; cursor: pointer;
+                    border-left: 3px solid transparent; color: #d6dbe3; }
+    .nav-item:hover     { background: #1c222c; }
+    .nav-item.active    { background: #1c222c; border-left-color: var(--accent); color: #fff; }
+    .nav-item .badge    { font-size: 11px; background: #2b3340; padding: 2px 8px;
+                          border-radius: 10px; color: #aab3c0; }
+    .nav-item.coming    { color: #6b7382; }
+    .main         { padding: 24px 32px; max-width: 1280px; }
+    .page-header  { display: flex; align-items: baseline; justify-content: space-between;
+                    margin-bottom: 6px; }
+    .page-header h2 { margin: 0; font-size: 22px; font-weight: 600; }
+    .page-sub     { color: var(--text-dim); margin: 0 0 16px; }
+
+    .authority-banner {
+      padding: 10px 14px; border-radius: 6px; margin: 0 0 16px;
+      font-size: 13px; display: flex; align-items: center; gap: 10px;
+    }
+    .banner-ref  { background: var(--badge-ref-bg);  color: var(--badge-ref-fg); }
+    .banner-auth { background: var(--badge-auth-bg); color: var(--badge-auth-fg); }
+    .banner-warn { background: var(--warning-soft);  color: var(--warning); }
+    .auth-pill   { font-size: 11px; padding: 2px 8px; border-radius: 12px;
+                   text-transform: uppercase; letter-spacing: .4px;
+                   font-weight: 600; }
+    .pill-ref    { background: var(--badge-ref-bg);  color: var(--badge-ref-fg); }
+    .pill-auth   { background: var(--badge-auth-bg); color: var(--badge-auth-fg); }
+
+    .toolbar     { display: flex; gap: 12px; align-items: center;
+                   margin-bottom: 12px; flex-wrap: wrap; }
+    .toolbar input[type=search] {
+      flex: 1; min-width: 220px;
+      padding: 8px 12px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--panel);
+    }
+    .btn {
+      padding: 7px 12px; border: 1px solid var(--border);
+      background: var(--panel); border-radius: 6px;
+      cursor: pointer; font-size: 13px; color: var(--text);
+    }
+    .btn:hover         { background: #f1f3f6; }
+    .btn-primary       { background: var(--accent); color: #fff;
+                          border-color: var(--accent); }
+    .btn-primary:hover { background: #1859bd; }
+    .btn-danger        { background: var(--danger); color: #fff;
+                          border-color: var(--danger); }
+    .btn-danger:hover  { background: #9d2d22; }
+    .btn-ghost         { background: transparent; border-color: transparent;
+                          color: var(--accent); }
+    .btn[disabled]     { opacity: .5; cursor: not-allowed; }
+
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; box-shadow: var(--shadow);
+    }
+    .table       { width: 100%; border-collapse: collapse; }
+    .table th    { text-align: left; padding: 10px 14px;
+                   font-size: 12px; font-weight: 600;
+                   color: var(--text-dim); text-transform: uppercase;
+                   letter-spacing: .4px;
+                   border-bottom: 1px solid var(--border); }
+    .table td    { padding: 10px 14px; border-bottom: 1px solid var(--border-soft); }
+    .table tr:last-child td { border-bottom: none; }
+    .table tr:hover td      { background: #fafbfc; }
+    .row-actions { display: flex; gap: 4px; }
+    .empty       { padding: 32px; text-align: center; color: var(--text-dim); }
+
+    .badge-ok   { background: var(--ok-soft);     color: var(--ok);     padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+    .badge-off  { background: #f0f1f4;            color: var(--text-soft); padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+
+    /* Drawer */
+    .drawer-bg   { position: fixed; inset: 0; background: rgba(0,0,0,.35);
+                   display: flex; justify-content: flex-end; z-index: 50; }
+    .drawer      { width: 520px; max-width: 100vw; background: var(--panel);
+                   height: 100vh; overflow-y: auto; padding: 24px;
+                   box-shadow: -8px 0 16px rgba(0,0,0,.08); }
+    .drawer h3   { margin-top: 0; }
+    .drawer .row { display: grid; grid-template-columns: 1fr 2fr;
+                   gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border-soft); }
+    .drawer .row label { color: var(--text-dim); }
+    .drawer-footer { display: flex; justify-content: flex-end; gap: 8px;
+                      margin-top: 16px; padding-top: 16px;
+                      border-top: 1px solid var(--border); }
+
+    /* Modal */
+    .modal-bg    { position: fixed; inset: 0; background: rgba(0,0,0,.45);
+                   display: flex; align-items: center; justify-content: center;
+                   z-index: 60; }
+    .modal       { width: 480px; max-width: 90vw; background: var(--panel);
+                   border-radius: 8px; padding: 24px; box-shadow: var(--shadow); }
+    .modal h3    { margin: 0 0 12px; }
+    .modal-warning { background: var(--danger-soft); color: var(--danger);
+                     padding: 10px 12px; border-radius: 6px; margin: 12px 0;
+                     font-size: 13px; }
+    .modal-footer{ display: flex; justify-content: flex-end; gap: 8px;
+                   margin-top: 16px; }
+
+    /* Audit drawer */
+    .audit-row   { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
+    .audit-row:last-child { border-bottom: none; }
+    .audit-meta  { font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+    .audit-op    { display: inline-block; padding: 2px 8px; border-radius: 10px;
+                   background: var(--accent-soft); color: var(--accent);
+                   font-size: 11px; font-weight: 600; margin-right: 6px;
+                   text-transform: uppercase; }
+    .audit-diff  { background: #f9fafb; border: 1px solid var(--border-soft);
+                   border-radius: 4px; padding: 8px; font-family: monospace;
+                   font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+
+    /* Toast */
+    #toast       { position: fixed; top: 16px; right: 16px; z-index: 100; }
+    .toast       { background: var(--panel); border: 1px solid var(--border);
+                   border-radius: 6px; padding: 10px 16px; margin-bottom: 8px;
+                   box-shadow: var(--shadow); font-size: 13px;
+                   min-width: 240px; }
+    .toast.error { border-left: 4px solid var(--danger); }
+    .toast.ok    { border-left: 4px solid var(--ok); }
+
+    /* Form */
+    .form-grid   { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .form-grid label { display: block; }
+    .form-grid .full { grid-column: 1 / -1; }
+    .form-grid input, .form-grid textarea, .form-grid select {
+      width: 100%; padding: 7px 10px; border: 1px solid var(--border);
+      border-radius: 6px; font-size: 14px; background: var(--panel);
+    }
+    .form-grid textarea { min-height: 60px; resize: vertical; }
+  </style>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel" data-presets="env,react"
+          src="/dashboard/dashboard-shared.js"></script>
+</head>
+
+<body>
+  <div id="root"></div>
+  <div id="toast"></div>
+
+  <script type="text/babel" data-presets="env,react">
+"use strict";
+
+const { apiFetch } = window.EstrellaShared || {};
+
+// ── Entity registry ─────────────────────────────────────────────────────────
+//
+// One descriptor per entity. Drives nav, table columns, edit form, authority
+// banner, delete copy. No domain logic lives in dashboard-shared.js — the
+// registry is the single authority for "what does this entity look like".
+//
+// Backend status flags:
+//   available: full CRUD wired (Phase 1)
+//   comingNext: declared but Phase 3 backend not built yet
+//
+// Authority kind:
+//   "local"      — local CRUD is the authority
+//   "reference"  — local table is reference / observation only;
+//                  edits do NOT affect downstream calculation
+//   "external"   — external system (wFirma) is authority; local is overlay/mirror
+
+const ENTITIES = [
+  {
+    key: "customers", label: "Customers", available: true,
+    apiBase: "/api/v1/customer-master",
+    listKey: "customers", pkField: "contractor_id",
+    auditEntity: "customers",
+    authority: "external",
+    softDeleteEnabled: true,   // Phase 4B Wave 3b-2
+    banner: "wFirma is the authority. This page edits the local mirror of wFirma contractors.",
+    columns: [
+      { key: "contractor_id", label: "Contractor ID" },
+      { key: "bill_to_name",  label: "Bill-to name" },
+      { key: "country",       label: "Country" },
+      { key: "vat_id",        label: "VAT" },
+    ],
+    formFields: [
+      { key: "contractor_id", label: "Contractor ID", required: true, pkOnCreate: true },
+      { key: "bill_to_name",  label: "Bill-to name",  required: true },
+      { key: "country",       label: "Country (ISO-2)", required: true },
+      { key: "vat_id",        label: "VAT ID" },
+    ],
+  },
+  // Phase 4B Wave 2 — composite-key customer child entities.
+  //
+  // These are managed PER CONTRACTOR. The V2 nav surfaces the catalog
+  // entry so operators can see soft-delete is wired and audit history is
+  // queryable by composite pk. The actual record editing UI for these
+  // sub-entities lives on the Customers detail page (rendered by V1 today,
+  // to be ported to V2 in a later phase). The placeholder page below
+  // explains the scope and the stable audit pk format.
+  {
+    key: "addresses", label: "Addresses", available: true,
+    apiBase: "/api/v1/customer-master",   // contractor scope is required
+    auditEntity: "client_addresses",
+    authority: "local",
+    softDeleteEnabled: true,
+    parentScope: "customer",
+    banner: "Shipping addresses are scoped per contractor. Soft-delete and Restore work — open the Customers detail flow to manage individual addresses, or query the audit log by composite pk customer:{contractor_id}:address:{addr_id}.",
+  },
+  {
+    key: "carrier_accounts", label: "Carrier Accounts", available: true,
+    apiBase: "/api/v1/customer-master",
+    auditEntity: "client_carrier_accounts",
+    authority: "local",
+    softDeleteEnabled: true,
+    parentScope: "customer",
+    banner: "Carrier accounts are scoped per contractor. Soft-delete and Restore work — open the Customers detail flow to manage individual accounts, or query the audit log by composite pk customer:{contractor_id}:carrier_account:{acct_id}.",
+    // Phase 4D-ext — declarative field map for the inline editor that
+    // ships with the V2 customer-detail surface. EditDrawer routes
+    // ``pickerSource`` fields through <ReferencePicker> so operators
+    // cannot save a missing/inactive carrier (which Phase 4C-ext would
+    // reject with 409).
+    formFields: [
+      {
+        key: "carrier",
+        label: "Carrier",
+        required: true,
+        pickerSource: "/api/v1/carriers-config/?active=true",
+        pickerValueField: "carrier_code",
+        pickerLabelFields: ["display_name", "carrier_code"],
+        pickerListKey: "carriers",
+        pickerNoun: "carriers",
+        pickerNounSingular: "carrier",
+      },
+      { key: "account_number", label: "Account number", required: true },
+      { key: "account_name",   label: "Account name" },
+      { key: "payment_type",   label: "Payment type (shipper/receiver/third_party)" },
+      { key: "service_level",  label: "Service level" },
+      // NOTE: NO api_key / secret / token fields. Carrier credentials live
+      // in .env per the carriers_config authority banner. The picker
+      // surface does NOT introduce any credential collection path.
+    ],
+  },
+  {
+    key: "suppliers", label: "Suppliers", available: true,
+    apiBase: "/api/v1/suppliers",
+    listKey: "suppliers", pkField: "id",
+    auditEntity: "suppliers",
+    authority: "local",
+    softDeleteEnabled: true,   // Phase 4B Wave 3b-1
+    banner: null,
+    columns: [
+      { key: "id",            label: "ID" },
+      { key: "supplier_code", label: "Code" },
+      { key: "name",          label: "Name" },
+      { key: "country",       label: "Country" },
+    ],
+    formFields: [
+      { key: "supplier_code", label: "Supplier code", required: true, pkOnCreate: true },
+      { key: "name",          label: "Name", required: true },
+      { key: "country",       label: "Country (ISO-2)", required: true },
+    ],
+    createsViaPost: true,
+  },
+  {
+    key: "product_local", label: "Products", available: true,
+    apiBase: "/api/v1/product-local",
+    listKey: "items", pkField: "product_code",
+    auditEntity: "product_local",
+    authority: "external",
+    softDeleteEnabled: true,   // Phase 4B Wave 4 — deactivate = stop applying overlay
+    deactivateNoun: "overlay",  // (informational; UI copy stays standard)
+    banner: "wFirma is the authority for product existence. This page edits the LOCAL overlay (HS code, unit, origin) only.",
+    columns: [
+      { key: "product_code",     label: "Product code" },
+      { key: "hs_code_override", label: "HS override" },
+      { key: "unit_override",    label: "Unit override" },
+      { key: "origin_country",   label: "Origin" },
+    ],
+    formFields: [
+      { key: "product_code",     label: "Product code", required: true, pkOnCreate: true },
+      // Phase 4D-ext-2 — pick from ACTIVE hs_codes so the Phase 4C RI
+      // check (hs_code_override → active hs_codes) cannot 409.
+      {
+        key: "hs_code_override", label: "HS code override",
+        pickerSource: "/api/v1/hs-codes/?active=true",
+        pickerValueField: "hs_code",
+        pickerLabelFields: ["description", "hs_code"],
+        pickerListKey: "hs_codes",
+        pickerNoun: "HS codes",
+        pickerNounSingular: "HS code",
+      },
+      { key: "unit_override",    label: "Unit override" },
+      { key: "origin_country",   label: "Origin (ISO-2)" },
+      { key: "notes",            label: "Notes", multiline: true, full: true },
+    ],
+  },
+  {
+    key: "designs", label: "Designs", available: true,
+    apiBase: "/api/v1/designs",
+    listKey: "designs", pkField: "design_code",
+    auditEntity: "designs",
+    authority: "local",
+    softDeleteEnabled: true,   // Phase 4B Wave 1
+    banner: null,
+    columns: [
+      { key: "design_code",   label: "Code" },
+      { key: "display_name",  label: "Name" },
+      { key: "design_family", label: "Family" },
+      { key: "metal",         label: "Metal" },
+    ],
+    formFields: [
+      { key: "design_code",   label: "Design code", required: true, pkOnCreate: true },
+      { key: "display_name",  label: "Display name" },
+      { key: "design_family", label: "Family" },
+      { key: "collection",    label: "Collection" },
+      { key: "metal",         label: "Metal" },
+      // Phase 4D-ext-2 — pick from ACTIVE hs_codes (RI: designs.hs_code).
+      {
+        key: "hs_code",       label: "HS code",
+        pickerSource: "/api/v1/hs-codes/?active=true",
+        pickerValueField: "hs_code",
+        pickerLabelFields: ["description", "hs_code"],
+        pickerListKey: "hs_codes",
+        pickerNoun: "HS codes",
+        pickerNounSingular: "HS code",
+      },
+      { key: "stone_summary", label: "Stones", full: true },
+    ],
+  },
+  {
+    key: "hs_codes", label: "HS Codes", available: true,
+    apiBase: "/api/v1/hs-codes",
+    listKey: "hs_codes", pkField: "hs_code",
+    auditEntity: "hs_codes",
+    authority: "local",
+    softDeleteEnabled: true,   // Phase 4B Wave 1
+    banner: null,
+    columns: [
+      { key: "hs_code",        label: "Code" },
+      { key: "description_pl", label: "Description (PL)" },
+      { key: "duty_rate_pct",  label: "Duty %" },
+      { key: "vat_rate_pct",   label: "VAT %" },
+    ],
+    formFields: [
+      { key: "hs_code",        label: "HS code (4–12 digits)", required: true, pkOnCreate: true },
+      { key: "description_pl", label: "Description (Polish)" },
+      { key: "description_en", label: "Description (English)" },
+      { key: "duty_rate_pct",  label: "Duty rate %" },
+      { key: "vat_rate_pct",   label: "VAT rate %" },
+      { key: "notes",          label: "Notes", multiline: true, full: true },
+    ],
+  },
+  {
+    key: "units", label: "Units", available: true,
+    apiBase: "/api/v1/units",
+    listKey: "units", pkField: "code",
+    auditEntity: "units",
+    authority: "local",
+    softDeleteEnabled: true,   // Phase 4B Wave 1
+    banner: null,
+    columns: [
+      { key: "code",      label: "Code" },
+      { key: "name_pl",   label: "Name (PL)" },
+      { key: "unit_type", label: "Type" },
+    ],
+    formFields: [
+      { key: "code",      label: "Code", required: true, pkOnCreate: true },
+      { key: "name_pl",   label: "Name (Polish)" },
+      { key: "name_en",   label: "Name (English)" },
+      { key: "unit_type", label: "Type (piece/weight/volume)" },
+    ],
+  },
+  {
+    key: "incoterms", label: "Incoterms", available: true,
+    apiBase: "/api/v1/incoterms",
+    listKey: "incoterms", pkField: "code",
+    auditEntity: "incoterms",
+    authority: "local",
+    softDeleteEnabled: true,   // Phase 4B Wave 1
+    banner: null,
+    columns: [
+      { key: "code", label: "Code" },
+      { key: "name", label: "Name" },
+      { key: "risk_transfer_point", label: "Risk transfer" },
+    ],
+    formFields: [
+      { key: "code",                label: "Code (e.g. EXW)", required: true, pkOnCreate: true },
+      { key: "name",                label: "Name" },
+      { key: "risk_transfer_point", label: "Risk transfer point" },
+      { key: "notes",               label: "Notes", multiline: true, full: true },
+    ],
+  },
+  {
+    key: "vat_config", label: "VAT", available: true,
+    apiBase: "/api/v1/vat-config",
+    listKey: "vat_config", pkField: "id",
+    auditEntity: "vat_config",
+    authority: "reference",
+    softDeleteEnabled: true,   // Phase 4B Wave 1
+    banner: "Reference only with respect to the wFirma invoice path. This table does not override wFirma VAT codes used during invoice issuance.",
+    columns: [
+      { key: "id",       label: "ID" },
+      { key: "country",  label: "Country" },
+      { key: "rate_pct", label: "Rate %" },
+      { key: "rate_code",label: "wFirma code" },
+    ],
+    formFields: [
+      { key: "country",   label: "Country (ISO-2)", required: true },
+      { key: "rate_pct",  label: "Rate %", required: true },
+      { key: "rate_code", label: "wFirma rate code" },
+      { key: "notes",     label: "Notes", multiline: true, full: true },
+    ],
+    createsViaPost: true,
+  },
+  {
+    key: "fx_rates", label: "FX Rates", available: true,
+    apiBase: "/api/v1/fx-rates",
+    listKey: "fx_rates", pkField: "id",
+    auditEntity: "fx_rates",
+    authority: "reference",
+    softDeleteEnabled: true,   // Phase 4B Wave 1
+    banner: "Reference only. PZ landed-cost calculation uses LIVE NBP rates — edits here do NOT affect any PZ, customs, or accounting calculation.",
+    columns: [
+      { key: "id",            label: "ID" },
+      { key: "rate_date",     label: "Date" },
+      { key: "from_currency", label: "From" },
+      { key: "to_currency",   label: "To" },
+      { key: "rate",          label: "Rate" },
+      { key: "source",        label: "Source" },
+    ],
+    formFields: [
+      { key: "rate_date",     label: "Date (YYYY-MM-DD)", required: true },
+      { key: "from_currency", label: "From (ISO 4217)", required: true },
+      { key: "to_currency",   label: "To (ISO 4217)", required: true },
+      { key: "rate",          label: "Rate (decimal)", required: true },
+      { key: "source",        label: "Source" },
+      { key: "notes",         label: "Notes", multiline: true, full: true },
+    ],
+    createsViaPost: true,
+  },
+  {
+    key: "carriers_config", label: "Carriers", available: true,
+    apiBase: "/api/v1/carriers-config",
+    listKey: "carriers", pkField: "carrier_code",
+    auditEntity: "carriers_config",
+    authority: "reference",
+    softDeleteEnabled: true,   // Phase 4B Wave 3a
+    banner: "Configuration only. Carrier API credentials live in .env and are NEVER stored or shown here.",
+    columns: [
+      { key: "carrier_code", label: "Code" },
+      { key: "name",         label: "Name" },
+      { key: "parser_type",  label: "Parser" },
+      { key: "api_type",     label: "API type" },
+    ],
+    formFields: [
+      { key: "carrier_code",       label: "Code", required: true, pkOnCreate: true },
+      { key: "name",               label: "Name" },
+      { key: "parser_type",        label: "Parser type" },
+      { key: "inbox_email",        label: "Inbox email" },
+      { key: "api_type",           label: "API type (api/portal/email_only)" },
+      { key: "supported_services", label: "Supported services" },
+      { key: "notes",              label: "Notes", multiline: true, full: true },
+    ],
+    // Hard-coded forbidden field guard: even if backend ever leaked a
+    // credential field name, this allow-list ensures the UI cannot render it.
+  },
+  // Phase-3 entities — activated 2026-05-28.
+  {
+    key: "metals", label: "Metals", available: true,
+    apiBase: "/api/v1/metals",
+    listKey: "metals", pkField: "code",
+    auditEntity: "metals",
+    authority: "local",
+    softDeleteEnabled: true,   // Phase 4A — soft-delete + restore enabled
+    banner: "Local valuation reference. Does not overwrite wFirma products.",
+    columns: [
+      { key: "code",         label: "Code" },
+      { key: "name",         label: "Name" },
+      { key: "metal_type",   label: "Type" },
+      { key: "purity_pct",   label: "Purity ‰" },
+      { key: "purity_label", label: "Purity label" },
+    ],
+    formFields: [
+      { key: "code",         label: "Code (uppercase, A–Z0–9_-, 2–32)", required: true, pkOnCreate: true },
+      { key: "name",         label: "Name" },
+      { key: "metal_type",   label: "Type (gold/silver/platinum/palladium/other)" },
+      { key: "purity_pct",   label: "Purity (millage, e.g. 750)" },
+      { key: "purity_label", label: "Purity label (e.g. 18K)" },
+      { key: "notes",        label: "Notes", multiline: true, full: true },
+    ],
+  },
+  {
+    key: "stones", label: "Stones", available: true,
+    apiBase: "/api/v1/stones",
+    listKey: "stones", pkField: "code",
+    auditEntity: "stones",
+    authority: "reference",
+    softDeleteEnabled: true,   // Phase 4A
+    banner: "Local gemstone catalog. Certification data is reference only — not validated against any external lab registry.",
+    columns: [
+      { key: "code",         label: "Code" },
+      { key: "stone_type",   label: "Type" },
+      { key: "shape",        label: "Shape" },
+      { key: "carat_weight", label: "Carat" },
+      { key: "cert_type",    label: "Cert type" },
+      { key: "cert_id",      label: "Cert id" },
+    ],
+    formFields: [
+      { key: "code",          label: "Code (uppercase, A–Z0–9_-, 2–40)", required: true, pkOnCreate: true },
+      { key: "stone_type",    label: "Type (diamond/ruby/emerald/sapphire/semi_precious/other)" },
+      { key: "name",          label: "Name" },
+      { key: "shape",         label: "Shape (round/princess/oval/emerald/pear/marquise/cushion/radiant/heart/baguette/other)" },
+      { key: "carat_weight",  label: "Carat weight (decimal as string)" },
+      { key: "color_grade",   label: "Color grade" },
+      { key: "clarity_grade", label: "Clarity grade" },
+      { key: "cut_grade",     label: "Cut grade" },
+      { key: "cert_type",     label: "Cert type (GIA/IGI/HRD/SGL/none/other)" },
+      { key: "cert_id",       label: "Cert id" },
+      { key: "cert_lab",      label: "Cert lab" },
+      { key: "notes",         label: "Notes", multiline: true, full: true },
+    ],
+  },
+  {
+    key: "warehouses", label: "Warehouses", available: true,
+    apiBase: "/api/v1/warehouses",
+    listKey: "warehouses", pkField: "code",
+    auditEntity: "warehouses",
+    authority: "local",
+    softDeleteEnabled: true,   // Phase 4A
+    banner: "Local stock-location authority. Inventory logic reads this as reference; this page does NOT mutate inventory state.",
+    columns: [
+      { key: "code",         label: "Code" },
+      { key: "name",         label: "Name" },
+      { key: "category",     label: "Category" },
+      { key: "country_code", label: "Country" },
+      { key: "city",         label: "City" },
+    ],
+    formFields: [
+      { key: "code",         label: "Code (uppercase, A–Z0–9_-, 2–32)", required: true, pkOnCreate: true },
+      { key: "name",         label: "Name" },
+      { key: "category",     label: "Category (own/supplier/customer_consignment/transit/customs_hold)" },
+      { key: "country_code", label: "Country (ISO-2 uppercase, e.g. PL)" },
+      { key: "city",         label: "City" },
+      { key: "address_line", label: "Address" },
+      { key: "notes",        label: "Notes", multiline: true, full: true },
+    ],
+  },
+];
+
+
+function authorityPill(authority) {
+  if (authority === "external") {
+    return <span className="auth-pill pill-auth" data-testid="auth-pill-external">wFirma is authority</span>;
+  }
+  if (authority === "reference") {
+    return <span className="auth-pill pill-ref" data-testid="auth-pill-reference">Reference only</span>;
+  }
+  return null;
+}
+
+
+// ── Confirmation modal ──────────────────────────────────────────────────────
+//
+// Two copy variants:
+//   - hard-delete (legacy entities + entities without softDeleteEnabled)
+//   - soft-delete (Phase 4A — metals/stones/warehouses)
+// Restore confirmations have their own small modal below.
+function ConfirmDeleteModal({ entity, label, onCancel, onConfirm }) {
+  const [reason, setReason] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const soft = !!entity.softDeleteEnabled;
+
+  return (
+    <div className="modal-bg" data-testid="delete-confirm-modal" role="dialog" aria-modal="true">
+      <div className="modal">
+        <h3>
+          {soft ? "Deactivate" : "Delete"} {entity.label.toLowerCase().replace(/s$/,'')} {label}?
+        </h3>
+        {soft ? (
+          <>
+            <p>
+              The record will be marked <strong>inactive</strong> and hidden from
+              the default list. You can restore it later by switching to “Show
+              inactive”.
+            </p>
+            <div className="authority-banner banner-ref" data-testid="delete-soft-info">
+              Soft delete. Reversible from this page. Hard delete remains
+              available to administrators with the feature flag enabled.
+            </div>
+          </>
+        ) : (
+          <>
+            <p>This will permanently delete the record.</p>
+            <div className="modal-warning" data-testid="delete-hard-warning">
+              Hard delete cannot be undone. Soft-delete and Restore are not yet
+              supported by the backend.
+            </div>
+          </>
+        )}
+        <label htmlFor="del-reason" style={{display:"block", marginBottom:4, color:"var(--text-dim)"}}>
+          Reason (optional, recorded in audit):
+        </label>
+        <input id="del-reason" type="text" value={reason}
+               onChange={e => setReason(e.target.value)}
+               style={{width:"100%", padding:"7px 10px",
+                       border:"1px solid var(--border)",
+                       borderRadius:6, fontSize:14}}
+               data-testid="delete-reason-input" />
+        <div className="modal-footer">
+          <button className="btn" onClick={onCancel} disabled={busy}
+                  data-testid="delete-cancel-btn">
+            Cancel
+          </button>
+          <button className="btn btn-danger"
+                  onClick={async () => { setBusy(true); try { await onConfirm(reason); } finally { setBusy(false); } }}
+                  disabled={busy}
+                  data-testid="delete-confirm-btn">
+            {busy ? (soft ? "Deactivating…" : "Deleting…")
+                  : (soft ? "Deactivate" : "Delete permanently")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function ConfirmRestoreModal({ entity, label, onCancel, onConfirm }) {
+  const [busy, setBusy] = React.useState(false);
+  return (
+    <div className="modal-bg" data-testid="restore-confirm-modal" role="dialog" aria-modal="true">
+      <div className="modal">
+        <h3>Restore {entity.label.toLowerCase().replace(/s$/,'')} {label}?</h3>
+        <p>
+          The record will be marked <strong>active</strong> again and reappear
+          in the default list. This action is recorded in audit.
+        </p>
+        <div className="modal-footer">
+          <button className="btn" onClick={onCancel} disabled={busy}
+                  data-testid="restore-cancel-btn">Cancel</button>
+          <button className="btn btn-primary"
+                  onClick={async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } }}
+                  disabled={busy}
+                  data-testid="restore-confirm-btn">
+            {busy ? "Restoring…" : "Restore"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ── Audit drawer ────────────────────────────────────────────────────────────
+function AuditDrawer({ entity, pk, onClose }) {
+  const [rows, setRows] = React.useState(null);
+  const [err, setErr]   = React.useState(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const qs = new URLSearchParams({ entity: entity.auditEntity, pk: String(pk) });
+        const d = await apiFetch(`/api/v1/master/audit/?${qs.toString()}`);
+        if (!cancelled) setRows((d && d.rows) || []);
+      } catch (e) {
+        if (!cancelled) setErr(e.message || "Audit fetch failed");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [entity, pk]);
+
+  return (
+    <div className="drawer-bg" data-testid="audit-drawer" onClick={onClose}>
+      <div className="drawer" onClick={e => e.stopPropagation()}>
+        <h3>Audit history</h3>
+        <div className="audit-meta">
+          {entity.label} · pk: <code>{String(pk)}</code>
+        </div>
+        {err && <div className="modal-warning" data-testid="audit-error">{err}</div>}
+        {!rows && !err && <div className="empty">Loading…</div>}
+        {rows && rows.length === 0 &&
+          <div className="empty" data-testid="audit-empty">No audit entries for this record yet.</div>}
+        {rows && rows.length > 0 && rows.map(r => (
+          <div key={r.id} className="audit-row" data-testid="audit-row">
+            <div className="audit-meta">
+              <span className="audit-op">{r.op}</span>
+              <code>{r.created_at}</code> · {r.actor}
+              {r.reason ? <> · reason: <em>{r.reason}</em></> : null}
+              {r.request_id ? <> · req: <code>{r.request_id}</code></> : null}
+            </div>
+            {r.diff_json && (
+              <div className="audit-diff">{JSON.stringify(r.diff_json, null, 2)}</div>
+            )}
+          </div>
+        ))}
+        <div className="drawer-footer">
+          <button className="btn" onClick={onClose} data-testid="audit-close">Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ── Reference picker (Phase 4D-ext, generalized in 4D-ext-2) ───────────────
+//
+// Replaces a free-text reference input with a picker of ACTIVE referents
+// loaded from a master-data list endpoint. Closes the Phase 4C / 4C-ext
+// 409 reference_conflict loop at the UI layer — the operator literally
+// cannot pick a missing or inactive referent.
+//
+// Used today by:
+//   - carrier_accounts.carrier        → /api/v1/carriers-config/?active=true
+//   - product_local.hs_code_override  → /api/v1/hs-codes/?active=true
+//   - designs.hs_code                 → /api/v1/hs-codes/?active=true
+//
+// Contract (declared by the entity field):
+//   pickerSource:      "<list endpoint with ?active=true>"
+//   pickerValueField:  "<option value field>"          e.g. "hs_code"
+//   pickerLabelFields: ["<preferred>", "<fallback>"]    first non-empty
+//   pickerListKey:     "<envelope array key>"           e.g. "hs_codes"
+//   pickerNoun:        "<plural noun for failure copy>" e.g. "HS codes"
+//
+// Behavior:
+//   - Loads on mount via apiFetch (auth + Phase 4D structured errors);
+//     shows a disabled "Loading…" while pending.
+//   - On fetch failure, falls back to a plain <input> + explanatory copy:
+//     "Could not load active <noun>. You can still save only if the
+//     backend accepts the <singular>." — never raw JSON.
+//   - If the current value is not in the active list (legacy row whose
+//     referent went inactive), surfaces it as a DISABLED option labeled
+//     "Current: {value} (inactive or unavailable)".
+//   - Only ever chooses a key value — never renders a credential field.
+function ReferencePicker({ field, value, onChange }) {
+  const [loaded,  setLoaded]  = React.useState(false);
+  const [failed,  setFailed]  = React.useState(false);
+  const [options, setOptions] = React.useState([]);
+
+  const noun     = field.pickerNoun || "options";
+  const nounOne  = field.pickerNounSingular || "value";
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const d = await apiFetch(field.pickerSource);
+        const list = (d && d[field.pickerListKey || "items"]) || [];
+        if (!cancelled) {
+          setOptions(list);
+          setLoaded(true);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setFailed(true);
+          setLoaded(true);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [field.pickerSource]);
+
+  if (!loaded) {
+    return <select disabled data-testid="reference-picker-loading"><option>Loading…</option></select>;
+  }
+  if (failed) {
+    return (
+      <div data-testid="reference-picker-failed">
+        <input
+          value={value ?? ""}
+          onChange={e => onChange(e.target.value)}
+          data-testid={`edit-field-${field.key}`}
+        />
+        <div style={{color:"var(--text-dim)", fontSize:12, marginTop:4}}
+             data-testid={`reference-picker-failed-copy-${field.key}`}>
+          Could not load active {noun}. You can still save only if the
+          backend accepts the {nounOne}.
+        </div>
+      </div>
+    );
+  }
+
+  const valueKey = field.pickerValueField || "code";
+  const labelKeys = field.pickerLabelFields || [valueKey];
+  function _label(opt) {
+    for (const k of labelKeys) {
+      const v = opt[k];
+      if (v != null && v !== "") return String(v);
+    }
+    return String(opt[valueKey] ?? "");
+  }
+
+  const knownCodes = new Set(options.map(o => String(o[valueKey])));
+  const currentIsKnown = value == null || value === "" || knownCodes.has(String(value));
+
+  return (
+    <select
+      value={value ?? ""}
+      onChange={e => onChange(e.target.value)}
+      data-testid={`edit-field-${field.key}`}
+    >
+      <option value="">— select —</option>
+      {options.map(opt => (
+        <option key={opt[valueKey]} value={opt[valueKey]}>
+          {_label(opt)}
+        </option>
+      ))}
+      {!currentIsKnown && (
+        <option value={value} disabled
+                data-testid="reference-picker-current-fallback">
+          Current: {value} (inactive or unavailable)
+        </option>
+      )}
+    </select>
+  );
+}
+
+
+// ── Edit drawer ─────────────────────────────────────────────────────────────
+function EditDrawer({ entity, record, onCancel, onSaved }) {
+  const isCreate = !record;
+  const initial  = record || {};
+  const [values, setValues] = React.useState(() => {
+    const v = {};
+    entity.formFields.forEach(f => { v[f.key] = initial[f.key] ?? ""; });
+    return v;
+  });
+  const [err, setErr] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+
+  const set = (k, v) => setValues(prev => ({ ...prev, [k]: v }));
+
+  async function save() {
+    setErr(null);
+    // Required-field check (UI-side; backend re-validates).
+    for (const f of entity.formFields) {
+      if (f.required && !values[f.key]) {
+        setErr(`Required: ${f.label}`); return;
+      }
+    }
+    setBusy(true);
+    try {
+      let url, method, body;
+      if (isCreate) {
+        if (entity.createsViaPost) {
+          // POST /entity/  — surrogate-id or supplier-style create
+          url    = `${entity.apiBase}/`;
+          method = "POST";
+          body   = { ...values };
+        } else {
+          // PUT /entity/{pk} — natural-keyed upsert
+          const pk = values[entity.pkField] || values[entity.formFields.find(f=>f.pkOnCreate)?.key];
+          if (!pk) { setErr("Missing primary key"); setBusy(false); return; }
+          url    = `${entity.apiBase}/${encodeURIComponent(pk)}`;
+          method = "PUT";
+          body   = { ...values };
+        }
+      } else {
+        const pk = record[entity.pkField];
+        url    = `${entity.apiBase}/${encodeURIComponent(pk)}`;
+        method = "PUT";
+        body   = { ...values };
+      }
+      await apiFetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      onSaved();
+    } catch (e) {
+      // Phase 4D — formatApiError converts 409 reference_conflict
+      // bodies into operator-readable prose; falls back to the raw
+      // message for any other error.
+      setErr(formatApiError(e) || "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="drawer-bg" data-testid="edit-drawer" onClick={onCancel}>
+      <div className="drawer" onClick={e => e.stopPropagation()}>
+        <h3>{isCreate ? `Add new ${entity.label.toLowerCase().replace(/s$/,'')}` : `Edit ${entity.label.toLowerCase().replace(/s$/,'')}`}</h3>
+        {err && <div className="modal-warning" data-testid="edit-error">{err}</div>}
+        <div className="form-grid">
+          {entity.formFields.map(f => (
+            <label key={f.key} className={f.full ? "full" : ""}>
+              <div style={{color:"var(--text-dim)", marginBottom:4, fontSize:13}}>
+                {f.label}{f.required ? " *" : ""}
+              </div>
+              {f.pickerSource
+                /* Phase 4D-ext / 4D-ext-2 — picker fields go through the
+                   generic ReferencePicker so the operator can only choose
+                   active referents (carriers, HS codes, …). */
+                ? <ReferencePicker field={f}
+                                   value={values[f.key]}
+                                   onChange={v => set(f.key, v)} />
+                : f.multiline
+                  ? <textarea value={values[f.key] ?? ""}
+                              onChange={e => set(f.key, e.target.value)}
+                              data-testid={`edit-field-${f.key}`} />
+                  : <input value={values[f.key] ?? ""}
+                           onChange={e => set(f.key, e.target.value)}
+                           disabled={!isCreate && f.pkOnCreate}
+                           data-testid={`edit-field-${f.key}`} />}
+            </label>
+          ))}
+        </div>
+        <div className="drawer-footer">
+          <button className="btn" onClick={onCancel} disabled={busy}
+                  data-testid="edit-cancel-btn">
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={save} disabled={busy}
+                  data-testid="edit-save-btn">
+            {busy ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ── View drawer ─────────────────────────────────────────────────────────────
+function ViewDrawer({ entity, record, onClose }) {
+  return (
+    <div className="drawer-bg" data-testid="view-drawer" onClick={onClose}>
+      <div className="drawer" onClick={e => e.stopPropagation()}>
+        <h3>{entity.label} detail</h3>
+        {Object.entries(record).map(([k, v]) => (
+          <div className="row" key={k}>
+            <label>{k}</label>
+            <div><code>{v == null ? "—" : (typeof v === "object" ? JSON.stringify(v) : String(v))}</code></div>
+          </div>
+        ))}
+        <div className="drawer-footer">
+          <button className="btn" onClick={onClose} data-testid="view-close">Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ── Toast ───────────────────────────────────────────────────────────────────
+function showToast(msg, type) {
+  const root = document.getElementById("toast");
+  if (!root) return;
+  const el = document.createElement("div");
+  el.className = `toast ${type || ""}`;
+  // textContent (not innerHTML) — no HTML / JSON injection into the toast.
+  el.textContent = msg;
+  root.appendChild(el);
+  setTimeout(() => el.remove(), 4500);
+}
+
+
+// ── Phase 4D — structured backend-error formatter ──────────────────────────
+//
+// The Phase 4C referential-integrity layer returns:
+//   HTTP/1.1 409 Conflict
+//   {"detail":{"error":"reference_conflict",
+//              "field":"<field>","entity":"<entity>",
+//              "key":"<key>","reason":"missing"|"inactive"}}
+//
+// dashboard-shared.js `apiFetch` throws Error(`HTTP <code>: <body>`). This
+// helper extracts the JSON body from the error message and — when it is
+// a reference_conflict — returns an operator-friendly sentence. For
+// everything else it returns the original message (generic fallback).
+//
+// Raw JSON is NEVER surfaced in the toast for reference_conflict — only
+// the formatted prose. Console logging of the raw error is left to the
+// callers' existing console.error/console.debug paths.
+function formatApiError(err) {
+  const raw = err && err.message ? String(err.message) : "Unknown error";
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart === -1) return raw;
+  let body = null;
+  try {
+    body = JSON.parse(raw.slice(jsonStart));
+  } catch (parseErr) {
+    return raw;
+  }
+  const detail = (body && body.detail) || body;
+  if (!detail || detail.error !== "reference_conflict") return raw;
+  const field  = detail.field  || "(unknown field)";
+  const entity = detail.entity || "(unknown entity)";
+  const key    = detail.key    || "(unknown key)";
+  if (detail.reason === "missing") {
+    return `Cannot save. The referenced ${entity} \`${key}\` does not exist. `
+         + `Field: ${field}.`;
+  }
+  if (detail.reason === "inactive") {
+    return `Cannot save. The referenced ${entity} \`${key}\` is inactive. `
+         + `Restore it first or choose another value. Field: ${field}.`;
+  }
+  // reference_conflict with an unknown reason — surface the structured
+  // shape in prose, never as raw JSON.
+  return `Cannot save. Reference conflict on field ${field} `
+       + `(${entity} ${key}, reason: ${detail.reason || "unknown"}).`;
+}
+
+
+// ── Parent-scoped placeholder (Phase 4B Wave 2) ────────────────────────────
+//
+// For composite-key sub-entities (addresses, carrier_accounts) the V2 nav
+// surfaces a placeholder. Soft-delete + Restore are backend-supported; this
+// page explains how the audit pk encodes the (contractor_id, sub_id) pair
+// and where to manage individual records today.
+function ParentScopedPage({ entity }) {
+  return (
+    <div data-testid={`page-${entity.key}`}>
+      <div className="page-header">
+        <h2>{entity.label} {authorityPill(entity.authority)}</h2>
+      </div>
+      <div className="authority-banner banner-ref"
+           data-testid={`banner-${entity.key}`}>
+        {entity.banner}
+      </div>
+      <div className="card empty" data-testid={`parent-scoped-${entity.key}`}>
+        <p style={{margin:"0 0 8px"}}>
+          <strong>Soft-delete and Restore are enabled</strong> for this entity.
+        </p>
+        <p style={{margin:"0 0 8px", color:"var(--text-dim)"}}>
+          Records are scoped per contractor. Manage individual rows from the
+          Customers detail flow. Hard-delete remains gated on the
+          master_admin role + hard-delete flag.
+        </p>
+        <p style={{margin:0, color:"var(--text-dim)"}}>
+          Audit history is queryable directly:
+          {" "}<code>GET /api/v1/master/audit/?entity={entity.auditEntity}
+          &pk=customer:&lt;contractor_id&gt;:
+          {entity.key === "addresses" ? "address" : "carrier_account"}
+          :&lt;sub_id&gt;</code>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+
+// ── Coming-next placeholder ────────────────────────────────────────────────
+function ComingSoonPage({ entity }) {
+  return (
+    <div data-testid={`page-coming-${entity.key}`}>
+      <div className="page-header">
+        <h2>{entity.label}</h2>
+      </div>
+      <div className="authority-banner banner-warn">
+        {entity.banner}
+      </div>
+      <div className="card empty" data-testid={`unavailable-${entity.key}`}>
+        Backend endpoint for <strong>{entity.label}</strong> is not available yet.
+        No actions can be taken from this page until the next release.
+      </div>
+    </div>
+  );
+}
+
+
+// ── Entity page (the reusable surface) ─────────────────────────────────────
+function EntityPage({ entity, onOpenDetail }) {
+  if (entity.comingNext || !entity.available) {
+    return <ComingSoonPage entity={entity} />;
+  }
+  if (entity.parentScope) {
+    return <ParentScopedPage entity={entity} />;
+  }
+
+  const [rows, setRows]    = React.useState([]);
+  const [loading, setL]    = React.useState(false);
+  const [search, setSearch]= React.useState("");
+  const [showInactive, setShowInactive] = React.useState(false);
+  const [viewRec, setView] = React.useState(null);
+  const [editRec, setEdit] = React.useState(null);          // {} = create
+  const [delRec,  setDel]  = React.useState(null);
+  const [restoreRec, setRestore] = React.useState(null);
+  const [auditRec, setAud] = React.useState(null);
+
+  async function reload() {
+    setL(true);
+    try {
+      const d = await apiFetch(`${entity.apiBase}/`);
+      const list = (d && (d[entity.listKey] || d.items || [])) || [];
+      setRows(list);
+    } catch (e) {
+      showToast(`Failed to load ${entity.label}: ${formatApiError(e)}`, "error");
+    } finally {
+      setL(false);
+    }
+  }
+
+  React.useEffect(() => { reload(); /* eslint-disable-next-line */ }, [entity.key]);
+
+  async function confirmDelete(reason) {
+    const pk = delRec[entity.pkField];
+    const headers = reason ? { "X-Change-Reason": reason } : {};
+    const soft = !!entity.softDeleteEnabled;
+    try {
+      await apiFetch(`${entity.apiBase}/${encodeURIComponent(pk)}`,
+                     { method: "DELETE", headers });
+      showToast(`${entity.label} ${pk} ${soft ? "deactivated" : "deleted"}.`, "ok");
+      setDel(null);
+      reload();
+    } catch (e) {
+      showToast(`${soft ? "Deactivate" : "Delete"} failed: ${formatApiError(e)}`, "error");
+    }
+  }
+
+  async function confirmRestore() {
+    const pk = restoreRec[entity.pkField];
+    try {
+      await apiFetch(`${entity.apiBase}/${encodeURIComponent(pk)}/restore`,
+                     { method: "POST" });
+      showToast(`${entity.label} ${pk} restored.`, "ok");
+      setRestore(null);
+      reload();
+    } catch (e) {
+      showToast(`Restore failed: ${formatApiError(e)}`, "error");
+    }
+  }
+
+  const filtered = rows.filter(r => {
+    if (!showInactive && r.active === false) return false;
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return entity.columns.some(c => {
+      const v = r[c.key];
+      return v != null && String(v).toLowerCase().includes(s);
+    });
+  });
+
+  return (
+    <div data-testid={`page-${entity.key}`}>
+      <div className="page-header">
+        <div>
+          <h2>{entity.label} {authorityPill(entity.authority)}</h2>
+          <p className="page-sub">{rows.length} record{rows.length === 1 ? "" : "s"}</p>
+        </div>
+        <button className="btn btn-primary"
+                onClick={() => setEdit({})}
+                data-testid={`btn-add-${entity.key}`}>
+          + Add new
+        </button>
+      </div>
+
+      {entity.banner && (
+        <div className={`authority-banner ${entity.authority === "reference" ? "banner-ref" : "banner-auth"}`}
+             data-testid={`banner-${entity.key}`}>
+          <strong>{entity.authority === "reference" ? "Reference only." : "External authority."}</strong>
+          {entity.banner}
+        </div>
+      )}
+
+      <div className="toolbar">
+        <input type="search" placeholder={`Search ${entity.label.toLowerCase()}…`}
+               value={search} onChange={e => setSearch(e.target.value)}
+               data-testid={`search-${entity.key}`} />
+        <label style={{display:"flex", gap:6, alignItems:"center", color:"var(--text-dim)"}}>
+          <input type="checkbox" checked={showInactive}
+                 onChange={e => setShowInactive(e.target.checked)}
+                 data-testid={`toggle-inactive-${entity.key}`} />
+          Show inactive
+        </label>
+      </div>
+
+      <div className="card">
+        {loading && <div className="empty">Loading…</div>}
+        {!loading && filtered.length === 0 && (
+          <div className="empty" data-testid={`empty-${entity.key}`}>
+            No records to show.
+          </div>
+        )}
+        {!loading && filtered.length > 0 && (
+          <table className="table" data-testid={`table-${entity.key}`}>
+            <thead>
+              <tr>
+                {entity.columns.map(c => <th key={c.key}>{c.label}</th>)}
+                <th>Active</th>
+                <th style={{width:280}}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(r => {
+                const pk = r[entity.pkField];
+                return (
+                  <tr key={pk} data-testid={`row-${entity.key}-${pk}`}>
+                    {entity.columns.map(c =>
+                      <td key={c.key}>{r[c.key] == null ? "—" : String(r[c.key])}</td>)}
+                    <td>
+                      {r.active === false
+                        ? <span className="badge-off">inactive</span>
+                        : <span className="badge-ok">active</span>}
+                    </td>
+                    <td>
+                      <div className="row-actions">
+                        {onOpenDetail && (
+                          <button className="btn btn-primary" onClick={() => onOpenDetail(pk)}
+                                  data-testid={`action-manage-${entity.key}-${pk}`}>Manage</button>
+                        )}
+                        <button className="btn" onClick={() => setView(r)}
+                                data-testid={`action-view-${entity.key}-${pk}`}>View</button>
+                        <button className="btn" onClick={() => setEdit(r)}
+                                data-testid={`action-edit-${entity.key}-${pk}`}>Edit</button>
+                        {entity.softDeleteEnabled && r.active === false ? (
+                          <button className="btn btn-primary" onClick={() => setRestore(r)}
+                                  data-testid={`action-restore-${entity.key}-${pk}`}>Restore</button>
+                        ) : (
+                          <button className="btn btn-danger" onClick={() => setDel(r)}
+                                  data-testid={`action-delete-${entity.key}-${pk}`}>
+                            {entity.softDeleteEnabled ? "Deactivate" : "Delete"}
+                          </button>
+                        )}
+                        <button className="btn btn-ghost" onClick={() => setAud(r)}
+                                data-testid={`action-audit-${entity.key}-${pk}`}>View audit</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {viewRec && <ViewDrawer entity={entity} record={viewRec} onClose={() => setView(null)} />}
+      {editRec && <EditDrawer entity={entity}
+                              record={Object.keys(editRec).length ? editRec : null}
+                              onCancel={() => setEdit(null)}
+                              onSaved={() => { setEdit(null); reload(); showToast("Saved.", "ok"); }} />}
+      {delRec  && <ConfirmDeleteModal entity={entity}
+                                       label={String(delRec[entity.pkField])}
+                                       onCancel={() => setDel(null)}
+                                       onConfirm={confirmDelete} />}
+      {restoreRec && <ConfirmRestoreModal entity={entity}
+                                           label={String(restoreRec[entity.pkField])}
+                                           onCancel={() => setRestore(null)}
+                                           onConfirm={confirmRestore} />}
+      {auditRec && <AuditDrawer entity={entity}
+                                 pk={auditRec[entity.pkField]}
+                                 onClose={() => setAud(null)} />}
+    </div>
+  );
+}
+
+
+// ── Customer detail surface (Phase 5) ──────────────────────────────────────
+//
+// ONE PAGE = ONE DOMAIN AUTHORITY (Lesson F): the customer detail page owns
+// the CUSTOMER domain. Shipping addresses and carrier accounts are children
+// of a customer, so they are edited HERE, scoped to the contractor — not on
+// their own top-level pages. The standalone Addresses / Carrier Accounts nav
+// entries remain as parent-scoped placeholders that point operators here.
+//
+// All sub-resource CRUD reuses the existing primitives:
+//   EditDrawer (formFields, ReferencePicker), ConfirmDeleteModal,
+//   ConfirmRestoreModal, AuditDrawer (composite pk), formatApiError.
+
+// Sub-resource config map. Each describes one child collection of a customer.
+const CUSTOMER_SUBRESOURCES = [
+  {
+    key: "addresses",
+    label: "Shipping Addresses",
+    subPath: "shipping-addresses",
+    listKey: "addresses",
+    pkField: "id",
+    auditEntity: "client_addresses",
+    auditKeyword: "address",          // composite pk: customer:{cid}:address:{id}
+    softDeleteEnabled: true,
+    columns: [
+      { key: "label",   label: "Label" },
+      { key: "city",    label: "City" },
+      { key: "country", label: "Country" },
+      { key: "is_default", label: "Default" },
+    ],
+    formFields: [
+      { key: "label",   label: "Label", required: true },
+      { key: "name",    label: "Recipient name" },
+      { key: "person",  label: "Contact person" },
+      { key: "street",  label: "Street" },
+      { key: "city",    label: "City" },
+      { key: "zip",     label: "ZIP" },
+      { key: "country", label: "Country (ISO-2)" },
+      { key: "phone",   label: "Phone" },
+      { key: "email",   label: "Email" },
+    ],
+  },
+  {
+    key: "carrier_accounts",
+    label: "Carrier Accounts",
+    subPath: "carrier-accounts",
+    listKey: "accounts",
+    pkField: "id",
+    auditEntity: "client_carrier_accounts",
+    auditKeyword: "carrier_account",  // composite pk: customer:{cid}:carrier_account:{id}
+    softDeleteEnabled: true,
+    columns: [
+      { key: "carrier",        label: "Carrier" },
+      { key: "account_number", label: "Account #" },
+      { key: "payment_type",   label: "Payment" },
+      { key: "is_default",     label: "Default" },
+    ],
+    formFields: [
+      {
+        key: "carrier", label: "Carrier", required: true,
+        pickerSource: "/api/v1/carriers-config/?active=true",
+        pickerValueField: "carrier_code",
+        pickerLabelFields: ["display_name", "carrier_code"],
+        pickerListKey: "carriers",
+        pickerNoun: "carriers",
+        pickerNounSingular: "carrier",
+      },
+      { key: "account_number", label: "Account number", required: true },
+      { key: "account_name",   label: "Account name" },
+      { key: "payment_type",   label: "Payment type (shipper/receiver/third_party)" },
+      { key: "service_level",  label: "Service level" },
+    ],
+  },
+];
+
+
+function SubResourceSection({ contractorId, config }) {
+  const [rows, setRows]    = React.useState([]);
+  const [loading, setL]    = React.useState(false);
+  const [showInactive, setShowInactive] = React.useState(false);
+  const [editRec, setEdit] = React.useState(null);   // {} = create
+  const [delRec,  setDel]  = React.useState(null);
+  const [restoreRec, setRestore] = React.useState(null);
+  const [auditRec, setAud] = React.useState(null);
+
+  const base = `/api/v1/customer-master/${encodeURIComponent(contractorId)}/${config.subPath}`;
+
+  // Synthetic entity descriptor so the shared drawers/modals work unchanged.
+  const subEntity = {
+    key: config.key,
+    label: config.label,
+    apiBase: base,
+    listKey: config.listKey,
+    pkField: config.pkField,
+    auditEntity: config.auditEntity,
+    softDeleteEnabled: config.softDeleteEnabled,
+    createsViaPost: true,             // surrogate-id children create via POST
+    columns: config.columns,
+    formFields: config.formFields,
+    authority: "local",
+  };
+
+  function _auditPk(id) {
+    return `customer:${contractorId}:${config.auditKeyword}:${id}`;
+  }
+
+  async function reload() {
+    setL(true);
+    try {
+      const qs = showInactive ? "?active=false" : "";
+      const d = await apiFetch(`${base}/${qs}`);
+      setRows((d && d[config.listKey]) || []);
+    } catch (e) {
+      showToast(`Failed to load ${config.label}: ${formatApiError(e)}`, "error");
+    } finally {
+      setL(false);
+    }
+  }
+
+  React.useEffect(() => { reload(); /* eslint-disable-next-line */ },
+                  [contractorId, config.key, showInactive]);
+
+  async function confirmDelete(reason) {
+    const id = delRec[config.pkField];
+    const headers = reason ? { "X-Change-Reason": reason } : {};
+    try {
+      await apiFetch(`${base}/${encodeURIComponent(id)}`, { method: "DELETE", headers });
+      showToast(`${config.label} #${id} deactivated.`, "ok");
+      setDel(null); reload();
+    } catch (e) {
+      showToast(`Deactivate failed: ${formatApiError(e)}`, "error");
+    }
+  }
+
+  async function confirmRestore() {
+    const id = restoreRec[config.pkField];
+    try {
+      await apiFetch(`${base}/${encodeURIComponent(id)}/restore`, { method: "POST" });
+      showToast(`${config.label} #${id} restored.`, "ok");
+      setRestore(null); reload();
+    } catch (e) {
+      showToast(`Restore failed: ${formatApiError(e)}`, "error");
+    }
+  }
+
+  return (
+    <div className="card" style={{marginBottom:24, padding:16}}
+         data-testid={`subresource-${config.key}`}>
+      <div className="page-header" style={{marginBottom:12}}>
+        <h3 style={{margin:0}}>{config.label}</h3>
+        <div style={{display:"flex", gap:12, alignItems:"center"}}>
+          <label style={{display:"flex", gap:6, alignItems:"center", color:"var(--text-dim)", fontSize:13}}>
+            <input type="checkbox" checked={showInactive}
+                   onChange={e => setShowInactive(e.target.checked)}
+                   data-testid={`subresource-toggle-inactive-${config.key}`} />
+            Show inactive
+          </label>
+          <button className="btn btn-primary" onClick={() => setEdit({})}
+                  data-testid={`subresource-add-${config.key}`}>
+            + Add {config.label.toLowerCase().replace(/s$/,'')}
+          </button>
+        </div>
+      </div>
+
+      {loading && <div className="empty">Loading…</div>}
+      {!loading && rows.length === 0 && (
+        <div className="empty" data-testid={`subresource-empty-${config.key}`}>
+          No {config.label.toLowerCase()} for this customer.
+        </div>
+      )}
+      {!loading && rows.length > 0 && (
+        <table className="table" data-testid={`subresource-table-${config.key}`}>
+          <thead>
+            <tr>
+              {config.columns.map(c => <th key={c.key}>{c.label}</th>)}
+              <th>Active</th>
+              <th style={{width:280}}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => {
+              const id = r[config.pkField];
+              return (
+                <tr key={id} data-testid={`subresource-row-${config.key}-${id}`}>
+                  {config.columns.map(c =>
+                    <td key={c.key}>{r[c.key] == null ? "—" : String(r[c.key])}</td>)}
+                  <td>{r.active === false
+                        ? <span className="badge-off">inactive</span>
+                        : <span className="badge-ok">active</span>}</td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="btn" onClick={() => setEdit(r)}
+                              data-testid={`subresource-edit-${config.key}-${id}`}>Edit</button>
+                      {r.active === false ? (
+                        <button className="btn btn-primary" onClick={() => setRestore(r)}
+                                data-testid={`subresource-restore-${config.key}-${id}`}>Restore</button>
+                      ) : (
+                        <button className="btn btn-danger" onClick={() => setDel(r)}
+                                data-testid={`subresource-delete-${config.key}-${id}`}>Deactivate</button>
+                      )}
+                      <button className="btn btn-ghost" onClick={() => setAud(r)}
+                              data-testid={`subresource-audit-${config.key}-${id}`}>View audit</button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {editRec && <EditDrawer entity={subEntity}
+                              record={Object.keys(editRec).length ? editRec : null}
+                              onCancel={() => setEdit(null)}
+                              onSaved={() => { setEdit(null); reload(); showToast("Saved.", "ok"); }} />}
+      {delRec  && <ConfirmDeleteModal entity={subEntity}
+                                       label={`#${delRec[config.pkField]}`}
+                                       onCancel={() => setDel(null)}
+                                       onConfirm={confirmDelete} />}
+      {restoreRec && <ConfirmRestoreModal entity={subEntity}
+                                           label={`#${restoreRec[config.pkField]}`}
+                                           onCancel={() => setRestore(null)}
+                                           onConfirm={confirmRestore} />}
+      {auditRec && <AuditDrawer entity={subEntity}
+                                 pk={_auditPk(auditRec[config.pkField])}
+                                 onClose={() => setAud(null)} />}
+    </div>
+  );
+}
+
+
+function CustomerDetailPage({ contractorId, onBack }) {
+  const [customer, setCustomer] = React.useState(null);
+  const [err, setErr] = React.useState(null);
+  const [editCust, setEditCust] = React.useState(false);
+
+  const custEntity = ENTITIES.find(e => e.key === "customers");
+
+  async function loadCustomer() {
+    try {
+      const d = await apiFetch(`/api/v1/customer-master/${encodeURIComponent(contractorId)}`);
+      setCustomer(d);
+    } catch (e) {
+      setErr(formatApiError(e));
+    }
+  }
+  React.useEffect(() => { loadCustomer(); /* eslint-disable-next-line */ }, [contractorId]);
+
+  return (
+    <div data-testid="customer-detail-page">
+      <div className="page-header">
+        <div>
+          <button className="btn btn-ghost" onClick={onBack}
+                  data-testid="customer-detail-back">← Back to Customers</button>
+          <h2 style={{margin:"8px 0 0"}}>
+            Customer {contractorId} {authorityPill("external")}
+          </h2>
+          <p className="page-sub">
+            {customer ? (customer.bill_to_name || "—") : "Loading…"}
+          </p>
+        </div>
+        <button className="btn" onClick={() => setEditCust(true)}
+                data-testid="customer-detail-edit">Edit customer</button>
+      </div>
+
+      <div className="authority-banner banner-auth" data-testid="customer-detail-authority">
+        <strong>External authority.</strong>
+        wFirma is the authority for this customer. Local edits mirror wFirma.
+      </div>
+
+      {customer && customer.active === false && (
+        <div className="authority-banner banner-warn" data-testid="customer-detail-inactive">
+          <strong>This customer is inactive (soft-deleted).</strong>
+          New shipping addresses and carrier accounts cannot be added until the
+          customer is restored. Use the Customers list to restore it.
+        </div>
+      )}
+
+      {err && <div className="modal-warning" data-testid="customer-detail-error">{err}</div>}
+
+      {/* Child collections — scoped to this contractor */}
+      {CUSTOMER_SUBRESOURCES.map(cfg => (
+        <SubResourceSection key={cfg.key} contractorId={contractorId} config={cfg} />
+      ))}
+
+      {editCust && customer && (
+        <EditDrawer entity={custEntity} record={customer}
+                    onCancel={() => setEditCust(false)}
+                    onSaved={() => { setEditCust(false); loadCustomer(); showToast("Saved.", "ok"); }} />
+      )}
+    </div>
+  );
+}
+
+
+// ── App shell ───────────────────────────────────────────────────────────────
+function App() {
+  const [activeKey, setActiveKey] = React.useState("customers");
+  const [detailCustomer, setDetailCustomer] = React.useState(null);
+  const active = ENTITIES.find(e => e.key === activeKey) || ENTITIES[0];
+
+  return (
+    <div className="layout" data-testid="master-data-v2">
+      <aside className="sidebar">
+        <h1>Master Data</h1>
+        <nav data-testid="master-nav">
+          {ENTITIES.map(e => (
+            <div key={e.key}
+                 className={`nav-item ${activeKey === e.key ? "active" : ""} ${e.comingNext ? "coming" : ""}`}
+                 onClick={() => { setActiveKey(e.key); setDetailCustomer(null); }}
+                 data-testid={`nav-${e.key}`}>
+              <span>{e.label}</span>
+              {e.comingNext && <span className="badge">Coming</span>}
+            </div>
+          ))}
+        </nav>
+      </aside>
+      <main className="main">
+        {activeKey === "customers" && detailCustomer
+          ? <CustomerDetailPage contractorId={detailCustomer}
+                                onBack={() => setDetailCustomer(null)} />
+          : <EntityPage key={active.key} entity={active}
+                        onOpenDetail={active.key === "customers" ? setDetailCustomer : null} />}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

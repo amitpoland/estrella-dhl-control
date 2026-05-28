@@ -77,7 +77,14 @@ def test_role_allowlist_pinned():
     m = re.search(r"^ROLES\s*=\s*\(([^)]+)\)", src, re.MULTILINE)
     assert m is not None, "ROLES tuple must be defined in auth/service.py"
     items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
-    expected = ["admin", "accounts", "logistics", "auditor", "viewer"]
+    # Phase 2 (2026-05-28): canonical ROLES extended with three isolated
+    # master-data roles. Legacy ladder is preserved first; master_* names are
+    # appended at the end. Frontend ADMIN_USERS_ROLES depends on this list —
+    # update both together if this list ever changes.
+    expected = [
+        "admin", "accounts", "logistics", "auditor", "viewer",
+        "master_admin", "master_editor", "master_viewer",
+    ]
     assert items == expected, (
         f"ROLES drifted: expected {expected}, got {items}. "
         "Frontend ADMIN_USERS_ROLES depends on this list — update both together."

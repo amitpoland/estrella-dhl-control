@@ -35,17 +35,6 @@ class Settings(BaseSettings):
     # Default True (live refresh on stale cache) — set False to skip live fetch.
     series_bootstrap_enabled: bool = True
 
-    # ── Compliance intelligence resolver (feature-flagged, default OFF) ─────────
-    # When True (env: COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=1), the batch
-    # detail endpoint injects a read-time ``compliance_resolution`` object that
-    # maps each compliance check to one of four states:
-    #   engine_verified | intelligence_resolved | gap | failed
-    # audit.verification is NEVER mutated — this is a projection-only layer.
-    # The frontend renders the new "intelligence_resolved" (blue) badge state
-    # only when this object is present in the response.
-    # Default False — do NOT enable in production without operator sign-off.
-    compliance_intelligence_resolver_enabled: bool = False
-
     # ── Audit hardening (feature-flagged) ─────────────────────────────────────
     # When True (env: AUDIT_HARDENING_ENABLED=1), audit_scoring.score_batch
     # emits the categorical `status` taxonomy (VERIFIED / PARTIAL /
@@ -433,6 +422,25 @@ class Settings(BaseSettings):
     # Approval package: tasks/phase-6f-5-dual-write-approval-package.md
     finance_dual_write_enabled:  bool = Field(default=False)
     finance_dual_write_shadow:   bool = Field(default=False)
+
+    # ── Master Data governance flags (Phase 0 scaffolding) ───────────────────
+    # All three default to a posture that preserves CURRENT behavior:
+    #   - audit_enabled=True   → audit writes from day one (no behavior change
+    #                            on read paths; only adds rows to a NEW table)
+    #   - role_enforcement=False → role_gate dependency degrades to
+    #                            require_api_key. No write surface is gated
+    #                            until master_admin/master_editor/master_viewer
+    #                            users are seeded.
+    #   - hard_delete_enabled=False → soft-delete is the only delete path
+    #                            available via API once Phase 4 lands. Phase 0
+    #                            does NOT change current delete semantics.
+    # Retention: master_audit rows are retained 7 years per jewelry / VAT /
+    # customs / supplier record-keeping policy. Purge tooling is OUT of Phase 0
+    # scope — the constant lives here so future purge code reads one source.
+    master_audit_enabled:        bool = Field(default=True)
+    master_role_enforcement:     bool = Field(default=False)
+    master_hard_delete_enabled:  bool = Field(default=False)
+    master_audit_retention_days: int  = Field(default=2557)   # 7y + 2 leap days
 
 
 settings = Settings()

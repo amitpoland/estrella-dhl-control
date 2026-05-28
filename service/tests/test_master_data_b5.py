@@ -203,12 +203,18 @@ def test_api_hs_put_422_bad_code(md_client):
     assert r.status_code == 422
 
 
-def test_api_hs_delete_204_then_404(md_client):
-    md_client.put("/api/v1/hs-codes/99999999", json={}, headers=_hdr())
-    d = md_client.delete("/api/v1/hs-codes/99999999", headers=_hdr())
+def test_api_hs_delete_204_then_soft_inactive(md_client):
+    """Post-Phase-4B-Wave-1: default DELETE is soft-delete. After delete,
+    GET-by-code still returns 200 with active=false + deleted_at set.
+    Default list excludes the inactive record."""
+    md_client.put("/api/v1/hs-codes/99999998", json={}, headers=_hdr())
+    d = md_client.delete("/api/v1/hs-codes/99999998", headers=_hdr())
     assert d.status_code == 204
-    g = md_client.get("/api/v1/hs-codes/99999999", headers=_hdr())
-    assert g.status_code == 404
+    g = md_client.get("/api/v1/hs-codes/99999998", headers=_hdr())
+    assert g.status_code == 200
+    body = g.json()
+    assert body["active"] is False
+    assert body.get("deleted_at")
 
 
 # ── Units API ─────────────────────────────────────────────────────────────────
@@ -246,6 +252,8 @@ def test_api_pl_full_lifecycle(md_client):
 
 
 def test_api_pl_list_after_lifecycle(md_client):
+    # Phase 4C: hs_code_override must reference an active hs_codes row.
+    md_client.put("/api/v1/hs-codes/12345678", json={}, headers=_hdr())
     md_client.put("/api/v1/product-local/SKU-LIST-1",
                   json={"hs_code_override": "12345678"}, headers=_hdr())
     md_client.put("/api/v1/product-local/SKU-LIST-2",

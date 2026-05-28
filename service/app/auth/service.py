@@ -15,7 +15,12 @@ import jwt
 from .database import get_db
 from ..core.config import settings
 
-ROLES = ("admin", "accounts", "logistics", "auditor", "viewer")
+# Canonical roles. First five are the legacy operator ladder; last three are
+# the master-data isolated namespace added in Phase 2 (operator instruction
+# 2026-05-28). The master_* names are NOT in _ROLE_RANK — holding a master_*
+# role does not grant legacy access, and holding a legacy role does not grant
+# master-data access.
+ROLES = ("admin", "accounts", "logistics", "auditor", "viewer", "master_admin", "master_editor", "master_viewer")
 
 
 # ── Password helpers (direct bcrypt — avoids passlib startup compatibility issue) ─

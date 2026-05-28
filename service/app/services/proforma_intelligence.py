@@ -197,9 +197,12 @@ def infer_missing_fields(
             with sqlite3.connect(str(master_db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 # product_local: hs_code_override, origin_country
+                # Phase 4B Wave 4: only ACTIVE overlays contribute HS
+                # suggestions. COALESCE tolerates pre-migration rows.
                 rows = conn.execute(
                     "SELECT product_code, hs_code_override FROM product_local "
-                    "WHERE hs_code_override IS NOT NULL AND hs_code_override <> ''"
+                    "WHERE hs_code_override IS NOT NULL AND hs_code_override <> '' "
+                    "AND COALESCE(active, 1) = 1"
                 ).fetchall()
                 for r in rows:
                     hs_lookup[r["product_code"].strip()] = r["hs_code_override"].strip()

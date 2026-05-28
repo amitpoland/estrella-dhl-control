@@ -209,7 +209,10 @@ def _resolve_hs_code(
     if master_db_path is not None:
         try:
             pl = mdb.get_product_local(master_db_path, product_code.strip())
-            if pl and (pl.hs_code_override or "").strip():
+            # Phase 4B Wave 4: an INACTIVE overlay means "stop applying overlay"
+            # — treat it as a Level-1 miss and fall through to invoice lines.
+            if (pl and getattr(pl, "active", True)
+                    and (pl.hs_code_override or "").strip()):
                 return pl.hs_code_override.strip()
         except Exception as _exc:
             log.debug(
