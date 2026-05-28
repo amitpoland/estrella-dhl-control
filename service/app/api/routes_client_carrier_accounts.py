@@ -184,6 +184,22 @@ async def update_account_endpoint(contractor_id: str, acct_id: int, request: Req
         raise HTTPException(status_code=422, detail={"validation_errors": errs})
     init_db(_DB_PATH)
     before = get_account(_DB_PATH, acct_id, contractor_id)
+    # Authority ordering: 422 (body) → 404 (account missing) → 409 (carrier
+    # reference conflict) → write. Verify the account exists before checking
+    # carrier authority so a missing-resource request is not turned into a
+    # misleading master-data conflict.
+    if before is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Carrier account not found: id={acct_id} contractor_id={contractor_id!r}",
+        )
+    # Phase 4C-ext Wave 2 — the carrier being set/preserved must still exist
+    # and be active in carriers_config. Closes the update-path bypass.
+    carrier_code = (body.get("carrier") or "").strip().lower()
+    try:
+        check_carrier_active(settings.storage_root, carrier_code)
+    except ReferenceConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.to_detail())
     try:
         stored = update_account(_DB_PATH, acct_id, contractor_id, body)
     except ValueError as exc:
