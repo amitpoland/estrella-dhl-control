@@ -732,9 +732,12 @@ def refresh_proposals_endpoint(batch_id: str) -> Dict[str, Any]:
 
 @router.get("/{batch_id}")
 def list_proposals(batch_id: str) -> Dict[str, Any]:
-    """Return all action proposals for a batch."""
+    """Return all action proposals for a batch, annotated with can_approve."""
     audit = _load_audit(batch_id)
-    proposals = audit.get("action_proposals") or []
+    proposals = [
+        _annotate_can_approve(p, audit)
+        for p in (audit.get("action_proposals") or [])
+    ]
     return {
         "batch_id":  batch_id,
         "count":     len(proposals),
@@ -1173,6 +1176,53 @@ def queue_proposal(proposal_id: str) -> Dict[str, Any]:
         "email_id":    email_id,
         "to":          to_addr,
     }
+
+
+# ── can_approve projection — backend single authority ────────────────────────
+
+def _annotate_can_approve(proposal: Dict[str, Any], audit: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Project can_approve + approve_blocked_reason onto a copy of the proposal.
+
+    Backend is the single authority. Renderers must consume these fields and
+    must never re-derive from raw audit fields (pz_pdf_filename, status, etc.).
+
+    Rules (first match wins):
+    1. Non-pending statuses (approved/queued/rejected/sent/resolved) → blocked
+    2. Non-email types (tracking_lookup) → always approvable
+    3. Completed batch → blocked regardless of PZ state
+    4. PZ not generated (no pz_pdf_filename AND no pz_generated_at) → blocked
+    5. Otherwise → approvable
+    """
+    p = dict(proposal)
+
+    status = p.get("status", "")
+    ptype  = p.get("type", "")
+
+    if status != "pending_review":
+        p["can_approve"]          = False
+        p["approve_blocked_reason"] = f"Proposal is already {status}"
+        return p
+
+    if ptype in _NON_EMAIL_TYPES:
+        p["can_approve"]          = True
+        p["approve_blocked_reason"] = None
+        return p
+
+    if (audit.get("status") or "").lower() == "completed":
+        p["can_approve"]          = False
+        p["approve_blocked_reason"] = "Batch is completed — no further actions allowed"
+        return p
+
+    pz_ready = bool(audit.get("pz_pdf_filename") or audit.get("pz_generated_at"))
+    if not pz_ready:
+        p["can_approve"]          = False
+        p["approve_blocked_reason"] = "PZ not yet generated — approve requires PZ to exist"
+        return p
+
+    p["can_approve"]          = True
+    p["approve_blocked_reason"] = None
+    return p
 
 
 # ── Batch-scoped proposal resolver ────────────────────────────────────────────
