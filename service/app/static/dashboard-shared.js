@@ -506,6 +506,23 @@
     );
   }
 
+  // Operator identity resolver — prompts once per browser session, caches in localStorage.
+  // Returns "" if user cancels; backend falls back to "operator" via _operator_from_header.
+  function _resolveOperator() {
+    try {
+      const cached = (window.localStorage.getItem('pz_operator_name') || '').trim();
+      if (cached) return cached;
+    } catch (_) { /* localStorage may be disabled */ }
+    let name = '';
+    try {
+      name = (window.prompt('Operator name (recorded in audit timeline):', 'admin') || '').trim();
+    } catch (_) { name = ''; }
+    if (name) {
+      try { window.localStorage.setItem('pz_operator_name', name); } catch (_) {}
+    }
+    return name;
+  }
+
   // ── Export ─────────────────────────────────────────────────────────
   window.EstrellaShared = Object.freeze({
     apiFetch, fmtPLN,
@@ -513,5 +530,7 @@
     EstrellaMark, SubTabStrip, Sidebar,
     // V2 visual atoms (no domain knowledge)
     StatusDot, GateBlock, SectionHeader, CompactTable, EmptyState,
+    // Utility
+    _resolveOperator,
   });
 })();
