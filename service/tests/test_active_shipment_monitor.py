@@ -20,6 +20,25 @@ def _settings(tmp_path: Path):
     return S()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_storage(tmp_path, monkeypatch):
+    """Redirect all storage-writing modules to tmp_path for every test.
+
+    active_shipment_monitor dispatches tasks via ai_bridge, which writes to
+    settings.storage_root/ai_bridge/tasks/. Without patching ai_bridge.settings,
+    those writes land in the live app/storage root and trigger _guard_storage_root.
+    email_intelligence_store is patched here too for consistency — per-test patches
+    that repeat this are redundant but harmless (same tmp_path).
+    """
+    from app.services import active_shipment_monitor as m
+    from app.services import ai_bridge as ab
+    from app.services import email_intelligence_store as ei
+    s = _settings(tmp_path)
+    monkeypatch.setattr(m,  "settings", s)
+    monkeypatch.setattr(ab, "settings", s)
+    monkeypatch.setattr(ei, "settings", s)
+
+
 def _write_audit(tmp_path: Path, batch_id: str, **fields) -> Path:
     p = tmp_path / "outputs" / batch_id / "audit.json"
     p.parent.mkdir(parents=True, exist_ok=True)
