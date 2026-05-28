@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-28 (compliance resolver production enablement + OQ12 closure).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-28 (PR #390 Master Data merge + new GATE 4 salvage findings).
 
-**Last-run-at:** 2026-05-28T(post-Sprint01-deploy). Origin/main HEAD: da854e3 (chore: PROJECT_STATE memory commit). Code HEAD: da854e3. Production: SHA **da854e3 DEPLOYED** at C:\PZ — 2026-05-28 7-agent gate READY-TO-DEPLOY → robocopy exit 2 (all current) + engine exit 0 + PZService RUNNING (PID 18460) + health 200 local + 200 public + carrier pending + gate POST 503 + stderr CLEAN. GATE 2: 1/3 open PRs (PR #370 pz-correction). TEST BASELINE: 160/160 PZ + 381/381 carrier green. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ISSUE #378: wFirma product gate bug filed (GATE 4 disposition). Runtime posture: READY FOR CONTROLLED NORMAL ADVISORY USE. SUPPLIER AUTHORITY: per-shipment resolution deployed and verified. ATLAS-V2 SPRINT 01: DEPLOYED — Sprint 02 UNBLOCKED (pending operator directive). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true).
+**Last-run-at:** 2026-05-28T19:46Z (post-PR390-merge). Origin/main HEAD: **a98c2f2** (PR #390 squash-merge: Master Data soft-delete + V2 campaign). Code HEAD: a98c2f2. Production: SHA **da854e3 DEPLOYED** at C:\PZ (production deploy of #390 DEFERRED to controlled step). GATE 2: 1/3 open PRs (PR #370 pz-correction). TEST BASELINE: **85 PRE-EXISTING FAILURES** on merged main (NOT caused by #390) + 160/160 PZ golden + 381/381 carrier green + 583/583 #390-authored tests. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ATLAS-V2 SPRINT 01: DEPLOYED — Sprint 02 UNBLOCKED (pending operator directive). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **3 NEW OPEN QUESTIONS** from #390 merge (85 main failures + 2 GATE 4 salvage findings).
 
 ---
 
@@ -2886,6 +2886,42 @@ Lesson L and CLAUDE.md updated with routing-key distinction: `sales_documents.cl
 **Lifecycle state**: PZ_CREATED — locked, terminal_event=wfirma_pz_created  
 **Current wFirma flags**: `WFIRMA_CREATE_PRODUCT_ALLOWED=false` (closed), `WFIRMA_CREATE_PZ_ALLOWED=true` (unchanged throughout)
 
+## PR #390 — Master Data soft-delete + V2 campaign (2026-05-28, MERGED)
+
+**Date**: 2026-05-28T19:46Z  
+**PR**: #390 — Master Data soft-delete + V2 campaign — 15/15 entities, audit, RBAC, RI  
+**Merge commit**: `a98c2f2` (squash-merged from branch `feat/master-data-soft-delete`)  
+**Single PR commit**: `9b33477` (54 files: 50 py, 3 md, 1 html)  
+**Merged by**: amitpoland
+
+**7-agent gate result**: READY-TO-MERGE (all agents ACCEPTABLE/EXEMPLARY)  
+**Scorecard**: `.claude/memory/scorecards/2026-05-28-pr390-master-data-merge-gate.md` (verified on disk)
+
+**Post-merge verification (main SHA `a98c2f2`)**:
+- App imports: 422 routes ✓
+- `make verify` PZ golden regression: 160/160 PASS ✓  
+- Carrier suite: 381 passed ✓
+- Campaign's authored test files: 583 passed, 0 failed ✓
+- **Zero new test failures** caused by PR #390 (proven by identical failing-test-set diff)
+
+**85 pre-existing test failures** NOT caused by PR #390:
+- 64 `test_dashboard_*` missing-data-testid contract failures
+- 13 `test_master_data_suppliers_wfirma_sync`  
+- 6 `test_master_data_designs`
+- 1 `test_product_master_foundation` source-grep guard
+- 1 `test_dhl_readiness_endpoint`
+- Origin: ~11 other PRs merged to origin/main in parallel (candidate: PR #391 still open)
+
+**Feature flags**: Production-safe defaults: `master_role_enforcement=False`, `master_hard_delete_enabled=False`  
+**Schema**: Additive-only (backward compatible)  
+**Deployment**: Merge-only (no production deploy); production deploy deferred to controlled step after smoke confirmation
+
+**Preserved working tree**: `stash@{0}` (`preserve-dirty-tree-before-md-isolation-2026-05-28`) remains untouched
+
+**GATE 4 salvage findings** (2 items flagged):
+- deploy-qa-reviewer merge-result-testing gap
+- test-baseline.md contract drift
+
 ---
 
 # DECISIONS
@@ -2940,6 +2976,12 @@ Lesson L and CLAUDE.md updated with routing-key distinction: `sales_documents.cl
 - **No new lineage or matching work is needed for execution.** `proposed_lines[]`, `recommended_option`, `risk_level`, and current-vs-authority comparison are already present in the proposal object.
 
 - **Execution campaign gate (HARD):** May not begin until operator explicitly instructs. Phase 5 is unrelated and proceeds independently.
+
+---
+
+## PR #390 Master Data — Merge-Only Decision (2026-05-28)
+
+- **PR #390 production deploy deferred to controlled step** (2026-05-28) — operator chose merge-only for PR #390. Production deploy is deferred to a separate controlled step to run after main is updated and smoke-confirmed, gated by the full 7-agent deploy gate. Reasoning: allows post-merge verification of the combined main state (main+390+other-merged-PRs) before production commit.
 
 ---
 
@@ -3342,5 +3384,31 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Impact if left unanswered**: Product master data operations may be unnecessarily blocked when SAD/ZC429 is incomplete, even when WFIRMA_CREATE_PRODUCT_ALLOWED=true.
 - **Fix target**: Remove `_guard_wfirma_export(audit)` from routes_wfirma.py lines ~1654 and ~2045. All PZ export gates remain unchanged.
 - **GATE 4 status**: ISSUE filed (proper disposition per governance)
+
+## OQ-NEW-4 -- 85 Pre-existing Main Test Failures (NEW 2026-05-28)
+
+- **Question**: What disposition for the 85 pre-existing test failures discovered on merged main `a98c2f2`?
+- **Answerer**: Operator — ownership/triage assignment needed  
+- **Context**: Post-PR #390 merge, main carries 85 test failures NOT caused by #390 (proven by identical failing-test-set diff between merged main and pre-merge parent). Origin: ~11 other PRs merged to origin/main in parallel. Candidate source: PR #391 (still open).
+- **Breakdown**: 64 `test_dashboard_*` missing-data-testid contract failures, 13 `test_master_data_suppliers_wfirma_sync`, 6 `test_master_data_designs`, 1 `test_product_master_foundation` source-grep guard, 1 `test_dhl_readiness_endpoint`
+- **Impact if left unanswered**: Unclear whether these failures block the upcoming PR #390 production deploy
+- **GATE 4 status**: Requires disposition (SCHEDULED / ISSUE / REJECTED)
+
+## OQ-NEW-5 -- Deploy Gate Testing Gap (NEW 2026-05-28, GATE 4 SALVAGE)
+
+- **Question**: How to close the deploy-qa-reviewer merge-result-testing gap where gate agents test branch-tip in isolation, not post-merge main state?
+- **Answerer**: Next session can design fix — process improvement  
+- **Context**: 7-agent merge gate for PR #390 tested branch-tip in isolation but missed +11-commit drift / 85 failures that appeared post-merge. Gate agents do not test the actual merge result.
+- **Impact if left unanswered**: Future merge gates may pass while the post-merge main state has failures
+- **GATE 4 status**: Salvage finding requiring disposition (SCHEDULED / ISSUE / REJECTED)
+
+## OQ-NEW-6 -- Test Baseline Contract Drift (NEW 2026-05-28, GATE 4 SALVAGE)
+
+- **Question**: When to fix the test-baseline.md contract that references non-existent `tests/test_pz_regression.py`?
+- **Answerer**: Operator scheduling — documentation fix
+- **Context**: PZ regression actually runs as the repo-root script via `make verify`, not as a pytest file. Contract drift causes confusion in test-counting agents.
+- **Impact if left unanswered**: Test baseline references will continue to be inaccurate
+- **Fix target**: Update `.claude/contracts/test-baseline.md` to reference `make verify` not non-existent pytest file
+- **GATE 4 status**: Salvage finding requiring disposition (SCHEDULED / ISSUE / REJECTED)
 
 ---
