@@ -598,6 +598,55 @@ def test_carrier_account_update_404_wins_over_carrier_check(client):
     assert r.status_code == 404, r.text
 
 
+def test_carrier_account_update_preserving_inactive_carrier_is_rejected(client):
+    """INTENDED CONTRACT (task scope: 'set OR preserve'): an update that does
+    not change the carrier but PRESERVES a reference to a now-inactive carrier
+    is rejected with 409 inactive. This makes update consistent with restore,
+    which already rejects inactive-carrier restores. Writes are gated even when
+    the carrier value is unchanged; only GET stays readable for legacy rows."""
+    _seed_customer(client, "W-CARR-UPD-PRESV")
+    _seed_carrier(client, "dhl")
+    create = client.post(
+        "/api/v1/customer-master/W-CARR-UPD-PRESV/carrier-accounts/",
+        json={"carrier": "dhl", "account_number": "P1", "account_name": "Old"},
+        headers=_HDR,
+    )
+    assert create.status_code == 201, create.text
+    acct_id = create.json()["id"]
+    # Carrier goes inactive AFTER the account was created (legacy scenario).
+    client.delete("/api/v1/carriers-config/dhl", headers=_HDR)
+    # Operator edits only account_name; carrier value is preserved (dhl).
+    r = client.put(
+        f"/api/v1/customer-master/W-CARR-UPD-PRESV/carrier-accounts/{acct_id}",
+        json={"carrier": "dhl", "account_number": "P1", "account_name": "New"},
+        headers=_HDR,
+    )
+    _assert_reference_conflict(r, field="carrier", entity="carriers_config",
+                               key="dhl", reason="inactive")
+
+
+def test_carrier_account_update_changes_name_with_active_carrier(client):
+    """Non-carrier edits succeed (200) while the carrier remains active —
+    confirms the write gate only blocks on a missing/inactive carrier, not on
+    every update."""
+    _seed_customer(client, "W-CARR-UPD-NAME")
+    _seed_carrier(client, "dhl")
+    create = client.post(
+        "/api/v1/customer-master/W-CARR-UPD-NAME/carrier-accounts/",
+        json={"carrier": "dhl", "account_number": "N1", "account_name": "Old"},
+        headers=_HDR,
+    )
+    assert create.status_code == 201, create.text
+    acct_id = create.json()["id"]
+    r = client.put(
+        f"/api/v1/customer-master/W-CARR-UPD-NAME/carrier-accounts/{acct_id}",
+        json={"carrier": "dhl", "account_number": "N1", "account_name": "New"},
+        headers=_HDR,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["account_name"] == "New"
+
+
 def test_phase4c_ext_uses_local_storage_only():
     """check_carrier_active must read only the local SQLite file, no
     external HTTP / wFirma / DHL call."""
