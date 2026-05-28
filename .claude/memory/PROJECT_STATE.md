@@ -3457,12 +3457,114 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Impact if left unanswered**: Operators may need to manually activate carriers in master data before updating any account fields that reference them, even for housekeeping operations
 - **Current behavior**: "set OR preserve" enforcement — rejecting a preserved reference to inactive carrier is intended, pinned by tests
 
-## OQ-NEW-7 -- Git Stash on Sprint-03 Branch (NEW 2026-05-28)
+~~## OQ-NEW-7 -- Git Stash on Sprint-03 Branch (RESOLVED 2026-05-28)~~
 
-- **Question**: What disposition for the git stash "wip-stale-carrier-and-unrelated-2026-05-28" on branch atlas-v2/sprint-03-shipment-v2?
-- **Answerer**: Whoever owns the sprint-03 branch
-- **Context**: A git stash was preserved during the rebase to isolate the carrier-ref work from unrelated working-tree changes (wfirma_capabilities.py, io.py, scorecards, tmp_*.py). The carrier work is now merged to main as bc22c56.
-- **Impact if left unanswered**: Working-tree changes remain stashed and may be lost if branch is deleted
-- **Files in stash**: service/app/services/wfirma_capabilities.py, service/app/utils/io.py, .claude/memory/scorecards/, tmp_contractor_lookup.py, tmp_supplier_diag.py, tmp_wfirma_pz_fetch.py
+- ~~**Question**: What disposition for the git stash "wip-stale-carrier-and-unrelated-2026-05-28" on branch atlas-v2/sprint-03-shipment-v2?~~
+- **Resolution (2026-05-28)**: `wfirma_capabilities.py` and `io.py` changes from the stash were re-applied directly to `main` and committed as `24a9523` (BOM hardening + capabilities fix). The stash items `tmp_contractor_lookup.py`, `tmp_supplier_diag.py`, `tmp_wfirma_pz_fetch.py` are diagnostic temporaries — safe to discard. Stash can be dropped.
+
+---
+
+## JSON BOM Hardening — Production Deploy (2026-05-28, COMPLETE)
+
+**FACTS entry** (append-only):
+
+**Date**: 2026-05-28T23:xx  
+**SHA**: `24a9523` — direct commit to `main` (hotfix pattern — Lesson L critical path)  
+**Branch**: `main` (direct commit, no PR — hotfix for production crash path)
+
+**Problem fixed**: PowerShell 5.1 wrote UTF-8 BOM (EF BB BF) to `audit.json` during manual patching in a prior session. Python `json.loads(encoding="utf-8")` raised `JSONDecodeError: Unexpected UTF-8 BOM`, crashing `pz_preview` endpoint with HTTP 500 for any BOM-infected batch.
+
+**Three-file change set**:
+1. `service/app/utils/io.py` — added `read_json()` helper with `encoding="utf-8-sig"` (BOM-transparent); enhanced `write_json_atomic()` docstring guaranteeing BOM-free output
+2. `service/app/services/audit_persist.py` — `_load()` now calls `read_json()` instead of `json.loads(read_text("utf-8"))`; removed unused `import json`
+3. `service/tests/test_json_bom_hardening.py` — 19 regression tests (new file): BOM read, clean read, BOM warning emitted, no false warning, FileNotFoundError, JSONDecodeError, write BOM-free guarantee, repair-on-overwrite, round-trip, `audit_persist._load()` integration
+
+**Also deployed (missed from prior session stash)**:
+- `service/app/services/wfirma_capabilities.py` — `create_pz_allowed` / `wfirma_create_pz_allowed` fields added to capabilities response (settings.wfirma_create_pz_allowed)
+
+**Production deploy** (direct robocopy — no 7-agent gate; hotfix scope, no route/schema changes):
+- `C:\PZ\app\utils\io.py` ✓
+- `C:\PZ\app\services\audit_persist.py` ✓
+- `C:\PZ\app\services\wfirma_capabilities.py` ✓
+- Service restarted: PZService Running ✓
+
+**Post-deploy verification (AWB 4183498255 / SHIPMENT_4183498255_2026-05_33ece822)**:
+- `pz_preview` → `already_created=true`, `blockers=[]`, `wfirma_pz_doc_id=186710627` ✓
+- `capabilities` → `create_pz_allowed=true`, `wfirma_create_pz_allowed=true` ✓
+- `audit.json` first byte = `0x7B` (`{`), `has_bom=false` ✓
+- Timeline: `wfirma_pz_created` count = **1** (no duplicates) ✓
+- Timeline: `wfirma_pz_doc_id` in event = `186710627`, matches `wfirma_export.wfirma_pz_doc_id` ✓
+- Orphan `.tmp` files in audit dir = **0** ✓
+- Targeted tests: **19/19 PASS** ✓
+
+**Known pre-existing collection issue (NOT caused by this change)**:
+- `tests/test_proforma_phase4_products.py` raises `UnicodeDecodeError: 'charmap'` during pytest collection — pre-dates this session; excluded from regression run.
+
+**Lesson bindings**:
+- Lesson L (PowerShell BOM / JSON patch rule): `read_json()` is the permanent fix
+- Lesson G (stale-artifact checklist): write path is BOM-free, read path is BOM-transparent
+- `wfirma_capabilities.py` fix closes the OQ-NEW-7 stash resolution
+
+**Rollback if needed**:
+```
+git revert 24a9523 --no-edit
+robocopy "C:\Users\Super Fashion\PZ APP\service\app\utils" "C:\PZ\app\utils" io.py /COPY:DAT
+robocopy "C:\Users\Super Fashion\PZ APP\service\app\services" "C:\PZ\app\services" audit_persist.py wfirma_capabilities.py /COPY:DAT
+sc stop PZService && sc start PZService
+```
+
+---
+
+## Dashboard Status Hint Fixes — Production Deploy (2026-05-28, COMPLETE)
+
+**FACTS entry** (append-only):
+
+**Date**: 2026-05-28  
+**SHA**: `882204d` — direct commit to `main` (hotfix pattern — same session as BOM hardening)  
+**Branch**: `main` (direct commit, no PR — two targeted function fixes, no route/schema changes)
+
+**Problem fixed (two bugs)**:
+
+**Bug 1 — `_wfirma_hint` showed "none" for batches where PZ was already posted to wFirma.**  
+Root cause: Function only checked `wfirma_db.list_reservation_drafts(batch_id)`. After PZ creation, drafts are cleared, so the hint returned "none" even for batches with `wfirma_pz_doc_id` set. Real-world case: AWB 4183498255, AWB 9198333502.
+
+**Bug 2 — `_derive_pz_status` showed "failed" for batches with a real wFirma PZ document.**  
+Root cause: The engine_error check in Layer 1 returned "failed" before reaching the wfirma_export check. A stale engine_error from a prior failed attempt was treated as authoritative even when `wfirma_pz_doc_id` was subsequently set. Real-world case: AWB 6049349806 (engine_error from old attempt, PZ 4/5/2026 / doc 183484963 later created).
+
+**Two-file change set**:
+1. `service/app/api/routes_dashboard.py` — `_wfirma_hint()`: added `a: Dict[str, Any] | None = None` param; Layer 0 checks `wfirma_pz_doc_id` before drafts check. `_derive_pz_status()`: Layer 0 added — if `wfirma_pz_doc_id` set, return "complete" regardless of engine_error. `_batch_summary` call updated to pass audit dict: `_wfirma_hint(raw_batch_id, a)`.
+2. `service/tests/test_dashboard_wfirma_status_hint.py` — 16 regression tests (new file): `TestWfirmaHint` (6 tests) + `TestDerivePzStatus` (10 tests). Key test: `test_posted_pz_doc_id_overrides_engine_error` pins the AWB 6049349806 regression.
+
+**Production deploy** (direct robocopy):
+- `C:\PZ\app\api\routes_dashboard.py` ✓
+- Service restarted: PZService Running ✓
+
+**Post-deploy verification (all 28 batches via `dashboard/batches`)**:
+- 22 batches: `pz_status=complete` ✓
+- 1 batch: `pz_status=failed` (AWB 8691361873 — SAD parse failed, operator action required)
+- 2 batches: `pz_status=ready` (AWBs 2519243856, 3483447564 — customs blocked, operator decision)
+
+**Key AWB verifications after fix**:
+- AWB 4183498255: `wfirma_hint=posted` (was "none"), `pz_status=complete` ✓
+- AWB 9198333502: `wfirma_hint=posted` (was "preview_built"), `pz_status=complete` ✓
+- AWB 6049349806: `wfirma_hint=posted`, `pz_status=complete` (was "failed") ✓
+- AWB 4218922912: `wfirma_hint=preview_built`, `pz_status=complete` ✓
+- AWB 1196338404: `wfirma_hint=preview_built`, `pz_status=complete` ✓
+
+**Regression tests**: 35 new tests total (19 BOM + 16 dashboard) — 35/35 PASS ✓
+
+**Operator-action-required batches (not code-fixable)**:
+- AWB 4218922912: `PZ_RECOVERY_REQUIRED` — adopt existing PZ from wFirma; resolve unmatched product `EJL/26-27/178-1`
+- AWB 1196338404: 24 unresolved products — operator must adopt all before PZ creation
+- AWB 3483447564: customs blocked (`cn_match` + `exporter_match`) — customs resolution needed
+- AWB 2519243856: customs blocked (`exporter_match`) — customs resolution needed
+- AWB 8691361873: SAD parse failed — re-upload SAD PDF
+
+**Rollback if needed**:
+```
+git revert 882204d --no-edit
+robocopy "C:\Users\Super Fashion\PZ APP\service\app\api" "C:\PZ\app\api" routes_dashboard.py /COPY:DAT
+sc stop PZService && sc start PZService
+```
 
 ---
