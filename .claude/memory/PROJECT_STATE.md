@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-28 (PR #390 Master Data merge + new GATE 4 salvage findings).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-28 (PR #393 carrier reference integrity + GATE 4 Issue #394).
 
-**Last-run-at:** 2026-05-28T19:46Z (post-PR390-merge). Origin/main HEAD: **a98c2f2** (PR #390 squash-merge: Master Data soft-delete + V2 campaign). Code HEAD: a98c2f2. Production: SHA **da854e3 DEPLOYED** at C:\PZ (production deploy of #390 DEFERRED to controlled step). GATE 2: 1/3 open PRs (PR #370 pz-correction). TEST BASELINE: **85 PRE-EXISTING FAILURES** on merged main (NOT caused by #390) + 160/160 PZ golden + 381/381 carrier green + 583/583 #390-authored tests. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ATLAS-V2 SPRINT 01: DEPLOYED — Sprint 02 UNBLOCKED (pending operator directive). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **3 NEW OPEN QUESTIONS** from #390 merge (85 main failures + 2 GATE 4 salvage findings).
+**Last-run-at:** 2026-05-28T22:35Z (post-PR393-merge). Origin/main HEAD: **bc22c56** (PR #393 squash-merge: carrier reference integrity update). Code HEAD: bc22c56. Production: SHA **da854e3 DEPLOYED** at C:\PZ (production deploy of #390 DEFERRED to controlled step). GATE 2: 1/3 open PRs (PR #370 pz-correction). TEST BASELINE: **85 PRE-EXISTING FAILURES** on merged main (NOT caused by #390) + 160/160 PZ golden + 381/381 carrier green + 583/583 #390-authored tests. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ATLAS-V2 SPRINT 01: DEPLOYED — Sprint 02 UNBLOCKED (pending operator directive). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **3 NEW OPEN QUESTIONS** from #390 merge (85 main failures + 2 GATE 4 salvage findings).
 
 ---
 
@@ -2924,6 +2924,39 @@ Lesson L and CLAUDE.md updated with routing-key distinction: `sales_documents.cl
 
 ---
 
+## Phase 4C-ext Wave 2 — Carrier Reference Integrity (2026-05-28, COMPLETE)
+
+**Date**: 2026-05-28  
+**PR**: #393 — feat(master-ref): enforce carrier reference integrity on carrier-account update  
+**Merge commit**: `bc22c56` on `origin/main` (squash-merged)  
+**Branch**: `feature/phase-4c-ext-carrier-ref-integrity-update` (merged, deleted)
+
+**Campaign scope**: Phase 4C-ext Wave 2 — extend carrier reference-integrity enforcement to carrier-account update endpoint. Wave 1 (create + restore) was already complete on main before this campaign.
+
+**What merged**:
+- `service/app/api/routes_client_carrier_accounts.py` — `update_account_endpoint` now calls `check_carrier_active` before write, with ordering: 422 (body validation) → 404 (account missing) → 409 (carrier reference conflict via `ReferenceConflict.to_detail()`) → write
+- `service/app/services/master_reference_checks.py` — new module (Wave 1 was already merged)
+- `service/tests/test_master_referential_integrity_phase4c.py` — +7 regression tests across two commits
+- **carriers_config in master_data.sqlite is the single carrier authority**
+
+**Phase 4C-ext COMPLETE**: Carrier reference integrity now enforced across all THREE write paths:
+1. Create carrier account (Wave 1 — already on main)  
+2. Restore carrier account (Wave 1 — already on main)  
+3. Update carrier account (Wave 2 — PR #393)
+
+**Merge-gate scorecard**: `.claude/memory/scorecards/2026-05-28-pr393-carrier-ref-integrity-update.md` (verified on disk, 5088 bytes)  
+**Gate results**: 5 reviewers — backend-safety PASS, security-write-action PASS, gap-hunter EXEMPLARY (raised P1), reviewer-challenge EXEMPLARY, test-coverage ACCEPTABLE. No NEEDS-TUNING/UNRELIABLE verdicts.
+
+**Tests at merge**: 63 carrier-suite (`test_master_referential_integrity_phase4c.py` + `test_client_carrier_accounts.py`) + 160/160 PZ regression, all green.
+
+**GATE 4**: UX question filed as Issue #394 (proper GATE 4 disposition = ISSUE) — whether carrier-account update should have escape hatch when carrier is soft-deleted (currently blocks all updates with 409, by design/consistent with restore).
+
+**Design decision**: Carrier-account update enforces "set OR preserve" — rejecting a preserved reference to an inactive/missing carrier is intended behavior, consistent with restore + Phase 4C write-gating principle. Pinned by tests.
+
+**Note**: PROJECT_STATE.md was NOT edited by the PR #393 branch (local copy on sprint-03 was stale); this update is the authoritative record from clean main.
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
@@ -3001,6 +3034,11 @@ Lesson L and CLAUDE.md updated with routing-key distinction: `sales_documents.cl
 - **patch("app.services.ai_gateway", mock, create=True) is correct mock target** (2026-05-23) — for `from . import ai_gateway` inside function bodies; NOT patch.dict("sys.modules", ...) and NOT patch("app.services.ai_customs_parser.ai_gateway", ...)
 - **deploy_git_diff_reviewer NEEDS-TUNING verdict disposition** (2026-05-24) — SCHEDULED (Issue #352). Scorecard evidence: PR #350 false-positive Gate 2 check (5-file diff ≠ 6-file expectation from naming convention). Scheduled for prompt tuning to reduce false positives on file counts.
 - **Phase 2 LLM flag deployment policy** (2026-05-24) — AI_ADVISORY_LLM_ENABLED ships OFF by default. Operator must explicitly set `AI_ADVISORY_LLM_ENABLED=True` in production .env to activate LLM path after deployment.
+
+## Carrier Reference Integrity Decisions (2026-05-28)
+
+- **Carrier-account update enforces "set OR preserve"** (2026-05-28) — rejecting a preserved reference to an inactive/missing carrier is intended behavior, consistent with restore + Phase 4C write-gating principle. Pinned by regression tests.
+- **PR title scoped to "update" not "create, update, and restore"** (2026-05-28) — Wave 1 (create + restore) was already merged before this campaign; disclosed to operator during PR #393. Campaign scope was correctly limited to Wave 2 completion.
 
 ## Phase 4 and sequencing decisions (operator-locked 2026-05-23)
 
@@ -3410,5 +3448,21 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Impact if left unanswered**: Test baseline references will continue to be inaccurate
 - **Fix target**: Update `.claude/contracts/test-baseline.md` to reference `make verify` not non-existent pytest file
 - **GATE 4 status**: Salvage finding requiring disposition (SCHEDULED / ISSUE / REJECTED)
+
+## OQ-NEW-6 -- Carrier-Account Update UX Escape Hatch (NEW 2026-05-28, GATE 4 ISSUE #394)
+
+- **Question**: Should carrier-account update gain an escape hatch (field-scoped check, or enriched 409 guidance) for legacy-row maintenance when the carrier is inactive?
+- **Answerer**: Operator product decision
+- **Context**: Issue #394 filed (proper GATE 4 disposition). Currently carrier-account update blocks ALL updates with 409 when the carrier reference is to an inactive/missing carrier, by design and consistent with restore behavior.
+- **Impact if left unanswered**: Operators may need to manually activate carriers in master data before updating any account fields that reference them, even for housekeeping operations
+- **Current behavior**: "set OR preserve" enforcement — rejecting a preserved reference to inactive carrier is intended, pinned by tests
+
+## OQ-NEW-7 -- Git Stash on Sprint-03 Branch (NEW 2026-05-28)
+
+- **Question**: What disposition for the git stash "wip-stale-carrier-and-unrelated-2026-05-28" on branch atlas-v2/sprint-03-shipment-v2?
+- **Answerer**: Whoever owns the sprint-03 branch
+- **Context**: A git stash was preserved during the rebase to isolate the carrier-ref work from unrelated working-tree changes (wfirma_capabilities.py, io.py, scorecards, tmp_*.py). The carrier work is now merged to main as bc22c56.
+- **Impact if left unanswered**: Working-tree changes remain stashed and may be lost if branch is deleted
+- **Files in stash**: service/app/services/wfirma_capabilities.py, service/app/utils/io.py, .claude/memory/scorecards/, tmp_contractor_lookup.py, tmp_supplier_diag.py, tmp_wfirma_pz_fetch.py
 
 ---
