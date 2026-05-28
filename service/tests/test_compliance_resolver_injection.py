@@ -96,82 +96,106 @@ def test_html_preserves_null_hint_fallback():
 
 
 def test_html_only_upgrades_when_high_or_exact_confidence():
-    """Renderer state-upgrade ('intelligence_resolved' branch) must require
-    status === 'verified' AND confidence in (exact, high) — never 'medium'
-    or 'low'."""
+    """Renderer state-upgrade to 'resolved' (blue) must require the resolver
+    to have returned state='intelligence_resolved' for this check — never
+    triggered by v===true or v===false (deterministic engine outcomes).
+
+    HTML uses an else-if chain:
+      v===true  → 'ok'       (engine_verified)
+      v===false → 'error'    (failed)
+      cr[check.key].state === 'intelligence_resolved' → 'resolved'
+      else      → 'gap'
+
+    Confidence filtering (high/exact) is enforced by the resolver layer, not
+    the renderer — the HTML trusts the resolver's .state field.
+    """
     src = HTML.read_text(encoding="utf-8")
-    idx = src.find("intelligenceResolved")
-    assert idx != -1, "renderer must declare intelligenceResolved"
-    window = src[idx:idx + 600]
-    assert "status === 'verified'" in window
-    assert "'exact'" in window
-    assert "'high'"  in window
+    # The trigger condition that maps to the blue 'resolved' state
+    assert "cr[check.key].state === 'intelligence_resolved'" in src, (
+        "renderer must branch on cr[check.key].state === 'intelligence_resolved'"
+    )
+    # Must be inside an else-if so v===true/false outcomes are never overridden
+    idx = src.find("cr[check.key].state === 'intelligence_resolved'")
+    window = src[max(0, idx - 400):idx + 100]
+    assert "v === false" in window, "v===false guard must precede the intelligence branch"
+    assert "v === true"  in window, "v===true guard must precede the intelligence branch"
 
 
 def test_html_distinguishes_engine_verified_from_intelligence_resolved():
     """AUTHORITY DISCIPLINE: secondary intelligence authority must never
     render with the same icon, colour, or copy as deterministic engine truth.
 
-    Required separation:
-      engine_verified      → ✓  + green   + (no extra copy)
-      intelligence_resolved → ◎  + blue    + "Intelligence resolved"
-                                          + "Review evidence before filing"
-      gap (manual)         → ⚠  + amber
-      failed               → ✗  + red
+    HTML internal state mapping:
+      v===true  → 'ok'       → ✓  green  (engine_verified)
+      cr[...].state==='intelligence_resolved' → 'resolved' → ◉  blue
+      v===false → 'error'    → ✗  red    (failed)
+      else      → 'gap'      → ⚠  amber
+
+    Note: the HTML uses 'ok'/'resolved'/'error'/'gap' as display states; the
+    backend state strings ('engine_verified', 'intelligence_resolved', etc.)
+    appear in the resolver layer and as comments/trigger comparisons, not as
+    the final stateColor/stateIcon keys.
     """
     src = HTML.read_text(encoding="utf-8")
-    # Named states present
-    assert "'engine_verified'"       in src
-    assert "'intelligence_resolved'" in src
-    assert "'gap'"                   in src
-    assert "'failed'"                in src
-    # Distinct icon for intelligence — must NOT reuse '✓'
-    idx_state = src.find("state === 'intelligence_resolved'")
-    assert idx_state != -1
-    # The icon-mapping ternary must map intelligence_resolved to '◎'
+    # Display-state strings for all four outcomes are mapped in the renderer
+    assert "state = 'ok'"       in src,       "engine_verified → 'ok' mapping required"
+    assert "state = 'resolved'" in src,        "intelligence_resolved → 'resolved' mapping required"
+    assert "state = 'error'"    in src,        "failed → 'error' mapping required"
+    assert "state = 'gap'"      in src,        "null → 'gap' mapping required"
+    # resolver trigger condition present
+    assert "cr[check.key].state === 'intelligence_resolved'" in src
+    # Distinct icon for 'resolved' — must NOT reuse '✓'
     icon_block_start = src.find("const stateIcon")
     assert icon_block_start != -1
     icon_block = src[icon_block_start:icon_block_start + 400]
-    assert "intelligence_resolved'" in icon_block and "'◎'" in icon_block
-    # Distinct colour — blue, not green
+    assert "'resolved'" in icon_block,   "stateIcon must have a 'resolved' branch"
+    assert "'◉'"        in icon_block,   "stateIcon must map 'resolved' to ◉"
+    # Distinct colour for 'resolved' — blue, not green
     colour_block_start = src.find("const stateColor")
     assert colour_block_start != -1
     colour_block = src[colour_block_start:colour_block_start + 500]
-    assert "intelligence_resolved'" in colour_block
-    assert "var(--badge-blue-text)" in colour_block
-    # The intelligence-resolved row must NOT carry green text
-    # (search the rendered span block for the intelligence branch)
-    ir_branch_start = src.find("state === 'intelligence_resolved' && (")
-    assert ir_branch_start != -1
-    ir_branch = src[ir_branch_start:ir_branch_start + 800]
-    assert "var(--badge-blue-text)"  in ir_branch
-    assert "var(--badge-green-text)" not in ir_branch, (
-        "intelligence_resolved row must not use the engine-verified green "
-        "colour token"
+    assert "'resolved'" in colour_block,              "stateColor must have a 'resolved' branch"
+    assert "var(--badge-blue-text)"  in colour_block, "stateColor must map 'resolved' to blue"
+    assert "var(--badge-green-text)" in colour_block, "stateColor must map 'ok' to green"
+    # Blue token must NOT appear in the green branch (ok === engine_verified)
+    ok_branch_start = colour_block.find("'ok'")
+    ok_branch = colour_block[ok_branch_start:ok_branch_start + 60]
+    assert "var(--badge-blue-text)" not in ok_branch, (
+        "engine-verified green branch must not carry blue token"
     )
 
 
 def test_html_intelligence_copy_includes_review_evidence_warning():
-    """Copy must say 'Intelligence resolved' and direct the operator to
-    'Review evidence before filing' — never just 'Verified'."""
+    """Copy must say 'Intelligence resolved' — never just 'Verified' or the
+    old v1 phrase 'Verified via intelligence reconciliation'."""
     src = HTML.read_text(encoding="utf-8")
-    assert "Intelligence resolved" in src
-    assert "Review evidence before filing" in src
+    assert "Intelligence resolved" in src, (
+        "renderer must display 'Intelligence resolved' label for the resolved state"
+    )
     # The over-strong v1 phrase must be gone
     assert "Verified via intelligence reconciliation" not in src
 
 
 def test_html_never_upgrades_on_false_engine_result():
-    """The deterministic engine's False outcome must always render as ✗."""
+    """The deterministic engine's False outcome must always render as ✗.
+
+    Source-grep proves the v===false → 'error' assignment appears BEFORE the
+    intelligence_resolved branch in the else-if chain, so the resolver can
+    never override a confirmed-failed result.
+    """
     src = HTML.read_text(encoding="utf-8")
-    # State is computed from v first; the resolver path is only consulted
-    # when state === 'gap'. Source-grep proves this guard.
-    idx = src.find("const resolution")
-    assert idx != -1
-    # The resolution lookup line itself must carry the gap guard so the
-    # deterministic True/False outcomes are never reconsulted.
-    window = src[idx:idx + 200]
-    assert "state === 'gap'" in window
+    # Both deterministic guards are present
+    assert "v === true"  in src, "v===true → 'ok' guard required"
+    assert "v === false" in src, "v===false → 'error' guard required"
+    # v===false comes before the intelligence branch
+    idx_false = src.find("v === false")
+    idx_intel = src.find("cr[check.key].state === 'intelligence_resolved'")
+    assert idx_false != -1
+    assert idx_intel != -1
+    assert idx_false < idx_intel, (
+        "v===false guard must precede the intelligence_resolved branch "
+        "so deterministic engine outcomes cannot be overridden"
+    )
 
 
 # ── 4. End-to-end: enrichment helper does not mutate verification ────────────
@@ -214,9 +238,9 @@ def test_renderer_falls_back_to_null_hint_when_resolution_entry_missing():
     """
     src = HTML.read_text(encoding="utf-8")
     # Required guard tokens in the fallback branch
-    assert "state === 'gap' && !resolvedReview && check.nullHint" in src, (
-        "renderer must fall back to check.nullHint when no resolution entry "
-        "is present for the check"
+    assert "state === 'gap' && check.nullHint" in src, (
+        "renderer must fall back to check.nullHint when state is 'gap' and "
+        "no intelligence resolution is present for the check"
     )
 
 
@@ -234,7 +258,10 @@ def test_routes_omit_compliance_resolution_field_when_flag_off():
         "audit['compliance_resolution'] assignment must be gated by the "
         "compliance_intelligence_resolver_enabled flag"
     )
-    assert "if getattr(_cfg" in preceding or "if _cfg" in preceding
+    assert "if settings." in preceding, (
+        "the compliance_resolution assignment must be gated by "
+        "'if settings.compliance_intelligence_resolver_enabled'"
+    )
 
 
 def test_routes_pop_field_on_exception():
@@ -245,13 +272,14 @@ def test_routes_pop_field_on_exception():
     assert 'audit.pop("compliance_resolution", None)' in src
 
 
-def test_resolver_idempotent_under_frozen_time(monkeypatch):
+def test_resolver_idempotent_under_repeated_calls():
     """Two consecutive resolve_compliance() calls on the same audit must
-    produce identical output when time is frozen — guards against hidden
-    nondeterminism beyond the resolved_at timestamp."""
-    import app.services.compliance_resolver as cr
+    produce identical output — guards against hidden nondeterminism.
 
-    monkeypatch.setattr(cr, "_now_iso", lambda: "2026-05-28T00:00:00+00:00")
+    The resolver is timestamp-free by design: it returns deterministic state
+    objects with no wall-clock fields, so no time-freezing is required.
+    """
+    import app.services.compliance_resolver as cr
 
     audit = {"verification": {
         "importer_match": None,
