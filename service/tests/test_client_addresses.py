@@ -149,7 +149,15 @@ def client(api_tmp):
     with patch.object(settings, "storage_root", api_tmp):
         import app.api.routes_client_addresses as mod
         mod._DB_PATH = api_tmp / "customer_master.sqlite"
+        # Phase 4C — addresses now require an existing customer parent.
+        # Seed the contractors used by this module's tests.
+        import app.api.routes_customer_master as cm_mod
+        cm_mod._DB_PATH = api_tmp / "customer_master.sqlite"
         with TestClient(app, raise_server_exceptions=True) as c:
+            for cid in ("API_C001", "FRESH_C"):
+                c.put(f"/api/v1/customer-master/{cid}",
+                      json={"bill_to_name": cid, "country": "PL"},
+                      headers={"X-API-KEY": settings.api_key or "test-key"})
             yield c
 
 

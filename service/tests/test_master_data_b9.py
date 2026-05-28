@@ -144,10 +144,13 @@ def test_api_carrier_lifecycle(b9_client):
     g = b9_client.get("/api/v1/carriers-config/dhl", headers=_hdr())
     assert g.status_code == 200
     assert g.json()["name"] == "DHL Express"
+    # Phase 4B Wave 3a: default DELETE is soft-delete. GET still returns
+    # the (inactive) record.
     d = b9_client.delete("/api/v1/carriers-config/dhl", headers=_hdr())
     assert d.status_code == 204
-    g404 = b9_client.get("/api/v1/carriers-config/dhl", headers=_hdr())
-    assert g404.status_code == 404
+    g_after = b9_client.get("/api/v1/carriers-config/dhl", headers=_hdr())
+    assert g_after.status_code == 200
+    assert g_after.json()["active"] is False
 
 
 def test_api_carrier_put_422_bad_code(b9_client):

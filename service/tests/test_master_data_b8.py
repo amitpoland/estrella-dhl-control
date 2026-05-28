@@ -149,10 +149,12 @@ def test_api_fx_lifecycle(b8_client):
     assert u.json()["rate"] == "4.30"
     g = b8_client.get(f"/api/v1/fx-rates/{fid}", headers=_hdr())
     assert g.status_code == 200
+    # Phase 4B Wave 1: default DELETE is soft-delete.
     d = b8_client.delete(f"/api/v1/fx-rates/{fid}", headers=_hdr())
     assert d.status_code == 204
-    g404 = b8_client.get(f"/api/v1/fx-rates/{fid}", headers=_hdr())
-    assert g404.status_code == 404
+    g_after = b8_client.get(f"/api/v1/fx-rates/{fid}", headers=_hdr())
+    assert g_after.status_code == 200
+    assert g_after.json()["active"] is False
 
 
 def test_api_fx_post_422_validation(b8_client):

@@ -186,10 +186,13 @@ def test_api_vat_full_lifecycle(b7_client):
     assert u.json()["rate_pct"] == "7"
     l = b7_client.get("/api/v1/vat-config/?country=DE", headers=_hdr())
     assert l.status_code == 200
+    # Phase 4B Wave 1: default DELETE is soft-delete — GET still returns
+    # the (inactive) record.
     d = b7_client.delete(f"/api/v1/vat-config/{vid}", headers=_hdr())
     assert d.status_code == 204
     g = b7_client.get(f"/api/v1/vat-config/{vid}", headers=_hdr())
-    assert g.status_code == 404
+    assert g.status_code == 200
+    assert g.json()["active"] is False
 
 
 def test_api_vat_post_422_bad_country(b7_client):

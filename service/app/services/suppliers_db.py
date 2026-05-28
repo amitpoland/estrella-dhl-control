@@ -58,6 +58,8 @@ class Supplier:
     bank_account:        Optional[str] = None
     last_wfirma_sync_at: Optional[str] = None
     wfirma_sync_source:  Optional[str] = None
+    # Phase 4B Wave 3b-1 — soft-delete timestamp (NULL = not deleted).
+    deleted_at:          Optional[str] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -98,6 +100,7 @@ def _row_to_supplier(row: sqlite3.Row) -> Supplier:
         bank_account        = _get("bank_account"),
         last_wfirma_sync_at = _get("last_wfirma_sync_at"),
         wfirma_sync_source  = _get("wfirma_sync_source"),
+        deleted_at          = _get("deleted_at"),
     )
 
 
@@ -186,6 +189,8 @@ def init_db(db_path: Path) -> None:
             ("bank_account",        "TEXT"),
             ("last_wfirma_sync_at", "TEXT"),
             ("wfirma_sync_source",  "TEXT"),
+            # Phase 4B Wave 3b-1 — soft-delete column.
+            ("deleted_at",          "TEXT"),
         ):
             if c not in cols:
                 try:
@@ -356,7 +361,11 @@ def update_supplier(db_path: Path, supplier_id: int, data: Dict[str, Any]) -> Op
 
 
 def delete_supplier(db_path: Path, supplier_id: int) -> bool:
-    """Hard delete. Returns True if a row was removed."""
+    """Hard delete. Returns True if a row was removed.
+
+    Phase 4B Wave 3b-1 retains this as the hard-delete primitive; the route
+    layer chooses between soft-delete (default) and hard-delete.
+    """
     db_path = Path(db_path)
     if not db_path.exists():
         return False
@@ -367,6 +376,52 @@ def delete_supplier(db_path: Path, supplier_id: int) -> bool:
             return cur.rowcount > 0
         except sqlite3.OperationalError:
             return False
+
+
+# ── Phase 4B Wave 3b-1 — soft-delete + restore ──────────────────────────────
+#
+# Pure-local. No wFirma client import, no sync side effects. The wFirma sync
+# code path (sync_from_wfirma / upsert_supplier_identity_from_wfirma below) is
+# NOT modified by this phase.
+
+def soft_delete_supplier(db_path: Path, supplier_id: int) -> bool:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        try:
+            cur = conn.execute(
+                "UPDATE suppliers SET active = 0, deleted_at = ?, updated_at = ? "
+                "WHERE id = ?",
+                (now, now, supplier_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.OperationalError:
+            return False
+
+
+def restore_supplier(db_path: Path, supplier_id: int) -> bool:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        try:
+            cur = conn.execute(
+                "UPDATE suppliers SET active = 1, deleted_at = NULL, updated_at = ? "
+                "WHERE id = ?",
+                (now, supplier_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.OperationalError:
+            return False
+
+
+def hard_delete_supplier(db_path: Path, supplier_id: int) -> bool:
+    return delete_supplier(db_path, supplier_id)
 
 
 # ── Name-normalised lookup ─────────────────────────────────────────────────────

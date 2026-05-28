@@ -1378,7 +1378,8 @@ def generate_report(domain: Optional[str] = None) -> MasterDataIntelligenceRepor
     try:
         md_init(_MD_DB)
         designs = list_designs(_MD_DB, limit=5000)
-        product_locals = list_product_local(_MD_DB, limit=5000)
+        # Phase 4B Wave 4: overlay-coverage metric counts ACTIVE overlays only.
+        product_locals = list_product_local(_MD_DB, active=True, limit=5000)
     except Exception as exc:
         log.warning("[mdi] master_data (designs/product_locals) read failed: %s", exc)
 

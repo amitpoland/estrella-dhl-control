@@ -31,6 +31,8 @@ from fastapi.responses import JSONResponse, Response
 from ..core.config import settings
 from ..core.security import require_api_key
 from ..core.logging import get_logger
+from ..core.audit import audit_safe
+from ..core.role_gate import require_role_or_apikey, MASTER_ADMIN, MASTER_EDITOR
 from ..services.suppliers_db import (
     Supplier,
     init_db,
@@ -40,14 +42,54 @@ from ..services.suppliers_db import (
     list_suppliers,
     update_supplier,
     delete_supplier,
+    soft_delete_supplier,
+    restore_supplier,
+    hard_delete_supplier,
     sync_from_wfirma,
 )
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/suppliers", tags=["suppliers"])
 _auth  = Depends(require_api_key)
+_write_auth = Depends(require_role_or_apikey(MASTER_ADMIN, MASTER_EDITOR))
 
 _DB_PATH = settings.storage_root / "suppliers.sqlite"
+
+
+import hmac as _hmac
+
+
+def _hard_delete_guard(request: Request) -> None:
+    """Phase 4B Wave 3b-1 — gate for DELETE ...?hard=true. Flag must be on
+    AND caller must hold master_admin (or admin X-API-Key). Same contract as
+    the master-data / jewelry guards."""
+    if not settings.master_hard_delete_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail=("Hard delete is disabled. Set master_hard_delete_enabled "
+                    "to true (admin) to permit permanent removal."),
+        )
+    key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
+    if settings.api_key and key and _hmac.compare_digest(key, settings.api_key):
+        return
+    cookie = request.cookies.get("pz_session")
+    if cookie:
+        try:
+            from ..auth.dependencies import get_current_user_optional  # noqa: PLC0415
+            user = get_current_user_optional(pz_session=cookie)
+        except Exception:
+            user = None
+        if user and (user.get("role") or "") == MASTER_ADMIN:
+            return
+    raise HTTPException(status_code=403,
+                        detail="Hard delete requires master_admin role.")
+
+
+def _resolve_list_active(v: Optional[str]) -> Optional[bool]:
+    """Phase 4B Wave 3b-1 — default supplier list to active-only when the
+    ``active`` query param is omitted."""
+    parsed = _parse_active_query(v)
+    return True if parsed is None else parsed
 
 
 def _supplier_dict(s: Supplier) -> dict:
@@ -74,6 +116,7 @@ def _supplier_dict(s: Supplier) -> dict:
         "bank_account":        s.bank_account,
         "last_wfirma_sync_at": s.last_wfirma_sync_at,
         "wfirma_sync_source":  s.wfirma_sync_source,
+        "deleted_at":          s.deleted_at,
     }
 
 
@@ -91,14 +134,18 @@ def _parse_active_query(v: Optional[str]) -> Optional[bool]:
 @router.get("/", dependencies=[_auth], summary="List suppliers")
 def list_suppliers_endpoint(
     country: Optional[str] = Query(None, description="ISO alpha-2 filter"),
-    active:  Optional[str] = Query(None, description="true|false"),
+    active:  Optional[str] = Query(None,
+        description="omit = active-only (default); 'false' = inactive only; 'true' = active only"),
     limit:   int           = Query(200, ge=1, le=1000),
 ) -> JSONResponse:
-    """List suppliers, most-recently-updated first."""
+    """List suppliers, most-recently-updated first.
+
+    Phase 4B Wave 3b-1: default to active-only when ``active`` is omitted.
+    """
     try:
         init_db(_DB_PATH)
         records = list_suppliers(_DB_PATH,
-                                 active=_parse_active_query(active),
+                                 active=_resolve_list_active(active),
                                  country=country, limit=limit)
     except HTTPException:
         raise
@@ -123,7 +170,7 @@ def get_supplier_endpoint(supplier_id: int) -> JSONResponse:
     return JSONResponse(_supplier_dict(rec))
 
 
-@router.post("/", dependencies=[_auth], summary="Create supplier", status_code=201)
+@router.post("/", dependencies=[_write_auth], summary="Create supplier", status_code=201)
 async def create_supplier_endpoint(request: Request) -> JSONResponse:
     """Create a new supplier. Body must be a JSON object with at least
     supplier_code, name, and country."""
@@ -154,10 +201,12 @@ async def create_supplier_endpoint(request: Request) -> JSONResponse:
         raise HTTPException(status_code=500,
                             detail="create succeeded but record not found on re-read")
     log.info("supplier_create id=%d code=%s", new_id, rec.supplier_code)
+    audit_safe("suppliers", "create", new_id,
+               request=request, before=None, after=rec)
     return JSONResponse(status_code=201, content=_supplier_dict(rec))
 
 
-@router.put("/{supplier_id}", dependencies=[_auth], summary="Update supplier")
+@router.put("/{supplier_id}", dependencies=[_write_auth], summary="Update supplier")
 async def update_supplier_endpoint(supplier_id: int, request: Request) -> JSONResponse:
     """Update a supplier. Partial payloads merge over existing fields."""
     try:
@@ -167,8 +216,9 @@ async def update_supplier_endpoint(supplier_id: int, request: Request) -> JSONRe
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="Request body must be a JSON object")
 
+    init_db(_DB_PATH)
+    before = get_supplier(_DB_PATH, supplier_id)
     try:
-        init_db(_DB_PATH)
         updated = update_supplier(_DB_PATH, supplier_id, body)
     except ValueError as exc:
         msg = str(exc)
@@ -180,23 +230,63 @@ async def update_supplier_endpoint(supplier_id: int, request: Request) -> JSONRe
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Supplier not found: id={supplier_id}")
     log.info("supplier_update id=%d code=%s", supplier_id, updated.supplier_code)
+    audit_safe("suppliers", "update", supplier_id,
+               request=request, before=before, after=updated)
     return JSONResponse(_supplier_dict(updated))
 
 
-@router.delete("/{supplier_id}", dependencies=[_auth], summary="Delete supplier",
+@router.delete("/{supplier_id}", dependencies=[_write_auth],
+               summary="Delete supplier (soft-delete by default; ?hard=true for permanent)",
                status_code=204)
-def delete_supplier_endpoint(supplier_id: int) -> Response:
-    """Hard delete. 204 on success, 404 if missing."""
+def delete_supplier_endpoint(
+    supplier_id: int, request: Request,
+    hard: bool = Query(False, description="Permanent removal; requires master_admin + flag"),
+) -> Response:
+    init_db(_DB_PATH)
+    before = get_supplier(_DB_PATH, supplier_id)
+    if before is None:
+        raise HTTPException(status_code=404, detail=f"Supplier not found: id={supplier_id}")
+    if hard:
+        _hard_delete_guard(request)
+        try:
+            removed = hard_delete_supplier(_DB_PATH, supplier_id)
+        except Exception as exc:
+            log.error("hard_delete_supplier failed id=%s: %s", supplier_id, exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+        if not removed:
+            raise HTTPException(status_code=404, detail=f"Supplier not found: id={supplier_id}")
+        log.info("supplier_hard_delete id=%d", supplier_id)
+        audit_safe("suppliers", "hard_delete", supplier_id,
+                   request=request, before=before, after=None)
+        return Response(status_code=204)
+    # Soft-delete (default).
     try:
-        init_db(_DB_PATH)
-        removed = delete_supplier(_DB_PATH, supplier_id)
+        removed = soft_delete_supplier(_DB_PATH, supplier_id)
     except Exception as exc:
-        log.error("delete_supplier failed id=%s: %s", supplier_id, exc, exc_info=True)
+        log.error("soft_delete_supplier failed id=%s: %s", supplier_id, exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"DB error: {exc}")
     if not removed:
         raise HTTPException(status_code=404, detail=f"Supplier not found: id={supplier_id}")
-    log.info("supplier_delete id=%d", supplier_id)
+    log.info("supplier_soft_delete id=%d", supplier_id)
+    audit_safe("suppliers", "delete", supplier_id,
+               request=request, before=before, after=None)
     return Response(status_code=204)
+
+
+@router.post("/{supplier_id}/restore", dependencies=[_write_auth],
+             summary="Restore a soft-deleted supplier")
+def restore_supplier_endpoint(supplier_id: int, request: Request) -> JSONResponse:
+    init_db(_DB_PATH)
+    before = get_supplier(_DB_PATH, supplier_id)
+    if before is None:
+        raise HTTPException(status_code=404, detail=f"Supplier not found: id={supplier_id}")
+    if not restore_supplier(_DB_PATH, supplier_id):
+        raise HTTPException(status_code=404, detail=f"Supplier not found: id={supplier_id}")
+    after = get_supplier(_DB_PATH, supplier_id)
+    log.info("supplier_restore id=%d", supplier_id)
+    audit_safe("suppliers", "restore", supplier_id,
+               request=request, before=before, after=after)
+    return JSONResponse(_supplier_dict(after))
 
 
 # ── B0 (MDOC-cache) — sync from wFirma ────────────────────────────────────────

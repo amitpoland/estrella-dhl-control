@@ -5645,7 +5645,10 @@ def _build_product_lines_panel(lines: List[Dict[str, Any]]) -> List[Dict[str, An
         if pc and _mdb.exists():
             try:
                 pl_row = _get_pl(_mdb, pc)
-                if pl_row:
+                # Phase 4B Wave 4: only apply the overlay when it is ACTIVE.
+                # An inactive overlay means "no overlay" → fall back to the
+                # line value / default origin.
+                if pl_row and getattr(pl_row, "active", True):
                     origin_country = pl_row.origin_country or "IN"
                     if not hs and pl_row.hs_code_override:
                         hs        = pl_row.hs_code_override

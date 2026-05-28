@@ -280,10 +280,13 @@ def test_api_delete_204_then_404(supp_client):
         headers=_hdr(),
     )
     sid = r.json()["id"]
+    # Phase 4B Wave 3b-1: default DELETE is soft-delete. GET still returns
+    # the (inactive) record.
     d = supp_client.delete(f"/api/v1/suppliers/{sid}", headers=_hdr())
     assert d.status_code == 204
     g = supp_client.get(f"/api/v1/suppliers/{sid}", headers=_hdr())
-    assert g.status_code == 404
+    assert g.status_code == 200
+    assert g.json()["active"] is False
 
 
 def test_api_list_filters_active_param(supp_client):

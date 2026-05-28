@@ -33,6 +33,9 @@ class ShippingAddress:
     id:            Optional[int] = None
     created_at:    Optional[str] = None
     updated_at:    Optional[str] = None
+    # Phase 4B Wave 2 — soft-delete fields.
+    active:        bool = True
+    deleted_at:    Optional[str] = None
 
 
 def _now() -> str:
@@ -40,6 +43,7 @@ def _now() -> str:
 
 
 def _row_to_addr(row: sqlite3.Row) -> ShippingAddress:
+    keys = row.keys() if hasattr(row, "keys") else []
     return ShippingAddress(
         id            = row["id"],
         contractor_id = row["contractor_id"],
@@ -55,7 +59,16 @@ def _row_to_addr(row: sqlite3.Row) -> ShippingAddress:
         is_default    = bool(int(row["is_default"])),
         created_at    = row["created_at"],
         updated_at    = row["updated_at"],
+        active        = bool(int(row["active"])) if "active" in keys else True,
+        deleted_at    = (row["deleted_at"] if "deleted_at" in keys else None),
     )
+
+
+def address_audit_pk(contractor_id: str, addr_id: int) -> str:
+    """Phase 4B Wave 2 — stable colon-separated composite audit pk.
+    Used by route handlers so master_audit rows have a human-readable
+    PK string that's grep-friendly and stable across releases."""
+    return f"customer:{contractor_id}:address:{int(addr_id)}"
 
 
 def validate_address(data: Dict[str, Any]) -> List[str]:
@@ -97,6 +110,23 @@ def init_db(db_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS ix_csa_contractor
             ON client_shipping_addresses (contractor_id)
         """)
+        # Phase 4B Wave 2 — soft-delete columns. Idempotent ALTER per
+        # SQLite limitations; swallow only "duplicate column" errors.
+        for _col_sql in (
+            "ALTER TABLE client_shipping_addresses ADD COLUMN "
+            "active INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE client_shipping_addresses ADD COLUMN "
+            "deleted_at TEXT",
+        ):
+            try:
+                conn.execute(_col_sql)
+            except sqlite3.OperationalError as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    raise
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_csa_active "
+            "ON client_shipping_addresses (active)"
+        )
 
 
 def create_address(db_path: Path, contractor_id: str, data: Dict[str, Any]) -> int:
@@ -134,18 +164,28 @@ def create_address(db_path: Path, contractor_id: str, data: Dict[str, Any]) -> i
         return int(cur.lastrowid or 0)
 
 
-def list_addresses(db_path: Path, contractor_id: str) -> List[ShippingAddress]:
-    """Return all addresses for a contractor, default first then by id."""
+def list_addresses(db_path: Path, contractor_id: str,
+                   *, active: Optional[bool] = None) -> List[ShippingAddress]:
+    """Return all addresses for a contractor, default first then by id.
+
+    Phase 4B Wave 2: ``active`` filter:
+      - ``None`` (default at DB layer) → no filter, returns all rows
+      - ``True``  → active rows only
+      - ``False`` → inactive (soft-deleted) rows only
+    The route layer applies its own default (active-only) policy.
+    """
     if not Path(db_path).is_file():
         return []
+    sql = ("SELECT * FROM client_shipping_addresses "
+           "WHERE contractor_id=?")
+    params: List[Any] = [contractor_id]
+    if active is not None:
+        sql += " AND active=?"
+        params.append(1 if active else 0)
+    sql += " ORDER BY is_default DESC, id ASC"
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """SELECT * FROM client_shipping_addresses
-               WHERE contractor_id=?
-               ORDER BY is_default DESC, id ASC""",
-            (contractor_id,),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [_row_to_addr(r) for r in rows]
 
 
@@ -221,4 +261,40 @@ __all__ = [
     "ShippingAddress", "validate_address", "init_db",
     "create_address", "list_addresses", "get_address",
     "update_address", "delete_address",
+    "soft_delete_address", "restore_address", "hard_delete_address",
+    "address_audit_pk",
 ]
+
+
+# ── Phase 4B Wave 2 — soft-delete + restore ─────────────────────────────────
+
+def soft_delete_address(db_path: Path, addr_id: int, contractor_id: str) -> bool:
+    if not Path(db_path).is_file():
+        return False
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            "UPDATE client_shipping_addresses "
+            "SET active = 0, deleted_at = ?, updated_at = ? "
+            "WHERE id = ? AND contractor_id = ?",
+            (now, now, addr_id, contractor_id),
+        )
+        return cur.rowcount > 0
+
+
+def restore_address(db_path: Path, addr_id: int, contractor_id: str) -> bool:
+    if not Path(db_path).is_file():
+        return False
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            "UPDATE client_shipping_addresses "
+            "SET active = 1, deleted_at = NULL, updated_at = ? "
+            "WHERE id = ? AND contractor_id = ?",
+            (now, addr_id, contractor_id),
+        )
+        return cur.rowcount > 0
+
+
+def hard_delete_address(db_path: Path, addr_id: int, contractor_id: str) -> bool:
+    return delete_address(db_path, addr_id, contractor_id)

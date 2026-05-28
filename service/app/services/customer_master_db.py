@@ -160,6 +160,11 @@ class CustomerMaster:
     client_type:             Optional[str] = None    # e.g. "client" | "supplier" | "both"
     industry:                Optional[str] = None
     eori:                    Optional[str] = None
+    # Phase 4B Wave 3b-2 — soft-delete lifecycle. `active` defaults True so
+    # every existing/legacy customer is treated as active. `deleted_at` is
+    # NULL until the row is soft-deleted.
+    active:                  bool = True
+    deleted_at:              Optional[str] = None
 
 
 def validate(c: CustomerMaster) -> List[str]:
@@ -390,6 +395,9 @@ def init_db(db_path: Path) -> None:
             ("eori",                      "TEXT"),
             # B2a — wFirma payment method default
             ("preferred_payment_method",  "TEXT"),
+            # Phase 4B Wave 3b-2 — soft-delete lifecycle columns.
+            ("active",                    "INTEGER NOT NULL DEFAULT 1"),
+            ("deleted_at",                "TEXT"),
         ])
 
 
@@ -521,6 +529,9 @@ def _row_to_customer(row: sqlite3.Row) -> CustomerMaster:
         client_type                   = _row_get(row, "client_type"),
         industry                      = _row_get(row, "industry"),
         eori                          = _row_get(row, "eori"),
+        # Phase 4B Wave 3b-2 — soft-delete lifecycle (tolerant of legacy rows).
+        active                        = bool(int(_row_get(row, "active") or 0)) if _row_get(row, "active") is not None else True,
+        deleted_at                    = _row_get(row, "deleted_at"),
     )
 
 
@@ -836,8 +847,15 @@ def get_customer(db_path: Path, bill_to_contractor_id: str) -> Optional[Customer
 def list_customers(db_path: Path,
                    country: Optional[str] = None,
                    risk_status: Optional[str] = None,
-                   limit: int = 200) -> List[CustomerMaster]:
-    """Read with optional filters."""
+                   limit: int = 200,
+                   *,
+                   active: Optional[bool] = None) -> List[CustomerMaster]:
+    """Read with optional filters.
+
+    Phase 4B Wave 3b-2: ``active`` filter — None=no filter (all rows);
+    True=active only; False=soft-deleted only. The route layer applies its
+    own default policy (active-only when the query param is omitted).
+    """
     if not Path(db_path).is_file():
         return []
     sql = "SELECT * FROM customer_master WHERE 1=1"
@@ -846,16 +864,28 @@ def list_customers(db_path: Path,
         sql += " AND country = ?"; params.append(country.upper())
     if risk_status:
         sql += " AND risk_status = ?"; params.append(risk_status)
+    if active is not None:
+        sql += " AND active = ?"; params.append(1 if active else 0)
     sql += " ORDER BY datetime(updated_at) DESC, id DESC LIMIT ?"
     params.append(int(limit))
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(sql, params).fetchall()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError:
+            # Legacy DB without the active column: fall back to no filter.
+            rows = conn.execute(
+                "SELECT * FROM customer_master ORDER BY datetime(updated_at) "
+                "DESC, id DESC LIMIT ?", (int(limit),)).fetchall()
     return [_row_to_customer(r) for r in rows]
 
 
 def delete_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
-    """Hard delete (test/admin use). Returns True if a row was removed."""
+    """Hard delete (test/admin use). Returns True if a row was removed.
+
+    Phase 4B Wave 3b-2 retains this as the hard-delete primitive; the route
+    layer chooses between soft-delete (default) and hard-delete.
+    """
     if not Path(db_path).is_file():
         return False
     with sqlite3.connect(str(db_path)) as conn:
@@ -864,6 +894,43 @@ def delete_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
             (bill_to_contractor_id,),
         )
         return cur.rowcount > 0
+
+
+# ── Phase 4B Wave 3b-2 — soft-delete + restore ──────────────────────────────
+#
+# Pure-local. No wFirma client import, no sync side effects. The wFirma
+# sync/apply/dictionary code paths are NOT modified by this phase.
+
+def soft_delete_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
+    if not Path(db_path).is_file():
+        return False
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            "UPDATE customer_master SET active = 0, deleted_at = ?, updated_at = ? "
+            "WHERE bill_to_contractor_id = ?",
+            (now, now, bill_to_contractor_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def restore_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
+    if not Path(db_path).is_file():
+        return False
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            "UPDATE customer_master SET active = 1, deleted_at = NULL, updated_at = ? "
+            "WHERE bill_to_contractor_id = ?",
+            (now, bill_to_contractor_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def hard_delete_customer(db_path: Path, bill_to_contractor_id: str) -> bool:
+    return delete_customer(db_path, bill_to_contractor_id)
 
 
 __all__ = [
@@ -875,6 +942,9 @@ __all__ = [
     "get_customer",
     "list_customers",
     "delete_customer",
+    "soft_delete_customer",
+    "restore_customer",
+    "hard_delete_customer",
     "get_effective_defaults",
 ]
 

@@ -35,6 +35,7 @@ class HsCode:
     notes:          Optional[str] = None
     created_at:     Optional[str] = None
     updated_at:     Optional[str] = None
+    deleted_at:     Optional[str] = None   # Phase 4B Wave 1 — soft-delete timestamp
 
 
 @dataclass
@@ -46,6 +47,7 @@ class Unit:
     active:      bool = True
     created_at:  Optional[str] = None
     updated_at:  Optional[str] = None
+    deleted_at:  Optional[str] = None    # Phase 4B Wave 1
 
 
 @dataclass
@@ -59,6 +61,10 @@ class ProductLocal:
     origin_country:   str = "IN"
     created_at:       Optional[str] = None
     updated_at:       Optional[str] = None
+    # Phase 4B Wave 4 — soft-delete lifecycle. active=False means the overlay
+    # is NOT applied; consumers fall back to non-overlay behavior.
+    active:           bool = True
+    deleted_at:       Optional[str] = None
 
 
 # B7 ─────────────────────────────────────────────────────────────────────────
@@ -80,6 +86,7 @@ class CarrierConfig:
     active:              bool = True
     created_at:          Optional[str] = None
     updated_at:          Optional[str] = None
+    deleted_at:          Optional[str] = None   # Phase 4B Wave 3a — soft-delete
 
 
 @dataclass
@@ -94,6 +101,7 @@ class Incoterm:
     active:               bool = True
     created_at:           Optional[str] = None
     updated_at:           Optional[str] = None
+    deleted_at:           Optional[str] = None   # Phase 4B Wave 1
 
 
 @dataclass
@@ -113,6 +121,7 @@ class FxRate:
     id:             Optional[int] = None
     created_at:     Optional[str] = None
     updated_at:     Optional[str] = None
+    deleted_at:     Optional[str] = None   # Phase 4B Wave 1
 
 
 @dataclass
@@ -130,6 +139,7 @@ class VatConfig:
     id:             Optional[int] = None
     created_at:     Optional[str] = None
     updated_at:     Optional[str] = None
+    deleted_at:     Optional[str] = None   # Phase 4B Wave 1
 
 
 @dataclass
@@ -157,6 +167,7 @@ class Design:
     notes:         Optional[str] = None
     created_at:    Optional[str] = None
     updated_at:    Optional[str] = None
+    deleted_at:    Optional[str] = None   # Phase 4B Wave 1
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -241,6 +252,17 @@ def init_db(db_path: Path) -> None:
         except sqlite3.OperationalError as _e:
             if "duplicate column" not in str(_e).lower():
                 raise
+        # Phase 4B Wave 4 — additive soft-delete columns.
+        for _pl_col in (
+            "ALTER TABLE product_local ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE product_local ADD COLUMN deleted_at TEXT",
+        ):
+            try:
+                conn.execute(_pl_col)
+            except sqlite3.OperationalError as _e:
+                if "duplicate column" not in str(_e).lower():
+                    raise
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pl_active ON product_local (active)")
 
         # ── B7 ─────────────────────────────────────────────────────────
         conn.execute("""
@@ -337,6 +359,22 @@ def init_db(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_designs_collection ON designs (collection)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_designs_product_ref ON designs (product_ref)")
 
+        # ── Phase 4B Wave 1 — soft-delete deleted_at column migration ─────
+        # Idempotent ALTER TABLE for each of the six Wave 1 entities.
+        # Tables created on Wave 1 deploy already include deleted_at via
+        # CREATE TABLE; pre-Wave-1 DBs need the ALTER. SQLite has no
+        # IF NOT EXISTS on ALTER — we swallow only the "duplicate column"
+        # error and re-raise anything else.
+        for _tbl in ("hs_codes", "units", "incoterms",
+                     "vat_config", "fx_rates", "designs",
+                     # Phase 4B Wave 3a — carriers_config soft-delete.
+                     "carriers_config"):
+            try:
+                conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN deleted_at TEXT")
+            except sqlite3.OperationalError as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    raise
+
         conn.commit()
 
 
@@ -369,12 +407,14 @@ def validate_carrier_config(data: Dict[str, Any]) -> List[str]:
 
 
 def _row_to_carrier(row: sqlite3.Row) -> CarrierConfig:
+    keys = row.keys() if hasattr(row, "keys") else []
     return CarrierConfig(
         carrier_code=row["carrier_code"], name=row["name"],
         parser_type=row["parser_type"], inbox_email=row["inbox_email"],
         api_type=row["api_type"], supported_services=row["supported_services"],
         notes=row["notes"], active=bool(int(row["active"])),
         created_at=row["created_at"], updated_at=row["updated_at"],
+        deleted_at=(row["deleted_at"] if "deleted_at" in keys else None),
     )
 
 
@@ -496,12 +536,14 @@ def validate_fx_rate(data: Dict[str, Any]) -> List[str]:
 
 
 def _row_to_fx(row: sqlite3.Row) -> FxRate:
+    keys = row.keys() if hasattr(row, "keys") else []
     return FxRate(
         id=row["id"], rate_date=row["rate_date"],
         from_currency=row["from_currency"], to_currency=row["to_currency"],
         rate=row["rate"], source=row["source"], table_number=row["table_number"],
         notes=row["notes"], active=bool(int(row["active"])),
         created_at=row["created_at"], updated_at=row["updated_at"],
+        deleted_at=(row["deleted_at"] if "deleted_at" in keys else None),
     )
 
 
@@ -634,6 +676,7 @@ def validate_incoterm(data: Dict[str, Any]) -> List[str]:
 
 
 def _row_to_incoterm(row: sqlite3.Row) -> Incoterm:
+    keys = row.keys() if hasattr(row, "keys") else []
     return Incoterm(
         code=row["code"], name=row["name"],
         risk_transfer_point=row["risk_transfer_point"],
@@ -642,6 +685,7 @@ def _row_to_incoterm(row: sqlite3.Row) -> Incoterm:
         customs_included=bool(int(row["customs_included"])),
         notes=row["notes"], active=bool(int(row["active"])),
         created_at=row["created_at"], updated_at=row["updated_at"],
+        deleted_at=(row["deleted_at"] if "deleted_at" in keys else None),
     )
 
 
@@ -752,12 +796,14 @@ def validate_vat_config(data: Dict[str, Any]) -> List[str]:
 
 
 def _row_to_vat(row: sqlite3.Row) -> VatConfig:
+    keys = row.keys() if hasattr(row, "keys") else []
     return VatConfig(
         id=row["id"], country=row["country"], product_type=row["product_type"],
         rate_pct=row["rate_pct"], rate_code=row["rate_code"],
         effective_from=row["effective_from"], effective_to=row["effective_to"],
         active=bool(int(row["active"])), notes=row["notes"],
         created_at=row["created_at"], updated_at=row["updated_at"],
+        deleted_at=(row["deleted_at"] if "deleted_at" in keys else None),
     )
 
 
@@ -892,11 +938,13 @@ def validate_hs_code(data: Dict[str, Any]) -> List[str]:
 
 
 def _row_to_hs(row: sqlite3.Row) -> HsCode:
+    keys = row.keys() if hasattr(row, "keys") else []
     return HsCode(
         hs_code=row["hs_code"], description_pl=row["description_pl"],
         description_en=row["description_en"], duty_rate_pct=row["duty_rate_pct"],
         vat_rate_pct=row["vat_rate_pct"], active=bool(int(row["active"])),
         notes=row["notes"], created_at=row["created_at"], updated_at=row["updated_at"],
+        deleted_at=(row["deleted_at"] if "deleted_at" in keys else None),
     )
 
 
@@ -998,10 +1046,12 @@ def validate_unit(data: Dict[str, Any]) -> List[str]:
 
 
 def _row_to_unit(row: sqlite3.Row) -> Unit:
+    keys = row.keys() if hasattr(row, "keys") else []
     return Unit(
         code=row["code"], name_pl=row["name_pl"], name_en=row["name_en"],
         unit_type=row["unit_type"], active=bool(int(row["active"])),
         created_at=row["created_at"], updated_at=row["updated_at"],
+        deleted_at=(row["deleted_at"] if "deleted_at" in keys else None),
     )
 
 
@@ -1104,6 +1154,10 @@ def _row_to_pl(row: sqlite3.Row) -> ProductLocal:
         origin_country   = (row["origin_country"] if "origin_country" in keys else "IN") or "IN",
         created_at       = row["created_at"],
         updated_at       = row["updated_at"],
+        # Phase 4B Wave 4 — soft-delete (tolerant of legacy rows → active).
+        active           = (bool(int(row["active"])) if "active" in keys
+                            and row["active"] is not None else True),
+        deleted_at       = (row["deleted_at"] if "deleted_at" in keys else None),
     )
 
 
@@ -1161,23 +1215,46 @@ def get_product_local(db_path: Path, product_code: str) -> Optional[ProductLocal
     return _row_to_pl(row) if row else None
 
 
-def list_product_local(db_path: Path, *, limit: int = 500) -> List[ProductLocal]:
+def list_product_local(db_path: Path, *, active: Optional[bool] = None,
+                       limit: int = 500) -> List[ProductLocal]:
+    """List product_local overlays.
+
+    Phase 4B Wave 4: ``active`` filter — None=no filter (all); True=active
+    only; False=soft-deleted only. The route layer applies its own default
+    (active-only when the query param is omitted).
+    """
     db_path = Path(db_path)
     if not db_path.exists():
         return []
+    where = ""
+    params: List[Any] = []
+    if active is not None:
+        where = " WHERE active = ?"
+        params.append(1 if active else 0)
+    params.append(int(limit))
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
-                "SELECT * FROM product_local ORDER BY updated_at DESC, product_code ASC LIMIT ?",
-                (int(limit),)
+                f"SELECT * FROM product_local{where} "
+                "ORDER BY updated_at DESC, product_code ASC LIMIT ?",
+                params,
             ).fetchall()
             return [_row_to_pl(r) for r in rows]
         except sqlite3.OperationalError:
-            return []
+            # Legacy DB without the active column: fall back to no filter.
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM product_local "
+                    "ORDER BY updated_at DESC, product_code ASC LIMIT ?",
+                    (int(limit),)).fetchall()
+                return [_row_to_pl(r) for r in rows]
+            except sqlite3.OperationalError:
+                return []
 
 
 def delete_product_local(db_path: Path, product_code: str) -> bool:
+    """Hard delete primitive. The route layer chooses soft (default) vs hard."""
     db_path = Path(db_path)
     if not db_path.exists():
         return False
@@ -1188,6 +1265,22 @@ def delete_product_local(db_path: Path, product_code: str) -> bool:
             return cur.rowcount > 0
         except sqlite3.OperationalError:
             return False
+
+
+# ── Phase 4B Wave 4 — product_local soft-delete + restore ───────────────────
+#
+# Inactive overlay = "stop applying overlay". Pure-local; no wFirma / PZ /
+# customs side effects. Consumers (proforma_draft_sync, routes_proforma,
+# proforma_intelligence) skip inactive overlays and fall back.
+
+def soft_delete_product_local(db_path: Path, product_code: str) -> bool:
+    return _soft_delete_by_pk(db_path, "product_local", "product_code", product_code)
+
+def restore_product_local(db_path: Path, product_code: str) -> bool:
+    return _restore_by_pk(db_path, "product_local", "product_code", product_code)
+
+def hard_delete_product_local(db_path: Path, product_code: str) -> bool:
+    return delete_product_local(db_path, product_code)
 
 
 # ── B-MD2 Designs master (MDOC-2026-05) ───────────────────────────────────────
@@ -1214,6 +1307,7 @@ def validate_design(data: Dict[str, Any]) -> List[str]:
 
 
 def _row_to_design(row: sqlite3.Row) -> Design:
+    keys = row.keys() if hasattr(row, "keys") else []
     return Design(
         design_code   = row["design_code"],
         display_name  = row["display_name"],
@@ -1228,6 +1322,7 @@ def _row_to_design(row: sqlite3.Row) -> Design:
         notes         = row["notes"],
         created_at    = row["created_at"],
         updated_at    = row["updated_at"],
+        deleted_at    = (row["deleted_at"] if "deleted_at" in keys else None),
     )
 
 
@@ -1539,3 +1634,121 @@ def upsert_company_profile(db_path: Path, **fields) -> CompanyProfile:
             "SELECT * FROM company_profile WHERE id=1"
         ).fetchone()
     return _row_to_company_profile(row)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 4B Wave 1 — soft-delete + restore primitives for six legacy entities
+# ════════════════════════════════════════════════════════════════════════════
+#
+# Authority: each helper mutates ONLY its own table. Route handlers choose
+# between soft-delete (default) and hard-delete (gated by flag + role).
+# The legacy ``delete_X`` functions remain hard-delete primitives so callers
+# that test the low-level contract continue to work without change.
+
+def _soft_delete_by_pk(db_path: Path, table: str, pk_column: str,
+                       pk_value: Any) -> bool:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            f"UPDATE {table} SET active = 0, deleted_at = ?, updated_at = ? "
+            f"WHERE {pk_column} = ?",
+            (now, now, pk_value),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def _restore_by_pk(db_path: Path, table: str, pk_column: str,
+                   pk_value: Any) -> bool:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            f"UPDATE {table} SET active = 1, deleted_at = NULL, updated_at = ? "
+            f"WHERE {pk_column} = ?",
+            (now, pk_value),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ── HS codes ────────────────────────────────────────────────────────────────
+def soft_delete_hs_code(db_path: Path, hs_code: str) -> bool:
+    return _soft_delete_by_pk(db_path, "hs_codes", "hs_code", hs_code)
+
+def restore_hs_code(db_path: Path, hs_code: str) -> bool:
+    return _restore_by_pk(db_path, "hs_codes", "hs_code", hs_code)
+
+def hard_delete_hs_code(db_path: Path, hs_code: str) -> bool:
+    return delete_hs_code(db_path, hs_code)
+
+
+# ── Units ───────────────────────────────────────────────────────────────────
+def soft_delete_unit(db_path: Path, code: str) -> bool:
+    return _soft_delete_by_pk(db_path, "units", "code", code)
+
+def restore_unit(db_path: Path, code: str) -> bool:
+    return _restore_by_pk(db_path, "units", "code", code)
+
+def hard_delete_unit(db_path: Path, code: str) -> bool:
+    return delete_unit(db_path, code)
+
+
+# ── Incoterms ───────────────────────────────────────────────────────────────
+def soft_delete_incoterm(db_path: Path, code: str) -> bool:
+    return _soft_delete_by_pk(db_path, "incoterms", "code", code)
+
+def restore_incoterm(db_path: Path, code: str) -> bool:
+    return _restore_by_pk(db_path, "incoterms", "code", code)
+
+def hard_delete_incoterm(db_path: Path, code: str) -> bool:
+    return delete_incoterm(db_path, code)
+
+
+# ── VAT config (surrogate id) ──────────────────────────────────────────────
+def soft_delete_vat_config(db_path: Path, vat_id: int) -> bool:
+    return _soft_delete_by_pk(db_path, "vat_config", "id", int(vat_id))
+
+def restore_vat_config(db_path: Path, vat_id: int) -> bool:
+    return _restore_by_pk(db_path, "vat_config", "id", int(vat_id))
+
+def hard_delete_vat_config(db_path: Path, vat_id: int) -> bool:
+    return delete_vat_config(db_path, vat_id)
+
+
+# ── FX rates (surrogate id) ────────────────────────────────────────────────
+def soft_delete_fx_rate(db_path: Path, fx_id: int) -> bool:
+    return _soft_delete_by_pk(db_path, "fx_rates", "id", int(fx_id))
+
+def restore_fx_rate(db_path: Path, fx_id: int) -> bool:
+    return _restore_by_pk(db_path, "fx_rates", "id", int(fx_id))
+
+def hard_delete_fx_rate(db_path: Path, fx_id: int) -> bool:
+    return delete_fx_rate(db_path, fx_id)
+
+
+# ── Designs ─────────────────────────────────────────────────────────────────
+def soft_delete_design(db_path: Path, design_code: str) -> bool:
+    return _soft_delete_by_pk(db_path, "designs", "design_code", design_code)
+
+def restore_design(db_path: Path, design_code: str) -> bool:
+    return _restore_by_pk(db_path, "designs", "design_code", design_code)
+
+def hard_delete_design(db_path: Path, design_code: str) -> bool:
+    return delete_design(db_path, design_code)
+
+
+# ── Carriers config (Phase 4B Wave 3a) ──────────────────────────────────────
+def soft_delete_carrier_config(db_path: Path, carrier_code: str) -> bool:
+    return _soft_delete_by_pk(db_path, "carriers_config", "carrier_code", carrier_code)
+
+def restore_carrier_config(db_path: Path, carrier_code: str) -> bool:
+    return _restore_by_pk(db_path, "carriers_config", "carrier_code", carrier_code)
+
+def hard_delete_carrier_config(db_path: Path, carrier_code: str) -> bool:
+    return delete_carrier_config(db_path, carrier_code)

@@ -21,11 +21,13 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from ..core.config import settings
 from ..core.security import require_api_key
 from ..core.logging import get_logger
+from ..core.audit import audit_safe
+from ..core.role_gate import require_role_or_apikey, MASTER_ADMIN, MASTER_EDITOR
 from ..services.customer_master_db import (
     CustomerMaster,
     validate,
@@ -34,13 +36,62 @@ from ..services.customer_master_db import (
     upsert_identity_only,
     get_customer,
     list_customers,
+    soft_delete_customer,
+    restore_customer,
+    hard_delete_customer,
 )
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/customer-master", tags=["customer-master"])
 _auth  = Depends(require_api_key)
+_write_auth = Depends(require_role_or_apikey(MASTER_ADMIN, MASTER_EDITOR))
 
 _DB_PATH = settings.storage_root / "customer_master.sqlite"
+
+
+import hmac as _hmac
+
+
+def _parse_active_query(v: Optional[str]) -> Optional[bool]:
+    if v is None or v == "":
+        return None
+    s = str(v).strip().lower()
+    if s in ("true", "1", "yes"):  return True
+    if s in ("false", "0", "no"):  return False
+    raise HTTPException(status_code=422, detail=f"active must be true/false, got {v!r}")
+
+
+def _resolve_list_active(v: Optional[str]) -> Optional[bool]:
+    """Phase 4B Wave 3b-2 — default customer list to active-only when the
+    ``active`` query param is omitted."""
+    parsed = _parse_active_query(v)
+    return True if parsed is None else parsed
+
+
+def _hard_delete_guard(request: Request) -> None:
+    """Phase 4B Wave 3b-2 — gate for DELETE ...?hard=true. Flag must be on
+    AND caller must hold master_admin (or admin X-API-Key). Same contract as
+    the suppliers / master-data guards."""
+    if not settings.master_hard_delete_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail=("Hard delete is disabled. Set master_hard_delete_enabled "
+                    "to true (admin) to permit permanent removal."),
+        )
+    key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
+    if settings.api_key and key and _hmac.compare_digest(key, settings.api_key):
+        return
+    cookie = request.cookies.get("pz_session")
+    if cookie:
+        try:
+            from ..auth.dependencies import get_current_user_optional  # noqa: PLC0415
+            user = get_current_user_optional(pz_session=cookie)
+        except Exception:
+            user = None
+        if user and (user.get("role") or "") == MASTER_ADMIN:
+            return
+    raise HTTPException(status_code=403,
+                        detail="Hard delete requires master_admin role.")
 
 
 # ── Serialisation helpers ─────────────────────────────────────────────────────
@@ -141,6 +192,9 @@ def _customer_to_dict(c: CustomerMaster) -> Dict[str, Any]:
         "client_type":                   c.client_type,
         "industry":                      c.industry,
         "eori":                          c.eori,
+        # Phase 4B Wave 3b-2 — soft-delete lifecycle.
+        "active":                        c.active,
+        "deleted_at":                    c.deleted_at,
     }
 
 
@@ -339,13 +393,19 @@ def _parse_body(
 def list_customers_endpoint(
     country:     Optional[str] = Query(None, description="ISO-3166 alpha-2 country filter"),
     risk_status: Optional[str] = Query(None, description="Filter by risk_status"),
+    active:      Optional[str] = Query(None,
+        description="omit = active-only (default); 'false' = inactive only; 'true' = active only"),
     limit:       int           = Query(200, ge=1, le=1000, description="Max rows returned"),
 ) -> JSONResponse:
     """List customers with optional filters. Returns up to `limit` records,
-    ordered by most-recently-updated first."""
+    ordered by most-recently-updated first.
+
+    Phase 4B Wave 3b-2: defaults to active-only when ``active`` is omitted.
+    """
     try:
         records = list_customers(_DB_PATH, country=country,
-                                 risk_status=risk_status, limit=limit)
+                                 risk_status=risk_status, limit=limit,
+                                 active=_resolve_list_active(active))
     except Exception as exc:
         log.error("list_customers failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"DB error: {exc}")
@@ -751,7 +811,7 @@ def get_customer_endpoint(contractor_id: str) -> JSONResponse:
     return JSONResponse(_customer_to_dict(record))
 
 
-@router.put("/{contractor_id}", dependencies=[_auth], summary="Create or update customer")
+@router.put("/{contractor_id}", dependencies=[_write_auth], summary="Create or update customer")
 async def upsert_customer_endpoint(contractor_id: str, request: Request) -> JSONResponse:
     """Upsert a customer record by wFirma contractor id.
 
@@ -799,4 +859,49 @@ async def upsert_customer_endpoint(contractor_id: str, request: Request) -> JSON
                             detail="upsert succeeded but record not found on re-read")
 
     log.info("customer_master_upsert contractor_id=%s row_id=%d", contractor_id, row_id)
+    audit_safe("customers", "create" if existing is None else "update", contractor_id,
+               request=request, before=existing, after=stored)
     return JSONResponse(status_code=200, content=_customer_to_dict(stored))
+
+
+@router.delete("/{contractor_id}", dependencies=[_write_auth],
+               summary="Delete customer (soft-delete by default; ?hard=true for permanent)",
+               status_code=204)
+def delete_customer_endpoint(
+    contractor_id: str, request: Request,
+    hard: bool = Query(False, description="Permanent removal; requires master_admin + flag"),
+):
+    init_db(_DB_PATH)
+    before = get_customer(_DB_PATH, contractor_id)
+    if before is None:
+        raise HTTPException(status_code=404, detail=f"Customer not found: {contractor_id}")
+    if hard:
+        _hard_delete_guard(request)
+        if not hard_delete_customer(_DB_PATH, contractor_id):
+            raise HTTPException(status_code=404, detail=f"Customer not found: {contractor_id}")
+        log.info("customer_master_hard_delete contractor_id=%s", contractor_id)
+        audit_safe("customers", "hard_delete", contractor_id,
+                   request=request, before=before, after=None)
+        return Response(status_code=204)
+    if not soft_delete_customer(_DB_PATH, contractor_id):
+        raise HTTPException(status_code=404, detail=f"Customer not found: {contractor_id}")
+    log.info("customer_master_soft_delete contractor_id=%s", contractor_id)
+    audit_safe("customers", "delete", contractor_id,
+               request=request, before=before, after=None)
+    return Response(status_code=204)
+
+
+@router.post("/{contractor_id}/restore", dependencies=[_write_auth],
+             summary="Restore a soft-deleted customer")
+def restore_customer_endpoint(contractor_id: str, request: Request) -> JSONResponse:
+    init_db(_DB_PATH)
+    before = get_customer(_DB_PATH, contractor_id)
+    if before is None:
+        raise HTTPException(status_code=404, detail=f"Customer not found: {contractor_id}")
+    if not restore_customer(_DB_PATH, contractor_id):
+        raise HTTPException(status_code=404, detail=f"Customer not found: {contractor_id}")
+    after = get_customer(_DB_PATH, contractor_id)
+    log.info("customer_master_restore contractor_id=%s", contractor_id)
+    audit_safe("customers", "restore", contractor_id,
+               request=request, before=before, after=after)
+    return JSONResponse(_customer_to_dict(after))

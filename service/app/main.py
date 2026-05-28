@@ -80,6 +80,12 @@ from .api.routes_master_data import (
     fx_router as md_fx_router,
     carriers_config_router as md_carriers_config_router,
     designs_router as md_designs_router,
+    audit_router as md_audit_router,
+)
+from .api.routes_master_jewelry import (
+    metals_router      as mj_metals_router,
+    stones_router      as mj_stones_router,
+    warehouses_router  as mj_warehouses_router,
 )
 from .api.routes_finance_postings import router as finance_postings_router
 from .core.config import settings
@@ -435,6 +441,10 @@ app.include_router(md_vat_router)                   # MasterData-B7: VAT config 
 app.include_router(md_fx_router)                    # MasterData-B8: FX rates (REFERENCE-ONLY; NOT a PZ override path)
 app.include_router(md_carriers_config_router)       # MasterData-B9: Carrier config (LOCAL, NON-SECRET; runtime untouched)
 app.include_router(md_designs_router)                # B-MD2 (MDOC): Designs master (LOCAL, additive; product_identity_engine read-only consumer)
+app.include_router(md_audit_router)                  # Phase 1: unified master-data audit (read-only query surface)
+app.include_router(mj_metals_router)                 # Phase 3: metals master (LOCAL valuation reference)
+app.include_router(mj_stones_router)                 # Phase 3: stones master (LOCAL catalog, cert reference only)
+app.include_router(mj_warehouses_router)             # Phase 3: warehouses master (LOCAL stock-location authority)
 app.include_router(finance_postings_router)         # Phase 6F.3: read-only breakdown endpoint (no writes, no posting/settlement/FX/wFirma coupling; init_db lazy-on-call)
 app.include_router(settings_router)                # Phase 7: company profile (seller identity + bank details)
 

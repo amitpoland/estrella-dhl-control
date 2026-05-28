@@ -33,6 +33,9 @@ class CarrierAccount:
     id:             Optional[int] = None
     created_at:     Optional[str] = None
     updated_at:     Optional[str] = None
+    # Phase 4B Wave 2 — soft-delete fields.
+    active:         bool = True
+    deleted_at:     Optional[str] = None
 
 
 def _now() -> str:
@@ -40,6 +43,7 @@ def _now() -> str:
 
 
 def _row_to_acct(row: sqlite3.Row) -> CarrierAccount:
+    keys = row.keys() if hasattr(row, "keys") else []
     return CarrierAccount(
         id             = row["id"],
         contractor_id  = row["contractor_id"],
@@ -51,7 +55,14 @@ def _row_to_acct(row: sqlite3.Row) -> CarrierAccount:
         is_default     = bool(int(row["is_default"])),
         created_at     = row["created_at"],
         updated_at     = row["updated_at"],
+        active         = bool(int(row["active"])) if "active" in keys else True,
+        deleted_at     = (row["deleted_at"] if "deleted_at" in keys else None),
     )
+
+
+def carrier_account_audit_pk(contractor_id: str, acct_id: int) -> str:
+    """Phase 4B Wave 2 — stable colon-separated composite audit pk."""
+    return f"customer:{contractor_id}:carrier_account:{int(acct_id)}"
 
 
 def validate_account(data: Dict[str, Any]) -> List[str]:
@@ -100,6 +111,22 @@ def init_db(db_path: Path) -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS ix_cca_unique
             ON client_carrier_accounts (contractor_id, carrier, account_number)
         """)
+        # Phase 4B Wave 2 — soft-delete columns.
+        for _col_sql in (
+            "ALTER TABLE client_carrier_accounts ADD COLUMN "
+            "active INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE client_carrier_accounts ADD COLUMN "
+            "deleted_at TEXT",
+        ):
+            try:
+                conn.execute(_col_sql)
+            except sqlite3.OperationalError as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    raise
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_cca_active "
+            "ON client_carrier_accounts (active)"
+        )
 
 
 def create_account(db_path: Path, contractor_id: str, data: Dict[str, Any]) -> int:
@@ -136,18 +163,25 @@ def create_account(db_path: Path, contractor_id: str, data: Dict[str, Any]) -> i
         raise ValueError("DUPLICATE_ACCOUNT")
 
 
-def list_accounts(db_path: Path, contractor_id: str) -> List[CarrierAccount]:
-    """Return all accounts for a contractor, default first then by id."""
+def list_accounts(db_path: Path, contractor_id: str,
+                  *, active: Optional[bool] = None) -> List[CarrierAccount]:
+    """Return all accounts for a contractor, default first then by id.
+
+    Phase 4B Wave 2: ``active`` filter — None=no filter; True=active only;
+    False=soft-deleted only. Route layer applies its own default policy
+    (active-only when ``active`` query param is omitted)."""
     if not Path(db_path).is_file():
         return []
+    sql = ("SELECT * FROM client_carrier_accounts "
+           "WHERE contractor_id=?")
+    params: List[Any] = [contractor_id]
+    if active is not None:
+        sql += " AND active=?"
+        params.append(1 if active else 0)
+    sql += " ORDER BY is_default DESC, id ASC"
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """SELECT * FROM client_carrier_accounts
-               WHERE contractor_id=?
-               ORDER BY is_default DESC, id ASC""",
-            (contractor_id,),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [_row_to_acct(r) for r in rows]
 
 
@@ -223,5 +257,41 @@ __all__ = [
     "CarrierAccount", "validate_account", "init_db",
     "create_account", "list_accounts", "get_account",
     "update_account", "delete_account",
+    "soft_delete_account", "restore_account", "hard_delete_account",
+    "carrier_account_audit_pk",
     "VALID_CARRIERS", "VALID_PAYMENT_TYPES",
 ]
+
+
+# ── Phase 4B Wave 2 — soft-delete + restore ─────────────────────────────────
+
+def soft_delete_account(db_path: Path, acct_id: int, contractor_id: str) -> bool:
+    if not Path(db_path).is_file():
+        return False
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            "UPDATE client_carrier_accounts "
+            "SET active = 0, deleted_at = ?, updated_at = ? "
+            "WHERE id = ? AND contractor_id = ?",
+            (now, now, acct_id, contractor_id),
+        )
+        return cur.rowcount > 0
+
+
+def restore_account(db_path: Path, acct_id: int, contractor_id: str) -> bool:
+    if not Path(db_path).is_file():
+        return False
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            "UPDATE client_carrier_accounts "
+            "SET active = 1, deleted_at = NULL, updated_at = ? "
+            "WHERE id = ? AND contractor_id = ?",
+            (now, acct_id, contractor_id),
+        )
+        return cur.rowcount > 0
+
+
+def hard_delete_account(db_path: Path, acct_id: int, contractor_id: str) -> bool:
+    return delete_account(db_path, acct_id, contractor_id)
