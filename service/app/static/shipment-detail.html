@@ -3525,8 +3525,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
               const accountingChecks   = (cc && cc.accounting_checks) || {};
               const accountingFollowup = !!(cc && cc.accounting_followup_required);
               const invoiceStatus      = (cc && cc.invoice_status) || null;
-              // Readiness gate: PZ must exist before closure evaluation is meaningful
-              const pzGenerated = !!(audit && (audit.pz_pdf_filename || audit.pz_generated_at));
+              // Readiness gate: PZ must exist before closure evaluation is meaningful.
+              // Authority: wfirma_pz_doc_id is ground truth (same rule as _derive_pz_status).
+              // A batch with a real wFirma PZ document (doc ID set) is PZ-complete even if
+              // pz_pdf_filename / pz_generated_at are absent from the audit (e.g. PZ created
+              // through wFirma directly or via an older flow that didn't write those fields).
+              const _wfExport   = (audit && audit.wfirma_export) || {};
+              const _pzDocId    = (_wfExport.wfirma_pz_doc_id || '').trim();
+              const pzGenerated = !!(audit && (audit.pz_pdf_filename || audit.pz_generated_at || _pzDocId));
               const batchCompletedStatus = !!(audit && audit.status === 'completed');
               const closureEvalDisabled = closureCheckLoading || !pzGenerated || batchCompletedStatus;
               const closureEvalDisabledReason = batchCompletedStatus
