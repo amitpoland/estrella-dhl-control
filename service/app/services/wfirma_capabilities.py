@@ -91,6 +91,8 @@ def get_capabilities() -> Dict[str, Any]:
         "currency_supported":       currency_supported,
         "create_product_allowed":   settings.wfirma_create_product_allowed,
         "create_customer_allowed":  settings.wfirma_create_customer_allowed,
+        "create_pz_allowed":        settings.wfirma_create_pz_allowed,
+        "wfirma_create_pz_allowed": settings.wfirma_create_pz_allowed,
         "warehouse_id":             settings.wfirma_warehouse_id or None,
         "company_id":               settings.wfirma_company_id or None,
         "blocking_reasons":         blocking_reasons,

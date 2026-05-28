@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +24,16 @@ def write_json_atomic(path: str | Path, data: Any, indent: int = 2) -> None:
     On POSIX, os.replace() is guaranteed atomic at the filesystem level;
     on Windows it is best-effort (same drive required).
 
+    On Windows, os.replace() raises PermissionError (WinError 5) when the
+    destination file is momentarily held open by another reader (service,
+    antivirus, etc.).  We retry up to _WINDOWS_REPLACE_RETRIES times with
+    a short sleep before re-raising so transient locks don't crash the engine.
+
     Raises on any I/O or serialisation error — caller decides how to handle.
     """
+    _WINDOWS_REPLACE_RETRIES = 5
+    _WINDOWS_REPLACE_DELAY = 0.1  # seconds between retries
+
     path = Path(path)
     dir_ = path.parent
     dir_.mkdir(parents=True, exist_ok=True)
@@ -32,7 +42,18 @@ def write_json_atomic(path: str | Path, data: Any, indent: int = 2) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=indent)
-        os.replace(tmp, path)
+
+        if sys.platform == "win32":
+            for attempt in range(_WINDOWS_REPLACE_RETRIES):
+                try:
+                    os.replace(tmp, path)
+                    break
+                except PermissionError:
+                    if attempt == _WINDOWS_REPLACE_RETRIES - 1:
+                        raise
+                    time.sleep(_WINDOWS_REPLACE_DELAY)
+        else:
+            os.replace(tmp, path)
     except Exception:
         # Clean up orphaned temp file; re-raise so the caller knows
         try:

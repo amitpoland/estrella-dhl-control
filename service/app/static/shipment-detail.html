@@ -11197,11 +11197,14 @@ function ExecutePZGate({ batchId, onToast }) {
     } else if (_lifecycle.state === 'PZ_LOCKED') {
       reasons.push('Batch locked by accounting period close or operator hold');
     }
-  } else {
-    if (alreadyCreated)               reasons.push('PZ already created');
+  } else if (!alreadyCreated) {
+    // Only surface creation blockers when the PZ has not yet been created.
+    // When alreadyCreated===true the "Already created" chip below is the
+    // authoritative status signal — showing "creation disabled / preview not
+    // ready" alongside a done PZ contradicts reality and confuses operators.
     if (!flagOn && !_lfSuppressCreateDisabled) reasons.push('PZ creation is disabled (admin setting)');
     if (!ready)                       reasons.push('PZ preview not ready — resolve issues in steps 1–6 above');
-    if (!wouldCreate && !alreadyCreated) reasons.push('Preview check: no PZ would be created — verify product and customer mapping');
+    if (!wouldCreate)                 reasons.push('Preview check: no PZ would be created — verify product and customer mapping');
     if (data && (data.unresolved_product_codes || []).length > 0) {
       reasons.push(`${data.unresolved_product_codes.length} product code(s) unresolved`);
     }
@@ -11225,9 +11228,9 @@ function ExecutePZGate({ batchId, onToast }) {
       )}
 
       <div style={{ marginBottom: 8 }}>
-        <span style={chip(enabled ? 'green' : alreadyCreated ? 'gray' : 'amber')}
+        <span style={chip(enabled ? 'green' : alreadyCreated ? 'green' : 'amber')}
               data-testid="execute-pz-status-chip">
-          {alreadyCreated ? 'Already created' : enabled ? 'Ready to post' : 'Blocked — resolve items above'}
+          {alreadyCreated ? '✓ Already created' : enabled ? 'Ready to post' : 'Blocked — resolve items above'}
         </span>
       </div>
 

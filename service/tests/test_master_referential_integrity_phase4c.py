@@ -504,6 +504,149 @@ def test_get_returns_existing_carrier_account_after_carrier_goes_inactive(client
     assert target[0]["carrier"] == "ups"
 
 
+# ── Phase 4C-ext Wave 2 — carrier reference integrity on UPDATE ─────────────
+# Ordering contract: 422 (body) → 404 (account missing) → 409 (carrier
+# reference conflict) → write.
+
+def test_carrier_account_update_rejects_missing_carrier(client):
+    """PUT that switches the carrier to one absent from carriers_config must
+    return 409 reason=missing — the update bypass is closed."""
+    _seed_customer(client, "W-CARR-UPD-MISS")
+    _seed_carrier(client, "dhl")
+    create = client.post(
+        "/api/v1/customer-master/W-CARR-UPD-MISS/carrier-accounts/",
+        json={"carrier": "dhl", "account_number": "U1"}, headers=_HDR,
+    )
+    assert create.status_code == 201, create.text
+    acct_id = create.json()["id"]
+    # fedex is a valid enum value but was never seeded into carriers_config.
+    r = client.put(
+        f"/api/v1/customer-master/W-CARR-UPD-MISS/carrier-accounts/{acct_id}",
+        json={"carrier": "fedex", "account_number": "U1"}, headers=_HDR,
+    )
+    _assert_reference_conflict(r, field="carrier", entity="carriers_config",
+                               key="fedex", reason="missing")
+
+
+def test_carrier_account_update_rejects_inactive_carrier(client):
+    """PUT that switches the carrier to a soft-deleted carrier must return
+    409 reason=inactive."""
+    _seed_customer(client, "W-CARR-UPD-INACT")
+    _seed_carrier(client, "dhl")
+    _seed_carrier(client, "fedex", active=False)
+    create = client.post(
+        "/api/v1/customer-master/W-CARR-UPD-INACT/carrier-accounts/",
+        json={"carrier": "dhl", "account_number": "U2"}, headers=_HDR,
+    )
+    assert create.status_code == 201, create.text
+    acct_id = create.json()["id"]
+    r = client.put(
+        f"/api/v1/customer-master/W-CARR-UPD-INACT/carrier-accounts/{acct_id}",
+        json={"carrier": "fedex", "account_number": "U2"}, headers=_HDR,
+    )
+    _assert_reference_conflict(r, field="carrier", entity="carriers_config",
+                               key="fedex", reason="inactive")
+
+
+def test_carrier_account_update_accepts_active_carrier(client):
+    """PUT preserving an active carrier persists the change (200)."""
+    _seed_customer(client, "W-CARR-UPD-OK")
+    _seed_carrier(client, "dhl")
+    create = client.post(
+        "/api/v1/customer-master/W-CARR-UPD-OK/carrier-accounts/",
+        json={"carrier": "dhl", "account_number": "OLD"}, headers=_HDR,
+    )
+    assert create.status_code == 201, create.text
+    acct_id = create.json()["id"]
+    r = client.put(
+        f"/api/v1/customer-master/W-CARR-UPD-OK/carrier-accounts/{acct_id}",
+        json={"carrier": "dhl", "account_number": "NEW"}, headers=_HDR,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["account_number"] == "NEW"
+
+
+def test_carrier_account_update_422_wins_over_carrier_check(client):
+    """A bad-enum carrier fails body validation (422) before the
+    carriers_config authority check ever runs."""
+    _seed_customer(client, "W-CARR-UPD-422")
+    _seed_carrier(client, "dhl")
+    create = client.post(
+        "/api/v1/customer-master/W-CARR-UPD-422/carrier-accounts/",
+        json={"carrier": "dhl", "account_number": "V1"}, headers=_HDR,
+    )
+    assert create.status_code == 201, create.text
+    acct_id = create.json()["id"]
+    r = client.put(
+        f"/api/v1/customer-master/W-CARR-UPD-422/carrier-accounts/{acct_id}",
+        json={"carrier": "invalidcarrier", "account_number": "V1"}, headers=_HDR,
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_carrier_account_update_404_wins_over_carrier_check(client):
+    """A missing account returns 404 even when the supplied carrier would
+    itself be a 409 reference conflict — the resource-not-found verdict takes
+    precedence over the master-data conflict."""
+    _seed_customer(client, "W-CARR-UPD-404")
+    # 'fedex' is a valid enum value but is NOT seeded → would be 409 missing
+    # if the carrier check ran first. The 404 (account missing) must win.
+    r = client.put(
+        "/api/v1/customer-master/W-CARR-UPD-404/carrier-accounts/999999",
+        json={"carrier": "fedex", "account_number": "GHOST"}, headers=_HDR,
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_carrier_account_update_preserving_inactive_carrier_is_rejected(client):
+    """INTENDED CONTRACT (task scope: 'set OR preserve'): an update that does
+    not change the carrier but PRESERVES a reference to a now-inactive carrier
+    is rejected with 409 inactive. This makes update consistent with restore,
+    which already rejects inactive-carrier restores. Writes are gated even when
+    the carrier value is unchanged; only GET stays readable for legacy rows."""
+    _seed_customer(client, "W-CARR-UPD-PRESV")
+    _seed_carrier(client, "dhl")
+    create = client.post(
+        "/api/v1/customer-master/W-CARR-UPD-PRESV/carrier-accounts/",
+        json={"carrier": "dhl", "account_number": "P1", "account_name": "Old"},
+        headers=_HDR,
+    )
+    assert create.status_code == 201, create.text
+    acct_id = create.json()["id"]
+    # Carrier goes inactive AFTER the account was created (legacy scenario).
+    client.delete("/api/v1/carriers-config/dhl", headers=_HDR)
+    # Operator edits only account_name; carrier value is preserved (dhl).
+    r = client.put(
+        f"/api/v1/customer-master/W-CARR-UPD-PRESV/carrier-accounts/{acct_id}",
+        json={"carrier": "dhl", "account_number": "P1", "account_name": "New"},
+        headers=_HDR,
+    )
+    _assert_reference_conflict(r, field="carrier", entity="carriers_config",
+                               key="dhl", reason="inactive")
+
+
+def test_carrier_account_update_changes_name_with_active_carrier(client):
+    """Non-carrier edits succeed (200) while the carrier remains active —
+    confirms the write gate only blocks on a missing/inactive carrier, not on
+    every update."""
+    _seed_customer(client, "W-CARR-UPD-NAME")
+    _seed_carrier(client, "dhl")
+    create = client.post(
+        "/api/v1/customer-master/W-CARR-UPD-NAME/carrier-accounts/",
+        json={"carrier": "dhl", "account_number": "N1", "account_name": "Old"},
+        headers=_HDR,
+    )
+    assert create.status_code == 201, create.text
+    acct_id = create.json()["id"]
+    r = client.put(
+        f"/api/v1/customer-master/W-CARR-UPD-NAME/carrier-accounts/{acct_id}",
+        json={"carrier": "dhl", "account_number": "N1", "account_name": "New"},
+        headers=_HDR,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["account_name"] == "New"
+
+
 def test_phase4c_ext_uses_local_storage_only():
     """check_carrier_active must read only the local SQLite file, no
     external HTTP / wFirma / DHL call."""
