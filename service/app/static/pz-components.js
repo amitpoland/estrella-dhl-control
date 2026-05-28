@@ -65,7 +65,7 @@
           borderRadius: 6,
         }}>
           <span style={{ fontSize: 13, color: 'var(--badge-green-text)' }}>✓</span>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--badge-green-text)', flex: 1 }}>
+          <span data-testid="readiness-ready-chip" style={{ fontSize: 12, fontWeight: 600, color: 'var(--badge-green-text)', flex: 1 }}>
             Ready to Issue
           </span>
           {onReload && (
@@ -176,7 +176,7 @@
     return (
       <tr data-testid={`draft-line-row-${lid}`}>
         <td style={{ padding: '6px 8px' }}>
-          <StatusDot status={line.product_match ? 'ok' : 'error'} title={line.product_match ? 'Matched' : 'Not matched'} />
+          <StatusDot status={line.product_match ? 'ok' : 'warn'} title={line.product_match ? 'Matched' : 'Not matched'} />
           {' '}<span style={{ fontSize: 11 }}>{line.product_code || '—'}</span>
         </td>
         <td style={{ padding: '6px 8px', fontSize: 11, color: 'var(--text-2)' }}>
@@ -248,8 +248,10 @@
 
   // ── CustomerAuthorityCard ─────────────────────────────────────────────────
   // Displays customer resolution status from draft.customer_resolution or preview.customer_resolution.
-  // Read-only display — remap action is handled by the page layer.
-  function CustomerAuthorityCard({ resolution, clientName }) {
+  // onSave(wfirmaId): page layer provides the save handler; button is explicit-click only.
+  function CustomerAuthorityCard({ resolution, clientName, onSave, saveBusy }) {
+    const [inputId, setInputId] = useState('');
+
     if (!resolution) {
       return (
         <div style={{ padding: '10px', fontSize: 12, color: 'var(--text-2)' }}>
@@ -265,6 +267,13 @@
     } = resolution;
 
     const statusDotStatus = found ? 'ok' : ambiguous ? 'warn' : 'error';
+
+    const handleSave = () => {
+      if (!onSave) return;
+      const idToSave = found ? wfirma_customer_id : inputId.trim();
+      if (!idToSave) return;
+      onSave(idToSave);
+    };
 
     return (
       <div data-testid="customer-authority-card" style={{ fontSize: 12 }}>
@@ -291,7 +300,36 @@
         )}
         {!found && !ambiguous && (
           <div style={{ color: 'var(--badge-red-text)', marginTop: 2, fontSize: 11 }}>
-            No wFirma customer match. Add via Customer Master.
+            No wFirma customer match. Enter ID to create mapping:
+          </div>
+        )}
+
+        {/* Save mapping — explicit click only; no auto-save */}
+        {onSave && (
+          <div style={{ marginTop: 8, display: 'flex', gap: 6, alignItems: 'center' }}>
+            {!found && (
+              <input
+                type="text"
+                value={inputId}
+                onChange={e => setInputId(e.target.value)}
+                placeholder="wFirma customer ID"
+                data-testid="customer-mapping-id-input"
+                style={{
+                  fontSize: 11, padding: '3px 7px',
+                  border: '1px solid var(--border)', borderRadius: 4,
+                  fontFamily: 'inherit', color: 'var(--text)',
+                  background: 'var(--bg-subtle)', width: 140,
+                }}
+              />
+            )}
+            <Btn
+              variant="outline" small
+              onClick={handleSave}
+              disabled={saveBusy || (!found && !inputId.trim())}
+              data-testid="btn-save-customer-mapping"
+            >
+              {saveBusy ? '…' : 'Save Customer Mapping'}
+            </Btn>
           </div>
         )}
       </div>
@@ -312,8 +350,10 @@
           {line.design_no || '—'}
         </td>
         <td style={{ padding: '5px 8px', fontSize: 11 }}>
-          <StatusDot status={line.product_match ? 'ok' : 'error'} />
-          {' '}{line.product_match ? 'Matched' : 'Not matched'}
+          <StatusDot status={line.product_match ? 'ok' : 'warn'} />
+          {' '}{line.product_match
+            ? (line.wfirma_product_name || 'Matched')
+            : 'Not matched'}
         </td>
         <td style={{ padding: '5px 8px', fontSize: 11 }}>
           <StatusDot status={line.stock_ok ? 'ok' : 'warn'} />
