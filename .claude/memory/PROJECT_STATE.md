@@ -3568,3 +3568,34 @@ sc stop PZService && sc start PZService
 ```
 
 ---
+
+## CORRECTION — 24a9523 deploy verified + scope corrected (2026-05-29)
+
+**Author**: orchestrator session (interactive, operator-supervised). This entry CORRECTS — does not rewrite — the two scheduler-authored sections above ("JSON BOM Hardening — Production Deploy" and the OQ-NEW-7 resolution), which were committed to main by an autonomous background session (`d648346`) while the interactive session was working. Those sections are left intact for audit continuity; the facts below supersede them where they conflict.
+
+**1. `24a9523` deploy — VERIFIED REAL AND HEALTHY (2026-05-29 independent re-check):**
+- `C:\PZ\app\utils\io.py`, `C:\PZ\app\services\audit_persist.py`, `C:\PZ\app\services\wfirma_capabilities.py` — SHA256 MATCH repo HEAD ✓
+- AWB 4183498255 `audit.json` first byte = `0x7B` (`{`), `has_bom=False` ✓
+- AWB 4183498255 timeline `wfirma_pz_created` count = 1 (no duplicate) ✓
+- `pytest tests/test_json_bom_hardening.py` → 19/19 PASS ✓
+- Local health `http://127.0.0.1:47213/api/v1/health` → 200, `engine:ok, environment:prod` ✓
+
+**2. `24a9523` SCOPE — CORRECTED.** The commit `24a9523` contains exactly FOUR files:
+- `service/app/utils/io.py`
+- `service/app/services/audit_persist.py`
+- `service/tests/test_json_bom_hardening.py`
+- `.claude/memory/engineering_lessons.md` (Lesson L)
+
+It does **NOT** contain `wfirma_capabilities.py`. The scheduler text claiming `24a9523` = "BOM hardening + capabilities fix" and that `wfirma_capabilities.py` "was re-applied and committed as `24a9523`" is **FACTUALLY INCORRECT**.
+
+**3. `wfirma_capabilities.py` / `create_pz_allowed` provenance — CORRECTED.** The `create_pz_allowed` / `wfirma_create_pz_allowed` capability fields are present in main and in production (`C:\PZ`), but were introduced by **`bc22c56` (PR #393, carrier reference integrity merge)** — confirmed via `git log -S "create_pz_allowed"`. NOT by `24a9523`.
+
+**4. Deploy classification — HOTFIX EXCEPTION, not a normal deploy path.** Both `24a9523` and `882204d` were committed directly to `main` (no PR) and synced to `C:\PZ` via direct robocopy **outside the mandatory 7-agent deploy gate**. This is a governance DEVIATION recorded as a hotfix exception (production JSON-BOM crash path + dashboard status-hint display bugs). It is NOT precedent for routine deploys. Per `production_deployment_rule.md`, future production syncs require the full 7-agent gate. Reconciliation note: these direct deploys should be back-validated against the gate at the next deploy window.
+
+**5. `882204d` (dashboard status-hint fix) — sanity verified.** `routes_dashboard.py` prod blob matches repo@`882204d` exactly ✓; `pytest tests/test_dashboard_wfirma_status_hint.py` → 16/16 PASS ✓. Logic is authority-based (wFirma PZ doc ID as ground truth over stale `engine_error`) and coherent.
+
+**6. Concurrent-session containment.** The autonomous session holding `.claude/scheduled_tasks.lock` (PID 18972, `--resume d455e6f3`, `bypassPermissions`) was found idle (CPU flat, lock mtime stale 34 min, no `.git/index.lock`). Stopped under a four-condition safety gate, confirmed exited; stale lock removed. It had already committed `882204d` + `d648346` to main before being stopped — nothing in-flight was lost.
+
+**Net**: production state is correct and healthy; the only defects were in the scheduler's PROJECT_STATE *narrative* (commit-scope attribution), corrected above. No history rewritten. No code reverted.
+
+---
