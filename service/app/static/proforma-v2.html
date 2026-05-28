@@ -510,6 +510,23 @@
       draftsHook.reload();
     };
 
+    // Customer mapping save
+    const [cmSaveBusy, setCmSaveBusy] = React.useState(false);
+    const handleSaveCustomerMapping = async (wfirmaId) => {
+      const clientKey = selectedClient;
+      if (!clientKey || !wfirmaId) return;
+      setCmSaveBusy(true);
+      const res = await Api.saveCustomerMaster(clientKey, { wfirma_customer_id: wfirmaId });
+      setCmSaveBusy(false);
+      if (res.ok) {
+        showToast('Customer mapping saved.', 'success');
+        previewHook.reload();
+        if (draft) draftHook.reload();
+      } else {
+        showToast(res.error || 'Save failed.', 'error');
+      }
+    };
+
     // Detect dev bypass from export_blockers
     const bypassActive = Array.isArray(preview?.export_blockers) &&
       preview.export_blockers.some(r => r.includes('[DEV-BYPASS]'));
@@ -609,14 +626,17 @@
           )}
 
           {/* 2-column layout: left = readiness + draft, right = customer + product */}
-          {selectedClient && (
+          {selectedClient && drafts.filter(d => d.client_name === selectedClient).length === 0 && !draftsHook.loading && (
+            <EmptyState state="empty" message="No drafts for this client." data-testid="empty-client-drafts" />
+          )}
+          {selectedClient && drafts.filter(d => d.client_name === selectedClient).length > 0 && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
 
               {/* ── LEFT COLUMN ──────────────────────────────────────────── */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
                 {/* Readiness gate */}
-                <Card style={{ padding: '14px 16px' }}>
+                <Card data-testid="readiness-card" style={{ padding: '14px 16px' }}>
                   <SectionHeader label="Readiness" action={
                     <Btn variant="ghost" small onClick={previewHook.reload} data-testid="preview-refresh-btn">↻</Btn>
                   } />
@@ -636,7 +656,7 @@
                 </Card>
 
                 {/* Draft panel */}
-                <Card style={{ padding: '14px 16px' }}>
+                <Card data-testid="draft-card" style={{ padding: '14px 16px' }}>
                   <SectionHeader label="Draft" />
 
                   {draftHook.loading && selectedDraftId ? (
@@ -656,7 +676,7 @@
 
                 {/* Draft history (compact) */}
                 {drafts.filter(d => d.client_name === selectedClient).length > 1 && (
-                  <Card style={{ padding: '14px 16px' }}>
+                  <Card data-testid="draft-history-card" style={{ padding: '14px 16px' }}>
                     <SectionHeader label="Draft History" />
                     <CompactTable
                       cols={[
@@ -680,17 +700,21 @@
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
                 {/* Customer authority */}
-                <Card style={{ padding: '14px 16px' }}>
+                <Card data-testid="customer-authority-card-wrapper" style={{ padding: '14px 16px' }}>
                   <SectionHeader label="Customer Authority" />
                   {draft ? (
                     <CustomerAuthorityCard
                       resolution={draft.customer_resolution}
                       clientName={selectedClient}
+                      onSave={handleSaveCustomerMapping}
+                      saveBusy={cmSaveBusy}
                     />
                   ) : preview?.customer_resolution ? (
                     <CustomerAuthorityCard
                       resolution={preview.customer_resolution}
                       clientName={selectedClient}
+                      onSave={handleSaveCustomerMapping}
+                      saveBusy={cmSaveBusy}
                     />
                   ) : (
                     <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Load a draft to see customer mapping.</div>
@@ -699,7 +723,7 @@
 
                 {/* Ship-to */}
                 {(draft?.customer_resolution?.found || preview?.ship_to?.mode) && (
-                  <Card style={{ padding: '14px 16px' }}>
+                  <Card data-testid="ship-to-card" style={{ padding: '14px 16px' }}>
                     <SectionHeader label="Ship-to (Odbiorca)" />
                     {(() => {
                       const shipTo = preview?.ship_to || {};
@@ -725,7 +749,7 @@
 
                 {/* Product authority */}
                 {preview?.lines && preview.lines.length > 0 && (
-                  <Card style={{ padding: '14px 16px' }}>
+                  <Card data-testid="product-authority-card" style={{ padding: '14px 16px' }}>
                     <SectionHeader label="Product Authority" />
                     <div style={{ overflowX: 'auto' }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -763,7 +787,7 @@
 
                 {/* Design–product bridge diagnostic */}
                 {preview?.design_product_bridge && Object.keys(preview.design_product_bridge.ambiguous_design_codes || {}).length > 0 && (
-                  <Card style={{ padding: '14px 16px' }}>
+                  <Card data-testid="design-bridge-card" style={{ padding: '14px 16px' }}>
                     <SectionHeader label="Design Bridge — Ambiguous" />
                     <GateBlock
                       variant="warn"

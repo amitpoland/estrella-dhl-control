@@ -619,3 +619,114 @@ class TestLayerDisciplineProofs:
             assert tid in combined, (
                 f"data-testid={tid!r} must be present in proforma-v2.html or pz-components.js"
             )
+
+
+class TestSprint01Hardening:
+    """Sprint 01 hardening — source-grep tests for Atlas-V2 Sprint 01 additions.
+
+    Pins the seven gaps closed by Sprint 01:
+      1. readiness-ready-chip testid on the green "Ready to Issue" chip
+      2. btn-save-customer-mapping testid on "Save Customer Mapping" Btn
+      3. onSave prop wired to CustomerAuthorityCard in the page
+      4. EmptyState for "No drafts for this client." (client-level empty state)
+      5. Card root testids on section panels
+      6. ProductAuthorityRow uses 'warn' (not 'error') for unmatched products
+      7. CustomerAuthorityCard does not auto-save (explicit click only)
+    """
+
+    STATIC = Path(__file__).parents[1] / "app" / "static"
+
+    @pytest.fixture(autouse=True)
+    def _files(self):
+        self.v2_html = (self.STATIC / "proforma-v2.html").read_text(encoding="utf-8")
+        self.pz_comp = (self.STATIC / "pz-components.js").read_text(encoding="utf-8")
+
+    # Gap 1 — readiness-ready-chip testid
+    def test_readiness_ready_chip_testid(self):
+        combined = self.v2_html + self.pz_comp
+        assert 'readiness-ready-chip' in combined, (
+            "readiness-ready-chip data-testid must be present on the green 'Ready to Issue' chip"
+        )
+
+    # Gap 2 — btn-save-customer-mapping testid
+    def test_btn_save_customer_mapping_testid(self):
+        assert 'btn-save-customer-mapping' in self.pz_comp, (
+            "btn-save-customer-mapping data-testid must be present on the Save Customer Mapping Btn"
+        )
+
+    # Gap 2 (authority rule) — CustomerAuthorityCard accepts onSave prop
+    def test_customer_authority_card_accepts_onsave(self):
+        assert 'onSave' in self.pz_comp, (
+            "CustomerAuthorityCard must accept an onSave prop (wired by page layer, not fetching itself)"
+        )
+
+    # Gap 2 (no auto-save) — CustomerAuthorityCard must not call PzApi or apiFetch directly
+    def test_customer_authority_card_no_auto_save(self):
+        for fetch_kw in ("PzApi.", "apiFetch", "saveCustomerMaster", "fetch("):
+            assert fetch_kw not in self.pz_comp, (
+                f"pz-components.js must not call {fetch_kw!r} — onSave callback is provided by page layer"
+            )
+
+    # Gap 3 — onSave wired in the page
+    def test_page_wires_onsave_to_customer_card(self):
+        assert 'onSave={handleSaveCustomerMapping}' in self.v2_html, (
+            "proforma-v2.html must pass onSave={handleSaveCustomerMapping} to CustomerAuthorityCard"
+        )
+        assert 'handleSaveCustomerMapping' in self.v2_html, (
+            "proforma-v2.html must define handleSaveCustomerMapping handler"
+        )
+        assert 'saveCustomerMaster' in self.v2_html, (
+            "handleSaveCustomerMapping must call Api.saveCustomerMaster"
+        )
+
+    # Gap 4 — EmptyState for no client drafts
+    def test_empty_state_for_no_client_drafts(self):
+        assert 'No drafts for this client.' in self.v2_html, (
+            "proforma-v2.html must show EmptyState 'No drafts for this client.' when client has no drafts"
+        )
+
+    # Gap 5 — Card section testids
+    def test_card_section_testids(self):
+        required_cards = [
+            'readiness-card',
+            'draft-card',
+            'customer-authority-card-wrapper',
+            'product-authority-card',
+            'draft-history-card',
+        ]
+        for tid in required_cards:
+            assert tid in self.v2_html, (
+                f"proforma-v2.html Card wrapper must have data-testid={tid!r}"
+            )
+
+    # Gap 6 — ProductAuthorityRow uses 'warn' not 'error' for unmatched
+    def test_product_authority_row_uses_warn_for_unmatched(self):
+        import re
+        # Extract only the ProductAuthorityRow function body (DraftLineRow may still use 'error')
+        match = re.search(
+            r"function ProductAuthorityRow\b.*?(?=\n  // ──|\n  window\.PzComponents)",
+            self.pz_comp, re.DOTALL,
+        )
+        assert match is not None, "ProductAuthorityRow function must exist in pz-components.js"
+        row_body = match.group(0)
+        assert "'warn'" in row_body or '"warn"' in row_body, (
+            "ProductAuthorityRow must use StatusDot status='warn' for unmatched products"
+        )
+        old_pattern = re.search(r"product_match\s*\?\s*['\"]ok['\"]\s*:\s*['\"]error['\"]", row_body)
+        assert old_pattern is None, (
+            "ProductAuthorityRow must not use 'error' for unmatched — use 'warn'"
+        )
+
+    # Gap 7 — ProformaReadinessGate does not infer readiness locally
+    def test_readiness_gate_no_local_inference(self):
+        for forbidden in (
+            "blocking_reasons.length === 0",
+            "blocking_reasons.length == 0",
+            "!blocking_reasons.length",
+            "ready = true",
+            "ready = false",
+            "setReady(",
+        ):
+            assert forbidden not in self.pz_comp, (
+                f"ProformaReadinessGate must not infer readiness locally — found: {forbidden!r}"
+            )
