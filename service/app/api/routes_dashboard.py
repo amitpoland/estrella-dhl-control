@@ -297,6 +297,10 @@ def _derive_pz_status(a: Dict[str, Any]) -> str:
     Returns: 'complete' | 'ready' | 'locked' | 'failed'
 
     Precedence (highest first):
+      0. complete — wfirma_export.wfirma_pz_doc_id is set: PZ was ACTUALLY
+                    created in wFirma. This overrides any stale engine_error
+                    from an earlier failed attempt. The PZ doc ID is the
+                    highest-authority proof of completion.
       1. failed  — audit.status=='failed' OR audit.engine_error truthy
                    (Lesson G: do not show "Ready for PZ" when the engine
                     refused to write outputs. The two authorities — status
@@ -305,6 +309,12 @@ def _derive_pz_status(a: Dict[str, Any]) -> str:
       3. locked   — SAD missing
       4. ready    — default
     """
+    # Layer 0: wFirma PZ document ID is the ground truth — if the PZ was
+    # created (even after an earlier engine failure) the batch is complete.
+    wfirma_export = a.get("wfirma_export") or {}
+    if wfirma_export.get("wfirma_pz_doc_id"):
+        return "complete"
+
     # Layer 1: engine outcome wins. A persisted failure must surface as
     # "PZ Failed" rather than the optimistic "Ready for PZ" derived from
     # SAD presence alone. See PZ Preview Authority Audit, Section 5.
@@ -356,9 +366,18 @@ def _sales_hint(batch_id: str) -> str:
         return "n/a"
 
 
-def _wfirma_hint(batch_id: str) -> str:
-    """Return 'preview_built' | 'none' based on draft existence."""
+def _wfirma_hint(batch_id: str, a: Dict[str, Any] | None = None) -> str:
+    """Return 'posted' | 'preview_built' | 'none' based on PZ and draft state.
+
+    Precedence:
+      1. 'posted'        — wfirma_export.wfirma_pz_doc_id is set in audit
+      2. 'preview_built' — reservation drafts exist but no PZ created yet
+      3. 'none'          — no drafts, no PZ
+    """
     try:
+        # Ground truth: PZ doc ID in audit means it was posted to wFirma
+        if a and (a.get("wfirma_export") or {}).get("wfirma_pz_doc_id"):
+            return "posted"
         from ..services import wfirma_db as wfdb
         drafts = wfdb.list_reservation_drafts(batch_id)
         return "preview_built" if drafts else "none"
@@ -439,7 +458,7 @@ def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
         # Each fails silently to 'n/a' — list view must never break.
         "warehouse_status_hint": _warehouse_hint(raw_batch_id),
         "sales_status_hint":     _sales_hint(raw_batch_id),
-        "wfirma_status_hint":    _wfirma_hint(raw_batch_id),
+        "wfirma_status_hint":    _wfirma_hint(raw_batch_id, a),
     }
 
 
