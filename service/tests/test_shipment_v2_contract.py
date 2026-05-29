@@ -506,3 +506,96 @@ class TestShipmentV2V1Freeze:
         assert "ReactDOM.createRoot" in content, (
             "shipment-v2.html must be a complete React application"
         )
+
+
+class TestShipmentV2RouteResolution:
+    """
+    Contract 16: every apiFetch endpoint must RESOLVE on the mounted app.
+
+    Contract 13 only asserts that the STRING "/api/v1/dashboard/batches/" is
+    present in the page. A string can be present while the backend route is NOT
+    mounted — which is exactly how Sprint 03 (#389) shipped broken: the dashboard
+    router carries a baked-in "/dashboard" prefix and was mounted only at
+    "/dashboard/*", so the page's "/api/v1/dashboard/*" data fetches all 404'd
+    ("Shipment not found" for every batch in the authenticated smoke).
+
+    This contract extracts every apiFetch(`...`) endpoint from shipment-v2.html,
+    normalizes the JS template literal (${...} -> one path segment, query string
+    stripped), and asserts each resolves to a real GET route on the mounted
+    FastAPI app using the path-template-aware route_contract_validator. It FAILS
+    on a pre-alias build and PASSES once the /api/v1 dashboard alias mount exists
+    in main.py — the regression guard that would have caught #389 before deploy.
+
+    Workflow class: frontend->backend endpoint contract (string-presence is not
+    resolution). Authority owner: the mounted FastAPI route table (app.routes),
+    not the page source.
+    """
+
+    STATIC = Path(__file__).parents[1] / "app" / "static"
+
+    # apiFetch(`<template>`) — capture the backtick template literal argument.
+    _APIFETCH_RE = re.compile(r"apiFetch\(\s*`([^`]+)`")
+    # ${ ... } — a JS interpolation; replaced by a single concrete path segment.
+    _INTERP_RE = re.compile(r"\$\{.*?\}")
+
+    @pytest.fixture(autouse=True)
+    def _load_file(self):
+        self.shipment_v2_html = (self.STATIC / "shipment-v2.html").read_text(encoding="utf-8")
+
+    def _extract_get_endpoints(self):
+        """
+        Return [(id, 'GET', concrete_path), ...] for each apiFetch call.
+
+        shipment-v2.html is a read-only page (Contract 4): every apiFetch call
+        passes no opts, so the transport defaults to GET.
+        """
+        endpoints = []
+        for i, tpl in enumerate(self._APIFETCH_RE.findall(self.shipment_v2_html)):
+            # ${encodeURIComponent(batchId)} -> "SEG" (a non-slash path segment
+            # that matches the validator's {param} -> [^/]+ and {param:path} -> .+)
+            concrete = self._INTERP_RE.sub("SEG", tpl)
+            concrete = concrete.split("?", 1)[0].strip()
+            endpoints.append((f"shipment-v2:apiFetch[{i}]", "GET", concrete))
+        return endpoints
+
+    def test_apifetch_endpoints_extracted(self):
+        """Guard against a vacuous pass: the regex must find the page's fetches."""
+        endpoints = self._extract_get_endpoints()
+        assert len(endpoints) >= 4, (
+            f"Expected >=4 apiFetch data endpoints in shipment-v2.html, "
+            f"found {len(endpoints)}: {endpoints}"
+        )
+
+    def test_all_apifetch_endpoints_resolve_on_mounted_app(self):
+        """Every shipment-v2 apiFetch GET endpoint must resolve to a mounted route.
+
+        Lazy imports keep the 15 source-grep contracts isolated from any app
+        import failure (only this test errors if the app cannot be imported).
+        """
+        from app.main import app
+        from app.services.route_contract_validator import validate_endpoints
+
+        endpoints = self._extract_get_endpoints()
+        broken = validate_endpoints(app, endpoints)
+        assert broken == [], (
+            "shipment-v2.html calls endpoints that do not resolve on the mounted "
+            f"app (the #389 bug class): {[(b.endpoint, b.reason) for b in broken]}"
+        )
+
+    def test_dashboard_alias_endpoints_resolve(self):
+        """Pin the specific fix: /api/v1/dashboard/* alias must resolve the two
+        dashboard data endpoints the page depends on. A future prefix regression
+        (alias removed, or router prefix changed) fails loudly here."""
+        from app.main import app
+        from app.services.route_contract_validator import validate_endpoints
+
+        alias_endpoints = [
+            ("shipment-v2:batch_detail",       "GET", "/api/v1/dashboard/batches/SEG"),
+            ("shipment-v2:proforma_readiness", "GET", "/api/v1/dashboard/batches/SEG/proforma-readiness"),
+        ]
+        broken = validate_endpoints(app, alias_endpoints)
+        assert broken == [], (
+            "The /api/v1/dashboard alias mount is missing — shipment-v2 batch "
+            "detail + proforma-readiness will 404: "
+            f"{[(b.endpoint, b.reason) for b in broken]}"
+        )

@@ -375,6 +375,17 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(router)
 app.include_router(dashboard_router)
+# Alias mount: also expose the dashboard router under /api/v1/dashboard/*.
+# The dashboard router already carries its own "/dashboard" prefix, so this
+# include yields /api/v1/dashboard/* pointing at the SAME handlers with the
+# SAME auth dependency (require_api_key — session-cookie aware). This is
+# required because the V2 pages (shipment-v2.html) and V1 dashboard.html call
+# /api/v1/dashboard/...; without this alias those calls 404 (root cause of the
+# Sprint-03 #389 "Shipment not found" smoke failure). The original /dashboard/*
+# paths are preserved, and the app-level /dashboard/{path:path} static
+# catch-all is NOT in this router, so static serving is unaffected. Resolution
+# is pinned by the route-contract test in test_shipment_v2_contract.py.
+app.include_router(dashboard_router, prefix="/api/v1")
 app.include_router(bot_router)
 app.include_router(batch_router)
 app.include_router(debug_router)
