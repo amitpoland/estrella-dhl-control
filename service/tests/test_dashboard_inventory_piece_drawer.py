@@ -19,7 +19,11 @@ def _src() -> str:
 def _inventory_body() -> str:
     src = _src()
     start = src.index("function InventoryPage(")
-    end = src.index("function MasterDataPage(", start)
+    # InventoryPage is now immediately followed by the ClientKycModal
+    # component (a sibling that owns its own KYC address/carrier CRUD).
+    # Bound on ClientKycModal so the write-allowlist scan covers only
+    # InventoryPage's own body and does not bleed into ClientKycModal.
+    end = src.index("function ClientKycModal(", start)
     return src[start:end]
 
 

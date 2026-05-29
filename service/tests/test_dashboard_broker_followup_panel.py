@@ -33,16 +33,29 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DASHBOARD = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html"
-)
-ROUTES_DASHBOARD = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/api/routes_dashboard.py"
-)
+_SVC_ROOT = Path(__file__).resolve().parent.parent
+DASHBOARD = _SVC_ROOT / "app" / "static" / "dashboard.html"
+ROUTES_DASHBOARD = _SVC_ROOT / "app" / "api" / "routes_dashboard.py"
+
+
+SHIPMENT_DETAIL = _SVC_ROOT / "app" / "static" / "shipment-detail.html"
 
 
 def _src() -> str:
+    if not DASHBOARD.exists():
+        import pytest
+        pytest.skip(f"dashboard.html not found at {DASHBOARD}")
     return DASHBOARD.read_text(encoding="utf-8")
+
+
+def _detail_src() -> str:
+    # The BrokerFollowupPanel render/mount site moved to shipment-detail.html
+    # (Atlas-V2 Overview tab). The component body is still defined in
+    # dashboard.html, so internal-behaviour tests keep reading _src().
+    if not SHIPMENT_DETAIL.exists():
+        import pytest
+        pytest.skip(f"shipment-detail.html not found at {SHIPMENT_DETAIL}")
+    return SHIPMENT_DETAIL.read_text(encoding="utf-8")
 
 
 # ── Component existence ───────────────────────────────────────────────────────
@@ -53,8 +66,9 @@ def test_broker_followup_panel_function_exists():
 
 
 def test_panel_rendered_in_overview_tab():
-    """The panel must be mounted inside the activeTab === 'Overview' tab block."""
-    src = _src()
+    """The panel must be mounted inside the activeTab === 'Overview' tab block
+    (now on shipment-detail.html under Atlas-V2)."""
+    src = _detail_src()
     # Use the JSX render site, not the comment in the function header
     panel_idx = src.find("<BrokerFollowupPanel batchId={batchId}")
     assert panel_idx != -1, "<BrokerFollowupPanel batchId={batchId} /> render site not found"
@@ -66,7 +80,8 @@ def test_panel_rendered_in_overview_tab():
 
 
 def test_panel_passes_batch_id_prop():
-    assert re.search(r"<BrokerFollowupPanel\s+batchId=\{batchId\}", _src()), \
+    # Render site moved to shipment-detail.html (Atlas-V2 Overview tab).
+    assert re.search(r"<BrokerFollowupPanel\s+batchId=\{batchId\}", _detail_src()), \
         "<BrokerFollowupPanel /> must receive batchId prop"
 
 

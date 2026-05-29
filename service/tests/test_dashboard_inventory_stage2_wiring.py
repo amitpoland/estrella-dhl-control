@@ -21,7 +21,11 @@ def _inventory_page_body() -> str:
     # function/comment header. Bound on the next component header for
     # tight scope.
     start = src.index("function InventoryPage(")
-    end = src.index("function MasterDataPage(", start)
+    # Bound on the next sibling component (ClientKycModal) rather than
+    # MasterDataPage: a ClientKycModal component now sits between
+    # InventoryPage and MasterDataPage, and its own KYC address/carrier
+    # CRUD must not bleed into InventoryPage's write-allowlist scan.
+    end = src.index("function ClientKycModal(", start)
     return src[start:end]
 
 
