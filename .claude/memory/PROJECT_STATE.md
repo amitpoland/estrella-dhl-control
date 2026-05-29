@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-28 (PR #393 carrier reference integrity + GATE 4 Issue #394).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-29 (PR #399 merge + governance reconciliation).
 
-**Last-run-at:** 2026-05-29T09:00Z (post-PR395-merge + governance reconciliation). Origin/main HEAD: **79da306** (PR #395 squash-merge: alias-mount dashboard router under /api/v1 so V2 + dashboard.html resolve). Code HEAD: 79da306. Production: SHA **da854e3 DEPLOYED** at C:\PZ (last verified deploy; production SHA NOT re-verifiable from Mac side this session — Windows-side `git -C C:\PZ rev-parse HEAD` check still outstanding). GATE 2: 1/3 open PRs (PR #370 pz-correction). TEST BASELINE: **85 PRE-EXISTING FAILURES** on merged main + 244/244 PZ golden (`make verify`) + 381/381 carrier green + 27/27 #395 contract tests. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ATLAS-V2: Sprint 01 DEPLOYED; **Sprint 04 NOT STARTED — awaiting operator reassessment from reconciled baseline**. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). DEPLOY-AHEAD-OF-MERGE: PR #395 repository-authority reconciliation COMPLETE at content level (085eb789 → squash 79da306 on origin/main); no on-disk #395 deploy disclosure found in `local-commit-deploys.jsonl` or any scorecard. **2 NEW OPEN QUESTIONS** (OQ-NEW-8 production-SHA verification, OQ-NEW-9 Sprint 04 reassessment).
+**Last-run-at:** 2026-05-29T19:30Z (post-PR399-merge + governance reconciliation). Origin/main HEAD: **9c4921d** (PR #399 squash-merge: test-suite green cleanup A/B/C). Code HEAD: 9c4921d. Production: SHA **da854e3 DEPLOYED** at C:\PZ (last verified deploy; production SHA NOT re-verifiable from Mac side this session — Windows-side `git -C C:\PZ rev-parse HEAD` check still outstanding). GATE 2: 1/3 open PRs (PR #370 pz-correction). PR #398 also merged 2026-05-29T19:18:51Z. TEST BASELINE: **85 PRE-EXISTING FAILURES** on merged main + 244/244 PZ golden (`make verify`) + 299/299 PR #399 affected tests + Issue #400 filed for remaining ~626 test backlog. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ATLAS-V2: Sprint 01 DEPLOYED; **Sprint 04 NOT STARTED — awaiting operator reassessment from reconciled baseline**. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). DEPLOY-AHEAD-OF-MERGE: no outstanding disclosure gaps. **2 NEW OPEN QUESTIONS** (OQ-NEW-8 production-SHA verification, OQ-NEW-9 Sprint 04 reassessment).
 
 ---
 
@@ -54,6 +54,68 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #399 — Test-suite green cleanup (2026-05-29, MERGED)
+
+**Date**: 2026-05-29T19:27:24Z (merge)
+**PR #399** — `test: test-suite green cleanup A/B/C (test+tooling; 2 UI copy strings)`
+**Merge SHA**: `9c4921d` (squash-merge to `origin/main`)
+**Source branch**: `fix/test-suite-green` (commits 7b1a6c3, 351bb99, 4013e53 squashed)
+
+**Diff scope (LOW risk, test-focused with minimal UI copy changes)**:
+- **9 test-only files** — repairs to dashboard source-grep tests and inventory stage2 wiring tests
+- **1 tooling file** — `service/app/tools/dashboard_route_audit.py` (additive: concat-URL strict-prefix matcher)
+- **1 production UI file** — `service/app/static/dashboard.html` (exactly 2 copy string changes: AWB placeholder `DHL-1234567890`→`1234567890`; ProformaReadinessCard confirm() prose removed literal `goods/add`, reworded to "live wFirma goods auto-register endpoint")
+
+**Merge-gate verification**:
+- **299 tests across 10 affected suites**: GREEN
+- **PZ regression**: 160/160 PASS
+- **Backend behavior**: NO CHANGE (real endpoint `/api/v1/wfirma/goods/auto-register/{batchId}` unchanged and gated)
+- **Write-safety guards**: NO GUARDS WEAKENED
+- **5 inventory live endpoints**: confirmed gated (require_api_key + inventory_state_engine.transition() + 409 WRONG_STATE)
+
+**Deploy status**: NO DEPLOY performed for PR #399 (static/test change; deploy remains held for 7-agent gate window). Production NOT updated with #399 yet.
+
+**GATE 2**: Open-PR count dropped from 3/3 to 1/3 after merge (PR #398 also merged same session at 19:18:51Z). Remaining open: PR #370 (pz-correction V2 sprint01).
+
+**GATE 4**: Issue #400 filed (GATE 4 salvage) — broad dashboard/inventory test backlog (~626 failures), classified in 3 categories: (1) ~349 foreign hardcoded-path FileNotFoundError, (2) Atlas-V2 shell-migration source-grep failures, (3) 5 server-dependent test_wfirma_reservation_create integration tests. Disposition: SCHEDULED as separate cleanup campaign. Out of scope for PR #399. Labels: testing, governance, follow-up.
+
+**Rollback**: `git revert 9c4921d --no-edit`
+
+---
+
+## PR #398 — Atlas-V2 Sprint 04 Documents V2 (2026-05-29, MERGED)
+
+**Date**: 2026-05-29T19:18:51Z (merge)
+**PR #398** — `feat(atlas-v2): Sprint 04 — read-only Documents V2 viewer`
+**Merge SHA**: `8f5f4f1` (squash-merge to `origin/main`)
+
+**Diff scope (Atlas-V2 Sprint 04 — read-only Documents V2 viewer)**:
+- **New file**: `service/app/static/documents-v2.html` (480 lines) — standalone V2 documents page with Atlas design system
+- **New file**: `service/tests/test_documents_v2_contract.py` (22 tests) — contract tests for documents V2 testids and structure
+- **Zero V1 changes** — maintains Lesson F V1-FREEZE discipline
+
+**Features delivered**:
+- Read-only document viewer for shipment document audit trail
+- Atlas design system (Plus Jakarta Sans, accent colors, consistent spacing)
+- Responsive layout with document cards and download actions
+- Backend integration via existing `/api/v1/dashboard/documents/audit/{batchId}` endpoint
+- 22/22 contract tests PASS
+
+**V2 Architecture compliance**:
+- Single-domain authority: documents/audit only
+- No cross-domain business logic
+- Backend-authoritative data rendering
+- Stateless component design
+- No forbidden write paths
+
+**Deploy status**: NO DEPLOY performed for PR #398 (V2 static page; deploy coordinated with Sprint 04 deployment window).
+
+**GATE 2**: PR #398 merged in sequence with PR #399 on same session, reducing open-PR count to 1/3.
+
+**Rollback**: `git revert 8f5f4f1 --no-edit`
+
+---
 
 ## PR #395 — Dashboard router /api/v1 alias-mount (2026-05-29, MERGED + RECONCILED)
 
