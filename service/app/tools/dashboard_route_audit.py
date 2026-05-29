@@ -34,6 +34,7 @@ class FrontendCall(NamedTuple):
     path:   str    # normalised path — ${…} → {param}, query stripped
     raw:    str    # original string from source (for display)
     line:   int
+    concat: bool = False   # URL was built by string concatenation ('/a/' + id + '/b')
 
 
 class BackendRoute(NamedTuple):
@@ -59,6 +60,10 @@ _METHOD_RE = re.compile(r"""\bmethod\s*:\s*['"]([A-Z]+)['"]""", re.IGNORECASE)
 
 # Guard against external URLs
 _EXTERNAL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+# A '+' (with optional whitespace) immediately after a fetch URL literal means
+# the URL is built by string concatenation: apiFetch('/a/' + id + '/b').
+_CONCAT_AFTER_RE = re.compile(r"^\s*\+")
 
 
 def _normalise(raw: str) -> str:
@@ -115,6 +120,8 @@ def extract_frontend_calls(html: str) -> List[FrontendCall]:
         # Look ahead from the URL's closing delimiter for a method option.
         # Stop at the next fetch/apiFetch call to avoid cross-call contamination.
         window = html[m.end(): m.end() + 220]
+        # Detect string-concatenation URL building before trimming the window.
+        is_concat = bool(_CONCAT_AFTER_RE.match(window))
         next_call = _NEXT_CALL_RE.search(window)
         if next_call:
             window = window[: next_call.start()]
@@ -124,6 +131,7 @@ def extract_frontend_calls(html: str) -> List[FrontendCall]:
             path=_normalise(raw),
             raw=raw,
             line=_lineno(html, m.start()),
+            concat=is_concat,
         ))
 
     # ── 2. href="/api/..." or href='/api/...' (static) ────────────────────────
@@ -228,6 +236,32 @@ def paths_compatible(fe_path: str, be_path: str) -> bool:
     return True
 
 
+def path_prefix_compatible(fe_path: str, be_path: str) -> bool:
+    """
+    Return True when fe_path is a leading path-prefix of be_path.
+
+    Used ONLY for string-concatenation calls, where the static extractor can see
+    just the leading literal:
+
+        apiFetch('/api/v1/finance/postings/' + encodeURIComponent(id) + '/breakdown')
+
+    yields the captured literal '/api/v1/finance/postings/'. That literal is a
+    genuine prefix of the real route /api/v1/finance/postings/{posting_id}/breakdown,
+    so the call resolves — it is not stale. Restricting this leniency to concat
+    calls keeps ordinary single-literal calls strictly matched.
+    """
+    fe_segs = _path_segments(fe_path)
+    be_segs = _path_segments(be_path)
+    if not fe_segs or len(fe_segs) >= len(be_segs):
+        return False   # must be a STRICT prefix (real route has more segments)
+    for fe, be in zip(fe_segs, be_segs):
+        if _is_param(fe) or _is_param(be):
+            continue
+        if fe != be:
+            return False
+    return True
+
+
 def find_match(fe: FrontendCall, backend: List[BackendRoute]) -> Optional[BackendRoute]:
     """Return the first backend route whose path (and optionally method) match."""
     path_matches: List[BackendRoute] = [
@@ -240,6 +274,18 @@ def find_match(fe: FrontendCall, backend: List[BackendRoute]) -> Optional[Backen
     # Path matched but method differs — still count as matched (route exists)
     if path_matches:
         return path_matches[0]
+    # Concatenation-built URLs ('/a/' + id + '/b'): the extractor only saw the
+    # leading literal. Match it as a strict path-prefix of a real route so the
+    # truncated capture is not mis-reported as stale. Scoped to concat calls.
+    if fe.concat:
+        prefix_matches = [
+            br for br in backend if path_prefix_compatible(fe.path, br.path)
+        ]
+        for br in prefix_matches:
+            if fe.method in br.methods:
+                return br
+        if prefix_matches:
+            return prefix_matches[0]
     return None
 
 
