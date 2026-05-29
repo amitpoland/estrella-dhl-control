@@ -21,7 +21,11 @@ def _inventory_page_body() -> str:
     # function/comment header. Bound on the next component header for
     # tight scope.
     start = src.index("function InventoryPage(")
-    end = src.index("function MasterDataPage(", start)
+    # Bound on the next sibling component (ClientKycModal) rather than
+    # MasterDataPage: a ClientKycModal component now sits between
+    # InventoryPage and MasterDataPage, and its own KYC address/carrier
+    # CRUD must not bleed into InventoryPage's write-allowlist scan.
+    end = src.index("function ClientKycModal(", start)
     return src[start:end]
 
 
@@ -85,27 +89,31 @@ def test_error_state_chip_present_and_isolated():
     assert 'data-testid="inventory-page"' in _src()
 
 
-def test_disabled_action_buttons_post_sample_activation():
-    # The toolbar placeholder array is rendered from a JSX template
-    # literal: `data-testid={`inventory-preview-action-${b.id}`}`. With
-    # Phase B.1 (Sample-out live) and Move stock live, only Goods-return
-    # and Return-to-producer remain backend-pending toolbar placeholders.
+def test_inventory_lifecycle_actions_are_live_not_disabled_placeholders():
+    """Phase B.2: the Phase B.1 disabled-placeholder toolbar array is retired.
+    Every lifecycle write (move-stock, sample-out, sample-return,
+    return-from-client, return-to-producer, return-from-producer) is now a
+    live, state-gated `_postSample` write in the piece drawer. Consignment is
+    the only remaining backend-pending surface and shows as a badge.
+
+    Supersedes the old test_disabled_action_buttons_post_sample_activation,
+    which pinned the now-removed disabled-placeholder contract."""
     body = _inventory_page_body()
-    assert "data-testid={`inventory-preview-action-${b.id}`}" in body, \
-        "Disabled-action testid template missing from InventoryPage"
-    for action_id in ("'goods_return'", "'return_prod'"):
-        assert f"id: {action_id}" in body, \
-            f"Backend-pending action id missing from source: {action_id}"
-    for action_id in ("'sample_out'", "'sample_return'", "'move_stock'"):
+    # Retired disabled-action placeholder template must stay gone.
+    assert "data-testid={`inventory-preview-action-${b.id}`}" not in body, \
+        "Retired disabled-action placeholder template re-introduced"
+    for action_id in ("'goods_return'", "'return_prod'", "'sample_out'",
+                      "'sample_return'", "'move_stock'"):
         assert f"id: {action_id}" not in body, \
-            f"Live action {action_id} must not remain in disabled placeholders"
-    # Remaining placeholders still carry disabled + cursor: not-allowed.
-    actions_block_start = body.index("Phase B.1 live")
-    actions_block_end = body.index("Lifecycle buckets", actions_block_start)
-    actions_block = body[actions_block_start:actions_block_end]
-    assert "disabled" in actions_block
-    assert 'aria-disabled="true"' in actions_block
-    assert "cursor: 'not-allowed'" in actions_block
+            f"Stale toolbar placeholder id {action_id} must not reappear"
+    # Live writes wired through the shared, state-gated _postSample helper.
+    for suffix in ("sample-out", "sample-return", "return-from-client",
+                   "return-to-producer", "return-from-producer"):
+        assert f"_postSample('{suffix}'" in body, \
+            f"Live lifecycle action _postSample('{suffix}') missing"
+    # Consignment is the only remaining backend-pending lifecycle surface.
+    assert 'data-testid="inventory-preview-pending-badge"' in body
+    assert "Consignment" in body
 
 
 def test_inventory_page_writes_match_sample_allowlist():

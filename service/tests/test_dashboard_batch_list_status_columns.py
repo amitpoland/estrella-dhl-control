@@ -12,13 +12,28 @@ from __future__ import annotations
 from pathlib import Path
 
 
-DASHBOARD = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html"
+DASHBOARD = (
+    Path(__file__).resolve().parent.parent / "app" / "static" / "dashboard.html"
+)
+
+
+SHIPMENT_DETAIL = (
+    Path(__file__).resolve().parent.parent / "app" / "static" / "shipment-detail.html"
 )
 
 
 def _src() -> str:
+    if not DASHBOARD.exists():
+        import pytest
+        pytest.skip(f"dashboard.html not found at {DASHBOARD}")
     return DASHBOARD.read_text(encoding="utf-8")
+
+
+def _detail_src() -> str:
+    if not SHIPMENT_DETAIL.exists():
+        import pytest
+        pytest.skip(f"shipment-detail.html not found at {SHIPMENT_DETAIL}")
+    return SHIPMENT_DETAIL.read_text(encoding="utf-8")
 
 
 # ── Endpoint wiring (must remain) ────────────────────────────────────────────
@@ -85,7 +100,10 @@ def test_overall_cell_remains_present_as_blocked_ready_indicator():
     the new layout must keep it AND give it a stable test id."""
     src = _src()
     assert 'data-testid="shipments-cell-overall"' in src
-    assert "<Badge status={row.overall} small />" in src
+    # Badge is bound to row.overall with the `small` variant. A `title`
+    # tooltip prop (action_reason) was later added after `small`, so match
+    # the stable prefix rather than the exact self-closing form.
+    assert "<Badge status={row.overall} small" in src
 
 
 # ── Missing-value handling ───────────────────────────────────────────────────
@@ -152,12 +170,15 @@ def test_dashboard_has_status_chip_helper_and_table_marker():
 
 
 def test_no_unrelated_endpoints_changed():
-    """Sanity: the change is UI-only. The endpoints we depend on are still
-    referenced by the same paths."""
+    """Sanity: the endpoints we depend on are still referenced (not deleted).
+    Under Atlas-V2 the per-shipment sales-linkage and wFirma reservation-preview
+    calls migrated from dashboard.html to shipment-detail.html; the batch-list
+    fetch stays on dashboard.html."""
     src = _src()
-    # Sales linkage
-    assert "/api/v1/sales/linkage/" in src
-    # wFirma reservation preview
-    assert "/api/v1/wfirma/reservation-preview/" in src
-    # Batch list
+    detail = _detail_src()
+    # Sales linkage (moved to the shipment-detail page)
+    assert "/api/v1/sales/linkage/" in detail
+    # wFirma reservation preview (moved to the shipment-detail page)
+    assert "/api/v1/wfirma/reservation-preview/" in detail
+    # Batch list (still the dashboard's own fetch)
     assert "/dashboard/batches?all=1" in src

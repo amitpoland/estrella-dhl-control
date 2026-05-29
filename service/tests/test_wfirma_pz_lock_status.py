@@ -215,11 +215,12 @@ def test_adopted_existing_source_label():
 
 def test_dashboard_html_contains_lock_status_banner():
     """
-    Static markup verification: dashboard.html includes the
+    Static markup verification: the PZ lock banner moved to
+    shipment-detail.html (Atlas-V2). It includes the
     `pz-lock-status-banner` testid, reads the four required fields, and
     exposes `data-can-create` / `data-can-adopt` gate attributes for tests.
     """
-    html = (Path(_svc) / "app" / "static" / "dashboard.html").read_text(encoding="utf-8")
+    html = (Path(_svc) / "app" / "static" / "shipment-detail.html").read_text(encoding="utf-8")
     # Banner element with stable test id
     assert 'data-testid="pz-lock-status-banner"' in html
     # Reads all four important pz_lock_status fields
@@ -241,9 +242,10 @@ def test_dashboard_buttons_use_lock_status_for_disabled_state():
     """
     The Create button must check `pzPreview.pz_lock_status.can_create`
     (with a fallback to legacy ad-hoc checks).  The Adopt button must check
-    `pzPreview.pz_lock_status.can_adopt`.
+    `pzPreview.pz_lock_status.can_adopt`.  (Buttons moved to
+    shipment-detail.html under Atlas-V2.)
     """
-    html = (Path(_svc) / "app" / "static" / "dashboard.html").read_text(encoding="utf-8")
+    html = (Path(_svc) / "app" / "static" / "shipment-detail.html").read_text(encoding="utf-8")
 
     # Create button — extract the JSX block following data-testid="btn-pz-create"
     m = re.search(r'data-testid="btn-pz-create"[\s\S]{0,1200}', html)

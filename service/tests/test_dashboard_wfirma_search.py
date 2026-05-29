@@ -13,12 +13,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-DASHBOARD = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html"
+DASHBOARD = (
+    Path(__file__).resolve().parent.parent / "app" / "static" / "dashboard.html"
 )
 
 
 def _src() -> str:
+    if not DASHBOARD.exists():
+        import pytest
+        pytest.skip(f"dashboard.html not found at {DASHBOARD}")
     return DASHBOARD.read_text(encoding="utf-8")
 
 

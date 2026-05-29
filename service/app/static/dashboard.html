@@ -8588,7 +8588,7 @@ function NewShipmentModal({ onClose, onCreated }) {
           {/* Row 1: AWB + Carrier */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <FormField label="AWB / Tracking Number" hint="Required">
-              <Inp value={awbNo} onChange={e => setAwbNo(e.target.value)} placeholder="e.g. DHL-1234567890" />
+              <Inp value={awbNo} onChange={e => setAwbNo(e.target.value)} placeholder="e.g. 1234567890" />
             </FormField>
             <FormField label="Carrier">
               <Sel value={carrier} onChange={e => setCarrier(e.target.value)}>
@@ -16625,7 +16625,7 @@ function ProformaReadinessCard({ batchId, onToast }) {
     })
   );
   const writeProducts = () => {
-    if (!confirm('Auto-register all missing product codes in wFirma? This calls live goods/add for each missing code.')) return;
+    if (!confirm('Auto-register all missing product codes in wFirma? This calls the live wFirma goods auto-register endpoint for each missing code.')) return;
     return runAction('Auto-register products', () =>
       apiFetch(`/api/v1/wfirma/goods/auto-register/${encodeURIComponent(batchId)}`, {
         method: 'POST',
