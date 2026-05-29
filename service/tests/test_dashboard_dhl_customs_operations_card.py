@@ -29,12 +29,19 @@ import pytest
 _HERE     = Path(__file__).resolve()
 _SVC_ROOT = _HERE.parent.parent
 _DASH     = _SVC_ROOT / "app" / "static" / "dashboard.html"
+_DETAIL   = _SVC_ROOT / "app" / "static" / "shipment-detail.html"
 
 
 def _src() -> str:
     if not _DASH.exists():
         pytest.skip("dashboard.html not found")
     return _DASH.read_text(encoding="utf-8")
+
+
+def _detail_src() -> str:
+    if not _DETAIL.exists():
+        pytest.skip("shipment-detail.html not found")
+    return _DETAIL.read_text(encoding="utf-8")
 
 
 _BLOCK_OPEN  = "UI-3.2b: cross-batch DHL & customs operations card"
@@ -408,7 +415,8 @@ def test_card_block_keeps_dhl_express_wording_in_title_area():
 # ── Prior UI-3.x surface preservation ─────────────────────────────────────
 
 def test_ui_3_1a_per_batch_badge_preserved():
-    src = _src()
+    # The per-batch lifecycle badge moved to shipment-detail.html.
+    src = _detail_src()
     assert 'data-testid="warehouse-inventory-lifecycle-badge"' in src
     assert "const lifecycleLabel" in src
 

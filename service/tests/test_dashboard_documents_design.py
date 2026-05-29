@@ -20,6 +20,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _SVC_ROOT = _HERE.parent
 _DASH = _SVC_ROOT / "app" / "static" / "dashboard.html"
+_DETAIL = _SVC_ROOT / "app" / "static" / "shipment-detail.html"
 
 
 def _src() -> str:
@@ -27,6 +28,13 @@ def _src() -> str:
         import pytest
         pytest.skip(f"dashboard.html not found at {_DASH}")
     return _DASH.read_text(encoding="utf-8")
+
+
+def _detail_src() -> str:
+    if not _DETAIL.exists():
+        import pytest
+        pytest.skip(f"shipment-detail.html not found at {_DETAIL}")
+    return _DETAIL.read_text(encoding="utf-8")
 
 
 # ── Live customs section preserved ─────────────────────────────────────────
@@ -210,9 +218,10 @@ def test_no_design_mock_client_names():
 # ── Existing real upload flows preserved (BatchDetailPage) ─────────────────
 
 def test_batch_detail_upload_handlers_intact():
-    src = _src()
-    # Real SAD upload flow exists in BatchDetailPage (per-batch, not this page)
-    # — verify by sampling the well-known refs
+    # BatchDetailPage's per-batch SAD upload flow now lives in
+    # shipment-detail.html (moved out of dashboard.html). Verify the
+    # well-known upload refs survived the move by sampling them there.
+    src = _detail_src()
     assert "sadRef" in src
     assert "dhlDocsRef" in src
     assert "agencyDocsRef" in src
