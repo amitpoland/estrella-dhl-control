@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Documents — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    :root {
+      --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+      --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+      --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+      --shadow: rgba(27,37,56,0.06); --shadow-heavy: rgba(27,37,56,0.16);
+      --accent: #B89968; --accent-light: #D4B884; --accent-text: #1B2538;
+      --accent-subtle: #F8EFD8; --accent-border: #CFB178;
+      --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+      --badge-blue-bg: #E8EFF8;   --badge-blue-text: #1A4A90;   --badge-blue-border: #AABEE0;
+      --badge-amber-bg: #FBF5E0;  --badge-amber-text: #805A00;  --badge-amber-border: #DEC870;
+      --badge-orange-bg: #FBF0E4; --badge-orange-text: #804000; --badge-orange-border: #DEB870;
+      --badge-green-bg: #E8F5EE;  --badge-green-text: #186838;  --badge-green-border: #96CCA8;
+      --badge-red-bg: #FBE8E6;    --badge-red-text: #902018;    --badge-red-border: #E0A8A0;
+      --badge-purple-bg: #EEE8F8; --badge-purple-text: #481898; --badge-purple-border: #BEA4E8;
+      --badge-accent-bg: #1E2D4A; --badge-accent-text: #C9A456; --badge-accent-border: #C9A456;
+      --sidebar-bg: #131C2E; --sidebar-border: #25334C;
+      --sidebar-active: #1F2A42; --sidebar-hover: #1A2438;
+      --sidebar-text: #F2EBD9; --sidebar-text-muted: #7C89A3; --sidebar-icon: #B89968;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+        --row-hover: #223040; --border: #2C3C54; --border-subtle: #243050;
+        --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+        --shadow: rgba(0,0,0,0.3); --shadow-heavy: rgba(0,0,0,0.5);
+        --accent: #D4AA5C; --accent-light: #ECC870; --accent-text: #111928;
+        --accent-subtle: #1E2808; --accent-border: #5A4A18;
+        --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+        --badge-blue-bg: #0E1E38;   --badge-blue-text: #80AAEE;   --badge-blue-border: #1E3A64;
+        --badge-amber-bg: #20180A;  --badge-amber-text: #E8C040;  --badge-amber-border: #584010;
+        --badge-orange-bg: #201008; --badge-orange-text: #E89860; --badge-orange-border: #582010;
+        --badge-green-bg: #0E2018;  --badge-green-text: #68CC88;  --badge-green-border: #1A4830;
+        --badge-red-bg: #200E10;    --badge-red-text: #EE8880;    --badge-red-border: #581018;
+        --badge-purple-bg: #160E28; --badge-purple-text: #AA88EE; --badge-purple-border: #341860;
+        --badge-accent-bg: #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border: #5A4A18;
+        --sidebar-bg: #0E1A30; --sidebar-border: #1A2840;
+        --sidebar-active: #1A2E48; --sidebar-hover: #162438;
+        --sidebar-text: #EEE8DC; --sidebar-text-muted: #566478; --sidebar-icon: #6A7A96;
+      }
+    }
+
+    body {
+      margin: 0; padding: 0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; font-size: 13px;
+    }
+
+    #root { display: flex; flex-direction: column; min-height: 100vh; }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+    }
+
+    /* Page layout */
+    .page-container {
+      display: flex; flex-direction: column; flex: 1;
+      padding: 16px; max-width: 1000px; margin: 0 auto;
+      gap: 16px; width: 100%;
+    }
+
+    .page-header {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px;
+    }
+
+    .back-link {
+      color: var(--accent); text-decoration: none; font-weight: 500;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .back-link:hover { color: var(--accent-light); }
+
+    /* Document rows */
+    .doc-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 10px 4px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .doc-row:last-child { border-bottom: none; }
+
+    .doc-row-left {
+      display: flex; align-items: center; gap: 10px; min-width: 0;
+    }
+    .doc-name {
+      font-size: 13px; color: var(--text); font-weight: 500;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      max-width: 360px;
+    }
+    .doc-kind {
+      font-size: 11px; color: var(--text-3); font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+
+    /* Document link button (read-only, opens in new tab) */
+    .doc-link {
+      color: var(--accent); text-decoration: none; font-size: 12px; font-weight: 600;
+      padding: 5px 10px; border-radius: 5px; border: 1px solid var(--accent-border);
+      background: var(--accent-subtle); white-space: nowrap;
+    }
+    .doc-link:hover { background: var(--accent-light); color: var(--accent-text); }
+
+    .doc-disabled {
+      font-size: 12px; color: var(--text-3); font-style: italic; white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React + Babel CDN -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- Shared layer — load order is the dependency order -->
+<script type="text/babel" data-presets="env,react" src="/dashboard/dashboard-shared.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-components.js"></script>
+
+<!-- Documents V2 page -->
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+
+  // ── URL params ─────────────────────────────────────────────────────────────
+  const _sp = new URLSearchParams(window.location.search);
+  const URL_BATCH_ID = (_sp.get('batch_id') || '').trim();
+
+  // ── Destructure shared atoms ───────────────────────────────────────────────
+  const {
+    Badge, Card, Btn, SessionBanner,
+    SectionHeader, CompactTable, EmptyState,
+    apiFetch
+  } = window.EstrellaShared;
+
+  // ── Single data source: the real dashboard batch-detail endpoint ────────────
+  //   GET /api/v1/dashboard/batches/{batch_id}  (PR #395 alias-mount)
+  //   returns: { batch_id, awb, carrier, status, timestamp, timeline: [...],
+  //              files_detail: { source_files: {invoices, sad, awb}, files: {...} } }
+  //   This page is READ-ONLY. It performs no writes, no generation, no PZ/wFirma/DHL
+  //   mutation. It renders document availability + links the backend already provides.
+
+  function useBatchDetail(batchId) {
+    const [data, setData] = React.useState(null);
+    const [loading, setLoading] = React.useState(false);
+    const [error, setError] = React.useState(null);
+
+    const load = React.useCallback(async () => {
+      if (!batchId) return;
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await apiFetch(`/api/v1/dashboard/batches/${encodeURIComponent(batchId)}`);
+        setData(result);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }, [batchId]);
+
+    React.useEffect(() => { load(); }, [load]);
+
+    return { data, loading, error, reload: load };
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────────────
+
+  // A file descriptor from the backend has shape {name, url, exists, stale?}.
+  // Map it to an availability badge without inventing state.
+  function fileBadge(file) {
+    if (!file || !file.exists) return { status: 'Missing', label: 'Missing' };
+    if (file.stale) return { status: 'Stale', label: 'Stale' };
+    return { status: 'Available', label: 'Available' };
+  }
+
+  // Read-only open-in-new-tab label depends on extension; no inline render.
+  function openLabel(name) {
+    const lower = (name || '').toLowerCase();
+    if (lower.endsWith('.pdf')) return 'View PDF';
+    if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) return 'Download XLSX';
+    if (lower.endsWith('.json')) return 'View JSON';
+    return 'Download';
+  }
+
+  // ── DocumentRow ────────────────────────────────────────────────────────────
+
+  function DocumentRow({ kind, file, testid }) {
+    if (!file) return null;
+    const name = file.name || '—';
+    const badge = fileBadge(file);
+    const canOpen = !!(file.exists && file.url);
+
+    return (
+      <div className="doc-row" data-testid={testid}>
+        <div className="doc-row-left">
+          {kind && <span className="doc-kind" data-testid={`${testid}-kind`}>{kind}</span>}
+          <Badge status={badge.status} label={badge.label} small />
+          <span className="doc-name" title={name}>{name}</span>
+        </div>
+        {canOpen ? (
+          <a
+            href={file.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="doc-link"
+            data-testid={`${testid}-open`}
+          >
+            {openLabel(name)} ↗
+          </a>
+        ) : (
+          <span className="doc-disabled" data-testid={`${testid}-unavailable`}>Not available</span>
+        )}
+      </div>
+    );
+  }
+
+  // ── Sections ─────────────────────────────────────────────────────────────────
+
+  function CustomsDocumentsSection({ filesDetail }) {
+    const sf = (filesDetail && filesDetail.source_files) || {};
+    const sad = Array.isArray(sf.sad) ? sf.sad : [];
+    const awb = Array.isArray(sf.awb) ? sf.awb : [];
+    const total = sad.length + awb.length;
+
+    return (
+      <Card style={{ padding: '16px 20px' }}>
+        <div data-testid="customs-documents-section">
+          <SectionHeader label="Customs Documents" />
+          {total === 0 ? (
+            <EmptyState state="empty" message="No customs documents (SAD / AWB) uploaded for this shipment." />
+          ) : (
+            <div data-testid="customs-documents-list">
+              {sad.map((f, i) => (
+                <DocumentRow key={`sad-${i}`} kind="SAD" file={f} testid={`customs-doc-sad-${i}`} />
+              ))}
+              {awb.map((f, i) => (
+                <DocumentRow key={`awb-${i}`} kind="AWB" file={f} testid={`customs-doc-awb-${i}`} />
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  }
+
+  function CommercialDocumentsSection({ filesDetail }) {
+    const sf = (filesDetail && filesDetail.source_files) || {};
+    const invoices = Array.isArray(sf.invoices) ? sf.invoices : [];
+
+    return (
+      <Card style={{ padding: '16px 20px' }}>
+        <div data-testid="commercial-documents-section">
+          <SectionHeader label="Commercial Documents" />
+          {invoices.length === 0 ? (
+            <EmptyState state="empty" message="No commercial documents (invoices) uploaded for this shipment." />
+          ) : (
+            <div data-testid="commercial-documents-list">
+              {invoices.map((f, i) => (
+                <DocumentRow key={`inv-${i}`} kind="Invoice" file={f} testid={`commercial-doc-invoice-${i}`} />
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  }
+
+  function GeneratedDocumentsSection({ filesDetail }) {
+    const files = (filesDetail && filesDetail.files) || {};
+    const rows = [
+      { key: 'pz_pdf',      kind: 'PZ PDF',       file: files.pz_pdf },
+      { key: 'calc_xlsx',   kind: 'Calc XLSX',    file: files.calc_xlsx },
+      { key: 'audit_en',    kind: 'Audit (EN)',   file: files.audit_en },
+      { key: 'audit_pl',    kind: 'Audit (PL)',   file: files.audit_pl },
+      { key: 'audit_memo',  kind: 'Audit Memo',   file: files.audit_memo },
+      { key: 'corrections', kind: 'Corrections',  file: files.corrections },
+    ];
+    const present = rows.filter(r => r.file && r.file.exists);
+
+    return (
+      <Card style={{ padding: '16px 20px' }}>
+        <div data-testid="generated-documents-section">
+          <SectionHeader label="Generated Documents" />
+          {present.length === 0 ? (
+            <EmptyState state="empty" message="No generated documents yet — run PZ processing to produce them." />
+          ) : (
+            <div data-testid="generated-documents-list">
+              {present.map((r) => (
+                <DocumentRow key={r.key} kind={r.kind} file={r.file} testid={`generated-doc-${r.key}`} />
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  }
+
+  function AuditTrailSection({ timeline }) {
+    const events = Array.isArray(timeline) ? timeline : [];
+
+    const cols = [
+      { key: 'event',  label: 'Action' },
+      { key: 'ts',     label: 'Timestamp' },
+      { key: 'actor',  label: 'Operator' },
+      { key: 'note',   label: 'Note' },
+    ];
+
+    const rows = events.map((e) => {
+      const detail = e && e.detail;
+      let note = '';
+      if (detail && typeof detail === 'object') {
+        try { note = Object.entries(detail).map(([k, v]) => `${k}: ${v}`).join(', '); }
+        catch (_err) { note = ''; }
+      } else if (typeof detail === 'string') {
+        note = detail;
+      }
+      return {
+        event: (e && e.event) || '—',
+        ts: e && e.ts ? new Date(e.ts).toLocaleString() : '—',
+        actor: (e && (e.actor || e.trigger_source)) || '—',
+        note: note || '—',
+      };
+    });
+
+    return (
+      <Card style={{ padding: '16px 20px' }}>
+        <div data-testid="audit-trail-section">
+          <SectionHeader label="Audit Trail" />
+          {rows.length === 0 ? (
+            <EmptyState state="empty" message="No audit-trail events recorded for this shipment." />
+          ) : (
+            <div data-testid="audit-trail-table">
+              <CompactTable
+                cols={cols}
+                rows={rows}
+                emptyLabel="No audit-trail events recorded."
+              />
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  }
+
+  function BatchHeader({ batch }) {
+    if (!batch) return null;
+    const awb = batch.awb || batch.tracking_no || '—';
+    const carrier = batch.carrier || 'Unknown';
+    const status = batch.status || 'draft';
+    const timestamp = batch.timestamp ? new Date(batch.timestamp).toLocaleString() : '—';
+
+    return (
+      <Card style={{ padding: '16px 20px' }}>
+        <div data-testid="batch-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
+              <span data-testid="batch-awb">AWB: {awb}</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span data-testid="carrier-badge"><Badge status={carrier} /></span>
+              <span style={{ fontSize: 12, color: 'var(--text-2)' }}>Shipment date: {timestamp}</span>
+            </div>
+          </div>
+          <div><Badge status={status} /></div>
+        </div>
+      </Card>
+    );
+  }
+
+  // ── Main Component ──────────────────────────────────────────────────────────
+
+  function DocumentsV2Root() {
+    const [sessionError, setSessionError] = React.useState(null);
+    const batchHook = useBatchDetail(URL_BATCH_ID);
+
+    React.useEffect(() => {
+      const err = batchHook.error;
+      if (err && (err.includes('Session expired') || err.includes('401') || err.includes('403'))) {
+        setSessionError({ type: 'auth', message: err });
+      }
+    }, [batchHook.error]);
+
+    // Missing batch_id param
+    if (!URL_BATCH_ID) {
+      return (
+        <div className="page-container" data-testid="documents-v2-root">
+          <EmptyState
+            state="error"
+            message="Missing batch_id in URL. Use ?batch_id=SHIPMENT_..."
+          />
+        </div>
+      );
+    }
+
+    if (sessionError) {
+      return (
+        <div className="page-container" data-testid="documents-v2-root">
+          <SessionBanner type={sessionError.type} onDismiss={() => setSessionError(null)} />
+        </div>
+      );
+    }
+
+    if (batchHook.error && batchHook.error.includes('404')) {
+      return (
+        <div className="page-container" data-testid="documents-v2-root">
+          <EmptyState state="error" message="Shipment not found." />
+        </div>
+      );
+    }
+
+    const batch = batchHook.data;
+    const filesDetail = batch && batch.files_detail;
+    const timeline = batch && batch.timeline;
+
+    return (
+      <div className="page-container" data-testid="documents-v2-root">
+        {/* Page Header */}
+        <div className="page-header">
+          <a href="/dashboard/" className="back-link" data-testid="back-to-dashboard-link">
+            ← Back to Dashboard
+          </a>
+          {batch && (
+            <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
+              Batch ID: {batch.batch_id}
+            </div>
+          )}
+        </div>
+
+        {/* Loading state */}
+        {batchHook.loading && (
+          <div style={{ textAlign: 'center', padding: 40 }} data-testid="documents-loading">
+            <span className="spinner" />
+            <span style={{ marginLeft: 8, color: 'var(--text-3)' }}>Loading documents...</span>
+          </div>
+        )}
+
+        {/* Main content */}
+        {batch && (
+          <>
+            <BatchHeader batch={batch} />
+            <CustomsDocumentsSection filesDetail={filesDetail} />
+            <CommercialDocumentsSection filesDetail={filesDetail} />
+            <GeneratedDocumentsSection filesDetail={filesDetail} />
+            <AuditTrailSection timeline={timeline} />
+          </>
+        )}
+      </div>
+    );
+  }
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+
+  const container = document.getElementById('root');
+  const root = ReactDOM.createRoot(container);
+  root.render(<DocumentsV2Root />);
+
+})();
+</script>
+</body>
+</html>
