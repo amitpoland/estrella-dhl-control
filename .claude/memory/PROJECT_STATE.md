@@ -4,7 +4,7 @@ Source of truth for the current project execution state. Read this file at the s
 
 Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-28 (PR #393 carrier reference integrity + GATE 4 Issue #394).
 
-**Last-run-at:** 2026-05-28T22:35Z (post-PR393-merge). Origin/main HEAD: **bc22c56** (PR #393 squash-merge: carrier reference integrity update). Code HEAD: bc22c56. Production: SHA **da854e3 DEPLOYED** at C:\PZ (production deploy of #390 DEFERRED to controlled step). GATE 2: 1/3 open PRs (PR #370 pz-correction). TEST BASELINE: **85 PRE-EXISTING FAILURES** on merged main (NOT caused by #390) + 160/160 PZ golden + 381/381 carrier green + 583/583 #390-authored tests. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ATLAS-V2 SPRINT 01: DEPLOYED — Sprint 02 UNBLOCKED (pending operator directive). COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). **3 NEW OPEN QUESTIONS** from #390 merge (85 main failures + 2 GATE 4 salvage findings).
+**Last-run-at:** 2026-05-29T09:00Z (post-PR395-merge + governance reconciliation). Origin/main HEAD: **79da306** (PR #395 squash-merge: alias-mount dashboard router under /api/v1 so V2 + dashboard.html resolve). Code HEAD: 79da306. Production: SHA **da854e3 DEPLOYED** at C:\PZ (last verified deploy; production SHA NOT re-verifiable from Mac side this session — Windows-side `git -C C:\PZ rev-parse HEAD` check still outstanding). GATE 2: 1/3 open PRs (PR #370 pz-correction). TEST BASELINE: **85 PRE-EXISTING FAILURES** on merged main + 244/244 PZ golden (`make verify`) + 381/381 carrier green + 27/27 #395 contract tests. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ATLAS-V2: Sprint 01 DEPLOYED; **Sprint 04 NOT STARTED — awaiting operator reassessment from reconciled baseline**. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). DEPLOY-AHEAD-OF-MERGE: PR #395 repository-authority reconciliation COMPLETE at content level (085eb789 → squash 79da306 on origin/main); no on-disk #395 deploy disclosure found in `local-commit-deploys.jsonl` or any scorecard. **2 NEW OPEN QUESTIONS** (OQ-NEW-8 production-SHA verification, OQ-NEW-9 Sprint 04 reassessment).
 
 ---
 
@@ -54,6 +54,35 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 ---
 
 # FACTS
+
+## PR #395 — Dashboard router /api/v1 alias-mount (2026-05-29, MERGED + RECONCILED)
+
+**Date**: 2026-05-29T08:51:26Z (merge), 2026-05-29T09:00Z (governance reconciliation)
+**PR #395** — `fix: alias-mount dashboard router under /api/v1 so V2 + dashboard.html resolve`
+**Merge SHA**: `79da306` (squash-merge to `origin/main`)
+**Source branch HEAD**: `085eb789`
+**Merge-base**: `7864bd7` (PR #391)
+
+**Diff scope (additive, zero-overlap)**:
+- `service/app/main.py` — +11 lines: mounts the EXISTING dashboard router under an ADDITIONAL `/api/v1` prefix. No route logic changed; no existing mount removed. 31 `/api/v1/dashboard/*` routes confirmed mounted via import smoke.
+- `service/tests/test_shipment_v2_contract.py` — +93 lines: 27 new contract tests. **27/27 PASS.**
+
+**Pre-merge verification**:
+- Dry-run merge: CLEAN (no conflicts; no newer conflicting commits landed since the last gate)
+- Mergeable state: CLEAN
+- 27/27 contract tests pass; import smoke = 31 `/api/v1/dashboard/*` routes mounted
+
+**GATE 2**: 1/3 open PRs after merge (only PR #370 pz-correction remains open).
+
+**Deploy-ahead-of-merge reconciliation (Lesson D)**:
+- Operator directive: "Merge PR #395 → update PROJECT_STATE → stop and reassess Sprint 04 from the reconciled baseline."
+- **HONEST FINDING**: No on-disk record of any #395 production deploy exists — NO entry in `.claude/memory/local-commit-deploys.jsonl` (last entries: 7392be1 RESOLVED, 5c19c1c MERGED, 4361d29 MERGED — none for #395/085eb789), NO PROJECT_STATE production-SHA bump, NO scorecard. Therefore there was no recorded LOCAL-COMMIT-ONLY deploy exception to formally close for #395.
+- **Repository-authority reconciliation IS complete**: 085eb789 content is now on origin/main via squash `79da306`. The repository is the authority for #395 content.
+- **Still outstanding (OQ-NEW-8)**: production SHA at Windows `C:\PZ` cannot be verified from the Mac side — `git -C C:\PZ rev-parse HEAD` must be run Windows-side to confirm production lineage matches merged `79da306`.
+
+**Rollback**: `git revert 79da306 --no-edit` (additive change; revert restores single-prefix mount).
+
+---
 
 ## Atlas-V2 Sprint 01 — Deploy to Production (2026-05-28, DEPLOYED)
 
@@ -3461,6 +3490,22 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 - ~~**Question**: What disposition for the git stash "wip-stale-carrier-and-unrelated-2026-05-28" on branch atlas-v2/sprint-03-shipment-v2?~~
 - **Resolution (2026-05-28)**: `wfirma_capabilities.py` and `io.py` changes from the stash were re-applied directly to `main` and committed as `24a9523` (BOM hardening + capabilities fix). The stash items `tmp_contractor_lookup.py`, `tmp_supplier_diag.py`, `tmp_wfirma_pz_fetch.py` are diagnostic temporaries — safe to discard. Stash can be dropped.
+
+## OQ-NEW-8 -- PR #395 Production SHA Verification (NEW 2026-05-29)
+
+- **Question**: Does the production SHA deployed at Windows `C:\PZ` match the merged `79da306` lineage? The Mac side cannot read the Windows working tree.
+- **Answerer**: Operator (or Windows-side session) — run `git -C C:\PZ rev-parse HEAD` and compare to merged lineage; confirm `/api/v1/dashboard/*` routes resolve in production.
+- **Context**: PR #395 merged to origin/main as `79da306` (additive alias-mount). Repository-authority reconciliation is complete at content level. Production SHA last verified as `da854e3` (pre-#395). No #395 deploy disclosure exists in `local-commit-deploys.jsonl`, so it is unknown whether #395 content is yet on production.
+- **Impact if left unanswered**: It remains unverified whether dashboard.html + V2 pages resolve their `/api/v1/dashboard/*` calls in production. If production predates #395, those calls 404 until a deploy lands.
+- **Verification target**: `git -C "C:\PZ" rev-parse HEAD` == `79da306` (or a descendant) AND `GET https://pz.estrellajewels.eu/api/v1/dashboard/...` resolves 200.
+
+## OQ-NEW-9 -- Sprint 04 Reassessment from Reconciled Baseline (NEW 2026-05-29)
+
+- **Question**: With PR #395 merged and PROJECT_STATE reconciled, should Atlas-V2 Sprint 04 now begin, and with what scope?
+- **Answerer**: Operator — per directive: "stop and reassess Sprint 04 from the reconciled baseline."
+- **Context**: Operator explicitly sequenced: merge #395 → update PROJECT_STATE → STOP → reassess. Sprint 04 is NOT started. Task #11 (`test_pz_regression.py --e2e`) is explicitly DEFERRED until after reconciliation (operator: "I would not prioritize Task #11 before #395 is merged. That task can be run from a reconciled state afterward.").
+- **Impact if left unanswered**: Atlas-V2 campaign pauses at the reconciled baseline — a safe stop point. No production risk; no open implementation work proceeds without operator go-ahead.
+- **Next operational step**: Operator reviews this reconciled baseline and either (a) authorizes Sprint 04, or (b) authorizes Task #11 e2e run, or (c) redirects.
 
 ---
 
