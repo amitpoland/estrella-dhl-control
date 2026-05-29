@@ -84,6 +84,26 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 
 ---
 
+## PR #389 — Atlas-V2 Sprint 03 Shipment V2 (2026-05-28, MERGED)
+
+**Date**: 2026-05-28T19:45Z (merge)
+**PR #389** — `feat(atlas-v2): Sprint 03 — Shipment V2 pipeline view`
+**Merge SHA**: `c08a383` (merge commit to `origin/main`)
+
+**Diff scope (Atlas-V2 Sprint 03 — shipment V2 pipeline view)**:
+- Atlas-V2 Sprint 03 implementation delivering shipment V2 pipeline view functionality
+- Authenticated smoke test initially failed ("Shipment not found", 404 on `/api/v1/dashboard/*`)
+- Resolved by subsequent PR #395 alias-mount
+- Authenticated re-smoke subsequently PASSED
+
+**Sprint 03 status**: CLOSED (operator authoritative 2026-05-29)
+
+**Deploy status**: Production deployment completed successfully after PR #395 resolution
+
+**Rollback**: `git revert c08a383 --no-edit`
+
+---
+
 ## PR #398 — Atlas-V2 Sprint 04 Documents V2 (2026-05-29, MERGED)
 
 **Date**: 2026-05-29T19:18:51Z (merge)
@@ -109,11 +129,23 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 - Stateless component design
 - No forbidden write paths
 
-**Deploy status**: NO DEPLOY performed for PR #398 (V2 static page; deploy coordinated with Sprint 04 deployment window).
+- **Description drift corrected**: this merge note originally stated "22 tests" and endpoint "`/api/v1/dashboard/documents/audit/{batchId}`" — actual file contains 20 contract tests and the file's sole endpoint is `GET /api/v1/dashboard/batches/{batch_id}` (verified by grep of deployed file, line 172). Deploy was verified against the real endpoint.
 
 **GATE 2**: PR #398 merged in sequence with PR #399 on same session, reducing open-PR count to 1/3.
 
-**Rollback**: `git revert 8f5f4f1 --no-edit`
+**Deploy status (2026-05-29 ~21:50)**: DEPLOYED TO PRODUCTION. Static-only single-file deploy: `service/app/static/documents-v2.html` → `C:\PZ\app\static\documents-v2.html` (Copy-Item; no robocopy /MIR; no engine sync; no PZService restart).
+
+**7-agent deploy gate**: Unanimous GO before write — git-diff CLEAR, backend-impact CLEAR, persistence CLEAR, security CLEAR, QA CLEAR (PZ regression 160/160, carrier 381/381, #398 contract 20/20), release-manager GO, lead-coordinator READY-TO-DEPLOY.
+
+**Production base resolution**: C:\PZ is robocopy-deployed (NO .git); git rev-parse cannot return SHA. Resolved by content-fingerprint: #395 alias mount present in C:\PZ\app\main.py (=55a1af2-equiv, past da854e3); documents-v2.html was absent pre-deploy → additive deploy.
+
+**Post-deploy smoke**: PASS — deployed sha256 matched source (9D379DF6…); /api/v1/health 200 (env=prod); /dashboard/documents-v2.html?batch_id=… 200 w/ markers; data dependency /api/v1/dashboard/batches/{batch_id} (#395 alias — the file's ONLY endpoint) 200.
+
+**Scorecard**: `.claude/memory/scorecards/2026-05-29-pr398-sprint04-documents-v2-deploy.md` — 7 agents, all EXEMPLARY (29-32/35), zero NEEDS-TUNING/UNRELIABLE (no GATE 4 disposition required). Verified on disk (9299 bytes).
+
+**Backup dir**: `C:\PZ\app\bak\sprint04_documents_v2_20260529_215042` (empty — target was absent pre-deploy).
+
+**Rollback (code)**: `git revert 8f5f4f1 --no-edit` · **Rollback (deploy)**: `Remove-Item "C:\PZ\app\static\documents-v2.html" -Force`
 
 ---
 
@@ -956,6 +988,7 @@ Remove 6 pilot `.env` lines → restart PZService → confirm `active_provider=n
 
 ## RULE 6 visibility entries (scorecards)
 
+- **2026-05-29** — Scorecard recorded: `.claude/memory/scorecards/2026-05-29-pr398-sprint04-documents-v2-deploy.md` — observer: `agent-performance-observer` RULE 2 auto-fire. PR #398 Atlas-V2 Sprint 04 static file production deploy. 7 agents scored, ALL EXEMPLARY (29-32/35). Zero NEEDS-TUNING/UNRELIABLE verdicts (no GATE 4 disposition required). File confirmed on disk (9299 bytes).
 - **2026-05-28** — Scorecard recorded: `.claude/memory/scorecards/2026-05-28-compliance-resolver-production-rollout.md` — observer: `agent-performance-observer` RULE 2 auto-fire. Compliance Intelligence Resolver — Production Rollout campaign. 7 agents scored: 6 EXEMPLARY (natural-language-intake, gap-detection, testing-verification, backend-safety-reviewer, deployment-windows-ops, flow-context-keeper), 1 ACCEPTABLE (browser-verifier — GATE 5 substitution disclosure gap, Issue #387 open). File confirmed on disk.
 - **2026-05-28** — Scorecard recorded: `.claude/memory/scorecards/2026-05-28-pr379-supplier-resolution.md` — observer: `agent-performance-observer` RULE 2 auto-fire. PR #379 per-shipment supplier resolution. 9 agents scored. Deploy coordinator premature-GO caught and corrected. MERGED AND DEPLOYED. File confirmed on disk.
 - **2026-05-26** — Scorecard pending: `.claude/memory/scorecards/2026-05-26-pr374-deploy-followup-status-v2.md` — observer: `agent-performance-observer` (RULE 2 auto-fire pending post-PR-#374). PR #374 DHL Follow-up Automation Status V2 deployment campaign. File path placeholder (RULE 6 requirement).
@@ -2412,7 +2445,8 @@ Expected: synthetic=true, source="audit.tracking", total=30, counts.PURCHASE_TRA
 - **GATE 2: 0 open PRs** as of Campaign 9 close
 
 ## Current origin/main HEAD
-- **2026-05-26** — `b71fbb9` refactor(inbox): replace DHL automation surface with navigation bridge (Lesson F) — **origin/main HEAD (2026-05-26)**
+- **2026-05-29** — `9c4921d` test: test-suite green cleanup A/B/C (test+tooling; 2 UI copy strings) (#399) — **origin/main HEAD (2026-05-29)**
+- **2026-05-29** — `8f5f4f1` feat(atlas-v2): Sprint 04 — read-only Documents V2 viewer (#398) — **prior to #399 merge**
 - **2026-05-26** — `144f42e` feat(inbox): surface DHL automation status and shipment modes (#376) — **superseded by Lesson F refactor**
 - ~~**2026-05-23** — `fe0ab30` Phase 3A AI safety patch — enforce ai_parser_enabled flag at service level~~ — **prior origin/main HEAD**
 - **2026-05-20** — `3dd5243` C21A follow-up — fix: 3 observer-identified error divs in WorkflowCard/CN panel — **prior origin/main HEAD**
@@ -3331,8 +3365,8 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Issue #378 wFirma Product Gate Bug Fix** — Remove `_guard_wfirma_export(audit)` from `wfirma_products_resolve()` and `wfirma_products_sync_names()` functions (routes_wfirma.py lines ~1654, ~2045). Target: targeted bug fix allowing product operations when WFIRMA_CREATE_PRODUCT_ALLOWED=true regardless of SAD/ZC429 state. Gating: Issue filed, simple targeted fix.
-2. **PZ correction workflow suppression (operator action)** — RECOMMENDED: operator calls `POST /api/v1/pz/lineage/SHIPMENT_4789974092_2026-05_999deef1/correction-suppress` to close the correction workflow cleanly. Gate 8 permanently blocks automated push; suppression is the correct closure. Optional pre-step: manually update product codes in wFirma PZ 9/5/2026 if needed.
+1. **Complete Atlas V2 Sprint 05** — target: operator to fire next sprint from atlas-v2 campaign — gating: Sprint 04 deployed (✓ completed 2026-05-29) + authenticated browser verification (pending GATE 6) + sprint file `.claude/campaigns/atlas-v2/sprint-05-*.md` execution
+2. **Issue #378 wFirma Product Gate Bug Fix** — Remove `_guard_wfirma_export(audit)` from `wfirma_products_resolve()` and `wfirma_products_sync_names()` functions (routes_wfirma.py lines ~1654, ~2045). Target: targeted bug fix allowing product operations when WFIRMA_CREATE_PRODUCT_ALLOWED=true regardless of SAD/ZC429 state. Gating: Issue filed, simple targeted fix.
 3. **PR-C: DHL followup auto-send flag flip (operator decision)** — Set `DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true` in C:\PZ\.env + restart PZService to enable actual auto-sends. Code deployed (b71fbb9), all guards verified, idempotency tested. Target: operator decision when ready for live sends. Gating: none (deployment clean, all features flag-OFF safe).
 
 **DEPLOY-AGENT-REGISTRATION-REPAIR COMPLETE (2026-05-25, SHA 4366b0f)**: All 7 deploy agent files now have valid YAML frontmatter and are registered as dispatchable subagents. Names: deploy-lead-coordinator, deploy-git-diff-reviewer, deploy-backend-impact-reviewer, deploy-persistence-storage-reviewer, deploy-security-reviewer, deploy-qa-reviewer, deploy-release-manager. Tools: Read, Grep, Glob (review-only). Takes effect in next fresh Claude Code session (Lesson B). OQ6 resolved — see below.
@@ -3354,11 +3388,6 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **OQ4 (1,033 pre-existing test failures)**: → ISSUE #366 filed on GitHub (SCHEDULED triage)  
 - **OQ6 (GATE 5 agent substitution disclosure)**: → SCHEDULED — process rule added: future implementation sessions continuing from prior context MUST fire gap-detection + reviewer-challenge before any code change
 
-## Next 3 actions in queue
-
-1. **Monitor PR #370 progress** — target: merge `feat/pz-correction-v2-sprint01` branch — gating: Sprint 01 B completion + 7-agent gate PASS + operator review + GATE 2 compliance (currently 1/3 open PRs)
-2. **Complete Atlas V2 Sprint 02** — target: milestone completion by operator directive — gating: Sprint 01 merged + `.claude/campaigns/atlas-v2/sprint-02-*.md` sprint file execution
-3. **Evaluate DHL automation SMTP enablement** — target: operator decision on AUTO_SEND_* flags — gating: development phase observation complete + operator approval for external email automation
 
 ## Completed actions (Campaign 8, 2026-05-19)
 - ~~**Windows deploy**~~ — **DONE 2026-05-19**: Campaign 8 deploy complete. Windows HEAD = `7392be1` (32d6a8f + V1/V2/V3). All smoke checks PASS. See "Campaign 8 deploy smoke results" above. Deployment maturity: standard sequence — future static/UI changes are routine, not campaigns. Operational stance: ops/perf/UX only.
@@ -3433,6 +3462,14 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 ## OQ8 -- Post-flag-flip: First auto-send window validation (NEW 2026-05-26)
 
 - **Question**: After PR-C enabled, what specific validations are needed for the first real auto-send trigger in production?
+
+## OQ10 -- PR #398 Sprint 04 GATE 6 browser verification (NEW 2026-05-29)
+
+- **Question**: Authenticated browser visual confirmation of documents-v2.html pending (source docs render / generated docs render / audit trail renders / links open backend file URLs)?
+- **Answerer**: Operator with logged-in session or browser-verifier with credentials
+- **Context**: PR #398 deployed successfully to production (2026-05-29 ~21:50), HTTP-level smoke passed, data endpoint verified, but full visual render needs authenticated session
+- **Impact if left unanswered**: Atlas V2 Sprint 05 initiation may be premature without visual confirmation that deployed documents viewer works end-to-end
+- **Preconditions met**: Static file deployed ✅, endpoints responding ✅, smoke tests passed ✅
 - **Answerer**: Next session can self-resolve via production observation
 - **Context**: Need to confirm idempotency key persistence, suppression buckets work correctly, AI enhancement fallback functions, SLA triggers fire as expected
 - **Impact if unanswered**: First production sends may reveal edge cases not caught in testing; automated follow-up reliability unknown until live validation
@@ -3568,6 +3605,23 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Context**: Operator explicitly sequenced: merge #395 → update PROJECT_STATE → STOP → reassess. Sprint 04 is NOT started. Task #11 (`test_pz_regression.py --e2e`) is explicitly DEFERRED until after reconciliation (operator: "I would not prioritize Task #11 before #395 is merged. That task can be run from a reconciled state afterward.").
 - **Impact if left unanswered**: Atlas-V2 campaign pauses at the reconciled baseline — a safe stop point. No production risk; no open implementation work proceeds without operator go-ahead.
 - **Next operational step**: Operator reviews this reconciled baseline and either (a) authorizes Sprint 04, or (b) authorizes Task #11 e2e run, or (c) redirects.
+
+## OQ-NEW-396 -- shipment-v2 Documents card always empty (NEW 2026-05-29)
+
+- **Question**: shipment-v2 Documents card always empty — wrong `files_detail` keys and download URL form.
+- **Answerer**: future implementation session
+- **Context**: shipment-v2 Documents card uses non-existent `files_detail` keys (`sad_pdf`/`zc429_pdf`/`packing_list`); real shape is `{source_files, files}` with per-entry `.url`. Download URL form `/api/v1/dashboard/batches/{id}/files/{type}` returns 405. 15-file evidence batch shows "No documents available".
+- **Impact if left unanswered**: shipment-v2 Documents section stays broken
+- **Disposition**: GATE 4 ISSUE (#396), SCHEDULED
+
+## OQ-NEW-397 -- production `C:\PZ\app` drifted 5 files ahead of recorded SHA (NEW 2026-05-29)
+
+- **Question**: production `C:\PZ\app` drifted 5 files ahead of recorded SHA `7864bd7` — reconcile deployed state.
+- **Answerer**: operator
+- **Context**: 5 drifted files — routes_dashboard.py, audit_persist.py, wfirma_capabilities.py, static/shipment-detail.html, utils/io.py. Production state no longer maps cleanly to one SHA (governance risk).
+- **Impact if left unanswered**: Production state remains unverifiable against repository authority
+- **Disposition**: GATE 4 ISSUE (#397)
+- **Cross-reference**: This is the SAME concern as OQ-NEW-8 (production-SHA verification) — OQ-NEW-8 should be treated as linked to / subsumed by Issue #397, not a separate unknown.
 
 ---
 
