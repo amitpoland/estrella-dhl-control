@@ -1,4 +1,4 @@
-"""
+﻿"""
 routes_proforma.py — wFirma proforma preview + create-shell endpoints.
 
   POST /api/v1/proforma/preview/{batch_id}/{client_name}
@@ -5831,4 +5831,79 @@ def get_proforma_draft_intelligence(draft_id: int) -> JSONResponse:
             "pricing":  confidence.pricing,
         },
         "corpus_size": corpus.corpus_size,
+    })
+
+
+# ── Sprint-24 Screen-B read-only aliases ──────────────────────────────────────
+#
+# These thin aliases translate the new draft_id-keyed routes that Screen B
+# needs into calls to the existing (batch_id, client_name)-keyed functions.
+# Read-only only — the convert POST alias ships in a later PR.
+
+@router.get(
+    "/draft/{draft_id}/to-invoice-preview",
+    dependencies=[_auth],
+    summary="Sprint-24: preview conversion plan via draft_id (alias)",
+)
+def draft_to_invoice_preview_by_id(draft_id: int) -> JSONResponse:
+    """Read-only alias: resolves draft_id → (batch_id, client_name) and
+    delegates to the existing proforma_to_invoice_preview function.
+
+    No write. No wFirma call. Blocked when:
+    - draft_id unknown (404)
+    - draft has no wfirma_proforma_id (returns blocked)
+    - proforma_invoice_links already has an issued link (already converted)
+    """
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+    return proforma_to_invoice_preview(d.batch_id, d.client_name)
+
+
+@router.get(
+    "/draft/{draft_id}/invoice-link",
+    dependencies=[_auth],
+    summary="Sprint-24: conversion result for a draft (read-only join on proforma_invoice_links)",
+)
+def get_draft_invoice_link(draft_id: int) -> JSONResponse:
+    """Read-only: returns the proforma_invoice_links row for this draft's
+    wfirma_proforma_id if one exists, else {ok: false, status: 'not_converted'}.
+
+    The Overview tab uses this to populate wFirma invoice ID and invoice number
+    without denormalizing a new column onto proforma_drafts.
+    """
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+
+    pid = (d.wfirma_proforma_id or "").strip()
+    if not pid:
+        return JSONResponse({
+            "ok":     False,
+            "status": "not_converted",
+            "reason": "draft has no wfirma_proforma_id — proforma not yet posted to wFirma",
+        })
+
+    from ..services import proforma_invoice_link_db as plink
+    link_db = settings.storage_root / "proforma_links.db"
+    link = plink.get_link_by_proforma(link_db, pid)
+    if link is None:
+        return JSONResponse({
+            "ok":                 False,
+            "status":             "not_converted",
+            "wfirma_proforma_id": pid,
+            "reason":             "no conversion link found — proforma not yet converted to invoice",
+        })
+
+    return JSONResponse({
+        "ok":                 True,
+        "status":             link.status,   # pending | issued | failed | rolled_back
+        "wfirma_proforma_id": link.proforma_id,
+        "wfirma_proforma_number": link.proforma_number,
+        "invoice_id":         link.invoice_id,
+        "invoice_number":     link.invoice_number,
+        "invoice_total":      str(link.invoice_total) if link.invoice_total else str(link.source_total),
+        "currency":           link.currency,
+        "notes":              link.notes,
+        "converted_at":       link.converted_at,
     })

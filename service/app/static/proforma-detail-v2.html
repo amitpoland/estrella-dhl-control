@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pro Forma Detail — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; }
+    body { font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); color: var(--text); }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; }
+
+    :root {
+      --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+      --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+      --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+      --shadow: rgba(27,37,56,0.06); --shadow-heavy: rgba(27,37,56,0.16);
+      --overlay: rgba(19,28,46,0.6);
+      --accent: #B89968; --accent-light: #D4B884; --accent-text: #1B2538;
+      --accent-subtle: #F8EFD8; --accent-border: #CFB178;
+      --sidebar-bg: #131C2E; --sidebar-border: #25334C;
+      --sidebar-active: #1F2A42; --sidebar-hover: #1A2438;
+      --sidebar-text: #F2EBD9; --sidebar-text-muted: #7C89A3; --sidebar-icon: #B89968;
+      --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+      --badge-blue-bg: #E8EFF8;   --badge-blue-text: #1A4A90;   --badge-blue-border: #AABEE0;
+      --badge-amber-bg: #FBF5E0;  --badge-amber-text: #805A00;  --badge-amber-border: #DEC870;
+      --badge-orange-bg: #FBF0E4; --badge-orange-text: #804000; --badge-orange-border: #DEB870;
+      --badge-green-bg: #E8F5EE;  --badge-green-text: #186838;  --badge-green-border: #96CCA8;
+      --badge-red-bg: #FBE8E6;    --badge-red-text: #902018;    --badge-red-border: #E0A8A0;
+      --badge-purple-bg: #EEE8F8; --badge-purple-text: #481898; --badge-purple-border: #BEA4E8;
+      --badge-accent-bg: #131C2E; --badge-accent-text: #B89968; --badge-accent-border: #B89968;
+    }
+    [data-theme="dark"] {
+      --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+      --border: #2C3C54; --border-subtle: #243050;
+      --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+      --shadow: rgba(0,0,0,0.3); --shadow-heavy: rgba(0,0,0,0.5); --overlay: rgba(0,0,0,0.72);
+      --accent: #D4AA5C; --accent-light: #ECC870; --accent-text: #111928;
+      --accent-subtle: #1E2808; --accent-border: #5A4A18;
+      --sidebar-bg: #0E1A30; --sidebar-border: #1A2A48;
+      --sidebar-active: #1A2A48; --sidebar-hover: #14223C;
+      --sidebar-text: #F0EAE0; --sidebar-text-muted: #6E7E96; --sidebar-icon: #C9A456;
+      --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+      --badge-blue-bg: #0E1E38;   --badge-blue-text: #80AAEE;   --badge-blue-border: #1E3A64;
+      --badge-amber-bg: #20180A;  --badge-amber-text: #E8C040;  --badge-amber-border: #584010;
+      --badge-green-bg: #0E2018;  --badge-green-text: #68CC88;  --badge-green-border: #1A4830;
+      --badge-red-bg: #200E10;    --badge-red-text: #EE8880;    --badge-red-border: #581018;
+      --badge-accent-bg: #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border: #5A4A18;
+    }
+    .sidebar-desktop { display: flex; }
+    @media (max-width: 900px) { .sidebar-desktop { display: none !important; } }
+    @media (max-width: 600px) {
+      .party-grid { grid-template-columns: 1fr !important; }
+      .overview-grid { grid-template-columns: 1fr 1fr !important; }
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-design-v2.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+
+  const { useState, useEffect, useCallback } = React;
+  const {
+    AppShell, PageHeader, Card, Btn, Badge, SectionHeader,
+    InfoRow, Toast, EmptyState, Modal, EstrellaMark,
+  } = window.PzDesign;
+  const Api = window.PzApi;
+
+  // ── URL param ──────────────────────────────────────────────────────────────
+
+  function getParam(name) {
+    return new URLSearchParams(window.location.search).get(name) || '';
+  }
+
+  const draftId = parseInt(getParam('draft_id') || '0', 10);
+
+  // ── Chip vocabulary §4.2 ──────────────────────────────────────────────────
+  // DRAFT, EDITING, APPROVED, POSTING, PROFORMA POSTED, CONVERT BLOCKED,
+  // POST FAILED, INVOICED, CANCELLED, SUPERSEDED
+
+  function DraftChip({ draft, invoiceLink }) {
+    const state = draft?.draft_state || '';
+    // Check if there's an issued invoice
+    const invoiced = invoiceLink?.ok && invoiceLink?.status === 'issued';
+    // Check if convert is blocked (posted but reservation not ready)
+    const readiness = draft?.readiness;
+    const convertBlocked = state === 'posted' && !invoiced && (readiness?.safe_to_defer === false);
+
+    const map = {
+      draft:     { label: 'DRAFT',           bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+      editing:   { label: 'EDITING',         bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+      approved:  { label: 'APPROVED',        bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+      posting:   { label: 'POSTING…',        bg: 'var(--badge-blue-bg)',    text: 'var(--badge-blue-text)',    border: 'var(--badge-blue-border)' },
+      post_failed: { label: 'POST FAILED',   bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+      cancelled: { label: 'CANCELLED',       bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+      superseded: { label: 'SUPERSEDED',     bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+    };
+
+    let chip;
+    if (invoiced) {
+      chip = { label: 'INVOICED', bg: 'var(--badge-green-bg)', text: 'var(--badge-green-text)', border: 'var(--badge-green-border)' };
+    } else if (convertBlocked && state === 'posted') {
+      chip = { label: 'CONVERT BLOCKED', bg: 'var(--badge-amber-bg)', text: 'var(--badge-amber-text)', border: 'var(--badge-amber-border)' };
+    } else if (state === 'posted') {
+      chip = { label: 'PROFORMA POSTED', bg: 'var(--badge-blue-bg)', text: 'var(--badge-blue-text)', border: 'var(--badge-blue-border)' };
+    } else if (state === 'adopted_from_audit') {
+      chip = { label: 'PROFORMA POSTED', bg: 'var(--badge-blue-bg)', text: 'var(--badge-blue-text)', border: 'var(--badge-blue-border)' };
+    } else {
+      chip = map[state] || { label: state.toUpperCase(), bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
+    }
+
+    return (
+      <span data-testid="draft-chip" style={{
+        display: 'inline-flex', alignItems: 'center',
+        background: chip.bg, color: chip.text, border: `1px solid ${chip.border}`,
+        borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 700,
+        letterSpacing: '0.05em', whiteSpace: 'nowrap',
+      }}>{chip.label}</span>
+    );
+  }
+
+  // ── Generic hook ──────────────────────────────────────────────────────────
+
+  function useGet(fetcher, deps) {
+    const [state, setState] = useState({ data: null, loading: true, error: null });
+    const load = useCallback(async () => {
+      setState(s => ({ ...s, loading: true, error: null }));
+      const res = await fetcher();
+      if (res.ok) setState({ data: res.data, loading: false, error: null });
+      else setState({ data: null, loading: false, error: res.error || 'Request failed' });
+    }, deps); // eslint-disable-line react-hooks/exhaustive-deps
+    useEffect(() => { load(); }, [load]);
+    return { ...state, reload: load };
+  }
+
+  function LoadCell({ loading, error, onRetry, children }) {
+    if (loading) return <div style={{ padding: 24, textAlign: 'center' }}><span className="spinner" /></div>;
+    if (error) return <EmptyState state="error" message={error} onRetry={onRetry} />;
+    return children;
+  }
+
+  // ── Party card ────────────────────────────────────────────────────────────
+
+  function PartyCard({ title, name, street, city, zip, country, nip, vatEu, warning, testId }) {
+    return (
+      <Card style={{ padding: '14px 16px' }} data-testid={testId}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>{title}</div>
+        {name && <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>{name}</div>}
+        {street && <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{street}</div>}
+        {(city || zip) && <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{[zip, city].filter(Boolean).join(' ')}</div>}
+        {country && <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{country}</div>}
+        {nip && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>NIP: {nip}</div>}
+        {vatEu && <div style={{ fontSize: 11, color: 'var(--text-3)' }}>VAT UE: {vatEu}</div>}
+        {warning && (
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--badge-amber-text)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span>⚠</span>
+            <span>{warning}</span>
+          </div>
+        )}
+      </Card>
+    );
+  }
+
+  // ── Overview tab ──────────────────────────────────────────────────────────
+
+  function OverviewTab({ draft, invoiceLink }) {
+    const d = draft;
+    const il = invoiceLink?.ok ? invoiceLink : null;
+    const pt = d?.payment_terms || {};
+    const fmt = v => v || '—';
+    const fmtDec = v => v ? parseFloat(v).toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+
+    const cells = [
+      { label: 'Draft №',         value: d?.id ? `#${d.id} · v${d.draft_version || 1}` : '—' },
+      { label: 'AWB / Shipment',  value: fmt(d?.batch_id) },
+      { label: 'wFirma Proforma', value: fmt(d?.wfirma_proforma_fullnumber || d?.wfirma_proforma_id) },
+      { label: 'wFirma Invoice',  value: il ? `${fmt(il.invoice_number)} (ID: ${fmt(il.invoice_id)})` : '—' },
+      { label: 'Draft State',     value: fmt(d?.draft_state) },
+      { label: 'Currency',        value: fmt(d?.currency) },
+      { label: 'FX Rate',         value: d?.exchange_rate ? `${d.exchange_rate} (${fmt(d.fx_rate_source)})` : '—' },
+      { label: 'FX Rate Date',    value: fmt(d?.fx_rate_date) },
+      { label: 'Payment Method',  value: fmt(pt.paymentmethod || d?.wfirma_payment_method) },
+      { label: 'Payment Due',     value: fmt(pt.paymentdate || d?.wfirma_payment_due) },
+      { label: 'Incoterm',        value: fmt(d?.incoterm) },
+      { label: 'Insurance EUR',   value: d?.insurance_eur ? `${fmtDec(d.insurance_eur)} EUR` : '—' },
+      { label: 'Created',         value: fmt(d?.created_at?.slice(0, 16)) },
+      { label: 'Updated',         value: fmt(d?.updated_at?.slice(0, 16)) },
+      { label: 'Posted By',       value: fmt(d?.posted_by) },
+      { label: 'Posted At',       value: fmt(d?.posted_at?.slice(0, 16)) },
+    ].filter(c => c.value !== '—' || ['Draft №', 'AWB / Shipment', 'Draft State', 'Currency'].includes(c.label));
+
+    if (il?.status === 'issued') {
+      cells.push({ label: 'Invoice Total', value: fmt(il.invoice_total ? `${fmtDec(il.invoice_total)} ${il.currency}` : il.invoice_total) });
+      cells.push({ label: 'Converted At', value: fmt(il.converted_at?.slice(0, 16)) });
+    }
+
+    return (
+      <div data-testid="tab-overview" style={{ padding: '20px 24px' }}>
+        <div className="overview-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 0 }}>
+          {cells.map(c => (
+            <div key={c.label} style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle)', borderRight: '1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 4 }}>{c.label}</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: c.label.includes('FX') || c.label.includes('Total') ? 'monospace' : 'inherit' }}>{c.value}</div>
+            </div>
+          ))}
+        </div>
+        {d?.remarks && (
+          <div style={{ marginTop: 16, padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 12, color: 'var(--text-2)' }}>
+            <strong>Remarks:</strong> {d.remarks}
+          </div>
+        )}
+        {d?.needs_pricing_refresh && (
+          <div data-testid="pricing-refresh-warning" style={{ marginTop: 12, padding: '8px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+            ⚠ One or more lines have unit price ≤ 0 — reset draft from packing list to refresh EUR prices.
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Lines tab ──────────────────────────────────────────────────────────────
+
+  function LinesTab({ draft }) {
+    const lines = draft?.editable_lines || [];
+    const charges = draft?.service_charges || [];
+    if (lines.length === 0 && charges.length === 0) {
+      return <EmptyState state="empty" message="No line items found for this draft." data-testid="tab-lines" />;
+    }
+    const fmtDec = v => v != null ? parseFloat(v).toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+    return (
+      <div data-testid="tab-lines" style={{ padding: '0 0 20px' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: 'var(--bg-subtle)', borderBottom: '2px solid var(--border)' }}>
+              {['#', 'Name', 'HS Code', 'Origin', 'Qty', 'Unit Price', 'Total', 'VAT'].map(h =>
+                <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 700, color: 'var(--text-2)', whiteSpace: 'nowrap', fontSize: 11 }}>{h}</th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l, i) => (
+              <tr key={l.line_id || i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                <td style={{ padding: '8px 10px', color: 'var(--text-3)', width: 32 }}>{i + 1}</td>
+                <td style={{ padding: '8px 10px', fontWeight: 600 }}>
+                  <div>{l.name_en || l.name_pl || l.product_code || '—'}</div>
+                  {l.name_pl && l.name_en && l.name_pl !== l.name_en && <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{l.name_pl}</div>}
+                </td>
+                <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>{l.hs_code || '—'}</td>
+                <td style={{ padding: '8px 10px' }}>{l.country_of_origin || '—'}</td>
+                <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>{l.qty ?? '—'}</td>
+                <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>{l.unit_price ? fmtDec(l.unit_price) : '—'}</td>
+                <td style={{ padding: '8px 10px', fontFamily: 'monospace', fontWeight: 600 }}>
+                  {l.qty && l.unit_price ? fmtDec(l.qty * l.unit_price) : '—'}
+                </td>
+                <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{l.vat_rate ?? '—'}</td>
+              </tr>
+            ))}
+            {charges.map((c, i) => (
+              <tr key={`charge-${i}`} style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+                <td style={{ padding: '8px 10px', color: 'var(--text-3)' }}>—</td>
+                <td style={{ padding: '8px 10px', color: 'var(--text-2)', fontStyle: 'italic' }} colSpan={5}>
+                  {c.label || c.charge_type}: {c.amount} {c.currency}
+                </td>
+                <td colSpan={2} />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // ── Customer Mapping tab ───────────────────────────────────────────────────
+
+  function CustomerMappingTab({ draft }) {
+    const cr = draft?.customer_resolution;
+    if (!cr) return <EmptyState state="empty" message="No customer resolution data." />;
+
+    const rows = [
+      { label: 'Sales client name', value: cr.raw_input || '—' },
+      { label: 'Normalized name', value: cr.normalized_name || '—' },
+      { label: 'wFirma customer ID', value: cr.wfirma_customer_id || '—', mono: true },
+      { label: 'wFirma stored name', value: cr.resolved_wfirma_name || '—' },
+      { label: 'Match strategy', value: cr.match_strategy || '—' },
+      { label: 'Found', value: cr.found ? '✓ Yes' : '✗ No' },
+    ];
+
+    return (
+      <div data-testid="tab-customer-mapping" style={{ padding: '20px 24px' }}>
+        <Card style={{ padding: '0 0 8px' }}>
+          <SectionHeader label="Customer Mapping" />
+          <div style={{ padding: '0 16px' }}>
+            {rows.map(r => <InfoRow key={r.label} label={r.label} value={r.value} mono={r.mono} />)}
+          </div>
+        </Card>
+        {!cr.found && (
+          <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-amber-text)' }}>
+            ⚠ Not mapped to wFirma customer —{' '}
+            <a href="/dashboard/customer-master-v2.html" style={{ color: 'var(--badge-amber-text)', fontWeight: 700 }}>Open Customer Master</a>
+          </div>
+        )}
+        {cr.candidates && cr.candidates.length > 1 && (
+          <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-blue-text)' }}>
+            Ambiguous match — {cr.candidates.length} candidates. Review in Customer Master.
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Reservation tab ───────────────────────────────────────────────────────
+
+  function ReservationTab({ draft }) {
+    const batchId = draft?.batch_id;
+    const clientName = draft?.client_name;
+    const visHook = useGet(
+      () => batchId && clientName
+        ? Api.previewProforma(batchId, clientName)
+        : Promise.resolve({ ok: true, data: null }),
+      [batchId, clientName],
+    );
+
+    return (
+      <div data-testid="tab-reservation" style={{ padding: '20px 24px' }}>
+        <LoadCell loading={visHook.loading} error={visHook.error} onRetry={visHook.reload}>
+          {!visHook.data ? (
+            <EmptyState state="empty" message="No reservation data available." />
+          ) : (
+            <ReservationBody preview={visHook.data} />
+          )}
+        </LoadCell>
+      </div>
+    );
+  }
+
+  function ReservationBody({ preview }) {
+    const p = preview;
+    const capable = p?.wfirma_capable !== false;
+    const auditClean = p?.audit_status === 'clean' || p?.audit_ok === true;
+    const reservationSupported = p?.reservation_supported !== false;
+    const blocking = Array.isArray(p?.export_blockers) ? p.export_blockers : [];
+    const isBlocked = blocking.length > 0;
+
+    const chip = (label, ok) => (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        padding: '3px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+        background: ok ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)',
+        color: ok ? 'var(--badge-green-text)' : 'var(--badge-amber-text)',
+        border: `1px solid ${ok ? 'var(--badge-green-border)' : 'var(--badge-amber-border)'}`,
+      }}>
+        {ok ? '✓' : '⚠'} {label}
+      </span>
+    );
+
+    return (
+      <div>
+        {/* Capability strip */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+          {chip('wFirma configured', capable)}
+          {chip('Audit clean', auditClean)}
+          {chip('Reservation supported', reservationSupported)}
+        </div>
+
+        {/* Blocking reasons */}
+        {isBlocked && (
+          <Card style={{ padding: '14px 16px', background: 'var(--badge-amber-bg)', borderColor: 'var(--badge-amber-border)', marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--badge-amber-text)', marginBottom: 8 }}>Blocking reasons</div>
+            <ul style={{ paddingLeft: 18, fontSize: 12, color: 'var(--badge-amber-text)' }}>
+              {blocking.map((b, i) => <li key={i} style={{ marginBottom: 4 }}>{b}</li>)}
+            </ul>
+          </Card>
+        )}
+
+        {/* Action footer — disabled (ships next round) */}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+          <Btn variant="outline" disabled title="Ships in next sprint">
+            Create Reservation
+          </Btn>
+          <Btn variant="outline" disabled title="Convert-to-Invoice ships in next sprint — see action toolbar">
+            ⚠ Convert Proforma to Invoice
+          </Btn>
+        </div>
+      </div>
+    );
+  }
+
+  // ── History tab ───────────────────────────────────────────────────────────
+
+  function HistoryTab({ draftId }) {
+    const evHook = useGet(
+      () => Api.getDraft ? _eventsGet(draftId) : Promise.resolve({ ok: true, data: { events: [], count: 0 } }),
+      [draftId],
+    );
+
+    return (
+      <div data-testid="tab-history" style={{ padding: '20px 24px' }}>
+        <LoadCell loading={evHook.loading} error={evHook.error} onRetry={evHook.reload}>
+          <EventList events={evHook.data?.events || []} />
+        </LoadCell>
+      </div>
+    );
+  }
+
+  // Direct fetch for events (pz-api.js doesn't expose this endpoint yet)
+  async function _eventsGet(draftId) {
+    return window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}/events`)
+      .then(data => ({ ok: true, data }))
+      .catch(e => ({ ok: false, error: e.message }));
+  }
+
+  function EventList({ events }) {
+    if (!events || events.length === 0) {
+      return <EmptyState state="empty" message="No events recorded for this draft." />;
+    }
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        {events.map((ev, i) => (
+          <div key={i} style={{ display: 'flex', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', marginTop: 5, flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{ev.event_type || ev.type || 'event'}</div>
+              {ev.operator && <div style={{ fontSize: 11, color: 'var(--text-2)' }}>by {ev.operator}</div>}
+              {ev.notes && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{ev.notes}</div>}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+              {(ev.created_at || ev.recorded_at || '').slice(0, 16)}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // ── Tab strip ─────────────────────────────────────────────────────────────
+
+  const TABS = ['Overview', 'Lines', 'Customer Mapping', 'Reservation', 'History'];
+
+  // ── Main App ──────────────────────────────────────────────────────────────
+
+  function App() {
+    const [activeTab, setActiveTab] = useState('Overview');
+    const [toast, setToast] = useState(null);
+
+    const showToast = (msg, type = 'info') => {
+      setToast({ msg, type });
+      setTimeout(() => setToast(null), 3500);
+    };
+
+    // Draft fetch
+    const draftHook = useGet(
+      () => draftId
+        ? window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}`)
+            .then(d => ({ ok: true, data: d }))
+            .catch(e => ({ ok: false, error: e.message }))
+        : Promise.resolve({ ok: false, error: 'No draft_id in URL' }),
+      [draftId],
+    );
+
+    // GET /api/v1/proforma/draft/{id} returns {ok, draft: {...}} — extract the nested draft object
+    const draft = draftHook.data?.draft ?? draftHook.data;
+
+    // Invoice link fetch (for INVOICED chip + Overview)
+    const invLinkHook = useGet(
+      () => draftId
+        ? window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}/invoice-link`)
+            .then(d => ({ ok: true, data: d }))
+            .catch(e => ({ ok: true, data: { ok: false, status: 'not_converted' } }))
+        : Promise.resolve({ ok: true, data: null }),
+      [draftId],
+    );
+
+    const invoiceLink = invLinkHook.data;
+
+    // Company profile (Seller card)
+    const compHook = useGet(
+      () => window.EstrellaShared.apiFetch('/api/v1/settings/company-profile')
+          .then(d => ({ ok: true, data: d }))
+          .catch(() => ({ ok: true, data: null })),
+      [],
+    );
+    const company = compHook.data;
+
+    // Customer master for Buyer card enrichment
+    const buyerContractorId = draft?.customer_resolution?.customer?.bill_to_contractor_id;
+    const cmHook = useGet(
+      () => buyerContractorId
+        ? Api.getCustomerMaster(buyerContractorId)
+        : Promise.resolve({ ok: true, data: null }),
+      [buyerContractorId],
+    );
+    const cm = cmHook.data;
+
+    if (!draftId) {
+      return (
+        <AppShell activeNav="proforma">
+          <div style={{ padding: 40, textAlign: 'center' }}>
+            <EmptyState state="error" message="Missing draft_id — use ?draft_id=X in the URL." />
+          </div>
+        </AppShell>
+      );
+    }
+
+    const backBatchId = draft?.batch_id || '';
+    const backHref = backBatchId
+      ? `/dashboard/proforma-v2.html?batch_id=${encodeURIComponent(backBatchId)}`
+      : '/dashboard/proforma-v2.html';
+
+    // Buyer data: prefer customer master, fall back to draft customer_resolution
+    const buyer = cm || draft?.customer_resolution?.customer;
+    const buyerUnmatched = !draft?.customer_resolution?.found;
+
+    // Ship-to: only show if different from buyer
+    const shipTo = draft?.ship_to_override && Object.keys(draft.ship_to_override).length > 0
+      ? draft.ship_to_override : null;
+
+    return (
+      <AppShell activeNav="proforma" data-testid="proforma-detail-v2-root">
+        {toast && <Toast msg={toast.msg} type={toast.type} />}
+
+        {/* Back link + breadcrumb */}
+        <div style={{ padding: '12px 24px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <a href={backHref} data-testid="back-to-screen-a" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none', fontWeight: 600 }}>
+            ← {backBatchId ? `Shipment ${backBatchId.slice(-8)}` : 'All Drafts'}
+          </a>
+          <span style={{ color: 'var(--text-3)' }}>/</span>
+          <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
+            {draft ? (draft.client_name || `Draft #${draftId}`) : `Draft #${draftId}`}
+          </span>
+          {draft && <DraftChip draft={draft} invoiceLink={invoiceLink} />}
+        </div>
+
+        {/* Page header with wFirma proforma number as title */}
+        <PageHeader
+          title={draft ? (draft.wfirma_proforma_fullnumber || `Draft #${draftId}`) : `Draft #${draftId}`}
+          subtitle={draft ? `${draft.client_name} · ${draft.currency || '—'}` : 'Loading…'}
+        />
+
+        {/* Main content */}
+        <div style={{ padding: '16px 24px 40px', flex: 1, overflowY: 'auto' }}>
+
+          {draftHook.loading ? (
+            <div style={{ textAlign: 'center', padding: 40 }}><span className="spinner" /></div>
+          ) : draftHook.error ? (
+            <EmptyState state="error" message={draftHook.error} onRetry={draftHook.reload} />
+          ) : (
+            <>
+              {/* Action toolbar — ALL DISABLED, stubs only */}
+              <Card data-testid="action-toolbar" style={{ padding: '10px 16px', marginBottom: 16 }}>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {[
+                    { label: 'Edit',              testId: 'btn-edit' },
+                    { label: 'Delete',            testId: 'btn-delete' },
+                    { label: 'Duplicate',         testId: 'btn-duplicate' },
+                    { label: 'Post to wFirma',    testId: 'btn-post-wfirma' },
+                    { label: '⚠ Convert to Invoice', testId: 'btn-convert-invoice', accent: true },
+                    { label: 'Print',             testId: 'btn-print' },
+                    { label: 'Send',              testId: 'btn-send' },
+                    { label: 'Generate ▾',        testId: 'btn-generate' },
+                  ].map(b => (
+                    <Btn
+                      key={b.label}
+                      variant={b.accent ? 'outline' : 'ghost'}
+                      disabled
+                      small
+                      data-testid={b.testId}
+                      title="Action wiring ships in next sprint"
+                      style={{ opacity: 0.45, cursor: 'not-allowed' }}
+                    >
+                      {b.label}
+                    </Btn>
+                  ))}
+                  <div style={{ flex: 1 }} />
+                  <span style={{ fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>Actions wiring — next sprint</span>
+                </div>
+              </Card>
+
+              {/* Party cards */}
+              <div className="party-grid" style={{ display: 'grid', gridTemplateColumns: shipTo ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12, marginBottom: 16 }}>
+                <PartyCard
+                  testId="party-seller"
+                  title="Seller"
+                  name={company?.company_name || 'Estrella Jewels sp. z o.o. sp.k.'}
+                  street={company?.address_street}
+                  city={company?.address_city}
+                  zip={company?.address_postal_code}
+                  country={company?.address_country || 'PL'}
+                  nip={company?.nip}
+                />
+                <PartyCard
+                  testId="party-buyer"
+                  title="Buyer"
+                  name={buyer?.bill_to_name || draft?.client_name || '—'}
+                  street={buyer?.bill_to_street}
+                  city={buyer?.bill_to_city}
+                  zip={buyer?.bill_to_postal_code}
+                  country={buyer?.country}
+                  nip={buyer?.nip}
+                  vatEu={buyer?.vat_eu_number}
+                  warning={buyerUnmatched ? 'Not mapped to wFirma customer — Open Customer Master' : null}
+                />
+                {shipTo && (
+                  <PartyCard
+                    testId="party-shipto"
+                    title="Ship-To"
+                    name={shipTo.name}
+                    street={shipTo.street}
+                    city={shipTo.city}
+                    zip={shipTo.zip}
+                    country={shipTo.country}
+                  />
+                )}
+              </div>
+
+              {/* Tab strip */}
+              <Card style={{ overflow: 'hidden' }}>
+                <div data-testid="tab-strip" style={{
+                  display: 'flex', gap: 0,
+                  borderBottom: '1px solid var(--border)',
+                  background: 'var(--card)',
+                  overflowX: 'auto',
+                }}>
+                  {TABS.map(tab => (
+                    <button key={tab} onClick={() => setActiveTab(tab)} style={{
+                      background: 'transparent', border: 'none', cursor: 'pointer',
+                      padding: '10px 18px 11px',
+                      fontSize: 12, fontWeight: activeTab === tab ? 700 : 500,
+                      color: activeTab === tab ? 'var(--text)' : 'var(--text-2)',
+                      borderBottom: activeTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
+                      marginBottom: -1, whiteSpace: 'nowrap',
+                      fontFamily: 'inherit',
+                    }} data-testid={`tab-btn-${tab.toLowerCase().replace(/ /g, '-')}`}>
+                      {tab}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Tab body */}
+                {activeTab === 'Overview' && (
+                  <OverviewTab draft={draft} invoiceLink={invoiceLink} />
+                )}
+                {activeTab === 'Lines' && (
+                  <LinesTab draft={draft} />
+                )}
+                {activeTab === 'Customer Mapping' && (
+                  <CustomerMappingTab draft={draft} />
+                )}
+                {activeTab === 'Reservation' && (
+                  <ReservationTab draft={draft} />
+                )}
+                {activeTab === 'History' && (
+                  <HistoryTab draftId={draftId} />
+                )}
+              </Card>
+            </>
+          )}
+        </div>
+      </AppShell>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>
