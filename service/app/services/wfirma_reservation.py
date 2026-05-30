@@ -55,6 +55,18 @@ log = get_logger(__name__)
 _WS = re.compile(r"\s+")
 
 
+def _filter_stub_doc(sdoc: dict) -> bool:
+    """Sprint-24 §4.1: return True if this sales_doc is a stub that should be filtered.
+
+    A stub has an empty client_name AND no sales_doc_no. These are auto-generated
+    placeholder rows produced during sync, not real drafts. Real unassigned drafts
+    have a doc_number even if client_name is empty; those are kept (return False).
+    """
+    client = (sdoc.get("client_name") or "").strip()
+    doc_no = (sdoc.get("sales_doc_no") or sdoc.get("client_ref") or "").strip()
+    return not client and not doc_no
+
+
 def _norm(s: str) -> str:
     return _WS.sub(" ", (s or "").strip()).upper()
 
@@ -242,6 +254,9 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         )
 
     # ── 7. Build per-document preview ─────────────────────────────────────────
+    # Sprint-24 §4.1: filter stub rows — empty client_name with no doc_number
+    # are auto-generated placeholders, not real drafts. Real unassigned drafts
+    # would have a doc_number; those are rendered with their doc_number as label.
     documents: List[Dict[str, Any]] = []
 
     for sdoc in sales_docs:
@@ -249,6 +264,12 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         client     = sdoc.get("client_name") or ""
         client_ref = sdoc.get("client_ref") or ""
         doc_no     = sdoc.get("sales_doc_no") or client_ref
+
+        # Filter: skip stub rows — empty client_name with no doc_number.
+        # Uses the named helper so the filter logic is unit-testable.
+        if _filter_stub_doc(sdoc):
+            continue
+
         customer_ok = bool(client and client.strip())
 
         # Customer mapping lookup

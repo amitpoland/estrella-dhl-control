@@ -444,6 +444,11 @@ class ProformaDraft:
     wfirma_issue_date:      Optional[str] = None   # from wFirma invoices/get
     wfirma_payment_due:     Optional[str] = None   # paymentdate from wFirma
     wfirma_payment_method:  Optional[str] = None   # payment_method from wFirma
+    # ── Sprint-24 clone provenance ────────────────────────────────────
+    # clone_generation=0 for original drafts; 1,2,… for successive clones.
+    # source_ref_id points to the draft this row was cloned from (None for originals).
+    clone_generation:       int           = 0      # 0 = original, ≥1 = clone
+    source_ref_id:          Optional[int] = None   # id of the source draft if cloned
 
 
 def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
@@ -504,6 +509,9 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         ("wfirma_issue_date",     "TEXT"),
         ("wfirma_payment_due",    "TEXT"),
         ("wfirma_payment_method", "TEXT"),
+        # ── Sprint-24 clone provenance ────────────────────────────────────
+        ("clone_generation", "INTEGER NOT NULL DEFAULT 0"),
+        ("source_ref_id",    "INTEGER"),
     )
     for _col, _ddl in _ADDITIVE_DRAFT_COLUMNS:
         try:
@@ -511,6 +519,50 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc).lower():
                 raise
+
+    # ── Sprint-24: widen unique constraint to allow clone rows ────────────
+    # Original table has UNIQUE(batch_id, client_name) as a table-level
+    # constraint. Clones share the same (batch_id, client_name) but differ
+    # in clone_generation. SQLite requires table recreation to change
+    # constraints. Migration is idempotent: detected via presence of the
+    # uq_pd_batch_client_gen index.
+    _idx_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' "
+        "AND name='uq_pd_batch_client_gen'"
+    ).fetchone()
+    if not _idx_exists:
+        # Verify sprint-24 columns were already added before recreation
+        _cols_now = {r[1] for r in conn.execute("PRAGMA table_info(proforma_drafts)")}
+        if "clone_generation" in _cols_now and "source_ref_id" in _cols_now:
+            # Rename old table, create new with UNIQUE(batch_id, client_name, clone_generation)
+            # and copy data. We read the old table's column definitions to preserve
+            # types, defaults, and NOT NULL markers.
+            _ci = conn.execute("PRAGMA table_info(proforma_drafts)").fetchall()
+            _col_defs = []
+            for _c in _ci:
+                _cname = _c[1]; _ctype = _c[2] or "TEXT"
+                _notnull = " NOT NULL" if _c[3] else ""
+                _dflt = f" DEFAULT {_c[4]}" if _c[4] is not None else ""
+                _pk = " PRIMARY KEY AUTOINCREMENT" if _c[5] == 1 else ""
+                _col_defs.append(f"{_cname} {_ctype}{_pk}{_notnull}{_dflt}")
+            _col_ddl = ",\n  ".join(_col_defs)
+            conn.execute("ALTER TABLE proforma_drafts RENAME TO _pd_old")
+            conn.execute(f"""
+                CREATE TABLE proforma_drafts (
+                  {_col_ddl},
+                  UNIQUE(batch_id, client_name, clone_generation)
+                )
+            """)
+            _col_names = ", ".join(c[1] for c in _ci)
+            conn.execute(
+                f"INSERT INTO proforma_drafts ({_col_names}) "
+                f"SELECT {_col_names} FROM _pd_old"
+            )
+            conn.execute("DROP TABLE _pd_old")
+            conn.execute(
+                "CREATE UNIQUE INDEX uq_pd_batch_client_gen "
+                "ON proforma_drafts(batch_id, client_name, clone_generation)"
+            )
 
     # Backfill draft_state from legacy status. Idempotent — only fires
     # on rows where the mapped value differs from the current value.
@@ -694,6 +746,9 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         wfirma_issue_date          = _opt("wfirma_issue_date"),
         wfirma_payment_due         = _opt("wfirma_payment_due"),
         wfirma_payment_method      = _opt("wfirma_payment_method"),
+        # Sprint-24 clone provenance
+        clone_generation           = int(_opt("clone_generation", 0) or 0),
+        source_ref_id              = _opt("source_ref_id"),
     )
 
 
@@ -765,9 +820,9 @@ def upsert_pending_draft(
                 (batch_id, client_name, status, currency, exchange_rate,
                  source_lines_json, service_charges_json,
                  wfirma_proforma_id, notes,
-                 created_at, updated_at)
-            VALUES (?, ?, 'pending_local', ?, ?, ?, ?, NULL, NULL, ?, ?)
-            ON CONFLICT(batch_id, client_name) DO NOTHING
+                 created_at, updated_at, clone_generation)
+            VALUES (?, ?, 'pending_local', ?, ?, ?, ?, NULL, NULL, ?, ?, 0)
+            ON CONFLICT(batch_id, client_name, clone_generation) DO NOTHING
             """,
             (str(batch_id), str(client_name), str(currency or ""),
              exchange_rate, source_lines_json, sc_json, now, now),
@@ -1112,6 +1167,86 @@ def get_draft_by_id(db_path: Path, draft_id: int) -> Optional[ProformaDraft]:
             (int(draft_id),),
         ).fetchone()
     return _row_to_draft(row) if row else None
+
+
+def clone_draft(db_path: Path, source_id: int) -> ProformaDraft:
+    """Create a new draft as a deep copy of the source, status=draft, unposted.
+
+    The clone gets:
+    - Same batch_id, client_name, currency, all line/charge/override JSON
+    - draft_state = 'draft', draft_version = 1
+    - wfirma_proforma_id = None (never posted)
+    - clone_generation = max existing clone_generation for this (batch, client) + 1
+    - source_ref_id = source_id
+
+    The source draft is NOT modified in any way.
+    Raises KeyError if source_id not found.
+    """
+    import json as _json
+    now = _now_utc_iso()
+    init_db(db_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+
+        src_row = conn.execute(
+            "SELECT * FROM proforma_drafts WHERE id=? LIMIT 1",
+            (int(source_id),),
+        ).fetchone()
+        if src_row is None:
+            raise KeyError(f"source draft {source_id} not found")
+
+        src = _row_to_draft(src_row)
+
+        # Determine next clone_generation for this (batch_id, client_name) pair
+        max_gen_row = conn.execute(
+            "SELECT MAX(clone_generation) FROM proforma_drafts "
+            "WHERE batch_id=? AND client_name=?",
+            (src.batch_id, src.client_name),
+        ).fetchone()
+        next_gen = (max_gen_row[0] or 0) + 1
+
+        conn.execute(
+            """
+            INSERT INTO proforma_drafts (
+                batch_id, client_name, status, currency, exchange_rate,
+                source_lines_json, editable_lines_json, service_charges_json,
+                buyer_override_json, ship_to_override_json, payment_terms_json,
+                remarks, incoterm, fx_rate_source,
+                draft_state, draft_version,
+                wfirma_proforma_id, wfirma_proforma_fullnumber,
+                notes, created_at, updated_at,
+                clone_generation, source_ref_id
+            ) VALUES (
+                ?, ?, 'draft', ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                'draft', 1,
+                NULL, '',
+                ?, ?, ?,
+                ?, ?
+            )
+            """,
+            (
+                src.batch_id, src.client_name,
+                src.currency, src.exchange_rate,
+                src.source_lines_json, src.editable_lines_json, src.service_charges_json,
+                src.buyer_override_json, src.ship_to_override_json, src.payment_terms_json,
+                src.remarks, src.incoterm, src.fx_rate_source,
+                f"Cloned from draft #{source_id}",
+                now, now,
+                next_gen, source_id,
+            ),
+        )
+        new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+
+        new_row = conn.execute(
+            "SELECT * FROM proforma_drafts WHERE id=? LIMIT 1",
+            (int(new_id),),
+        ).fetchone()
+    return _row_to_draft(new_row)
 
 
 def list_drafts_for_batch(db_path: Path, batch_id: str) -> List[ProformaDraft]:

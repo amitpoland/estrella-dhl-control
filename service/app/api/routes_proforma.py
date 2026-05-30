@@ -1,4 +1,4 @@
-"""
+﻿"""
 routes_proforma.py — wFirma proforma preview + create-shell endpoints.
 
   POST /api/v1/proforma/preview/{batch_id}/{client_name}
@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse, Response, HTMLResponse
 
 from ..core.config import settings
@@ -3235,6 +3235,9 @@ def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         # Phase 6 — packing-upload auto-sync metadata
         "last_packing_sync_at":       d.last_packing_sync_at,
         "packing_sync_warning":       d.packing_sync_warning,
+        # Sprint-24 clone provenance
+        "clone_generation":           getattr(d, "clone_generation", 0),
+        "source_ref_id":              getattr(d, "source_ref_id", None),
     }
 
 
@@ -3401,6 +3404,48 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
     return JSONResponse({
         "ok":    True,
         "draft": full,
+    })
+
+
+# ── Sprint-24: clone endpoint ─────────────────────────────────────────────────
+
+@router.post("/draft/{draft_id}/clone", dependencies=[_auth])
+def clone_proforma_draft(draft_id: int) -> JSONResponse:
+    """Create a deep copy of a draft as a new unposted 'draft' row.
+
+    Source draft is NEVER modified. Clone gets status=draft,
+    draft_state=draft, wfirma_proforma_id=None. The new row is identified
+    by clone_generation (≥1) and source_ref_id pointing to the source.
+
+    Response: { ok, draft_id, source_id, clone_generation, draft: {...} }
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+
+    src = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if src is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    try:
+        clone = pildb.clone_draft(_proforma_db_path(), int(draft_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log.error("clone_proforma_draft: failed for source %s: %s", draft_id, exc)
+        raise HTTPException(status_code=500, detail=f"Clone failed: {exc}") from exc
+
+    full = _draft_to_full(clone)
+    try:
+        full["customer_resolution"] = _resolve_customer(clone.client_name or "")
+    except Exception:
+        full["customer_resolution"] = {"raw_input": clone.client_name or "",
+                                       "found": False, "ambiguous": False}
+    return JSONResponse({
+        "ok":               True,
+        "draft_id":         clone.id,
+        "source_id":        draft_id,
+        "clone_generation": clone.clone_generation,
+        "draft":            full,
     })
 
 
@@ -5832,3 +5877,143 @@ def get_proforma_draft_intelligence(draft_id: int) -> JSONResponse:
         },
         "corpus_size": corpus.corpus_size,
     })
+
+
+# ── Sprint-24 helper: optional session user (proper Depends, avoids raw Request) ─
+def _get_current_user_optional(
+    pz_session: Optional[str] = Cookie(default=None),
+) -> Optional[dict]:
+    """Inject the authenticated user from the session cookie, or None.
+    Used by draft_to_invoice_by_id to derive operator server-side.
+    Does NOT raise 401/403 — callers handle None themselves.
+    """
+    if not pz_session:
+        return None
+    try:
+        from ..auth.service import decode_token, get_user_by_id  # noqa: PLC0415
+        payload = decode_token(pz_session)
+        if not payload:
+            return None
+        return get_user_by_id(payload.get("sub"))
+    except Exception:
+        return None
+
+
+# ── Sprint-24 Screen-B aliases (read + write) ────────────────────────────────
+#
+# Thin aliases translating draft_id-keyed routes → existing (batch_id,
+# client_name)-keyed functions. The POST to-invoice alias is the critical
+# addition: it derives operator from the authenticated SESSION (not X-Operator
+# header / window.prompt) so Convert-to-Invoice is un-spoofable from the UI.
+
+@router.get(
+    "/draft/{draft_id}/to-invoice-preview",
+    dependencies=[_auth],
+    summary="Sprint-24: preview conversion plan via draft_id (alias)",
+)
+def draft_to_invoice_preview_by_id(draft_id: int) -> JSONResponse:
+    """Read-only alias: resolves draft_id → (batch_id, client_name) and
+    delegates to the existing proforma_to_invoice_preview function.
+
+    No write. No wFirma call. Blocked when:
+    - draft_id unknown (404)
+    - draft has no wfirma_proforma_id (returns blocked)
+    - proforma_invoice_links already has an issued link (already converted)
+    """
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+    return proforma_to_invoice_preview(d.batch_id, d.client_name)
+
+
+@router.get(
+    "/draft/{draft_id}/invoice-link",
+    dependencies=[_auth],
+    summary="Sprint-24: conversion result for a draft (read-only join on proforma_invoice_links)",
+)
+def get_draft_invoice_link(draft_id: int) -> JSONResponse:
+    """Read-only: returns the proforma_invoice_links row for this draft's
+    wfirma_proforma_id if one exists, else {ok: false, status: 'not_converted'}.
+
+    The Overview tab uses this to populate wFirma invoice ID and invoice number
+    without denormalizing a new column onto proforma_drafts.
+    """
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+
+    pid = (d.wfirma_proforma_id or "").strip()
+    if not pid:
+        return JSONResponse({
+            "ok":     False,
+            "status": "not_converted",
+            "reason": "draft has no wfirma_proforma_id — proforma not yet posted to wFirma",
+        })
+
+    from ..services import proforma_invoice_link_db as plink
+    link_db = settings.storage_root / "proforma_links.db"
+    link = plink.get_link_by_proforma(link_db, pid)
+    if link is None:
+        return JSONResponse({
+            "ok":                 False,
+            "status":             "not_converted",
+            "wfirma_proforma_id": pid,
+            "reason":             "no conversion link found — proforma not yet converted to invoice",
+        })
+
+    return JSONResponse({
+        "ok":                 True,
+        "status":             link.status,   # pending | issued | failed | rolled_back
+        "wfirma_proforma_id": link.proforma_id,
+        "wfirma_proforma_number": link.proforma_number,
+        "invoice_id":         link.invoice_id,
+        "invoice_number":     link.invoice_number,
+        "invoice_total":      str(link.invoice_total) if link.invoice_total else str(link.source_total),
+        "currency":           link.currency,
+        "notes":              link.notes,
+        "converted_at":       link.converted_at,
+    })
+
+
+@router.post(
+    "/draft/{draft_id}/to-invoice",
+    dependencies=[_auth],
+    summary="Sprint-24: convert proforma → invoice via draft_id (session-operator alias)",
+)
+def draft_to_invoice_by_id(
+    draft_id: int,
+    body: _FinalInvoiceConfirmReq,
+    session_user: Optional[dict] = Depends(_get_current_user_optional),
+) -> JSONResponse:
+    """POST alias: resolves draft_id → (batch_id, client_name) and delegates to
+    the existing proforma_to_invoice function.
+
+    Safety invariants preserved:
+    - ALL existing guard rails in proforma_to_invoice() apply unchanged:
+      wfirma_create_invoice_allowed flag gate, confirm token, UNIQUE(proforma_id)
+      duplicate-conversion guard, pending-link-pre-call, mark_failed, audit event.
+    - Operator is derived SERVER-SIDE from the authenticated session (full_name
+      or email from the JWT cookie). X-Operator header is NOT accepted — the
+      operator identity comes from the session, not from client-controlled input.
+    - No wFirma call if wfirma_create_invoice_allowed is False (returns 503).
+
+    Deterministic idempotency key note: the actual guard is UNIQUE(proforma_id)
+    on proforma_invoice_links, which is immutable. The key displayed in the
+    modal is f"prof-{wfirma_proforma_id[:12]}-conv" — informational only.
+    """
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+
+    # Derive operator from session via get_current_user_optional Depends.
+    # Falls back to "session-user" when authenticated via API key (no session).
+    operator = (
+        ((session_user or {}).get("full_name") or "").strip()
+        or ((session_user or {}).get("email") or "").strip()
+        or "session-user"
+    )
+
+    return proforma_to_invoice(d.batch_id, d.client_name, body, x_operator=operator)
+
+
+# (clone_proforma_draft already defined at line 3412 from PR #407 Phase 2/3 — no duplicate needed)

@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pro Forma Detail — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; }
+    body { font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); color: var(--text); }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; }
+
+    :root {
+      --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+      --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+      --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+      --shadow: rgba(27,37,56,0.06); --shadow-heavy: rgba(27,37,56,0.16);
+      --overlay: rgba(19,28,46,0.6);
+      --accent: #B89968; --accent-light: #D4B884; --accent-text: #1B2538;
+      --accent-subtle: #F8EFD8; --accent-border: #CFB178;
+      --sidebar-bg: #131C2E; --sidebar-border: #25334C;
+      --sidebar-active: #1F2A42; --sidebar-hover: #1A2438;
+      --sidebar-text: #F2EBD9; --sidebar-text-muted: #7C89A3; --sidebar-icon: #B89968;
+      --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+      --badge-blue-bg: #E8EFF8;   --badge-blue-text: #1A4A90;   --badge-blue-border: #AABEE0;
+      --badge-amber-bg: #FBF5E0;  --badge-amber-text: #805A00;  --badge-amber-border: #DEC870;
+      --badge-orange-bg: #FBF0E4; --badge-orange-text: #804000; --badge-orange-border: #DEB870;
+      --badge-green-bg: #E8F5EE;  --badge-green-text: #186838;  --badge-green-border: #96CCA8;
+      --badge-red-bg: #FBE8E6;    --badge-red-text: #902018;    --badge-red-border: #E0A8A0;
+      --badge-purple-bg: #EEE8F8; --badge-purple-text: #481898; --badge-purple-border: #BEA4E8;
+      --badge-accent-bg: #131C2E; --badge-accent-text: #B89968; --badge-accent-border: #B89968;
+    }
+    [data-theme="dark"] {
+      --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+      --border: #2C3C54; --border-subtle: #243050;
+      --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+      --shadow: rgba(0,0,0,0.3); --shadow-heavy: rgba(0,0,0,0.5); --overlay: rgba(0,0,0,0.72);
+      --accent: #D4AA5C; --accent-text: #111928; --accent-subtle: #1E2808; --accent-border: #5A4A18;
+      --sidebar-bg: #0E1A30; --sidebar-border: #1A2A48; --sidebar-active: #1A2A48; --sidebar-hover: #14223C;
+      --sidebar-text: #F0EAE0; --sidebar-text-muted: #6E7E96; --sidebar-icon: #C9A456;
+      --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+      --badge-blue-bg: #0E1E38;   --badge-blue-text: #80AAEE;   --badge-blue-border: #1E3A64;
+      --badge-amber-bg: #20180A;  --badge-amber-text: #E8C040;  --badge-amber-border: #584010;
+      --badge-green-bg: #0E2018;  --badge-green-text: #68CC88;  --badge-green-border: #1A4830;
+      --badge-red-bg: #200E10;    --badge-red-text: #EE8880;    --badge-red-border: #581018;
+      --badge-accent-bg: #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border: #5A4A18;
+    }
+    .sidebar-desktop { display: flex; }
+    @media (max-width: 900px) { .sidebar-desktop { display: none !important; } }
+    @media (max-width: 600px) {
+      .party-grid { grid-template-columns: 1fr !important; }
+      .overview-grid { grid-template-columns: 1fr 1fr !important; }
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-design-v2.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+
+  const { useState, useEffect, useCallback } = React;
+  const { AppShell, PageHeader, Card, Btn, SectionHeader, InfoRow, Toast, EmptyState } = window.PzDesign;
+  const apiFetch = window.EstrellaShared.apiFetch;
+  const DRAFT_ID = parseInt(new URLSearchParams(window.location.search).get('draft_id') || '0', 10);
+  const TABS = ['Overview', 'Lines', 'Customer Mapping', 'Reservation', 'History'];
+
+  // ── Generic GET hook ──────────────────────────────────────────────────────
+  function useGet(url, deps) {
+    const [s, setS] = useState({ data: null, loading: !!url, error: null });
+    const load = useCallback(async () => {
+      if (!url) return;
+      setS(p => ({ ...p, loading: true, error: null }));
+      try { setS({ data: await apiFetch(url), loading: false, error: null }); }
+      catch (e) { setS({ data: null, loading: false, error: e.message }); }
+    }, deps); // eslint-disable-line
+    useEffect(() => { load(); }, [load]);
+    return { ...s, reload: load };
+  }
+
+  function Box({ loading, error, retry, children }) {
+    if (loading) return <div style={{ padding: 32, textAlign: 'center' }}><span className="spinner" /></div>;
+    if (error) return <EmptyState state="error" message={error} onRetry={retry} />;
+    return children;
+  }
+
+  // ── §4.2 chip vocabulary ──────────────────────────────────────────────────
+  const CHIPS = {
+    DRAFT:             { bg: 'var(--badge-neutral-bg)', c: 'var(--badge-neutral-text)', b: 'var(--badge-neutral-border)' },
+    EDITING:           { bg: 'var(--badge-neutral-bg)', c: 'var(--badge-neutral-text)', b: 'var(--badge-neutral-border)' },
+    APPROVED:          { bg: 'var(--badge-blue-bg)',    c: 'var(--badge-blue-text)',    b: 'var(--badge-blue-border)' },
+    'POSTING…':   { bg: 'var(--badge-blue-bg)',    c: 'var(--badge-blue-text)',    b: 'var(--badge-blue-border)' },
+    'PROFORMA POSTED': { bg: 'var(--badge-blue-bg)',    c: 'var(--badge-blue-text)',    b: 'var(--badge-blue-border)' },
+    'CONVERT BLOCKED': { bg: 'var(--badge-amber-bg)',   c: 'var(--badge-amber-text)',   b: 'var(--badge-amber-border)' },
+    'POST FAILED':     { bg: 'var(--badge-red-bg)',     c: 'var(--badge-red-text)',     b: 'var(--badge-red-border)' },
+    INVOICED:          { bg: 'var(--badge-green-bg)',   c: 'var(--badge-green-text)',   b: 'var(--badge-green-border)' },
+    CANCELLED:         { bg: 'var(--badge-neutral-bg)', c: 'var(--badge-neutral-text)', b: 'var(--badge-neutral-border)' },
+    SUPERSEDED:        { bg: 'var(--badge-neutral-bg)', c: 'var(--badge-neutral-text)', b: 'var(--badge-neutral-border)' },
+  };
+  function deriveChip(d, il) {
+    if (!d) return 'DRAFT';
+    if (il?.ok && il?.status === 'issued') return 'INVOICED';
+    const m = { draft:'DRAFT', editing:'EDITING', approved:'APPROVED', posting:'POSTING…',
+      posted:'PROFORMA POSTED', adopted_from_audit:'PROFORMA POSTED',
+      post_failed:'POST FAILED', cancelled:'CANCELLED', superseded:'SUPERSEDED' };
+    const st = d.draft_state || '';
+    if ((st==='posted'||st==='adopted_from_audit') && d.readiness?.safe_to_defer===false) return 'CONVERT BLOCKED';
+    return m[st] || st.toUpperCase().replace('_',' ');
+  }
+  function Chip({ label }) {
+    const s = CHIPS[label] || CHIPS.DRAFT;
+    return <span data-testid="draft-chip" style={{ display:'inline-flex', alignItems:'center', background:s.bg, color:s.c, border:`1px solid ${s.b}`, borderRadius:4, padding:'2px 8px', fontSize:11, fontWeight:700, letterSpacing:'0.05em', whiteSpace:'nowrap' }}>{label}</span>;
+  }
+
+  // ── Party card ────────────────────────────────────────────────────────────
+  function Party({ title, name, street, city, zip, country, nip, vatEu, warn, tid }) {
+    return (
+      <Card style={{ padding:'14px 16px' }} data-testid={tid}>
+        <div style={{ fontSize:10, fontWeight:700, color:'var(--text-3)', letterSpacing:'0.1em', textTransform:'uppercase', marginBottom:8 }}>{title}</div>
+        {name && <div style={{ fontWeight:700, fontSize:13, marginBottom:4 }}>{name}</div>}
+        {street && <div style={{ fontSize:12, color:'var(--text-2)' }}>{street}</div>}
+        {(city||zip) && <div style={{ fontSize:12, color:'var(--text-2)' }}>{[zip,city].filter(Boolean).join(' ')}</div>}
+        {country && <div style={{ fontSize:12, color:'var(--text-2)' }}>{country}</div>}
+        {nip && <div style={{ fontSize:11, color:'var(--text-3)', marginTop:4 }}>NIP: {nip}</div>}
+        {vatEu && <div style={{ fontSize:11, color:'var(--text-3)' }}>VAT UE: {vatEu}</div>}
+        {warn && <div style={{ marginTop:8, fontSize:11, color:'var(--badge-amber-text)' }}>⚠ {warn}</div>}
+      </Card>
+    );
+  }
+
+  // ── Confirm modal ─────────────────────────────────────────────────────────
+  function Confirm({ title, msg, ok, cancel, busy, label='Confirm', danger }) {
+    return (
+      <div style={{ position:'fixed', inset:0, background:'var(--overlay)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }} onClick={e=>e.target===e.currentTarget&&!busy&&cancel()}>
+        <div style={{ background:'var(--card)', borderRadius:10, padding:24, maxWidth:400, width:'90%', boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)' }}>
+          <div style={{ fontWeight:700, fontSize:15, marginBottom:10, color:danger?'var(--badge-red-text)':'var(--text)' }}>{title}</div>
+          <div style={{ fontSize:13, color:'var(--text-2)', marginBottom:20, lineHeight:1.6 }}>{msg}</div>
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+            <Btn variant="ghost" onClick={cancel} disabled={busy} small>Cancel</Btn>
+            <Btn variant={danger?'danger':'default'} onClick={ok} disabled={busy} small data-testid="confirm-ok">
+              {busy?<><span className="spinner" style={{ marginRight:6 }}/>Working…</>:label}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Cancel modal (reason required) ───────────────────────────────────────
+  function CancelModal({ draftId, onCancel, onDone }) {
+    const [reason, setReason] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState('');
+    const submit = async () => {
+      if (!reason.trim()) { setErr('Reason required.'); return; }
+      setBusy(true); setErr('');
+      try {
+        const d = await apiFetch(`/api/v1/proforma/draft/${draftId}`);
+        await apiFetch(`/api/v1/proforma/draft/${draftId}/cancel`, {
+          method:'POST', headers:{ 'Content-Type':'application/json', 'X-Operator': localStorage.getItem('pz_operator_name')||'operator' },
+          body: JSON.stringify({ expected_updated_at:(d?.draft||d)?.updated_at||'', reason:reason.trim() }),
+        });
+        onDone('Draft cancelled.');
+      } catch (e) { setErr(e.message); setBusy(false); }
+    };
+    return (
+      <div style={{ position:'fixed', inset:0, background:'var(--overlay)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }}>
+        <div style={{ background:'var(--card)', borderRadius:10, padding:24, maxWidth:420, width:'90%', boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)' }}>
+          <div style={{ fontWeight:700, fontSize:15, color:'var(--badge-red-text)', marginBottom:8 }}>Delete Draft #{draftId}</div>
+          <div style={{ fontSize:12, color:'var(--text-2)', marginBottom:12, lineHeight:1.5 }}>Voids this draft (marks as cancelled). The draft is <strong>retained for audit history</strong> — it is NOT permanently deleted and no change is made in wFirma. Reason required.</div>
+          <label style={{ fontSize:11, fontWeight:600, color:'var(--text-2)', display:'block', marginBottom:4 }}>Reason <span style={{ color:'var(--badge-red-text)' }}>*</span></label>
+          <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={2} placeholder="e.g. Client withdrew order"
+            style={{ width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--border)', fontSize:12, background:'var(--bg-subtle)', color:'var(--text)', fontFamily:'inherit', resize:'vertical' }} />
+          {err && <div style={{ color:'var(--badge-red-text)', fontSize:12, marginTop:6 }}>{err}</div>}
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:16 }}>
+            <Btn variant="ghost" onClick={onCancel} disabled={busy} small>Back</Btn>
+            <Btn variant="danger" onClick={submit} disabled={busy||!reason.trim()} small data-testid="btn-confirm-cancel">
+              {busy?<><span className="spinner" style={{ marginRight:6 }}/>…</>:'Cancel Draft'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Edit Draft modal (PATCH /draft/{id} metadata) ────────────────────────
+  function EditDraftModal({ draft, onClose, onDone }) {
+    const [currency, setCurrency] = useState(draft?.currency||'');
+    const [remarks, setRemarks] = useState(draft?.remarks||'');
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState('');
+    const submit = async () => {
+      if (!currency.trim()) { setErr('Currency required.'); return; }
+      setBusy(true); setErr('');
+      try {
+        await apiFetch(`/api/v1/proforma/draft/${draft.id}`, {
+          method:'PATCH', headers:{'Content-Type':'application/json','X-Operator':localStorage.getItem('pz_operator_name')||'operator'},
+          body:JSON.stringify({ currency:currency.trim(), remarks:remarks.trim(), expected_updated_at:draft.updated_at||'' }),
+        });
+        onDone('Draft updated.');
+      } catch (e) { setErr(e.message); setBusy(false); }
+    };
+    return (
+      <div style={{ position:'fixed', inset:0, background:'var(--overlay)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }} onClick={e=>e.target===e.currentTarget&&!busy&&onClose()}>
+        <div style={{ background:'var(--card)', borderRadius:10, padding:24, maxWidth:440, width:'92%', boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)' }}>
+          <div style={{ fontWeight:700, fontSize:15, fontFamily:'"DM Serif Display",serif', marginBottom:16, color:'var(--text)' }}>Edit Draft #{draft?.id}</div>
+          <label style={{ fontSize:11, fontWeight:600, color:'var(--text-2)', display:'block', marginBottom:4 }}>Currency</label>
+          <input value={currency} onChange={e=>setCurrency(e.target.value)} placeholder="USD" maxLength={4}
+            style={{ width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--border)', fontSize:12, background:'var(--bg-subtle)', color:'var(--text)', marginBottom:12 }} />
+          <label style={{ fontSize:11, fontWeight:600, color:'var(--text-2)', display:'block', marginBottom:4 }}>Remarks</label>
+          <textarea value={remarks} onChange={e=>setRemarks(e.target.value)} rows={2} placeholder="Optional note"
+            style={{ width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--border)', fontSize:12, background:'var(--bg-subtle)', color:'var(--text)', fontFamily:'inherit', resize:'vertical' }} />
+          {err && <div style={{ color:'var(--badge-red-text)', fontSize:12, marginTop:6 }}>{err}</div>}
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:16 }}>
+            <Btn variant="ghost" onClick={onClose} disabled={busy} small>Cancel</Btn>
+            <Btn variant="default" onClick={submit} disabled={busy} small data-testid="btn-confirm-edit">
+              {busy?<><span className="spinner" style={{ marginRight:6 }}/>Saving…</>:'Save changes'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Generate ▾ dropdown (Print=preview.html; Generate=PDF from wFirma) ─────
+  function GenerateMenu({ draftId, batchId, clientName, onClose }) {
+    const pdfUrl = batchId && clientName
+      ? `/api/v1/proforma/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}/document.pdf`
+      : null;
+    const btn = (label, onClick, tid) => (
+      <button onClick={onClick} data-testid={tid}
+        style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 14px', background:'none', border:'none', cursor:'pointer', fontSize:12, color:'var(--text)' }}
+        onMouseEnter={e=>e.currentTarget.style.background='var(--bg-subtle)'}
+        onMouseLeave={e=>e.currentTarget.style.background='none'}>
+        {label}
+      </button>
+    );
+    return (
+      <div style={{ position:'absolute', top:'100%', left:0, marginTop:4, background:'var(--card)', border:'1px solid var(--border)', borderRadius:6, boxShadow:'0 8px 24px var(--shadow-heavy)', zIndex:200, minWidth:200 }} onClick={onClose}>
+        {pdfUrl
+          ? btn('Download PDF (wFirma)', ()=>window.open(pdfUrl,'_blank'), 'btn-generate-pdf')
+          : <div style={{ padding:'9px 14px', fontSize:12, color:'var(--text-3)' }}>PDF: draft must be posted to wFirma first</div>
+        }
+      </div>
+    );
+  }
+
+  // ── Overflow ⋯ menu (secondary / less-frequent actions) ──────────────────
+  function OverflowMenu({ onClose, onApprove, onReopen, onReset, onSend, canApprove, canReopen, canReset }) {
+    const item = (label, handler, disabled, tid, warn) => (
+      <button onClick={()=>{ if(!disabled){ handler(); onClose(); } }} disabled={disabled}
+        data-testid={tid}
+        style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 14px', background:'none', border:'none',
+          cursor:disabled?'not-allowed':'pointer', fontSize:12,
+          color: warn ? 'var(--badge-amber-text)' : disabled ? 'var(--text-3)' : 'var(--text)',
+          opacity:disabled?0.5:1 }}
+        onMouseEnter={e=>{ if(!disabled) e.currentTarget.style.background='var(--bg-subtle)'; }}
+        onMouseLeave={e=>{ e.currentTarget.style.background='none'; }}>
+        {label}
+      </button>
+    );
+    return (
+      <div style={{ position:'absolute', top:'100%', right:0, marginTop:4, background:'var(--card)', border:'1px solid var(--border)', borderRadius:6, boxShadow:'0 8px 24px var(--shadow-heavy)', zIndex:200, minWidth:210 }} onClick={e=>e.stopPropagation()}>
+        {item('Approve draft',  onApprove, !canApprove, 'overflow-btn-approve')}
+        {item('Re-open draft',  onReopen,  !canReopen,  'overflow-btn-reopen')}
+        <div style={{ height:1, background:'var(--border-subtle)', margin:'4px 0' }} />
+        {item('⚠ Reset lines from packing — overwrites edits', onReset, !canReset, 'overflow-btn-reset', true)}
+        <div style={{ height:1, background:'var(--border-subtle)', margin:'4px 0' }} />
+        {item('Send (not yet available)', onSend, false, 'overflow-btn-send')}
+      </div>
+    );
+  }
+
+  // ── Convert-to-Invoice modal ───────────────────────────────────────────────
+  function ConvertModal({ draft, onClose, onDone }) {
+    const draftId = draft?.id;
+    const pid = draft?.wfirma_proforma_id || '';
+    const idempKey = pid ? `prof-${pid.slice(0,12)}-conv` : `draft-${draftId}-conv`;
+    const [preview, setPreview] = useState(null);
+    const [previewLoading, setPreviewLoading] = useState(true);
+    const [previewError, setPreviewError] = useState('');
+    const [sessionUser, setSessionUser] = useState(null);
+    const [submitting, setSubmitting] = useState(false);
+    const [outcome, setOutcome] = useState(null);
+
+    useEffect(() => {
+      Promise.all([
+        apiFetch(`/api/v1/proforma/draft/${draftId}/to-invoice-preview`).catch(e=>({ _err: e.message })),
+        apiFetch('/auth/me').catch(()=>null),
+      ]).then(([prev, user]) => {
+        if (prev?._err) setPreviewError(prev._err);
+        else setPreview(prev);
+        setSessionUser(user);
+        setPreviewLoading(false);
+      });
+    }, [draftId]);
+
+    const doConvert = async () => {
+      setSubmitting(true);
+      try {
+        const res = await apiFetch(`/api/v1/proforma/draft/${draftId}/to-invoice`, {
+          method:'POST', headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ confirm:'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA' }),
+        });
+        if (res?.ok) {
+          setOutcome({ type:'success', msg:`Invoice created: ${res.wfirma_invoice_number||res.wfirma_invoice_id}`, res });
+        } else {
+          const reasons = (res?.blocking_reasons||[]).join('; ');
+          if (reasons.includes('WFIRMA_CREATE_INVOICE_ALLOWED')) {
+            setOutcome({ type:'flag_off', msg:'Invoice creation is disabled. Ask admin to enable WFIRMA_CREATE_INVOICE_ALLOWED and restart the service.' });
+          } else {
+            setOutcome({ type:'rejected', msg:`wFirma rejected: ${reasons||res?.error||'Unknown'}`, res });
+          }
+        }
+      } catch (e) {
+        const m = e.message||'';
+        if (m.includes('503')||m.toLowerCase().includes('disabled')) setOutcome({ type:'flag_off', msg:'Invoice creation is disabled. Ask admin to enable WFIRMA_CREATE_INVOICE_ALLOWED.' });
+        else if (m.includes('504')||m.includes('502')||m.toLowerCase().includes('timeout')||m.includes('unreachable')) setOutcome({ type:'timeout', msg:'Network timeout — do NOT retry immediately. Verify with wFirma support. wfirma_post_retry Inbox proposal not yet registered — file manually if needed.' });
+        else if (m.includes('500')) setOutcome({ type:'partial', msg:'Server error after wFirma call. Invoice may exist in wFirma but local record not updated. Check audit trail; use Adopt Existing if invoice is there.' });
+        else setOutcome({ type:'rejected', msg:m });
+      }
+      setSubmitting(false);
+    };
+
+    const sum = preview?.summary || {};
+    const operator = sessionUser?.full_name || sessionUser?.email || 'session user';
+    const blocked = !previewLoading && (!!previewError || preview?.status==='blocked');
+
+    if (outcome) {
+      const isOk = outcome.type==='success';
+      const col = { success:'var(--badge-green-text)', rejected:'var(--badge-red-text)', flag_off:'var(--badge-neutral-text)', timeout:'var(--badge-amber-text)', partial:'var(--badge-orange-text)' }[outcome.type]||'var(--badge-red-text)';
+      return (
+        <div style={{ position:'fixed', inset:0, background:'var(--overlay)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }}>
+          <div style={{ background:'var(--card)', borderRadius:10, padding:24, maxWidth:440, width:'92%', boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)' }}>
+            <div style={{ fontWeight:700, fontSize:14, color:col, marginBottom:10 }}>{isOk?'✓ Invoice created':'⚠ '+(outcome.type.toUpperCase().replace('_',' '))}</div>
+            <div style={{ fontSize:13, color:'var(--text-2)', lineHeight:1.6, marginBottom:16 }}>{outcome.msg}</div>
+            {isOk && outcome.res && <div style={{ fontSize:12, marginBottom:12 }}>Invoice ID: <strong>{outcome.res.wfirma_invoice_id}</strong> · Number: <strong>{outcome.res.wfirma_invoice_number}</strong></div>}
+            <Btn variant={isOk?'gold':'outline'} onClick={()=>{ onDone(isOk?'success':'failed'); onClose(); }} small style={{ width:'100%' }} data-testid="convert-outcome-close">{isOk?'Done':'Close'}</Btn>
+          </div>
+        </div>
+      );
+    }
+
+    const Cell = ({ k, v, mono }) => (
+      <><div style={{ color:'var(--text-3)', fontWeight:600, fontSize:12 }}>{k}</div>
+        <div style={{ color:'var(--text)', fontFamily:mono?'monospace':'inherit', fontSize:12, wordBreak:'break-all' }}>{v}</div></>
+    );
+
+    return (
+      <div style={{ position:'fixed', inset:0, background:'var(--overlay)', display:'flex', alignItems:'flex-start', justifyContent:'center', zIndex:2000, paddingTop:48, overflowY:'auto' }}>
+        <div style={{ background:'var(--card)', borderRadius:10, width:'92%', maxWidth:640, marginBottom:40, boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)' }}>
+          <div style={{ padding:'16px 20px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <span style={{ fontWeight:700, fontSize:16, fontFamily:'"DM Serif Display",serif' }}>⚠ Convert Proforma → Invoice</span>
+            <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', fontSize:18, color:'var(--text-3)' }} data-testid="convert-modal-close">×</button>
+          </div>
+          <div style={{ padding:'18px 20px' }}>
+            {/* SENTENCE ONE — irreversibility */}
+            <div style={{ padding:'10px 14px', background:'var(--badge-red-bg)', border:'1px solid var(--badge-red-border)', borderRadius:6, marginBottom:16, fontSize:13, color:'var(--badge-red-text)', fontWeight:600, lineHeight:1.5 }} data-testid="irreversibility-warning">
+              This creates a wFirma invoice and cannot be cancelled — only corrected via Korekta.
+            </div>
+
+            {previewLoading ? <div style={{ textAlign:'center', padding:24 }}><span className="spinner" /></div>
+            : previewError ? <div style={{ padding:'10px 14px', background:'var(--badge-amber-bg)', borderRadius:6, fontSize:12, color:'var(--badge-amber-text)' }}>Preview blocked: {previewError}</div>
+            : preview?.status==='blocked' ? <div style={{ padding:'10px 14px', background:'var(--badge-amber-bg)', borderRadius:6, fontSize:12, color:'var(--badge-amber-text)' }}>Conversion blocked: {(preview?.blocking_reasons||[]).join('; ')}</div>
+            : (
+              <>
+                <div style={{ fontSize:11, fontWeight:700, color:'var(--text-3)', letterSpacing:'0.08em', textTransform:'uppercase', marginBottom:8 }}>── PAYLOAD ─────────────────────────────</div>
+                <div style={{ display:'grid', gridTemplateColumns:'140px 1fr', gap:'6px 12px', marginBottom:14 }}>
+                  <Cell k="Endpoint" v={`POST /api/v1/proforma/draft/${draftId}/to-invoice`} mono />
+                  <Cell k="Source" v={sum.source_proforma_number||'—'} />
+                  <Cell k="wFirma Proforma" v={preview?.wfirma_proforma_id||'—'} mono />
+                  <Cell k="Contractor ID" v={sum.contractor_id||'—'} mono />
+                  <Cell k="Currency" v={sum.currency||'—'} />
+                  <Cell k="Total (expected)" v={sum.source_proforma_total?`${sum.source_proforma_total} ${sum.currency}`:'—'} />
+                  <Cell k="Series ID (auto)" v={(sum.series_id||'—') + ' (read-only)'} />
+                  <Cell k="Lines" v={sum.line_count?`${sum.line_count} line(s)`:'—'} />
+                  <Cell k="Issue Date" v={sum.final_date||'—'} />
+                </div>
+                <div style={{ fontSize:11, fontWeight:700, color:'var(--text-3)', letterSpacing:'0.08em', textTransform:'uppercase', marginBottom:8 }}>── AUDIT ────────────────────────────────</div>
+                <div style={{ display:'grid', gridTemplateColumns:'140px 1fr', gap:'6px 12px', marginBottom:14 }}>
+                  <Cell k="Idempotency key" v={idempKey + ' (deterministic)'} mono />
+                  <Cell k="Audit row" v="written pre-call as pending; updated post-call" />
+                  <Cell k="Actor" v={`${operator} (session-derived)`} />
+                </div>
+                <div style={{ fontSize:11, color:'var(--text-3)', padding:'8px 10px', background:'var(--bg-subtle)', borderRadius:4, marginBottom:14, lineHeight:1.5 }}>
+                  On timeout: do NOT retry. wfirma_post_retry Inbox proposal not yet registered — verify manually with wFirma support or use Adopt Existing.
+                </div>
+              </>
+            )}
+
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', paddingTop:8, borderTop:'1px solid var(--border-subtle)' }}>
+              <Btn variant="ghost" onClick={onClose} disabled={submitting} small>Cancel</Btn>
+              <Btn variant="danger" onClick={doConvert} disabled={submitting||previewLoading||blocked} small data-testid="btn-confirm-convert">
+                {submitting?<><span className="spinner" style={{ marginRight:6 }}/>Converting…</>:'⚠ Convert to Invoice'}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Tab bodies ────────────────────────────────────────────────────────────
+
+  function OverviewTab({ draft, invoiceLink }) {
+    const d = draft||{}; const il = invoiceLink?.ok?invoiceLink:null;
+    const pt = d.payment_terms||{};
+    const fmt = v=>v||'—';
+    const cells = [
+      ['Draft №', d.id?`#${d.id} · v${d.draft_version||1}`:'—'],
+      ['AWB / Shipment', fmt(d.batch_id)],
+      ['wFirma Proforma', fmt(d.wfirma_proforma_fullnumber||d.wfirma_proforma_id)],
+      ['wFirma Invoice', il?`${fmt(il.invoice_number)} (${fmt(il.invoice_id)})`:'—'],
+      ['Draft State', fmt(d.draft_state)],
+      ['Currency', fmt(d.currency)],
+      ['FX Rate', d.exchange_rate?`${d.exchange_rate} (${d.fx_rate_source||'NBP'})`:'—'],
+      ['Payment Method', fmt(pt.paymentmethod||d.wfirma_payment_method)],
+      ['Payment Due', fmt(pt.paymentdate||d.wfirma_payment_due)],
+      ['Incoterm', fmt(d.incoterm)],
+      ['Created', fmt((d.created_at||'').slice(0,16))],
+      ['Updated', fmt((d.updated_at||'').slice(0,16))],
+      ['Posted By', fmt(d.posted_by)],
+      ...(il?.status==='issued'?[['Invoice Total',`${il.invoice_total||il.source_total} ${il.currency}`],['Converted At',fmt((il.converted_at||'').slice(0,16))]]:[]),
+    ].filter(([k,v])=>v!=='—'||['Draft №','AWB / Shipment','Draft State','Currency'].includes(k));
+    return (
+      <div data-testid="tab-overview" style={{ padding:'20px 24px' }}>
+        <div className="overview-grid" style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:0, border:'1px solid var(--border-subtle)', borderRadius:6, overflow:'hidden' }}>
+          {cells.map(([k,v])=>(
+            <div key={k} style={{ padding:'10px 12px', borderBottom:'1px solid var(--border-subtle)', borderRight:'1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize:10, fontWeight:600, color:'var(--text-3)', letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:4 }}>{k}</div>
+              <div style={{ fontSize:13, fontWeight:600, color:'var(--text)' }}>{v}</div>
+            </div>
+          ))}
+        </div>
+        {d.remarks && <div style={{ marginTop:12, padding:'10px 14px', background:'var(--bg-subtle)', borderRadius:6, border:'1px solid var(--border-subtle)', fontSize:12 }}><strong>Remarks:</strong> {d.remarks}</div>}
+        {d.needs_pricing_refresh && <div data-testid="pricing-warning" style={{ marginTop:10, padding:'8px 12px', background:'var(--badge-amber-bg)', border:'1px solid var(--badge-amber-border)', borderRadius:6, fontSize:12, color:'var(--badge-amber-text)', fontWeight:600 }}>⚠ One or more lines have unit price ≤ 0 — reset from packing list.</div>}
+      </div>
+    );
+  }
+
+  function LinesTab({ draft, onRefresh }) {
+    const lines = draft?.editable_lines||[];
+    const charges = draft?.service_charges||[];
+    const [busy, setBusy] = useState({});
+    const [confirmDel, setConfirmDel] = useState(null); // lid to confirm
+    const [delErr, setDelErr] = useState('');
+    const op = ()=>localStorage.getItem('pz_operator_name')||'operator';
+    const fmt = v=>v!=null?parseFloat(v).toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
+    const delLine = async (lid) => {
+      setConfirmDel(null);
+      setBusy(b=>({...b,[lid]:true})); setDelErr('');
+      try {
+        await apiFetch(`/api/v1/proforma/draft/${draft.id}/lines/${lid}?expected_updated_at=${encodeURIComponent(draft.updated_at||'')}&force=false`,
+          { method:'DELETE', headers:{ 'X-Operator':op() } });
+        onRefresh();
+      } catch (e) { setDelErr(e.message); }
+      setBusy(b=>({...b,[lid]:false}));
+    };
+    if (!lines.length&&!charges.length) return <EmptyState state="empty" message="No lines." />;
+    return (
+      <div data-testid="tab-lines" style={{ overflowX:'auto' }}>
+        {confirmDel!==null && <Confirm title="Delete Line" msg={`Remove line #${confirmDel}? This cannot be undone.`} label="Delete line" danger ok={()=>delLine(confirmDel)} cancel={()=>setConfirmDel(null)} busy={!!busy[confirmDel]} />}
+        {delErr && <div style={{ padding:'6px 12px', background:'var(--badge-red-bg)', color:'var(--badge-red-text)', fontSize:12, borderRadius:4, margin:'6px 12px 0' }}>Delete failed: {delErr}</div>}
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead><tr style={{ background:'var(--bg-subtle)', borderBottom:'2px solid var(--border)' }}>
+            {['#','Name','HS','Origin','Qty','Unit Price','Total','VAT',''].map(h=><th key={h} style={{ padding:'8px 10px', textAlign:'left', fontSize:11, fontWeight:700, color:'var(--text-2)', whiteSpace:'nowrap' }}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {lines.map((l,i)=>(
+              <tr key={l.line_id||i} style={{ borderBottom:'1px solid var(--border-subtle)' }}>
+                <td style={{ padding:'7px 10px', color:'var(--text-3)', width:28 }}>{i+1}</td>
+                <td style={{ padding:'7px 10px', fontWeight:600 }}>{l.name_en||l.name_pl||l.product_code||'—'}</td>
+                <td style={{ padding:'7px 10px', fontFamily:'monospace' }}>{l.hs_code||'—'}</td>
+                <td style={{ padding:'7px 10px' }}>{l.country_of_origin||'—'}</td>
+                <td style={{ padding:'7px 10px', fontFamily:'monospace' }}>{l.qty??'—'}</td>
+                <td style={{ padding:'7px 10px', fontFamily:'monospace' }}>{l.unit_price?fmt(l.unit_price):'—'}</td>
+                <td style={{ padding:'7px 10px', fontFamily:'monospace', fontWeight:600 }}>{l.qty&&l.unit_price?fmt(l.qty*l.unit_price):'—'}</td>
+                <td style={{ padding:'7px 10px', color:'var(--text-2)' }}>{l.vat_rate??'—'}</td>
+                <td style={{ padding:'7px 10px' }}><Btn variant="ghost" small onClick={()=>setConfirmDel(l.line_id||l.id)} disabled={busy[l.line_id||l.id]} data-testid={`btn-del-line-${l.line_id||i}`}>×</Btn></td>
+              </tr>
+            ))}
+            {charges.map((c,i)=>(
+              <tr key={`ch${i}`} style={{ borderBottom:'1px solid var(--border-subtle)', background:'var(--bg-subtle)' }}>
+                <td style={{ padding:'7px 10px' }}>—</td>
+                <td colSpan={6} style={{ padding:'7px 10px', fontStyle:'italic', color:'var(--text-2)' }}>{c.label||c.charge_type}: {c.amount} {c.currency}</td>
+                <td /><td />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  function CustomerMappingTab({ draft }) {
+    const cr = draft?.customer_resolution;
+    if (!cr) return <EmptyState state="empty" message="No resolution data." />;
+    return (
+      <div data-testid="tab-customer-mapping" style={{ padding:'20px 24px' }}>
+        <Card style={{ padding:'0 0 8px' }}>
+          <SectionHeader label="Customer Mapping" />
+          <div style={{ padding:'0 16px' }}>
+            {[['Sales client name',cr.raw_input||'—'],['Normalized',cr.normalized_name||'—'],['wFirma customer ID',cr.wfirma_customer_id||'—',true],['wFirma name',cr.resolved_wfirma_name||'—'],['Match strategy',cr.match_strategy||'—'],['Found',cr.found?'✓ Yes':'✗ No']].map(([k,v,mono])=><InfoRow key={k} label={k} value={v} mono={mono} />)}
+          </div>
+        </Card>
+        {!cr.found && <div style={{ marginTop:12, padding:'10px 14px', background:'var(--badge-amber-bg)', border:'1px solid var(--badge-amber-border)', borderRadius:6, fontSize:12, color:'var(--badge-amber-text)' }}>⚠ Not mapped to wFirma customer — <a href="/dashboard/customer-master-v2.html" style={{ color:'var(--badge-amber-text)', fontWeight:700 }}>Open Customer Master</a></div>}
+      </div>
+    );
+  }
+
+  function ReservationTab({ draft, onRefresh }) {
+    const [creating, setCreating] = useState(false);
+    const [createErr, setCreateErr] = useState('');
+    const [confirmRes, setConfirmRes] = useState(false);
+    const hook = useGet(
+      draft?.batch_id && draft?.client_name ? `/api/v1/proforma/preview/${encodeURIComponent(draft.batch_id)}/${encodeURIComponent(draft.client_name)}` : null,
+      [draft?.batch_id, draft?.client_name],
+    );
+    const p = hook.data;
+    const blockers = Array.isArray(p?.export_blockers)?p.export_blockers:[];
+    const chip = (label,ok) => <span style={{ display:'inline-flex', alignItems:'center', gap:4, padding:'3px 10px', borderRadius:4, fontSize:11, fontWeight:600, background:ok?'var(--badge-green-bg)':'var(--badge-amber-bg)', color:ok?'var(--badge-green-text)':'var(--badge-amber-text)', border:`1px solid ${ok?'var(--badge-green-border)':'var(--badge-amber-border)'}` }}>{ok?'✓':'⚠'} {label}</span>;
+    const createRes = async () => {
+      setCreating(true); setCreateErr('');
+      try {
+        await apiFetch('/api/v1/wfirma/reservations/create', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ batch_id:draft.batch_id, client_name:draft.client_name }) });
+        onRefresh(); hook.reload();
+      } catch (e) { setCreateErr(e.message); }
+      setCreating(false); setConfirmRes(false);
+    };
+    return (
+      <div data-testid="tab-reservation" style={{ padding:'20px 24px' }}>
+        <Box loading={hook.loading} error={hook.error} retry={hook.reload}>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:14 }}>
+            {chip('wFirma configured', p?.wfirma_capable!==false)}
+            {chip('Audit clean', p?.audit_ok===true||p?.audit_status==='clean')}
+            {chip('Reservation supported', p?.reservation_supported!==false)}
+          </div>
+          {blockers.length>0 && <Card style={{ padding:'12px 16px', marginBottom:14, background:'var(--badge-amber-bg)', borderColor:'var(--badge-amber-border)' }}><div style={{ fontWeight:700, fontSize:12, color:'var(--badge-amber-text)', marginBottom:6 }}>Blocking reasons</div><ul style={{ paddingLeft:16, fontSize:12, color:'var(--badge-amber-text)' }}>{blockers.map((b,i)=><li key={i} style={{ marginBottom:3 }}>{b}</li>)}</ul></Card>}
+          {createErr && <div style={{ color:'var(--badge-red-text)', fontSize:12, marginTop:8, padding:'6px 10px', background:'var(--badge-red-bg)', borderRadius:4 }}>Reservation failed: {createErr}</div>}
+          {confirmRes && <Confirm title="Create Reservation" msg={`Create wFirma reservation for ${draft?.client_name}? This calls the live wFirma API.`} label="Create Reservation" ok={createRes} cancel={()=>setConfirmRes(false)} busy={creating} />}
+          <div style={{ display:'flex', justifyContent:'flex-end', marginTop:8 }}>
+            <Btn variant="outline" small onClick={()=>setConfirmRes(true)} disabled={creating||blockers.length>0} data-testid="btn-create-reservation">
+              {creating?<><span className="spinner" style={{ marginRight:6 }}/>Creating…</>:'Create Reservation'}
+            </Btn>
+          </div>
+        </Box>
+      </div>
+    );
+  }
+
+  function HistoryTab({ draftId }) {
+    const hook = useGet(`/api/v1/proforma/draft/${draftId}/events`, [draftId]);
+    const events = hook.data?.events||[];
+    return (
+      <div data-testid="tab-history" style={{ padding:'20px 24px' }}>
+        <Box loading={hook.loading} error={hook.error} retry={hook.reload}>
+          {!events.length?<EmptyState state="empty" message="No events." />:(
+            <div>{events.map((ev,i)=>(
+              <div key={i} style={{ display:'flex', gap:12, padding:'9px 0', borderBottom:'1px solid var(--border-subtle)' }}>
+                <div style={{ width:7, height:7, borderRadius:'50%', background:'var(--accent)', marginTop:5, flexShrink:0 }} />
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:12, fontWeight:600 }}>{ev.event_type||ev.type||'event'}</div>
+                  {ev.operator&&<div style={{ fontSize:11, color:'var(--text-2)' }}>by {ev.operator}</div>}
+                  {ev.notes&&<div style={{ fontSize:11, color:'var(--text-3)', marginTop:2 }}>{ev.notes}</div>}
+                </div>
+                <div style={{ fontSize:10, color:'var(--text-3)', whiteSpace:'nowrap' }}>{(ev.created_at||ev.recorded_at||'').slice(0,16)}</div>
+              </div>
+            ))}</div>
+          )}
+        </Box>
+      </div>
+    );
+  }
+
+  // ── Main App ──────────────────────────────────────────────────────────────
+  function App() {
+    const [activeTab, setActiveTab] = useState('Overview');
+    const [toast, setToast] = useState(null);
+    const [modal, setModal] = useState(null);
+    const [actionBusy, setActionBusy] = useState({});
+    const [showGenerate, setShowGenerate] = useState(false);
+    const [showOverflow, setShowOverflow] = useState(false);
+    const showToast = (msg, type='info') => { setToast({msg,type}); setTimeout(()=>setToast(null),4000); };
+
+    // Draft state
+    const [draftRaw, setDraftRaw] = useState(null);
+    const [draftLoading, setDraftLoading] = useState(true);
+    const [draftError, setDraftError] = useState(null);
+    const loadDraft = useCallback(async () => {
+      if (!DRAFT_ID) return;
+      setDraftLoading(true); setDraftError(null);
+      try {
+        const res = await apiFetch(`/api/v1/proforma/draft/${DRAFT_ID}`);
+        setDraftRaw(res?.draft??res); setDraftLoading(false);
+      } catch (e) { setDraftError(e.message); setDraftLoading(false); }
+    }, []);
+    useEffect(()=>{ loadDraft(); },[loadDraft]);
+
+    const invLinkHook = useGet(DRAFT_ID?`/api/v1/proforma/draft/${DRAFT_ID}/invoice-link`:null,[DRAFT_ID]);
+    const compHook = useGet('/api/v1/settings/company-profile',[]);
+
+    const draft = draftRaw;
+    const invoiceLink = invLinkHook.data;
+    const chip = deriveChip(draft, invoiceLink);
+    const op = ()=>localStorage.getItem('pz_operator_name')||'operator';
+
+    // Mutation helper
+    const mutate = async (path, body, successMsg, key) => {
+      setActionBusy(b=>({...b,[key]:true}));
+      try {
+        await apiFetch(path, { method:'POST', headers:{'Content-Type':'application/json','X-Operator':op()}, body:JSON.stringify(body) });
+        showToast(successMsg,'success'); loadDraft(); invLinkHook.reload&&invLinkHook.reload();
+      } catch (e) { showToast(e.message,'error'); }
+      setActionBusy(b=>({...b,[key]:false}));
+    };
+
+    const st = draft?.draft_state||'';
+    const posted = st==='posted'||st==='adopted_from_audit';
+    const canApprove = ['editing','draft'].includes(st);
+    const canReopen = st==='approved';
+    const canPost = st==='approved';
+    const canCancel = !['cancelled','superseded'].includes(st)&&!posted&&chip!=='INVOICED';
+    const canConvert = posted&&chip!=='INVOICED'&&!!draft?.wfirma_proforma_id;
+    const canReset = ['editing','draft','approved'].includes(st);
+    const canEdit = ['draft','editing'].includes(st);
+    // Duplicate = clone to new draft; available for any non-terminal state
+    const canDuplicate = !['cancelled','superseded'].includes(st);
+
+    if (!DRAFT_ID) return <AppShell activeNav="proforma"><div style={{ padding:40 }}><EmptyState state="error" message="Missing draft_id" /></div></AppShell>;
+
+    const backHref = draft?.batch_id?`/dashboard/proforma-v2.html?batch_id=${encodeURIComponent(draft.batch_id)}`:'/dashboard/proforma-v2.html';
+    const company = compHook.data;
+    const cr = draft?.customer_resolution;
+    const buyer = cr?.customer;
+
+    return (
+      <AppShell activeNav="proforma" data-testid="proforma-detail-v2-root">
+        {toast && <Toast msg={toast.msg} type={toast.type} />}
+
+        {/* Modals */}
+        {/* Cancel draft modal — uses CancelModal which requires a reason for audit */}
+        {modal==='cancel' && <CancelModal draftId={DRAFT_ID} onCancel={()=>setModal(null)} onDone={msg=>{ showToast(msg,'success'); setModal(null); loadDraft(); }} />}
+        {modal==='reopen' && <Confirm title="Re-open Draft" msg="Move approved draft back to editing?" label="Re-open" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/re-open`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_REOPEN_LOCAL_PROFORMA_DRAFT'},'Draft re-opened.','reopen'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reopen} />}
+        {modal==='approve' && <Confirm title="Approve Draft" msg="Lock draft as approved? Required before posting to wFirma." label="Approve" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/approve`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_APPROVE_LOCAL_PROFORMA_DRAFT'},'Draft approved.','approve'); }} cancel={()=>setModal(null)} busy={!!actionBusy.approve} />}
+        {modal==='post' && <Confirm title="Post to wFirma" msg={`Post draft #${DRAFT_ID} to wFirma as a proforma? This calls the live wFirma API (shared-with-production).`} label="Post to wFirma" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/post`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA'},'Proforma posted to wFirma.','post'); }} cancel={()=>setModal(null)} busy={!!actionBusy.post} />}
+        {/* Duplicate = clone to NEW draft; source is untouched */}
+        {modal==='duplicate' && <Confirm title="Duplicate Draft" msg={`Create a copy of Draft #${DRAFT_ID}? A NEW draft will be created — this draft's edits are NOT changed. The clone starts as unposted.`} label="Create duplicate" ok={async()=>{ setModal(null); setActionBusy(b=>({...b,duplicate:true})); try { const r = await apiFetch(`/api/v1/proforma/draft/${DRAFT_ID}/clone`,{method:'POST'}); showToast(`Duplicate created — Draft #${r.draft_id}`,'success'); window.location.href = `/dashboard/proforma-detail-v2.html?draft_id=${r.draft_id}`; } catch(e){ showToast(e.message,'error'); } setActionBusy(b=>({...b,duplicate:false})); }} cancel={()=>setModal(null)} busy={!!actionBusy.duplicate} />}
+        {/* Reset lines from packing — only via overflow, with explicit overwrite warning */}
+        {modal==='reset' && <Confirm title="Reset Lines from Packing" msg="⚠ This will OVERWRITE the current draft's manual line edits with lines from the latest packing data. This action cannot be undone. The draft itself stays — only its line items are replaced." label="Reset lines (overwrites edits)" danger ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/reset-from-sales-packing`,{expected_updated_at:draft?.updated_at||'',reset_all:false},'Lines reset from packing.','reset'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reset} />}
+        {modal==='edit' && draft && <EditDraftModal draft={draft} onClose={()=>setModal(null)} onDone={msg=>{ showToast(msg,'success'); setModal(null); loadDraft(); }} />}
+        {modal==='convert' && draft && <ConvertModal draft={draft} onClose={()=>setModal(null)} onDone={(outcome)=>{ loadDraft(); invLinkHook.reload&&invLinkHook.reload(); if(outcome==='success')setActiveTab('Overview'); }} />}
+
+        {/* Breadcrumb */}
+        <div style={{ padding:'12px 24px 0', display:'flex', alignItems:'center', gap:8 }}>
+          <a href={backHref} data-testid="back-to-screen-a" style={{ fontSize:12, color:'var(--accent)', textDecoration:'none', fontWeight:600 }}>← {draft?.batch_id?`Shipment ${draft.batch_id.slice(-8)}`:'All Drafts'}</a>
+          <span style={{ color:'var(--text-3)' }}>/</span>
+          <span style={{ fontSize:12, color:'var(--text-2)' }}>{draft?.client_name||`Draft #${DRAFT_ID}`}</span>
+          {draft&&<Chip label={chip} />}
+        </div>
+
+        <PageHeader title={draft?(draft.wfirma_proforma_fullnumber||`Draft #${DRAFT_ID}`):`Draft #${DRAFT_ID}`} subtitle={draft?`${draft.client_name||'—'} · ${draft.currency||'—'}`:'Loading…'} />
+
+        <div style={{ padding:'16px 24px 40px', flex:1, overflowY:'auto' }}>
+          {draftLoading ? <div style={{ textAlign:'center', padding:40 }}><span className="spinner" /></div>
+          : draftError ? <EmptyState state="error" message={draftError} onRetry={loadDraft} />
+          : (
+            <>
+              {/* Toolbar: Edit · Cancel draft · Duplicate · Post · Convert⚠ · Print · Generate▾ · ⋯(Approve,Reopen,Reset,Send) */}
+              <Card data-testid="action-toolbar" style={{ padding:'10px 16px', marginBottom:14, position:'relative' }}>
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}
+                  onClick={()=>{ setShowGenerate(false); setShowOverflow(false); }}>
+                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('edit');}} disabled={!canEdit} data-testid="btn-edit">Edit</Btn>
+                  {/* Delete = soft cancel (POST /cancel); draft retained for audit — NOT permanently deleted */}
+                  {/* "Cancel draft" = soft cancel (POST /cancel); draft retained for audit — NOT permanently deleted */}
+                  <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setModal('cancel');}} disabled={!canCancel} data-testid="btn-cancel-draft">Cancel draft</Btn>
+                  {/* Duplicate = POST /clone → NEW unposted draft; source untouched */}
+                  <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setModal('duplicate');}} disabled={!canDuplicate} data-testid="btn-duplicate">Duplicate</Btn>
+                  <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
+                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('post');}} disabled={!canPost} data-testid="btn-post-wfirma">Post to wFirma</Btn>
+                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('convert');}} disabled={!canConvert} style={canConvert?{color:'var(--badge-amber-text)',borderColor:'var(--badge-amber-border)'}:{}} data-testid="btn-convert-invoice">⚠ Convert to Invoice</Btn>
+                  <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
+                  {/* Print = HTML preview (always available, no posting required) */}
+                  <Btn variant="ghost" small onClick={e=>{e.stopPropagation();window.open(`/api/v1/proforma/draft/${DRAFT_ID}/preview.html`,'_blank');}} data-testid="btn-print">Print</Btn>
+                  {/* Generate ▾ = PDF from wFirma (requires posted proforma; distinct from Print) */}
+                  <div style={{ position:'relative' }}>
+                    <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setShowGenerate(g=>!g);setShowOverflow(false);}} data-testid="btn-generate">Generate ▾</Btn>
+                    {showGenerate && <GenerateMenu draftId={DRAFT_ID} batchId={draft?.batch_id} clientName={draft?.client_name} onClose={()=>setShowGenerate(false)} />}
+                  </div>
+                  {/* ⋯ overflow: secondary/state-gated/unavailable actions */}
+                  <div style={{ position:'relative', marginLeft:'auto' }}>
+                    <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setShowOverflow(o=>!o);setShowGenerate(false);}} data-testid="btn-overflow">⋯</Btn>
+                    {showOverflow && <OverflowMenu
+                      onClose={()=>setShowOverflow(false)}
+                      canApprove={canApprove} onApprove={()=>setModal('approve')}
+                      canReopen={canReopen}   onReopen={()=>setModal('reopen')}
+                      canReset={canReset}     onReset={()=>setModal('reset')}
+                      onSend={()=>{ setShowOverflow(false); showToast('Email send not yet available — download PDF via Generate ▾ and send manually.','info'); }}
+                    />}
+                  </div>
+                </div>
+              </Card>
+
+              {/* Party cards */}
+              <div className="party-grid" style={{ display:'grid', gridTemplateColumns:draft?.ship_to_override&&Object.keys(draft.ship_to_override).length?'1fr 1fr 1fr':'1fr 1fr', gap:12, marginBottom:14 }}>
+                <Party tid="party-seller" title="Seller" name={company?.company_name||'Estrella Jewels sp. z o.o. sp.k.'} street={company?.address_street} city={company?.address_city} zip={company?.address_postal_code} country={company?.address_country||'PL'} nip={company?.nip} />
+                <Party tid="party-buyer" title="Buyer" name={buyer?.bill_to_name||draft?.client_name||'—'} street={buyer?.bill_to_street} city={buyer?.bill_to_city} zip={buyer?.bill_to_postal_code} country={buyer?.country} nip={buyer?.nip} vatEu={buyer?.vat_eu_number} warn={cr&&!cr.found?'Not mapped to wFirma customer':null} />
+                {draft?.ship_to_override&&Object.keys(draft.ship_to_override).length>0&&<Party tid="party-shipto" title="Ship-To" name={draft.ship_to_override.name} street={draft.ship_to_override.street} city={draft.ship_to_override.city} zip={draft.ship_to_override.zip} country={draft.ship_to_override.country} />}
+              </div>
+
+              {/* Tab strip */}
+              <Card style={{ overflow:'hidden' }}>
+                <div data-testid="tab-strip" style={{ display:'flex', borderBottom:'1px solid var(--border)', background:'var(--card)', overflowX:'auto' }}>
+                  {TABS.map(tab=>(
+                    <button key={tab} onClick={()=>setActiveTab(tab)} style={{ background:'transparent', border:'none', cursor:'pointer', padding:'10px 18px 11px', fontSize:12, fontWeight:activeTab===tab?700:500, color:activeTab===tab?'var(--text)':'var(--text-2)', borderBottom:activeTab===tab?'2px solid var(--accent)':'2px solid transparent', marginBottom:-1, whiteSpace:'nowrap', fontFamily:'inherit' }} data-testid={`tab-btn-${tab.toLowerCase().replace(/ /g,'-')}`}>{tab}</button>
+                  ))}
+                </div>
+                {activeTab==='Overview' && <OverviewTab draft={draft} invoiceLink={invoiceLink} />}
+                {activeTab==='Lines' && <LinesTab draft={draft} onRefresh={loadDraft} />}
+                {activeTab==='Customer Mapping' && <CustomerMappingTab draft={draft} />}
+                {activeTab==='Reservation' && <ReservationTab draft={draft} onRefresh={loadDraft} />}
+                {activeTab==='History' && <HistoryTab draftId={DRAFT_ID} />}
+              </Card>
+            </>
+          )}
+        </div>
+      </AppShell>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

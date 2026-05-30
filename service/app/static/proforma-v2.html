@@ -347,6 +347,15 @@
             {draft.draft_version > 1 ? ` · v${draft.draft_version}` : ''}
             {' · '}{currency}
           </span>
+          {/* Sprint-24: drilldown link to Screen B */}
+          <a
+            href={`/dashboard/proforma-detail-v2.html?draft_id=${draft.id}`}
+            data-testid={`link-drilldown-${draft.id}`}
+            style={{ fontSize: 11, color: 'var(--accent)', textDecoration: 'none', fontWeight: 600, marginLeft: 4 }}
+            title="Open detail view (Sprint-24)"
+          >
+            Open ›
+          </a>
           {draft.wfirma_proforma_fullnumber && (
             <Badge label={draft.wfirma_proforma_fullnumber} status="Completed" small />
           )}
