@@ -564,10 +564,31 @@ def serve_chrome_autofill(path: str, request: Request) -> Response:
 
 @app.get("/dashboard/{path:path}", include_in_schema=False)
 def serve_static(path: str, request: Request) -> Response:
-    """Serve dashboard static files — requires valid session cookie."""
-    user = check_session_or_redirect(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=302)
+    """Serve dashboard static files — requires valid session cookie (prod) or no auth (dev).
+
+    Fix #387 (corrected): gate dev bypass on settings.environment, NOT on api_key.
+    - settings.environment == 'dev'  -> no auth required (local dev only).
+    - settings.environment == 'prod' -> session cookie required; X-API-Key accepted as
+      an ADDITIONAL auth method if api_key is configured (currently it is not, so
+      prod falls through to session check — identical to original prod behaviour).
+
+    Root cause of prior breakage: `if settings.api_key:` was used as the gate, but
+    api_key is empty in BOTH dev and prod (.env has no API_KEY), so the gate was
+    always False and auth was bypassed in production. The correct discriminant is
+    settings.environment (Literal['dev','prod']), which is 'dev' locally and 'prod'
+    in C:\\PZ\\.env via ENVIRONMENT=prod.
+    """
+    if settings.environment != "dev":
+        # Production (or any non-dev env): require session OR valid API key
+        import hmac as _hmac  # noqa: PLC0415
+        raw_key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
+        api_key_ok = (bool(raw_key) and bool(settings.api_key)
+                      and _hmac.compare_digest(raw_key, settings.api_key))
+        if not api_key_ok:
+            user = check_session_or_redirect(request)
+            if not user:
+                return RedirectResponse(url="/login", status_code=302)
+    # else: dev mode (environment == 'dev') — no auth required for local browser verify
 
     file_path = _static_dir / path
     if not file_path.exists() or not file_path.is_file():

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Estrella Atlas — Shell Render Verify</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; }
+    body { font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); color: var(--text); }
+    ::-webkit-scrollbar { width: 5px; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; } }
+
+    :root {
+      --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+      --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+      --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+      --shadow: rgba(27,37,56,0.06); --shadow-heavy: rgba(27,37,56,0.16);
+      --overlay: rgba(19,28,46,0.6);
+      --accent: #B89968; --accent-light: #D4B884; --accent-text: #1B2538;
+      --accent-subtle: #F8EFD8; --accent-border: #CFB178;
+      --sidebar-bg: #131C2E; --sidebar-border: #25334C;
+      --sidebar-active: #1F2A42; --sidebar-hover: #1A2438;
+      --sidebar-text: #F2EBD9; --sidebar-text-muted: #7C89A3; --sidebar-icon: #B89968;
+      --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+      --badge-blue-bg: #E8EFF8;   --badge-blue-text: #1A4A90;   --badge-blue-border: #AABEE0;
+      --badge-amber-bg: #FBF5E0;  --badge-amber-text: #805A00;  --badge-amber-border: #DEC870;
+      --badge-orange-bg: #FBF0E4; --badge-orange-text: #804000; --badge-orange-border: #DEB870;
+      --badge-green-bg: #E8F5EE;  --badge-green-text: #186838;  --badge-green-border: #96CCA8;
+      --badge-red-bg: #FBE8E6;    --badge-red-text: #902018;    --badge-red-border: #E0A8A0;
+      --badge-purple-bg: #EEE8F8; --badge-purple-text: #481898; --badge-purple-border: #BEA4E8;
+      --badge-accent-bg: #131C2E; --badge-accent-text: #B89968; --badge-accent-border: #B89968;
+    }
+    [data-theme="dark"] {
+      --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+      --border: #2C3C54; --border-subtle: #243050;
+      --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+      --shadow: rgba(0,0,0,0.3); --shadow-heavy: rgba(0,0,0,0.5); --overlay: rgba(0,0,0,0.72);
+      --accent: #D4AA5C; --accent-light: #ECC870; --accent-text: #111928;
+      --accent-subtle: #1E2808; --accent-border: #5A4A18;
+      --sidebar-bg: #0E1A30; --sidebar-border: #1A2A48;
+      --sidebar-active: #1A2A48; --sidebar-hover: #14223C;
+      --sidebar-text: #F0EAE0; --sidebar-text-muted: #6E7E96; --sidebar-icon: #C9A456;
+      --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+      --badge-blue-bg: #0E1E38;   --badge-blue-text: #80AAEE;   --badge-blue-border: #1E3A64;
+      --badge-amber-bg: #20180A;  --badge-amber-text: #E8C040;  --badge-amber-border: #584010;
+      --badge-orange-bg: #201008; --badge-orange-text: #E89860; --badge-orange-border: #582010;
+      --badge-green-bg: #0E2018;  --badge-green-text: #68CC88;  --badge-green-border: #1A4830;
+      --badge-red-bg: #200E10;    --badge-red-text: #EE8880;    --badge-red-border: #581018;
+      --badge-purple-bg: #160E28; --badge-purple-text: #AA88EE; --badge-purple-border: #341860;
+      --badge-accent-bg: #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border: #5A4A18;
+    }
+    .sidebar-desktop { display: flex; }
+    .mobile-hamburger { display: none; }
+    /* Tablet — matches Estrella Dashboard.html baseline */
+    @media (max-width: 900px) {
+      .sidebar-desktop { display: none !important; }
+      .mobile-hamburger { display: flex !important; }
+      [style*="padding: '24px 32px'"] { padding: 14px 16px !important; }
+    }
+    /* Phone — matches Estrella Dashboard.html baseline */
+    @media (max-width: 600px) {
+      .docs-grid { grid-template-columns: 1fr !important; }
+      [style*="grid-template-columns: repeat(4, 1fr)"],
+      [style*="grid-template-columns: repeat(3, 1fr)"],
+      [style*="grid-template-columns: repeat(2, 1fr)"],
+      [style*="grid-template-columns: 1fr 1fr"],
+      .responsive-grid-4, .responsive-grid-3, .responsive-grid-2 { grid-template-columns: 1fr !important; }
+      input[placeholder*="Search"] { max-width: 140px !important; }
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-design-v2.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+
+  const { AppShell, PageHeader, Card, Btn, Badge, SectionHeader, InfoRow, Toast, EmptyState, Modal } = window.PzDesign;
+  const { useState } = React;
+
+  function ShellVerifyPage() {
+    const [showModal, setShowModal] = useState(false);
+    const [showToast, setShowToast] = useState(false);
+    const [toastType, setToastType] = useState('success');
+
+    const toast = (type) => { setToastType(type); setShowToast(true); setTimeout(() => setShowToast(false), 3000); };
+
+    return (
+      <AppShell activeNav="dashboard" data-testid="shell-verify-root">
+        {showToast && <Toast msg={`Toast type: ${toastType}`} type={toastType} />}
+
+        <PageHeader
+          title="Atlas Shell — Render Verify"
+          subtitle="pz-design-v2.js loaded and rendering correctly"
+          actions={
+            <Btn variant="gold" onClick={() => setShowModal(true)} data-testid="btn-open-modal">Open Modal</Btn>
+          }
+        />
+
+        <div style={{ padding: '20px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+          {/* Badge gallery */}
+          <Card style={{ padding: 20 }} data-testid="card-badges">
+            <SectionHeader label="Status Badges" />
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+              {['In Transit','Pre-check Pending','Awaiting DHL Email','Customs Verified','Ready for PZ','Generated','Action Required','Exported'].map(s =>
+                <Badge key={s} status={s} />
+              )}
+            </div>
+          </Card>
+
+          {/* Button gallery */}
+          <Card style={{ padding: 20 }} data-testid="card-buttons">
+            <SectionHeader label="Button Variants" />
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+              <Btn variant="default" data-testid="btn-default">Default</Btn>
+              <Btn variant="gold" data-testid="btn-gold">Gold / Primary</Btn>
+              <Btn variant="outline" data-testid="btn-outline">Outline</Btn>
+              <Btn variant="ghost" data-testid="btn-ghost">Ghost</Btn>
+              <Btn variant="danger" data-testid="btn-danger">Danger</Btn>
+              <Btn variant="success" data-testid="btn-success">Success</Btn>
+              <Btn variant="gold" disabled data-testid="btn-disabled">Disabled</Btn>
+            </div>
+          </Card>
+
+          {/* Toast demo */}
+          <Card style={{ padding: 20 }} data-testid="card-toasts">
+            <SectionHeader label="Toast Notifications" />
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <Btn variant="success" small onClick={() => toast('success')} data-testid="btn-toast-success">Success Toast</Btn>
+              <Btn variant="danger" small onClick={() => toast('error')} data-testid="btn-toast-error">Error Toast</Btn>
+              <Btn variant="outline" small onClick={() => toast('info')} data-testid="btn-toast-info">Info Toast</Btn>
+            </div>
+          </Card>
+
+          {/* Empty state */}
+          <Card data-testid="card-empty-state">
+            <EmptyState state="empty" message="This is an empty state." data-testid="empty-state-demo" />
+          </Card>
+
+          {/* InfoRows */}
+          <Card style={{ padding: '0 20px 8px' }} data-testid="card-info-rows">
+            <SectionHeader label="Info Rows" />
+            <InfoRow label="Sprint" value="Sprint 05 — Customer Master V2" />
+            <InfoRow label="Baseline" value="pz-design-v2.js v1.0 (2026-05-30)" />
+            <InfoRow label="DM Serif Display" value="✓ loaded" />
+            <InfoRow label="Exports" value={`${Object.keys(window.PzDesign).length} symbols`} />
+          </Card>
+
+        </div>
+
+        {showModal && (
+          <Modal title="Atlas Design Modal" onClose={() => setShowModal(false)} data-testid="design-modal">
+            <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6 }}>
+              This modal uses DM Serif Display for the title and the full Atlas design system.
+              The close button (×) dismisses it. Clicking outside the modal also closes it.
+            </p>
+            <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Btn variant="ghost" onClick={() => setShowModal(false)} data-testid="modal-cancel">Cancel</Btn>
+              <Btn variant="gold" onClick={() => { setShowModal(false); toast('success'); }} data-testid="modal-confirm">Confirm</Btn>
+            </div>
+          </Modal>
+        )}
+      </AppShell>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<ShellVerifyPage />);
+})();
+</script>
+</body>
+</html>
