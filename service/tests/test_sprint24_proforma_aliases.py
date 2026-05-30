@@ -366,8 +366,12 @@ class TestToolbarDesignSpecContract:
     def test_btn_edit_present(self):
         assert 'data-testid="btn-edit"' in self.html, "Edit button testid missing"
 
-    def test_btn_delete_present(self):
-        assert 'data-testid="btn-delete"' in self.html, "Delete button testid missing"
+    def test_btn_cancel_draft_present_not_btn_delete(self):
+        # Toolbar semantics fix: soft cancel ≠ hard delete. Label = 'Cancel draft'.
+        assert 'data-testid="btn-cancel-draft"' in self.html, (
+            "btn-cancel-draft must be present (replaces btn-delete)")
+        assert 'data-testid="btn-delete"' not in self.html, (
+            "btn-delete must be absent — renamed to btn-cancel-draft")
 
     def test_btn_duplicate_present(self):
         assert 'data-testid="btn-duplicate"' in self.html, "Duplicate button testid missing"
