@@ -58,7 +58,8 @@ def test_cdn_and_shared_load_order():
         src.find("react@18/umd/react.production.min.js"),
         src.find("react-dom@18/umd/react-dom.production.min.js"),
         src.find("@babel/standalone/babel.min.js"),
-        src.find("/dashboard/dashboard-shared.js"),
+        # Step 7 reskin: pz-design-v2.js replaces dashboard-shared.js as the shared layer
+        src.find("/dashboard/pz-design-v2.js"),
         src.find("/dashboard/pz-api.js"),
         src.find("/dashboard/pz-state.js"),
     ]
@@ -72,11 +73,12 @@ def test_cdn_and_shared_load_order():
 def test_page_structure_testids():
     src = _src()
 
-    # Direct data-testid attributes
+    # Direct data-testid attributes present in HTML source.
+    # Note: "topbar" testid is now rendered by AppShell (pz-design-v2.js), not in HTML source.
+    # "back-to-dashboard-link" was in the old TopBar — also removed by Step 7 reskin.
     direct_testids = [
         "customer-master-v2-root",
-        "topbar",
-        "back-to-dashboard-link",
+        # topbar + back-to-dashboard-link now rendered by AppShell (not in HTML source)
         "customer-list-view",
         "filter-bar",
         "search-input",
@@ -166,16 +168,21 @@ def test_sync_confirmation_gate():
 def test_shared_layer_load_order():
     src = _src()
 
-    # Scripts should load in correct order: dashboard-shared.js → pz-api.js → pz-state.js
-    dashboard_shared_pos = src.find("/dashboard/dashboard-shared.js")
-    pz_api_pos = src.find("/dashboard/pz-api.js")
-    pz_state_pos = src.find("/dashboard/pz-state.js")
+    # Step 7 reskin: pz-design-v2.js → pz-api.js → pz-state.js (new load order)
+    pz_design_pos = src.find("/dashboard/pz-design-v2.js")
+    pz_api_pos    = src.find("/dashboard/pz-api.js")
+    pz_state_pos  = src.find("/dashboard/pz-state.js")
 
-    assert dashboard_shared_pos != -1, "dashboard-shared.js should be present"
-    assert pz_api_pos != -1, "pz-api.js should be present"
-    assert pz_state_pos != -1, "pz-state.js should be present"
+    assert pz_design_pos != -1, "pz-design-v2.js should be present (new Atlas baseline)"
+    assert pz_api_pos    != -1, "pz-api.js should be present"
+    assert pz_state_pos  != -1, "pz-state.js should be present"
 
-    assert dashboard_shared_pos < pz_api_pos < pz_state_pos, "Scripts must load in dependency order"
+    # dashboard-shared.js must NOT be present (replaced by pz-design-v2.js)
+    assert "/dashboard/dashboard-shared.js" not in src, (
+        "dashboard-shared.js must be absent after Step 7 reskin"
+    )
+
+    assert pz_design_pos < pz_api_pos < pz_state_pos, "Scripts must load in dependency order"
 
 
 # ── Contract 8: CSS vars only test ────────────────────────────────────────────

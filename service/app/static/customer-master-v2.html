@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Customer Master — Estrella Atlas</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; }
 
@@ -87,7 +87,8 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script type="text/babel" data-presets="env,react" src="/dashboard/dashboard-shared.js"></script>
+<!-- Step 7 reskin: dashboard-shared.js → pz-design-v2.js (new Atlas baseline) -->
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-design-v2.js"></script>
 <script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
 <script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
 
@@ -96,8 +97,10 @@
   'use strict';
 
   const { useState, useEffect, useCallback, useRef } = React;
-  const { Btn, Badge, Card, Sel, Toast, EmptyState, SectionHeader, SessionBanner, CompactTable } =
-    window.EstrellaShared;
+  // Step 7 reskin: components from pz-design-v2.js (new Atlas baseline)
+  // Sel + CompactTable were destructured but never used — removed.
+  const { Btn, Badge, Card, Toast, EmptyState, SectionHeader, SessionBanner, AppShell, InfoRow } =
+    window.PzDesign;
   const Api   = window.PzApi;
   const State = window.PzState;
 
@@ -144,40 +147,7 @@
     return s.slice(0, 10);
   }
 
-  // ── EstrellaMark ─────────────────────────────────────────────────────────
-
-  function EstrellaMark({ size = 28 }) {
-    return (
-      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <rect width="32" height="32" rx="7" fill="var(--accent)" />
-        <text x="16" y="21" textAnchor="middle" fontSize="14" fontWeight="700" fill="var(--accent-text)" fontFamily="serif">E</text>
-      </svg>
-    );
-  }
-
-  // ── TopBar ────────────────────────────────────────────────────────────────
-
-  function TopBar({ subtitle }) {
-    return (
-      <header data-testid="topbar" style={{
-        background: 'var(--sidebar-bg)', borderBottom: '1px solid var(--sidebar-border)',
-        padding: '0 20px', height: 52, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0,
-      }}>
-        <EstrellaMark size={28} />
-        <span style={{ color: 'var(--sidebar-text)', fontWeight: 700, fontSize: 13, letterSpacing: '0.04em' }}>
-          Estrella Atlas
-        </span>
-        <span style={{ color: 'var(--sidebar-text-muted)', fontSize: 11, marginLeft: 4 }}>
-          / Customer Master{subtitle ? ` / ${subtitle}` : ''}
-        </span>
-        <div style={{ flex: 1 }} />
-        <a href="/dashboard/dashboard.html" style={{ fontSize: 11, color: 'var(--sidebar-text-muted)', textDecoration: 'none' }}
-           data-testid="back-to-dashboard-link">
-          ← Dashboard
-        </a>
-      </header>
-    );
-  }
+  // EstrellaMark + TopBar removed — provided by AppShell (pz-design-v2.js)
 
   // ── FilterBar ─────────────────────────────────────────────────────────────
 
@@ -898,21 +868,19 @@
     // The shared layer surfaces 'auth' type on 401/403 responses
 
     return (
-      <div data-testid="customer-master-v2-root" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+      // Step 7 reskin: AppShell provides collapsible sidebar nav + TopBar
+      <AppShell activeNav="master">
         {sessionError && <SessionBanner type={sessionError} onDismiss={() => setSessionError(null)} />}
+        {syncOpen && <SyncModal onClose={() => setSyncOpen(false)} />}
 
-        <TopBar subtitle={contractorId || null} />
-
-        <main style={{ flex: 1, padding: '20px 24px', maxWidth: 1100, width: '100%', margin: '0 auto' }}>
+        <div data-testid="customer-master-v2-root" style={{ flex: 1, padding: '20px 24px', maxWidth: 1100, width: '100%', margin: '0 auto', overflowY: 'auto' }}>
           {contractorId ? (
             <CustomerDetail contractorId={contractorId} />
           ) : (
             <CustomerList onSync={() => setSyncOpen(true)} />
           )}
-        </main>
-
-        {syncOpen && <SyncModal onClose={() => setSyncOpen(false)} />}
-      </div>
+        </div>
+      </AppShell>
     );
   }
 
