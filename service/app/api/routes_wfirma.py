@@ -74,8 +74,10 @@ EV_WFIRMA_JSON       = "wfirma_json_generated"
 EV_WFIRMA_PZ_CREATED = "wfirma_pz_created"
 EV_WFIRMA_PZ_ADOPTED = "wfirma_pz_adopted"
 
-# PZ statuses that indicate a completed run
-_PZ_DONE = {"success", "partial"}
+# PZ statuses that indicate a completed run.
+# ATLAS P1: shared from operational_authority so the wFirma guard and the
+# dashboard PZ-status authority cannot drift on "what counts as done".
+from ..services.operational_authority import PZ_DONE as _PZ_DONE  # noqa: E402
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -23,6 +23,13 @@ from ..auth.dependencies import require_admin
 from ..core import timeline as tl
 from ..services import cliq_service
 from ..utils.io import write_json_atomic
+# ATLAS P1: PZ-status authority lives in operational_authority (single source).
+# Re-imported under their historical private names so call sites are unchanged.
+from ..services.operational_authority import (
+    derive_status as _derive_status,
+    derive_sad_status as _derive_sad_status,
+    derive_pz_status as _derive_pz_status,
+)
 
 log = get_logger(__name__)
 
@@ -175,54 +182,8 @@ def _derive_clearance_status(a: Dict[str, Any]) -> str:
     return a.get("clearance_status", "")
 
 
-def _derive_status(a: Dict[str, Any]) -> str:
-    """
-    Derive status for old audit files that pre-date the `status` field.
-    Priority: explicit field → infer from verification → infer from corrections_log.
-    New business statuses: draft, ready, processing are passed through as-is.
-    """
-    stored = a.get("status")
-    # "failed" with no real failures and PZ output present means the engine crashed
-    # in a post-generation step — infer true status from evidence instead of surfacing
-    # a misleading "Action Required" badge for a complete batch.
-    if stored == "failed":
-        fc = a.get("failed_checks") or []
-        pz_files_exist = bool(
-            a.get("pz_output", {}).get("generated_at")
-            or (a.get("files", {}).get("pdf") or {}).get("sha256")
-        )
-        if not fc and pz_files_exist:
-            # Re-derive from verification / corrections like legacy audits
-            v = a.get("verification", {})
-            hard_fails = [k for k, val in v.items() if not isinstance(val, list) and val is False]
-            if hard_fails:
-                return "blocked"
-            corrections = a.get("corrections_log", [])
-            has_gaps = any(c.startswith("[VERIFY-GAP]") for c in corrections)
-            if has_gaps:
-                return "partial"
-            if v:
-                return "success"
-            return "partial"  # files exist, no hard failures → treat as partial
-    # Pass new lifecycle states straight through
-    if stored in ("draft", "ready", "processing", "in_preparation",
-                  "success", "partial", "blocked", "failed"):
-        return stored
-
-    if stored and stored != "unknown":
-        return stored
-
-    v = a.get("verification", {})
-    hard_fails = [k for k, val in v.items() if not isinstance(val, list) and val is False]
-    if hard_fails:
-        return "blocked"
-    corrections = a.get("corrections_log", [])
-    has_gaps = any(c.startswith("[VERIFY-GAP]") for c in corrections)
-    if has_gaps:
-        return "partial"
-    if v:
-        return "success"
-    return "unknown"
+# _derive_status → moved to services.operational_authority.derive_status
+# (re-imported above as _derive_status; ATLAS P1 single-authority).
 
 
 def _derive_action_reason(a: Dict[str, Any]) -> str:
@@ -250,85 +211,13 @@ def _derive_failed_checks(a: Dict[str, Any]) -> List[str]:
     return [k for k, val in v.items() if not isinstance(val, list) and val is False][:3]
 
 
-def _derive_sad_status(a: Dict[str, Any]) -> str:
-    """
-    Derive SAD pipeline status for list column.
-    Returns: 'uploaded_parsed' | 'uploaded' | 'missing'
-    """
-    inp = a.get("inputs", {})
-    fd  = a.get("files_detail", {})
-    sf  = (fd or {}).get("source_files", {})
-
-    # Check all possible indicators that SAD/ZC429 data exists
-    has_sad = bool(
-        (sf.get("sad") or [])
-        or inp.get("zc429_file") or inp.get("sad_file") or inp.get("zc429")
-        or a.get("zc429", {}).get("mrn")           # pre-parsed XML dict
-        or a.get("customs_declaration", {}).get("mrn")  # already populated
-    )
-    # Also check on-disk source/sad directory (for list view where files_detail not injected)
-    if not has_sad:
-        batch_id = a.get("batch_id", "")
-        if batch_id:
-            sad_dir = _OUTPUTS / batch_id / "source" / "sad"
-            if sad_dir.exists() and any(sad_dir.iterdir()):
-                has_sad = True
-
-    if not has_sad:
-        return "missing"
-
-    cd = a.get("customs_declaration", {})
-    if cd and (cd.get("mrn") or cd.get("duty_a00_pln") is not None):
-        return "uploaded_parsed"
-
-    if inp.get("zc429_mrn"):
-        return "uploaded_parsed"
-
-    # Check zc429 dict from XML parse
-    if a.get("zc429", {}).get("mrn"):
-        return "uploaded_parsed"
-
-    return "uploaded"
+# _derive_sad_status → moved to services.operational_authority.derive_sad_status
+# (re-imported above as _derive_sad_status; ATLAS P1 single-authority).
 
 
-def _derive_pz_status(a: Dict[str, Any]) -> str:
-    """
-    Derive PZ accounting pipeline status for list column.
-    Returns: 'complete' | 'ready' | 'locked' | 'failed'
-
-    Precedence (highest first):
-      0. complete — wfirma_export.wfirma_pz_doc_id is set: PZ was ACTUALLY
-                    created in wFirma. This overrides any stale engine_error
-                    from an earlier failed attempt. The PZ doc ID is the
-                    highest-authority proof of completion.
-      1. failed  — audit.status=='failed' OR audit.engine_error truthy
-                   (Lesson G: do not show "Ready for PZ" when the engine
-                    refused to write outputs. The two authorities — status
-                    badge and engine outcome — must agree.)
-      2. complete — derive_status returns success/partial
-      3. locked   — SAD missing
-      4. ready    — default
-    """
-    # Layer 0: wFirma PZ document ID is the ground truth — if the PZ was
-    # created (even after an earlier engine failure) the batch is complete.
-    wfirma_export = a.get("wfirma_export") or {}
-    if wfirma_export.get("wfirma_pz_doc_id"):
-        return "complete"
-
-    # Layer 1: engine outcome wins. A persisted failure must surface as
-    # "PZ Failed" rather than the optimistic "Ready for PZ" derived from
-    # SAD presence alone. See PZ Preview Authority Audit, Section 5.
-    stored = (a.get("status") or "").strip().lower()
-    if stored == "failed" or (a.get("engine_error") or "").strip():
-        return "failed"
-
-    status = _derive_status(a)
-    if status in ("success", "partial"):
-        return "complete"
-    sad_status = _derive_sad_status(a)
-    if sad_status == "missing":
-        return "locked"
-    return "ready"
+# _derive_pz_status → moved to services.operational_authority.derive_pz_status
+# (re-imported above as _derive_pz_status; ATLAS P1 single-authority — the one
+# canonical PZ-status derivation that routes_wfirma + the frontend now agree with).
 
 
 # ── Lightweight per-batch status hints (cheap COUNT-only queries) ─────────────
