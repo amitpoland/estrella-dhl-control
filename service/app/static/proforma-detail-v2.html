@@ -197,6 +197,82 @@
     );
   }
 
+  // ── Edit Draft modal (PATCH /draft/{id} metadata) ────────────────────────
+  function EditDraftModal({ draft, onClose, onDone }) {
+    const [currency, setCurrency] = useState(draft?.currency||'');
+    const [remarks, setRemarks] = useState(draft?.remarks||'');
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState('');
+    const submit = async () => {
+      if (!currency.trim()) { setErr('Currency required.'); return; }
+      setBusy(true); setErr('');
+      try {
+        await apiFetch(`/api/v1/proforma/draft/${draft.id}`, {
+          method:'PATCH', headers:{'Content-Type':'application/json','X-Operator':localStorage.getItem('pz_operator_name')||'operator'},
+          body:JSON.stringify({ currency:currency.trim(), remarks:remarks.trim(), expected_updated_at:draft.updated_at||'' }),
+        });
+        onDone('Draft updated.');
+      } catch (e) { setErr(e.message); setBusy(false); }
+    };
+    return (
+      <div style={{ position:'fixed', inset:0, background:'var(--overlay)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }} onClick={e=>e.target===e.currentTarget&&!busy&&onClose()}>
+        <div style={{ background:'var(--card)', borderRadius:10, padding:24, maxWidth:440, width:'92%', boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)' }}>
+          <div style={{ fontWeight:700, fontSize:15, fontFamily:'"DM Serif Display",serif', marginBottom:16, color:'var(--text)' }}>Edit Draft #{draft?.id}</div>
+          <label style={{ fontSize:11, fontWeight:600, color:'var(--text-2)', display:'block', marginBottom:4 }}>Currency</label>
+          <input value={currency} onChange={e=>setCurrency(e.target.value)} placeholder="USD" maxLength={4}
+            style={{ width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--border)', fontSize:12, background:'var(--bg-subtle)', color:'var(--text)', marginBottom:12 }} />
+          <label style={{ fontSize:11, fontWeight:600, color:'var(--text-2)', display:'block', marginBottom:4 }}>Remarks</label>
+          <textarea value={remarks} onChange={e=>setRemarks(e.target.value)} rows={2} placeholder="Optional note"
+            style={{ width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--border)', fontSize:12, background:'var(--bg-subtle)', color:'var(--text)', fontFamily:'inherit', resize:'vertical' }} />
+          {err && <div style={{ color:'var(--badge-red-text)', fontSize:12, marginTop:6 }}>{err}</div>}
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:16 }}>
+            <Btn variant="ghost" onClick={onClose} disabled={busy} small>Cancel</Btn>
+            <Btn variant="default" onClick={submit} disabled={busy} small data-testid="btn-confirm-edit">
+              {busy?<><span className="spinner" style={{ marginRight:6 }}/>Saving…</>:'Save changes'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Generate ▾ dropdown ───────────────────────────────────────────────────
+  function GenerateMenu({ draftId, onClose }) {
+    return (
+      <div style={{ position:'absolute', top:'100%', left:0, marginTop:4, background:'var(--card)', border:'1px solid var(--border)', borderRadius:6, boxShadow:'0 8px 24px var(--shadow-heavy)', zIndex:200, minWidth:180 }} onClick={onClose}>
+        <button onClick={()=>window.open(`/api/v1/proforma/draft/${draftId}/preview.html`,'_blank')} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 14px', background:'none', border:'none', cursor:'pointer', fontSize:12, color:'var(--text)', borderRadius:'6px 6px 0 0' }} data-testid="btn-generate-preview"
+          onMouseEnter={e=>e.target.style.background='var(--bg-subtle)'} onMouseLeave={e=>e.target.style.background='none'}>
+          Preview HTML
+        </button>
+        <button onClick={()=>window.open(`/api/v1/proforma/draft/${draftId}/preview.html`,'_blank')} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 14px', background:'none', border:'none', cursor:'pointer', fontSize:12, color:'var(--text)', borderRadius:'0 0 6px 6px' }} data-testid="btn-generate-pdf"
+          onMouseEnter={e=>e.target.style.background='var(--bg-subtle)'} onMouseLeave={e=>e.target.style.background='none'}>
+          Download PDF
+        </button>
+      </div>
+    );
+  }
+
+  // ── Overflow ⋯ menu ───────────────────────────────────────────────────────
+  function OverflowMenu({ onClose, onApprove, onReopen, onReset, canApprove, canReopen, canReset }) {
+    const item = (label, handler, disabled, tid) => (
+      <button onClick={()=>{ if(!disabled){ handler(); onClose(); } }} disabled={disabled}
+        data-testid={tid}
+        style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 14px', background:'none', border:'none',
+          cursor:disabled?'not-allowed':'pointer', fontSize:12, color:disabled?'var(--text-3)':'var(--text)', opacity:disabled?0.5:1 }}
+        onMouseEnter={e=>{ if(!disabled) e.currentTarget.style.background='var(--bg-subtle)'; }}
+        onMouseLeave={e=>{ e.currentTarget.style.background='none'; }}>
+        {label}
+      </button>
+    );
+    return (
+      <div style={{ position:'absolute', top:'100%', right:0, marginTop:4, background:'var(--card)', border:'1px solid var(--border)', borderRadius:6, boxShadow:'0 8px 24px var(--shadow-heavy)', zIndex:200, minWidth:180 }} onClick={e=>e.stopPropagation()}>
+        {item('Approve draft',  onApprove, !canApprove, 'overflow-btn-approve')}
+        {item('Re-open draft',  onReopen,  !canReopen,  'overflow-btn-reopen')}
+        {item('Reset from packing', onReset, !canReset, 'overflow-btn-reset')}
+      </div>
+    );
+  }
+
   // ── Convert-to-Invoice modal ───────────────────────────────────────────────
   function ConvertModal({ draft, onClose, onDone }) {
     const draftId = draft?.id;
@@ -368,21 +444,25 @@
     const lines = draft?.editable_lines||[];
     const charges = draft?.service_charges||[];
     const [busy, setBusy] = useState({});
+    const [confirmDel, setConfirmDel] = useState(null); // lid to confirm
+    const [delErr, setDelErr] = useState('');
     const op = ()=>localStorage.getItem('pz_operator_name')||'operator';
     const fmt = v=>v!=null?parseFloat(v).toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
     const delLine = async (lid) => {
-      if (!window.confirm(`Delete line ${lid}?`)) return;
-      setBusy(b=>({...b,[lid]:true}));
+      setConfirmDel(null);
+      setBusy(b=>({...b,[lid]:true})); setDelErr('');
       try {
         await apiFetch(`/api/v1/proforma/draft/${draft.id}/lines/${lid}?expected_updated_at=${encodeURIComponent(draft.updated_at||'')}&force=false`,
           { method:'DELETE', headers:{ 'X-Operator':op() } });
         onRefresh();
-      } catch (e) { alert('Delete failed: '+e.message); }
+      } catch (e) { setDelErr(e.message); }
       setBusy(b=>({...b,[lid]:false}));
     };
     if (!lines.length&&!charges.length) return <EmptyState state="empty" message="No lines." />;
     return (
       <div data-testid="tab-lines" style={{ overflowX:'auto' }}>
+        {confirmDel!==null && <Confirm title="Delete Line" msg={`Remove line #${confirmDel}? This cannot be undone.`} label="Delete line" danger ok={()=>delLine(confirmDel)} cancel={()=>setConfirmDel(null)} busy={!!busy[confirmDel]} />}
+        {delErr && <div style={{ padding:'6px 12px', background:'var(--badge-red-bg)', color:'var(--badge-red-text)', fontSize:12, borderRadius:4, margin:'6px 12px 0' }}>Delete failed: {delErr}</div>}
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
           <thead><tr style={{ background:'var(--bg-subtle)', borderBottom:'2px solid var(--border)' }}>
             {['#','Name','HS','Origin','Qty','Unit Price','Total','VAT',''].map(h=><th key={h} style={{ padding:'8px 10px', textAlign:'left', fontSize:11, fontWeight:700, color:'var(--text-2)', whiteSpace:'nowrap' }}>{h}</th>)}
@@ -398,7 +478,7 @@
                 <td style={{ padding:'7px 10px', fontFamily:'monospace' }}>{l.unit_price?fmt(l.unit_price):'—'}</td>
                 <td style={{ padding:'7px 10px', fontFamily:'monospace', fontWeight:600 }}>{l.qty&&l.unit_price?fmt(l.qty*l.unit_price):'—'}</td>
                 <td style={{ padding:'7px 10px', color:'var(--text-2)' }}>{l.vat_rate??'—'}</td>
-                <td style={{ padding:'7px 10px' }}><Btn variant="ghost" small onClick={()=>delLine(l.line_id||l.id)} disabled={busy[l.line_id||l.id]} data-testid={`btn-del-line-${l.line_id||i}`}>×</Btn></td>
+                <td style={{ padding:'7px 10px' }}><Btn variant="ghost" small onClick={()=>setConfirmDel(l.line_id||l.id)} disabled={busy[l.line_id||l.id]} data-testid={`btn-del-line-${l.line_id||i}`}>×</Btn></td>
               </tr>
             ))}
             {charges.map((c,i)=>(
@@ -432,6 +512,8 @@
 
   function ReservationTab({ draft, onRefresh }) {
     const [creating, setCreating] = useState(false);
+    const [createErr, setCreateErr] = useState('');
+    const [confirmRes, setConfirmRes] = useState(false);
     const hook = useGet(
       draft?.batch_id && draft?.client_name ? `/api/v1/proforma/preview/${encodeURIComponent(draft.batch_id)}/${encodeURIComponent(draft.client_name)}` : null,
       [draft?.batch_id, draft?.client_name],
@@ -440,13 +522,12 @@
     const blockers = Array.isArray(p?.export_blockers)?p.export_blockers:[];
     const chip = (label,ok) => <span style={{ display:'inline-flex', alignItems:'center', gap:4, padding:'3px 10px', borderRadius:4, fontSize:11, fontWeight:600, background:ok?'var(--badge-green-bg)':'var(--badge-amber-bg)', color:ok?'var(--badge-green-text)':'var(--badge-amber-text)', border:`1px solid ${ok?'var(--badge-green-border)':'var(--badge-amber-border)'}` }}>{ok?'✓':'⚠'} {label}</span>;
     const createRes = async () => {
-      if (!window.confirm('Create wFirma reservation for '+draft.client_name+'?')) return;
-      setCreating(true);
+      setCreating(true); setCreateErr('');
       try {
         await apiFetch('/api/v1/wfirma/reservations/create', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ batch_id:draft.batch_id, client_name:draft.client_name }) });
         onRefresh(); hook.reload();
-      } catch (e) { alert('Reservation failed: '+e.message); }
-      setCreating(false);
+      } catch (e) { setCreateErr(e.message); }
+      setCreating(false); setConfirmRes(false);
     };
     return (
       <div data-testid="tab-reservation" style={{ padding:'20px 24px' }}>
@@ -457,8 +538,10 @@
             {chip('Reservation supported', p?.reservation_supported!==false)}
           </div>
           {blockers.length>0 && <Card style={{ padding:'12px 16px', marginBottom:14, background:'var(--badge-amber-bg)', borderColor:'var(--badge-amber-border)' }}><div style={{ fontWeight:700, fontSize:12, color:'var(--badge-amber-text)', marginBottom:6 }}>Blocking reasons</div><ul style={{ paddingLeft:16, fontSize:12, color:'var(--badge-amber-text)' }}>{blockers.map((b,i)=><li key={i} style={{ marginBottom:3 }}>{b}</li>)}</ul></Card>}
+          {createErr && <div style={{ color:'var(--badge-red-text)', fontSize:12, marginTop:8, padding:'6px 10px', background:'var(--badge-red-bg)', borderRadius:4 }}>Reservation failed: {createErr}</div>}
+          {confirmRes && <Confirm title="Create Reservation" msg={`Create wFirma reservation for ${draft?.client_name}? This calls the live wFirma API.`} label="Create Reservation" ok={createRes} cancel={()=>setConfirmRes(false)} busy={creating} />}
           <div style={{ display:'flex', justifyContent:'flex-end', marginTop:8 }}>
-            <Btn variant="outline" small onClick={createRes} disabled={creating||blockers.length>0} data-testid="btn-create-reservation">
+            <Btn variant="outline" small onClick={()=>setConfirmRes(true)} disabled={creating||blockers.length>0} data-testid="btn-create-reservation">
               {creating?<><span className="spinner" style={{ marginRight:6 }}/>Creating…</>:'Create Reservation'}
             </Btn>
           </div>
@@ -497,6 +580,8 @@
     const [toast, setToast] = useState(null);
     const [modal, setModal] = useState(null);
     const [actionBusy, setActionBusy] = useState({});
+    const [showGenerate, setShowGenerate] = useState(false);
+    const [showOverflow, setShowOverflow] = useState(false);
     const showToast = (msg, type='info') => { setToast({msg,type}); setTimeout(()=>setToast(null),4000); };
 
     // Draft state
@@ -536,9 +621,11 @@
     const canApprove = ['editing','draft'].includes(st);
     const canReopen = st==='approved';
     const canPost = st==='approved';
-    const canCancel = !['cancelled','superseded'].includes(st)&&!posted&&chip!=='INVOICED';
+    const canDelete = !['cancelled','superseded'].includes(st)&&!posted&&chip!=='INVOICED';
     const canConvert = posted&&chip!=='INVOICED'&&!!draft?.wfirma_proforma_id;
     const canReset = ['editing','draft','approved'].includes(st);
+    const canEdit = ['draft','editing'].includes(st);
+    const canDuplicate = canReset;  // rebuild from packing
 
     if (!DRAFT_ID) return <AppShell activeNav="proforma"><div style={{ padding:40 }}><EmptyState state="error" message="Missing draft_id" /></div></AppShell>;
 
@@ -552,11 +639,13 @@
         {toast && <Toast msg={toast.msg} type={toast.type} />}
 
         {/* Modals */}
-        {modal==='cancel' && <CancelModal draftId={DRAFT_ID} onCancel={()=>setModal(null)} onDone={msg=>{ showToast(msg,'success'); setModal(null); loadDraft(); }} />}
-        {modal==='reopen' && <Confirm title="Re-open Draft" msg="Move approved draft back to editing?" label="Re-open" onConfirm={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/re-open`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_REOPEN_LOCAL_PROFORMA_DRAFT'},'Draft re-opened.','reopen'); }} onCancel={()=>setModal(null)} busy={!!actionBusy.reopen} />}
-        {modal==='approve' && <Confirm title="Approve Draft" msg="Lock draft as approved? Required before posting to wFirma." label="Approve" onConfirm={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/approve`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_APPROVE_LOCAL_PROFORMA_DRAFT'},'Draft approved.','approve'); }} onCancel={()=>setModal(null)} busy={!!actionBusy.approve} />}
-        {modal==='post' && <Confirm title="Post to wFirma" msg={`Post draft #${DRAFT_ID} to wFirma as a proforma? This calls the live wFirma API.`} label="Post to wFirma" onConfirm={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/post`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA'},'Proforma posted to wFirma.','post'); }} onCancel={()=>setModal(null)} busy={!!actionBusy.post} />}
-        {modal==='reset' && <Confirm title="Reset from Packing" msg="Rebuild lines from latest packing data? Manual edits will be overwritten." label="Reset Lines" onConfirm={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/reset-from-sales-packing`,{expected_updated_at:draft?.updated_at||'',reset_all:false},'Lines reset from packing.','reset'); }} onCancel={()=>setModal(null)} busy={!!actionBusy.reset} />}
+        {modal==='delete' && <CancelModal draftId={DRAFT_ID} onCancel={()=>setModal(null)} onDone={msg=>{ showToast(msg,'success'); setModal(null); loadDraft(); }} />}
+        {modal==='reopen' && <Confirm title="Re-open Draft" msg="Move approved draft back to editing?" label="Re-open" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/re-open`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_REOPEN_LOCAL_PROFORMA_DRAFT'},'Draft re-opened.','reopen'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reopen} />}
+        {modal==='approve' && <Confirm title="Approve Draft" msg="Lock draft as approved? Required before posting to wFirma." label="Approve" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/approve`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_APPROVE_LOCAL_PROFORMA_DRAFT'},'Draft approved.','approve'); }} cancel={()=>setModal(null)} busy={!!actionBusy.approve} />}
+        {modal==='post' && <Confirm title="Post to wFirma" msg={`Post draft #${DRAFT_ID} to wFirma as a proforma? This calls the live wFirma API (shared-with-production).`} label="Post to wFirma" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/post`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA'},'Proforma posted to wFirma.','post'); }} cancel={()=>setModal(null)} busy={!!actionBusy.post} />}
+        {modal==='duplicate' && <Confirm title="Rebuild from Packing" msg="Rebuild draft lines from latest packing data? Manual edits will be overwritten. (No new draft — current draft lines are replaced.)" label="Rebuild lines" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/reset-from-sales-packing`,{expected_updated_at:draft?.updated_at||'',reset_all:false},'Lines rebuilt from packing.','reset'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reset} />}
+        {modal==='reset' && <Confirm title="Reset from Packing" msg="Rebuild lines from latest packing data? Manual edits will be overwritten." label="Reset Lines" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/reset-from-sales-packing`,{expected_updated_at:draft?.updated_at||'',reset_all:false},'Lines reset from packing.','reset'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reset} />}
+        {modal==='edit' && draft && <EditDraftModal draft={draft} onClose={()=>setModal(null)} onDone={msg=>{ showToast(msg,'success'); setModal(null); loadDraft(); }} />}
         {modal==='convert' && draft && <ConvertModal draft={draft} onClose={()=>setModal(null)} onDone={(outcome)=>{ loadDraft(); invLinkHook.reload&&invLinkHook.reload(); if(outcome==='success')setActiveTab('Overview'); }} />}
 
         {/* Breadcrumb */}
@@ -574,18 +663,35 @@
           : draftError ? <EmptyState state="error" message={draftError} onRetry={loadDraft} />
           : (
             <>
-              {/* Toolbar */}
-              <Card data-testid="action-toolbar" style={{ padding:'10px 16px', marginBottom:14 }}>
-                <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
-                  <Btn variant="outline" small onClick={()=>setModal('approve')} disabled={!canApprove} data-testid="btn-approve">Approve</Btn>
-                  <Btn variant="ghost" small onClick={()=>setModal('reopen')} disabled={!canReopen} data-testid="btn-reopen">Re-open</Btn>
-                  <Btn variant="ghost" small onClick={()=>setModal('reset')} disabled={!canReset} data-testid="btn-reset-packing">Reset from packing</Btn>
-                  <div style={{ width:1, height:20, background:'var(--border)', margin:'0 4px' }} />
-                  <Btn variant="outline" small onClick={()=>setModal('post')} disabled={!canPost} data-testid="btn-post-wfirma">Post to wFirma</Btn>
-                  <Btn variant="outline" small onClick={()=>setModal('convert')} disabled={!canConvert} style={canConvert?{color:'var(--badge-amber-text)',borderColor:'var(--badge-amber-border)'}:{}} data-testid="btn-convert-invoice">⚠ Convert to Invoice</Btn>
-                  <div style={{ width:1, height:20, background:'var(--border)', margin:'0 4px' }} />
-                  <Btn variant="ghost" small onClick={()=>window.open(`/api/v1/proforma/draft/${DRAFT_ID}/preview.html`,'_blank')} data-testid="btn-print">Print</Btn>
-                  <Btn variant="danger" small onClick={()=>setModal('cancel')} disabled={!canCancel} data-testid="btn-cancel-draft">Cancel</Btn>
+              {/* Toolbar — wFirma-style: Edit · Delete · Duplicate · Post · Convert⚠ · Print · Send · Generate▾ · ⋯ */}
+              <Card data-testid="action-toolbar" style={{ padding:'10px 16px', marginBottom:14, position:'relative' }}>
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}
+                  onClick={()=>{ setShowGenerate(false); setShowOverflow(false); }}>
+                  {/* Primary actions — exactly the designed set */}
+                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('edit');}} disabled={!canEdit} data-testid="btn-edit">Edit</Btn>
+                  <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setModal('delete');}} disabled={!canDelete} data-testid="btn-delete">Delete</Btn>
+                  <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setModal('duplicate');}} disabled={!canDuplicate} data-testid="btn-duplicate">Duplicate</Btn>
+                  <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
+                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('post');}} disabled={!canPost} data-testid="btn-post-wfirma">Post to wFirma</Btn>
+                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('convert');}} disabled={!canConvert} style={canConvert?{color:'var(--badge-amber-text)',borderColor:'var(--badge-amber-border)'}:{}} data-testid="btn-convert-invoice">⚠ Convert to Invoice</Btn>
+                  <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
+                  <Btn variant="ghost" small onClick={e=>{e.stopPropagation();window.open(`/api/v1/proforma/draft/${DRAFT_ID}/preview.html`,'_blank');}} data-testid="btn-print">Print</Btn>
+                  <Btn variant="ghost" small onClick={e=>{e.stopPropagation(); showToast('Email sending not yet configured — export PDF and send manually.','info');}} data-testid="btn-send">Send</Btn>
+                  {/* Generate ▾ dropdown */}
+                  <div style={{ position:'relative' }}>
+                    <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setShowGenerate(g=>!g);setShowOverflow(false);}} data-testid="btn-generate">Generate ▾</Btn>
+                    {showGenerate && <GenerateMenu draftId={DRAFT_ID} onClose={()=>setShowGenerate(false)} />}
+                  </div>
+                  {/* ⋯ overflow: Approve, Re-open (secondary / state-gated) */}
+                  <div style={{ position:'relative', marginLeft:'auto' }}>
+                    <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setShowOverflow(o=>!o);setShowGenerate(false);}} data-testid="btn-overflow">⋯</Btn>
+                    {showOverflow && <OverflowMenu
+                      onClose={()=>setShowOverflow(false)}
+                      canApprove={canApprove} onApprove={()=>setModal('approve')}
+                      canReopen={canReopen}   onReopen={()=>setModal('reopen')}
+                      canReset={canReset}     onReset={()=>setModal('reset')}
+                    />}
+                  </div>
                 </div>
               </Card>
 

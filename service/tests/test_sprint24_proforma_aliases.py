@@ -273,3 +273,92 @@ class TestPhantomRowFilter:
         from app.services.wfirma_reservation import _filter_stub_doc
         assert _filter_stub_doc({"client_name": "Diamond Point", "sales_doc_no": None}) is False
         assert _filter_stub_doc({"client_name": "Acme", "sales_doc_no": "DOC-X"}) is False
+
+
+# ── Phase 2/3 toolbar design-spec contract ────────────────────────────────────
+# Source-grep tests: pin that proforma-detail-v2.html carries the exact toolbar
+# testids specified by ATLAS_PROFORMA_DRILLDOWN_REDESIGN.md §2.3.
+# These run offline — no server, no wFirma, no DB.
+
+import pathlib as _pathlib
+
+_DETAIL_HTML = (
+    _pathlib.Path(__file__).parent.parent
+    / "app" / "static" / "proforma-detail-v2.html"
+)
+
+
+class TestToolbarDesignSpecContract:
+    """Pins all 9 toolbar testids (design spec §2.3 + overflow) in Screen B HTML."""
+
+    @pytest.fixture(autouse=True)
+    def load_html(self):
+        self.html = _DETAIL_HTML.read_text(encoding="utf-8")
+
+    # ── Primary toolbar buttons (design spec §2.3) ─────────────────────────
+    def test_btn_edit_present(self):
+        assert 'data-testid="btn-edit"' in self.html, "Edit button testid missing"
+
+    def test_btn_delete_present(self):
+        assert 'data-testid="btn-delete"' in self.html, "Delete button testid missing"
+
+    def test_btn_duplicate_present(self):
+        assert 'data-testid="btn-duplicate"' in self.html, "Duplicate button testid missing"
+
+    def test_btn_post_wfirma_present(self):
+        assert 'data-testid="btn-post-wfirma"' in self.html, "Post to wFirma testid missing"
+
+    def test_btn_convert_invoice_present(self):
+        assert 'data-testid="btn-convert-invoice"' in self.html, "Convert to Invoice testid missing"
+
+    def test_btn_print_present(self):
+        assert 'data-testid="btn-print"' in self.html, "Print testid missing"
+
+    def test_btn_send_present(self):
+        assert 'data-testid="btn-send"' in self.html, "Send testid missing"
+
+    def test_btn_generate_present(self):
+        assert 'data-testid="btn-generate"' in self.html, "Generate testid missing"
+
+    def test_btn_overflow_present(self):
+        assert 'data-testid="btn-overflow"' in self.html, "Overflow ⋯ testid missing"
+
+    # ── No unconditionally-disabled stubs (Round 1 regression guard) ───────
+    def test_no_ships_next_sprint_tooltip(self):
+        """Guard against Round-1 'ships next sprint' placeholder stubs."""
+        assert "ships next sprint" not in self.html, (
+            "Round-1 disabled stub tooltip found — toolbar was not wired"
+        )
+
+    # ── Convert modal security markers ─────────────────────────────────────
+    def test_irreversibility_warning_first(self):
+        """Irreversibility warning must appear BEFORE the payload section."""
+        irrev_pos = self.html.find("cannot be cancelled")
+        payload_pos = self.html.find("PAYLOAD")
+        assert irrev_pos != -1, "Irreversibility sentence missing from ConvertModal"
+        assert payload_pos != -1, "PAYLOAD section header missing from ConvertModal"
+        assert irrev_pos < payload_pos, (
+            "Irreversibility warning must appear before the payload section"
+        )
+
+    def test_confirm_token_in_convert_call(self):
+        assert "YES_CREATE_FINAL_INVOICE_FROM_PROFORMA" in self.html, (
+            "Convert confirm token must be present in the fetch body"
+        )
+
+    def test_flag_off_message_present(self):
+        assert "WFIRMA_CREATE_INVOICE_ALLOWED" in self.html, (
+            "Flag-off message must reference the WFIRMA_CREATE_INVOICE_ALLOWED env var"
+        )
+
+    # ── Design system layer (no dashboard-shared.js) ───────────────────────
+    def test_uses_pz_design_v2_not_dashboard_shared(self):
+        assert "pz-design-v2.js" in self.html, "Must import pz-design-v2.js"
+        assert "dashboard-shared.js" not in self.html, (
+            "Must NOT import dashboard-shared.js (Lesson F: V2 layer only)"
+        )
+
+    def test_dm_serif_font_loaded(self):
+        assert "DM+Serif+Display" in self.html or "DM Serif Display" in self.html, (
+            "DM Serif Display Google Font must be loaded"
+        )
