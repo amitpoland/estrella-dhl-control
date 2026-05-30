@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Customer Master — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    :root {
+      --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+      --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+      --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+      --shadow: rgba(27,37,56,0.06); --shadow-heavy: rgba(27,37,56,0.16);
+      --accent: #B89968; --accent-light: #D4B884; --accent-text: #1B2538;
+      --accent-subtle: #F8EFD8; --accent-border: #CFB178;
+      --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+      --badge-blue-bg: #E8EFF8;   --badge-blue-text: #1A4A90;   --badge-blue-border: #AABEE0;
+      --badge-amber-bg: #FBF5E0;  --badge-amber-text: #805A00;  --badge-amber-border: #DEC870;
+      --badge-orange-bg: #FBF0E4; --badge-orange-text: #804000; --badge-orange-border: #DEB870;
+      --badge-green-bg: #E8F5EE;  --badge-green-text: #186838;  --badge-green-border: #96CCA8;
+      --badge-red-bg: #FBE8E6;    --badge-red-text: #902018;    --badge-red-border: #E0A8A0;
+      --badge-purple-bg: #EEE8F8; --badge-purple-text: #481898; --badge-purple-border: #BEA4E8;
+      --badge-accent-bg: #1E2D4A; --badge-accent-text: #C9A456; --badge-accent-border: #C9A456;
+      --sidebar-bg: #131C2E; --sidebar-border: #25334C;
+      --sidebar-active: #1F2A42; --sidebar-hover: #1A2438;
+      --sidebar-text: #F2EBD9; --sidebar-text-muted: #7C89A3; --sidebar-icon: #B89968;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+        --row-hover: #223040; --border: #2C3C54; --border-subtle: #243050;
+        --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+        --shadow: rgba(0,0,0,0.3); --shadow-heavy: rgba(0,0,0,0.5);
+        --accent: #D4AA5C; --accent-light: #ECC870; --accent-text: #111928;
+        --accent-subtle: #1E2808; --accent-border: #5A4A18;
+        --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+        --badge-blue-bg: #0E1E38;   --badge-blue-text: #80AAEE;   --badge-blue-border: #1E3A64;
+        --badge-amber-bg: #20180A;  --badge-amber-text: #E8C040;  --badge-amber-border: #584010;
+        --badge-orange-bg: #201008; --badge-orange-text: #E89860; --badge-orange-border: #582010;
+        --badge-green-bg: #0E2018;  --badge-green-text: #68CC88;  --badge-green-border: #1A4830;
+        --badge-red-bg: #200E10;    --badge-red-text: #EE8880;    --badge-red-border: #581018;
+        --badge-purple-bg: #160E28; --badge-purple-text: #AA88EE; --badge-purple-border: #341860;
+        --badge-accent-bg: #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border: #5A4A18;
+        --sidebar-bg: #0E1A30; --sidebar-border: #1A2840;
+        --sidebar-active: #1A2E48; --sidebar-hover: #162438;
+        --sidebar-text: #EEE8DC; --sidebar-text-muted: #566478; --sidebar-icon: #6A7A96;
+      }
+    }
+
+    body { margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; font-size: 13px; }
+    #root { display: flex; flex-direction: column; min-height: 100vh; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: flex-start; justify-content: center; z-index: 8000; padding-top: 60px; animation: fadeIn 0.15s; overflow-y: auto; }
+    .modal-box { background: var(--card); border-radius: 10px; box-shadow: 0 8px 32px var(--shadow-heavy); width: 92%; max-width: 860px; margin-bottom: 40px; }
+    input[type=text], input[type=email], input[type=tel], input[type=number], select, textarea {
+      font-family: inherit; font-size: 12px; background: var(--bg-subtle); border: 1px solid var(--border);
+      border-radius: 5px; color: var(--text); padding: 6px 9px; width: 100%;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    label { font-size: 11px; font-weight: 600; color: var(--text-2); display: block; margin-bottom: 3px; }
+    .field-group { margin-bottom: 10px; }
+    details summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-2); padding: 8px 0; user-select: none; list-style: none; display: flex; align-items: center; gap: 6px; }
+    details summary::before { content: '▶'; font-size: 9px; color: var(--text-3); transition: transform 0.15s; }
+    details[open] summary::before { transform: rotate(90deg); }
+    details .section-body { padding: 4px 0 8px 0; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    tr:hover { background: var(--row-hover); }
+    .tag { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 20px; font-size: 10px; font-weight: 600; border: 1px solid; }
+    .tag-green { background: var(--badge-green-bg); color: var(--badge-green-text); border-color: var(--badge-green-border); }
+    .tag-amber { background: var(--badge-amber-bg); color: var(--badge-amber-text); border-color: var(--badge-amber-border); }
+    .tag-red   { background: var(--badge-red-bg);   color: var(--badge-red-text);   border-color: var(--badge-red-border); }
+    .tag-blue  { background: var(--badge-blue-bg);  color: var(--badge-blue-text);  border-color: var(--badge-blue-border); }
+    .tag-neutral { background: var(--badge-neutral-bg); color: var(--badge-neutral-text); border-color: var(--badge-neutral-border); }
+    .tag-purple { background: var(--badge-purple-bg); color: var(--badge-purple-text); border-color: var(--badge-purple-border); }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/dashboard-shared.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+
+  const { useState, useEffect, useCallback, useRef } = React;
+  const { Btn, Badge, Card, Sel, Toast, EmptyState, SectionHeader, SessionBanner, CompactTable } =
+    window.EstrellaShared;
+  const Api   = window.PzApi;
+  const State = window.PzState;
+
+  // ── Helpers ─────────────────────────────────────────────────────────────
+
+  function getParam(name) {
+    return new URLSearchParams(window.location.search).get(name) || '';
+  }
+
+  function navTo(contractorId) {
+    const url = contractorId
+      ? `/dashboard/customer-master-v2.html?contractor_id=${encodeURIComponent(contractorId)}`
+      : '/dashboard/customer-master-v2.html';
+    window.location.href = url;
+  }
+
+  function riskTag(status) {
+    if (!status) return null;
+    const map = {
+      high: 'tag-red', medium: 'tag-amber', low: 'tag-green',
+      blocked: 'tag-red', approved: 'tag-green',
+    };
+    return <span className={`tag ${map[status] || 'tag-neutral'}`}>{status}</span>;
+  }
+
+  function kycTag(status) {
+    if (!status) return null;
+    const map = { approved: 'tag-green', pending: 'tag-amber', expired: 'tag-red', rejected: 'tag-red' };
+    return <span className={`tag ${map[status] || 'tag-neutral'}`}>{status}</span>;
+  }
+
+  function syncStatusTag(status) {
+    const map = {
+      matched_existing: 'tag-blue',
+      new_candidate: 'tag-green',
+      needs_operator_review: 'tag-amber',
+      skipped_invalid: 'tag-neutral',
+    };
+    return <span className={`tag ${map[status] || 'tag-neutral'}`}>{status}</span>;
+  }
+
+  function fmtDate(s) {
+    if (!s) return '—';
+    return s.slice(0, 10);
+  }
+
+  // ── EstrellaMark ─────────────────────────────────────────────────────────
+
+  function EstrellaMark({ size = 28 }) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+        <rect width="32" height="32" rx="7" fill="var(--accent)" />
+        <text x="16" y="21" textAnchor="middle" fontSize="14" fontWeight="700" fill="var(--accent-text)" fontFamily="serif">E</text>
+      </svg>
+    );
+  }
+
+  // ── TopBar ────────────────────────────────────────────────────────────────
+
+  function TopBar({ subtitle }) {
+    return (
+      <header data-testid="topbar" style={{
+        background: 'var(--sidebar-bg)', borderBottom: '1px solid var(--sidebar-border)',
+        padding: '0 20px', height: 52, display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0,
+      }}>
+        <EstrellaMark size={28} />
+        <span style={{ color: 'var(--sidebar-text)', fontWeight: 700, fontSize: 13, letterSpacing: '0.04em' }}>
+          Estrella Atlas
+        </span>
+        <span style={{ color: 'var(--sidebar-text-muted)', fontSize: 11, marginLeft: 4 }}>
+          / Customer Master{subtitle ? ` / ${subtitle}` : ''}
+        </span>
+        <div style={{ flex: 1 }} />
+        <a href="/dashboard/dashboard.html" style={{ fontSize: 11, color: 'var(--sidebar-text-muted)', textDecoration: 'none' }}
+           data-testid="back-to-dashboard-link">
+          ← Dashboard
+        </a>
+      </header>
+    );
+  }
+
+  // ── FilterBar ─────────────────────────────────────────────────────────────
+
+  function FilterBar({ filters, onChange }) {
+    return (
+      <div data-testid="filter-bar" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+        <input
+          type="text"
+          placeholder="Search by name or NIP…"
+          value={filters.q || ''}
+          onChange={e => onChange({ ...filters, q: e.target.value })}
+          style={{ width: 220, fontSize: 12 }}
+          data-testid="search-input"
+        />
+        <select
+          value={filters.country || ''}
+          onChange={e => onChange({ ...filters, country: e.target.value })}
+          style={{ width: 110, fontSize: 12, padding: '6px 9px' }}
+          data-testid="country-filter"
+        >
+          <option value="">All countries</option>
+          {['PL','DE','FR','NL','BE','CZ','SK','HU','GB','US','IN','AE','CN'].map(c =>
+            <option key={c} value={c}>{c}</option>
+          )}
+        </select>
+        <select
+          value={filters.risk_status || ''}
+          onChange={e => onChange({ ...filters, risk_status: e.target.value })}
+          style={{ width: 130, fontSize: 12, padding: '6px 9px' }}
+          data-testid="risk-filter"
+        >
+          <option value="">All risk levels</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="blocked">Blocked</option>
+        </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 500, color: 'var(--text-2)', cursor: 'pointer', marginBottom: 0 }}>
+          <input
+            type="checkbox"
+            checked={filters.active !== 'false'}
+            onChange={e => onChange({ ...filters, active: e.target.checked ? 'true' : 'false' })}
+            data-testid="active-toggle"
+          />
+          Active only
+        </label>
+      </div>
+    );
+  }
+
+  // ── CustomerList ──────────────────────────────────────────────────────────
+
+  function CustomerList({ onSync }) {
+    const [filters, setFilters] = useState({ active: 'true' });
+    const apiParams = {};
+    if (filters.country) apiParams.country = filters.country;
+    if (filters.risk_status) apiParams.risk_status = filters.risk_status;
+    if (filters.active) apiParams.active = filters.active;
+    apiParams.limit = 200;
+
+    const { data, loading, error, reload } = State.useCustomerList(apiParams);
+    const customers = data?.customers || [];
+
+    // Client-side name/NIP filter (API doesn't support text search)
+    const q = (filters.q || '').toLowerCase().trim();
+    const visible = q
+      ? customers.filter(c =>
+          (c.bill_to_name || '').toLowerCase().includes(q) ||
+          (c.nip || '').toLowerCase().includes(q) ||
+          (c.bill_to_contractor_id || '').toLowerCase().includes(q)
+        )
+      : customers;
+
+    return (
+      <div data-testid="customer-list-view">
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+          <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700, flex: 1 }}>Customer Master</h1>
+          <Btn
+            variant="secondary"
+            onClick={onSync}
+            data-testid="btn-sync-preview"
+          >
+            ⟳ Sync from wFirma
+          </Btn>
+          <Btn
+            variant="ghost"
+            onClick={reload}
+            data-testid="btn-refresh-list"
+          >
+            ↻
+          </Btn>
+        </div>
+
+        <FilterBar filters={filters} onChange={setFilters} />
+
+        {loading ? (
+          <div style={{ padding: 32, textAlign: 'center' }}>
+            <span className="spinner" /> <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 8 }}>Loading customers…</span>
+          </div>
+        ) : error ? (
+          <EmptyState state="error" message={`Failed to load customers: ${error}`} onRetry={reload} />
+        ) : visible.length === 0 ? (
+          <EmptyState state="empty" message={q ? `No customers match "${q}"` : 'No customers found.'} />
+        ) : (
+          <Card style={{ overflow: 'hidden' }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                    {['Name', 'wFirma ID', 'Country', 'NIP', 'Risk', 'KYC', 'Updated'].map(h =>
+                      <th key={h} style={{ padding: '7px 10px', textAlign: 'left', fontWeight: 600, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{h}</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map(c => (
+                    <tr
+                      key={c.bill_to_contractor_id || c.id}
+                      onClick={() => navTo(c.bill_to_contractor_id)}
+                      style={{ cursor: 'pointer', borderBottom: '1px solid var(--border-subtle)' }}
+                      data-testid={`customer-row-${c.bill_to_contractor_id}`}
+                    >
+                      <td style={{ padding: '7px 10px', fontWeight: 600, color: 'var(--text)' }}>
+                        {c.bill_to_name || <span style={{ color: 'var(--text-3)' }}>—</span>}
+                      </td>
+                      <td style={{ padding: '7px 10px', fontFamily: 'monospace', color: 'var(--text-2)', fontSize: 11 }}>
+                        {c.bill_to_contractor_id || '—'}
+                      </td>
+                      <td style={{ padding: '7px 10px', color: 'var(--text-2)' }}>{c.country || '—'}</td>
+                      <td style={{ padding: '7px 10px', fontFamily: 'monospace', fontSize: 11 }}>
+                        {c.nip || c.vat_eu_number || <span style={{ color: 'var(--text-3)' }}>—</span>}
+                      </td>
+                      <td style={{ padding: '7px 10px' }}>{riskTag(c.risk_status)}</td>
+                      <td style={{ padding: '7px 10px' }}>{kycTag(c.kyc_status)}</td>
+                      <td style={{ padding: '7px 10px', color: 'var(--text-3)', fontSize: 11 }}>{fmtDate(c.updated_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-3)' }}>
+              {visible.length} customer{visible.length !== 1 ? 's' : ''}{q ? ` matching "${q}"` : ''} · {data?.count ?? 0} total
+            </div>
+          </Card>
+        )}
+      </div>
+    );
+  }
+
+  // ── FormField helper ──────────────────────────────────────────────────────
+
+  function Field({ label, name, value, onChange, type = 'text', readOnly = false, hint, testId }) {
+    return (
+      <div className="field-group">
+        <label>{label}</label>
+        <input
+          type={type}
+          value={value ?? ''}
+          readOnly={readOnly}
+          onChange={readOnly ? undefined : e => onChange(name, e.target.value)}
+          data-testid={testId || `field-${name}`}
+          style={readOnly ? { background: 'var(--bg)', color: 'var(--text-3)', cursor: 'default' } : {}}
+        />
+        {hint && <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{hint}</div>}
+      </div>
+    );
+  }
+
+  function SelectField({ label, name, value, onChange, options, testId }) {
+    return (
+      <div className="field-group">
+        <label>{label}</label>
+        <select
+          value={value ?? ''}
+          onChange={e => onChange(name, e.target.value)}
+          data-testid={testId || `field-${name}`}
+        >
+          <option value="">— not set —</option>
+          {options.map(o => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
+  function CheckField({ label, name, value, onChange, testId }) {
+    return (
+      <div className="field-group" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+        <input
+          type="checkbox"
+          id={`chk-${name}`}
+          checked={!!value}
+          onChange={e => onChange(name, e.target.checked)}
+          data-testid={testId || `field-${name}`}
+        />
+        <label htmlFor={`chk-${name}`} style={{ marginBottom: 0, cursor: 'pointer' }}>{label}</label>
+      </div>
+    );
+  }
+
+  // ── CustomerDetail ────────────────────────────────────────────────────────
+
+  function CustomerDetail({ contractorId }) {
+    const { data: record, loading, error, reload, save, saving } = State.useCustomerMaster(contractorId);
+    const [form, setForm] = useState(null);
+    const [dirty, setDirty] = useState(false);
+    const [toast, setToast] = useState(null);
+    const isNew = !contractorId;
+
+    useEffect(() => {
+      if (record) {
+        setForm({ ...record });
+        setDirty(false);
+      }
+    }, [record]);
+
+    const showToast = (msg, type = 'info') => {
+      setToast({ msg, type });
+      setTimeout(() => setToast(null), 3500);
+    };
+
+    const setField = useCallback((name, val) => {
+      setForm(f => ({ ...f, [name]: val }));
+      setDirty(true);
+    }, []);
+
+    const handleSave = async () => {
+      if (!form) return;
+      const res = await save(form);
+      if (res.ok) {
+        showToast('Customer saved.', 'success');
+        setDirty(false);
+      } else {
+        showToast(res.error || 'Save failed.', 'error');
+      }
+    };
+
+    if (loading) {
+      return (
+        <div style={{ padding: 40, textAlign: 'center' }}>
+          <span className="spinner" /> <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 8 }}>Loading customer…</span>
+        </div>
+      );
+    }
+    if (error) {
+      return <EmptyState state="error" message={`Failed to load: ${error}`} onRetry={reload} />;
+    }
+    if (!form) {
+      return <EmptyState state="empty" message="No data." />;
+    }
+
+    return (
+      <div data-testid="customer-detail-view">
+        {toast && <Toast msg={toast.msg} type={toast.type} />}
+
+        {/* Back + Title */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+          <button
+            onClick={() => navTo('')}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent)', fontSize: 13, fontWeight: 600, padding: 0 }}
+            data-testid="back-to-list-btn"
+          >
+            ← All Customers
+          </button>
+          <span style={{ color: 'var(--text-3)' }}>/</span>
+          <span style={{ fontWeight: 700, fontSize: 16 }}>{form.bill_to_name || contractorId}</span>
+          {dirty && <span style={{ fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>● unsaved</span>}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16, alignItems: 'start' }}>
+
+          {/* ── Left: form sections ── */}
+          <div>
+
+            {/* Identity */}
+            <Card style={{ padding: '14px 16px', marginBottom: 12 }}>
+              <SectionHeader label="Identity" />
+              <div className="grid-2">
+                <Field label="wFirma Contractor ID" name="bill_to_contractor_id" value={form.bill_to_contractor_id} onChange={setField} readOnly hint="Primary key — cannot be changed" testId="field-contractor-id" />
+                <Field label="Company Name *" name="bill_to_name" value={form.bill_to_name} onChange={setField} testId="field-name" />
+                <Field label="Country *" name="country" value={form.country} onChange={setField} hint="ISO-3166 alpha-2 (e.g. PL, DE, IN)" testId="field-country" />
+                <Field label="NIP / Tax ID" name="nip" value={form.nip} onChange={setField} testId="field-nip" />
+                <Field label="VAT EU Number" name="vat_eu_number" value={form.vat_eu_number} onChange={setField} testId="field-vat-eu" />
+                <Field label="EORI" name="eori" value={form.eori} onChange={setField} testId="field-eori" />
+                <Field label="REGON" name="regon" value={form.regon} onChange={setField} testId="field-regon" />
+                <Field label="Short Code" name="short_code" value={form.short_code} onChange={setField} testId="field-short-code" />
+              </div>
+              <div className="grid-3" style={{ marginTop: 6 }}>
+                <SelectField label="Client Type" name="client_type" value={form.client_type} onChange={setField}
+                  options={[{value:'retail',label:'Retail'},{value:'wholesale',label:'Wholesale'},{value:'distributor',label:'Distributor'},{value:'reseller',label:'Reseller'}]}
+                  testId="field-client-type" />
+                <Field label="Industry" name="industry" value={form.industry} onChange={setField} testId="field-industry" />
+                <SelectField label="VAT Mode" name="vat_mode" value={String(form.vat_mode ?? '')} onChange={(n,v) => setField(n, v ? parseInt(v) : null)}
+                  options={[{value:'0',label:'0 — Standard'},{value:'1',label:'1 — EU'},{value:'2',label:'2 — Export'}]}
+                  testId="field-vat-mode" />
+              </div>
+            </Card>
+
+            {/* Contact */}
+            <Card style={{ padding: '14px 16px', marginBottom: 12 }}>
+              <details>
+                <summary>Contact &amp; Address</summary>
+                <div className="section-body">
+                  <div className="grid-2">
+                    <Field label="Email" name="bill_to_email" value={form.bill_to_email} onChange={setField} type="email" testId="field-email" />
+                    <Field label="Phone" name="bill_to_phone" value={form.bill_to_phone} onChange={setField} type="tel" testId="field-phone" />
+                    <Field label="Mobile" name="bill_to_mobile" value={form.bill_to_mobile} onChange={setField} type="tel" testId="field-mobile" />
+                    <Field label="Bank Account" name="bank_account" value={form.bank_account} onChange={setField} testId="field-bank-account" />
+                    <Field label="Street" name="bill_to_street" value={form.bill_to_street} onChange={setField} testId="field-street" />
+                    <Field label="City" name="bill_to_city" value={form.bill_to_city} onChange={setField} testId="field-city" />
+                    <Field label="Postal Code" name="bill_to_postal_code" value={form.bill_to_postal_code} onChange={setField} testId="field-postal" />
+                  </div>
+                </div>
+              </details>
+            </Card>
+
+            {/* Invoice / Proforma defaults */}
+            <Card style={{ padding: '14px 16px', marginBottom: 12 }}>
+              <details>
+                <summary>Invoice &amp; Proforma Defaults</summary>
+                <div className="section-body">
+                  <div className="grid-3">
+                    <SelectField label="Payment Method" name="preferred_payment_method" value={form.preferred_payment_method} onChange={setField}
+                      options={[{value:'transfer',label:'Transfer'},{value:'cash',label:'Cash'},{value:'card',label:'Card'},{value:'compensation',label:'Compensation'}]}
+                      testId="field-payment-method" />
+                    <Field label="Default Currency" name="default_currency" value={form.default_currency} onChange={setField} hint="e.g. EUR, PLN, USD" testId="field-currency" />
+                    <Field label="Payment Terms (days)" name="payment_terms_days" value={form.payment_terms_days} onChange={(n,v) => setField(n, v ? parseInt(v) : null)} type="number" testId="field-payment-terms" />
+                    <Field label="Proforma Series ID" name="preferred_proforma_series_id" value={form.preferred_proforma_series_id} onChange={setField} testId="field-proforma-series" />
+                    <Field label="Invoice Series ID" name="preferred_invoice_series_id" value={form.preferred_invoice_series_id} onChange={setField} testId="field-invoice-series" />
+                    <Field label="Language ID" name="default_language_id" value={form.default_language_id} onChange={setField} testId="field-language-id" />
+                  </div>
+                </div>
+              </details>
+            </Card>
+
+            {/* Freight */}
+            <Card style={{ padding: '14px 16px', marginBottom: 12 }}>
+              <details>
+                <summary>Freight</summary>
+                <div className="section-body">
+                  <div className="grid-3">
+                    <Field label="Freight Service ID" name="freight_service_id" value={form.freight_service_id} onChange={setField} testId="field-freight-service" />
+                    <SelectField label="Mode" name="freight_mode" value={form.freight_mode} onChange={setField}
+                      options={[{value:'fixed',label:'Fixed'},{value:'rate',label:'Rate'},{value:'actual',label:'Actual'}]}
+                      testId="field-freight-mode" />
+                    <Field label="Currency" name="freight_currency" value={form.freight_currency} onChange={setField} testId="field-freight-currency" />
+                    <Field label="Last Amount" name="freight_last_amount" value={form.freight_last_amount} onChange={setField} type="number" testId="field-freight-last" />
+                    <Field label="Fixed EUR" name="freight_fixed_amount_eur" value={form.freight_fixed_amount_eur} onChange={setField} type="number" testId="field-freight-eur" />
+                    <Field label="Fixed USD" name="freight_fixed_amount_usd" value={form.freight_fixed_amount_usd} onChange={setField} type="number" testId="field-freight-usd" />
+                    <Field label="Label PL" name="freight_label_pl" value={form.freight_label_pl} onChange={setField} testId="field-freight-label-pl" />
+                    <Field label="Label EN" name="freight_label_en" value={form.freight_label_en} onChange={setField} testId="field-freight-label-en" />
+                  </div>
+                </div>
+              </details>
+            </Card>
+
+            {/* Insurance */}
+            <Card style={{ padding: '14px 16px', marginBottom: 12 }}>
+              <details>
+                <summary>Insurance</summary>
+                <div className="section-body">
+                  <CheckField label="Insurance Enabled" name="insurance_enabled" value={form.insurance_enabled} onChange={setField} testId="field-insurance-enabled" />
+                  <div className="grid-3" style={{ marginTop: 8 }}>
+                    <Field label="Insurance Service ID" name="insurance_service_id" value={form.insurance_service_id} onChange={setField} testId="field-ins-service" />
+                    <SelectField label="Mode" name="insurance_mode" value={form.insurance_mode} onChange={setField}
+                      options={[{value:'fixed',label:'Fixed'},{value:'rate',label:'Rate'},{value:'actual',label:'Actual'}]}
+                      testId="field-ins-mode" />
+                    <Field label="Rate (%)" name="insurance_rate" value={form.insurance_rate} onChange={setField} type="number" testId="field-ins-rate" />
+                    <Field label="Min Amount" name="insurance_min_amount" value={form.insurance_min_amount} onChange={setField} type="number" testId="field-ins-min" />
+                    <Field label="Fixed EUR" name="insurance_fixed_amount_eur" value={form.insurance_fixed_amount_eur} onChange={setField} type="number" testId="field-ins-eur" />
+                    <Field label="Fixed USD" name="insurance_fixed_amount_usd" value={form.insurance_fixed_amount_usd} onChange={setField} type="number" testId="field-ins-usd" />
+                    <Field label="Label PL" name="insurance_label_pl" value={form.insurance_label_pl} onChange={setField} testId="field-ins-label-pl" />
+                    <Field label="Label EN" name="insurance_label_en" value={form.insurance_label_en} onChange={setField} testId="field-ins-label-en" />
+                  </div>
+                </div>
+              </details>
+            </Card>
+
+            {/* Credit / KYC */}
+            <Card style={{ padding: '14px 16px', marginBottom: 12 }}>
+              <details>
+                <summary>Credit &amp; KYC</summary>
+                <div className="section-body">
+                  <div className="grid-3">
+                    <Field label="Credit Limit" name="credit_limit" value={form.credit_limit} onChange={setField} type="number" testId="field-credit-limit" />
+                    <Field label="Credit Currency" name="credit_currency" value={form.credit_currency} onChange={setField} testId="field-credit-currency" />
+                    <SelectField label="Risk Status" name="risk_status" value={form.risk_status} onChange={setField}
+                      options={[{value:'low',label:'Low'},{value:'medium',label:'Medium'},{value:'high',label:'High'},{value:'blocked',label:'Blocked'}]}
+                      testId="field-risk-status" />
+                    <CheckField label="KUKE Approved" name="kuke_approved" value={form.kuke_approved} onChange={setField} testId="field-kuke-approved" />
+                    <Field label="KUKE Limit" name="kuke_limit" value={form.kuke_limit} onChange={setField} type="number" testId="field-kuke-limit" />
+                    <Field label="KUKE Expiry" name="kuke_expiry_date" value={form.kuke_expiry_date} onChange={setField} testId="field-kuke-expiry" />
+                    <Field label="KUKE Policy #" name="kuke_policy_number" value={form.kuke_policy_number} onChange={setField} testId="field-kuke-policy" />
+                    <SelectField label="KYC Status" name="kyc_status" value={form.kyc_status} onChange={setField}
+                      options={[{value:'pending',label:'Pending'},{value:'approved',label:'Approved'},{value:'expired',label:'Expired'},{value:'rejected',label:'Rejected'}]}
+                      testId="field-kyc-status" />
+                    <Field label="KYC Approved On" name="kyc_approved_on" value={form.kyc_approved_on} onChange={setField} testId="field-kyc-approved-on" />
+                    <Field label="KYC Expiry" name="kyc_expiry" value={form.kyc_expiry} onChange={setField} testId="field-kyc-expiry" />
+                    <SelectField label="AML Risk Rating" name="aml_risk_rating" value={form.aml_risk_rating} onChange={setField}
+                      options={[{value:'low',label:'Low'},{value:'medium',label:'Medium'},{value:'high',label:'High'}]}
+                      testId="field-aml-rating" />
+                  </div>
+                </div>
+              </details>
+            </Card>
+
+            {/* Ship-to defaults */}
+            <Card style={{ padding: '14px 16px', marginBottom: 12 }}>
+              <details>
+                <summary>Shipping Defaults</summary>
+                <div className="section-body">
+                  <CheckField label="Use Alternate Ship-To Address" name="ship_to_use_alternate" value={form.ship_to_use_alternate} onChange={setField} testId="field-ship-alternate" />
+                  <div className="grid-2" style={{ marginTop: 8 }}>
+                    <Field label="Ship-To Name" name="ship_to_name" value={form.ship_to_name} onChange={setField} testId="field-ship-name" />
+                    <Field label="Contact Person" name="ship_to_person" value={form.ship_to_person} onChange={setField} testId="field-ship-person" />
+                    <Field label="Street" name="ship_to_street" value={form.ship_to_street} onChange={setField} testId="field-ship-street" />
+                    <Field label="City" name="ship_to_city" value={form.ship_to_city} onChange={setField} testId="field-ship-city" />
+                    <Field label="ZIP" name="ship_to_zip" value={form.ship_to_zip} onChange={setField} testId="field-ship-zip" />
+                    <Field label="Country" name="ship_to_country" value={form.ship_to_country} onChange={setField} testId="field-ship-country" />
+                    <Field label="Phone" name="ship_to_phone" value={form.ship_to_phone} onChange={setField} type="tel" testId="field-ship-phone" />
+                    <Field label="Email" name="ship_to_email" value={form.ship_to_email} onChange={setField} type="email" testId="field-ship-email" />
+                  </div>
+                  <div className="field-group" style={{ marginTop: 8 }}>
+                    <Field label="Ship-To wFirma Contractor ID" name="ship_to_contractor_id" value={form.ship_to_contractor_id} onChange={setField} testId="field-ship-contractor" />
+                  </div>
+                </div>
+              </details>
+            </Card>
+
+          </div>{/* end left */}
+
+          {/* ── Right: save card + meta ── */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Card style={{ padding: '14px 16px' }}>
+              <SectionHeader label="Save" />
+              <Btn
+                variant="primary"
+                onClick={handleSave}
+                disabled={saving || !dirty}
+                style={{ width: '100%', marginBottom: 8 }}
+                data-testid="btn-save-customer"
+              >
+                {saving ? <><span className="spinner" style={{ marginRight: 6 }} /> Saving…</> : 'Save Customer Master'}
+              </Btn>
+              {!dirty && <div style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center' }}>No unsaved changes</div>}
+              {dirty && <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', textAlign: 'center' }}>Changes not yet saved</div>}
+            </Card>
+            <Card style={{ padding: '14px 16px' }}>
+              <SectionHeader label="Record Info" />
+              <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+                <tbody>
+                  {[
+                    ['ID', record?.id],
+                    ['Created', fmtDate(record?.created_at)],
+                    ['Updated', fmtDate(record?.updated_at)],
+                    ['Last wFirma Sync', fmtDate(record?.last_wfirma_sync_at)],
+                    ['Sync Source', record?.wfirma_sync_source],
+                    ['Active', record?.active ? 'Yes' : 'No'],
+                  ].map(([k, v]) => (
+                    <tr key={k}>
+                      <td style={{ color: 'var(--text-3)', padding: '3px 0', paddingRight: 8, whiteSpace: 'nowrap' }}>{k}</td>
+                      <td style={{ color: 'var(--text)', fontWeight: 500 }}>{v ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+            <Card style={{ padding: '14px 16px' }}>
+              <SectionHeader label="Notes" />
+              <div className="field-group">
+                <textarea
+                  rows={4}
+                  value={form.notes ?? ''}
+                  onChange={e => setField('notes', e.target.value)}
+                  placeholder="Operator notes…"
+                  data-testid="field-notes"
+                  style={{ resize: 'vertical' }}
+                />
+              </div>
+              <div className="field-group">
+                <label>Compliance Notes</label>
+                <textarea
+                  rows={3}
+                  value={form.compliance_notes ?? ''}
+                  onChange={e => setField('compliance_notes', e.target.value)}
+                  placeholder="Compliance / AML notes…"
+                  data-testid="field-compliance-notes"
+                  style={{ resize: 'vertical' }}
+                />
+              </div>
+            </Card>
+          </div>{/* end right */}
+
+        </div>{/* end grid */}
+      </div>
+    );
+  }
+
+  // ── SyncModal ─────────────────────────────────────────────────────────────
+
+  function SyncModal({ onClose }) {
+    const [proposals, setProposals] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [fetchError, setFetchError] = useState(null);
+    const [selected, setSelected] = useState(new Set());
+    const [applying, setApplying] = useState(false);
+    const [applyResult, setApplyResult] = useState(null);
+    const [toast, setToast] = useState(null);
+    const [confirmOpen, setConfirmOpen] = useState(false);
+
+    const showToast = (msg, type = 'info') => {
+      setToast({ msg, type });
+      setTimeout(() => setToast(null), 4000);
+    };
+
+    const fetchPreview = useCallback(async () => {
+      setLoading(true);
+      setFetchError(null);
+      setApplyResult(null);
+      const res = await Api.previewWfirmaSyncCustomer();
+      setLoading(false);
+      if (res.ok) {
+        setProposals(res.data.proposals || []);
+        setSelected(new Set());
+      } else {
+        setFetchError(res.error || 'Failed to fetch wFirma proposals');
+      }
+    }, []);
+
+    useEffect(() => { fetchPreview(); }, [fetchPreview]);
+
+    const toggle = (wfirmaId) => {
+      setSelected(s => {
+        const n = new Set(s);
+        n.has(wfirmaId) ? n.delete(wfirmaId) : n.add(wfirmaId);
+        return n;
+      });
+    };
+
+    const toggleAll = (filteredIds) => {
+      setSelected(s => {
+        const allSelected = filteredIds.every(id => s.has(id));
+        const n = new Set(s);
+        filteredIds.forEach(id => allSelected ? n.delete(id) : n.add(id));
+        return n;
+      });
+    };
+
+    const handleApply = async () => {
+      if (selected.size === 0) return;
+      setApplying(true);
+      setConfirmOpen(false);
+      const res = await Api.applyWfirmaSyncCustomer(Array.from(selected));
+      setApplying(false);
+      if (res.ok) {
+        const d = res.data;
+        showToast(`Applied: ${d.inserted} inserted, ${d.updated} updated, ${d.rejected?.length || 0} rejected.`, 'success');
+        setApplyResult(d);
+        await fetchPreview();
+      } else {
+        showToast(res.error || 'Apply failed.', 'error');
+      }
+    };
+
+    const actionable = (proposals || []).filter(p => p.status !== 'skipped_invalid');
+
+    return (
+      <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()} data-testid="sync-modal">
+        <div className="modal-box">
+          {toast && <Toast msg={toast.msg} type={toast.type} />}
+
+          {/* Header */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+            <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>Sync from wFirma — Preview</span>
+            <Btn variant="ghost" small onClick={fetchPreview} disabled={loading} data-testid="btn-sync-refresh">
+              ↻ Refresh
+            </Btn>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', fontSize: 18, padding: '2px 6px' }} data-testid="btn-sync-close">×</button>
+          </div>
+
+          {/* Body */}
+          <div style={{ padding: '16px 20px', maxHeight: '60vh', overflowY: 'auto' }}>
+            {loading ? (
+              <div style={{ textAlign: 'center', padding: 32 }}>
+                <span className="spinner" /> <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 8 }}>Fetching wFirma contractors…</span>
+              </div>
+            ) : fetchError ? (
+              <EmptyState state="error" message={fetchError} onRetry={fetchPreview} />
+            ) : !proposals || proposals.length === 0 ? (
+              <EmptyState state="empty" message="No wFirma contractors found." />
+            ) : (
+              <>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+                  {proposals.length} contractors fetched · {actionable.length} actionable · {selected.size} selected
+                </div>
+                {actionable.length === 0 && proposals.length > 0 && (
+                  <div style={{ padding: '10px 12px', background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-amber-text)', marginBottom: 10 }}>
+                    All {proposals.length} contractors are marked <strong>skipped_invalid</strong> (missing wFirma ID or required fields). No rows can be applied. Try refreshing, or review the contractors in wFirma directly.
+                  </div>
+                )}
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                      <th style={{ padding: '6px 8px', width: 28 }}>
+                        <input type="checkbox"
+                          checked={actionable.length > 0 && actionable.every(p => selected.has(p.wfirma_id))}
+                          onChange={() => toggleAll(actionable.map(p => p.wfirma_id))}
+                          data-testid="sync-select-all"
+                        />
+                      </th>
+                      {['wFirma ID','Name','Country','VAT','Status','Suggested','Local Match'].map(h =>
+                        <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, color: 'var(--text-2)' }}>{h}</th>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {proposals.map(p => {
+                      const disabled = p.status === 'skipped_invalid';
+                      return (
+                        <tr key={p.wfirma_id || p.name}
+                          style={{ borderBottom: '1px solid var(--border-subtle)', opacity: disabled ? 0.4 : 1 }}
+                          data-testid={`sync-row-${p.wfirma_id}`}>
+                          <td style={{ padding: '5px 8px' }}>
+                            <input type="checkbox"
+                              disabled={disabled}
+                              checked={selected.has(p.wfirma_id)}
+                              onChange={() => !disabled && toggle(p.wfirma_id)}
+                              data-testid={`sync-row-checkbox-${p.wfirma_id}`}
+                            />
+                          </td>
+                          <td style={{ padding: '5px 8px', fontFamily: 'monospace', color: 'var(--text-2)' }}>{p.wfirma_id || '—'}</td>
+                          <td style={{ padding: '5px 8px', fontWeight: 600 }}>{p.name || '—'}</td>
+                          <td style={{ padding: '5px 8px' }}>{p.country || '—'}</td>
+                          <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{p.vat_id || '—'}</td>
+                          <td style={{ padding: '5px 8px' }}>{syncStatusTag(p.status)}</td>
+                          <td style={{ padding: '5px 8px' }}>
+                            <span className={`tag ${p.suggested_target === 'client_master' ? 'tag-green' : p.suggested_target === 'ignore' ? 'tag-neutral' : 'tag-amber'}`}>
+                              {p.suggested_target || '—'}
+                            </span>
+                          </td>
+                          <td style={{ padding: '5px 8px', color: 'var(--text-2)' }}>
+                            {p.local_match ? (
+                              <span title={p.local_match.bill_to_name}>✓ {p.local_match.bill_to_name?.slice(0, 18)}</span>
+                            ) : '—'}
+                            {p.mismatches && p.mismatches.length > 0 && (
+                              <span className="tag tag-amber" style={{ marginLeft: 4 }}>
+                                {p.mismatches.length} mismatch{p.mismatches.length > 1 ? 'es' : ''}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </div>
+
+          {/* Apply result */}
+          {applyResult && (
+            <div style={{ padding: '10px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', fontSize: 12 }}>
+              <strong>Last apply:</strong> {applyResult.inserted} inserted · {applyResult.updated} updated · {(applyResult.rejected || []).length} rejected
+              {(applyResult.rejected || []).length > 0 && (
+                <div style={{ color: 'var(--badge-red-text)', marginTop: 4 }}>
+                  Rejected: {applyResult.rejected.map(r => `${r.wfirma_id} (${r.reason})`).join(', ')}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Footer */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 20px', borderTop: '1px solid var(--border)' }}>
+            <span style={{ flex: 1, fontSize: 11, color: 'var(--text-3)' }}>
+              {selected.size > 0 ? `${selected.size} row${selected.size !== 1 ? 's' : ''} selected` : 'Select rows to apply'}
+            </span>
+            <Btn variant="ghost" onClick={onClose} data-testid="btn-sync-cancel">Cancel</Btn>
+            <Btn
+              variant="primary"
+              disabled={selected.size === 0 || applying}
+              onClick={() => setConfirmOpen(true)}
+              data-testid="btn-apply-selected"
+            >
+              {applying ? <><span className="spinner" style={{ marginRight: 6 }} /> Applying…</> : `Apply ${selected.size} Selected`}
+            </Btn>
+          </div>
+
+          {/* Confirm overlay */}
+          {confirmOpen && (
+            <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 10, zIndex: 9000 }}>
+              <div style={{ background: 'var(--card)', borderRadius: 8, padding: 24, maxWidth: 360, width: '90%', boxShadow: '0 8px 32px var(--shadow-heavy)' }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Confirm Sync Apply</div>
+                <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.5 }}>
+                  This will write <strong>{selected.size} wFirma contractor{selected.size !== 1 ? 's' : ''}</strong> to the local Customer Master (identity fields only: name, country, NIP, email, phone). Existing freight, insurance, and KYC data will <strong>not</strong> be overwritten.
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <Btn variant="ghost" onClick={() => setConfirmOpen(false)} data-testid="btn-confirm-cancel">Cancel</Btn>
+                  <Btn variant="primary" onClick={handleApply} data-testid="btn-confirm-apply">Apply Selected</Btn>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── App root ──────────────────────────────────────────────────────────────
+
+  function App() {
+    const contractorId = getParam('contractor_id');
+    const [syncOpen, setSyncOpen] = useState(false);
+    const [sessionError, setSessionError] = useState(null);
+
+    // Detect auth errors from any hook via global error event (simple approach)
+    // The shared layer surfaces 'auth' type on 401/403 responses
+
+    return (
+      <div data-testid="customer-master-v2-root" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+        {sessionError && <SessionBanner type={sessionError} onDismiss={() => setSessionError(null)} />}
+
+        <TopBar subtitle={contractorId || null} />
+
+        <main style={{ flex: 1, padding: '20px 24px', maxWidth: 1100, width: '100%', margin: '0 auto' }}>
+          {contractorId ? (
+            <CustomerDetail contractorId={contractorId} />
+          ) : (
+            <CustomerList onSync={() => setSyncOpen(true)} />
+          )}
+        </main>
+
+        {syncOpen && <SyncModal onClose={() => setSyncOpen(false)} />}
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+})();
+</script>
+</body>
+</html>
