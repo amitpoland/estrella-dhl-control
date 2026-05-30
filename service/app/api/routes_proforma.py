@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse, Response, HTMLResponse
 
 from ..core.config import settings
@@ -5834,11 +5834,32 @@ def get_proforma_draft_intelligence(draft_id: int) -> JSONResponse:
     })
 
 
-# ── Sprint-24 Screen-B read-only aliases ──────────────────────────────────────
+# ── Sprint-24 helper: optional session user (proper Depends, avoids raw Request) ─
+def _get_current_user_optional(
+    pz_session: Optional[str] = Cookie(default=None),
+) -> Optional[dict]:
+    """Inject the authenticated user from the session cookie, or None.
+    Used by draft_to_invoice_by_id to derive operator server-side.
+    Does NOT raise 401/403 — callers handle None themselves.
+    """
+    if not pz_session:
+        return None
+    try:
+        from ..auth.service import decode_token, get_user_by_id  # noqa: PLC0415
+        payload = decode_token(pz_session)
+        if not payload:
+            return None
+        return get_user_by_id(payload.get("sub"))
+    except Exception:
+        return None
+
+
+# ── Sprint-24 Screen-B aliases (read + write) ────────────────────────────────
 #
-# These thin aliases translate the new draft_id-keyed routes that Screen B
-# needs into calls to the existing (batch_id, client_name)-keyed functions.
-# Read-only only — the convert POST alias ships in a later PR.
+# Thin aliases translating draft_id-keyed routes → existing (batch_id,
+# client_name)-keyed functions. The POST to-invoice alias is the critical
+# addition: it derives operator from the authenticated SESSION (not X-Operator
+# header / window.prompt) so Convert-to-Invoice is un-spoofable from the UI.
 
 @router.get(
     "/draft/{draft_id}/to-invoice-preview",
@@ -5907,3 +5928,44 @@ def get_draft_invoice_link(draft_id: int) -> JSONResponse:
         "notes":              link.notes,
         "converted_at":       link.converted_at,
     })
+
+
+@router.post(
+    "/draft/{draft_id}/to-invoice",
+    dependencies=[_auth],
+    summary="Sprint-24: convert proforma → invoice via draft_id (session-operator alias)",
+)
+def draft_to_invoice_by_id(
+    draft_id: int,
+    body: _FinalInvoiceConfirmReq,
+    session_user: Optional[dict] = Depends(_get_current_user_optional),
+) -> JSONResponse:
+    """POST alias: resolves draft_id → (batch_id, client_name) and delegates to
+    the existing proforma_to_invoice function.
+
+    Safety invariants preserved:
+    - ALL existing guard rails in proforma_to_invoice() apply unchanged:
+      wfirma_create_invoice_allowed flag gate, confirm token, UNIQUE(proforma_id)
+      duplicate-conversion guard, pending-link-pre-call, mark_failed, audit event.
+    - Operator is derived SERVER-SIDE from the authenticated session (full_name
+      or email from the JWT cookie). X-Operator header is NOT accepted — the
+      operator identity comes from the session, not from client-controlled input.
+    - No wFirma call if wfirma_create_invoice_allowed is False (returns 503).
+
+    Deterministic idempotency key note: the actual guard is UNIQUE(proforma_id)
+    on proforma_invoice_links, which is immutable. The key displayed in the
+    modal is f"prof-{wfirma_proforma_id[:12]}-conv" — informational only.
+    """
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+
+    # Derive operator from session via get_current_user_optional Depends.
+    # Falls back to "session-user" when authenticated via API key (no session).
+    operator = (
+        ((session_user or {}).get("full_name") or "").strip()
+        or ((session_user or {}).get("email") or "").strip()
+        or "session-user"
+    )
+
+    return proforma_to_invoice(d.batch_id, d.client_name, body, x_operator=operator)
