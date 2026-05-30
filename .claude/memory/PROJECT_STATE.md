@@ -2,9 +2,9 @@
 
 Source of truth for the current project execution state. Read this file at the start of every new session before any task work begins.
 
-Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-29 (PR #399 merge + governance reconciliation).
+Owned by `flow-context-keeper`. Do not edit by hand outside of an emergency. Last updated by flow-context-keeper on 2026-05-30 (Sprint 05 — Customer Master V2 campaign commencement).
 
-**Last-run-at:** 2026-05-29T20:30Z (post-PR399-merge + governance reconciliation pass: #396/#397/#389 reconciled, 2 deploy scorecards committed, OQ-NEW-8 RESOLVED via Windows-side verification, OQ10 confirmed OPEN). Origin/main HEAD: **9c4921d** (PR #399 squash-merge: test-suite green cleanup A/B/C). Code HEAD: 9c4921d. Production: `C:\PZ` is robocopy-deployed (NO `.git`; no single SHA — identity = content fingerprint). **Windows-side verified 2026-05-29**: PZService Running, `/api/v1/health` 200 (env=prod), #395 alias live (200), #398 documents-v2.html present; all 5 Issue #397 drift files byte-IDENTICAL to current `main` (no production-only hotfixes). Base `7864bd7` (PR #391) + #395 + #398, content-aligned with main. Residual: no deploy-SHA stamp (OQ-NEW-397 recommends a `DEPLOYED_SHA` marker). GATE 2: 1/3 open PRs (PR #370 pz-correction). PR #398 also merged 2026-05-29T19:18:51Z. TEST BASELINE: **85 PRE-EXISTING FAILURES** on merged main + 244/244 PZ golden (`make verify`) + 299/299 PR #399 affected tests + Issue #400 filed for remaining ~626 test backlog. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ATLAS-V2: Sprints 01/02/03 CLOSED; **Sprint 04 FULLY CLOSED 2026-05-29 (#398 documents-v2.html: deploy + HTTP smoke + GATE 6 browser-verifier PASS, OQ10 RESOLVED)** — Sprint 05 unblocked for operator planning. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). DEPLOY-AHEAD-OF-MERGE: no outstanding disclosure gaps. **OPEN QUESTIONS**: OQ-NEW-8 (production-SHA) RESOLVED 2026-05-29; OQ10 (#398 GATE 6 browser verification) RESOLVED 2026-05-29 (PASS); OQ-NEW-396 (#396) + OQ-NEW-397 (#397) OPEN as GATE 4 issues; OQ-NEW-9 (Sprint 04/05 reassessment) OPEN.
+**Last-run-at:** 2026-05-29T20:30Z (post-PR399-merge + governance reconciliation pass: #396/#397/#389 reconciled, 2 deploy scorecards committed, OQ-NEW-8 RESOLVED via Windows-side verification, OQ10 confirmed OPEN). Origin/main HEAD: **9c4921d** (PR #399 squash-merge: test-suite green cleanup A/B/C). Code HEAD: 9c4921d. Production: `C:\PZ` is robocopy-deployed (NO `.git`; no single SHA — identity = content fingerprint). **Windows-side verified 2026-05-29**: PZService Running, `/api/v1/health` 200 (env=prod), #395 alias live (200), #398 documents-v2.html present; all 5 Issue #397 drift files byte-IDENTICAL to current `main` (no production-only hotfixes). Base `7864bd7` (PR #391) + #395 + #398, content-aligned with main. Residual: no deploy-SHA stamp (OQ-NEW-397 recommends a `DEPLOYED_SHA` marker). GATE 2: 2/3 open PRs (PR #370 pz-correction + PR #401 sprint05). PR #398 also merged 2026-05-29T19:18:51Z. TEST BASELINE: **85 PRE-EXISTING FAILURES** on merged main + 244/244 PZ golden (`make verify`) + 299/299 PR #399 affected tests + Issue #400 filed for remaining ~626 test backlog. DHL AUTOMATION: dev-phase flows ENABLED (shadow_mode=false, 5 AUTO_* flags true, all AUTO_SEND_* false). PROFORMA: draft creation decoupled from PZ completion gate (pending_local status). ATLAS-V2: Sprints 01/02/03/04 CLOSED; **Sprint 05 OPEN 2026-05-30 (PR #401 Customer Master V2)** — Sprint 06 blocked until Sprint 05 merges. COMPLIANCE RESOLVER: LIVE (COMPLIANCE_INTELLIGENCE_RESOLVER_ENABLED=true). DEPLOY-AHEAD-OF-MERGE: no outstanding disclosure gaps. **OPEN QUESTIONS**: OQ-NEW-8 (production-SHA) RESOLVED 2026-05-29; OQ10 (#398 GATE 6 browser verification) RESOLVED 2026-05-29 (PASS); OQ-NEW-396 (#396) + OQ-NEW-397 (#397) OPEN as GATE 4 issues; OQ-NEW-9 (Sprint 04/05 reassessment) OPEN.
 
 ---
 
@@ -81,6 +81,31 @@ Two initiatives contain the words "Phase 2" or "correction." They are completely
 **GATE 4**: Issue #400 filed (GATE 4 salvage) — broad dashboard/inventory test backlog (~626 failures), classified in 3 categories: (1) ~349 foreign hardcoded-path FileNotFoundError, (2) Atlas-V2 shell-migration source-grep failures, (3) 5 server-dependent test_wfirma_reservation_create integration tests. Disposition: SCHEDULED as separate cleanup campaign. Out of scope for PR #399. Labels: testing, governance, follow-up.
 
 **Rollback**: `git revert 9c4921d --no-edit`
+
+---
+
+## PR #401 — Atlas-V2 Sprint 05 Customer Master V2 (2026-05-30, OPEN)
+
+**Date**: 2026-05-30
+**PR #401** — `feat(atlas-v2): Sprint 05 — Customer Master V2`
+**Branch**: `atlas-v2/sprint-05-customer-master-v2`
+**SHA**: `7151eef`
+
+**Diff scope (additive, zero backend changes):**
+- NEW: `service/app/static/customer-master-v2.html` (924 lines) — customer CRUD list + detail + wFirma sync modal
+- MODIFIED: `service/app/static/pz-api.js` (+17 lines) — 4 new customer sync/dictionary functions (additive only)
+- MODIFIED: `service/app/static/pz-state.js` (+13 lines) — `useCustomerList` hook (additive only)
+- NEW: `service/tests/test_customer_master_v2_contract.py` (264 lines, 12/12 PASS)
+
+**Sprint gate results**: system-architect APPROVED, gap-detection CLEAR, backend-safety SAFE (7/7), ux-flow NEEDS-FIX→PATCHED, frontend-flow PASS, testing 12/12 PASS, integration-boundary CONNECTED (6/6), 86/87 regression PASS (1 pre-existing unchanged).
+
+**GATE 2**: 2/3 open PRs (PR #370 pz-correction + PR #401 sprint05).
+
+**ATLAS-V2 sprint status update**: Sprint 05 OPEN (PR #401). Sprint 06 blocked until Sprint 05 merges.
+
+**Scorecard**: `.claude/memory/scorecards/2026-05-30-sprint-05-customer-master-v2.md` — 7 EXEMPLARY, 1 ACCEPTABLE (gap-hunter).
+
+**Deploy plan (post-merge)**: Static-only copy — `customer-master-v2.html`, `pz-api.js`, `pz-state.js` → `C:\PZ\app\static\`. No PZService restart. Rollback: remove customer-master-v2.html (pz-api/state additions are additive-only).
 
 ---
 
@@ -2544,7 +2569,8 @@ Expected: synthetic=true, source="audit.tracking", total=30, counts.PURCHASE_TRA
 - **Sequencing model** — three-PR cascade (Option B) chosen over single atomic PR for clean per-step rollback + GATE 2 compliance (max 3 open). Each PR in/out before next opened.
 
 ## Open PRs
-(Implementation slot: 1/3 used — PRs #376, #377 merged 2026-05-26, only PR #370 active)
+(Implementation slot: 2/3 used — PRs #376, #377 merged 2026-05-26, PRs #370 + #401 active)
+- **#401** feat(atlas-v2): Sprint 05 — Customer Master V2 — ACTIVE (2026-05-30)
 - **#370** feat(pz-correction): V2 operator-first UX + V1 card retirement (Sprint 01 A+B) — ACTIVE
 - **#10** feat(inventory): Risk-3/4 button stubs — deferred per operator instruction; do not touch. **REFERENCE_ONLY.**
 - **#1** ui: align sidebar IA with Estrella Atlas design — historical Atlas branch (REFERENCE_ONLY pending). **REFERENCE_ONLY.**
@@ -3365,7 +3391,7 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 
 ## Next 3 actions in queue
 
-1. **Complete Atlas V2 Sprint 05** — target: operator to fire next sprint from atlas-v2 campaign — gating: Sprint 04 deployed (✓ completed 2026-05-29) + authenticated browser verification (pending GATE 6) + sprint file `.claude/campaigns/atlas-v2/sprint-05-*.md` execution
+1. **Merge Atlas V2 Sprint 05 (PR #401)** — target: Sprint 05 Customer Master V2 merge after gate review — gating: 7 EXEMPLARY scorecard produced; frontend-only additive diff; 12/12 contract tests PASS
 2. **Issue #378 wFirma Product Gate Bug Fix** — Remove `_guard_wfirma_export(audit)` from `wfirma_products_resolve()` and `wfirma_products_sync_names()` functions (routes_wfirma.py lines ~1654, ~2045). Target: targeted bug fix allowing product operations when WFIRMA_CREATE_PRODUCT_ALLOWED=true regardless of SAD/ZC429 state. Gating: Issue filed, simple targeted fix.
 3. **PR-C: DHL followup auto-send flag flip (operator decision)** — Set `DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true` in C:\PZ\.env + restart PZService to enable actual auto-sends. Code deployed (b71fbb9), all guards verified, idempotency tested. Target: operator decision when ready for live sends. Gating: none (deployment clean, all features flag-OFF safe).
 
@@ -3600,12 +3626,11 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Verification target**: `git -C "C:\PZ" rev-parse HEAD` == `79da306` (or a descendant) AND `GET https://pz.estrellajewels.eu/api/v1/dashboard/...` resolves 200.
 - **RESOLVED (Windows-side, 2026-05-29 governance pass)**: `C:\PZ` has **NO `.git`** (robocopy-deployed) → a git SHA is not directly resolvable by design; production identity must be tracked by content fingerprint. Verified: PZService **Running**; `GET /api/v1/health` → **200** (`environment=prod`, `engine_dir=C:\PZ\engine`); #395 `/api/v1` alias present in deployed `main.py` L388 and `/api/v1/dashboard/batches` → **200**; #398 `documents-v2.html` present in `C:\PZ\app\static\`. **All 5 Issue #397 drift files are byte-IDENTICAL to current `main`** (routes_dashboard.py, services/audit_persist.py, services/wfirma_capabilities.py, static/shipment-detail.html, utils/io.py) — the drift self-reconciled as main advanced through #395→#398→#399; **no production-only hotfixes**. Residual gap = structural only (no deploy-SHA stamp on robocopy deploys); recommend a `DEPLOYED_SHA` marker convention. OQ-NEW-8 closed; see OQ-NEW-397 for the marker-convention follow-up.
 
-## OQ-NEW-9 -- Sprint 04 Reassessment from Reconciled Baseline (NEW 2026-05-29)
+## OQ-NEW-9 -- Sprint 04 Reassessment from Reconciled Baseline (RESOLVED 2026-05-30)
 
-- **Question**: With PR #395 merged and PROJECT_STATE reconciled, should Atlas-V2 Sprint 04 now begin, and with what scope?
-- **Answerer**: Operator — per directive: "stop and reassess Sprint 04 from the reconciled baseline."
-- **Context**: Operator explicitly sequenced: merge #395 → update PROJECT_STATE → STOP → reassess. Sprint 04 is NOT started. Task #11 (`test_pz_regression.py --e2e`) is explicitly DEFERRED until after reconciliation (operator: "I would not prioritize Task #11 before #395 is merged. That task can be run from a reconciled state afterward.").
-- **Impact if left unanswered**: Atlas-V2 campaign pauses at the reconciled baseline — a safe stop point. No production risk; no open implementation work proceeds without operator go-ahead.
+- **Question**: ~~With PR #395 merged and PROJECT_STATE reconciled, should Atlas-V2 Sprint 04 now begin, and with what scope?~~
+- **Resolution (2026-05-30)**: Operator proceeded with Sprint 04 (PR #398 documents-v2.html) which FULLY CLOSED 2026-05-29, then proceeded directly with Sprint 05 (PR #401 Customer Master V2) opened 2026-05-30. Sprint sequence Atlas-V2 is proceeding as planned.
+- **Final status**: Sprint 04 completed; Sprint 05 active at PR #401; Sprint 06 queued after Sprint 05 merges.
 - **Next operational step**: Operator reviews this reconciled baseline and either (a) authorizes Sprint 04, or (b) authorizes Task #11 e2e run, or (c) redirects.
 
 ## OQ-NEW-396 -- shipment-v2 Documents card always empty (NEW 2026-05-29)
@@ -3625,6 +3650,14 @@ Wave 2 = CLAUDE.md condensation backed by `.claude/commands/` retrieval. Not "sk
 - **Disposition**: GATE 4 ISSUE (#397)
 - **Cross-reference**: This is the SAME concern as OQ-NEW-8 (production-SHA verification) — OQ-NEW-8 should be treated as linked to / subsumed by Issue #397, not a separate unknown.
 - **Verification (2026-05-29 governance pass)**: All 5 drift files content-diffed `C:\PZ` vs current `main` — **5/5 byte-IDENTICAL**. The drift was production being ahead of the *old* baseline `7864bd7` (PR #391); main has since advanced through #395→#398→#399 and production content has CONVERGED. No production-only hotfixes. **Residual = structural only**: robocopy deploys leave no SHA stamp. Recommended close-out: adopt a `DEPLOYED_SHA` marker file written on every deploy so future verification is a one-line read. Verified scope = the 5 named files + #395 alias + #398 file; a full-tree fingerprint would be needed to assert production==main everywhere.
+
+## OQ-NEW-10 -- Proforma Screen B Specification for Atlas V2 (NEW 2026-05-30)
+
+- **Question**: Atlas V2 Proforma screens detailed specification — Screen A (drafts list), Screen B (drilldown detail + toolbar + tabs), Feature 1 (New Draft modal), Feature 2 (Convert to Invoice).
+- **Answerer**: Operator — proforma screen spec provided for sprint after Sprint 05 merges
+- **Context**: Operator chose to run Sprint 05 Customer Master first. Full proforma spec covers ATLAS_PROFORMA wiring stub integration, Screen A/B layouts, and two key features (New Draft modal, irreversible Convert to Invoice workflow).
+- **Impact if left unanswered**: Proforma V2 implementation blocks until operator provides detailed screen specifications
+- **Target resolution**: Queued for sprint planning after PR #401 Sprint 05 Customer Master V2 merges
 
 ---
 
