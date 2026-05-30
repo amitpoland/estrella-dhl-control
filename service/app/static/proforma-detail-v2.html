@@ -180,8 +180,8 @@
     return (
       <div style={{ position:'fixed', inset:0, background:'var(--overlay)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }}>
         <div style={{ background:'var(--card)', borderRadius:10, padding:24, maxWidth:420, width:'90%', boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)' }}>
-          <div style={{ fontWeight:700, fontSize:15, color:'var(--badge-red-text)', marginBottom:8 }}>Cancel Draft #{draftId}</div>
-          <div style={{ fontSize:12, color:'var(--text-2)', marginBottom:12, lineHeight:1.5 }}>Cancels draft locally. No wFirma change. Reason required for audit trail.</div>
+          <div style={{ fontWeight:700, fontSize:15, color:'var(--badge-red-text)', marginBottom:8 }}>Delete Draft #{draftId}</div>
+          <div style={{ fontSize:12, color:'var(--text-2)', marginBottom:12, lineHeight:1.5 }}>Voids this draft (marks as cancelled). The draft is <strong>retained for audit history</strong> — it is NOT permanently deleted and no change is made in wFirma. Reason required.</div>
           <label style={{ fontSize:11, fontWeight:600, color:'var(--text-2)', display:'block', marginBottom:4 }}>Reason <span style={{ color:'var(--badge-red-text)' }}>*</span></label>
           <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={2} placeholder="e.g. Client withdrew order"
             style={{ width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--border)', fontSize:12, background:'var(--bg-subtle)', color:'var(--text)', fontFamily:'inherit', resize:'vertical' }} />
@@ -236,39 +236,51 @@
     );
   }
 
-  // ── Generate ▾ dropdown ───────────────────────────────────────────────────
-  function GenerateMenu({ draftId, onClose }) {
+  // ── Generate ▾ dropdown (Print=preview.html; Generate=PDF from wFirma) ─────
+  function GenerateMenu({ draftId, batchId, clientName, onClose }) {
+    const pdfUrl = batchId && clientName
+      ? `/api/v1/proforma/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}/document.pdf`
+      : null;
+    const btn = (label, onClick, tid) => (
+      <button onClick={onClick} data-testid={tid}
+        style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 14px', background:'none', border:'none', cursor:'pointer', fontSize:12, color:'var(--text)' }}
+        onMouseEnter={e=>e.currentTarget.style.background='var(--bg-subtle)'}
+        onMouseLeave={e=>e.currentTarget.style.background='none'}>
+        {label}
+      </button>
+    );
     return (
-      <div style={{ position:'absolute', top:'100%', left:0, marginTop:4, background:'var(--card)', border:'1px solid var(--border)', borderRadius:6, boxShadow:'0 8px 24px var(--shadow-heavy)', zIndex:200, minWidth:180 }} onClick={onClose}>
-        <button onClick={()=>window.open(`/api/v1/proforma/draft/${draftId}/preview.html`,'_blank')} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 14px', background:'none', border:'none', cursor:'pointer', fontSize:12, color:'var(--text)', borderRadius:'6px 6px 0 0' }} data-testid="btn-generate-preview"
-          onMouseEnter={e=>e.target.style.background='var(--bg-subtle)'} onMouseLeave={e=>e.target.style.background='none'}>
-          Preview HTML
-        </button>
-        <button onClick={()=>window.open(`/api/v1/proforma/draft/${draftId}/preview.html`,'_blank')} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 14px', background:'none', border:'none', cursor:'pointer', fontSize:12, color:'var(--text)', borderRadius:'0 0 6px 6px' }} data-testid="btn-generate-pdf"
-          onMouseEnter={e=>e.target.style.background='var(--bg-subtle)'} onMouseLeave={e=>e.target.style.background='none'}>
-          Download PDF
-        </button>
+      <div style={{ position:'absolute', top:'100%', left:0, marginTop:4, background:'var(--card)', border:'1px solid var(--border)', borderRadius:6, boxShadow:'0 8px 24px var(--shadow-heavy)', zIndex:200, minWidth:200 }} onClick={onClose}>
+        {pdfUrl
+          ? btn('Download PDF (wFirma)', ()=>window.open(pdfUrl,'_blank'), 'btn-generate-pdf')
+          : <div style={{ padding:'9px 14px', fontSize:12, color:'var(--text-3)' }}>PDF: draft must be posted to wFirma first</div>
+        }
       </div>
     );
   }
 
-  // ── Overflow ⋯ menu ───────────────────────────────────────────────────────
-  function OverflowMenu({ onClose, onApprove, onReopen, onReset, canApprove, canReopen, canReset }) {
-    const item = (label, handler, disabled, tid) => (
+  // ── Overflow ⋯ menu (secondary / less-frequent actions) ──────────────────
+  function OverflowMenu({ onClose, onApprove, onReopen, onReset, onSend, canApprove, canReopen, canReset }) {
+    const item = (label, handler, disabled, tid, warn) => (
       <button onClick={()=>{ if(!disabled){ handler(); onClose(); } }} disabled={disabled}
         data-testid={tid}
         style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 14px', background:'none', border:'none',
-          cursor:disabled?'not-allowed':'pointer', fontSize:12, color:disabled?'var(--text-3)':'var(--text)', opacity:disabled?0.5:1 }}
+          cursor:disabled?'not-allowed':'pointer', fontSize:12,
+          color: warn ? 'var(--badge-amber-text)' : disabled ? 'var(--text-3)' : 'var(--text)',
+          opacity:disabled?0.5:1 }}
         onMouseEnter={e=>{ if(!disabled) e.currentTarget.style.background='var(--bg-subtle)'; }}
         onMouseLeave={e=>{ e.currentTarget.style.background='none'; }}>
         {label}
       </button>
     );
     return (
-      <div style={{ position:'absolute', top:'100%', right:0, marginTop:4, background:'var(--card)', border:'1px solid var(--border)', borderRadius:6, boxShadow:'0 8px 24px var(--shadow-heavy)', zIndex:200, minWidth:180 }} onClick={e=>e.stopPropagation()}>
+      <div style={{ position:'absolute', top:'100%', right:0, marginTop:4, background:'var(--card)', border:'1px solid var(--border)', borderRadius:6, boxShadow:'0 8px 24px var(--shadow-heavy)', zIndex:200, minWidth:210 }} onClick={e=>e.stopPropagation()}>
         {item('Approve draft',  onApprove, !canApprove, 'overflow-btn-approve')}
         {item('Re-open draft',  onReopen,  !canReopen,  'overflow-btn-reopen')}
-        {item('Reset from packing', onReset, !canReset, 'overflow-btn-reset')}
+        <div style={{ height:1, background:'var(--border-subtle)', margin:'4px 0' }} />
+        {item('⚠ Reset lines from packing — overwrites edits', onReset, !canReset, 'overflow-btn-reset', true)}
+        <div style={{ height:1, background:'var(--border-subtle)', margin:'4px 0' }} />
+        {item('Send (not yet available)', onSend, false, 'overflow-btn-send')}
       </div>
     );
   }
@@ -621,11 +633,12 @@
     const canApprove = ['editing','draft'].includes(st);
     const canReopen = st==='approved';
     const canPost = st==='approved';
-    const canDelete = !['cancelled','superseded'].includes(st)&&!posted&&chip!=='INVOICED';
+    const canCancel = !['cancelled','superseded'].includes(st)&&!posted&&chip!=='INVOICED';
     const canConvert = posted&&chip!=='INVOICED'&&!!draft?.wfirma_proforma_id;
     const canReset = ['editing','draft','approved'].includes(st);
     const canEdit = ['draft','editing'].includes(st);
-    const canDuplicate = canReset;  // rebuild from packing
+    // Duplicate = clone to new draft; available for any non-terminal state
+    const canDuplicate = !['cancelled','superseded'].includes(st);
 
     if (!DRAFT_ID) return <AppShell activeNav="proforma"><div style={{ padding:40 }}><EmptyState state="error" message="Missing draft_id" /></div></AppShell>;
 
@@ -639,12 +652,15 @@
         {toast && <Toast msg={toast.msg} type={toast.type} />}
 
         {/* Modals */}
-        {modal==='delete' && <CancelModal draftId={DRAFT_ID} onCancel={()=>setModal(null)} onDone={msg=>{ showToast(msg,'success'); setModal(null); loadDraft(); }} />}
+        {/* Cancel draft modal — uses CancelModal which requires a reason for audit */}
+        {modal==='cancel' && <CancelModal draftId={DRAFT_ID} onCancel={()=>setModal(null)} onDone={msg=>{ showToast(msg,'success'); setModal(null); loadDraft(); }} />}
         {modal==='reopen' && <Confirm title="Re-open Draft" msg="Move approved draft back to editing?" label="Re-open" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/re-open`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_REOPEN_LOCAL_PROFORMA_DRAFT'},'Draft re-opened.','reopen'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reopen} />}
         {modal==='approve' && <Confirm title="Approve Draft" msg="Lock draft as approved? Required before posting to wFirma." label="Approve" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/approve`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_APPROVE_LOCAL_PROFORMA_DRAFT'},'Draft approved.','approve'); }} cancel={()=>setModal(null)} busy={!!actionBusy.approve} />}
         {modal==='post' && <Confirm title="Post to wFirma" msg={`Post draft #${DRAFT_ID} to wFirma as a proforma? This calls the live wFirma API (shared-with-production).`} label="Post to wFirma" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/post`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA'},'Proforma posted to wFirma.','post'); }} cancel={()=>setModal(null)} busy={!!actionBusy.post} />}
-        {modal==='duplicate' && <Confirm title="Rebuild from Packing" msg="Rebuild draft lines from latest packing data? Manual edits will be overwritten. (No new draft — current draft lines are replaced.)" label="Rebuild lines" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/reset-from-sales-packing`,{expected_updated_at:draft?.updated_at||'',reset_all:false},'Lines rebuilt from packing.','reset'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reset} />}
-        {modal==='reset' && <Confirm title="Reset from Packing" msg="Rebuild lines from latest packing data? Manual edits will be overwritten." label="Reset Lines" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/reset-from-sales-packing`,{expected_updated_at:draft?.updated_at||'',reset_all:false},'Lines reset from packing.','reset'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reset} />}
+        {/* Duplicate = clone to NEW draft; source is untouched */}
+        {modal==='duplicate' && <Confirm title="Duplicate Draft" msg={`Create a copy of Draft #${DRAFT_ID}? A NEW draft will be created — this draft's edits are NOT changed. The clone starts as unposted.`} label="Create duplicate" ok={async()=>{ setModal(null); setActionBusy(b=>({...b,duplicate:true})); try { const r = await apiFetch(`/api/v1/proforma/draft/${DRAFT_ID}/clone`,{method:'POST'}); showToast(`Duplicate created — Draft #${r.draft_id}`,'success'); window.location.href = `/dashboard/proforma-detail-v2.html?draft_id=${r.draft_id}`; } catch(e){ showToast(e.message,'error'); } setActionBusy(b=>({...b,duplicate:false})); }} cancel={()=>setModal(null)} busy={!!actionBusy.duplicate} />}
+        {/* Reset lines from packing — only via overflow, with explicit overwrite warning */}
+        {modal==='reset' && <Confirm title="Reset Lines from Packing" msg="⚠ This will OVERWRITE the current draft's manual line edits with lines from the latest packing data. This action cannot be undone. The draft itself stays — only its line items are replaced." label="Reset lines (overwrites edits)" danger ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/reset-from-sales-packing`,{expected_updated_at:draft?.updated_at||'',reset_all:false},'Lines reset from packing.','reset'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reset} />}
         {modal==='edit' && draft && <EditDraftModal draft={draft} onClose={()=>setModal(null)} onDone={msg=>{ showToast(msg,'success'); setModal(null); loadDraft(); }} />}
         {modal==='convert' && draft && <ConvertModal draft={draft} onClose={()=>setModal(null)} onDone={(outcome)=>{ loadDraft(); invLinkHook.reload&&invLinkHook.reload(); if(outcome==='success')setActiveTab('Overview'); }} />}
 
@@ -663,26 +679,28 @@
           : draftError ? <EmptyState state="error" message={draftError} onRetry={loadDraft} />
           : (
             <>
-              {/* Toolbar — wFirma-style: Edit · Delete · Duplicate · Post · Convert⚠ · Print · Send · Generate▾ · ⋯ */}
+              {/* Toolbar: Edit · Cancel draft · Duplicate · Post · Convert⚠ · Print · Generate▾ · ⋯(Approve,Reopen,Reset,Send) */}
               <Card data-testid="action-toolbar" style={{ padding:'10px 16px', marginBottom:14, position:'relative' }}>
                 <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}
                   onClick={()=>{ setShowGenerate(false); setShowOverflow(false); }}>
-                  {/* Primary actions — exactly the designed set */}
                   <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('edit');}} disabled={!canEdit} data-testid="btn-edit">Edit</Btn>
-                  <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setModal('delete');}} disabled={!canDelete} data-testid="btn-delete">Delete</Btn>
+                  {/* Delete = soft cancel (POST /cancel); draft retained for audit — NOT permanently deleted */}
+                  {/* "Cancel draft" = soft cancel (POST /cancel); draft retained for audit — NOT permanently deleted */}
+                  <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setModal('cancel');}} disabled={!canCancel} data-testid="btn-cancel-draft">Cancel draft</Btn>
+                  {/* Duplicate = POST /clone → NEW unposted draft; source untouched */}
                   <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setModal('duplicate');}} disabled={!canDuplicate} data-testid="btn-duplicate">Duplicate</Btn>
                   <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
                   <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('post');}} disabled={!canPost} data-testid="btn-post-wfirma">Post to wFirma</Btn>
                   <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('convert');}} disabled={!canConvert} style={canConvert?{color:'var(--badge-amber-text)',borderColor:'var(--badge-amber-border)'}:{}} data-testid="btn-convert-invoice">⚠ Convert to Invoice</Btn>
                   <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
+                  {/* Print = HTML preview (always available, no posting required) */}
                   <Btn variant="ghost" small onClick={e=>{e.stopPropagation();window.open(`/api/v1/proforma/draft/${DRAFT_ID}/preview.html`,'_blank');}} data-testid="btn-print">Print</Btn>
-                  <Btn variant="ghost" small onClick={e=>{e.stopPropagation(); showToast('Email sending not yet configured — export PDF and send manually.','info');}} data-testid="btn-send">Send</Btn>
-                  {/* Generate ▾ dropdown */}
+                  {/* Generate ▾ = PDF from wFirma (requires posted proforma; distinct from Print) */}
                   <div style={{ position:'relative' }}>
                     <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setShowGenerate(g=>!g);setShowOverflow(false);}} data-testid="btn-generate">Generate ▾</Btn>
-                    {showGenerate && <GenerateMenu draftId={DRAFT_ID} onClose={()=>setShowGenerate(false)} />}
+                    {showGenerate && <GenerateMenu draftId={DRAFT_ID} batchId={draft?.batch_id} clientName={draft?.client_name} onClose={()=>setShowGenerate(false)} />}
                   </div>
-                  {/* ⋯ overflow: Approve, Re-open (secondary / state-gated) */}
+                  {/* ⋯ overflow: secondary/state-gated/unavailable actions */}
                   <div style={{ position:'relative', marginLeft:'auto' }}>
                     <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setShowOverflow(o=>!o);setShowGenerate(false);}} data-testid="btn-overflow">⋯</Btn>
                     {showOverflow && <OverflowMenu
@@ -690,6 +708,7 @@
                       canApprove={canApprove} onApprove={()=>setModal('approve')}
                       canReopen={canReopen}   onReopen={()=>setModal('reopen')}
                       canReset={canReset}     onReset={()=>setModal('reset')}
+                      onSend={()=>{ setShowOverflow(false); showToast('Email send not yet available — download PDF via Generate ▾ and send manually.','info'); }}
                     />}
                   </div>
                 </div>

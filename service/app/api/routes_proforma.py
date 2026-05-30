@@ -3235,6 +3235,9 @@ def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         # Phase 6 — packing-upload auto-sync metadata
         "last_packing_sync_at":       d.last_packing_sync_at,
         "packing_sync_warning":       d.packing_sync_warning,
+        # Sprint-24 clone provenance
+        "clone_generation":           getattr(d, "clone_generation", 0),
+        "source_ref_id":              getattr(d, "source_ref_id", None),
     }
 
 
@@ -3401,6 +3404,48 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
     return JSONResponse({
         "ok":    True,
         "draft": full,
+    })
+
+
+# ── Sprint-24: clone endpoint ─────────────────────────────────────────────────
+
+@router.post("/draft/{draft_id}/clone", dependencies=[_auth])
+def clone_proforma_draft(draft_id: int) -> JSONResponse:
+    """Create a deep copy of a draft as a new unposted 'draft' row.
+
+    Source draft is NEVER modified. Clone gets status=draft,
+    draft_state=draft, wfirma_proforma_id=None. The new row is identified
+    by clone_generation (≥1) and source_ref_id pointing to the source.
+
+    Response: { ok, draft_id, source_id, clone_generation, draft: {...} }
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+
+    src = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if src is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    try:
+        clone = pildb.clone_draft(_proforma_db_path(), int(draft_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log.error("clone_proforma_draft: failed for source %s: %s", draft_id, exc)
+        raise HTTPException(status_code=500, detail=f"Clone failed: {exc}") from exc
+
+    full = _draft_to_full(clone)
+    try:
+        full["customer_resolution"] = _resolve_customer(clone.client_name or "")
+    except Exception:
+        full["customer_resolution"] = {"raw_input": clone.client_name or "",
+                                       "found": False, "ambiguous": False}
+    return JSONResponse({
+        "ok":               True,
+        "draft_id":         clone.id,
+        "source_id":        draft_id,
+        "clone_generation": clone.clone_generation,
+        "draft":            full,
     })
 
 
@@ -5969,3 +6014,6 @@ def draft_to_invoice_by_id(
     )
 
     return proforma_to_invoice(d.batch_id, d.client_name, body, x_operator=operator)
+
+
+# (clone_proforma_draft already defined at line 3412 from PR #407 Phase 2/3 — no duplicate needed)

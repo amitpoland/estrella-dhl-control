@@ -288,6 +288,73 @@ _DETAIL_HTML = (
 )
 
 
+# ── POST /draft/{id}/clone ────────────────────────────────────────────────────
+
+class TestCloneEndpoint:
+    """Sprint-24 Phase 1: verify clone creates a new row, source is intact."""
+
+    def test_clone_creates_new_draft(self, client, tmp_path):
+        """POST /clone returns a new draft_id distinct from the source."""
+        db = tmp_path / "proforma_links.db"
+        _make_draft_db(db, batch_id="BATCH_C", client_name="Clone Client",
+                       draft_state="editing")
+        with patch("app.api.routes_proforma._proforma_db_path", return_value=db):
+            r = client.post("/api/v1/proforma/draft/1/clone")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["ok"] is True
+        assert data["draft_id"] != 1, "Clone must have a NEW id"
+        assert data["source_id"] == 1
+        assert data["clone_generation"] >= 1
+
+    def test_source_unchanged_after_clone(self, client, tmp_path):
+        """Source draft's draft_state and wfirma_proforma_id are untouched by clone."""
+        db = tmp_path / "proforma_links.db"
+        _make_draft_db(db, batch_id="BATCH_C2", client_name="Source Client",
+                       draft_state="approved", wfirma_proforma_id="PROF_SRC")
+        with patch("app.api.routes_proforma._proforma_db_path", return_value=db):
+            client.post("/api/v1/proforma/draft/1/clone")
+            # Re-fetch source to confirm no mutation
+            r_src = client.get("/api/v1/proforma/draft/1")
+        assert r_src.status_code == 200
+        src = r_src.json()["draft"]
+        assert src["draft_state"] == "approved", "Source draft_state must be unchanged"
+        assert src["wfirma_proforma_id"] == "PROF_SRC", "Source wfirma_proforma_id must be unchanged"
+
+    def test_clone_is_unposted_draft(self, client, tmp_path):
+        """Clone starts as draft state with no wFirma IDs."""
+        db = tmp_path / "proforma_links.db"
+        _make_draft_db(db, batch_id="BATCH_C3", client_name="Post Client",
+                       draft_state="posted", wfirma_proforma_id="PROF_ORIG")
+        with patch("app.api.routes_proforma._proforma_db_path", return_value=db):
+            r = client.post("/api/v1/proforma/draft/1/clone")
+        assert r.status_code == 200
+        clone = r.json()["draft"]
+        assert clone["draft_state"] == "draft", "Clone must start as 'draft'"
+        assert not clone["wfirma_proforma_id"], "Clone must have no wFirma ID"
+        assert clone["source_ref_id"] == 1
+
+    def test_clone_404_unknown_source(self, client, tmp_path):
+        """404 when source draft does not exist."""
+        db = tmp_path / "proforma_links.db"
+        _make_draft_db(db)
+        with patch("app.api.routes_proforma._proforma_db_path", return_value=db):
+            r = client.post("/api/v1/proforma/draft/999/clone")
+        assert r.status_code == 404
+
+    def test_two_clones_get_distinct_generations(self, client, tmp_path):
+        """Cloning the same source twice yields generation 1 and 2."""
+        db = tmp_path / "proforma_links.db"
+        _make_draft_db(db, batch_id="BATCH_C4", client_name="Gen Client",
+                       draft_state="editing")
+        with patch("app.api.routes_proforma._proforma_db_path", return_value=db):
+            r1 = client.post("/api/v1/proforma/draft/1/clone")
+            r2 = client.post("/api/v1/proforma/draft/1/clone")
+        assert r1.json()["clone_generation"] == 1
+        assert r2.json()["clone_generation"] == 2
+        assert r1.json()["draft_id"] != r2.json()["draft_id"]
+
+
 class TestToolbarDesignSpecContract:
     """Pins all 9 toolbar testids (design spec §2.3 + overflow) in Screen B HTML."""
 
@@ -314,8 +381,19 @@ class TestToolbarDesignSpecContract:
     def test_btn_print_present(self):
         assert 'data-testid="btn-print"' in self.html, "Print testid missing"
 
-    def test_btn_send_present(self):
-        assert 'data-testid="btn-send"' in self.html, "Send testid missing"
+    def test_btn_send_in_overflow(self):
+        """Send has no endpoint — lives in ⋯ overflow, not primary toolbar.
+        Primary toolbar holds only working actions (Phase 2/3 spec)."""
+        assert 'overflow-btn-send' in self.html, (
+            "Send must be in ⋯ overflow (overflow-btn-send testid) since it "
+            "has no backend endpoint yet — do NOT present as primary action"
+        )
+        # Guard: btn-send must NOT appear as a PRIMARY toolbar button
+        # (presence in overflow is fine, presence in primary is a regression)
+        assert 'data-testid="btn-send"' not in self.html, (
+            "btn-send in primary toolbar is a regression — "
+            "Send belongs in ⋯ overflow until an email endpoint exists"
+        )
 
     def test_btn_generate_present(self):
         assert 'data-testid="btn-generate"' in self.html, "Generate testid missing"
@@ -361,4 +439,28 @@ class TestToolbarDesignSpecContract:
     def test_dm_serif_font_loaded(self):
         assert "DM+Serif+Display" in self.html or "DM Serif Display" in self.html, (
             "DM Serif Display Google Font must be loaded"
+        )
+
+    def test_duplicate_calls_clone_endpoint(self):
+        """Duplicate must POST to /clone — not reset-from-sales-packing."""
+        assert '/clone' in self.html, (
+            "Duplicate button must call the /clone endpoint to create a new draft"
+        )
+        # Regression guard: Duplicate must NOT call reset-from-sales-packing
+        # (that overwrites the current draft — wrong semantic for Duplicate)
+        # reset-from-sales-packing should only appear in overflow under Reset
+        html = self.html
+        dup_section_start = html.find("modal==='duplicate'")
+        dup_section_end   = html.find("modal==='reset'", dup_section_start)
+        assert dup_section_start != -1, "modal==='duplicate' must exist"
+        dup_section = html[dup_section_start:dup_section_end] if dup_section_end != -1 else html[dup_section_start:dup_section_start+400]
+        assert "reset-from-sales-packing" not in dup_section, (
+            "Duplicate modal must NOT call reset-from-sales-packing — that overwrites "
+            "the current draft. Duplicate must POST to /clone instead."
+        )
+
+    def test_delete_wording_says_retained(self):
+        """Delete modal must clarify draft is retained for audit — not permanently deleted."""
+        assert "retained for audit" in self.html or "retained" in self.html, (
+            "Delete/Cancel modal must state the draft is retained for audit history"
         )
