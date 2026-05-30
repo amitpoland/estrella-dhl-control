@@ -564,10 +564,22 @@ def serve_chrome_autofill(path: str, request: Request) -> Response:
 
 @app.get("/dashboard/{path:path}", include_in_schema=False)
 def serve_static(path: str, request: Request) -> Response:
-    """Serve dashboard static files — requires valid session cookie."""
-    user = check_session_or_redirect(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=302)
+    """Serve dashboard static files — requires valid session cookie or API key.
+
+    Fix #387: mirrors require_api_key auth logic for HTML page routes.
+    - Dev mode (no api_key configured): no auth required (same as API endpoints).
+    - Production (api_key set): accept session cookie OR valid X-API-Key header.
+    """
+    if settings.api_key:
+        # Production: require session OR valid API key
+        import hmac as _hmac  # noqa: PLC0415
+        raw_key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
+        api_key_ok = bool(raw_key) and _hmac.compare_digest(raw_key, settings.api_key)
+        if not api_key_ok:
+            user = check_session_or_redirect(request)
+            if not user:
+                return RedirectResponse(url="/login", status_code=302)
+    # else: dev mode — api_key not configured → no auth (mirrors require_api_key line 18)
 
     file_path = _static_dir / path
     if not file_path.exists() or not file_path.is_file():
