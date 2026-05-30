@@ -206,5 +206,22 @@
     saveCustomerMaster: (clientKey, body) =>
       _put(`${BASE}/customer-master/${encodeURIComponent(clientKey)}`, body),
 
+    // GET /api/v1/customer-master/sync-from-wfirma/preview — read-only, no wFirma write
+    previewWfirmaSyncCustomer: () =>
+      _get(`${BASE}/customer-master/sync-from-wfirma/preview`),
+
+    // POST /api/v1/customer-master/sync-from-wfirma/apply — writes ONLY to local customer_master
+    // wfirmaIds: string[] — only selected rows
+    applyWfirmaSyncCustomer: (wfirmaIds) =>
+      _postM(`${BASE}/customer-master/sync-from-wfirma/apply`, { wfirma_ids: wfirmaIds }),
+
+    // GET /api/v1/customer-master/dictionaries — dropdown options for UI
+    getCustomerDictionaries: () =>
+      _get(`${BASE}/customer-master/dictionaries`),
+
+    // POST /api/v1/customer-master/dictionaries/refresh — operator-triggered wFirma dict refresh
+    refreshCustomerDictionaries: () =>
+      _postM(`${BASE}/customer-master/dictionaries/refresh`, {}),
+
   });
 })();

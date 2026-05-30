@@ -115,11 +115,24 @@
     return { ...base, save, saving };
   }
 
+  // ── useCustomerList ───────────────────────────────────────────────────────
+  // Fetches the customer list with optional filters.
+  // params: { country?, risk_status?, active?, limit? }
+  // Returns { data: { count, customers }, loading, error, reload }
+  function useCustomerList(params) {
+    const key = JSON.stringify(params || {});
+    return _useApiCall(
+      () => window.PzApi.listCustomerMaster(params || {}),
+      [key],
+    );
+  }
+
   // ── Export ────────────────────────────────────────────────────────────────
   window.PzState = Object.freeze({
     useProformaDrafts,
     useProformaPreview,
     useDraft,
     useCustomerMaster,
+    useCustomerList,
   });
 })();
