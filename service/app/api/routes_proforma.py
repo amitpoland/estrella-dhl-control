@@ -5267,22 +5267,67 @@ def post_proforma_draft_to_wfirma(
     try:
         result = wfirma_client.create_proforma_draft(req)
     except Exception as exc:
-        # Network / runtime / verify-after-create failure. Move to
-        # post_failed; the operator can re-open + edit + approve to retry.
+        # Network / runtime / verify-after-create failure (TRANSIENT).
+        # Move to post_failed; operator can re-open + edit + approve to retry.
+        error_str = f"{type(exc).__name__}: {exc}"
         try:
             pildb.mark_post_failed(
                 db, int(draft_id),
-                error=f"{type(exc).__name__}: {exc}",
+                error=error_str,
                 operator=operator,
             )
         except Exception as inner:
             log.error("[draft %s] mark_post_failed itself failed: %s",
                       draft_id, inner)
+
+        # B9 recovery: create a wfirma_post_retry proposal if the type is
+        # enabled. The bare error STILL returns unchanged; the proposal is
+        # additive and non-fatal.
+        try:
+            from ..services.wfirma_recovery import (
+                create_wfirma_proposal, recovery_enabled_types,
+            )
+            _b9_type = "wfirma_post_retry"
+            if _b9_type in recovery_enabled_types():
+                _audit_path = (
+                    settings.storage_root / "outputs"
+                    / (pre.batch_id or f"draft-{draft_id}") / "audit.json"
+                )
+                _audit_path.parent.mkdir(parents=True, exist_ok=True)
+                import json as _jb9
+                _b9_audit = (
+                    _jb9.loads(_audit_path.read_text(encoding="utf-8"))
+                    if _audit_path.exists()
+                    else {"batch_id": pre.batch_id or "", "action_proposals": []}
+                )
+                create_wfirma_proposal(
+                    audit=_b9_audit,
+                    batch_id=pre.batch_id or f"draft-{draft_id}",
+                    proposal_type=_b9_type,
+                    context={
+                        "draft_id":       int(draft_id),
+                        "batch_id":       pre.batch_id or "",
+                        "client_name":    pre.client_name or "",
+                        "error_message":  error_str,
+                        "failed_at":      pre.post_failed_at or "",
+                        "posted_by":      operator,
+                    },
+                    resolution_data={},
+                    reason=(
+                        f"Transient wFirma failure on draft #{draft_id}: {error_str}"
+                    ),
+                )
+                from ..utils.io import write_json_atomic
+                write_json_atomic(_audit_path, _b9_audit)
+        except Exception as _b9_exc:
+            log.warning("[draft %s] B9 proposal creation failed (non-fatal): %s",
+                        draft_id, _b9_exc)
+
         return JSONResponse({
             "ok":          False,
             "status":      "failed",
             "draft_id":    int(draft_id),
-            "error":       f"{type(exc).__name__}: {exc}",
+            "error":       error_str,
         })
 
     if not result.ok:

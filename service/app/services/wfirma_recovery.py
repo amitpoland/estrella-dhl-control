@@ -231,8 +231,93 @@ def resolve_wfirma_series_missing(
 
 # ── Dispatch table — add new types here as the 8-type set grows ───────────────
 
+def resolve_wfirma_post_retry(
+    proposal:    Dict[str, Any],
+    body:        Dict[str, Any],
+    operator:    str,
+) -> Dict[str, Any]:
+    """
+    Execute the wfirma_post_retry resolution (B9 — transient wFirma POST failure).
+
+    Re-enters the post path for the failed draft:
+      1. Approve the draft (post_failed → approved). The approve endpoint
+         already allows transition from post_failed.
+      2. Re-run post_proforma_draft_to_wfirma with the stored draft_id.
+
+    The resolve body is ignored — this is a simple retry with no new operator
+    input required. Operator identity is derived from the calling session.
+
+    Returns:
+      {"retry_result": <post_result_body>, "draft_id": <id>, "operator": <str>}
+    """
+    from fastapi import HTTPException
+    from fastapi.responses import JSONResponse as _JSONResponse
+    from ..api.routes_proforma import (
+        approve_proforma_draft,
+        post_proforma_draft_to_wfirma,
+    )
+    import json as _json
+
+    ctx      = proposal.get("context", {})
+    draft_id = ctx.get("draft_id")
+    if not draft_id:
+        raise HTTPException(
+            status_code=400,
+            detail="wfirma_post_retry proposal missing context.draft_id",
+        )
+    draft_id = int(draft_id)
+
+    # ── Step 1: re-approve (post_failed → approved) ──────────────────────────
+    from ..services.proforma_invoice_link_db import get_draft_by_id
+    from ..core.config import settings as _s
+    db_path = _s.storage_root / "proforma_links.db"
+    from pathlib import Path as _Path
+    # Locate the actual proforma db (same path used by routes_proforma)
+    from ..api.routes_proforma import _proforma_db_path
+    db = _proforma_db_path()
+    draft = get_draft_by_id(db, draft_id)
+    if draft is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"draft {draft_id} not found",
+        )
+
+    from ..services import proforma_invoice_link_db as _pildb
+    # approve_draft allows post_failed → approved
+    try:
+        _pildb.approve_draft(
+            db, draft_id, operator,
+            expected_updated_at=draft.updated_at or "",
+            confirm_token="YES_APPROVE_LOCAL_PROFORMA_DRAFT",
+        )
+    except (_pildb.DraftNotEditable, _pildb.DraftConflict, _pildb.DraftNotFound,
+            ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"re-approve before retry failed: {exc}",
+        ) from exc
+
+    # ── Step 2: re-run post ──────────────────────────────────────────────────
+    import json as _json2
+    post_result: _JSONResponse = post_proforma_draft_to_wfirma(
+        draft_id  = draft_id,
+        body      = {
+            "expected_updated_at": "",   # fresh after approve; lock already moved
+            "confirm_token":       "YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA",
+        },
+        x_operator = operator,
+    )
+    result_body = _json2.loads(post_result.body)
+    return {
+        "retry_result": result_body,
+        "draft_id":     draft_id,
+        "operator":     operator,
+    }
+
+
 _RESOLVE_HANDLERS = {
     "wfirma_series_missing": resolve_wfirma_series_missing,
+    "wfirma_post_retry":     resolve_wfirma_post_retry,
 }
 
 
