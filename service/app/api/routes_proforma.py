@@ -4279,29 +4279,28 @@ def send_proforma_draft(
     pdf_path = pdf_dir / filename
     pdf_path.write_bytes(pdf_bytes)
 
-    # ── Idempotency: one send per (draft_id, proforma_send) ──────────────────
     from ..services.email_service import queue_email as _queue_email
-    idempotency_key = f"draft-{draft_id}-proforma-send"
 
     # ── Queue the email ───────────────────────────────────────────────────────
+    # Idempotency: queue_email deduplicates on (batch_id, email_type, to)
+    # automatically — no separate idempotency_key parameter needed.
+    _subject = (
+        f"Proforma {draft.wfirma_proforma_fullnumber or wfirma_id} — Estrella Jewels"
+    )
+    _body_html = (
+        f"<p>Dear customer,</p>"
+        f"<p>Please find attached your proforma invoice "
+        f"{draft.wfirma_proforma_fullnumber or wfirma_id}.</p>"
+        f"<p>Kind regards,<br>Estrella Jewels</p>"
+    )
     try:
         queue_id = _queue_email(
-            batch_id       = draft.batch_id or f"draft-{draft_id}",
-            email_type     = "proforma_send",
-            to             = recipient,
-            subject        = (
-                f"Proforma {draft.wfirma_proforma_fullnumber or wfirma_id} — "
-                "Estrella Jewels"
-            ),
-            body           = (
-                f"Dear customer,\n\n"
-                f"Please find attached your proforma invoice "
-                f"{draft.wfirma_proforma_fullnumber or wfirma_id}.\n\n"
-                f"Kind regards,\nEstrella Jewels"
-            ),
-            attachments    = [str(pdf_path)],
-            operator       = operator,
-            idempotency_key= idempotency_key,
+            to          = recipient,
+            subject     = _subject,
+            body_html   = _body_html,
+            batch_id    = draft.batch_id or f"draft-{draft_id}",
+            email_type  = "proforma_send",
+            attachments = [{"label": filename, "path": str(pdf_path)}],
         )
     except Exception as exc:
         return JSONResponse(
