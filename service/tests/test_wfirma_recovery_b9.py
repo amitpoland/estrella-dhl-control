@@ -178,36 +178,47 @@ def test_type_enabled_creates_b9_proposal(tmp_storage, batch_audit_dir):
 
 # ── 3. Permanent rejection → no B9 proposal ──────────────────────────────────
 
-def test_permanent_rejection_creates_no_b9_proposal(tmp_storage, batch_audit_dir):
+def test_permanent_rejection_creates_no_b9_proposal(client, tmp_storage, batch_audit_dir):
     """When wFirma returns result.ok=False (permanent rejection), no B9 proposal.
 
     The B9 trigger is in the `except Exception` block (transient), NOT in the
-    `if not result.ok` block (permanent). This test verifies the distinction.
+    `if not result.ok` block (permanent). This test actually exercises the
+    result.ok=False code path and asserts create_wfirma_proposal is NOT called.
     """
     import app.api.routes_action_proposals as rap
     batch_id, audit_dir = batch_audit_dir
-    db = _make_draft_db(tmp_storage, draft_state="posting", batch_id=batch_id)
+    db = _make_draft_db(tmp_storage, draft_state="approved", batch_id=batch_id)
 
     # result.ok=False → permanent wFirma rejection — no proposal should fire
     mock_result = MagicMock()
     mock_result.ok = False
     mock_result.error = "wFirma: contractor not found (permanent)"
 
+    orig_outputs = rap._OUTPUTS
     rap._OUTPUTS = tmp_storage / "outputs"
-    with patch("app.core.config.settings.wfirma_recovery_enabled_types", "wfirma_post_retry"), \
-         patch("app.api.routes_proforma._proforma_db_path", return_value=db), \
-         patch("app.services.wfirma_client.create_proforma_draft", return_value=mock_result), \
-         patch("app.api.routes_proforma.settings.wfirma_create_proforma_allowed", True):
-        pass  # We're only testing the proposal logic, not the full endpoint
+    try:
+        with patch("app.core.config.settings.wfirma_recovery_enabled_types", "wfirma_post_retry"), \
+             patch("app.api.routes_proforma._proforma_db_path", return_value=db), \
+             patch("app.services.wfirma_client.create_proforma_draft", return_value=mock_result), \
+             patch("app.api.routes_proforma.settings.wfirma_create_proforma_allowed", True), \
+             patch("app.services.wfirma_recovery.create_wfirma_proposal") as mock_create:
+            r = client.post(
+                "/api/v1/proforma/draft/1/post",
+                json={
+                    "expected_updated_at": "",
+                    "confirm_token": "YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA",
+                },
+                headers={"X-Operator": "test-op"},
+            )
+    finally:
+        rap._OUTPUTS = orig_outputs
 
-    # Verify: a `not result.ok` failure does NOT call create_wfirma_proposal
-    # This is a logical check — the B9 trigger is inside `except Exception`,
-    # and wFirma returning ok=False goes into the `if not result.ok` branch.
-    from app.services.wfirma_recovery import create_wfirma_proposal
-    audit = _read_audit(audit_dir)
-    # No proposals were created because we never entered the transient path
-    assert len(audit.get("action_proposals", [])) == 0, (
-        "Permanent rejection must NOT create a B9 proposal"
+    # The call returned (not necessarily 200 — post_failed state)
+    assert r.status_code in (200, 409, 400)
+    # Critically: create_wfirma_proposal must NOT have been called
+    # (permanent rejection never enters the except-Exception branch)
+    mock_create.assert_not_called(), (
+        "Permanent rejection (result.ok=False) must NOT create a B9 proposal"
     )
 
 

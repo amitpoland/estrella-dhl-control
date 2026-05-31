@@ -269,10 +269,6 @@ def resolve_wfirma_post_retry(
 
     # ── Step 1: re-approve (post_failed → approved) ──────────────────────────
     from ..services.proforma_invoice_link_db import get_draft_by_id
-    from ..core.config import settings as _s
-    db_path = _s.storage_root / "proforma_links.db"
-    from pathlib import Path as _Path
-    # Locate the actual proforma db (same path used by routes_proforma)
     from ..api.routes_proforma import _proforma_db_path
     db = _proforma_db_path()
     draft = get_draft_by_id(db, draft_id)
@@ -285,7 +281,7 @@ def resolve_wfirma_post_retry(
     from ..services import proforma_invoice_link_db as _pildb
     # approve_draft allows post_failed → approved
     try:
-        _pildb.approve_draft(
+        approved_draft = _pildb.approve_draft(
             db, draft_id, operator,
             expected_updated_at=draft.updated_at or "",
             confirm_token="YES_APPROVE_LOCAL_PROFORMA_DRAFT",
@@ -298,11 +294,13 @@ def resolve_wfirma_post_retry(
         ) from exc
 
     # ── Step 2: re-run post ──────────────────────────────────────────────────
+    # Pass the fresh updated_at from the just-approved draft so the optimistic-
+    # lock check in start_post() sees a consistent timestamp.
     import json as _json2
     post_result: _JSONResponse = post_proforma_draft_to_wfirma(
         draft_id  = draft_id,
         body      = {
-            "expected_updated_at": "",   # fresh after approve; lock already moved
+            "expected_updated_at": (approved_draft.updated_at or ""),
             "confirm_token":       "YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA",
         },
         x_operator = operator,
