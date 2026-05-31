@@ -3,7 +3,7 @@
 **Status:** Proposed — umbrella / program-level ADR
 **Date:** 2026-05-31
 **Deciders:** Amit
-**Related:** ADR-021 (detect-before-gate), ADR-022 (post-time snapshot), ADR-018 (flag model)
+**Related:** ADR-022 (post-time snapshot — live pre-gate mechanism), ADR-018 (flag model). Supersedes the rejected ADR-021 (detect-before-gate; rejected in PR #414).
 
 ## Context
 
