@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>wFirma Recovery — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; }
+    body { font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); color: var(--text); }
+    ::-webkit-scrollbar { width: 5px; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; }
+
+    :root {
+      --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+      --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+      --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+      --shadow: rgba(27,37,56,0.06); --shadow-heavy: rgba(27,37,56,0.16);
+      --overlay: rgba(19,28,46,0.6);
+      --accent: #B89968; --accent-text: #1B2538; --accent-subtle: #F8EFD8; --accent-border: #CFB178;
+      --sidebar-bg: #131C2E; --sidebar-border: #25334C;
+      --sidebar-active: #1F2A42; --sidebar-hover: #1A2438;
+      --sidebar-text: #F2EBD9; --sidebar-text-muted: #7C89A3; --sidebar-icon: #B89968;
+      --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+      --badge-blue-bg: #E8EFF8;   --badge-blue-text: #1A4A90;   --badge-blue-border: #AABEE0;
+      --badge-amber-bg: #FBF5E0;  --badge-amber-text: #805A00;  --badge-amber-border: #DEC870;
+      --badge-green-bg: #E8F5EE;  --badge-green-text: #186838;  --badge-green-border: #96CCA8;
+      --badge-red-bg: #FBE8E6;    --badge-red-text: #902018;    --badge-red-border: #E0A8A0;
+    }
+    [data-theme="dark"] {
+      --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+      --border: #2C3C54; --border-subtle: #243050;
+      --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+      --shadow: rgba(0,0,0,0.3); --shadow-heavy: rgba(0,0,0,0.5); --overlay: rgba(0,0,0,0.72);
+      --accent: #D4AA5C; --accent-text: #111928; --accent-subtle: #1E2808; --accent-border: #5A4A18;
+      --sidebar-bg: #0E1A30; --sidebar-border: #1A2A48; --sidebar-active: #1A2A48; --sidebar-hover: #14223C;
+      --sidebar-text: #F0EAE0; --sidebar-text-muted: #6E7E96; --sidebar-icon: #C9A456;
+      --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+      --badge-blue-bg: #0E1E38;   --badge-blue-text: #80AAEE;   --badge-blue-border: #1E3A64;
+      --badge-amber-bg: #20180A;  --badge-amber-text: #E8C040;  --badge-amber-border: #584010;
+      --badge-green-bg: #0E2018;  --badge-green-text: #68CC88;  --badge-green-border: #1A4830;
+      --badge-red-bg: #200E10;    --badge-red-text: #EE8880;    --badge-red-border: #581018;
+    }
+    .sidebar-desktop { display: flex; }
+    @media (max-width: 900px) { .sidebar-desktop { display: none !important; } }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-design-v2.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+
+  const { useState, useEffect, useCallback } = React;
+  const { AppShell, PageHeader, Card, Btn, SectionHeader, InfoRow, Toast, EmptyState, Badge } = window.PzDesign;
+  const apiFetch = window.EstrellaShared.apiFetch;
+
+  // ── URL params ────────────────────────────────────────────────────────────
+  const BATCH_ID = new URLSearchParams(window.location.search).get('batch_id') || '';
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  function useGet(url, deps) {
+    const [s, setS] = useState({ data: null, loading: !!url, error: null });
+    const load = useCallback(async () => {
+      if (!url) return;
+      setS(p => ({ ...p, loading: true, error: null }));
+      try { setS({ data: await apiFetch(url), loading: false, error: null }); }
+      catch (e) { setS({ data: null, loading: false, error: e.message }); }
+    }, deps); // eslint-disable-line
+    useEffect(() => { load(); }, [load]);
+    return { ...s, reload: load };
+  }
+
+  // ── wFirma series-missing card ────────────────────────────────────────────
+
+  function SeriesMissingCard({ proposal, onResolved, showToast }) {
+    const ctx = proposal.context || {};
+    const availSeries = ctx.available_series || [];
+    const [selectedId, setSelectedId] = useState('');
+    const [saveToMaster, setSaveToMaster] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    const [rejecting, setRejecting] = useState(false);
+    const [outcome, setOutcome] = useState(null); // {type:'success'|'failed', msg}
+
+    const canResolve = !!selectedId;
+
+    const handleResolve = async () => {
+      setSubmitting(true);
+      try {
+        const r = await apiFetch(
+          `/api/v1/action-proposals/${encodeURIComponent(proposal.proposal_id)}/resolve`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              resolution_data: {
+                selected_series_id:      selectedId,
+                save_to_customer_master: saveToMaster,
+              },
+            }),
+          }
+        );
+        setOutcome({ type: 'success', msg: `Converted — invoice ${r?.result?.conversion_result?.wfirma_invoice_number || 'created'}` });
+        showToast('Series resolved — invoice conversion succeeded.', 'success');
+        onResolved();
+      } catch (e) {
+        const msg = e.message || String(e);
+        setOutcome({ type: 'failed', msg });
+        showToast(`Resolve failed: ${msg}`, 'error');
+      } finally { setSubmitting(false); }
+    };
+
+    const handleReject = async () => {
+      setRejecting(true);
+      try {
+        await apiFetch(
+          `/api/v1/action-proposals/${encodeURIComponent(proposal.proposal_id)}/reject`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rejected_by: 'operator', reason: 'Dismissed from wFirma inbox' }),
+          }
+        );
+        showToast('Proposal dismissed.', 'info');
+        onResolved();
+      } catch (e) { showToast(`Reject failed: ${e.message}`, 'error'); }
+      finally { setRejecting(false); }
+    };
+
+    const statusColor = proposal.status === 'resolved' ? 'var(--badge-green-bg)' : 'var(--badge-amber-bg)';
+    const statusText  = proposal.status === 'resolved' ? 'var(--badge-green-text)' : 'var(--badge-amber-text)';
+    const statusBorder = proposal.status === 'resolved' ? 'var(--badge-green-border)' : 'var(--badge-amber-border)';
+
+    return (
+      <Card data-testid={`wfirma-series-missing-card-${proposal.proposal_id}`}
+            style={{ marginBottom: 16, overflow: 'hidden' }}>
+        {/* Header */}
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 18 }}>⚠</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, fontFamily: '"DM Serif Display", serif' }}>
+              Missing Invoice Series
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>
+              {ctx.proforma_number || '—'} · {ctx.customer_name || '—'}
+            </div>
+          </div>
+          <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700,
+            background: statusColor, color: statusText, border: `1px solid ${statusBorder}` }}>
+            {proposal.status?.toUpperCase()}
+          </span>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: '16px 20px' }}>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 14, lineHeight: 1.6 }}>
+            Invoice conversion blocked: no series ID found in the proforma XML, customer master, or request.
+            Select the correct invoice series below to retry the conversion.
+          </div>
+
+          {/* Info rows */}
+          <div style={{ marginBottom: 14 }}>
+            <InfoRow label="Proforma number" value={ctx.proforma_number || '—'} />
+            <InfoRow label="Customer" value={ctx.customer_name || '—'} />
+            <InfoRow label="wFirma proforma ID" value={ctx.proforma_id || '—'} mono />
+            <InfoRow label="Current preferred series" value={ctx.current_preferred_series || 'none set'} />
+            <InfoRow label="Idempotency key"
+                     value={(proposal.resolution_data || {}).idempotency_key || '—'}
+                     mono />
+          </div>
+
+          {/* Series selector — NO default, resolve disabled until chosen */}
+          {proposal.status === 'pending_review' && (
+            <>
+              <div style={{ marginBottom: 10 }}>
+                <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', display: 'block', marginBottom: 5, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  Invoice series <span style={{ color: 'var(--badge-red-text)' }}>* required</span>
+                </label>
+                <select
+                  data-testid="series-select"
+                  value={selectedId}
+                  onChange={e => setSelectedId(e.target.value)}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: `1px solid ${selectedId ? 'var(--accent)' : 'var(--border)'}`, fontSize: 12, background: 'var(--bg-subtle)', color: 'var(--text)', fontFamily: 'inherit' }}
+                >
+                  <option value="">— select a series —</option>
+                  {availSeries.length === 0 && (
+                    <option value="" disabled>No series available — refresh dictionaries first</option>
+                  )}
+                  {availSeries.map(s => (
+                    <option key={s.id} value={s.id}>
+                      {s.label || s.id}{s.code ? ` (${s.code})` : ''}
+                    </option>
+                  ))}
+                </select>
+                {availSeries.length === 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }}>
+                    No series returned. Check that wFirma credentials are configured and
+                    run "Refresh Dictionaries" in Customer Master settings.
+                  </div>
+                )}
+              </div>
+
+              {/* Save to customer master checkbox */}
+              <label data-testid="save-to-master-label"
+                     style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer', marginBottom: 16, color: 'var(--text-2)' }}>
+                <input
+                  type="checkbox"
+                  data-testid="save-to-master-checkbox"
+                  checked={saveToMaster}
+                  onChange={e => setSaveToMaster(e.target.checked)}
+                />
+                Save as preferred invoice series on this customer master
+              </label>
+
+              {/* Action footer */}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <Btn variant="ghost" small onClick={handleReject} disabled={rejecting || submitting} data-testid="btn-reject-proposal">
+                  {rejecting ? <><span className="spinner" style={{ marginRight: 6 }} />Dismissing…</> : 'Dismiss'}
+                </Btn>
+                <Btn
+                  variant="gold"
+                  small
+                  onClick={handleResolve}
+                  disabled={!canResolve || submitting || rejecting}
+                  data-testid="btn-resolve-proposal"
+                  title={canResolve ? 'Retry conversion with selected series' : 'Select a series first'}
+                >
+                  {submitting
+                    ? <><span className="spinner" style={{ marginRight: 6 }} />Converting…</>
+                    : `⚠ Resolve — Retry Conversion`}
+                </Btn>
+              </div>
+
+              {!canResolve && (
+                <div style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'right', marginTop: 6 }}>
+                  Resolve is disabled until a series is selected
+                </div>
+              )}
+            </>
+          )}
+
+          {proposal.status === 'resolved' && (
+            <div style={{ padding: '10px 14px', background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-green-text)' }}>
+              ✓ Resolved — conversion retried with series{' '}
+              <strong>{(proposal.resolution_data || {}).selected_series_id || '—'}</strong>
+            </div>
+          )}
+
+          {proposal.status === 'rejected' && (
+            <div style={{ padding: '10px 14px', background: 'var(--badge-neutral-bg)', border: '1px solid var(--badge-neutral-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-neutral-text)' }}>
+              Dismissed — no retry was attempted.
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  }
+
+  // ── Proposal router ───────────────────────────────────────────────────────
+
+  function WfirmaProposalCard({ proposal, onResolved, showToast }) {
+    if (proposal.type === 'wfirma_series_missing') {
+      return <SeriesMissingCard proposal={proposal} onResolved={onResolved} showToast={showToast} />;
+    }
+    // Future types will be added here
+    return (
+      <Card style={{ marginBottom: 16, padding: '14px 20px', opacity: 0.7 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>{proposal.type}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
+          Recovery card for this type is not yet implemented.
+        </div>
+      </Card>
+    );
+  }
+
+  // ── Main App ──────────────────────────────────────────────────────────────
+
+  function App() {
+    const [toast, setToast] = useState(null);
+    const showToast = (msg, type = 'info') => { setToast({ msg, type }); setTimeout(() => setToast(null), 4500); };
+
+    const proposalsHook = useGet(
+      BATCH_ID ? `/api/v1/action-proposals/${encodeURIComponent(BATCH_ID)}` : null,
+      [BATCH_ID],
+    );
+
+    const wfirmaProposals = (proposalsHook.data?.proposals || [])
+      .filter(p => p.channel === 'wfirma_action');
+
+    if (!BATCH_ID) {
+      return (
+        <AppShell activeNav="inbox" data-testid="wfirma-inbox-root">
+          <div style={{ padding: 40 }}>
+            <EmptyState state="error" message="Missing batch_id — use ?batch_id=SHIPMENT_..." />
+          </div>
+        </AppShell>
+      );
+    }
+
+    return (
+      <AppShell activeNav="inbox" data-testid="wfirma-inbox-root">
+        {toast && <Toast msg={toast.msg} type={toast.type} />}
+
+        <PageHeader
+          title="wFirma Recovery"
+          subtitle={`Batch: ${BATCH_ID} · ${wfirmaProposals.length} pending action(s)`}
+        />
+
+        <div style={{ padding: '20px 24px 40px', flex: 1, overflowY: 'auto' }}>
+          {proposalsHook.loading ? (
+            <div style={{ textAlign: 'center', padding: 40 }}><span className="spinner" /></div>
+          ) : proposalsHook.error ? (
+            <EmptyState state="error" message={proposalsHook.error} onRetry={proposalsHook.reload} />
+          ) : wfirmaProposals.length === 0 ? (
+            <EmptyState state="empty" message="No wFirma recovery proposals for this batch." />
+          ) : (
+            wfirmaProposals.map(p => (
+              <WfirmaProposalCard
+                key={p.proposal_id}
+                proposal={p}
+                onResolved={proposalsHook.reload}
+                showToast={showToast}
+              />
+            ))
+          )}
+        </div>
+      </AppShell>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>
