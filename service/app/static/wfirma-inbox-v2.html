@@ -269,13 +269,111 @@
     );
   }
 
+  // ── B9: wfirma_post_retry card ───────────────────────────────────────────
+  // Transient wFirma POST failure — retry button re-approves and re-posts.
+
+  function PostRetryCard({ proposal, onResolved, showToast }) {
+    const ctx = proposal.context || {};
+    const [submitting, setSubmitting] = useState(false);
+    const [error, setError]           = useState('');
+    const [result, setResult]         = useState(null);
+
+    const doRetry = async () => {
+      setSubmitting(true); setError('');
+      try {
+        const pid = proposal.proposal_id;
+        const r = await apiFetch(
+          `/api/v1/action-proposals/${encodeURIComponent(pid)}/resolve`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ resolution_data: {} }),
+          },
+        );
+        setResult(r);
+        if (onResolved) onResolved(r);
+        if (showToast) showToast('Retry submitted — check result below', 'success');
+      } catch (e) {
+        setError(e.message || 'Retry failed');
+      } finally {
+        setSubmitting(false);
+      }
+    };
+
+    const doReject = async () => {
+      const reason = window.__prompt ? window.__prompt('Rejection reason:') : 'operator rejected';
+      if (!reason) return;
+      try {
+        await apiFetch(
+          `/api/v1/action-proposals/${encodeURIComponent(proposal.proposal_id)}/reject`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason }) },
+        );
+        if (onResolved) onResolved({ status: 'rejected' });
+        if (showToast) showToast('Proposal rejected', 'info');
+      } catch (e) {
+        setError(e.message || 'Reject failed');
+      }
+    };
+
+    return (
+      <Card data-testid={`wfirma-post-retry-card-${proposal.proposal_id}`}
+        style={{ marginBottom: 16, border: '1px solid var(--badge-amber-border)' }}>
+        <SectionHeader icon="⚠" title="wFirma POST failed — retry available"
+          subtitle={`Draft #${ctx.draft_id || '—'} · ${ctx.client_name || '—'}`} />
+        <div style={{ padding: '14px 20px' }}>
+          <InfoRow label="Draft ID"     value={ctx.draft_id ? `#${ctx.draft_id}` : '—'} />
+          <InfoRow label="Client"       value={ctx.client_name || '—'} />
+          <InfoRow label="Batch"        value={ctx.batch_id || '—'} />
+          <InfoRow label="Error"        value={ctx.error_message || '—'} />
+          <InfoRow label="Failed at"    value={(ctx.failed_at || '—').slice(0, 16)} />
+
+          {error && (
+            <div style={{ marginTop: 10, padding: '8px 10px', background: 'var(--badge-red-bg)',
+              border: '1px solid var(--badge-red-border)', borderRadius: 6,
+              fontSize: 12, color: 'var(--badge-red-text)' }}>
+              {error}
+            </div>
+          )}
+
+          {result && (
+            <div style={{ marginTop: 10, padding: '8px 10px', background: 'var(--badge-green-bg)',
+              border: '1px solid var(--badge-green-border)', borderRadius: 6,
+              fontSize: 12, color: 'var(--badge-green-text)' }}>
+              Retry result: {result.result?.retry_result?.status || JSON.stringify(result).slice(0, 80)}
+            </div>
+          )}
+
+          {proposal.status === 'pending_review' && !result && (
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+              <Btn variant="ghost" small onClick={doReject} disabled={submitting}
+                data-testid="btn-reject-post-retry">
+                Reject
+              </Btn>
+              <Btn variant="outline" small onClick={doRetry} disabled={submitting}
+                data-testid="btn-retry-post"
+                style={{ color: 'var(--badge-amber-text)', borderColor: 'var(--badge-amber-border)' }}>
+                {submitting
+                  ? <><span className="spinner" style={{ marginRight: 6 }} />Retrying…</>
+                  : '⟳ Retry POST to wFirma'}
+              </Btn>
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  }
+
   // ── Proposal router ───────────────────────────────────────────────────────
 
   function WfirmaProposalCard({ proposal, onResolved, showToast }) {
     if (proposal.type === 'wfirma_series_missing') {
       return <SeriesMissingCard proposal={proposal} onResolved={onResolved} showToast={showToast} />;
     }
-    // Future types will be added here
+    if (proposal.type === 'wfirma_post_retry') {
+      return <PostRetryCard proposal={proposal} onResolved={onResolved} showToast={showToast} />;
+    }
+    // Future types will be added here (B2–B8)
     return (
       <Card style={{ marginBottom: 16, padding: '14px 20px', opacity: 0.7 }}>
         <div style={{ fontSize: 13, fontWeight: 600 }}>{proposal.type}</div>
