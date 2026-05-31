@@ -807,9 +807,6 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
   const [pendingAction, setPendingAction] = React.useState(null);
   const inflightRef = React.useRef(new Set());      // idempotency: action_id+row.id
   const completedRef = React.useRef(new Set());     // double-click guard
-  // wFirma recovery: wfirma_series_missing inline modal state
-  // { proposal, selectedSeriesId, saveToMaster, submitting, error }
-  const [wfirmaMissing, setWfirmaMissing] = React.useState(null);
 
   const loadEmails = React.useCallback(async () => {
     setEmails(s => ({ ...s, loading: true, error: null }));
@@ -868,20 +865,6 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
   // ── Approval action: open confirm modal (loads preview) ─────────────────
   const openApproval = React.useCallback(async (row, action) => {
     if (!action || action.disabled) return;
-
-    // wFirma series-missing recovery: specialized modal path
-    if (action._wfirma_open_resolve && row._wfirma_proposal) {
-      setWfirmaMissing({
-        proposal:       row._wfirma_proposal,
-        selectedSeries: '',        // no default — operator must choose
-        saveToMaster:   false,
-        submitting:     false,
-        error:          null,
-        result:         null,
-      });
-      return;
-    }
-
     const latchKey = `${action.id}::${row.id}`;
     if (completedRef.current.has(latchKey) || inflightRef.current.has(latchKey)) {
       if (onToast) onToast('Already submitted', 'info');
@@ -994,62 +977,21 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
 
   // 2) Proposals → pending action proposals (real)
   (proposals.items || []).forEach(p => {
-    const isWfirmaAction = p.channel === 'wfirma_action';
     const severity = p.severity === 'HIGH' || p.priority === 'urgent' ? 'high'
                   : p.severity === 'MEDIUM' || p.priority === 'high'    ? 'med'
-                  : isWfirmaAction ? 'med'  // wFirma recovery = medium by default
                   : 'info';
-
-    // wFirma action proposals get a specialized title/reason from context
-    let title  = p.title || p.action || p.kind || p.action_type || p.field_missing || '(proposal)';
-    let reason = p.reason || p.description || p.message || p.failure_reason || '';
-    if (isWfirmaAction && p.type === 'wfirma_series_missing') {
-      const ctx = p.context || {};
-      title  = `⚠ Invoice series missing — ${ctx.proforma_number || '—'}`;
-      reason = `Customer: ${ctx.customer_name || '—'} · Preferred series: ${ctx.current_preferred_series || 'none'}`;
-    }
-
     const row = {
       id:         `proposal:${p.id || p.proposal_id || Math.random()}`,
       source:     'proposals',
       severity,
-      title,
+      title:      p.title || p.action || p.kind || p.action_type || p.field_missing || '(proposal)',
       batch_id:   p.batch_id || null,
       awb:        null,
       timestamp:  p.created_at || p.timestamp || '',
-      reason,
+      reason:     p.reason || p.description || p.message || p.failure_reason || '',
       open_target:p.batch_id ? { type: 'batch', id: p.batch_id } : null,
-      _wfirma_proposal: isWfirmaAction ? p : null,  // stored for specialized modal
     };
-
-    // wFirma recovery proposals use a specialized resolve modal — not the generic approve/reject
-    if (isWfirmaAction && p.type === 'wfirma_series_missing' && p.status === 'pending_review') {
-      row.actions = [
-        {
-          id:          'wfirma.series_missing.resolve',
-          label:       'Select series & resolve',
-          tone:        'amber',
-          risk_level:  'medium',
-          _wfirma_open_resolve: true,  // triggers setWfirmaMissing instead of setPendingAction
-        },
-        // Standard reject still available via the generic path
-        {
-          id: 'proposal.reject',
-          label: 'Reject',
-          tone: 'red',
-          execute_endpoint: `/api/v1/action-proposals/${encodeURIComponent(p.proposal_id || p.id)}/reject`,
-          method: 'POST',
-          requires_reason: true,
-          min_reason_len: 1,
-          body_template: { reason: '' },
-          requires_confirmation: true,
-          risk_level: 'low',
-          audit_event: 'wfirma_series_proposal_rejected',
-        },
-      ];
-    } else {
-      row.actions = inboxActionsFor(row, p);
-    }
+    row.actions = inboxActionsFor(row, p);
     rows.push(row);
   });
 
@@ -1367,151 +1309,6 @@ function InboxPage({ batches, onViewShipment, onNav, onToast }) {
           </div>
         </div>
       )}
-
-      {/* ── wFirma series-missing recovery modal ───────────────────────────
-          Shown when operator clicks "Select series & resolve" on a
-          wfirma_series_missing proposal. Uses no native confirm/alert.
-          Resolve button disabled until a series is explicitly chosen.
-      ─────────────────────────────────────────────────────────────────── */}
-      {wfirmaMissing && !wfirmaMissing.result && (
-        <div data-testid="inbox-wfirma-series-modal"
-          role="dialog" aria-modal="true"
-          onClick={e => { if (e.target === e.currentTarget && !wfirmaMissing.submitting) setWfirmaMissing(null); }}
-          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20 }}>
-          <div onClick={e => e.stopPropagation()}
-            style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 22, width: '100%', maxWidth: 520, maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 12px 40px var(--shadow-heavy)' }}>
-
-            {/* Header */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-              <div data-testid="wfirma-series-modal-title" style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>
-                ⚠ Resolve: Invoice Series Missing
-              </div>
-              <button onClick={() => !wfirmaMissing.submitting && setWfirmaMissing(null)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: 'var(--text-3)', lineHeight: 1 }}>×</button>
-            </div>
-
-            {/* Context */}
-            <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 14, lineHeight: 1.6, padding: '8px 10px', background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border-subtle)' }}>
-              <div><strong>Proforma:</strong> {(wfirmaMissing.proposal.context || {}).proforma_number || '—'}</div>
-              <div><strong>Customer:</strong> {(wfirmaMissing.proposal.context || {}).customer_name || '—'}</div>
-              <div><strong>Preferred series:</strong> {(wfirmaMissing.proposal.context || {}).current_preferred_series || 'none set'}</div>
-              <div><strong>Batch:</strong> {wfirmaMissing.proposal.batch_id || '—'}</div>
-            </div>
-
-            {/* Series selector — NO default; resolve disabled until chosen */}
-            <div style={{ marginBottom: 14 }}>
-              <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 5 }}>
-                Invoice series <span style={{ color: 'var(--badge-red-text)' }}>*</span>
-              </label>
-              <select data-testid="wfirma-series-select"
-                value={wfirmaMissing.selectedSeries}
-                onChange={e => setWfirmaMissing(s => ({ ...s, selectedSeries: e.target.value, error: null }))}
-                disabled={wfirmaMissing.submitting}
-                style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, fontFamily: 'inherit', background: 'var(--card)', color: 'var(--text)' }}>
-                <option value="">— select series —</option>
-                {((wfirmaMissing.proposal.context || {}).available_series || []).map(s => (
-                  <option key={s.id || s} value={s.id || s}>
-                    {s.label || s.name || s.id || s}
-                  </option>
-                ))}
-              </select>
-              {!((wfirmaMissing.proposal.context || {}).available_series || []).length && (
-                <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }}>
-                  No series in cache — run a dictionary refresh and reopen.
-                </div>
-              )}
-            </div>
-
-            {/* Save-to-customer-master checkbox */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-              <input type="checkbox" id="wfirma-save-master"
-                data-testid="wfirma-save-master-checkbox"
-                checked={wfirmaMissing.saveToMaster}
-                onChange={e => setWfirmaMissing(s => ({ ...s, saveToMaster: e.target.checked }))}
-                disabled={wfirmaMissing.submitting} />
-              <label htmlFor="wfirma-save-master" style={{ fontSize: 12, color: 'var(--text-2)', cursor: 'pointer' }}>
-                Save as preferred invoice series in Customer Master
-              </label>
-            </div>
-
-            {/* Error */}
-            {wfirmaMissing.error && (
-              <div data-testid="wfirma-series-error"
-                style={{ padding: '8px 10px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 12 }}>
-                {wfirmaMissing.error}
-              </div>
-            )}
-
-            {/* Footer buttons */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button onClick={() => !wfirmaMissing.submitting && setWfirmaMissing(null)}
-                disabled={wfirmaMissing.submitting}
-                style={{ padding: '6px 14px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text-2)', cursor: wfirmaMissing.submitting ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>
-                Cancel
-              </button>
-              <button data-testid="wfirma-series-resolve-btn"
-                onClick={async () => {
-                  const pid = wfirmaMissing.proposal.proposal_id || wfirmaMissing.proposal.id;
-                  if (!wfirmaMissing.selectedSeries) {
-                    setWfirmaMissing(s => ({ ...s, error: 'Select a series before resolving.' }));
-                    return;
-                  }
-                  setWfirmaMissing(s => ({ ...s, submitting: true, error: null }));
-                  try {
-                    const r = await apiFetch(`/api/v1/action-proposals/${encodeURIComponent(pid)}/resolve`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        resolution_data: {
-                          selected_series_id:      wfirmaMissing.selectedSeries,
-                          save_to_customer_master: wfirmaMissing.saveToMaster,
-                        },
-                      }),
-                    });
-                    setWfirmaMissing(s => ({ ...s, submitting: false, result: r }));
-                    loadProposals();
-                    if (onToast) onToast('Recovery proposal resolved', 'success');
-                  } catch (err) {
-                    setWfirmaMissing(s => ({ ...s, submitting: false, error: err.message || 'Resolve failed' }));
-                  }
-                }}
-                disabled={wfirmaMissing.submitting || !wfirmaMissing.selectedSeries}
-                style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, border: '1px solid var(--badge-amber-border)', borderRadius: 6, background: wfirmaMissing.selectedSeries ? 'var(--badge-amber-bg)' : 'var(--bg-subtle)', color: wfirmaMissing.selectedSeries ? 'var(--badge-amber-text)' : 'var(--text-3)', cursor: (wfirmaMissing.submitting || !wfirmaMissing.selectedSeries) ? 'not-allowed' : 'pointer', fontFamily: 'inherit', opacity: wfirmaMissing.submitting ? 0.6 : 1 }}>
-                {wfirmaMissing.submitting ? 'Resolving…' : 'Resolve — apply series'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Result card after resolve */}
-      {wfirmaMissing && wfirmaMissing.result && (
-        <div data-testid="inbox-wfirma-series-result"
-          role="dialog" aria-modal="true"
-          onClick={() => setWfirmaMissing(null)}
-          style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20 }}>
-          <div onClick={e => e.stopPropagation()}
-            style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 22, width: '100%', maxWidth: 480, boxShadow: '0 12px 40px var(--shadow-heavy)' }}>
-            <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)', marginBottom: 10 }}>
-              Resolution result
-            </div>
-            <div data-testid="wfirma-series-result-status" style={{ marginBottom: 10, fontSize: 13 }}>
-              <strong>Status:</strong> {wfirmaMissing.result.status || '—'}
-            </div>
-            <pre style={{ fontSize: 10, fontFamily: 'monospace', background: 'var(--bg-subtle)', padding: 8, borderRadius: 4, overflow: 'auto', maxHeight: 200, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-              {JSON.stringify(wfirmaMissing.result, null, 2)}
-            </pre>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
-              <button data-testid="wfirma-series-result-close"
-                onClick={() => setWfirmaMissing(null)}
-                style={{ padding: '6px 14px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700 }}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
     </div>
   );
 }

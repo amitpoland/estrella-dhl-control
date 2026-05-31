@@ -19,7 +19,7 @@ routes_action_proposals.py.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set
 
 
@@ -184,13 +184,15 @@ def resolve_wfirma_series_missing(
                 raise ValueError(
                     f"contractor_id {contractor_id!r} not found in customer master"
                 )
-            # Direct SQL update for preferred_invoice_series_id only —
-            # avoids dataclass round-trip and is safe for a targeted field update.
+            # Direct SQL update for preferred_invoice_series_id only.
+            # Uses the same ISO-8601 UTC timestamp format as _now_iso() in
+            # customer_master_db so updated_at is consistent across all write paths.
+            _now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
             with _sqlite3.connect(str(db_path)) as _conn:
                 _conn.execute(
                     "UPDATE customer_master SET preferred_invoice_series_id=?, "
-                    "updated_at=datetime('now') WHERE bill_to_contractor_id=?",
-                    (selected, contractor_id),
+                    "updated_at=? WHERE bill_to_contractor_id=?",
+                    (selected, _now, contractor_id),
                 )
                 _conn.commit()
             customer_master_updated = True

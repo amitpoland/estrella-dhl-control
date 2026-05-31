@@ -3211,6 +3211,47 @@ Lesson L and CLAUDE.md updated with routing-key distinction: `sales_documents.cl
 
 **GATE 2**: 0/3 open PRs after merge (clean board).
 
+---
+
+## PR #409 — wFirma Recovery B1 (2026-05-30, OPEN — pending cleanup)
+
+**Date**: 2026-05-30
+**PR #409** — `feat(wfirma-recovery): B1 vertical slice — wfirma_series_missing inbox card (proposal creation OFF)`
+**Branch**: `feat/wfirma-recovery-b1`
+**Commits**: `0819d66` (backend infra + wfirma-inbox-v2.html + tests) + `bd6fc11` (dashboard.html revert + updated_at fix + corrected claims)
+
+**Diff scope:**
+- NEW: `service/app/services/wfirma_recovery.py` — `create_wfirma_proposal`, `recovery_enabled_types`, `resolve_wfirma_series_missing` (400 guard, save-to-master, idempotency), `dispatch_resolve`
+- NEW: `service/app/services/wfirma_dictionary_cache.py` — series cache, `refresh_from_wfirma`
+- NEW: `service/app/static/wfirma-inbox-v2.html` — recovery inbox page on pz-design-v2.js (series dropdown NO default, save-to-master checkbox, resolve gated on selection)
+- NEW: `service/tests/test_wfirma_recovery_b1.py` — 10/10 PASS
+- MODIFIED: `service/app/api/routes_proforma.py` — B1 trigger at series-exhaustion dead-end
+- MODIFIED: `service/app/api/routes_action_proposals.py` — POST /{id}/resolve endpoint
+- MODIFIED: `service/app/core/config.py` — `wfirma_recovery_enabled_types: str = Field(default="")`
+- MODIFIED (cleanup commit): `service/app/services/wfirma_recovery.py` — `datetime('now')` → `datetime.now(timezone.utc)` for correct updated_at format
+
+**Flag gate ordering (verified):**
+`_check_invoice_approval_gates()` (which checks `wfirma_create_invoice_allowed`) runs at line ~2914, BEFORE the series fallback chain at line ~2982. With the convert flag OFF, the function returns early — the B1 dead-end is never reached. The B1 dead-end only fires when the convert flag is ON AND the series is missing.
+
+**CORRECTED VERIFY CLAIM (replaces session report):**
+The series injection is proven by unit test only: `resolve_wfirma_series_missing` calls `proforma_to_invoice` with `final_series_id="SER_DEV"` (confirmed by mock call-argument assertion). The claim that "error changed from series_missing → WFIRMA_CREATE_INVOICE_ALLOWED=false proving series cleared" is WRONG — the flag gate precedes the series check, so a flag-off retry never reaches the series check at all. The first real end-to-end exercise of the series-check → proposal → resolve → retry sequence will happen in production when the convert flag is enabled.
+
+**customer-master save path:**
+Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at=? WHERE bill_to_contractor_id=?` using `datetime.now(timezone.utc).replace(microsecond=0).isoformat()` (matches `_now_iso()` format used by `upsert_customer`). Safe because: (1) 400 guard ensures value is non-empty; (2) `get_customer` returns the updated value; (3) `pick_invoice_series_id` reads the same column.
+
+**dashboard.html**: V1-FROZEN. Reverted to origin/main in cleanup commit — zero diff confirmed. B1 card lives exclusively in `wfirma-inbox-v2.html`.
+
+**Card browser verify** (dev server 127.0.0.1:8792, stub proposal):
+- Card testid: `wfirma-series-missing-card-{uuid}` ✓
+- Context: `PROF 1/2026 · ACME · PENDING_REVIEW` ✓
+- Series dropdown: 3 options (placeholder NO default + WDT + PROF) ✓
+- Resolve button: disabled before selection ✓ → enabled after selecting 15827921 ✓
+- Console: CLEAN (1 log: `[pz-design-v2] loaded`) ✓
+
+**GATE 2**: 1/3 open PRs (PR #409).
+**Deploy plan (post-merge)**: Backend restart required (routes_proforma.py + routes_action_proposals.py changed). Static file wfirma-inbox-v2.html: `Copy-Item service\app\static\wfirma-inbox-v2.html C:\PZ\app\static\`.
+
+
 **ATLAS-V2 Sprint 24**: CLOSED. Next: Step 7 reskin (customer-master-v2 + shipment-detail-v3 → pz-design-v2.js integration).
 
 ---
