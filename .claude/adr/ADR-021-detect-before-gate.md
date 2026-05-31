@@ -1,8 +1,28 @@
 # ADR-021: Detect convert dead-ends before the write-enable gate
 
-**Status:** Proposed
+**Status:** Rejected — superseded by ADR-022
 **Date:** 2026-05-31
 **Deciders:** Amit
+**Superseded by:** [ADR-022](ADR-022-cache-proforma-snapshot-for-pre-gate-detection.md)
+
+## Rejection
+
+**Finding date:** 2026-05-31  
+**Finding:** Inspector pass on `proforma_to_invoice()` revealed that the proposed relocation is not
+implementable without violating the stated invariant.
+
+The detection step requires `snap`, a parsed proforma XML object. `snap` is materialised by
+`wfirma_client.fetch_invoice_xml(pid)` at line 2978 of `routes_proforma.py`. This call is the
+first live wFirma read in the function and executes **after** `_check_invoice_approval_gates()`
+at line 2916. Moving dead-end detection before the gate would therefore require moving
+`fetch_invoice_xml` before the gate — a new wFirma surface before the write-enable boundary.
+That directly contradicts the invariant: *no wFirma call — read or write — may occur before the
+gate*.
+
+**Disposition:** The proposal's Option B is unimplementable as stated. ADR-022 addresses the
+same problem by caching the snapshot produced during the first gate-passing conversion attempt,
+so subsequent retry calls can perform dead-end detection from the local cache without making a
+pre-gate wFirma read.
 
 ## Context
 In `proforma_to_invoice()`, `_check_invoice_approval_gates()` (which checks `WFIRMA_CREATE_INVOICE_ALLOWED`) runs before the series-resolution fallback chain. With the convert flag off, the function returns early, so the series check — and every other dead-end (B1–B9) — is never reached. Consequences today: (1) recovery proposals can only be created when the convert flag is on, so the recovery layer's first real exercise will be a production event; (2) the flow can't be triggered or tested with the flag off — a flag-off retry short-circuits at the gate, so a changed error proves nothing about series; (3) detection (spotting bad/missing data) is coupled to authorization (permission to write to wFirma), though they are independent concerns.
