@@ -34,6 +34,9 @@ from ..services import inventory_state_engine as ise
 from ..services import proforma_invoice_link_db as pildb
 from ..services import wfirma_client
 from ..services.customer_master_db import get_customer as get_customer_master
+from ..services.proforma_draft_governance import (
+    check_top_patch, check_line_patch, check_post_readiness, check_convert_series,
+)
 from ..services.customer_master import (
     pick_freight, compute_insurance_suggestion,
     pick_proforma_series_id, pick_invoice_series_id,
@@ -3051,6 +3054,19 @@ def proforma_to_invoice(
                     "operator did not supply one in the request body"
                 ],
             })
+        # Governance: series_id must be resolved before building the plan.
+        # No-op when proforma_draft_governance_enabled=False; also a no-op when
+        # the series exhaustion already returned a JSONResponse (unreachable here).
+        try:
+            check_convert_series(series_id)
+        except ValueError as exc:
+            return JSONResponse({
+                "ok":               False,
+                "status":           "blocked",
+                "batch_id":         batch_id,
+                "client_name":      cn,
+                "blocking_reasons": [str(exc)],
+            })
         plan = p2i.build_final_invoice_plan(
             snap,
             final_series_id      = series_id,
@@ -4239,6 +4255,12 @@ def patch_proforma_draft(
     operator = _require_operator(x_operator)
     expected = str(body.get("expected_updated_at") or "")
     patch    = body.get("patch") or {}
+    # Governance check on top-level fields (currency, buyer/ship_to overrides).
+    # No-op when proforma_draft_governance_enabled=False.
+    try:
+        check_top_patch(patch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return _draft_edit_dispatch(draft_id, lambda: pildb.update_draft_fields(
         _proforma_db_path(),
         int(draft_id),
@@ -4269,6 +4291,12 @@ def patch_proforma_draft_line(
     operator = _require_operator(x_operator)
     expected = str(body.get("expected_updated_at") or "")
     patch    = body.get("patch") or {}
+    # Governance check on line fields (hs_code format, qty/unit_price sign).
+    # No-op when proforma_draft_governance_enabled=False.
+    try:
+        check_line_patch(patch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return _draft_edit_dispatch(draft_id, lambda: pildb.update_draft_line(
         _proforma_db_path(),
         int(draft_id), int(line_id),
@@ -5222,6 +5250,13 @@ def post_proforma_draft_to_wfirma(
             f"{len(zero_price_lines)} line(s) have unit_price ≤ 0 — "
             "refresh prices from packing list before posting",
         )
+
+    # Governance: hs_code required on all lines (customs requirement).
+    # No-op when proforma_draft_governance_enabled=False.
+    try:
+        check_post_readiness(_pre_lines)
+    except ValueError as exc:
+        return _post_validation_error(draft_id, str(exc))
 
     # Build the wFirma request from persisted fields BEFORE start_post —
     # this surfaces missing-mapping / mixed-currency / service-charge
