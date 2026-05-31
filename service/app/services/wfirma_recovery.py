@@ -18,8 +18,9 @@ routes_action_proposals.py.
 """
 from __future__ import annotations
 
+import dataclasses
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, Optional, Set
 
 
@@ -176,7 +177,6 @@ def resolve_wfirma_series_missing(
     customer_master_updated = False
     if save_to_master and contractor_id:
         try:
-            import sqlite3 as _sqlite3
             db_path = settings.storage_root / "customer_master.sqlite"
             init_db(db_path)
             existing = get_customer(db_path, contractor_id)
@@ -184,17 +184,12 @@ def resolve_wfirma_series_missing(
                 raise ValueError(
                     f"contractor_id {contractor_id!r} not found in customer master"
                 )
-            # Direct SQL update for preferred_invoice_series_id only.
-            # Uses the same ISO-8601 UTC timestamp format as _now_iso() in
-            # customer_master_db so updated_at is consistent across all write paths.
-            _now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-            with _sqlite3.connect(str(db_path)) as _conn:
-                _conn.execute(
-                    "UPDATE customer_master SET preferred_invoice_series_id=?, "
-                    "updated_at=? WHERE bill_to_contractor_id=?",
-                    (selected, _now, contractor_id),
-                )
-                _conn.commit()
+            # Route through the service layer: CustomerMaster is frozen so we
+            # use dataclasses.replace to produce a new instance with the updated
+            # series. upsert_customer handles updated_at, format, and field
+            # validation automatically — consistent with every other write path.
+            updated = dataclasses.replace(existing, preferred_invoice_series_id=selected)
+            upsert_customer(db_path, updated)
             customer_master_updated = True
         except HTTPException:
             raise

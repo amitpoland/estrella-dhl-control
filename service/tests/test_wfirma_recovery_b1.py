@@ -383,35 +383,47 @@ def test_resolve_non_pending_returns_409(client, tmp_storage, batch_audit_dir):
 # ── 8. save_to_customer_master patches the master ────────────────────────────
 
 def test_save_to_customer_master_patches_record(client, tmp_storage, batch_audit_dir):
-    """save_to_customer_master=True updates customer master with the selected series."""
-    import sqlite3 as _sq3
+    """save_to_customer_master=True calls upsert_customer via the SERVICE LAYER.
+
+    Mocks at the service layer (get_customer + upsert_customer), NOT raw SQL.
+    Asserts:
+      - upsert_customer is called with a CustomerMaster whose
+        preferred_invoice_series_id == selected_series_id
+      - Other fields are preserved (dataclasses.replace semantics)
+      - customer_master_updated is True in the result
+    """
     import app.api.routes_action_proposals as rap
+    from app.services.customer_master_db import CustomerMaster
+
     batch_id, audit_dir = batch_audit_dir
     prop_id = _seed_proposal(audit_dir, batch_id)
 
     mock_conv_response = MagicMock()
-    mock_conv_response.body = json.dumps({"ok": True, "status": "issued",
+    mock_conv_response.body = json.dumps({
+        "ok": True, "status": "issued",
         "wfirma_invoice_id": "INV_X", "wfirma_invoice_number": "FV X/2026",
-        "currency": "EUR"}).encode()
+        "currency": "EUR",
+    }).encode()
 
-    # Create a real minimal customer master DB so the SQL update path works
-    from app.services.customer_master_db import init_db as cm_init_db
-    cm_db = tmp_storage / "customer_master.sqlite"
-    cm_init_db(cm_db)
-    now = datetime.utcnow().isoformat()
-    with _sq3.connect(str(cm_db)) as _c:
-        _c.execute(
-            "INSERT INTO customer_master (bill_to_contractor_id, bill_to_name,"
-            " country, active, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?)",
-            ("75483443", "Test Client", "PL", 1, now, now),
-        )
-        _c.commit()
+    # Frozen CustomerMaster returned by mock get_customer
+    mock_existing = CustomerMaster(
+        bill_to_contractor_id="75483443",
+        bill_to_name="Test Client",
+        country="PL",
+        preferred_invoice_series_id=None,  # no series yet — will be replaced
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
 
     orig_outputs = rap._OUTPUTS
     rap._OUTPUTS = tmp_storage / "outputs"
     try:
-        with patch("app.core.config.settings.storage_root", tmp_storage),              patch("app.core.config.settings.wfirma_create_invoice_allowed", True),              patch("app.api.routes_proforma.proforma_to_invoice",
+        with patch("app.core.config.settings.wfirma_create_invoice_allowed", True), \
+             patch("app.services.customer_master_db.init_db"), \
+             patch("app.services.customer_master_db.get_customer",
+                   return_value=mock_existing) as mock_get, \
+             patch("app.services.customer_master_db.upsert_customer") as mock_upsert, \
+             patch("app.api.routes_proforma.proforma_to_invoice",
                    return_value=mock_conv_response):
             r = client.post(
                 f"/api/v1/action-proposals/{prop_id}/resolve",
@@ -424,15 +436,91 @@ def test_save_to_customer_master_patches_record(client, tmp_storage, batch_audit
         rap._OUTPUTS = orig_outputs
 
     assert r.status_code == 200, r.text
-    # Verify the SQL update was committed to the DB
-    with _sq3.connect(str(cm_db)) as _c:
-        row = _c.execute(
-            "SELECT preferred_invoice_series_id FROM customer_master"
-            " WHERE bill_to_contractor_id=?", ("75483443",)
-        ).fetchone()
-    assert row is not None
-    assert row[0] == "15827921", f"Expected 15827921, got {row[0]!r}"
     assert r.json()["result"]["customer_master_updated"] is True
+
+    # ── Service-layer contract assertions ──────────────────────────────────────
+    # get_customer was called to verify the contractor exists
+    mock_get.assert_called_once()
+
+    # upsert_customer was called — not raw SQL
+    mock_upsert.assert_called_once()
+    saved_customer = mock_upsert.call_args.args[1]  # second positional arg (Python 3.8+)
+    assert isinstance(saved_customer, CustomerMaster), (
+        "upsert_customer must receive a CustomerMaster dataclass, not raw SQL params"
+    )
+    assert saved_customer.preferred_invoice_series_id == "15827921", (
+        f"upsert_customer must be called with preferred_invoice_series_id='15827921', "
+        f"got {saved_customer.preferred_invoice_series_id!r}"
+    )
+    # Fields not in the replace call must be preserved (frozen dataclass semantics)
+    assert saved_customer.bill_to_contractor_id == "75483443"
+    assert saved_customer.bill_to_name == "Test Client"
+
+
+# ── 8b. Operator identity: derived from JWT session, NOT X-Operator header ───
+
+def test_operator_derived_from_session_not_header(client, tmp_storage, batch_audit_dir):
+    """POST /resolve must use operator from JWT session cookie, not X-Operator header.
+
+    A client-supplied X-Operator header value must be ignored. The recorded
+    resolved_by must match the session user's full_name.
+    """
+    import app.api.routes_action_proposals as rap
+    from app.api.routes_action_proposals import _get_resolve_operator
+
+    batch_id, audit_dir = batch_audit_dir
+    prop_id = _seed_proposal(audit_dir, batch_id)
+
+    mock_conv_response = MagicMock()
+    mock_conv_response.body = json.dumps({
+        "ok": True, "status": "issued",
+        "wfirma_invoice_id": "INV_OP", "wfirma_invoice_number": "FV OP/2026",
+        "currency": "EUR",
+    }).encode()
+
+    # Override the session-operator dependency to return our test user
+    app.dependency_overrides[_get_resolve_operator] = lambda: _TEST_USER
+
+    orig_outputs = rap._OUTPUTS
+    rap._OUTPUTS = tmp_storage / "outputs"
+    try:
+        with patch("app.core.config.settings.wfirma_create_invoice_allowed", True), \
+             patch("app.api.routes_proforma.proforma_to_invoice",
+                   return_value=mock_conv_response):
+            r = client.post(
+                f"/api/v1/action-proposals/{prop_id}/resolve",
+                # Bogus X-Operator header — must NOT be used as the operator
+                headers={"X-Operator": "bogus-injected-header"},
+                json={"resolution_data": {
+                    "selected_series_id": "15827921",
+                    "save_to_customer_master": False,
+                }},
+            )
+    finally:
+        rap._OUTPUTS = orig_outputs
+        # Remove the override so it doesn't leak into other tests
+        app.dependency_overrides.pop(_get_resolve_operator, None)
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "resolved"
+
+    # The operator in the result and in the audit must be the SESSION identity
+    assert body["operator"] == _TEST_USER["full_name"], (
+        f"operator must be session full_name '{_TEST_USER['full_name']}', "
+        f"got '{body['operator']}'"
+    )
+    assert body["operator"] != "bogus-injected-header", (
+        "X-Operator header must NOT be used as the operator identity"
+    )
+
+    # Verify resolved_by in the persisted audit matches session identity too
+    audit = _read_audit(audit_dir)
+    prop = next(p for p in audit["action_proposals"] if p["proposal_id"] == prop_id)
+    assert prop["resolved_by"] == _TEST_USER["full_name"], (
+        f"resolved_by in audit must be session full_name, got {prop['resolved_by']!r}"
+    )
+
 
 # ── 9. Deduplication: second call returns existing proposal ───────────────────
 
