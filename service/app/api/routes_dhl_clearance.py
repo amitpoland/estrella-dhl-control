@@ -109,6 +109,110 @@ class ScanInboxResult(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Sentinel: imported from the engine at call time so both sides always agree.
+# If the engine is unreachable the fallback string keeps the meaning intact.
+def _get_unresolved_sentinel() -> str:
+    """Return the consignor-unresolved sentinel — always sourced from the engine."""
+    try:
+        _svc_engine = str(Path(__file__).parent.parent.parent.parent)
+        import sys as _sys
+        if _svc_engine not in _sys.path:
+            _sys.path.insert(0, _svc_engine)
+        import customs_description_engine as _cde  # type: ignore
+        return _cde._CONSIGNOR_UNRESOLVED_SENTINEL
+    except Exception:
+        return "[DOSTAWCA NIEOKRESLONY / SUPPLIER UNRESOLVED]"
+
+
+def _resolve_customs_identities(batch_id: str) -> "tuple[Optional[str], Optional[str]]":
+    """Resolve (consignee_name, consignor_name) from governed masters.
+
+    Only called when ``settings.customs_identity_from_masters`` is True.
+
+    Returns
+    -------
+    (consignee_name, consignor_name) — both Optional[str].
+
+    consignee_name:
+        company_profile.legal_name when the row exists and the field is
+        non-empty; empty string otherwise (caller falls back to the
+        hardcoded constant).
+
+    consignor_name:
+        - Resolved supplier name when shipment_documents.supplier_contractor_id
+          is non-empty for this batch and the corresponding suppliers row exists.
+        - _CONSIGNOR_UNRESOLVED_SENTINEL when the link is absent (supplier not
+          set on intake). This surfaces an explicit flag on the PDF so an
+          operator knows to set the supplier — rather than silently printing the
+          wrong company name on a legal customs document.
+        - Empty string on any read error (caller falls back to batch-parse path).
+
+    Never raises. Any DB / import error produces an empty string for that field
+    so the PDF can still be generated (with the current hardcoded fallback).
+    """
+    consignee_name: Optional[str] = None
+    consignor_name: Optional[str] = None
+
+    # ── Consignee from company_profile ───────────────────────────────────────
+    try:
+        from ..services.master_data_db import get_company_profile as _get_cp
+        cp = _get_cp(settings.storage_root / "master_data.sqlite")
+        consignee_name = (cp.legal_name or "").strip() if cp else ""
+    except Exception as _exc:
+        log.warning("[%s] _resolve_customs_identities: company_profile read "
+                    "failed (non-fatal): %s", batch_id, _exc)
+        consignee_name = ""
+
+    # ── Consignor from supplier master ────────────────────────────────────────
+    try:
+        import sqlite3 as _sqlite3
+        docs_db_path = settings.storage_root / "documents.db"
+        sup_db_path  = settings.storage_root / "suppliers.sqlite"
+
+        supplier_cid: Optional[str] = None
+        if docs_db_path.exists():
+            with _sqlite3.connect(str(docs_db_path)) as _dcon:
+                _dcon.row_factory = _sqlite3.Row
+                _row = _dcon.execute(
+                    "SELECT supplier_contractor_id "
+                    "FROM shipment_documents "
+                    "WHERE batch_id=? AND supplier_contractor_id != '' "
+                    "LIMIT 1",
+                    (batch_id,),
+                ).fetchone()
+                if _row:
+                    supplier_cid = str(_row["supplier_contractor_id"]).strip()
+
+        _sentinel = _get_unresolved_sentinel()
+        if not supplier_cid:
+            # No supplier link on intake — surface as explicit flag, not silent
+            # constant (which would be wrong for third-party supplier batches).
+            consignor_name = _sentinel
+        else:
+            # Look up supplier by primary key (supplier_contractor_id is the
+            # suppliers.id integer).
+            if sup_db_path.exists():
+                with _sqlite3.connect(str(sup_db_path)) as _scon:
+                    _scon.row_factory = _sqlite3.Row
+                    _srow = _scon.execute(
+                        "SELECT name FROM suppliers WHERE id=?",
+                        (supplier_cid,),
+                    ).fetchone()
+                    if _srow:
+                        consignor_name = (_srow["name"] or "").strip()
+                    else:
+                        consignor_name = _sentinel
+            else:
+                consignor_name = _sentinel
+
+    except Exception as _exc:
+        log.warning("[%s] _resolve_customs_identities: supplier lookup "
+                    "failed (non-fatal): %s", batch_id, _exc)
+        consignor_name = ""   # fall back to batch-parse on error
+
+    return consignee_name, consignor_name
+
+
 def _load_audit(batch_id: str) -> Optional[dict]:
     """Load audit.json for a batch_id from storage."""
     for sub in ("outputs", "working"):
@@ -1993,12 +2097,20 @@ async def generate_description(
             },
         )
 
+    _consignee_ov, _consignor_ov = (
+        _resolve_customs_identities(batch_id)
+        if settings.customs_identity_from_masters
+        else (None, None)
+    )
+
     try:
         pkg = generate_customs_description_package(
-            batch         = audit,
-            awb           = resolved_awb,
-            output_dir    = str(_POLISH_DESC_DIR),
-            date_override = date_override,
+            batch          = audit,
+            awb            = resolved_awb,
+            output_dir     = str(_POLISH_DESC_DIR),
+            date_override  = date_override,
+            consignee_name = _consignee_ov,
+            consignor_name = _consignor_ov,
         )
     except Exception as exc:
         log.error("Customs description generation failed: %s", exc, exc_info=True)
@@ -2287,6 +2399,12 @@ async def generate_customs_package(
             },
         )
 
+    _consignee_ov2, _consignor_ov2 = (
+        _resolve_customs_identities(batch_id)
+        if settings.customs_identity_from_masters
+        else (None, None)
+    )
+
     try:
         pkg = generate_customs_description_package(
             batch          = audit,
@@ -2294,6 +2412,8 @@ async def generate_customs_package(
             output_dir     = str(_POLISH_DESC_DIR),
             dhl_email_id   = body.dhl_email_id or "",
             date_override  = body.date_override,
+            consignee_name = _consignee_ov2,
+            consignor_name = _consignor_ov2,
         )
     except Exception as exc:
         log.error("generate_customs_package error: %s", exc, exc_info=True)

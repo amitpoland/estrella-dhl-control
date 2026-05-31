@@ -779,12 +779,19 @@ def _generate_sad_json(
 
 # ── Polish description PDF generator ──────────────────────────────────────────
 
+_CONSIGNOR_UNRESOLVED_SENTINEL = "[DOSTAWCA NIEOKREŚLONY / SUPPLIER UNRESOLVED]"
+_CONSIGNEE_FALLBACK            = "ESTRELLA JEWELS SP. Z O.O. SP.K."
+
+
 def generate_polish_description_pdf(
     batch: dict,
     awb: str,
     output_dir: str,
     dhl_email_id: str = "",
     date_override: Optional[str] = None,
+    *,
+    consignee_name: Optional[str] = None,
+    consignor_name: Optional[str] = None,
 ) -> dict:
     """
     Generate a Polish-language A4 customs description PDF.
@@ -799,13 +806,24 @@ def generate_polish_description_pdf(
     output_dir    : directory to write the file
     dhl_email_id  : optional DHL email ID (shown in header)
     date_override : YYYY-MM-DD (defaults to today UTC)
+    consignee_name: when provided (non-None), overrides the hardcoded consignee
+                    constant.  Empty string → use the hardcoded fallback.
+    consignor_name: when provided (non-None), overrides the batch-parsed exporter
+                    name.  Empty string → current batch-parse logic applies.
+                    Pass _CONSIGNOR_UNRESOLVED_SENTINEL to surface an explicit
+                    "supplier not resolved" notice on the PDF rather than
+                    silently printing the wrong company name.
 
     Returns
     -------
     dict with: generated, output_path, filename, items_described, pdf_hash
     """
     try:
-        return _generate_pdf(batch, awb, output_dir, dhl_email_id, date_override)
+        return _generate_pdf(
+            batch, awb, output_dir, dhl_email_id, date_override,
+            consignee_name=consignee_name,
+            consignor_name=consignor_name,
+        )
     except Exception as exc:
         return {
             "generated":       False,
@@ -884,6 +902,9 @@ def _generate_pdf(
     output_dir: str,
     dhl_email_id: str,
     date_override: Optional[str],
+    *,
+    consignee_name: Optional[str] = None,
+    consignor_name: Optional[str] = None,
 ) -> dict:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
@@ -918,8 +939,30 @@ def _generate_pdf(
 
     # ── Extract data ──────────────────────────────────────────────────────────
     lines    = process_batch_items(batch)
-    exporter = _get_exporter(batch)
     invoices = _extract_invoices(batch)
+
+    # ── Consignor (Nadawca / Shipper) ─────────────────────────────────────────
+    # Priority: caller-supplied override → batch-parsed → hardcoded fallback.
+    # None means "no override provided" (flag_off); caller uses current behavior.
+    # Non-None means "flag_on": use the supplied value (which may be a resolved
+    # supplier name, an empty string meaning "use batch parse", or the
+    # _CONSIGNOR_UNRESOLVED_SENTINEL meaning "supplier not resolved — flag it").
+    if consignor_name is not None:
+        # flag_on path: use exactly what the caller resolved
+        exporter = consignor_name if consignor_name else _get_exporter(batch)
+    else:
+        # flag_off path: current behavior
+        exporter = _get_exporter(batch)
+
+    # ── Consignee (Odbiorca / Consignee) ─────────────────────────────────────
+    # None means "no override" (flag_off) → current constant.
+    # Non-None and non-empty → use the supplied value (from company_profile).
+    # Non-None but empty → fall back to the hardcoded constant (company_profile
+    # row exists but legal_name is blank).
+    if consignee_name is not None and consignee_name.strip():
+        _consignee = consignee_name.strip()
+    else:
+        _consignee = _CONSIGNEE_FALLBACK
 
     if not lines:
         lines = _build_synthetic_lines_from_totals(batch)
@@ -1046,7 +1089,7 @@ def _generate_pdf(
         [Paragraph("Nadawca / Shipper:",       HDR_LBL),
          Paragraph(exporter or "Estrella Jewels LLP.", HDR_VAL),
          Paragraph("Odbiorca / Consignee:",    HDR_LBL),
-         Paragraph("ESTRELLA JEWELS SP. Z O.O. SP.K.", HDR_VAL)],
+         Paragraph(_consignee, HDR_VAL)],
         [Paragraph("Faktury / Invoices:",      HDR_LBL),
          Paragraph(f"{inv_count} szt. ({inv_refs_str})", HDR_VAL),
          Paragraph("Wartość CIF / CIF Value:", HDR_LBL),
@@ -1395,6 +1438,9 @@ def generate_customs_description_package(
     output_dir: str,
     dhl_email_id: str = "",
     date_override: Optional[str] = None,
+    *,
+    consignee_name: Optional[str] = None,
+    consignor_name: Optional[str] = None,
 ) -> dict:
     """
     Generate both the Polish description PDF and the SAD-ready JSON in one call.
@@ -1407,6 +1453,10 @@ def generate_customs_description_package(
     output_dir    : directory to write both files
     dhl_email_id  : optional DHL email ID for audit
     date_override : YYYY-MM-DD (defaults to today UTC)
+    consignee_name: forwarded to generate_polish_description_pdf(); see its
+                    docstring. None = flag_off (current hardcoded constant).
+    consignor_name: forwarded to generate_polish_description_pdf(); see its
+                    docstring. None = flag_off (current batch-parse behavior).
 
     Returns
     -------
@@ -1417,6 +1467,8 @@ def generate_customs_description_package(
     """
     pdf_result  = generate_polish_description_pdf(
         batch, awb, output_dir, dhl_email_id=dhl_email_id, date_override=date_override,
+        consignee_name=consignee_name,
+        consignor_name=consignor_name,
     )
     json_result = generate_sad_ready_json(
         batch, awb, output_dir, dhl_email_id=dhl_email_id,
