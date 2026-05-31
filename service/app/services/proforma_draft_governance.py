@@ -21,6 +21,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
+from ..core.config import settings as _settings
+
 
 # ── Regex constants ───────────────────────────────────────────────────────────
 
@@ -42,8 +44,7 @@ _OVERRIDE_ALLOWED_KEYS = frozenset({
 
 def _enabled() -> bool:
     """Return True iff governance is currently active."""
-    from ..core.config import settings  # lazy — avoids circular import
-    return bool(settings.proforma_draft_governance_enabled)
+    return bool(_settings.proforma_draft_governance_enabled)
 
 
 # ── Public validators ─────────────────────────────────────────────────────────
@@ -81,16 +82,18 @@ def check_creation_lines(lines: List[Dict[str, Any]]) -> None:
                 f"line {idx}: hs_code {hs!r} must be 6–10 digits "
                 f"(e.g. '711319' or '71131900')"
             )
+        raw_qty = ln.get("qty", ln.get("quantity", 0))
         try:
-            qty_v = float(ln.get("qty", ln.get("quantity", 0)) or 0)
+            qty_v = float(raw_qty or 0)
         except (TypeError, ValueError):
-            qty_v = -1.0
+            raise ValueError(f"line {idx}: qty must be a number, got {raw_qty!r}")
         if qty_v < 0:
             raise ValueError(f"line {idx}: qty must be ≥ 0")
+        raw_up = ln.get("unit_price", 0)
         try:
-            up_v = float(ln.get("unit_price", 0) or 0)
+            up_v = float(raw_up or 0)
         except (TypeError, ValueError):
-            up_v = -1.0
+            raise ValueError(f"line {idx}: unit_price must be a number, got {raw_up!r}")
         if up_v < 0:
             raise ValueError(f"line {idx}: unit_price must be ≥ 0")
 
