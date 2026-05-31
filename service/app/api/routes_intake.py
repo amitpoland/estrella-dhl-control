@@ -38,6 +38,7 @@ from fastapi.responses import JSONResponse
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..services.proforma_draft_governance import check_creation_lines
 from ..core import timeline as tl
 from ..services import document_db as ddb
 from ..services import packing_db as pdb
@@ -140,6 +141,8 @@ def _auto_create_draft_for_client(
                 "price_source": r.get("price_source") or "",
                 "client_ref":   r.get("client_ref") or client_ref or "",
             })
+        # Governance check — no-op when proforma_draft_governance_enabled=False
+        check_creation_lines(editable_input)
         draft, was_created = pildb.auto_create_draft_from_sales_packing(
             _proforma_db_path(),
             batch_id    = batch_id,

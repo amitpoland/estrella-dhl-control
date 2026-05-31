@@ -448,5 +448,22 @@ class Settings(BaseSettings):
     master_hard_delete_enabled:  bool = Field(default=False)
     master_audit_retention_days: int  = Field(default=2557)   # 7y + 2 leap days
 
+    # ── Proforma draft governance flags ──────────────────────────────────────
+    # Default OFF (False) to be non-breaking: existing stored drafts may not
+    # satisfy the new constraints and MUST continue to read correctly.
+    # The flag gates WRITE-path validation only — read, list, and GET are
+    # never touched regardless of this flag.
+    #
+    # Rules enforced when True:
+    #   creation  : each line's design_no must be ≤128 chars; hs_code format
+    #               if provided (6–10 digits); product_code non-empty
+    #   patch     : buyer_override/ship_to_override keys validated against
+    #               allowed schema; currency must be 3-letter ISO code
+    #   post-time : every line must carry a non-empty hs_code before wFirma
+    #               post (HS is required on EU/customs commercial documents)
+    #   convert   : series_id fallback must resolve to a non-"0" value before
+    #               the conversion plan is built (complements B1 recovery)
+    proforma_draft_governance_enabled: bool = Field(default=False)
+
 
 settings = Settings()
