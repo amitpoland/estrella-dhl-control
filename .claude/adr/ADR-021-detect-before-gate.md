@@ -1,81 +1,30 @@
-# ADR-021: wFirma recovery detection should run before the convert flag gate
+# ADR-021: Detect convert dead-ends before the write-enable gate
 
-Status: Proposed
-Date:   2026-05-30
-Context: PR #409 — wFirma recovery B1 (wfirma_series_missing)
-
----
+**Status:** Proposed
+**Date:** 2026-05-31
+**Deciders:** Amit
 
 ## Context
+In `proforma_to_invoice()`, `_check_invoice_approval_gates()` (which checks `WFIRMA_CREATE_INVOICE_ALLOWED`) runs before the series-resolution fallback chain. With the convert flag off, the function returns early, so the series check — and every other dead-end (B1–B9) — is never reached. Consequences today: (1) recovery proposals can only be created when the convert flag is on, so the recovery layer's first real exercise will be a production event; (2) the flow can't be triggered or tested with the flag off — a flag-off retry short-circuits at the gate, so a changed error proves nothing about series; (3) detection (spotting bad/missing data) is coupled to authorization (permission to write to wFirma), though they are independent concerns.
 
-`proforma_to_invoice()` currently checks guards in this order:
+## Decision
+Move dead-end detection — series resolution and the other validation checks — ahead of the write-enable gate. Build the conversion plan and run all dead-end checks, create recovery proposals on any dead-end, then check `WFIRMA_CREATE_INVOICE_ALLOWED` at the actual wFirma write boundary. The flag guards only the write, not the validation that precedes it.
 
-1. `_check_invoice_approval_gates()` — includes the `wfirma_create_invoice_allowed` flag check  
-2. Series fallback chain — reads proforma XML, resolves series from customer master
+## Options Considered
+### Option A: Keep gate-first (status quo)
+**Pros:** no change, no risk. **Cons:** recovery untestable with flag off; first real exercise is in prod; detection coupled to authorization.
+### Option B: Detection-before-gate (proposed)
+**Pros:** dead-ends detected and proposals created independent of the flag; recovery testable and pre-loadable before go-live; detection decoupled from authorization; the convert-on event isn't also the first-ever recovery exercise. **Cons:** does plan-building/validation work even when convert is disabled (minor compute); requires careful placement so no wFirma write can occur before the gate.
 
-The B1 dead-end (series missing) lives **inside** the series fallback chain, which is only reached when `wfirma_create_invoice_allowed = True`.
+## Trade-off Analysis
+B does a little throwaway work when convert is off in exchange for a testable, pre-loadable recovery layer and a safer go-live. The invariant: the gate must remain immediately before every wFirma write path, so detection-before-gate must never allow a write to slip through.
 
-This means the wFirma recovery proposal is only ever created when the convert flag is on. Consequences:
+## Consequences
+- Easier: testing the recovery loop with the flag off; pre-loading proposals before go-live; reasoning about detection vs authorization separately.
+- Harder: must prove no wFirma write occurs in the pre-gate path (needs a test).
+- Revisit: at convert go-live, confirm the gate still fences every write path.
 
-- The recovery infrastructure (proposal creation, inbox card, `/resolve` endpoint) cannot be exercised in production until the convert flag is enabled, which is itself a separate go-live event.
-- The first live exercise of the B1 recovery loop (dead-end → proposal → operator resolves → retry) is inherently a production event: the moment the convert flag flips for real clients.
-- End-to-end testing of the series-check branch requires the convert flag on; mocked unit tests prove the resolve handler calls `proforma_to_invoice` with the injected series, but they do not prove the series dead-end was actually reached in the real code path.
-
-## Decision under consideration
-
-Move the series resolution (detection) step **before** the flag gate:
-
-```
-proposed order:
-  1. Validate basic inputs (batch_id, client_name, confirm token, X-Operator)
-  2. Look up local proforma_drafts → wfirma_proforma_id
-  3. Fetch + parse proforma XML (read-only wFirma call)
-  4. Attempt series resolution (proforma XML → customer master fallback)
-     → if series still missing: create wfirma_series_missing proposal (additive)
-  5. wfirma_create_invoice_allowed flag check (WRITE gate — only reached if series resolved)
-  6. UNIQUE(proforma_id) duplicate-conversion guard
-  7. Build final-invoice plan, POST invoices/add
-```
-
-Under this ordering:
-- A missing series is **detected** even when the convert flag is off.
-- Proposals are created and pre-loaded in the inbox before go-live.
-- Operators can resolve series assignments (a data-prep action) independently of the write gate.
-- The write gate (step 5) still enforces that no wFirma invoice is created until the flag is on.
-
-## Implications
-
-### What changes
-- `_check_invoice_approval_gates()` call moves to after the series resolution.
-- Series resolution (proforma XML fetch + customer master lookup) becomes the first substantive step, before the flag check.
-- This adds one wFirma read call (`fetch_invoice_xml`) even when the flag is off — acceptable because the existing preview endpoint already makes this call.
-
-### What stays the same
-- `wfirma_create_invoice_allowed = False` still prevents any invoice creation.
-- All write-side guards (confirm token, UNIQUE, operator, flag) are unchanged.
-- The series-missing proposal is still additive (bare error returns unchanged).
-- `wfirma_recovery_enabled_types` still gates proposal creation.
-
-### Risk surface
-- The extra wFirma read call with flag off is low-risk (read-only).
-- Moving `_check_invoice_approval_gates()` past the XML fetch means the flag check runs after one more network call than today — negligible performance impact.
-- The token and operator checks within `_check_invoice_approval_gates()` can stay early (they are pure-local validation); only the `wfirma_create_invoice_allowed` bit needs to move.
-
-## Status: Proposed
-
-This ADR records the architectural option. It is **NOT implemented in PR #409**.
-
-Implementation requires:
-1. Extracting the pure-local checks (token, operator) from `_check_invoice_approval_gates()` into a new `_check_input_gates()` helper that runs early.
-2. Moving only the `wfirma_create_invoice_allowed` check to step 5.
-3. Adding a regression test that proves series-missing proposals are created with the flag OFF.
-4. Updating the verify claim in PROJECT_STATE: "series cleared proven by unit test" becomes "series cleared proven end-to-end (flag off, no wFirma write, proposal created in inbox before go-live)."
-
-Decision criteria: implement before the convert flag is enabled in production, or accept that the first live exercise of B1 recovery is a production event.
-
-## References
-
-- PR #409: wFirma recovery B1 vertical slice
-- PROJECT_STATE.md PR #409 fact block: flag-gate ordering, corrected verify claim
-- `service/app/api/routes_proforma.py` `proforma_to_invoice()` lines ~2885–3060
-- `service/app/services/wfirma_recovery.py` `resolve_wfirma_series_missing()`
+## Action Items
+1. [ ] Relocate series resolution + dead-end checks ahead of `_check_invoice_approval_gates()`.
+2. [ ] Keep the flag gate immediately before the wFirma write; add a test asserting no write occurs pre-gate with the flag off.
+3. [ ] Re-verify B1 (and future B2–B9) proposals are created with the flag off after the reorder.
