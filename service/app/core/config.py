@@ -448,5 +448,12 @@ class Settings(BaseSettings):
     master_hard_delete_enabled:  bool = Field(default=False)
     master_audit_retention_days: int  = Field(default=2557)   # 7y + 2 leap days
 
+    # ── Proforma send flag ────────────────────────────────────────────────────
+    # Default OFF. Both the queue AND the SMTP send are blocked when False.
+    # Also requires environment="prod" (enforced by _assert_production_env_for_smtp
+    # in email_sender.py — Lesson E Property 5).
+    # Set PROFORMA_SEND_ENABLED=true in prod .env ONLY after controlled rollout.
+    proforma_send_enabled: bool = Field(default=False)
+
 
 settings = Settings()

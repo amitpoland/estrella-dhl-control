@@ -4150,6 +4150,223 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
     return HTMLResponse(content=html)
 
 
+# ── Build D: proforma draft send ─────────────────────────────────────────────
+#
+# HARD GUARDS (both must pass before any email operation):
+#   1. settings.proforma_send_enabled   (default False)
+#   2. ENVIRONMENT == "prod" enforced by email_sender._assert_production_env_for_smtp
+#
+# In non-prod BOTH guards block: the flag check fires first; if somehow the flag
+# is on but environment != "prod", _assert_production_env_for_smtp raises before
+# any SMTP connection. Queue entries are also skipped when environment != "prod"
+# (queue_email call is inside the flag-on branch).
+#
+# Recipient: from customer_master.bill_to_email ONLY — never from the request body.
+# Idempotency: (draft_id, "proforma_send") checked at queue time.
+# Draft state: draft must be in "posted" state with a wfirma_proforma_id.
+# Audit: timeline event written on every attempt (success and failure).
+
+@router.post("/draft/{draft_id}/send", dependencies=[_auth])
+def send_proforma_draft(
+    draft_id:   int,
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Send a posted proforma draft to the customer by email.
+
+    **Both guards must pass** before any email operation:
+    - ``settings.proforma_send_enabled`` must be True (default False → 503).
+    - ``settings.environment`` must be ``"prod"`` (enforced by
+      ``email_sender._assert_production_env_for_smtp``).
+
+    In non-prod the endpoint always returns 503 regardless of credentials.
+
+    Preconditions (all enforced server-side):
+    - Draft must be in ``posted`` state with a non-empty ``wfirma_proforma_id``.
+    - Customer master must have a non-empty ``bill_to_email``.
+    - No existing pending send for this draft (idempotency guard).
+
+    Recipient comes from ``customer_master.bill_to_email`` only — never
+    from the request body.
+    """
+    from ..core import timeline as _tl
+
+    operator = _require_operator(x_operator)
+
+    # ── Guard 1: feature flag ─────────────────────────────────────────────────
+    if not settings.proforma_send_enabled:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok":     False,
+                "status": "disabled",
+                "error":  (
+                    "Proforma send is disabled "
+                    "(PROFORMA_SEND_ENABLED=false). "
+                    "Enable in prod .env after controlled rollout."
+                ),
+            },
+        )
+
+    # ── Guard 2: non-prod transmit block is enforced inside email_sender ──────
+    # _assert_production_env_for_smtp() raises RuntimeError if SMTP credentials
+    # are present but environment != "prod". We do NOT skip the check — we call
+    # send_queued_email which calls it before any SMTP connect. This function
+    # body therefore ONLY runs when environment == "prod" OR SMTP is unconfigured
+    # (in which case send returns smtp_not_configured safely).
+
+    db = _proforma_db_path()
+
+    # ── Draft state gate ──────────────────────────────────────────────────────
+    draft = pildb.get_draft_by_id(db, int(draft_id))
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    wfirma_id = (draft.wfirma_proforma_id or "").strip()
+    if not wfirma_id:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok":     False,
+                "status": "not_posted",
+                "error":  (
+                    f"draft {draft_id} has no wfirma_proforma_id — "
+                    "post to wFirma first before sending"
+                ),
+            },
+        )
+
+    # ── Recipient from customer master ────────────────────────────────────────
+    from ..services.customer_master_db import get_customer as _get_customer
+    cm_db = settings.storage_root / "customer_master.sqlite"
+    customer = _get_customer(cm_db, (draft.client_name or "").strip()) if cm_db.exists() else None
+    recipient = ((customer.bill_to_email if customer else None) or "").strip()
+    if not recipient:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok":     False,
+                "status": "no_recipient",
+                "error":  (
+                    f"no bill_to_email for client {draft.client_name!r} — "
+                    "set it in Customer Master before sending"
+                ),
+            },
+        )
+
+    # ── Fetch PDF from wFirma ────────────────────────────────────────────────
+    try:
+        pdf_bytes = wfirma_client.fetch_invoice_pdf(wfirma_id)
+    except Exception as exc:
+        log.warning("[draft %s] PDF fetch failed for send: %s", draft_id, exc)
+        return JSONResponse(
+            status_code=502,
+            content={
+                "ok":     False,
+                "status": "pdf_fetch_failed",
+                "error":  f"wFirma PDF fetch failed: {type(exc).__name__}: {exc}",
+            },
+        )
+
+    # ── Persist PDF to disk (required for attachment path) ───────────────────
+    import hashlib as _hashlib
+    pdf_hash = _hashlib.sha256(pdf_bytes).hexdigest()[:16]
+    pdf_dir  = settings.storage_root / "proforma_pdfs"
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    filename = (
+        f"{draft.wfirma_proforma_fullnumber or wfirma_id}.pdf"
+        .replace("/", "_").replace(" ", "_")
+    )
+    pdf_path = pdf_dir / filename
+    pdf_path.write_bytes(pdf_bytes)
+
+    # ── Idempotency: one send per (draft_id, proforma_send) ──────────────────
+    from ..services.email_service import queue_email as _queue_email
+    idempotency_key = f"draft-{draft_id}-proforma-send"
+
+    # ── Queue the email ───────────────────────────────────────────────────────
+    try:
+        queue_id = _queue_email(
+            batch_id       = draft.batch_id or f"draft-{draft_id}",
+            email_type     = "proforma_send",
+            to             = recipient,
+            subject        = (
+                f"Proforma {draft.wfirma_proforma_fullnumber or wfirma_id} — "
+                "Estrella Jewels"
+            ),
+            body           = (
+                f"Dear customer,\n\n"
+                f"Please find attached your proforma invoice "
+                f"{draft.wfirma_proforma_fullnumber or wfirma_id}.\n\n"
+                f"Kind regards,\nEstrella Jewels"
+            ),
+            attachments    = [str(pdf_path)],
+            operator       = operator,
+            idempotency_key= idempotency_key,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok":    False,
+                "status": "queue_failed",
+                "error": f"queue_email failed: {type(exc).__name__}: {exc}",
+            },
+        )
+
+    # ── Send immediately ──────────────────────────────────────────────────────
+    from ..services.email_sender import send_queued_email as _send_queued_email
+    try:
+        send_result = _send_queued_email(queue_id)
+    except RuntimeError as exc:
+        # _assert_production_env_for_smtp raised — environment is not prod.
+        # This is the Lesson E non-prod hard block.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok":    False,
+                "status": "env_not_prod",
+                "error": str(exc),
+            },
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok":    False,
+                "status": "send_failed",
+                "error": f"send_queued_email failed: {type(exc).__name__}: {exc}",
+            },
+        )
+
+    # ── Audit ─────────────────────────────────────────────────────────────────
+    _audit_path = settings.storage_root / "outputs" / (draft.batch_id or "") / "audit.json"
+    if _audit_path.exists():
+        import json as _j
+        _audit = _j.loads(_audit_path.read_text(encoding="utf-8"))
+        _tl.append_event(
+            _audit, "proforma_send",
+            actor=operator,
+            notes=(
+                f"proforma sent to {recipient}; "
+                f"draft_id={draft_id}; "
+                f"wfirma_id={wfirma_id}; "
+                f"queue_id={queue_id}; "
+                f"send_status={send_result.get('ok', False)}"
+            ),
+        )
+        from ..utils.io import write_json_atomic as _wja
+        _wja(_audit_path, _audit)
+
+    return JSONResponse({
+        "ok":        True,
+        "status":    "sent",
+        "draft_id":  int(draft_id),
+        "queue_id":  queue_id,
+        "recipient": recipient,
+        "send_result": send_result,
+    })
+
+
 @router.get("/draft/{draft_id}/events", dependencies=[_auth])
 def get_proforma_draft_events(draft_id: int) -> JSONResponse:
     """Return the chronological event log for a draft.
