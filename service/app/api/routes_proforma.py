@@ -2984,6 +2984,60 @@ def proforma_to_invoice(
             _cm_inv2 = get_customer_master(_customer_master_db_path(), snap.contractor_id)
             series_id = (pick_invoice_series_id(_cm_inv2) or "") if _cm_inv2 else ""
         if not series_id or series_id == "0":
+            # B1 dead-end: series exhausted. Side-effect: create a recovery
+            # proposal if "wfirma_series_missing" is in the enabled set.
+            # The bare error STILL returns unchanged; the proposal is additive.
+            try:
+                from ..services.wfirma_recovery import (
+                    create_wfirma_proposal, recovery_enabled_types,
+                )
+                from ..services.wfirma_dictionary_cache import get_dictionaries
+                from ..services.audit_persist import load_or_create_audit
+                _b1_type = "wfirma_series_missing"
+                if _b1_type in recovery_enabled_types():
+                    _dicts = get_dictionaries()
+                    _audit_path = (
+                        settings.storage_root / "outputs" / batch_id / "audit.json"
+                    )
+                    _audit_path.parent.mkdir(parents=True, exist_ok=True)
+                    if _audit_path.exists():
+                        import json as _js
+                        _audit = _js.loads(_audit_path.read_text(encoding="utf-8"))
+                    else:
+                        _audit = {"batch_id": batch_id, "action_proposals": []}
+                    create_wfirma_proposal(
+                        audit=_audit,
+                        batch_id=batch_id,
+                        proposal_type=_b1_type,
+                        context={
+                            "batch_id":               batch_id,
+                            "client_name":            cn,
+                            "draft_id":               None,   # filled by draft-keyed alias
+                            "proforma_id":            pid,
+                            "proforma_number":        snap.proforma_number,
+                            "customer_contractor_id": snap.contractor_id,
+                            "customer_name":          cn,
+                            "current_preferred_series": None,
+                            "available_series":       _dicts.get("invoice_series", []),
+                        },
+                        resolution_data={
+                            "selected_series_id":      None,
+                            "save_to_customer_master": False,
+                            "idempotency_key":         f"prof-{pid[:12]}-conv",
+                        },
+                        reason=(
+                            f"Invoice conversion blocked for proforma "
+                            f"{snap.proforma_number!r}: series ID exhausted"
+                        ),
+                    )
+                    from ..utils.io import write_json_atomic
+                    write_json_atomic(
+                        settings.storage_root / "outputs" / batch_id / "audit.json",
+                        _audit,
+                    )
+            except Exception as _b1_exc:
+                log.warning("[%s] B1 proposal creation failed (non-fatal): %s",
+                            batch_id, _b1_exc)
             return JSONResponse({
                 "ok":               False,
                 "status":           "blocked",

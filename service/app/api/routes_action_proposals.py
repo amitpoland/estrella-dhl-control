@@ -1,4 +1,4 @@
-"""
+﻿"""
 routes_action_proposals.py — Admin-approval pipeline for cowork action proposals.
 
 Every outbound email in the clearance workflow goes through this pipeline:
@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from ..core.config import settings
@@ -1253,3 +1253,148 @@ def _resolve_proposal(
                 return batch_dir.name, audit, prop
 
     raise HTTPException(status_code=404, detail=f"Proposal {proposal_id!r} not found.")
+
+
+# ── wFirma action-proposal session helper ─────────────────────────────────────
+# Mirror of routes_proforma._get_current_user_optional — operator is derived
+# SERVER-SIDE from the session cookie, never from a client-supplied header.
+
+def _get_resolve_operator(pz_session: Optional[str] = Cookie(default=None)) -> Optional[dict]:
+    """Inject the session user for operator derivation in /resolve. None when API-key auth."""
+    if not pz_session:
+        return None
+    try:
+        from ..auth.service import decode_token, get_user_by_id
+        payload = decode_token(pz_session)
+        if not payload:
+            return None
+        return get_user_by_id(payload.get("sub"))
+    except Exception:
+        return None
+
+
+# ── POST /{proposal_id}/resolve ───────────────────────────────────────────────
+
+class ResolveBody(BaseModel):
+    """Generic resolve body — type-specific fields live under resolution_data."""
+    resolution_data: Dict[str, Any] = {}
+
+
+@router.post("/{proposal_id}/resolve")
+def resolve_proposal(
+    proposal_id:  str,
+    body:         ResolveBody,
+    session_user: Optional[dict] = Depends(_get_resolve_operator),
+) -> Dict[str, Any]:
+    """
+    Execute a wfirma_action recovery proposal.
+
+    Guards:
+      - proposal must have channel="wfirma_action"
+      - proposal must be in status=pending_review
+      - type-specific handler validates resolution_data (e.g., selected_series_id
+        must be non-null and present in the proposal's available_series list)
+
+    Operator identity is derived SERVER-SIDE from the session cookie — a client
+    X-Operator header is never trusted. Falls back to "session-user" when
+    authenticated via API key (no session cookie).
+
+    On success: sets status=resolved, writes EV_WFIRMA_<TYPE>_RESOLVED.
+    On type-handler error: re-raises (400/500) without mutating the proposal.
+    """
+    from ..services.wfirma_recovery import (
+        WFIRMA_CHANNEL, STATUS_RESOLVED, STATUS_RESOLVING,
+        dispatch_resolve,
+    )
+
+    batch_id, audit, proposal = _resolve_proposal(proposal_id)
+
+    # ── Channel guard ─────────────────────────────────────────────────────────
+    if proposal.get("channel") != WFIRMA_CHANNEL:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"proposal {proposal_id!r} has channel={proposal.get('channel')!r}; "
+                f"/resolve only handles channel='{WFIRMA_CHANNEL}'"
+            ),
+        )
+
+    # ── Status guard ──────────────────────────────────────────────────────────
+    if proposal.get("status") != "pending_review":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"proposal {proposal_id!r} is in status={proposal.get('status')!r}; "
+                f"only pending_review proposals can be resolved"
+            ),
+        )
+
+    # ── Operator from session ─────────────────────────────────────────────────
+    operator = (
+        ((session_user or {}).get("full_name") or "").strip()
+        or ((session_user or {}).get("email") or "").strip()
+        or "session-user"
+    )
+
+    with proposal_write_lock(batch_id):
+        # Re-load inside lock for freshness
+        audit = _load_audit(batch_id)
+        proposal = _get_proposal(audit, proposal_id)
+
+        # Mark in-progress so concurrent calls see a terminal-ish status
+        proposal["status"] = STATUS_RESOLVING
+        _save_audit(batch_id, audit)
+
+    # ── Dispatch to type handler ──────────────────────────────────────────────
+    # Runs OUTSIDE the lock because it may make network calls (wFirma).
+    # The STATUS_RESOLVING sentinel prevents double-execution.
+    try:
+        result = dispatch_resolve(proposal, body.resolution_data, operator)
+    except HTTPException:
+        # Restore to pending_review so operator can correct and retry
+        with proposal_write_lock(batch_id):
+            audit = _load_audit(batch_id)
+            p = _get_proposal(audit, proposal_id)
+            p["status"] = "pending_review"
+            _save_audit(batch_id, audit)
+        raise
+    except Exception as exc:
+        with proposal_write_lock(batch_id):
+            audit = _load_audit(batch_id)
+            p = _get_proposal(audit, proposal_id)
+            p["status"] = "pending_review"
+            _save_audit(batch_id, audit)
+        raise HTTPException(
+            status_code=500,
+            detail=f"resolve handler failed: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    # ── Mark resolved + audit ─────────────────────────────────────────────────
+    with proposal_write_lock(batch_id):
+        audit = _load_audit(batch_id)
+        p = _get_proposal(audit, proposal_id)
+        p["status"]           = STATUS_RESOLVED
+        p["resolved_at"]      = _now()
+        p["resolved_by"]      = operator
+        p["resolution_result"] = result
+
+        # Audit timeline event (tl.log_event writes directly to disk)
+        ev_type = f"EV_WFIRMA_{proposal.get('type','').upper()}_RESOLVED"
+        tl.log_event(
+            _audit_path(batch_id), ev_type,
+            trigger_source = "wfirma_recovery_resolve",
+            actor          = operator,
+            detail         = {
+                "proposal_id": proposal_id,
+                "type":        proposal.get("type"),
+                "operator":    operator,
+            },
+        )
+        _save_audit(batch_id, audit)
+
+    return {
+        "status":       STATUS_RESOLVED,
+        "proposal_id":  proposal_id,
+        "operator":     operator,
+        "result":       result,
+    }

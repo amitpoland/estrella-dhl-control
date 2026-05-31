@@ -290,6 +290,12 @@ class Settings(BaseSettings):
     # operator flips to true only for the conversion run, then back.
     wfirma_create_invoice_allowed:  bool = Field(default=False)
     wfirma_supplier_contractor_id:  str  = Field(default="")
+    # wFirma recovery proposal creation gate — comma-separated set of
+    # wfirma_action proposal types that are permitted to create a recovery
+    # proposal when their dead-end fires. Default EMPTY (no proposals created).
+    # Prod stays empty; enable per-type during controlled roll-out only.
+    # Example: WFIRMA_RECOVERY_ENABLED_TYPES=wfirma_series_missing
+    wfirma_recovery_enabled_types:  str  = Field(default="")
 
     # ── Carrier subsystem (DHL Express outbound shipping) ────────────────────
     # Status gate — controls carrier API adapter selection.
