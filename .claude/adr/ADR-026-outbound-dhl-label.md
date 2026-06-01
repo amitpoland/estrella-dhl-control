@@ -72,7 +72,9 @@ the guaranteed fallback when Path-LIVE is unavailable or fails.
 
 ```
 operator clicks "Generate DHL label" (WF4.5)
-  [weight + dimensions are mandatory UI inputs — required before submission]
+  [operator selects box_type_id from box_types master — mandatory before submission]
+  [total_weight_kg = sum(packing_lines.gross_weight) + box.tare_weight_kg]
+  [receiver address = ship_to_* if ship_to_street set; otherwise bill_to_* + advisory]
   if carrier_api_status=sandbox AND creds:
     → Path-LIVE against DHL test endpoint (allowlist NOT enforced, non-billable)
   elif carrier_api_status=live AND creds AND batch in allowlist:
@@ -127,8 +129,8 @@ The Phase-C scaffold is the right architecture. Phase D completes it.
 | `DHL_EXPRESS_API_KEY`, `DHL_EXPRESS_API_SECRET`, `DHL_EXPRESS_ACCOUNT_NUMBER` | Path-LIVE | Not set in production. Operator configures via `.env`. |
 | `carrier_api_status` progression | Path-LIVE | Currently `"pending"`. Operator advances to `"shadow"` → `"sandbox"` → `"live"`. `sandbox` validates end-to-end against DHL test endpoint before production enablement. |
 | `client_carrier_accounts.account_number` per-client DHL account | Path-LIVE | GAP-8 — table populated (5 rows), not consumed by carrier subsystem. Phase D wires it. |
-| Recipient address completeness | BOTH | Advisory → Inbox when `ship_to_*` / `bill_to_*` are blank. |
-| Weight (kg) + Dimensions (L×W×H cm) | **Path-LIVE and Path-DOC** | **MISSING** — no data source in any table. Must be captured at label-generation time as **mandatory UI inputs** (no batch-level source to pre-fill). Required for both paths. |
+| Receiver label address | BOTH | Primary: `customer_master.ship_to_street/city/zip/country/name`. Fallback: `bill_to_*` when `ship_to_street` is absent, with advisory proposal `ship_to_missing` written to Inbox. Currently 12/61 customers have `ship_to_street`. |
+| `box_type_id` → dimensions + tare | **BOTH** | **REQUIRED** — operator selects box type from `box_types` master (`master_data.sqlite`). `box_types` table: `id, code, name, length_cm, width_cm, height_cm, tare_weight_kg`. Missing/unknown → 422 `{field:"box_type"}`. Total weight = `sum(packing_lines.gross_weight) + box.tare_weight_kg`. |
 | Incoterm | BOTH (CN23) | GAP-7 — `proforma_draft.incoterm` often NULL. Required on CN23. |
 | PLT eligibility | Path-LIVE international | Gated by `carrier_plt_status` (currently `"pending"`); existing `plt/eligibility.py` checks invoice, customs doc, country. |
 

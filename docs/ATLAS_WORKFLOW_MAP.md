@@ -256,7 +256,7 @@ if carrier_api_status == "live"
      → Path-DOC (generate document package; operator takes to DHL counter)
 ```
 
-Mandatory inputs at label-generation time (both Path-LIVE and Path-DOC): **weight (kg)** and **dimensions (L×W×H cm)** — no batch-level source exists; the UI must require these fields before submission.
+Mandatory input at label-generation time (both Path-LIVE and Path-DOC): **box_type_id** — the operator selects a box type from the `box_types` master table (`master_data.sqlite`). The box type carries `length_cm`, `width_cm`, `height_cm`, and `tare_weight_kg`. Total package weight = sum of `packing_lines.gross_weight` (all lines for the batch) + `box.tare_weight_kg`.
 
 **Gate = existing `carrier_api_status` progression** (`pending → shadow → sandbox → live`).
 The `sandbox` value is new: routes through the live adapter against DHL's non-billable test endpoint (`https://express.api.dhl.com/mydhlapi/test`); allowlist NOT enforced; requires sandbox credentials (≠ production credentials — separate DHL provisioning step). Auth = HTTP Basic `Authorization: Basic base64(API_KEY:API_SECRET)` — `API_KEY` is the username, `API_SECRET` is the password — for both `sandbox` and `live`. `shadow` mode is the offline fallback (no HTTP, no credentials required).
@@ -270,7 +270,8 @@ The `sandbox` value is new: routes through the live adapter against DHL's non-bi
 | `company_profile.eori` for shipper EORI | **BOTH** (Path-LIVE customs data + Path-DOC CN23) | ⚠ **REQUIRED for international shipments** — EORI is mandatory on the customs declaration (CN23 / PLT data). `company_profile.eori` (TEXT, nullable) is the sole source of truth for Estrella's EORI; must be populated. |
 | `client_carrier_accounts.account_number` for per-client DHL billing | Path-LIVE | **GAP-8** — table populated (5 rows in production), not consumed by carrier subsystem (`ShipmentRequest.shipper_account` is a free-text field today) |
 | Recipient address completeness | **BOTH** | Advisory → Inbox — `customer_master.ship_to_*` / `bill_to_*` fields exist but are often empty. Advisory validation should emit an `INBOX` proposal if ship-to fields are blank before label generation proceeds. |
-| Weight + Dimensions (kg, L×W×H cm) | **Path-LIVE and Path-DOC** | **MISSING** — no data source in any table. `ShipmentRequest.dimensions` + `weight_kg` are free-form fields. Must be captured at label-generation time via mandatory UI input (no batch-level source to pre-fill). Required for both paths. |
+| `box_type_id` → dimensions + tare | **BOTH** | **REQUIRED** — operator selects a box type at label time. `box_types` master table (`master_data.sqlite`) holds `length_cm`, `width_cm`, `height_cm`, `tare_weight_kg`. Missing or unknown `box_type_id` → 422 gap `{field:"box_type"}`. Goods weight from `packing_lines.gross_weight`; total = goods + tare. |
+| Receiver label address | **BOTH** | `customer_master.ship_to_*` (primary); fallback to `bill_to_*` when `ship_to_street` is absent + advisory proposal `ship_to_missing` written to audit Inbox. Currently 12/61 customers have `ship_to_street`. |
 | Incoterm | **BOTH** (CN23 / commercial invoice) | **GAP-7** — `proforma_draft.incoterm` is nullable, often NULL. Required on CN23 for customs. Must be resolved before dispatch. |
 | DHL Express credentials in .env | Path-LIVE only | **MISSING** in production — `DHL_EXPRESS_API_KEY`, `DHL_EXPRESS_API_SECRET`, `DHL_EXPRESS_ACCOUNT_NUMBER` all unset. |
 | `carrier_api_status` advanced to `"sandbox"` then `"live"` | Path-LIVE only | **operator step** — currently `"pending"` in production; must progress `pending → shadow → sandbox → live`. `sandbox` validates end-to-end against DHL test endpoint before production enablement. |
@@ -493,7 +494,7 @@ unchanged as defence-in-depth; it is no longer the primary correctness control.
 | Reservation tab | Approve readiness | WF3.2 | — |
 | Inventory | Receive (confirm received) | WF4.3 | — |
 | Inventory | Move Stock | WF4.4/4.5 | — |
-| Inventory / Dispatch | Generate DHL label | WF4.5 (see §1C) | carrier_api_status + creds + allowlist (Path-LIVE) or always (Path-DOC) |
+| Inventory / Dispatch | Generate DHL label | WF4.5 (see §1C) | body: {box_type_id, incoterm?, receiver_eori?, client_name?}; carrier_api_status + creds + allowlist (Path-LIVE) or always (Path-DOC) |
 | Inventory / Dispatch | Mark as Dispatched (CLIENT_DISPATCHED) | WF4.5 (see §1C) | — |
 | Inbox | Approve / Hold / Override / Execute | cross-cutting | per-proposal |
 | Utility (no WF) | Download PZ/Audit EN/PL/Memo/Calc XLSX/Correction | — | — |

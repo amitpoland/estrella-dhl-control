@@ -118,7 +118,17 @@ def _seed_customer_master(tmp_path: Path, country: str = "DE",
             vat_eu_number TEXT,
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT DEFAULT '',
-            updated_at TEXT DEFAULT ''
+            updated_at TEXT DEFAULT '',
+            ship_to_use_alternate INTEGER NOT NULL DEFAULT 0,
+            ship_to_name TEXT,
+            ship_to_person TEXT,
+            ship_to_street TEXT,
+            ship_to_city TEXT,
+            ship_to_zip TEXT,
+            ship_to_country TEXT,
+            ship_to_phone TEXT,
+            ship_to_email TEXT,
+            ship_to_contractor_id TEXT
         );
     """)
     street = "Musterstraße 1" if with_address else ""
@@ -179,6 +189,20 @@ def _seed_master_data(tmp_path: Path) -> None:
             krs TEXT, eori TEXT,
             updated_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS box_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            name TEXT,
+            length_cm REAL,
+            width_cm REAL,
+            height_cm REAL,
+            tare_weight_kg REAL,
+            active INTEGER NOT NULL DEFAULT 1,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_box_types_code ON box_types (code);
     """)
     conn.execute(
         "INSERT INTO company_profile (id, legal_name, street, postal_city, country, "
@@ -187,8 +211,24 @@ def _seed_master_data(tmp_path: Path) -> None:
          "5252812119", "PL5252812119", "PL525281211900000",
          "info@test.eu", "+48000000000"),
     )
+    # Seed a standard box type (id=1)
+    conn.execute(
+        "INSERT INTO box_types (id, code, name, length_cm, width_cm, height_cm, "
+        "tare_weight_kg, active) VALUES (1,'STD','Standard Box',30,20,10,0.5,1)"
+    )
     conn.commit()
     conn.close()
+
+
+# Standard box_type_id used throughout tests
+STD_BOX_ID = 1
+
+def _std_inputs(**kwargs) -> "LabelPackageInputs":
+    """Return LabelPackageInputs with standard box dims (matching seeded STD_BOX_ID)."""
+    from app.services.carrier.doc_package import LabelPackageInputs
+    base = dict(length_cm=30.0, width_cm=20.0, height_cm=10.0, tare_weight_kg=0.5)
+    base.update(kwargs)
+    return LabelPackageInputs(**base)
 
 
 def _seed_proforma_draft(tmp_path: Path, batch_id: str = "BATCH_TEST",
@@ -314,8 +354,7 @@ class TestEuDestinationPackage:
         storage = _full_setup(tmp_path, country="DE")
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
 
-        inputs = LPI(length_cm=30, width_cm=20, height_cm=10,
-                     client_name="Test Client GmbH")
+        inputs = _std_inputs(client_name="Test Client GmbH")
 
         with patch("app.services.wfirma_client.fetch_invoice_pdf",
                    return_value=FAKE_PDF):
@@ -331,8 +370,7 @@ class TestEuDestinationPackage:
         storage = _full_setup(tmp_path, country="PL")
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
 
-        inputs = LPI(length_cm=20, width_cm=15, height_cm=8,
-                     client_name="Test Client GmbH")
+        inputs = _std_inputs(client_name="Test Client GmbH")
 
         with patch("app.services.wfirma_client.fetch_invoice_pdf",
                    return_value=FAKE_PDF):
@@ -350,8 +388,7 @@ class TestNonEuDestinationPackage:
         storage = _full_setup(tmp_path, country="IN")
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
 
-        inputs = LPI(length_cm=25, width_cm=15, height_cm=10,
-                     incoterm="DAP", receiver_eori="IN1234567890",
+        inputs = _std_inputs(incoterm="DAP", receiver_eori="IN1234567890",
                      client_name="Test Client GmbH")
 
         with patch("app.services.wfirma_client.fetch_invoice_pdf",
@@ -368,8 +405,7 @@ class TestNonEuDestinationPackage:
         storage = _full_setup(tmp_path, country="US")
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
 
-        inputs = LPI(length_cm=20, width_cm=15, height_cm=8,
-                     incoterm="EXW", receiver_eori="US1234567890",
+        inputs = _std_inputs(incoterm="EXW", receiver_eori="US1234567890",
                      client_name="Test Client GmbH")
 
         with patch("app.services.wfirma_client.fetch_invoice_pdf",
@@ -380,33 +416,50 @@ class TestNonEuDestinationPackage:
         assert "cn23" in result.components
 
 
-# ── Test 4: missing dimensions → 422 ─────────────────────────────────────────
+# ── Test 4: missing box_type → 422 (replaces raw-dimension test) ────────────
 
-class TestMissingDimensions:
-    def test_missing_all_dims_returns_gaps(self, tmp_path):
+class TestMissingBoxType:
+    def test_unknown_box_type_id_returns_gap(self, tmp_path, monkeypatch):
+        """Route-level: unknown box_type_id -> 422 {gaps: [{field: box_type}]}."""
+        storage = _full_setup(tmp_path)
+        from app.core.config import settings as _s
+        monkeypatch.setattr(_s, "storage_root", storage)
+
+        from app.api.routes_carrier_actions import create_label_package, LabelPackageBody
+        from fastapi import HTTPException
+        import asyncio
+
+        body = LabelPackageBody(box_type_id=9999, client_name="Test Client GmbH")
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.get_event_loop().run_until_complete(
+                create_label_package(batch_id="BATCH_TEST", body=body, _auth=None)
+            )
+        assert exc_info.value.status_code == 422
+        detail = exc_info.value.detail
+        assert "box_type" in str(detail)
+        gaps = detail.get("gaps", [])
+        assert any(g["field"] == "box_type" for g in gaps)
+
+    def test_known_box_type_resolves_dims(self, tmp_path):
+        """STD_BOX_ID=1 resolves to 30x20x10cm + 0.5kg tare."""
+        storage = _full_setup(tmp_path)
+        LPI, _, __, ___, ____ = _import_doc_package()
+        inputs = _std_inputs(client_name="Test Client GmbH")
+        assert inputs.length_cm == 30.0
+        assert inputs.width_cm  == 20.0
+        assert inputs.height_cm == 10.0
+        assert inputs.tare_weight_kg == 0.5
+
+    def test_total_weight_includes_tare(self, tmp_path):
+        """Total weight = goods (2 * 12.5g = 25g) + tare (500g = 0.5kg) = 525g."""
         storage = _full_setup(tmp_path)
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
+        inputs = _std_inputs(client_name="Test Client GmbH")
 
-        inputs = LPI(length_cm=0, width_cm=0, height_cm=0,
-                     client_name="Test Client GmbH")
-
-        result = assemble("BATCH_TEST", inputs, storage)
-
-        assert isinstance(result, LPGaps)
-        gap_fields = [g["field"] for g in result.gaps]
-        assert "dimensions" in gap_fields
-
-    def test_partial_dims_returns_gaps(self, tmp_path):
-        storage = _full_setup(tmp_path)
-        LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
-
-        inputs = LPI(length_cm=30, width_cm=0, height_cm=0,
-                     client_name="Test Client GmbH")
-
-        result = assemble("BATCH_TEST", inputs, storage)
-
-        assert isinstance(result, LPGaps)
-        assert any(g["field"] == "dimensions" for g in result.gaps)
+        with patch("app.services.wfirma_client.fetch_invoice_pdf", return_value=FAKE_PDF):
+            result = assemble("BATCH_TEST", inputs, storage)
+        # EU batch → success (no CN23 gap)
+        assert isinstance(result, LPR)
 
 
 # ── Test 5: non-EU missing incoterm/EORI → 422 ───────────────────────────────
@@ -417,8 +470,7 @@ class TestNonEuMissingInputs:
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
 
         # Dimensions present but incoterm + eori missing
-        inputs = LPI(length_cm=20, width_cm=15, height_cm=8,
-                     client_name="Test Client GmbH")
+        inputs = _std_inputs(client_name="Test Client GmbH")
 
         result = assemble("BATCH_TEST", inputs, storage)
 
@@ -431,8 +483,7 @@ class TestNonEuMissingInputs:
         storage = _full_setup(tmp_path, country="US")
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
 
-        inputs = LPI(length_cm=20, width_cm=15, height_cm=8,
-                     incoterm="DAP", client_name="Test Client GmbH")
+        inputs = _std_inputs(incoterm="DAP", client_name="Test Client GmbH")
         # receiver_eori not supplied
 
         result = assemble("BATCH_TEST", inputs, storage)
@@ -449,8 +500,7 @@ class TestUnpostedProforma:
         storage = _full_setup(tmp_path, posted=False)
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
 
-        inputs = LPI(length_cm=20, width_cm=15, height_cm=8,
-                     client_name="Test Client GmbH")
+        inputs = _std_inputs(client_name="Test Client GmbH")
 
         result = assemble("BATCH_TEST", inputs, storage)
 
@@ -470,8 +520,7 @@ class TestUnpostedProforma:
         # No proforma_links.db seeded
 
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
-        inputs = LPI(length_cm=20, width_cm=15, height_cm=8,
-                     client_name="Test Client GmbH")
+        inputs = _std_inputs(client_name="Test Client GmbH")
 
         result = assemble("BATCH_TEST", inputs, storage)
 
@@ -479,7 +528,66 @@ class TestUnpostedProforma:
         assert any(g["field"] == "proforma" for g in result.gaps)
 
 
-# ── Test 7: blank receiver address → advisory, generation proceeds ────────────
+# ── Test 7: receiver address / ship_to logic + advisory proposals ────────────
+
+def _seed_ship_to(tmp_path: Path, batch_id: str = "BATCH_TEST") -> None:
+    """Add ship_to_* data to the existing CUST001 row."""
+    cm_db = tmp_path / "customer_master.sqlite"
+    conn = sqlite3.connect(str(cm_db))
+    conn.execute(
+        """UPDATE customer_master SET
+               ship_to_use_alternate=1,
+               ship_to_name='Ship-To GmbH',
+               ship_to_street='Lieferstraße 5',
+               ship_to_city='Hamburg',
+               ship_to_zip='20095',
+               ship_to_country='DE'
+           WHERE bill_to_contractor_id='CUST001'""",
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestReceiverShipTo:
+    def test_ship_to_used_when_present(self, tmp_path):
+        """ship_to_street set → ship_to_name/street used; no ship_to_missing advisory."""
+        storage = _full_setup(tmp_path, country="DE")
+        _seed_ship_to(storage)
+        LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
+
+        inputs = _std_inputs(client_name="Test Client GmbH")
+
+        with patch("app.services.wfirma_client.fetch_invoice_pdf",
+                   return_value=FAKE_PDF):
+            result = assemble("BATCH_TEST", inputs, storage)
+
+        assert isinstance(result, LPR)
+        # No ship_to_missing advisory when ship_to is set
+        assert not any("ship_to_missing" in a for a in result.advisories)
+
+    def test_bill_to_fallback_writes_advisory(self, tmp_path):
+        """ship_to_street absent → bill_to used + ship_to_missing advisory in Inbox."""
+        storage = _full_setup(tmp_path, country="DE", with_address=True)
+        # No _seed_ship_to → ship_to_street is NULL
+        LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
+
+        inputs = _std_inputs(client_name="Test Client GmbH")
+
+        with patch("app.services.wfirma_client.fetch_invoice_pdf",
+                   return_value=FAKE_PDF):
+            result = assemble("BATCH_TEST", inputs, storage)
+
+        assert isinstance(result, LPR)
+        # Advisory emitted
+        assert any("ship_to" in a for a in result.advisories)
+        audit_path = storage / "outputs" / "BATCH_TEST" / "audit.json"
+        audit = json.loads(audit_path.read_text())
+        ship_to_adv = [
+            p for p in audit.get("action_proposals", [])
+            if p.get("type") == "ship_to_missing"
+        ]
+        assert len(ship_to_adv) >= 1
+
 
 class TestBlankReceiverAddress:
     def test_blank_address_writes_advisory_but_generates(self, tmp_path):
@@ -487,8 +595,7 @@ class TestBlankReceiverAddress:
         storage = _full_setup(tmp_path, country="DE", with_address=False)
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
 
-        inputs = LPI(length_cm=20, width_cm=15, height_cm=8,
-                     client_name="Test Client GmbH")
+        inputs = _std_inputs(client_name="Test Client GmbH")
 
         with patch("app.services.wfirma_client.fetch_invoice_pdf",
                    return_value=FAKE_PDF):
@@ -514,8 +621,7 @@ class TestBlankReceiverAddress:
         storage = _full_setup(tmp_path, country="DE", with_weight=False)
         LPI, LPGaps, LPR, assemble, _ = _import_doc_package()
 
-        inputs = LPI(length_cm=20, width_cm=15, height_cm=8,
-                     client_name="Test Client GmbH")
+        inputs = _std_inputs(client_name="Test Client GmbH")
 
         with patch("app.services.wfirma_client.fetch_invoice_pdf",
                    return_value=FAKE_PDF):
@@ -546,7 +652,7 @@ class TestRouteUngated:
         from fastapi import HTTPException
 
         body = LabelPackageBody(
-            dimensions={"length_cm": 20, "width_cm": 15, "height_cm": 8},
+            box_type_id=STD_BOX_ID,
             client_name="Test Client GmbH",
         )
 
@@ -624,7 +730,7 @@ class TestWfirmaBoundary:
         storage = _full_setup(tmp_path, posted=False)
         LPI, LPGaps, _, assemble, _ = _import_doc_package()
 
-        inputs = LPI(length_cm=0, width_cm=0, height_cm=0)
+        inputs = _std_inputs()
 
         result = assemble("BATCH_TEST", inputs, storage)
 

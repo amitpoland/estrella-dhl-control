@@ -44,11 +44,16 @@ _ADVISORY_CHANNEL = "doc_package_advisory"
 
 @dataclass
 class LabelPackageInputs:
-    """Operator-supplied inputs required to generate the package."""
-    # Mandatory always
-    length_cm: float
-    width_cm:  float
-    height_cm: float
+    """Operator-supplied inputs required to generate the package.
+
+    Dimensions and tare are resolved from the box_types master by the route
+    before calling assemble_label_package(); the module receives concrete values.
+    """
+    # Mandatory always — resolved from box_types master by the route
+    length_cm:     float
+    width_cm:      float
+    height_cm:     float
+    tare_weight_kg: float = 0.0   # from box.tare_weight_kg
     # Required for non-EU only
     incoterm:      Optional[str] = None
     receiver_eori: Optional[str] = None
@@ -212,16 +217,24 @@ def _load_proforma_draft(batch_id: str, client_name: Optional[str],
 
 class _CustomerView:
     """Lightweight view of customer_master fields needed by doc_package.
-    Uses direct SQL so it works with both full and test-minimal schemas."""
+    Uses direct SQL so it works with both full and test-minimal schemas.
+    Includes both bill_to_* and ship_to_* fields for the receiver-address logic.
+    """
     __slots__ = (
         "bill_to_name", "country", "bill_to_street", "bill_to_city",
         "bill_to_postal_code", "bill_to_email", "bill_to_phone", "eori",
+        # ship_to_* (primary receiver address when ship_to_use_alternate=1)
+        "ship_to_name", "ship_to_street", "ship_to_city", "ship_to_zip",
+        "ship_to_country", "ship_to_phone", "ship_to_email",
+        "ship_to_use_alternate", "ship_to_contractor_id",
     )
 
     def __init__(self, row: sqlite3.Row) -> None:
         keys = row.keys() if hasattr(row, "keys") else []
         def _g(k: str) -> Optional[str]:
             return str(row[k]).strip() if k in keys and row[k] else None
+        def _b(k: str) -> bool:
+            return bool(int(row[k])) if k in keys and row[k] else False
         self.bill_to_name       = _g("bill_to_name")
         self.country            = _g("country") or ""
         self.bill_to_street     = _g("bill_to_street")
@@ -230,6 +243,16 @@ class _CustomerView:
         self.bill_to_email      = _g("bill_to_email")
         self.bill_to_phone      = _g("bill_to_phone")
         self.eori               = _g("eori")
+        # ship_to fields (alternate delivery address)
+        self.ship_to_name           = _g("ship_to_name")
+        self.ship_to_street         = _g("ship_to_street")
+        self.ship_to_city           = _g("ship_to_city")
+        self.ship_to_zip            = _g("ship_to_zip")
+        self.ship_to_country        = _g("ship_to_country")
+        self.ship_to_phone          = _g("ship_to_phone")
+        self.ship_to_email          = _g("ship_to_email")
+        self.ship_to_use_alternate  = _b("ship_to_use_alternate")
+        self.ship_to_contractor_id  = _g("ship_to_contractor_id")
 
 
 def _load_customer(contractor_id: str, storage_root: Path) -> Optional[_CustomerView]:
@@ -423,7 +446,12 @@ def render_packing_list_pdf(
         meta_rows.append(["Shipper:", company.legal_name or ""])
     client_name_str = ""
     if customer:
-        client_name_str = customer.bill_to_name or ""
+        # Prefer ship_to_name / ship_to_street for consignee display
+        has_ship_to = bool(getattr(customer, "ship_to_street", None))
+        if has_ship_to:
+            client_name_str = customer.ship_to_name or customer.bill_to_name or ""
+        else:
+            client_name_str = customer.bill_to_name or ""
         meta_rows.append(["Consignee:", client_name_str])
     if prof_ref:
         meta_rows.append(["Reference (PROF):", prof_ref])
@@ -571,16 +599,34 @@ def render_cn23_pdf(
         if company.nip:       shipper_lines.append(f"NIP: {company.nip}")
         if company.eori:      shipper_lines.append(f"EORI: {company.eori}")
 
+    # Receiver block: prefer ship_to_* (Shape A) then bill_to_* fallback
     receiver_lines = []
     if customer:
-        receiver_lines.append(customer.bill_to_name or "")
-        if customer.bill_to_street:      receiver_lines.append(customer.bill_to_street)
-        if customer.bill_to_city:        receiver_lines.append(customer.bill_to_city)
-        if customer.bill_to_postal_code: receiver_lines.append(customer.bill_to_postal_code)
-        if customer.country:             receiver_lines.append(customer.country)
-        if customer.bill_to_email:       receiver_lines.append(customer.bill_to_email)
-        if customer.bill_to_phone:       receiver_lines.append(customer.bill_to_phone)
-        if inputs.receiver_eori:         receiver_lines.append(f"EORI: {inputs.receiver_eori}")
+        has_ship_to = bool(getattr(customer, "ship_to_street", None))
+        if has_ship_to:
+            recv_name    = customer.ship_to_name or customer.bill_to_name or ""
+            recv_street  = customer.ship_to_street or ""
+            recv_city    = customer.ship_to_city or ""
+            recv_zip     = customer.ship_to_zip or ""
+            recv_country = customer.ship_to_country or customer.country or ""
+            recv_phone   = customer.ship_to_phone or customer.bill_to_phone or ""
+            recv_email   = customer.ship_to_email or customer.bill_to_email or ""
+        else:
+            recv_name    = customer.bill_to_name or ""
+            recv_street  = customer.bill_to_street or ""
+            recv_city    = customer.bill_to_city or ""
+            recv_zip     = getattr(customer, "bill_to_postal_code", None) or ""
+            recv_country = customer.country or ""
+            recv_phone   = customer.bill_to_phone or ""
+            recv_email   = customer.bill_to_email or ""
+        if recv_name:    receiver_lines.append(recv_name)
+        if recv_street:  receiver_lines.append(recv_street)
+        if recv_city:
+            receiver_lines.append(f"{recv_zip} {recv_city}".strip() if recv_zip else recv_city)
+        if recv_country: receiver_lines.append(recv_country)
+        if recv_email:   receiver_lines.append(recv_email)
+        if recv_phone:   receiver_lines.append(recv_phone)
+        if inputs.receiver_eori: receiver_lines.append(f"EORI: {inputs.receiver_eori}")
 
     parties = Table([
         [Paragraph("<b>Sender / Expéditeur</b>", H2),
@@ -692,8 +738,9 @@ def render_cn23_pdf(
     cif_usd = float(inv_totals.get("total_cif_usd") or total_val or 0)
     currency_final = (inv_totals.get("currency") or ccy or "USD").strip()
 
-    total_weight_g = sum(r["weight_g"] for r in goods_rows)
-    declared_weight_kg = total_weight_g / 1000.0 if total_weight_g else 0.0
+    goods_weight_g_cn23 = sum(r["weight_g"] for r in goods_rows)
+    tare_g_cn23 = (inputs.tare_weight_kg or 0) * 1000.0
+    declared_weight_kg = (goods_weight_g_cn23 + tare_g_cn23) / 1000.0
 
     prof_ref = ""
     if draft and draft.wfirma_proforma_fullnumber:
@@ -847,29 +894,41 @@ def assemble_label_package(
         return LabelPackageGaps(gaps=gaps)
 
     # ── 3. Soft gap checks (advisory, do not block) ───────────────────────────
-    if customer:
-        if not getattr(customer, "bill_to_street", None):
-            msg = (
-                f"Receiver {getattr(customer,'bill_to_name','?')} has no street address "
-                "in customer_master — verify before dispatch."
-            )
-            _write_soft_advisory(audit_path, "receiver_address_incomplete", msg)
-            advisories.append(msg)
-        if not getattr(customer, "bill_to_postal_code", None):
-            msg = (
-                f"Receiver {getattr(customer,'bill_to_name','?')} has no postal code — "
-                "CN23 / label may be rejected by carrier."
-            )
-            _write_soft_advisory(audit_path, "receiver_postcode_missing", msg)
-            advisories.append(msg)
 
-    # Weight advisory
+    # Receiver address: prefer ship_to_* (Shape A), fallback to bill_to_* + advisory
+    _using_ship_to = False
+    if customer:
+        has_ship_to = bool(getattr(customer, "ship_to_street", None))
+        if has_ship_to:
+            _using_ship_to = True
+        else:
+            # Fallback to bill_to_* — write advisory
+            has_bill_to = bool(getattr(customer, "bill_to_street", None))
+            msg = (
+                f"Receiver {getattr(customer,'bill_to_name','?')}: ship_to address not set "
+                "in customer_master — falling back to bill_to address. "
+                "Verify delivery address before dispatch."
+            )
+            _write_soft_advisory(audit_path, "ship_to_missing", msg)
+            advisories.append(msg)
+            if not has_bill_to:
+                msg2 = (
+                    f"Receiver {getattr(customer,'bill_to_name','?')} has no street address "
+                    "(neither ship_to nor bill_to) — label may be incomplete."
+                )
+                _write_soft_advisory(audit_path, "receiver_address_incomplete", msg2)
+                advisories.append(msg2)
+
+    # Weight: sum packing_lines gross weight + box tare
     packing_lines = _load_packing_lines(batch_id, storage_root)
-    total_gw = sum(float(ln.get("gross_weight") or 0) for ln in packing_lines)
-    if total_gw == 0:
+    goods_weight_g = sum(float(ln.get("gross_weight") or 0) for ln in packing_lines)
+    tare_g = (inputs.tare_weight_kg or 0) * 1000.0
+    total_gw = goods_weight_g + tare_g
+
+    if goods_weight_g == 0:
         msg = (
             "Gross weight is 0 for all packing lines — confirm weight before dispatch. "
-            "CN23 will show 0.000 kg."
+            f"Total weight will be box tare only ({tare_g:.0f} g)."
         )
         _write_soft_advisory(audit_path, "weight_zero", msg)
         advisories.append(msg)

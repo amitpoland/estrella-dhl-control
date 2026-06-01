@@ -159,8 +159,13 @@ def get_shipment(
 
 
 class LabelPackageBody(BaseModel):
-    """Request body for POST /api/v1/carrier/{batch_id}/label-package."""
-    dimensions:    Dict[str, float]   # {length_cm, width_cm, height_cm}
+    """Request body for POST /api/v1/carrier/{batch_id}/label-package.
+
+    Dimensions and tare weight are resolved from the box_types master table
+    by box_type_id (operator selects a pre-defined box at label time).
+    Total package weight = sum(packing_lines.gross_weight) + box.tare_weight_kg.
+    """
+    box_type_id:   int               # required; resolved to dims + tare from box_types
     incoterm:      Optional[str]  = None
     receiver_eori: Optional[str]  = None
     client_name:   Optional[str]  = None
@@ -173,8 +178,10 @@ class LabelPackageBody(BaseModel):
         "UNGATED — no carrier_api_status / creds / allowlist check. "
         "Returns a PDF or ZIP containing: commercial invoice (from wFirma, read-only) "
         "+ packing list (generated) + CN23 (generated, non-EU only). "
-        "Mandatory: dimensions. Non-EU also requires incoterm + receiver_eori. "
-        "Soft gaps (blank receiver address, zero weight) are returned as advisories "
+        "Mandatory: box_type_id (resolved to dims+tare from box_types master). "
+        "Non-EU also requires incoterm + receiver_eori. "
+        "Receiver address: ship_to_* primary; bill_to_* fallback + advisory. "
+        "Soft gaps (blank address, zero weight) are returned as advisories "
         "and do NOT block generation. "
         "422 {gaps:[...]} when mandatory inputs are missing."
     ),
@@ -200,14 +207,38 @@ async def create_label_package(
 
     from ..core.config import settings as _settings
 
-    dims = body.dimensions or {}
+    # Resolve box type → dimensions + tare
+    try:
+        from ..services.master_data_db import get_box_type, init_db as _init_md
+        md_db = _settings.storage_root / "master_data.sqlite"
+        _init_md(md_db)
+        box = get_box_type(md_db, body.box_type_id)
+    except Exception as _box_exc:
+        box = None
+
+    if box is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Missing mandatory inputs for label package",
+                "code":  "LABEL_PACKAGE_GAPS",
+                "gaps":  [{"field": "box_type",
+                            "reason": (
+                                f"box_type_id={body.box_type_id!r} not found in box_types master "
+                                "or box_types table is empty. "
+                                "Add box types via the master-data API before generating labels."
+                            )}],
+            },
+        )
+
     inputs = LabelPackageInputs(
-        length_cm    = float(dims.get("length_cm") or 0),
-        width_cm     = float(dims.get("width_cm") or 0),
-        height_cm    = float(dims.get("height_cm") or 0),
-        incoterm     = (body.incoterm or "").strip() or None,
-        receiver_eori= (body.receiver_eori or "").strip() or None,
-        client_name  = (body.client_name or "").strip() or None,
+        length_cm      = float(box.length_cm or 0),
+        width_cm       = float(box.width_cm  or 0),
+        height_cm      = float(box.height_cm or 0),
+        tare_weight_kg = float(box.tare_weight_kg or 0),
+        incoterm       = (body.incoterm or "").strip() or None,
+        receiver_eori  = (body.receiver_eori or "").strip() or None,
+        client_name    = (body.client_name or "").strip() or None,
     )
 
     result = assemble_label_package(
