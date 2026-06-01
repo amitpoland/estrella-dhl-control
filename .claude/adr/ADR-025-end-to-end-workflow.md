@@ -65,6 +65,8 @@ canonical execution plan for this ADR.
 - Composite product authority rule (resolves ADR-024 D1): `docs/ATLAS_WORKFLOW_MAP.md` §4
 - Four wFirma write flags (incl. WFIRMA_CREATE_PZ_ALLOWED for WF1.8): `docs/ATLAS_WORKFLOW_MAP.md` §3
 
+- The AI Reverification Layer (`docs/ATLAS_WORKFLOW_MAP.md` §1A) is the mechanism implementing the soft validate→inbox principle — read-only, proposal-only, master-wins.
+
 ---
 
 This ADR establishes the architectural foundation for transitioning from the current gate-blocked system to a master-data-driven workflow with soft validation, enabling end-to-end testing while preserving operational safety through feature flags.
