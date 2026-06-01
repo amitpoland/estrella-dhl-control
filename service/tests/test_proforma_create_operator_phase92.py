@@ -70,7 +70,8 @@ def _stub_legacy_create_path(monkeypatch, db_path: Path):
     # vat_codes / wfirma_products.
     monkeypatch.setattr(
         rp, "_build_proforma_request",
-        lambda preview: wfirma_client.ProformaRequest(
+        # ADR-027: now returns (ProformaRequest, List[str]) tuple
+        lambda preview: (wfirma_client.ProformaRequest(
             client_name="ACME", client_zip="", client_city="",
             lines=[
                 wfirma_client.ReservationLine(
@@ -83,7 +84,7 @@ def _stub_legacy_create_path(monkeypatch, db_path: Path):
             wfirma_contractor_id="WF-CUST-1",
             vat_code_id="VAT-23",
             wfirma_contractor_receiver_id="",   # no preflight needed
-        ),
+        ), []),
     )
     # wFirma "live" call returns a successful ProformaResult including
     # the Phase 9 fullnumber field.
