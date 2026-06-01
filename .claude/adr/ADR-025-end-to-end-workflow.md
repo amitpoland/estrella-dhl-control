@@ -65,7 +65,8 @@ canonical execution plan for this ADR.
 - Composite product authority rule (resolves ADR-024 D1): `docs/ATLAS_WORKFLOW_MAP.md` §4
 - Four wFirma write flags (incl. WFIRMA_CREATE_PZ_ALLOWED for WF1.8): `docs/ATLAS_WORKFLOW_MAP.md` §3
 
-- The AI Reverification Layer (`docs/ATLAS_WORKFLOW_MAP.md` §1A) is the mechanism implementing the soft validate→inbox principle — read-only, proposal-only, master-wins.
+- The **Rule-Based Reverification Layer** (`docs/ATLAS_WORKFLOW_MAP.md` §1A, `rule_based_reverification.py`) is the mechanism implementing the soft validate→inbox principle — deterministic rule-based (not AI), read-only, proposal-only, master-wins. Wired at `routes_intake.py` WF1.3 post-parse hook.
+- Product master authority adopts the **per-line `product_code` model** (see ADR-024): composite columns are additive metadata; canonical composite-collapse rejected. GAP-17 closed with advisory validation at inventory seed and proforma create paths.
 
 ---
 
