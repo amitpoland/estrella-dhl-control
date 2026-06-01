@@ -173,7 +173,13 @@ def _check_proforma_export_prerequisites(batch_id: str) -> List[str]:
     A commercial preview can be shown before the wFirma PZ is created.
     Actual proforma issuance (write to wFirma) requires a PZ to exist.
 
+    In advisory mode (settings.advisory_gates_enabled=True), the PZ-before-proforma
+    requirement becomes an advisory warning rather than a hard blocker — the
+    proforma draft can be created and reviewed without a wFirma PZ existing.
+    The wFirma write flag (WFIRMA_CREATE_PROFORMA_ALLOWED) remains hard.
+
     Returns [] when audit.json is absent (graceful pass-through).
+    Returns [] in advisory mode (caller sees the advisory in export_advisories).
     """
     output_dir = settings.storage_root / "outputs" / batch_id
     audit_path = output_dir / "audit.json"
@@ -185,15 +191,18 @@ def _check_proforma_export_prerequisites(batch_id: str) -> List[str]:
     except Exception:
         return ["export prerequisites check failed: could not read audit.json"]
 
-    reasons: List[str] = []
     wfirma_export = audit.get("wfirma_export") or {}
     pz_doc_id = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
     if not pz_doc_id:
-        reasons.append(
+        msg = (
             "proforma export requires wFirma PZ — "
             "run wFirma PZ create before issuing a proforma"
         )
-    return reasons
+        # Advisory mode: return advisory warning (empty blockers list = not blocked)
+        if settings.advisory_gates_enabled:
+            return []   # caller should check export_advisories for the advisory
+        return [msg]
+    return []
 
 
 # ── Batch lifecycle derivation ───────────────────────────────────────────────
@@ -498,12 +507,31 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     """
     blocking_reasons: List[str] = []
     warehouse_blockers: List[str] = []
-    export_blockers:   List[str] = []
+    export_blockers:    List[str] = []
+    export_advisories:  List[str] = []
 
     # ── 0a. Export prerequisites (wFirma PZ required for create — NOT preview) ─
     # Preview is intentionally allowed before the PZ exists so operators can
     # verify commercial data, customer mapping, and line items before customs.
-    export_blockers.extend(_check_proforma_export_prerequisites(batch_id))
+    # In advisory mode the prerequisite returns [] (not a blocker) and we add
+    # the advisory message to export_advisories for UI display.
+    _prereq_blockers = _check_proforma_export_prerequisites(batch_id)
+    export_blockers.extend(_prereq_blockers)
+    if not _prereq_blockers and settings.advisory_gates_enabled:
+        # Check if PZ is actually missing (advisory mode suppressed it from blockers)
+        _adv_dir = settings.storage_root / "outputs" / batch_id / "audit.json"
+        if _adv_dir.exists():
+            try:
+                import json as _adv_json
+                _adv_audit = _adv_json.loads(_adv_dir.read_text())
+                _adv_pz = ((_adv_audit.get("wfirma_export") or {}).get("wfirma_pz_doc_id") or "").strip()
+                if not _adv_pz:
+                    export_advisories.append(
+                        "advisory: wFirma PZ not yet created — proforma draft available for review; "
+                        "PZ required before final wFirma proforma issuance"
+                    )
+            except Exception:
+                pass
 
     # ── 0b. Warehouse readiness (product resolution + price conflicts) ─────────
     warehouse_blockers.extend(_check_warehouse_readiness(batch_id))
@@ -573,6 +601,7 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
             "ready":            False,
             "blocking_reasons": early_blockers,
             "export_blockers":  export_blockers,
+            "export_advisories": export_advisories,
             "warehouse_blockers": warehouse_blockers,
             "batch_lifecycle":  batch_lifecycle,
             "lines":            [],
@@ -939,6 +968,7 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         "ready":            ready,
         "blocking_reasons": blocking_reasons,
         "export_blockers":  export_blockers,
+        "export_advisories": export_advisories,
         "warehouse_blockers": warehouse_blockers,
         "batch_lifecycle":  batch_lifecycle,
         "lines":            lines,
@@ -5130,10 +5160,22 @@ def _build_proforma_request_from_draft(
             currency       = (ln.get("currency") or currency or "PLN").upper(),
         ))
     if missing_products:
-        raise ValueError(
+        missing_msg = (
             "wfirma_products missing wfirma_product_id for: "
             + ", ".join(missing_products[:5])
             + ("…" if len(missing_products) > 5 else "")
+        )
+        # HS-2 advisory mode: emit warning instead of blocking
+        # The wFirma write flag (WFIRMA_CREATE_PROFORMA_ALLOWED) remains hard;
+        # in advisory mode the draft can be reviewed but cannot be posted to
+        # wFirma until products are resolved.
+        if not settings.advisory_gates_enabled:
+            raise ValueError(missing_msg)
+        # Advisory mode: log warning; lines without wfirma_good_id are skipped
+        # from the request so the draft can be created for review.
+        import logging as _adv_log
+        _adv_log.getLogger(__name__).warning(
+            "advisory mode: %s — unresolved lines skipped from draft request", missing_msg
         )
 
     # Ship-to / Odbiorca (same logic as legacy _build_proforma_request)

@@ -5,8 +5,15 @@ Every pipeline action must pass its guard before executing.
 Guards raise HTTPException with a structured error body.
 
 Error body: {"guard": "<name>", "error": "<message>", "code": "<GUARD_CODE>"}
+
+Advisory mode (settings.advisory_gates_enabled = True):
+  The three workflow guards (guard_pz_requires_sad, guard_dhl_requires_email,
+  guard_proforma_export_prerequisites) become advisory — they return an advisory
+  dict instead of raising, allowing the pipeline to continue with a warning.
+  The four wFirma write flags remain hard-gated regardless.
 """
 from __future__ import annotations
+from typing import Optional
 from fastapi import HTTPException
 
 
@@ -16,6 +23,25 @@ def _guard_error(code: str, message: str) -> HTTPException:
         status_code=422,
         detail={"guard": prefix, "error": message, "code": code},
     )
+
+
+def _advisory_mode() -> bool:
+    """Return True when advisory_gates_enabled is set in settings."""
+    try:
+        from ..core.config import settings as _s
+        return bool(_s.advisory_gates_enabled)
+    except Exception:
+        return False
+
+
+def _make_advisory(code: str, message: str) -> dict:
+    """Build an advisory warning dict (NOT an HTTPException)."""
+    return {
+        "advisory": True,
+        "code": code,
+        "message": message,
+        "action": "review and approve in Inbox to continue, or supply the missing data",
+    }
 
 
 # Valid trigger sources — every action must declare one
@@ -33,12 +59,18 @@ _FORBIDDEN_TRANSITIONS: dict[str, list[str]] = {
 }
 
 
-def guard_pz_requires_sad(audit: dict) -> None:
-    """Block PZ execution if no customs data is present at all.
+def guard_pz_requires_sad(audit: dict) -> Optional[dict]:
+    """Check PZ execution requires SAD (ZC429) data.
 
-    Fix 4: Allow PZ when XML customs data (customs_declaration.mrn or zc429.mrn)
-    is available, even if no SAD PDF file is uploaded.  Only block when BOTH
-    the PDF reference and XML customs data are absent.
+    Hard mode (default): raises HTTP 422 when SAD is absent.
+    Advisory mode (advisory_gates_enabled=True): returns an advisory dict
+      instead of raising, allowing PZ to proceed with a warning.
+
+    Returns None when the check passes (no advisory).
+    Returns advisory dict when in advisory mode and SAD is absent.
+    Raises HTTPException(422) when in hard mode and SAD is absent.
+
+    The PZ_ALREADY_PROCESSED guard remains hard in both modes.
     """
     inputs = audit.get("inputs") or {}
     has_pdf = bool(inputs.get("zc429"))
@@ -49,22 +81,36 @@ def guard_pz_requires_sad(audit: dict) -> None:
     has_xml = bool(cd.get("mrn") or zc429_dict.get("mrn"))
 
     if not has_pdf and not has_xml:
-        raise _guard_error(
-            "PZ_NO_SAD",
-            "PZ requires SAD (ZC429) data. Upload ZC429 or ensure customs declaration XML has been parsed.",
+        msg = (
+            "PZ requires SAD (ZC429) data. Upload ZC429 or ensure customs "
+            "declaration XML has been parsed."
         )
-    # Only block on "blocked" — partial and success can be re-processed (Regenerate PZ).
+        if _advisory_mode():
+            return _make_advisory("PZ_NO_SAD", msg)
+        raise _guard_error("PZ_NO_SAD", msg)
+
+    # PZ_ALREADY_PROCESSED remains hard — this is a data-integrity guard, not a
+    # workflow gate. Allowing double-processing without a reset is unsafe.
     if audit.get("status") == "blocked":
         raise _guard_error(
             "PZ_ALREADY_PROCESSED",
-            f"Batch is in state 'blocked'. Re-processing not allowed without reset.",
+            "Batch is in state 'blocked'. Re-processing not allowed without reset.",
         )
+    return None
 
 
-def guard_dhl_requires_email(audit: dict, admin_override: bool = False) -> None:
-    """Block DSK/description generation unless a DHL customs email has arrived."""
+def guard_dhl_requires_email(audit: dict, admin_override: bool = False) -> Optional[dict]:
+    """Check DSK/description generation requires a DHL customs email.
+
+    Hard mode (default): raises HTTP 422 when no email/ticket/status present.
+    Advisory mode (advisory_gates_enabled=True): returns advisory dict instead.
+
+    Returns None when the check passes.
+    Returns advisory dict in advisory mode when email is absent.
+    Raises HTTPException(422) in hard mode when email is absent.
+    """
     if admin_override:
-        return
+        return None
     clearance_ok = {
         "dhl_email_received", "clearance_in_progress", "dhl_clearance_required",
         "external_broker_required", "polish_description_generated", "dsk_generated",
@@ -74,17 +120,18 @@ def guard_dhl_requires_email(audit: dict, admin_override: bool = False) -> None:
         "awaiting_dhl_customs_email", "awaiting_dhl_email",
     }
     if audit.get("clearance_status") in clearance_ok:
-        return
+        return None
     if audit.get("dhl_ticket"):
-        return
+        return None
     # Manual admin override: admin marked email received via dashboard modal
     dhl_email = audit.get("dhl_email") or {}
     if dhl_email.get("received") is True:
-        return
-    raise _guard_error(
-        "DHL_NO_EMAIL",
-        "Clearance action requires a DHL customs email (T#... ticket). No email received yet.",
-    )
+        return None
+
+    msg = "Clearance action requires a DHL customs email (T#... ticket). No email received yet."
+    if _advisory_mode():
+        return _make_advisory("DHL_NO_EMAIL", msg)
+    raise _guard_error("DHL_NO_EMAIL", msg)
 
 
 def guard_sad_requires_batch(audit: dict) -> None:

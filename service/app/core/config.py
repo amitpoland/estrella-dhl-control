@@ -465,5 +465,14 @@ class Settings(BaseSettings):
     #               the conversion plan is built (complements B1 recovery)
     proforma_draft_governance_enabled: bool = Field(default=False)
 
+    # ── Phase 2 — Soft advisory gates (Atlas Campaign, default OFF) ──────────
+    # When True: the three hard workflow stops (HS-1 DHL-email+SAD, HS-2 wFirma-
+    # product-sync, HS-3 PZ-before-proforma) become advisory — they surface an
+    # inbox warning and allow the pipeline to continue rather than raising 422/400.
+    # The four wFirma write flags (CREATE_PRODUCT/PZ/PROFORMA/INVOICE) remain
+    # hard-gated regardless of this flag; only workflow gates are softened.
+    # Default OFF: current hard-block behaviour preserved until operator activates.
+    advisory_gates_enabled: bool = Field(default=False)
+
 
 settings = Settings()

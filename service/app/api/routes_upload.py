@@ -800,9 +800,14 @@ async def _run_pipeline(
     log.info("[%s] Background pipeline start", batch_id)
 
     # Guard check — block if SAD missing or already processed
+    # In advisory mode, the guard returns an advisory dict instead of raising;
+    # we log it and continue so the pipeline runs without SAD for testing.
     audit = _read_audit(output_dir) if (output_dir / "audit.json").exists() else {}
     try:
-        guard_pz_requires_sad(audit)
+        _sad_advisory = guard_pz_requires_sad(audit)
+        if _sad_advisory:
+            log.info("[%s] PZ guard advisory (SAD absent, advisory mode ON): %s",
+                     batch_id, _sad_advisory.get("code"))
     except _HTTPException as ge:
         log.error("[%s] PZ guard blocked pipeline: %s", batch_id, ge.detail)
         _patch_audit(output_dir, {

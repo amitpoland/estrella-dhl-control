@@ -1863,7 +1863,11 @@ async def generate_description(
     _is_agency_path = is_agency_clearance(_decision.get("clearance_path"))
     if not _is_agency_path:
         try:
-            guard_dhl_requires_email(audit)
+            _dhl_advisory = guard_dhl_requires_email(audit)
+            # advisory mode: returns advisory dict instead of raising
+            if _dhl_advisory:
+                log.info("[%s] DHL email guard advisory (advisory mode ON): %s",
+                         batch_id, _dhl_advisory.get("code"))
         except HTTPException as _ge:
             raise HTTPException(
                 status_code=422,

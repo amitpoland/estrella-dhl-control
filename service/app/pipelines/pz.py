@@ -17,12 +17,22 @@ async def start_pz(
     trigger_source: str,
     actor: str,
 ) -> None:
-    """Validate preconditions before PZ engine runs. Non-destructive."""
-    guard_pz_requires_sad(audit)
+    """Validate preconditions before PZ engine runs. Non-destructive.
+
+    In advisory mode (settings.advisory_gates_enabled=True) the SAD guard
+    returns an advisory dict instead of raising; we log it and continue so
+    operators can test the pipeline end-to-end without needing SAD data.
+    The wFirma write flags remain hard-gated separately.
+    """
+    advisory = guard_pz_requires_sad(audit)
+    if advisory:
+        tl.log_event(audit_path, "advisory_gate_bypassed", trigger_source, actor,
+                     detail={"advisory": advisory})
     guard_trigger_declared(trigger_source)
     guard_status_transition(audit.get("status", ""), "processing")
     tl.log_event(audit_path, tl.EV_PROCESSING_STARTED, trigger_source, actor,
-                 detail={"trigger": trigger_source, "actor": actor})
+                 detail={"trigger": trigger_source, "actor": actor,
+                         "advisory": advisory})
 
 
 async def record_pz_result(
