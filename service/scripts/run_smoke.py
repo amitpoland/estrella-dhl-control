@@ -223,6 +223,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                   help="Output report path (default: tasks/smoke-reports/<date>-<slug>.md)")
     p.add_argument("--print-only", action="store_true",
                   help="Print report to stdout instead of writing")
+    p.add_argument("--api-key", default="",
+                  help="X-API-Key to inject into every request (never committed to spec files)")
     args = p.parse_args(argv)
 
     if not args.spec.exists():
@@ -230,6 +232,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     spec = load_spec(args.spec)
+    if args.api_key:
+        spec.setdefault("headers", {})
+        spec["headers"]["X-API-Key"] = args.api_key
     run = run_smoke(spec)
     report = render_markdown(run)
 
