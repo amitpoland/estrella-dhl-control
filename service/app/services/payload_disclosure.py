@@ -54,25 +54,37 @@ def build_proforma_post_disclosure(draft: Any) -> Dict[str, Any]:
     except Exception:
         service_charges = []
 
-    currency     = _get("currency", "")
-    client_name  = _get("client_name", "")
-    remarks      = _get("remarks", "")
-    draft_id     = _get("id", "")
-    batch_id     = _get("batch_id", "")
-    incoterm     = _get("incoterm", "")
+    currency        = _get("currency", "")
+    client_name     = _get("client_name", "")
+    remarks         = _get("remarks", "")
+    draft_id        = _get("id", "")
+    batch_id        = _get("batch_id", "")
+    incoterm        = _get("incoterm", "")
+    # ADR-027 D4 — frozen VAT context (set at post time by freeze_draft_vat_context)
+    vat_context     = _get("vat_context", "") or ""
+    vat_code        = _get("vat_code", "") or ""
+    decision_source = _get("decision_source", "") or ""
 
-    return {
+    # ADR-027 D3/D5: surface VAT warnings in the modal
+    vat_warnings: List[str] = []
+    if vat_context == "wdt":
+        # Re-check VIES status from the stored draft context if available.
+        # The actual warning list is populated at post time by the builder;
+        # here we re-derive a disclosure-level hint from the frozen state.
+        pass  # warnings come from _post_vat_warnings at post time; frozen fields shown here
+
+    disclosure: Dict[str, Any] = {
         "disclosure_type":  "proforma_post",
         "draft_id":         draft_id,
         "batch_id":         batch_id,
         "write_target":     "wFirma invoices/add (proforma type)",
         "flag_required":    "WFIRMA_CREATE_PROFORMA_ALLOWED",
         "fields_to_write": {
-            "client_name":       client_name,
-            "currency":          currency,
-            "incoterm":          incoterm,
-            "remarks":           remarks,
-            "line_count":        len(lines),
+            "client_name":          client_name,
+            "currency":             currency,
+            "incoterm":             incoterm,
+            "remarks":              remarks,
+            "line_count":           len(lines),
             "service_charge_count": len(service_charges),
         },
         "lines": [
@@ -91,7 +103,16 @@ def build_proforma_post_disclosure(draft: Any) -> Dict[str, Any]:
             "This action will CREATE a proforma in your live wFirma account. "
             "Verify all fields before confirming."
         ),
+        # ADR-027 D4 — VAT context frozen at draft creation / first post
+        "vat_resolution": {
+            "vat_context":     vat_context,
+            "vat_code":        vat_code,
+            "decision_source": decision_source,
+            # Warn if context is set but no code string (should never happen)
+            "draft_has_vat_freeze": bool(vat_context and vat_code),
+        },
     }
+    return disclosure
 
 
 # ── Invoice convert disclosure ────────────────────────────────────────────────

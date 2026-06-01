@@ -449,6 +449,10 @@ class ProformaDraft:
     # source_ref_id points to the draft this row was cloned from (None for originals).
     clone_generation:       int           = 0      # 0 = original, ≥1 = clone
     source_ref_id:          Optional[int] = None   # id of the source draft if cloned
+    # ── ADR-027 D4 — VAT freeze (set at draft creation; drift-checked at post)
+    vat_context:     Optional[str] = None   # "domestic"|"wdt"|"export"|"np"|…
+    vat_code:        Optional[str] = None   # "23"|"WDT"|"EXP"|"NP"|… (code string)
+    decision_source: Optional[str] = None   # "operator_vat_mode"|"derived"|"fallback_wfirma"
 
 
 def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
@@ -512,6 +516,10 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         # ── Sprint-24 clone provenance ────────────────────────────────────
         ("clone_generation", "INTEGER NOT NULL DEFAULT 0"),
         ("source_ref_id",    "INTEGER"),
+        # ── ADR-027 D4 — VAT freeze ───────────────────────────────────────
+        ("vat_context",     "TEXT"),
+        ("vat_code",        "TEXT"),
+        ("decision_source", "TEXT"),
     )
     for _col, _ddl in _ADDITIVE_DRAFT_COLUMNS:
         try:
@@ -749,7 +757,37 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         # Sprint-24 clone provenance
         clone_generation           = int(_opt("clone_generation", 0) or 0),
         source_ref_id              = _opt("source_ref_id"),
+        # ADR-027 D4 — VAT freeze
+        vat_context                = _opt("vat_context"),
+        vat_code                   = _opt("vat_code"),
+        decision_source            = _opt("decision_source"),
     )
+
+
+def freeze_draft_vat_context(
+    db_path:         Path,
+    draft_id:        int,
+    vat_context:     str,
+    vat_code:        str,
+    decision_source: str,
+) -> None:
+    """Write resolved VAT context into proforma_drafts (D4 freeze, ADR-027).
+
+    Idempotent — safe to call multiple times; last write wins.
+    Called at draft creation and, if not yet set, at first post attempt.
+    """
+    now = _now_utc_iso()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        # Do NOT call _ensure_drafts_table here — the draft row exists,
+        # the columns exist (added by startup migration), and calling it
+        # would re-run the legacy-status backfill which overwrites draft_state.
+        conn.execute(
+            "UPDATE proforma_drafts "
+            "SET vat_context=?, vat_code=?, decision_source=?, updated_at=? "
+            "WHERE id=?",
+            (vat_context, vat_code, decision_source, now, draft_id),
+        )
 
 
 def get_draft(

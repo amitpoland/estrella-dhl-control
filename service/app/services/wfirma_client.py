@@ -221,6 +221,14 @@ class ProformaRequest:
     # to a wFirma-accepted string (przelew/gotowka/karta/kompensata).
     # "other" or empty = omit the XML element so wFirma uses its own default.
     payment_method: str = ""
+    # ── ADR-027 D6 — document defaults ────────────────────────────────────────
+    # payment_terms_days: when set (≥0), emits <paymentdays>N</paymentdays>.
+    # None → omit; let wFirma use its contractor default.
+    payment_terms_days: Optional[int] = None
+    # translation_language_id: when non-empty, emits
+    # <translation_language><id>X</id></translation_language>.
+    # Empty or "0" → omit; let wFirma use its contractor default.
+    translation_language_id: str = ""
 
 
 @dataclass
@@ -1754,6 +1762,147 @@ def decide_proforma_vat_context(customer_country: str,
             "reason": f"non-EU export (country={cc})"}
 
 
+# ── ADR-027 D2: locked vat_mode integer → (context, code_string) ─────────────
+# vat_mode is stored in customer_master as an integer matching wFirma's
+# account-specific numeric vat_code id.  This map converts the stored integer
+# to a stable (context, code) pair used throughout the resolution path.
+# Unknown integers → ValueError (block draft, never guess).
+_VMODE_TO_CONTEXT: Dict[int, tuple] = {
+    222: ("domestic", "23"),
+    228: ("wdt",      "WDT"),
+    229: ("export",   "EXP"),
+    230: ("np",       "NP"),
+    231: ("npue",     "NPUE"),
+    233: ("zw",       "ZW"),
+    234: ("zero",     "0"),
+}
+
+
+def resolve_vat_context_from_master(cm: Any) -> Dict[str, Any]:
+    """Resolve VAT context from ``customer_master`` fields (D1/D2, ADR-027).
+
+    Priority 1 — ``customer_master.vat_mode`` (operator override, wins).
+    Priority 2 — derived from ``country`` + ``vat_eu_number``.
+
+    The caller is responsible for the last-resort fallback to
+    ``wfirma_customers`` / live ``search_customer`` when ``cm.country``
+    is empty and ``blocked`` is returned.
+
+    Returns a dict::
+
+        {
+          "context":         str,       # "domestic"|"wdt"|"export"|"np"|…|"blocked"
+          "vat_code":        str|None,  # "23"|"WDT"|"EXP"|"NP"|… or None if blocked
+          "decision_source": str,       # "operator_vat_mode" | "derived"
+          "warnings":        List[str], # D3 VIES warnings (non-empty → surface to operator)
+          "blocked":         bool,
+          "blocked_reason":  str,       # human-readable; empty when not blocked
+        }
+
+    Raises ``ValueError`` if ``vat_mode`` is set but has no known mapping
+    (unknown label — block the draft, do not guess).
+    Never raises on the derived-priority path.
+    """
+    warnings: List[str] = []
+
+    # ── Priority 1: operator vat_mode override ────────────────────────────
+    raw_mode = getattr(cm, "vat_mode", None)
+    if raw_mode is not None:
+        try:
+            mode_int = int(raw_mode)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"customer_master.vat_mode={raw_mode!r} is not a valid integer "
+                "(D2 ADR-027) — correct the stored value or clear it to use "
+                "derived VAT resolution"
+            )
+        mapping = _VMODE_TO_CONTEXT.get(mode_int)
+        if mapping is None:
+            raise ValueError(
+                f"customer_master.vat_mode={mode_int!r} has no context mapping "
+                f"(D2 ADR-027); known values: {sorted(_VMODE_TO_CONTEXT)} — "
+                "update the vat_mode or clear it to use derived resolution"
+            )
+        ctx, code = mapping
+        return {
+            "context":          ctx,
+            "vat_code":         code,
+            "decision_source":  "operator_vat_mode",
+            "warnings":         warnings,
+            "blocked":          False,
+            "blocked_reason":   "",
+            "d3_vies_warning":  False,   # operator override — D3 is not applicable
+        }
+
+    # ── Priority 2: derived from country + vat_eu_number ─────────────────
+    country      = (getattr(cm, "country", None)       or "").strip().upper()
+    vat_eu       = (getattr(cm, "vat_eu_number", None) or "").strip()
+    vat_eu_valid = getattr(cm, "vat_eu_valid", None)
+
+    if not country:
+        return {
+            "context":          "blocked",
+            "vat_code":         None,
+            "decision_source":  "derived",
+            "warnings":         warnings,
+            "blocked":          True,
+            "blocked_reason":   (
+                "customer_master.country is empty — cannot determine VAT "
+                "treatment; set country in customer master or use vat_mode override"
+            ),
+            "d3_vies_warning":  False,
+        }
+
+    if country == "PL":
+        return {
+            "context":          "domestic",
+            "vat_code":         "23",
+            "decision_source":  "derived",
+            "warnings":         warnings,
+            "blocked":          False,
+            "blocked_reason":   "",
+            "d3_vies_warning":  False,
+        }
+
+    if country in _EU_COUNTRIES:
+        # D3: fire when WDT + vat_eu_valid not confirmed True.
+        # The structured flag is the canonical signal for the advisory;
+        # the warnings list carries the human-readable message.
+        _d3 = (not vat_eu) or (vat_eu_valid is not True)
+        if not vat_eu:
+            warnings.append(
+                "vies_unverified: EU customer has no vat_eu_number set; "
+                "WDT 0% applied as intent (D3 ADR-027) — add EU VAT number "
+                "or set vat_mode override to confirm treatment"
+            )
+        elif vat_eu_valid is not True:
+            warnings.append(
+                "vies_unverified: vat_eu_number is present but vat_eu_valid "
+                "is not True (D3 ADR-027) — run VIES verification or set "
+                "vat_mode override to confirm WDT eligibility"
+            )
+        return {
+            "context":          "wdt",
+            "vat_code":         "WDT",
+            "decision_source":  "derived",
+            "warnings":         warnings,
+            "blocked":          False,
+            "blocked_reason":   "",
+            "d3_vies_warning":  _d3,  # True → fire Inbox advisory (not a block)
+        }
+
+    # Non-EU
+    return {
+        "context":          "export",
+        "vat_code":         "EXP",
+        "decision_source":  "derived",
+        "warnings":         warnings,
+        "blocked":          False,
+        "blocked_reason":   "",
+        "d3_vies_warning":  False,
+    }
+
+
 def find_vat_code_id_by_code(code: str) -> Optional[str]:
     """
     Look up a wFirma vat_code's id by its <code> field value
@@ -1971,6 +2120,20 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
         if _pm_val else ""
     )
 
+    # ADR-027 D6 — payment terms days (<paymentdays>)
+    _ptd = getattr(req, "payment_terms_days", None)
+    paymentdays_xml = (
+        f"<paymentdays>{int(_ptd)}</paymentdays>"
+        if _ptd is not None and int(_ptd) >= 0 else ""
+    )
+
+    # ADR-027 D6 — document language (<translation_language><id>…</id></translation_language>)
+    _lang = (getattr(req, "translation_language_id", None) or "").strip()
+    lang_xml = (
+        f"<translation_language><id>{_esc(_lang)}</id></translation_language>"
+        if _lang and _lang != "0" else ""
+    )
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <api>
   <invoices>
@@ -1982,6 +2145,8 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
       {series_xml}
       {date_xml}
       {paymentmethod_xml}
+      {paymentdays_xml}
+      {lang_xml}
       <invoicecontents>{lines_xml}
       </invoicecontents>
     </invoice>

@@ -348,7 +348,7 @@ def test_build_proforma_request_threads_receiver(client, storage):
                                 ship_to_wfirma_customer_id="190263843")
     preview = _build_preview(BATCH, "ACME")
     assert preview["ready"] is True
-    req = _build_proforma_request(preview)
+    req, _warnings = _build_proforma_request(preview)  # ADR-027: returns (req, warnings)
     assert req.wfirma_contractor_receiver_id == "190263843"
     # Builder emits the receiver block.
     xml = wc._build_proforma_xml(req)
@@ -362,7 +362,7 @@ def test_build_proforma_request_omits_receiver_when_same_as_bill_to(
     _seed_full_line()
     # default ship_to_mode is same_as_bill_to
     preview = _build_preview(BATCH, "ACME")
-    req = _build_proforma_request(preview)
+    req, _warnings = _build_proforma_request(preview)  # ADR-027: returns (req, warnings)
     assert req.wfirma_contractor_receiver_id == ""
     xml = wc._build_proforma_xml(req)
     assert "<contractor_receiver" not in xml

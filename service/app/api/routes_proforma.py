@@ -1247,50 +1247,86 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
             "register the customer mapping before creating a proforma"
         )
 
-    # Resolve preferred proforma series from customer master.
-    # bill_to_contractor_id in customer_master == wfirma_customer_id, so
-    # we can look up directly. Returns None if no record or field unset.
-    _cm_for_series = get_customer_master(_customer_master_db_path(), contractor_id)
-    cm_proforma_series = pick_proforma_series_id(_cm_for_series) if _cm_for_series else ""
-    cm_payment_method = (
-        (_cm_for_series.preferred_payment_method or "").strip().lower()
-        if _cm_for_series else ""
-    )
+    # Resolve customer master (SSOT for VAT + document defaults, ADR-027 D1).
+    # bill_to_contractor_id in customer_master == wfirma_customer_id.
+    _cm = get_customer_master(_customer_master_db_path(), contractor_id)
+    cm_proforma_series = pick_proforma_series_id(_cm) if _cm else ""
+    cm_payment_method = ((_cm.preferred_payment_method or "").strip().lower()
+                         if _cm else "")
+    cm_payment_terms_days = (_cm.payment_terms_days if _cm else None)
+    cm_language_id = ((_cm.default_language_id or "").strip() if _cm else "")
 
-    # ── Decide VAT context per customer (domestic / WDT / export) ──────────
-    customer_country = ((cust or {}).get("country") or "").strip()
-    customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
-    if not customer_country or (customer_country.upper() != "PL"
-                                 and not customer_vat_id):
-        # Local row is missing data — try a one-off live lookup against
-        # wFirma's master to fill the decision (no DB write here; the
-        # mapping refresh is a separate operator action).
+    # ── D1/D2: VAT context from customer_master (ADR-027) ──────────────────
+    # Priority 1: vat_mode operator override.
+    # Priority 2: derived from country + vat_eu_number.
+    # Last-resort: wfirma_customers mirror or live search_customer (read-only).
+    _vat_warnings: List[str] = []
+
+    if _cm is not None:
         try:
-            live = wfirma_client.search_customer(client_name)
-        except Exception:
-            live = None
-        if live is not None:
-            customer_country = customer_country or (live.country or "").strip()
-            customer_vat_id  = customer_vat_id  or (live.nip     or "").strip()
+            _cm_vat = wfirma_client.resolve_vat_context_from_master(_cm)
+        except ValueError as _ve:
+            raise ValueError(
+                f"vat_mode resolution failed for {client_name!r}: {_ve}"
+            )
+        if _cm_vat["blocked"]:
+            # customer_master has no country — fall back to wfirma_customers
+            customer_country = ((cust or {}).get("country") or "").strip()
+            customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
+            if not customer_country:
+                try:
+                    live = wfirma_client.search_customer(client_name)
+                except Exception:
+                    live = None
+                if live is not None:
+                    customer_country = (live.country or "").strip()
+                    customer_vat_id  = (live.nip or "").strip()
+            _fallback = wfirma_client.decide_proforma_vat_context(
+                customer_country=customer_country,
+                customer_vat_id=customer_vat_id,
+            )
+            if _fallback["context"] == "blocked":
+                raise ValueError(
+                    f"vat decision blocked for {client_name!r}: "
+                    f"{_cm_vat['blocked_reason']} "
+                    f"(fallback also failed: {_fallback['reason']})"
+                )
+            vat_code_str    = _fallback["vat_code"]
+            _decision_source = "fallback_wfirma"
+        else:
+            vat_code_str    = _cm_vat["vat_code"]
+            _decision_source = _cm_vat["decision_source"]
+            _vat_warnings.extend(_cm_vat["warnings"])
+    else:
+        # No customer_master at all — use legacy path
+        customer_country = ((cust or {}).get("country") or "").strip()
+        customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
+        if not customer_country or (customer_country.upper() != "PL"
+                                     and not customer_vat_id):
+            try:
+                live = wfirma_client.search_customer(client_name)
+            except Exception:
+                live = None
+            if live is not None:
+                customer_country = customer_country or (live.country or "").strip()
+                customer_vat_id  = customer_vat_id  or (live.nip     or "").strip()
+        _legacy = wfirma_client.decide_proforma_vat_context(
+            customer_country=customer_country,
+            customer_vat_id=customer_vat_id,
+        )
+        if _legacy["context"] == "blocked":
+            raise ValueError(
+                f"vat decision blocked for {client_name!r}: {_legacy['reason']}"
+            )
+        vat_code_str    = _legacy["vat_code"]
+        _decision_source = "fallback_wfirma"
 
-    decision = wfirma_client.decide_proforma_vat_context(
-        customer_country = customer_country,
-        customer_vat_id  = customer_vat_id,
-    )
-    if decision["context"] == "blocked":
-        raise ValueError(
-            f"vat decision blocked for {client_name!r} "
-            f"(country={customer_country!r}, vat_id={customer_vat_id!r}): "
-            f"{decision['reason']}"
-        )
+    # Resolve live numeric vat_code_id (never persisted — always live at post).
     try:
-        vat_code_id = wfirma_client.resolve_vat_code_id_for_context(
-            decision["vat_code"]
-        )
+        vat_code_id = wfirma_client.resolve_vat_code_id_for_context(vat_code_str)
     except Exception as exc:
         raise ValueError(
-            f"vat_code resolution failed for {decision['vat_code']!r} "
-            f"({decision['reason']}): {exc}"
+            f"vat_code resolution failed for {vat_code_str!r}: {exc}"
         )
 
     lines = []
@@ -1351,7 +1387,7 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
         )
     receiver_id = ship_to_rcv_id if ship_to_mode == "separate_contractor" else ""
 
-    return wfirma_client.ProformaRequest(
+    _req = wfirma_client.ProformaRequest(
         client_name                   = client_name,
         client_zip                    = "",
         client_city                   = "",
@@ -1362,7 +1398,11 @@ def _build_proforma_request(preview: Dict[str, Any]) -> "wfirma_client.ProformaR
         wfirma_contractor_receiver_id = receiver_id,
         series_id                     = cm_proforma_series or "",
         payment_method                = cm_payment_method,
+        # ADR-027 D6 — document defaults from customer_master
+        payment_terms_days            = cm_payment_terms_days,
+        translation_language_id       = cm_language_id,
     )
+    return _req, _vat_warnings
 
 
 @router.post("/create/{batch_id}/{client_name:path}", dependencies=[_auth])
@@ -1579,7 +1619,7 @@ def proforma_create(
     # that wFirma would reject or, worse, accept by creating a duplicate
     # contractor inline.
     try:
-        req = _build_proforma_request(preview)
+        req, _legacy_vat_warnings = _build_proforma_request(preview)
     except ValueError as exc:
         return JSONResponse({
             "ok":               False,
@@ -1741,6 +1781,8 @@ def proforma_create(
     }
     if _service_charges_wfirma_warning:
         _resp["service_charges_note"] = _service_charges_wfirma_warning
+    if _legacy_vat_warnings:
+        _resp["vat_warnings"] = _legacy_vat_warnings
     return JSONResponse(_resp)
 
 
@@ -5156,33 +5198,94 @@ def _build_proforma_request_from_draft(
             f"{resolution['normalized_name']!r}) — register the mapping first"
         )
 
-    # VAT context (live, same as legacy)
-    customer_country = ((cust or {}).get("country") or "").strip()
-    customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
-    if not customer_country or (customer_country.upper() != "PL"
-                                 and not customer_vat_id):
+    # ── D1/D2: VAT from customer_master (ADR-027) ─────────────────────────
+    _cm_vat_rec = get_customer_master(_customer_master_db_path(), contractor_id)
+    _vat_warnings_draft: List[str] = []
+
+    if _cm_vat_rec is not None:
         try:
-            live = wfirma_client.search_customer(client_name)
-        except Exception:
-            live = None
-        if live is not None:
-            customer_country = customer_country or (live.country or "").strip()
-            customer_vat_id  = customer_vat_id  or (live.nip     or "").strip()
-    decision = wfirma_client.decide_proforma_vat_context(
-        customer_country = customer_country,
-        customer_vat_id  = customer_vat_id,
-    )
-    if decision["context"] == "blocked":
-        raise ValueError(
-            f"vat decision blocked for {client_name!r}: {decision['reason']}"
+            _cm_vat = wfirma_client.resolve_vat_context_from_master(_cm_vat_rec)
+        except ValueError as _ve:
+            raise ValueError(
+                f"vat_mode resolution failed for {client_name!r}: {_ve}"
+            )
+        if _cm_vat["blocked"]:
+            # Fall back to wfirma_customers mirror then live search
+            customer_country = ((cust or {}).get("country") or "").strip()
+            customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
+            if not customer_country:
+                try:
+                    live = wfirma_client.search_customer(client_name)
+                except Exception:
+                    live = None
+                if live is not None:
+                    customer_country = (live.country or "").strip()
+                    customer_vat_id  = (live.nip or "").strip()
+            _fallback = wfirma_client.decide_proforma_vat_context(
+                customer_country=customer_country,
+                customer_vat_id=customer_vat_id,
+            )
+            if _fallback["context"] == "blocked":
+                raise ValueError(
+                    f"vat decision blocked for {client_name!r}: "
+                    f"{_cm_vat['blocked_reason']} "
+                    f"(fallback also failed: {_fallback['reason']})"
+                )
+            vat_code_str     = _fallback["vat_code"]
+            _resolved_ctx    = _fallback["context"]
+            _decision_source = "fallback_wfirma"
+            _d3_vies_flag    = False   # fallback path — D3 not applicable
+        else:
+            vat_code_str     = _cm_vat["vat_code"]
+            _resolved_ctx    = _cm_vat["context"]
+            _decision_source = _cm_vat["decision_source"]
+            _vat_warnings_draft.extend(_cm_vat["warnings"])
+            _d3_vies_flag    = bool(_cm_vat.get("d3_vies_warning", False))
+    else:
+        # No customer_master — legacy path; D3 not applicable
+        customer_country = ((cust or {}).get("country") or "").strip()
+        customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
+        if not customer_country or (customer_country.upper() != "PL"
+                                     and not customer_vat_id):
+            try:
+                live = wfirma_client.search_customer(client_name)
+            except Exception:
+                live = None
+            if live is not None:
+                customer_country = customer_country or (live.country or "").strip()
+                customer_vat_id  = customer_vat_id  or (live.nip     or "").strip()
+        _legacy = wfirma_client.decide_proforma_vat_context(
+            customer_country=customer_country,
+            customer_vat_id=customer_vat_id,
         )
+        if _legacy["context"] == "blocked":
+            raise ValueError(
+                f"vat decision blocked for {client_name!r}: {_legacy['reason']}"
+            )
+        vat_code_str     = _legacy["vat_code"]
+        _resolved_ctx    = _legacy["context"]
+        _decision_source = "fallback_wfirma"
+        _d3_vies_flag    = False   # legacy path — D3 not applicable
+
+    # ── D4: drift check (ADR-027) ─────────────────────────────────────────
+    # If the draft already has a frozen vat_context and it differs from what
+    # we resolved now, emit a DRIFT WARNING — never silent change.
+    # NOTE: the actual DB freeze is done by the route AFTER start_post so it
+    # does not disturb the optimistic-lock timestamp used by start_post.
+    _frozen_ctx = (draft.vat_context or "").strip()
+    if _frozen_ctx and _frozen_ctx != _resolved_ctx:
+        _vat_warnings_draft.append(
+            f"vat_drift: frozen vat_context={_frozen_ctx!r} differs from "
+            f"re-resolved context={_resolved_ctx!r} — check customer master "
+            "changes since draft creation"
+        )
+
+    # Resolve numeric vat_code_id live (never persisted).
     try:
-        vat_code_id = wfirma_client.resolve_vat_code_id_for_context(
-            decision["vat_code"]
-        )
+        vat_code_id = wfirma_client.resolve_vat_code_id_for_context(vat_code_str)
     except Exception as exc:
         raise ValueError(
-            f"vat_code resolution failed for {decision['vat_code']!r}: {exc}"
+            f"vat_code resolution failed for {vat_code_str!r}: {exc}"
         )
 
     # Per-line wfirma_good_id resolution (master-data, not pricing)
@@ -5260,9 +5363,22 @@ def _build_proforma_request_from_draft(
         )
     receiver_id = ship_to_rcv_id if ship_to_mode == "separate_contractor" else ""
 
-    # Series id from customer master (same fallback as _build_proforma_request)
-    _cm_draft_series = get_customer_master(_customer_master_db_path(), contractor_id)
-    draft_proforma_series = pick_proforma_series_id(_cm_draft_series) or "" if _cm_draft_series else ""
+    # D6: document defaults from customer_master (ADR-027)
+    # _cm_vat_rec was already fetched above for the VAT decision.
+    _cm_d6 = _cm_vat_rec  # same record — no second DB read needed
+    draft_proforma_series   = (pick_proforma_series_id(_cm_d6) or "") if _cm_d6 else ""
+    _d6_payment_terms_days  = (_cm_d6.payment_terms_days if _cm_d6 else None)
+    _d6_payment_method      = ((_cm_d6.preferred_payment_method or "").strip().lower()
+                               if _cm_d6 else "")
+    _d6_language_id         = ((_cm_d6.default_language_id or "").strip() if _cm_d6 else "")
+
+    # D5: currency — use sale-line dominant; default_currency as fallback
+    _d5_default_ccy = ((_cm_d6.default_currency or "").strip().upper() if _cm_d6 else "")
+    if _d5_default_ccy and currency and currency != _d5_default_ccy:
+        _vat_warnings_draft.append(
+            f"currency_mismatch: draft currency={currency!r} differs from "
+            f"customer_master.default_currency={_d5_default_ccy!r} (D5 ADR-027)"
+        )
 
     # Service charge lines — append mapped charges as additional wFirma line items.
     # Uses same module-level wfdb for testability. Unmapped charges are noted
@@ -5273,6 +5389,9 @@ def _build_proforma_request_from_draft(
         if _sc_extra_note and not _sc_wfirma_note:
             _sc_wfirma_note = _sc_extra_note
 
+    # _d3_vies_flag is the structured D3 signal (not a substring check) —
+    # True when context==wdt AND vat_eu_valid is not True.
+    _vat_freeze = (_resolved_ctx, vat_code_str, _decision_source, _d3_vies_flag)
     return wfirma_client.ProformaRequest(
         client_name                   = client_name,
         client_zip                    = "",
@@ -5283,7 +5402,11 @@ def _build_proforma_request_from_draft(
         vat_code_id                   = vat_code_id,
         wfirma_contractor_receiver_id = receiver_id,
         series_id                     = draft_proforma_series,
-    ), _sc_wfirma_note
+        payment_method                = _d6_payment_method,
+        # ADR-027 D6 — document defaults from customer_master
+        payment_terms_days            = _d6_payment_terms_days,
+        translation_language_id       = _d6_language_id,
+    ), _sc_wfirma_note, _vat_warnings_draft, _vat_freeze
 
 
 @router.post("/draft/{draft_id}/post", dependencies=[_auth])
@@ -5372,7 +5495,9 @@ def post_proforma_draft_to_wfirma(
     # this surfaces missing-mapping / mixed-currency / service-charge
     # blockers without ever leaving the draft in `posting`.
     try:
-        req, _sc_post_note = _build_proforma_request_from_draft(pre)
+        req, _sc_post_note, _post_vat_warnings, _vat_freeze = (
+            _build_proforma_request_from_draft(pre)
+        )
     except ValueError as exc:
         return _post_validation_error(draft_id, str(exc))
 
@@ -5407,6 +5532,62 @@ def post_proforma_draft_to_wfirma(
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    # ── D4 freeze: write vat_context/vat_code/decision_source now that ────────
+    # start_post has taken the optimistic lock and transitioned to 'posting'.
+    # The freeze UPDATE changes updated_at, but start_post already succeeded
+    # so the lock is no longer in use. Best-effort: never blocks the post.
+    try:
+        _f_ctx, _f_code, _f_src, _f_d3 = _vat_freeze
+        pildb.freeze_draft_vat_context(
+            db, posting.id,
+            vat_context     = _f_ctx,
+            vat_code        = _f_code,
+            decision_source = _f_src,
+        )
+    except Exception as _fe:
+        log.warning("[draft %s] freeze_draft_vat_context failed (non-fatal): %s",
+                    draft_id, _fe)
+
+    # ── D3 VIES advisory (ADR-027): write Inbox proposal for vies_unverified ──
+    # Keyed off the structured _f_d3 flag (context==wdt + vat_eu_valid not True)
+    # — NOT a substring of the warning text, so wording changes don't silently
+    # break advisory firing.
+    # Acknowledge-and-proceed — never blocks the post; never silent-downgrade.
+    if _f_d3:
+        try:
+            from ..pipelines.pz import _advisory_to_action_proposal, _write_advisory_proposal
+            _vies_audit = (
+                settings.storage_root / "outputs"
+                / (pre.batch_id or f"draft-{draft_id}") / "audit.json"
+            )
+            # Pull the human-readable message from vat_warnings if present;
+            # fall back to a default so advisory still fires even if warning list
+            # is empty (structured flag is the source of truth).
+            _vies_msg_candidates = [
+                w for w in (_post_vat_warnings or [])
+                if "vies_unverified" in w.lower()
+            ]
+            _vies_adv = {
+                "code":    "vies_unverified",
+                "message": (_vies_msg_candidates[0] if _vies_msg_candidates else
+                            "WDT context applied but VIES validity not confirmed "
+                            "(D3 ADR-027). Operator acknowledged and proceeded."),
+                "action":  (
+                    "Verify the customer's EU VAT number via VIES "
+                    "(https://ec.europa.eu/taxation_customs/vies/) or set "
+                    "vat_mode override on the customer master."
+                ),
+            }
+            _vies_proposal = _advisory_to_action_proposal(
+                _vies_adv,
+                batch_id  = pre.batch_id or f"draft-{draft_id}",
+                trigger_source = "proforma_post_d3_vies",
+            )
+            _write_advisory_proposal(_vies_audit, _vies_proposal)
+        except Exception as _d3_exc:
+            log.warning("[draft %s] D3 vies advisory write (non-fatal): %s",
+                        draft_id, _d3_exc)
 
     # ── Live wFirma call ──────────────────────────────────────────────────
     try:
@@ -5580,10 +5761,16 @@ def post_proforma_draft_to_wfirma(
         "wfirma_proforma_id":         wfirma_id,
         "wfirma_proforma_fullnumber": full_number,
         "currency":                   posted.currency,
+        # ADR-027 D4 — surface frozen VAT context from the now-updated draft
+        "vat_context":                posted.vat_context or "",
+        "vat_code":                   posted.vat_code or "",
+        "decision_source":            posted.decision_source or "",
         "draft":                      _draft_to_full(posted),
     }
     if _sc_post_note:
         _post_resp["service_charges_note"] = _sc_post_note
+    if _post_vat_warnings:
+        _post_resp["vat_warnings"] = _post_vat_warnings
     return JSONResponse(_post_resp)
 
 
