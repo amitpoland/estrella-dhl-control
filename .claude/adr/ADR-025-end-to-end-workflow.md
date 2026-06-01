@@ -3,7 +3,7 @@
 **Status:** Proposed  
 **Date:** 2026-06-01  
 **Deciders:** Amit  
-**Related:** ADR-023 (SSOT umbrella), ADR-024 (product master — pending), ADR-018 (flag model). Grounded in docs/inspection/workflow-reality-map-2026-06-01 + field-source-matrix-2026-05-31.
+**Related:** ADR-023 (SSOT umbrella), ADR-024 (product master — pending), ADR-018 (flag model). Grounded in docs/inspection/workflow-reality-map-2026-06-01 + field-source-matrix-2026-05-31. Workflow spine: `docs/ATLAS_WORKFLOW_MAP.md`
 
 ## Context
 
@@ -53,15 +53,17 @@ Easier: end-to-end testing (no hard stops), one master source, instant PZ, dead-
 - "Received" is soft, not enforced (assumed yes).
 - Whether/which of the 25 to unstick now operationally vs. wait for advisory mode.
 
-## Action Items
+## Action Items → Build Sequence
 
-1. [ ] Commit the workflow-reality map as docs/inspection/workflow-reality-map-2026-06-01.md.
-2. [ ] Land PR #416 (customs identity, flag-gated).
-3. [ ] Increment: advisory-mode flag for HS-1/2/3 + inbox proposals (unblocks testing).
-4. [ ] ADR-024 product master + close GAP 17.
-5. [ ] wFirma product auto-register at intake (flag-gated write).
-6. [ ] Validate-against-master → inbox layer.
-7. [ ] DHL-delivered → goods-received prompt → inventory transition.
+The incremental action items below are superseded by the official 12-phase build order.
+
+**Build order: see `docs/ATLAS_WORKFLOW_MAP.md` §8** — the 12-phase sequence is the
+canonical execution plan for this ADR.
+
+**Additional references from the workflow map:**
+- WF1–WF4 transition definitions: `docs/ATLAS_WORKFLOW_MAP.md` §1
+- Composite product authority rule (resolves ADR-024 D1): `docs/ATLAS_WORKFLOW_MAP.md` §4
+- Four wFirma write flags (incl. WFIRMA_CREATE_PZ_ALLOWED for WF1.8): `docs/ATLAS_WORKFLOW_MAP.md` §3
 
 ---
 
