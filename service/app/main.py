@@ -82,6 +82,7 @@ from .api.routes_master_data import (
     designs_router as md_designs_router,
     audit_router as md_audit_router,
 )
+from .api.routes_box_types import box_types_router  # Phase D: box_types CRUD (WF4.5)
 from .api.routes_master_jewelry import (
     metals_router      as mj_metals_router,
     stones_router      as mj_stones_router,
@@ -457,6 +458,7 @@ app.include_router(md_audit_router)                  # Phase 1: unified master-d
 app.include_router(mj_metals_router)                 # Phase 3: metals master (LOCAL valuation reference)
 app.include_router(mj_stones_router)                 # Phase 3: stones master (LOCAL catalog, cert reference only)
 app.include_router(mj_warehouses_router)             # Phase 3: warehouses master (LOCAL stock-location authority)
+app.include_router(box_types_router)                 # Phase D: box_types master (WF4.5 / Path-DOC outbound label packaging)
 app.include_router(finance_postings_router)         # Phase 6F.3: read-only breakdown endpoint (no writes, no posting/settlement/FX/wFirma coupling; init_db lazy-on-call)
 app.include_router(settings_router)                # Phase 7: company profile (seller identity + bank details)
 

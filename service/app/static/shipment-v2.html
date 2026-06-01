@@ -298,6 +298,211 @@
     return { data, loading, error, reload: load };
   }
 
+  // Phase D — WF4.5: inventory state hook (checks DIRECT_DISPATCH_READY count)
+  function useInventoryState(batchId) {
+    const [data, setData]     = React.useState(null);
+    const [loading, setLoading] = React.useState(false);
+
+    const load = React.useCallback(async () => {
+      if (!batchId) return;
+      setLoading(true);
+      try {
+        const result = await apiFetch(
+          `/api/v1/inventory/state/${encodeURIComponent(batchId)}`
+        );
+        setData(result);
+      } catch (_) {
+        // Non-fatal: if inventory state is unavailable the button is just hidden.
+      } finally {
+        setLoading(false);
+      }
+    }, [batchId]);
+
+    React.useEffect(() => { load(); }, [load]);
+    return { data, loading };
+  }
+
+  // Phase D — WF4.5: DHL label-package modal (box-picker + optional fields)
+  function LabelPackageModal({ batchId, onClose }) {
+    const [boxTypes, setBoxTypes]         = React.useState([]);
+    const [boxLoading, setBoxLoading]     = React.useState(true);
+    const [boxError, setBoxError]         = React.useState(null);
+    const [selectedBox, setSelectedBox]   = React.useState(null);
+    const [incoterm, setIncoterm]         = React.useState('');
+    const [receiverEori, setReceiverEori] = React.useState('');
+    const [clientName, setClientName]     = React.useState('');
+    const [generating, setGenerating]     = React.useState(false);
+    const [gapList, setGapList]           = React.useState(null);
+    const [genError, setGenError]         = React.useState(null);
+
+    // Load box types on mount
+    React.useEffect(() => {
+      (async () => {
+        try {
+          const d = await apiFetch('/api/v1/box-types/?active=true');
+          setBoxTypes(d.box_types || []);
+          if ((d.box_types || []).length > 0) setSelectedBox(d.box_types[0]);
+        } catch (e) {
+          setBoxError(e.message || 'Failed to load box types');
+        } finally {
+          setBoxLoading(false);
+        }
+      })();
+    }, []);
+
+    async function generate() {
+      if (!selectedBox) { setGenError('Select a box type'); return; }
+      setGenerating(true);
+      setGapList(null);
+      setGenError(null);
+      try {
+        // Use raw fetch so we can handle binary (blob) response
+        const res = await fetch(
+          `/api/v1/carrier/${encodeURIComponent(batchId)}/label-package`,
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              box_type_id:   selectedBox.id,
+              incoterm:      incoterm.trim() || undefined,
+              receiver_eori: receiverEori.trim() || undefined,
+              client_name:   clientName.trim() || undefined,
+            }),
+          }
+        );
+        if (res.ok) {
+          // Blob download
+          const blob = await res.blob();
+          const ct   = res.headers.get('Content-Type') || '';
+          const ext  = ct.includes('zip') ? '.zip' : '.pdf';
+          const url  = URL.createObjectURL(blob);
+          const a    = document.createElement('a');
+          a.href     = url;
+          a.download = `label-package-${batchId}${ext}`;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+          onClose();
+        } else {
+          const body = await res.json().catch(() => ({}));
+          if (res.status === 422 && Array.isArray(body.gaps)) {
+            setGapList(body.gaps);
+          } else {
+            setGenError(
+              (body.detail && typeof body.detail === 'string'
+                ? body.detail : null)
+              || body.error
+              || `HTTP ${res.status}`
+            );
+          }
+        }
+      } catch (e) {
+        setGenError(e.message || 'Network error');
+      } finally {
+        setGenerating(false);
+      }
+    }
+
+    const inp = { padding:'6px 8px', border:'1px solid var(--border)', borderRadius:4,
+                  background:'var(--bg)', color:'var(--text)', width:'100%', boxSizing:'border-box' };
+    const lbl = { display:'block', marginBottom:4, fontSize:12, color:'var(--text-muted)', fontWeight:600 };
+    const row = { marginBottom:12 };
+
+    return (
+      <div data-testid="label-pkg-modal" style={{
+        position:'fixed', inset:0, background:'rgba(0,0,0,.45)',
+        display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000,
+      }} onClick={e => e.target === e.currentTarget && onClose()}>
+        <div style={{
+          background:'var(--bg)', borderRadius:8, padding:'24px 28px',
+          width:480, maxWidth:'92vw', boxShadow:'0 8px 32px rgba(0,0,0,.25)',
+        }}>
+          <h3 style={{margin:'0 0 16px', fontSize:16}}>Generate DHL Label Package</h3>
+
+          {boxLoading && <p style={{color:'var(--text-muted)'}}>Loading box types…</p>}
+          {boxError   && <p style={{color:'red'}}>{boxError}</p>}
+
+          {!boxLoading && !boxError && boxTypes.length === 0 && (
+            <p style={{color:'orange'}}>
+              No active box types found. Add box types in <strong>Setup → Box Types</strong> first.
+            </p>
+          )}
+
+          {!boxLoading && boxTypes.length > 0 && (
+            <>
+              <div style={row}>
+                <label style={lbl}>Box type *</label>
+                <select
+                  data-testid="select-box-type"
+                  style={inp}
+                  value={selectedBox?.id ?? ''}
+                  onChange={e => {
+                    const b = boxTypes.find(x => String(x.id) === e.target.value);
+                    setSelectedBox(b || null);
+                  }}
+                >
+                  {boxTypes.map(b => (
+                    <option key={b.id} value={b.id}>
+                      {b.code}{b.name ? ` — ${b.name}` : ''}
+                      {b.length_cm ? ` (${b.length_cm}×${b.width_cm}×${b.height_cm} cm, ${b.tare_weight_kg} kg tare)` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={row}>
+                <label style={lbl}>Incoterm (e.g. DAP, DDP) — required for non-EU</label>
+                <input data-testid="input-incoterm" style={inp} value={incoterm}
+                  onChange={e => setIncoterm(e.target.value)} placeholder="e.g. DAP" />
+              </div>
+
+              <div style={row}>
+                <label style={lbl}>Receiver EORI — required for non-EU</label>
+                <input data-testid="input-receiver-eori" style={inp} value={receiverEori}
+                  onChange={e => setReceiverEori(e.target.value)} placeholder="e.g. GB123456789000" />
+              </div>
+
+              <div style={row}>
+                <label style={lbl}>Client name override (optional)</label>
+                <input data-testid="input-client-name" style={inp} value={clientName}
+                  onChange={e => setClientName(e.target.value)} placeholder="Leave blank to use packing list value" />
+              </div>
+
+              {gapList && (
+                <div style={{marginBottom:12, padding:'10px 12px', background:'var(--badge-red-bg,#fef2f2)',
+                             border:'1px solid var(--badge-red-border,#fca5a5)', borderRadius:6}}>
+                  <strong style={{color:'var(--badge-red-text,#dc2626)'}}>Missing mandatory inputs:</strong>
+                  <ul style={{margin:'6px 0 0 16px', padding:0}}>
+                    {gapList.map((g, i) => (
+                      <li key={i} style={{fontSize:13}}><strong>{g.field}</strong>: {g.reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {genError && (
+                <p data-testid="label-pkg-error"
+                   style={{color:'var(--badge-red-text,#dc2626)', marginBottom:12}}>{genError}</p>
+              )}
+
+              <div style={{display:'flex', gap:10, justifyContent:'flex-end', marginTop:8}}>
+                <Btn variant="outline" onClick={onClose} disabled={generating}>Cancel</Btn>
+                <Btn
+                  data-testid="btn-generate-label"
+                  onClick={generate}
+                  disabled={generating || !selectedBox}
+                >
+                  {generating ? 'Generating…' : 'Generate & Download'}
+                </Btn>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // ── Components ──────────────────────────────────────────────────────────────
 
   function BatchHeader({ batch }) {
@@ -560,29 +765,58 @@
     );
   }
 
-  function QuickLinks({ batchId }) {
+  // Phase D (WF4.5): QuickLinks now accepts inventoryState so it can gate
+  // the Generate DHL Label button on DIRECT_DISPATCH_READY pieces.
+  function QuickLinks({ batchId, inventoryState }) {
     if (!batchId) return null;
 
+    // D2 gate: show label button only when ≥1 piece is DIRECT_DISPATCH_READY
+    const dispatchReady = (inventoryState?.counts?.DIRECT_DISPATCH_READY || 0) > 0;
+    const [showLabelModal, setShowLabelModal] = React.useState(false);
+
     return (
-      <Card data-testid="quick-links" style={{ padding: '16px 20px' }}>
-        <SectionHeader label="Quick Actions" />
-        <div className="link-section">
-          <Btn
-            variant="outline"
-            data-testid="btn-view-proforma"
-            onClick={() => window.location.href = `/dashboard/proforma-v2.html?batch_id=${encodeURIComponent(batchId)}`}
-          >
-            View Proforma →
-          </Btn>
-          <Btn
-            variant="outline"
-            data-testid="btn-view-pz"
-            onClick={() => window.location.href = `/dashboard/pz-v2.html?batch_id=${encodeURIComponent(batchId)}`}
-          >
-            View PZ →
-          </Btn>
-        </div>
-      </Card>
+      <>
+        <Card data-testid="quick-links" style={{ padding: '16px 20px' }}>
+          <SectionHeader label="Quick Actions" />
+          <div className="link-section">
+            <Btn
+              variant="outline"
+              data-testid="btn-view-proforma"
+              onClick={() => window.location.href = `/dashboard/proforma-v2.html?batch_id=${encodeURIComponent(batchId)}`}
+            >
+              View Proforma →
+            </Btn>
+            <Btn
+              variant="outline"
+              data-testid="btn-view-pz"
+              onClick={() => window.location.href = `/dashboard/pz-v2.html?batch_id=${encodeURIComponent(batchId)}`}
+            >
+              View PZ →
+            </Btn>
+            {/* Phase D — WF4.5: Generate DHL label — visible only when DIRECT_DISPATCH_READY */}
+            {dispatchReady && (
+              <Btn
+                data-testid="btn-generate-dhl-label"
+                onClick={() => setShowLabelModal(true)}
+                style={{ background: 'var(--accent,#3b82f6)', color: '#fff', border: 'none' }}
+              >
+                Generate DHL Label
+              </Btn>
+            )}
+          </div>
+          {dispatchReady && (
+            <div style={{ marginTop:8, fontSize:12, color:'var(--text-muted)' }}>
+              {inventoryState.counts.DIRECT_DISPATCH_READY} piece(s) ready for direct dispatch.
+            </div>
+          )}
+        </Card>
+        {showLabelModal && (
+          <LabelPackageModal
+            batchId={batchId}
+            onClose={() => setShowLabelModal(false)}
+          />
+        )}
+      </>
     );
   }
 
@@ -595,6 +829,8 @@
     const timelineHook = useTrackingTimeline(URL_BATCH_ID);
     const readinessHook = useReadinessData(URL_BATCH_ID);
     const agentDecisionHook = useAgentDecision(URL_BATCH_ID);
+    // Phase D — WF4.5: inventory state for DIRECT_DISPATCH_READY gate
+    const inventoryHook = useInventoryState(URL_BATCH_ID);
 
     // Handle session errors
     React.useEffect(() => {
@@ -700,7 +936,7 @@
                 <AgencySection batch={batch} agentDecision={agentDecision} />
 
                 {/* Quick Links */}
-                <QuickLinks batchId={URL_BATCH_ID} />
+                <QuickLinks batchId={URL_BATCH_ID} inventoryState={inventoryHook.data} />
               </div>
             </div>
           </>
