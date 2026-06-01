@@ -6205,4 +6205,59 @@ def draft_to_invoice_by_id(
     return proforma_to_invoice(d.batch_id, d.client_name, body, x_operator=operator)
 
 
+# ── Phase 9 — Payload disclosure endpoints ───────────────────────────────────
+
+@router.get("/draft/{draft_id}/disclose-post", dependencies=[_auth],
+            summary="Phase 9: payload disclosure for proforma post (WF2.4)")
+def disclose_proforma_post(draft_id: int) -> JSONResponse:
+    """Return the exact payload that would be sent to wFirma on Post.
+
+    Read-only — no wFirma call, no DB write. Operator reviews this before
+    clicking the final Post button.
+    """
+    from ..services.payload_disclosure import build_proforma_post_disclosure
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+    return JSONResponse(build_proforma_post_disclosure(d))
+
+
+@router.get("/draft/{draft_id}/disclose-convert", dependencies=[_auth],
+            summary="Phase 9: payload disclosure for proforma→invoice convert (WF2.5)")
+def disclose_proforma_convert(
+    draft_id: int,
+    final_series_id: str = "",
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Return the exact payload that would be sent to wFirma on Convert.
+
+    Read-only — fetches the proforma XML from wFirma (no write), builds the
+    disclosure. Operator reviews before clicking the final Convert button.
+    """
+    from ..services.payload_disclosure import build_invoice_convert_disclosure
+    from ..services import proforma_to_invoice as p2i
+
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+    if not (d.wfirma_proforma_id or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Draft has no wfirma_proforma_id — post to wFirma before converting.",
+        )
+    try:
+        xml  = wfirma_client.fetch_invoice_xml(d.wfirma_proforma_id)
+        snap = p2i.parse_proforma_xml(xml)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not fetch proforma from wFirma: {exc}",
+        ) from exc
+
+    operator = (x_operator or "").strip() or "unknown"
+    return JSONResponse(
+        build_invoice_convert_disclosure(snap, final_series_id=final_series_id, operator=operator)
+    )
+
+
 # (clone_proforma_draft already defined at line 3412 from PR #407 Phase 2/3 — no duplicate needed)

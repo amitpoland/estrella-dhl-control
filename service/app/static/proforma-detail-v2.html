@@ -160,6 +160,52 @@
     );
   }
 
+  // ── Post Disclosure Modal (Phase 9 WF2.4) ────────────────────────────────
+  // Fetches /api/v1/proforma/draft/{id}/disclose-post and shows the operator
+  // exactly what will be written to wFirma before the final confirm.
+  function PostDisclosureModal({ draftId, onCancel, onConfirm, busy }) {
+    const [disclosure, setDisclosure] = useState(null);
+    const [loading, setLoading]       = useState(true);
+    const [err, setErr]               = useState('');
+    React.useEffect(() => {
+      let cancelled = false;
+      apiFetch(`/api/v1/proforma/draft/${draftId}/disclose-post`)
+        .then(d => { if (!cancelled) { setDisclosure(d); setLoading(false); } })
+        .catch(e => { if (!cancelled) { setErr(e.message); setLoading(false); } });
+      return () => { cancelled = true; };
+    }, [draftId]);
+    return (
+      <div style={{ position:'fixed', inset:0, background:'var(--overlay)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }} onClick={e=>e.target===e.currentTarget&&!busy&&onCancel()}>
+        <div style={{ background:'var(--card)', borderRadius:10, padding:24, maxWidth:520, width:'95%', boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)', maxHeight:'80vh', overflowY:'auto' }}>
+          <div style={{ fontWeight:700, fontSize:15, marginBottom:10 }}>Post to wFirma — Confirm Payload</div>
+          {loading && <div style={{ color:'var(--text-2)', fontSize:13, marginBottom:16 }}>Loading disclosure…</div>}
+          {err && <div style={{ color:'var(--badge-red-text)', fontSize:13, marginBottom:16 }}>{err}</div>}
+          {disclosure && (
+            <div style={{ fontSize:12, marginBottom:16 }}>
+              <div style={{ marginBottom:8, color:'var(--badge-amber-text)', fontWeight:600 }}>{disclosure.warning}</div>
+              <div style={{ marginBottom:4 }}><b>Flag required:</b> {disclosure.flag_required}</div>
+              <div style={{ marginBottom:4 }}><b>Client:</b> {disclosure.fields_to_write?.client_name}</div>
+              <div style={{ marginBottom:4 }}><b>Currency:</b> {disclosure.fields_to_write?.currency}</div>
+              <div style={{ marginBottom:4 }}><b>Lines:</b> {disclosure.fields_to_write?.line_count}</div>
+              <div style={{ marginBottom:8 }}><b>Confirm token:</b> <code style={{ fontSize:11 }}>{disclosure.confirm_token_required}</code></div>
+              {(disclosure.lines||[]).slice(0,5).map((l,i)=>(
+                <div key={i} style={{ fontSize:11, color:'var(--text-2)', paddingLeft:8 }}>
+                  {l.product_code} · qty {l.qty} · {l.unit_price} {l.currency}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:16 }}>
+            <Btn variant="ghost" onClick={onCancel} disabled={busy} small>Cancel</Btn>
+            <Btn variant="default" onClick={onConfirm} disabled={busy||loading||!!err} small data-testid="btn-post-confirm-disclosure">
+              {busy?<><span className="spinner" style={{ marginRight:6 }}/>Posting…</>:'Confirm Post to wFirma'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ── Cancel modal (reason required) ───────────────────────────────────────
   function CancelModal({ draftId, onCancel, onDone }) {
     const [reason, setReason] = useState('');
@@ -656,7 +702,7 @@
         {modal==='cancel' && <CancelModal draftId={DRAFT_ID} onCancel={()=>setModal(null)} onDone={msg=>{ showToast(msg,'success'); setModal(null); loadDraft(); }} />}
         {modal==='reopen' && <Confirm title="Re-open Draft" msg="Move approved draft back to editing?" label="Re-open" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/re-open`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_REOPEN_LOCAL_PROFORMA_DRAFT'},'Draft re-opened.','reopen'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reopen} />}
         {modal==='approve' && <Confirm title="Approve Draft" msg="Lock draft as approved? Required before posting to wFirma." label="Approve" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/approve`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_APPROVE_LOCAL_PROFORMA_DRAFT'},'Draft approved.','approve'); }} cancel={()=>setModal(null)} busy={!!actionBusy.approve} />}
-        {modal==='post' && <Confirm title="Post to wFirma" msg={`Post draft #${DRAFT_ID} to wFirma as a proforma? This calls the live wFirma API (shared-with-production).`} label="Post to wFirma" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/post`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA'},'Proforma posted to wFirma.','post'); }} cancel={()=>setModal(null)} busy={!!actionBusy.post} />}
+        {modal==='post' && <PostDisclosureModal draftId={DRAFT_ID} onCancel={()=>setModal(null)} onConfirm={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/post`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA'},'Proforma posted to wFirma.','post'); }} busy={!!actionBusy.post} />}
         {/* Duplicate = clone to NEW draft; source is untouched */}
         {modal==='duplicate' && <Confirm title="Duplicate Draft" msg={`Create a copy of Draft #${DRAFT_ID}? A NEW draft will be created — this draft's edits are NOT changed. The clone starts as unposted.`} label="Create duplicate" ok={async()=>{ setModal(null); setActionBusy(b=>({...b,duplicate:true})); try { const r = await apiFetch(`/api/v1/proforma/draft/${DRAFT_ID}/clone`,{method:'POST'}); showToast(`Duplicate created — Draft #${r.draft_id}`,'success'); window.location.href = `/dashboard/proforma-detail-v2.html?draft_id=${r.draft_id}`; } catch(e){ showToast(e.message,'error'); } setActionBusy(b=>({...b,duplicate:false})); }} cancel={()=>setModal(null)} busy={!!actionBusy.duplicate} />}
         {/* Reset lines from packing — only via overflow, with explicit overwrite warning */}
