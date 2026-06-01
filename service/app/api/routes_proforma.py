@@ -5544,6 +5544,38 @@ def post_proforma_draft_to_wfirma(
         log.warning("[draft %s] freeze_draft_vat_context failed (non-fatal): %s",
                     draft_id, _fe)
 
+    # ── D3 VIES advisory (ADR-027): write Inbox proposal for vies_unverified ──
+    # If any warning is VIES-related, write an action_proposal to audit.json so
+    # the operator sees it in the Inbox (in addition to the response warning).
+    # Acknowledge-and-proceed — never blocks the post; never silent-downgrade.
+    _vies_warnings = [w for w in (_post_vat_warnings or [])
+                      if "vies_unverified" in w.lower()]
+    if _vies_warnings:
+        try:
+            from ..pipelines.pz import _advisory_to_action_proposal, _write_advisory_proposal
+            _vies_audit = (
+                settings.storage_root / "outputs"
+                / (pre.batch_id or f"draft-{draft_id}") / "audit.json"
+            )
+            _vies_adv = {
+                "code":    "vies_unverified",
+                "message": _vies_warnings[0],
+                "action":  (
+                    "Verify the customer's EU VAT number via VIES "
+                    "(https://ec.europa.eu/taxation_customs/vies/) or set "
+                    "vat_mode override on the customer master."
+                ),
+            }
+            _vies_proposal = _advisory_to_action_proposal(
+                _vies_adv,
+                batch_id  = pre.batch_id or f"draft-{draft_id}",
+                trigger_source = "proforma_post_d3_vies",
+            )
+            _write_advisory_proposal(_vies_audit, _vies_proposal)
+        except Exception as _d3_exc:
+            log.warning("[draft %s] D3 vies advisory write (non-fatal): %s",
+                        draft_id, _d3_exc)
+
     # ── Live wFirma call ──────────────────────────────────────────────────
     try:
         result = wfirma_client.create_proforma_draft(req)
