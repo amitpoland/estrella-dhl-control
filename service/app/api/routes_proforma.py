@@ -5184,12 +5184,35 @@ def _build_proforma_request_from_draft(
         # wFirma until products are resolved.
         if not settings.advisory_gates_enabled:
             raise ValueError(missing_msg)
-        # Advisory mode: log warning; lines without wfirma_good_id are skipped
-        # from the request so the draft can be created for review.
+        # Advisory mode: emit a wfirma_product_registration inbox proposal so the
+        # operator sees it in the Inbox and can approve registration before posting.
+        # Lines without wfirma_good_id are skipped from the request for now.
         import logging as _adv_log
         _adv_log.getLogger(__name__).warning(
-            "advisory mode: %s — unresolved lines skipped from draft request", missing_msg
+            "advisory mode: %s — unresolved lines skipped; registration proposal emitted",
+            missing_msg
         )
+        try:
+            from ..services.wfirma_product_registration import create_registration_proposal
+            # Locate the draft's audit.json to write the proposal into
+            _reg_batch = (draft.batch_id or "").strip()
+            if _reg_batch:
+                _reg_audit_path = settings.storage_root / "outputs" / _reg_batch / "audit.json"
+                if _reg_audit_path.exists():
+                    import json as _reg_json
+                    _reg_audit = _reg_json.loads(_reg_audit_path.read_text(encoding="utf-8"))
+                    _reg_prop = create_registration_proposal(
+                        _reg_audit, _reg_batch, missing_products
+                    )
+                    if _reg_prop:
+                        _reg_audit_path.write_text(
+                            _reg_json.dumps(_reg_audit, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+        except Exception as _reg_exc:
+            _adv_log.getLogger(__name__).warning(
+                "advisory mode: registration proposal write failed (non-fatal): %s", _reg_exc
+            )
 
     # Ship-to / Odbiorca (same logic as legacy _build_proforma_request)
     ship_to_mode   = ((cust or {}).get("ship_to_mode") or "same_as_bill_to").lower()
