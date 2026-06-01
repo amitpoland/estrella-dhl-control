@@ -279,9 +279,10 @@ def build_final_invoice_plan(
     """Project a parsed proforma snapshot into a FinalInvoicePlan.
 
     Args:
-        final_series_id:      wFirma series id for the final invoice. REQUIRED.
-                              (Final invoices typically use a different series
-                              than proformas — e.g. 15827921 for WDT.)
+        final_series_id:      wFirma series id for the final invoice.
+                              When empty or omitted, no ``<series>`` element
+                              is emitted and wFirma applies its contractor
+                              default series. (ADR-027 D6: step 3 = omit.)
         invoice_date:         The issue date of the final invoice. Defaults
                               to today (UTC date).
         paymentdate:          Override payment date. Defaults to the proforma's
@@ -291,8 +292,8 @@ def build_final_invoice_plan(
                               reference. The back-reference is ALWAYS prepended
                               regardless of this value.
     """
-    if not (final_series_id or "").strip():
-        raise ValueError("final_series_id is required")
+    # ADR-027 D6 step 3: empty final_series_id is valid — <series> will be
+    # omitted and wFirma will use its own contractor default.  Do NOT raise.
 
     issue_date = invoice_date or date.today()
 
@@ -315,7 +316,7 @@ def build_final_invoice_plan(
         paymentdate             = paymentdate or snap.paymentdate,
         date                    = issue_date.isoformat(),
         description             = description,
-        series_id               = str(final_series_id).strip(),
+        series_id               = (str(final_series_id).strip() if final_series_id else ""),
         company_account_id      = snap.company_account_id,
         translation_language_id = snap.translation_language_id,
         contractor_receiver_id  = snap.contractor_receiver_id,
@@ -366,13 +367,16 @@ def _line_xml(line: LineItem) -> str:
 
 
 def build_final_invoice_xml(plan: FinalInvoicePlan) -> str:
-    """Emit the <api><invoices><invoice> body for invoices/add. Pure string."""
+    """Emit the <api><invoices><invoice> body for invoices/add. Pure string.
+
+    ADR-027 D6: when ``plan.series_id`` is empty, the ``<series>`` element is
+    omitted entirely so wFirma uses its own contractor-level default series.
+    """
     if plan.type != "normal":
         raise ValueError(f"plan.type must be 'normal', got {plan.type!r}")
     if not plan.contents:
         raise ValueError("plan has no line items")
-    if not plan.series_id:
-        raise ValueError("plan.series_id is required")
+    # series_id empty is valid (step 3: omit; wFirma contractor default applies)
 
     fx_block = (
         f"      <price_currency_exchange>{_esc(plan.price_currency_exchange)}</price_currency_exchange>\n"
@@ -389,6 +393,13 @@ def build_final_invoice_xml(plan: FinalInvoicePlan) -> str:
     rcv_block = (
         f"      <contractor_receiver><id>{_esc(plan.contractor_receiver_id)}</id></contractor_receiver>\n"
         if plan.contractor_receiver_id else ""
+    )
+    # ADR-027 D6 step 3: omit <series> when no series_id resolved.
+    # wFirma applies its own contractor-level default series in that case.
+    _sid = (plan.series_id or "").strip()
+    series_block = (
+        f"      <series><id>{_esc(_sid)}</id></series>\n"
+        if _sid and _sid != "0" else ""
     )
 
     lines_xml = "\n".join(_line_xml(l) for l in plan.contents)
@@ -409,7 +420,7 @@ def build_final_invoice_xml(plan: FinalInvoicePlan) -> str:
         f"      <description>{_esc(plan.description)}</description>\n"
         f"      <contractor><id>{_esc(plan.contractor_id)}</id></contractor>\n"
         f"{rcv_block}"
-        f"      <series><id>{_esc(plan.series_id)}</id></series>\n"
+        f"{series_block}"
         f"{ca_block}"
         f"{lang_block}"
         "      <invoicecontents>\n"

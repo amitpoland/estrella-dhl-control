@@ -178,21 +178,25 @@ def check_post_readiness(lines: List[Dict[str, Any]]) -> None:
 
 
 def check_convert_series(series_id: Optional[str]) -> None:
-    """Validate that the series_id fallback resolved to a usable value.
+    """Validate the resolved invoice series_id before convert.
+
+    ADR-027 D6 (step 3): an empty series_id is NOW VALID — the caller
+    omits ``<series>`` and wFirma applies its own contractor default.
+    This function therefore passes silently for empty / None values.
+
+    Raises ValueError (when governance is on) only for the literal "0"
+    sentinel, which would produce a malformed ``<series><id>0</id></series>``
+    element and is never a valid operator choice.
 
     Skips silently when governance is off.
-    Raises ValueError when governance is on and series_id is empty / "0".
-    This complements the B1 wfirma_series_missing proposal: governance fires
-    before the proposal path so the operator gets both a synchronous error
-    and an inbox recovery card.
     """
     if not _enabled():
         return
 
     sid = (series_id or "").strip()
-    if not sid or sid == "0":
+    if sid == "0":
         raise ValueError(
-            "governance: invoice series_id could not be resolved — "
-            "set preferred_invoice_series_id on the customer master record "
-            "or supply final_series_id in the request body"
+            "governance: invoice series_id resolved to '0' which is not a "
+            "valid wFirma series — supply final_series_id in the request "
+            "body or set preferred_invoice_series_id on the customer master"
         )
