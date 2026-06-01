@@ -474,5 +474,13 @@ class Settings(BaseSettings):
     # Default OFF: current hard-block behaviour preserved until operator activates.
     advisory_gates_enabled: bool = Field(default=False)
 
+    # ── Customs identity from governed masters (GAP 1/2) ─────────────────────
+    # When True: consignee resolved from company_profile.legal_name (M8);
+    # consignor resolved from suppliers.sqlite via batch's
+    # shipment_documents.supplier_contractor_id.
+    # Graceful fallbacks apply on both paths — see customs_description_engine.py.
+    # Default OFF (False): current hardcoded constants used unchanged.
+    customs_identity_from_masters: bool = Field(default=False)
+
 
 settings = Settings()
