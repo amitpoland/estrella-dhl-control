@@ -149,6 +149,144 @@ documents; the only wFirma write in this pipeline is PZ export (WF1.8, flag
 
 ---
 
+## 1C. WF4.5 OUTBOUND DISPATCH (carrier / DHL label) (spec + audit)
+
+### Overview
+
+WF4.5 ("Dispatch / sample / return paths") in the §1 table covers the outbound
+physical dispatch of goods to a customer. The key sub-path is:
+
+```
+DIRECT_DISPATCH_READY  →  [Generate DHL label]  →  CLIENT_DISPATCHED  →  CLOSED
+```
+
+### Existing carrier subsystem (audit — Phase C complete, Phase D pending)
+
+All file:line citations are from origin/main @ c09fdfa.
+
+| Component | File:line | Status |
+|---|---|---|
+| **Shipment-creation endpoint** | `routes_carrier_actions.py:98` — `POST /api/v1/carrier/{batch_id}/shipment` | **Registered + live** (503 when `carrier_api_status=pending`) |
+| **Coordinator (idempotency + shadow log)** | `services/carrier/coordinator.py:127` — `CarrierCoordinator.create_shipment()` | **Complete** — full idempotency key, PENDING anchor, shadow log, COMPLETE transition |
+| **Live adapter** | `services/carrier/adapters/live.py:44` — `DhlExpressLiveAdapter.create_shipment()` | **Raises `NotImplementedError`** — "Phase D will add the httpx call, idempotency write, and label handling." Guards: allowlist + credential checks pass first. |
+| **Shadow adapter** | `services/carrier/adapters/shadow.py:32` — `DhlExpressShadowAdapter.create_shipment()` | **Complete** — deterministic `SIM-{hash}` tracking ref, `simulated=True`, no HTTP |
+| **PLT eligibility** | `services/carrier/models/plt.py`, `services/carrier/plt/eligibility.py` | **Complete** — gate-checks `carrier_plt_status`, invoice paths, customs doc path, country allowlist |
+| **Response redactor** | `services/carrier/persistence/redactor.py:38` — strips `labelData`, `pdfData`, `shipmentLabel`, `labelImage`, `content`, `*Data`, `*Bytes`, `*Base64`, credentials, and (in LIVE mode) `awbNumber`, `trackingNumber`, `shipmentTrackingNumber` | **Complete** — defense-in-depth binary detection |
+| **Data model** | `services/carrier/models/shipment.py:31` — `ShipmentRequest` (batch_id, shipper_account, recipient_address: dict, declared_value, currency, weight_kg, dimensions: dict, special_instructions); `ShipmentResult` (idempotency_key, mode, state, tracking_ref, service_product, dimensions_json) | **Complete** — no label-bytes field yet |
+
+### Gate fields (config.py:305–324)
+
+| Setting | Default | Role |
+|---|---|---|
+| `carrier_api_status` | `"pending"` | Master gate: `pending` → 503; `shadow` → shadow adapter; `live` → live adapter (Phase D) |
+| `carrier_plt_status` | `"pending"` | PLT (Paperless Trade) gate — independent of `carrier_api_status` |
+| `carrier_live_allowlist` | `""` | CSV of batch_ids permitted for live calls (empty = no live calls even when status=live) |
+| `DHL_EXPRESS_API_KEY` | None | Shipment-creation credential (NOT the same as tracking/clearance DHL client) |
+| `DHL_EXPRESS_API_SECRET` | None | Shipment-creation credential |
+| `DHL_EXPRESS_ACCOUNT_NUMBER` | None | Shipper billing account |
+| `DHL_EXPRESS_API_URL` | `https://express.api.dhl.com` | Express API endpoint |
+
+All five `DHL_EXPRESS_*` fields are unset in production today. `carrier_api_status`
+is `"pending"`. No live call has ever been made.
+
+### Inventory dispatch states (inventory_state_engine.py)
+
+```
+PURCHASE_TRANSIT  →  DIRECT_DISPATCH_READY  (trigger: direct_dispatch_marked)
+                      ↓
+                    CLIENT_DISPATCHED        (trigger: client_dispatched)
+                      ↓
+                    CLOSED                   (trigger: delivery_confirmed)
+
+WAREHOUSE_STOCK   →  SALES_TRANSIT           (trigger: invoice_issued)
+                      ↓
+                    CLOSED                   (trigger: delivery_confirmed)
+```
+
+`POST /api/v1/lifecycle/inventory-state/mark-direct-dispatch` (routes_lifecycle.py:469)
+transitions scan_codes to `DIRECT_DISPATCH_READY`. Requires customs/PZ clearance
+evidence in `audit.json`, operator name, and customer allocation.
+
+`dispatch_reference` (inventory_state_engine.py:476) — free-text field on the
+`transition()` call, used for outbound waybill / RMA reference. Currently manually
+entered; no label generator populates it.
+
+### Two dispatch paths
+
+#### Path-LIVE — real DHL Express API label (Phase D)
+
+Triggers the existing `POST /api/v1/carrier/{batch_id}/shipment` endpoint with
+`carrier_api_status=live`, credentials set, and the batch in `carrier_live_allowlist`.
+
+**Phase D deliverables** (as stated in `adapters/live.py:49`):
+1. `httpx` call to `DHL_EXPRESS_API_URL/shipments` (REST JSON, not SOAP)
+2. Parse label from response (`labelData` / `shipmentLabel` — currently redacted)
+3. Idempotency write via existing coordinator
+4. Store real AWB in a dedicated field (see AWB storage decision below)
+5. Consume `client_carrier_accounts.account_number` as `shipper_account`
+
+#### Path-DOC — document package, no API (always-works floor)
+
+Generates a PDF package containing:
+- DHL CN23 customs declaration (for international shipments)
+- Commercial invoice (from proforma or wFirma invoice)
+- Packing list / weight declaration
+
+This path requires **no carrier credentials**, works in all environments, and is
+the guaranteed fallback. It produces documents the operator prints and hands to DHL
+at a service point. No API call, no AWB generated — the AWB is obtained physically
+at the counter.
+
+### "Generate DHL label" button logic
+
+```
+operator clicks "Generate DHL label" (WF4.5)
+  ↓
+if carrier_api_status == "live"
+   AND DHL_EXPRESS_API_KEY + DHL_EXPRESS_API_SECRET + DHL_EXPRESS_ACCOUNT_NUMBER set
+   AND batch_id in carrier_live_allowlist:
+     → attempt Path-LIVE
+     on success: store real AWB, mark CLIENT_DISPATCHED, show tracking ref
+     on failure: fall back to Path-DOC, surface error in Inbox
+  else:
+     → Path-DOC (generate document package; operator takes to DHL counter)
+```
+
+**Gate = existing `carrier_api_status` progression** (`pending → shadow → live`).
+**No new boolean flag is introduced.** The progression is deliberate and operator-driven.
+
+### Prerequisites and gaps
+
+| Prerequisite | Paths | Status |
+|---|---|---|
+| `company_profile.legal_name + address` for shipper | **BOTH** | ⚠ **REQUIRED** — currently no row in production. Must be populated before either path can print a valid shipper identity. (PR #416 wires the UI; operator must fill the data.) |
+| `client_carrier_accounts.account_number` for per-client DHL billing | Path-LIVE | **GAP-8** — table populated (5 rows in production), not consumed by carrier subsystem (`ShipmentRequest.shipper_account` is a free-text field today) |
+| Recipient address completeness | **BOTH** | Advisory → Inbox — `customer_master.ship_to_*` / `bill_to_*` fields exist but are often empty. Advisory validation should emit an `INBOX` proposal if ship-to fields are blank before label generation proceeds. |
+| Dimensions (L×W×H cm) | Path-LIVE | **MISSING** — no data source in any table. `ShipmentRequest.dimensions` is a free-form dict. Must be captured at label-generation time via a UI input (no batch-level source to pre-fill). |
+| Incoterm | **BOTH** (CN23 / commercial invoice) | **GAP-7** — `proforma_draft.incoterm` is nullable, often NULL. Required on CN23 for customs. Must be resolved before dispatch. |
+| DHL Express credentials in .env | Path-LIVE only | **MISSING** in production — `DHL_EXPRESS_API_KEY`, `DHL_EXPRESS_API_SECRET`, `DHL_EXPRESS_ACCOUNT_NUMBER` all unset. |
+| `carrier_api_status` advanced to `"live"` | Path-LIVE only | **operator step** — currently `"pending"` in production; must progress through `shadow` first. |
+| PLT eligibility (Paperless Trade) | Path-LIVE international | `carrier_plt_status` currently `"pending"`; invoice + customs doc paths + country allowlist all checked by existing `plt/eligibility.py`. Gated separately. |
+
+### AWB storage decision (ASSUMPTION — to confirm)
+
+> **Assumption (recorded, not decided):** the real AWB returned from Phase-D
+> Path-LIVE should be stored in a **dedicated field** on a `dispatch_record`
+> (new row, additive migration, atomic writer/reader) rather than overloaded into
+> the free-text `dispatch_reference` field on `inventory_state`. Rationale:
+> `dispatch_reference` is used for RMA/return references too; a structured `awb`
+> field enables downstream tracking queries. Implementation decision deferred to
+> the Phase-D PR.
+
+### Button binding additions for §2
+
+| Screen | Button label | WF id | Gate |
+|---|---|---|---|
+| Inventory / Dispatch | Generate DHL label | WF4.5 | `carrier_api_status` + creds + allowlist (Path-LIVE) or always (Path-DOC) |
+| Inventory / Dispatch | Mark as Dispatched | WF4.5→CLIENT_DISPATCHED | — |
+
+---
+
 ## 1D. WF2 VAT + Document Defaults from customer_master (spec — ADR-027)
 
 > **Context (audit finding, origin/main @ c09fdfa):** the pre-ADR-027 implementation
@@ -347,6 +485,8 @@ unchanged as defence-in-depth; it is no longer the primary correctness control.
 | Reservation tab | Approve readiness | WF3.2 | — |
 | Inventory | Receive (confirm received) | WF4.3 | — |
 | Inventory | Move Stock | WF4.4/4.5 | — |
+| Inventory / Dispatch | Generate DHL label | WF4.5 (see §1C) | carrier_api_status + creds + allowlist (Path-LIVE) or always (Path-DOC) |
+| Inventory / Dispatch | Mark as Dispatched (CLIENT_DISPATCHED) | WF4.5 (see §1C) | — |
 | Inbox | Approve / Hold / Override / Execute | cross-cutting | per-proposal |
 | Utility (no WF) | Download PZ/Audit EN/PL/Memo/Calc XLSX/Correction | — | — |
 | Utility (no WF) | Copy wFirma Format | — | — |
