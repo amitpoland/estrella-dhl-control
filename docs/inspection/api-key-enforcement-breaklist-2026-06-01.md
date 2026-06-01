@@ -5,6 +5,21 @@
 **Inspected:** 2026-06-02
 **Status:** PHASE 0 READ-ONLY — no flag flipped, no code changed, no PR opened
 
+### Amendment 2026-06-02
+
+**Hazard overturned:** An earlier note carried from the WF4 outbound-dispatch
+follow-up read: _"ships together or not at all — the shipment-v2.html blob fetch
+breaks when api_key is set."_
+
+**This is false.** `shipment-v2.html:360` sends `credentials: 'include'`
+(blob reason is why it bypasses `apiFetch`, not why it bypasses auth).
+`require_api_key` checks `pz_session` cookie after X-API-Key; a logged-in browser
+user passes via the cookie path. The blob fetch is safe.
+
+**Correct hazard, correctly located:** The coupled break is
+`scripts/run_active_shipment_monitor.py:34` — the **10-minute production cron** —
+which carries no auth at all. See §3b, break-list item #1.
+
 ---
 
 ## 1. Auth-Enforcement Map
