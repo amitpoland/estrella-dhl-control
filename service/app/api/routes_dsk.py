@@ -157,7 +157,15 @@ async def generate_dsk_endpoint(body: DskRequest) -> DskResponse:
             _guard_audit_path = _batch_dir / "audit.json"
             if _guard_audit_path.exists():
                 _resolved_audit = json.loads(_guard_audit_path.read_text(encoding="utf-8"))
-                guard_dhl_requires_email(_resolved_audit)
+                _dsk_adv = guard_dhl_requires_email(_resolved_audit)
+                if _dsk_adv:
+                    from ..pipelines.pz import _advisory_to_action_proposal, _write_advisory_proposal
+                    _dsk_prop = _advisory_to_action_proposal(
+                        _dsk_adv,
+                        _resolved_audit.get("batch_id", body.batch_id or ""),
+                        "dsk_endpoint",
+                    )
+                    _write_advisory_proposal(_guard_audit_path, _dsk_prop)
 
     # ── Derive value_usd from audit if not supplied in payload ────────────────
     value_usd  = body.value_usd or 0.0
@@ -318,7 +326,15 @@ async def build_email_package_endpoint(body: EmailPackageRequest) -> EmailPackag
         if _audit_path_dsk.exists():
             try:
                 _audit_for_guard = json.loads(_audit_path_dsk.read_text(encoding="utf-8"))
-                guard_dhl_requires_email(_audit_for_guard)
+                _dsk2_adv = guard_dhl_requires_email(_audit_for_guard)
+                if _dsk2_adv:
+                    from ..pipelines.pz import _advisory_to_action_proposal, _write_advisory_proposal
+                    _dsk2_prop = _advisory_to_action_proposal(
+                        _dsk2_adv,
+                        _audit_for_guard.get("batch_id", body.batch_id or ""),
+                        "dsk_send_endpoint",
+                    )
+                    _write_advisory_proposal(_audit_path_dsk, _dsk2_prop)
             except HTTPException:
                 raise
             except Exception:

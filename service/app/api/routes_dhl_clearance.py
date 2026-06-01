@@ -1868,6 +1868,12 @@ async def generate_description(
             if _dhl_advisory:
                 log.info("[%s] DHL email guard advisory (advisory mode ON): %s",
                          batch_id, _dhl_advisory.get("code"))
+                # Persist advisory as Inbox action_proposal (not just a log line)
+                from ..pipelines.pz import _advisory_to_action_proposal, _write_advisory_proposal
+                _adv_proposal = _advisory_to_action_proposal(
+                    _dhl_advisory, batch_id, "dhl_clearance")
+                _adv_audit_path = settings.storage_root / "outputs" / batch_id / "audit.json"
+                _write_advisory_proposal(_adv_audit_path, _adv_proposal)
         except HTTPException as _ge:
             raise HTTPException(
                 status_code=422,

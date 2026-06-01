@@ -29,6 +29,12 @@ async def start_clearance(
     actor: str,
     admin_override: bool = False,
 ) -> None:
-    guard_dhl_requires_email(audit, admin_override)
+    _dhl_adv = guard_dhl_requires_email(audit, admin_override)
+    if _dhl_adv:
+        # Advisory mode: persist to Inbox instead of silently swallowing
+        from .pz import _advisory_to_action_proposal, _write_advisory_proposal
+        _prop = _advisory_to_action_proposal(
+            _dhl_adv, audit.get("batch_id", ""), trigger_source)
+        _write_advisory_proposal(audit_path, _prop)
     guard_trigger_declared(trigger_source)
     tl.log_event(audit_path, tl.EV_CLEARANCE_STARTED, trigger_source, actor)
