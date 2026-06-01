@@ -1,5 +1,5 @@
 """
-Carrier action routes — shipment creation and state retrieval.
+Carrier action routes — shipment creation, state retrieval, and Path-DOC package.
 
 POST /api/v1/carrier/{batch_id}/shipment
     Creates a shipment via CarrierCoordinator.
@@ -12,16 +12,22 @@ GET /api/v1/carrier/{batch_id}/shipment
     Returns: batch_id, idempotency_key, mode, state, simulated, error.
     Note: tracking_ref is never returned — structural DB invariant (column absent).
 
+POST /api/v1/carrier/{batch_id}/label-package   ← Path-DOC (WF4.5)
+    Generates outbound customs/shipping document package.
+    UNGATED — no carrier_api_status / creds / allowlist check.
+    Returns: PDF or ZIP bytes containing invoice + packing list + CN23 (non-EU).
+    422 {gaps:[...]} when mandatory inputs are missing.
+
 Auth: X-API-Key header via require_api_key (same pattern as routes_pz.py).
 No live DHL calls in shadow mode.
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from ..core.security import require_api_key
@@ -147,3 +153,87 @@ def get_shipment(
         "simulated": bool(row["simulated"]),
         "error": row["error"],
     })
+
+
+# ── Path-DOC: label package ────────────────────────────────────────────────────
+
+
+class LabelPackageBody(BaseModel):
+    """Request body for POST /api/v1/carrier/{batch_id}/label-package."""
+    dimensions:    Dict[str, float]   # {length_cm, width_cm, height_cm}
+    incoterm:      Optional[str]  = None
+    receiver_eori: Optional[str]  = None
+    client_name:   Optional[str]  = None
+
+
+@router.post(
+    "/{batch_id}/label-package",
+    summary="Path-DOC: generate outbound customs/shipping document package (WF4.5)",
+    description=(
+        "UNGATED — no carrier_api_status / creds / allowlist check. "
+        "Returns a PDF or ZIP containing: commercial invoice (from wFirma, read-only) "
+        "+ packing list (generated) + CN23 (generated, non-EU only). "
+        "Mandatory: dimensions. Non-EU also requires incoterm + receiver_eori. "
+        "Soft gaps (blank receiver address, zero weight) are returned as advisories "
+        "and do NOT block generation. "
+        "422 {gaps:[...]} when mandatory inputs are missing."
+    ),
+)
+async def create_label_package(
+    batch_id: str,
+    body: LabelPackageBody,
+    _auth: None = Depends(require_api_key),
+) -> Response:
+    """Generate the Path-DOC outbound document package for a batch."""
+    try:
+        from ..services.carrier.doc_package import (
+            LabelPackageInputs,
+            LabelPackageGaps,
+            LabelPackageResult,
+            assemble_label_package,
+        )
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": f"doc_package unavailable: {exc}", "code": "DOC_PKG_MISSING"},
+        ) from exc
+
+    from ..core.config import settings as _settings
+
+    dims = body.dimensions or {}
+    inputs = LabelPackageInputs(
+        length_cm    = float(dims.get("length_cm") or 0),
+        width_cm     = float(dims.get("width_cm") or 0),
+        height_cm    = float(dims.get("height_cm") or 0),
+        incoterm     = (body.incoterm or "").strip() or None,
+        receiver_eori= (body.receiver_eori or "").strip() or None,
+        client_name  = (body.client_name or "").strip() or None,
+    )
+
+    result = assemble_label_package(
+        batch_id     = batch_id,
+        inputs       = inputs,
+        storage_root = _settings.storage_root,
+    )
+
+    if isinstance(result, LabelPackageGaps):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Missing mandatory inputs for label package",
+                "code":  "LABEL_PACKAGE_GAPS",
+                "gaps":  result.gaps,
+            },
+        )
+
+    # LabelPackageResult
+    headers = {"Content-Disposition": f'attachment; filename="{result.filename}"'}
+    if result.advisories:
+        # Surface advisories in a custom header (JSON-encoded list)
+        import json as _json
+        headers["X-Label-Advisories"] = _json.dumps(result.advisories)
+    return Response(
+        content      = result.content,
+        media_type   = result.content_type,
+        headers      = headers,
+    )
