@@ -160,6 +160,52 @@
     );
   }
 
+  // ── Post Disclosure Modal (Phase 9 WF2.4) ────────────────────────────────
+  // Fetches /api/v1/proforma/draft/{id}/disclose-post and shows the operator
+  // exactly what will be written to wFirma before the final confirm.
+  function PostDisclosureModal({ draftId, onCancel, onConfirm, busy }) {
+    const [disclosure, setDisclosure] = useState(null);
+    const [loading, setLoading]       = useState(true);
+    const [err, setErr]               = useState('');
+    React.useEffect(() => {
+      let cancelled = false;
+      apiFetch(`/api/v1/proforma/draft/${draftId}/disclose-post`)
+        .then(d => { if (!cancelled) { setDisclosure(d); setLoading(false); } })
+        .catch(e => { if (!cancelled) { setErr(e.message); setLoading(false); } });
+      return () => { cancelled = true; };
+    }, [draftId]);
+    return (
+      <div style={{ position:'fixed', inset:0, background:'var(--overlay)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000 }} onClick={e=>e.target===e.currentTarget&&!busy&&onCancel()}>
+        <div style={{ background:'var(--card)', borderRadius:10, padding:24, maxWidth:520, width:'95%', boxShadow:'0 16px 48px var(--shadow-heavy)', border:'1px solid var(--border)', maxHeight:'80vh', overflowY:'auto' }}>
+          <div style={{ fontWeight:700, fontSize:15, marginBottom:10 }}>Post to wFirma — Confirm Payload</div>
+          {loading && <div style={{ color:'var(--text-2)', fontSize:13, marginBottom:16 }}>Loading disclosure…</div>}
+          {err && <div style={{ color:'var(--badge-red-text)', fontSize:13, marginBottom:16 }}>{err}</div>}
+          {disclosure && (
+            <div style={{ fontSize:12, marginBottom:16 }}>
+              <div style={{ marginBottom:8, color:'var(--badge-amber-text)', fontWeight:600 }}>{disclosure.warning}</div>
+              <div style={{ marginBottom:4 }}><b>Flag required:</b> {disclosure.flag_required}</div>
+              <div style={{ marginBottom:4 }}><b>Client:</b> {disclosure.fields_to_write?.client_name}</div>
+              <div style={{ marginBottom:4 }}><b>Currency:</b> {disclosure.fields_to_write?.currency}</div>
+              <div style={{ marginBottom:4 }}><b>Lines:</b> {disclosure.fields_to_write?.line_count}</div>
+              <div style={{ marginBottom:8 }}><b>Confirm token:</b> <code style={{ fontSize:11 }}>{disclosure.confirm_token_required}</code></div>
+              {(disclosure.lines||[]).slice(0,5).map((l,i)=>(
+                <div key={i} style={{ fontSize:11, color:'var(--text-2)', paddingLeft:8 }}>
+                  {l.product_code} · qty {l.qty} · {l.unit_price} {l.currency}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:16 }}>
+            <Btn variant="ghost" onClick={onCancel} disabled={busy} small>Cancel</Btn>
+            <Btn variant="default" onClick={onConfirm} disabled={busy||loading||!!err} small data-testid="btn-post-confirm-disclosure">
+              {busy?<><span className="spinner" style={{ marginRight:6 }}/>Posting…</>:'Confirm Post to wFirma'}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ── Cancel modal (reason required) ───────────────────────────────────────
   function CancelModal({ draftId, onCancel, onDone }) {
     const [reason, setReason] = useState('');
@@ -416,6 +462,31 @@
 
   // ── Tab bodies ────────────────────────────────────────────────────────────
 
+  // ── Dual-Valuation panel (Phase 5 §6) ─────────────────────────────────────
+  function DualValuationPanel({ batchId, clientName }) {
+    const [dv, setDv]   = useState(null);
+    const [dvErr, setDvErr] = useState('');
+    React.useEffect(() => {
+      if (!batchId || !clientName) return;
+      apiFetch(`/api/v1/proforma/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}/dual-valuation`)
+        .then(d => setDv(d))
+        .catch(e => setDvErr(e.message));
+    }, [batchId, clientName]);
+    if (dvErr) return null; // silent — dual valuation is supplementary
+    if (!dv) return null;
+    const fmt = v => v != null ? parseFloat(v).toLocaleString('pl-PL', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+    return (
+      <div data-testid="dual-valuation-panel" style={{ marginTop:12, padding:'10px 14px', background:'var(--bg-subtle)', borderRadius:6, border:'1px solid var(--border-subtle)', fontSize:12 }}>
+        <div style={{ fontWeight:700, marginBottom:6, color:'var(--text-2)' }}>Dual Valuation (Phase 5 §6)</div>
+        <div style={{ display:'flex', gap:24 }}>
+          <div><span style={{ color:'var(--text-3)' }}>Purchase basis (customs/PZ):</span> <b>USD {fmt(dv.purchase_total_usd)}</b> <span style={{ color:'var(--text-3)', fontSize:11 }}>({dv.purchase_source})</span></div>
+          <div><span style={{ color:'var(--text-3)' }}>Sales basis (warehouse):</span> <b>{dv.sales_currency} {fmt(dv.sales_total)}</b> <span style={{ color:'var(--text-3)', fontSize:11 }}>({dv.sales_source})</span></div>
+          <div style={{ color:'var(--text-3)', fontSize:11 }}>confidence: {dv.confidence}</div>
+        </div>
+      </div>
+    );
+  }
+
   function OverviewTab({ draft, invoiceLink }) {
     const d = draft||{}; const il = invoiceLink?.ok?invoiceLink:null;
     const pt = d.payment_terms||{};
@@ -448,6 +519,7 @@
         </div>
         {d.remarks && <div style={{ marginTop:12, padding:'10px 14px', background:'var(--bg-subtle)', borderRadius:6, border:'1px solid var(--border-subtle)', fontSize:12 }}><strong>Remarks:</strong> {d.remarks}</div>}
         {d.needs_pricing_refresh && <div data-testid="pricing-warning" style={{ marginTop:10, padding:'8px 12px', background:'var(--badge-amber-bg)', border:'1px solid var(--badge-amber-border)', borderRadius:6, fontSize:12, color:'var(--badge-amber-text)', fontWeight:600 }}>⚠ One or more lines have unit price ≤ 0 — reset from packing list.</div>}
+        <DualValuationPanel batchId={d.batch_id} clientName={d.client_name} />
       </div>
     );
   }
@@ -656,7 +728,7 @@
         {modal==='cancel' && <CancelModal draftId={DRAFT_ID} onCancel={()=>setModal(null)} onDone={msg=>{ showToast(msg,'success'); setModal(null); loadDraft(); }} />}
         {modal==='reopen' && <Confirm title="Re-open Draft" msg="Move approved draft back to editing?" label="Re-open" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/re-open`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_REOPEN_LOCAL_PROFORMA_DRAFT'},'Draft re-opened.','reopen'); }} cancel={()=>setModal(null)} busy={!!actionBusy.reopen} />}
         {modal==='approve' && <Confirm title="Approve Draft" msg="Lock draft as approved? Required before posting to wFirma." label="Approve" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/approve`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_APPROVE_LOCAL_PROFORMA_DRAFT'},'Draft approved.','approve'); }} cancel={()=>setModal(null)} busy={!!actionBusy.approve} />}
-        {modal==='post' && <Confirm title="Post to wFirma" msg={`Post draft #${DRAFT_ID} to wFirma as a proforma? This calls the live wFirma API (shared-with-production).`} label="Post to wFirma" ok={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/post`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA'},'Proforma posted to wFirma.','post'); }} cancel={()=>setModal(null)} busy={!!actionBusy.post} />}
+        {modal==='post' && <PostDisclosureModal draftId={DRAFT_ID} onCancel={()=>setModal(null)} onConfirm={()=>{ setModal(null); mutate(`/api/v1/proforma/draft/${DRAFT_ID}/post`,{expected_updated_at:draft?.updated_at||'',confirm_token:'YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA'},'Proforma posted to wFirma.','post'); }} busy={!!actionBusy.post} />}
         {/* Duplicate = clone to NEW draft; source is untouched */}
         {modal==='duplicate' && <Confirm title="Duplicate Draft" msg={`Create a copy of Draft #${DRAFT_ID}? A NEW draft will be created — this draft's edits are NOT changed. The clone starts as unposted.`} label="Create duplicate" ok={async()=>{ setModal(null); setActionBusy(b=>({...b,duplicate:true})); try { const r = await apiFetch(`/api/v1/proforma/draft/${DRAFT_ID}/clone`,{method:'POST'}); showToast(`Duplicate created — Draft #${r.draft_id}`,'success'); window.location.href = `/dashboard/proforma-detail-v2.html?draft_id=${r.draft_id}`; } catch(e){ showToast(e.message,'error'); } setActionBusy(b=>({...b,duplicate:false})); }} cancel={()=>setModal(null)} busy={!!actionBusy.duplicate} />}
         {/* Reset lines from packing — only via overflow, with explicit overwrite warning */}
@@ -690,8 +762,8 @@
                   {/* Duplicate = POST /clone → NEW unposted draft; source untouched */}
                   <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setModal('duplicate');}} disabled={!canDuplicate} data-testid="btn-duplicate">Duplicate</Btn>
                   <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
-                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('post');}} disabled={!canPost} data-testid="btn-post-wfirma">Post to wFirma</Btn>
-                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('convert');}} disabled={!canConvert} style={canConvert?{color:'var(--badge-amber-text)',borderColor:'var(--badge-amber-border)'}:{}} data-testid="btn-convert-invoice">⚠ Convert to Invoice</Btn>
+                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('post');}} disabled={!canPost} data-testid="btn-post-wfirma" data-wf-id="WF2.4" data-wf-gate="WFIRMA_CREATE_PROFORMA_ALLOWED">Post to wFirma</Btn>
+                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('convert');}} disabled={!canConvert} style={canConvert?{color:'var(--badge-amber-text)',borderColor:'var(--badge-amber-border)'}:{}} data-testid="btn-convert-invoice" data-wf-id="WF2.5" data-wf-gate="WFIRMA_CREATE_INVOICE_ALLOWED">⚠ Convert to Invoice</Btn>
                   <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
                   {/* Print = HTML preview (always available, no posting required) */}
                   <Btn variant="ghost" small onClick={e=>{e.stopPropagation();window.open(`/api/v1/proforma/draft/${DRAFT_ID}/preview.html`,'_blank');}} data-testid="btn-print">Print</Btn>

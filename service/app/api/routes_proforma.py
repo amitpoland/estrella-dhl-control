@@ -173,7 +173,13 @@ def _check_proforma_export_prerequisites(batch_id: str) -> List[str]:
     A commercial preview can be shown before the wFirma PZ is created.
     Actual proforma issuance (write to wFirma) requires a PZ to exist.
 
+    In advisory mode (settings.advisory_gates_enabled=True), the PZ-before-proforma
+    requirement becomes an advisory warning rather than a hard blocker — the
+    proforma draft can be created and reviewed without a wFirma PZ existing.
+    The wFirma write flag (WFIRMA_CREATE_PROFORMA_ALLOWED) remains hard.
+
     Returns [] when audit.json is absent (graceful pass-through).
+    Returns [] in advisory mode (caller sees the advisory in export_advisories).
     """
     output_dir = settings.storage_root / "outputs" / batch_id
     audit_path = output_dir / "audit.json"
@@ -185,15 +191,18 @@ def _check_proforma_export_prerequisites(batch_id: str) -> List[str]:
     except Exception:
         return ["export prerequisites check failed: could not read audit.json"]
 
-    reasons: List[str] = []
     wfirma_export = audit.get("wfirma_export") or {}
     pz_doc_id = (wfirma_export.get("wfirma_pz_doc_id") or "").strip()
     if not pz_doc_id:
-        reasons.append(
+        msg = (
             "proforma export requires wFirma PZ — "
             "run wFirma PZ create before issuing a proforma"
         )
-    return reasons
+        # Advisory mode: return advisory warning (empty blockers list = not blocked)
+        if settings.advisory_gates_enabled:
+            return []   # caller should check export_advisories for the advisory
+        return [msg]
+    return []
 
 
 # ── Batch lifecycle derivation ───────────────────────────────────────────────
@@ -498,12 +507,31 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     """
     blocking_reasons: List[str] = []
     warehouse_blockers: List[str] = []
-    export_blockers:   List[str] = []
+    export_blockers:    List[str] = []
+    export_advisories:  List[str] = []
 
     # ── 0a. Export prerequisites (wFirma PZ required for create — NOT preview) ─
     # Preview is intentionally allowed before the PZ exists so operators can
     # verify commercial data, customer mapping, and line items before customs.
-    export_blockers.extend(_check_proforma_export_prerequisites(batch_id))
+    # In advisory mode the prerequisite returns [] (not a blocker) and we add
+    # the advisory message to export_advisories for UI display.
+    _prereq_blockers = _check_proforma_export_prerequisites(batch_id)
+    export_blockers.extend(_prereq_blockers)
+    if not _prereq_blockers and settings.advisory_gates_enabled:
+        # Check if PZ is actually missing (advisory mode suppressed it from blockers)
+        _adv_dir = settings.storage_root / "outputs" / batch_id / "audit.json"
+        if _adv_dir.exists():
+            try:
+                import json as _adv_json
+                _adv_audit = _adv_json.loads(_adv_dir.read_text())
+                _adv_pz = ((_adv_audit.get("wfirma_export") or {}).get("wfirma_pz_doc_id") or "").strip()
+                if not _adv_pz:
+                    export_advisories.append(
+                        "advisory: wFirma PZ not yet created — proforma draft available for review; "
+                        "PZ required before final wFirma proforma issuance"
+                    )
+            except Exception:
+                pass
 
     # ── 0b. Warehouse readiness (product resolution + price conflicts) ─────────
     warehouse_blockers.extend(_check_warehouse_readiness(batch_id))
@@ -572,10 +600,12 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
             "can_preview":      False,
             "ready":            False,
             "blocking_reasons": early_blockers,
-            "export_blockers":  export_blockers,
-            "warehouse_blockers": warehouse_blockers,
-            "batch_lifecycle":  batch_lifecycle,
-            "lines":            [],
+            "export_blockers":        export_blockers,
+            "export_advisories":      export_advisories,
+            "line_mismatch_advisories": [],
+            "warehouse_blockers":     warehouse_blockers,
+            "batch_lifecycle":        batch_lifecycle,
+            "lines":                  [],
             "customer_resolution": {
                 "normalized_customer_name":   customer_resolution["normalized_name"],
                 "resolved_wfirma_customer_name": customer_resolution["resolved_wfirma_name"],
@@ -782,10 +812,21 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
     exchange_rate = (sum(line_fx) / len(line_fx)) if line_fx else None
 
     # ── 6. Readiness gates ─────────────────────────────────────────────────
+    # Phase 8: unmatched sales designs become an inbox advisory in advisory mode
+    # rather than a hard blocking reason.
+    line_mismatch_advisories: List[str] = []
     if unmatched_count:
-        blocking_reasons.append(
-            f"{unmatched_count} sales design(s) not mapped to a wFirma product_code"
+        _mismatch_msg = (
+            f"{unmatched_count} sales design(s) not mapped to a wFirma product_code — "
+            "verify the sales packing list matches the purchase invoice and design_product_mapping "
+            "is populated (approve/correct/split via Inbox)"
         )
+        if settings.advisory_gates_enabled:
+            line_mismatch_advisories.append(_mismatch_msg)
+        else:
+            blocking_reasons.append(
+                f"{unmatched_count} sales design(s) not mapped to a wFirma product_code"
+            )
     if missing_price:
         blocking_reasons.append(
             f"{missing_price} line(s) missing sales unit_price or currency on the "
@@ -939,9 +980,11 @@ def _build_preview(batch_id: str, client_name: str) -> Dict[str, Any]:
         "ready":            ready,
         "blocking_reasons": blocking_reasons,
         "export_blockers":  export_blockers,
-        "warehouse_blockers": warehouse_blockers,
-        "batch_lifecycle":  batch_lifecycle,
-        "lines":            lines,
+        "export_advisories":       export_advisories,
+        "line_mismatch_advisories": line_mismatch_advisories,
+        "warehouse_blockers":      warehouse_blockers,
+        "batch_lifecycle":         batch_lifecycle,
+        "lines":                   lines,
         # Operator-entered freight / insurance (not derived from import cost).
         # insurance entries include the canonical wording that will appear on
         # the commercial document (generated by insurance_wording module).
@@ -1472,6 +1515,38 @@ def proforma_create(
             source_lines_json     = source_lines_json,
             service_charges_json  = _service_charges_json_snapshot,
         )
+
+    # ── GAP-17: advisory check — each line product_code should exist in product_master ──
+    # Advisory only (NOT a hard block). If a product_code is absent from product_master,
+    # write an advisory action_proposal to audit.json so the operator sees it in the Inbox.
+    try:
+        from ..services.reservation_db import validate_product_code_in_master as _gap17_val
+        _gap17_rq = settings.storage_root / "reservation_queue.db"
+        _gap17_audit = settings.storage_root / "outputs" / batch_id / "audit.json"
+        if _gap17_rq.exists() and _gap17_audit.exists():
+            _gap17_missing = [
+                ln.get("product_code", "")
+                for ln in (preview.get("lines") or [])
+                if ln.get("product_code") and not _gap17_val(_gap17_rq, ln["product_code"])
+            ]
+            if _gap17_missing:
+                from ..pipelines.pz import _advisory_to_action_proposal, _write_advisory_proposal
+                _gap17_adv_entry = _advisory_to_action_proposal(
+                    {
+                        "code": "GAP17_PRODUCT_NOT_IN_MASTER",
+                        "message": (
+                            f"{len(_gap17_missing)} product_code(s) not in product_master "
+                            f"(GAP-17): {_gap17_missing[:5]}"
+                        ),
+                        "action": "Run product master backfill or register the products.",
+                    },
+                    batch_id, "proforma_create",
+                )
+                _gap17_audit_data = json.loads(_gap17_audit.read_text(encoding="utf-8"))
+                _write_advisory_proposal(_gap17_audit, _gap17_adv_entry)
+    except Exception as _gap17_exc:
+        log.debug("[%s/%s] GAP-17 editable_lines check failed (non-fatal): %s",
+                  batch_id, cn, _gap17_exc)
 
     # ── 4b. Export gate — wFirma PZ required for live issuance ──────────────
     # The local draft has been persisted as pending_local. Live issuance to
@@ -5130,11 +5205,46 @@ def _build_proforma_request_from_draft(
             currency       = (ln.get("currency") or currency or "PLN").upper(),
         ))
     if missing_products:
-        raise ValueError(
+        missing_msg = (
             "wfirma_products missing wfirma_product_id for: "
             + ", ".join(missing_products[:5])
             + ("…" if len(missing_products) > 5 else "")
         )
+        # HS-2 advisory mode: emit warning instead of blocking
+        # The wFirma write flag (WFIRMA_CREATE_PROFORMA_ALLOWED) remains hard;
+        # in advisory mode the draft can be reviewed but cannot be posted to
+        # wFirma until products are resolved.
+        if not settings.advisory_gates_enabled:
+            raise ValueError(missing_msg)
+        # Advisory mode: emit a wfirma_product_registration inbox proposal so the
+        # operator sees it in the Inbox and can approve registration before posting.
+        # Lines without wfirma_good_id are skipped from the request for now.
+        import logging as _adv_log
+        _adv_log.getLogger(__name__).warning(
+            "advisory mode: %s — unresolved lines skipped; registration proposal emitted",
+            missing_msg
+        )
+        try:
+            from ..services.wfirma_product_registration import create_registration_proposal
+            # Locate the draft's audit.json to write the proposal into
+            _reg_batch = (draft.batch_id or "").strip()
+            if _reg_batch:
+                _reg_audit_path = settings.storage_root / "outputs" / _reg_batch / "audit.json"
+                if _reg_audit_path.exists():
+                    import json as _reg_json
+                    _reg_audit = _reg_json.loads(_reg_audit_path.read_text(encoding="utf-8"))
+                    _reg_prop = create_registration_proposal(
+                        _reg_audit, _reg_batch, missing_products
+                    )
+                    if _reg_prop:
+                        _reg_audit_path.write_text(
+                            _reg_json.dumps(_reg_audit, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+        except Exception as _reg_exc:
+            _adv_log.getLogger(__name__).warning(
+                "advisory mode: registration proposal write failed (non-fatal): %s", _reg_exc
+            )
 
     # Ship-to / Odbiorca (same logic as legacy _build_proforma_request)
     ship_to_mode   = ((cust or {}).get("ship_to_mode") or "same_as_bill_to").lower()
@@ -6148,6 +6258,78 @@ def draft_to_invoice_by_id(
     )
 
     return proforma_to_invoice(d.batch_id, d.client_name, body, x_operator=operator)
+
+
+# ── Phase 9 — Payload disclosure endpoints ───────────────────────────────────
+
+@router.get("/draft/{draft_id}/disclose-post", dependencies=[_auth],
+            summary="Phase 9: payload disclosure for proforma post (WF2.4)")
+def disclose_proforma_post(draft_id: int) -> JSONResponse:
+    """Return the exact payload that would be sent to wFirma on Post.
+
+    Read-only — no wFirma call, no DB write. Operator reviews this before
+    clicking the final Post button.
+    """
+    from ..services.payload_disclosure import build_proforma_post_disclosure
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+    return JSONResponse(build_proforma_post_disclosure(d))
+
+
+@router.get("/draft/{draft_id}/disclose-convert", dependencies=[_auth],
+            summary="Phase 9: payload disclosure for proforma→invoice convert (WF2.5)")
+def disclose_proforma_convert(
+    draft_id: int,
+    final_series_id: str = "",
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Return the exact payload that would be sent to wFirma on Convert.
+
+    Read-only — fetches the proforma XML from wFirma (no write), builds the
+    disclosure. Operator reviews before clicking the final Convert button.
+    """
+    from ..services.payload_disclosure import build_invoice_convert_disclosure
+    from ..services import proforma_to_invoice as p2i
+
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+    if not (d.wfirma_proforma_id or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Draft has no wfirma_proforma_id — post to wFirma before converting.",
+        )
+    try:
+        xml  = wfirma_client.fetch_invoice_xml(d.wfirma_proforma_id)
+        snap = p2i.parse_proforma_xml(xml)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not fetch proforma from wFirma: {exc}",
+        ) from exc
+
+    operator = (x_operator or "").strip() or "unknown"
+    return JSONResponse(
+        build_invoice_convert_disclosure(snap, final_series_id=final_series_id, operator=operator)
+    )
+
+
+# ── Phase 5 — Dual-valuation endpoint ────────────────────────────────────────
+
+@router.get("/{batch_id}/{client_name}/dual-valuation", dependencies=[_auth],
+            summary="Phase 5: return purchase (customs) and sales (warehouse) values")
+def get_dual_valuation(batch_id: str, client_name: str) -> JSONResponse:
+    """Return both value bases for a batch.
+
+    purchase_* = customs / SAD / PZ cost basis (from purchase invoice)
+    sales_*    = warehouse / sales value (from sales packing list)
+
+    Read-only. No wFirma call.
+    """
+    from ..services.dual_valuation import resolve_dual_values, summarize
+    result = resolve_dual_values(batch_id, settings.storage_root)
+    return JSONResponse(summarize(result))
 
 
 # (clone_proforma_draft already defined at line 3412 from PR #407 Phase 2/3 — no duplicate needed)

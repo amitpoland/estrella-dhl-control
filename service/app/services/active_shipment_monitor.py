@@ -2656,6 +2656,29 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
                 log.debug("[monitor] evidence gap-scan failed (non-fatal) for %s: %s",
                           action["batch_id"], _exc)
 
+        # 5j. DHL delivered→received bridge (Phase 7 §1B).
+        #     When DHL tracking shows "delivered" and the operator has not yet
+        #     confirmed physical receipt, create a "confirm received" inbox proposal.
+        #     Never auto-transitions inventory state — that requires operator confirm.
+        try:
+            from .dhl_delivery_bridge import (
+                create_delivery_confirmation_proposal as _create_recv_proposal,
+                is_dhl_delivered as _is_dhl_delivered,
+                is_received_confirmed as _is_recv_confirmed,
+            )
+            _audit_for_bridge = json.loads(audit_path.read_text(encoding="utf-8"))
+            _batch_id_bridge  = _audit_for_bridge.get("batch_id", action["batch_id"])
+            if _is_dhl_delivered(_audit_for_bridge) and not _is_recv_confirmed(_audit_for_bridge):
+                _recv_proposal = _create_delivery_confirmation_proposal(
+                    _audit_for_bridge, _batch_id_bridge
+                )
+                if _recv_proposal:
+                    write_json_atomic(audit_path, _audit_for_bridge)
+                    action["delivery_confirmation_proposal"] = _recv_proposal.get("proposal_id")
+        except Exception as _exc:
+            log.debug("[monitor] delivery bridge failed (non-fatal) for %s: %s",
+                      action["batch_id"], _exc)
+
         # 6. Trigger satisfied: clear pending state once DHL email confirmed
         # IMPORTANT: re-read from disk so steps 5b/5c writes (dhl_reply_package,
         # dhl_followup state changes) aren't clobbered by a stale local audit.

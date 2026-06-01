@@ -148,7 +148,13 @@ async def run_session(
         try:
             import json as _json
             _guard_audit = _json.loads(_audit_path_pre.read_text())
-            guard_pz_requires_sad(_guard_audit)
+            _sad_advisory = guard_pz_requires_sad(_guard_audit)
+            # advisory mode: log and continue; hard mode: raises HTTPException
+            if _sad_advisory:
+                import logging as _log
+                _log.getLogger(__name__).info(
+                    "[%s] advisory gate bypass: %s", batch_id, _sad_advisory.get("code")
+                )
             guard_status_transition(_guard_audit.get("status", ""), "processing")
         except HTTPException:
             raise

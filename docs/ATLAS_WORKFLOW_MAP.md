@@ -73,35 +73,41 @@ workflow transitions.
 
 ---
 
-## 1A. AI Reverification Layer (spec)
+## 1A. Rule-Based Reverification Layer (spec)
 
-**Role:** the engine of detect → inbox → approve. After document parse, an AI pass
-re-verifies the extracted data for correctness before it is trusted anywhere downstream.
+> **Docs-honesty correction (B9):** This layer is implemented as deterministic
+> rule-based logic (`rule_based_reverification.py`), NOT an AI model. There are no
+> Anthropic/LLM calls. The earlier name "AI Reverification" was aspirational;
+> the implementation is rule-based comparison against local masters. If a future
+> increment adds a real AI check, it will be an additional service layered on top.
+
+**Role:** the engine of detect → inbox → approve. After document parse, this layer
+re-checks extracted data for correctness using deterministic rules before it is
+trusted anywhere downstream.
 
 **Reads:**
-- (a) the ORIGINAL source document — re-read to catch parse / OCR / extraction errors,
-  not just the parsed fields
-- (b) the relevant masters (supplier, client, product, HS, company profile)
-- (c) the paired track's lines (purchase ↔ sales)
+- (a) the relevant masters (supplier, client, product, HS, company profile)
+- (b) the paired track's lines (purchase ↔ sales)
+- (c) invoice_lines from documents.db
 
-**Emits:** the §7 inbox proposal types, each with an AI confidence / verdict — supplier
-mismatch, client mismatch, product/design mismatch, missing HS code, price/value
-conflict, sales-vs-purchase line mismatch, 417G disambiguation, etc.
+**Emits:** the §7 inbox proposal types (9 active — see §7 list), each with a rule
+confidence level — supplier mismatch, client mismatch, product/design mismatch,
+missing HS code, price/value conflict, sales-vs-purchase line mismatch, etc.
+No "AI confidence/verdict" language — confidence values are rule-derived.
 
-**Boundaries (HARD):** the AI layer is read-only and proposal-only. It NEVER writes a
-master, NEVER writes to wFirma, NEVER auto-approves and NEVER auto-corrects. Master
-wins (§5); every AI finding is a proposal for operator approval. No live writes in
-dev (mock).
+**Boundaries (HARD):** read-only and proposal-only. NEVER writes a master, NEVER
+writes to wFirma, NEVER auto-approves and NEVER auto-corrects. Master wins (§5);
+every finding is a proposal for operator approval. No live writes in dev (mock).
 
-**Invocation:** runs automatically at WF1.3 (purchase reverify) and WF2.2 (sales match
-reverify); re-runnable on demand. If a manual "re-run checks" control exists in the UI
-it binds to WF1.3 / WF2.2.
+**Invocation:** runs automatically at WF1.3 (purchase reverify, wired in
+`routes_intake.py` post-parse) and WF2.2 (sales match reverify); re-runnable
+on demand. Re-runs bind to WF1.3 / WF2.2.
 
 **Distinct from generation:** this layer is VALIDATION. It is separate from the
 existing generative-AI uses (PL/EN customs descriptions, email drafts).
 
-**Output sink:** the Inbox layer — AI proposes → Inbox holds → operator approves /
-holds / overrides.
+**Output sink:** the Inbox layer — proposals written to `audit["action_proposals"]`
+→ Inbox holds → operator approves / holds / overrides.
 
 ---
 
@@ -187,14 +193,31 @@ documents; the only wFirma write in this pipeline is PZ export (WF1.8, flag
 
 ## 4. Product master authority (spec — ADR-024 / D1 resolved)
 
-Composite identity = `supplier_id` + `supplier_product_code` + `normalized_design_attributes`.
+**Implemented authority model (ADR-024 — per-line product_code):**
+The row identity is `product_code` (= `invoice_no-N`, minted at purchase intake).
+This is the per-line identity that flows through PZ, inventory, proforma, and invoice.
 
-- 417G and other non-globally-unique supplier codes are **NOT excluded**. Same code
-  across different suppliers → separate `product_master` rows.
-- Same supplier+code ambiguous → inbox disambiguation proposal.
-- Every parsed line must resolve to exactly one `product_master` row.
-  No free-text-only line authority.
-- Supplier-specific parsing rules preserved.
+The columns `supplier_id`, `supplier_product_code`, and `normalized_design_attributes`
+are **additive metadata** — not a composite primary key. They record which supplier the
+product came from and enable disambiguation lookups, but the actual uniqueness constraint
+remains on `product_code`.
+
+The **canonical composite-collapse** (making `supplier_id + supplier_product_code +
+normalized_design_attributes` the primary key) was **rejected** in ADR-024 because:
+- Product codes are already globally unique for EJL-class codes (by construction)
+- Collapsing across invoices would require renaming existing codes in production
+- The per-line `product_code` model is what every downstream system (PZ, inventory,
+  proforma) actually uses
+
+For 417G non-globally-unique codes: `supplier_id` is stored as metadata; the composite
+partial index `(supplier_id, product_code)` disambiguates when supplier context is
+available. No `disambiguation_417g` inbox proposal is emitted (proposal type removed
+as unimplemented).
+
+**GAP-17 closed (advisory):** `validate_product_code_in_master()` is called at
+`seed_purchase_transit` (inventory seed) and `upsert_pending_draft` (proforma create).
+Missing codes emit an advisory `GAP17_PRODUCT_NOT_IN_MASTER` action_proposal — NOT a
+hard block.
 
 ---
 
@@ -215,7 +238,7 @@ proposal, never a silent overwrite.
 
 ## 7. Inbox proposal types (spec) — the detect → inbox → approve set
 
-Emitted by the AI Reverification Layer (§1A):
+Emitted by the Rule-Based Reverification Layer (§1A):
 
 1. Supplier mismatch
 2. Client mismatch
@@ -226,7 +249,7 @@ Emitted by the AI Reverification Layer (§1A):
 7. DHL-delivered-not-received
 8. Product-not-synced-to-wFirma
 9. PZ / proforma / invoice ready-for-approval
-10. 417G disambiguation
+~~10. 417G disambiguation~~ *(removed — proposal type was defined but never implemented; see ADR-024)*
 
 ---
 
@@ -240,8 +263,8 @@ Emitted by the AI Reverification Layer (§1A):
 |---|---|
 | **1** | Create process authority: this map + WF1–WF4 + button binding + amend ADR-025 *(IN PROGRESS)* |
 | **2** | Soften the 3 hard-stops (DHL email, SAD/MRN, product-sync/PZ-before-proforma) to advisory/inbox; keep the 4 write flags hard. Note: softening the DHL-email gate is part of the DHL pipeline (§1B); Path B (agency) already bypasses it |
-| **3** | Build detect→inbox→approve via the AI Reverification Layer (§1A): AI re-verifies parsed data vs the source document + masters, emits the §7 proposal types; read-only / proposal-only |
-| **4** | Enforce product master authority (composite key §4); remove free-text-only line authority |
+| **3** | Build detect→inbox→approve via the Rule-Based Reverification Layer (§1A): deterministic rules check parsed data vs masters, emit the §7 proposal types; read-only / proposal-only. Wired at WF1.3 in `routes_intake.py`. |
+| **4** | Product master authority per ADR-024 (per-line product_code model; composite columns as metadata; GAP-17 advisory validation at write paths) |
 | **5** | Dual-valuation resolver (§6) + UI shows both values |
 | **6** | wFirma product registration at intake via inbox proposal → operator approves → push only if flag on |
 | **7** | DHL→inventory lifecycle (§1B delivered→received bridge): IN_TRANSIT auto; DELIVERED → "confirm received" proposal → RECEIVED (person/date/location); scan → final/dispatch |
