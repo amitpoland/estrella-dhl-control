@@ -28,8 +28,9 @@ eligibility — is never consulted.
 can be applied to a customer whose EU VAT number has not been VIES-verified.
 
 **G3 — Operator override silently ignored:**
-`customer_master.vat_mode` (operator-set UI label) is stored but
-`routes_proforma.py` never reads it. The operator has no effective override.
+`customer_master.vat_mode` (operator-set numeric id, stored as an integer equal to
+the wFirma account-specific vat_code id) is never read by `routes_proforma.py`.
+The operator has no effective override.
 
 **G4 — Decision not frozen; not shown before Post:**
 The resolved `vat_code_id` is not stored in the draft. The decision is
@@ -87,20 +88,33 @@ write occurs on fallback; it fills only the in-flight decision.
 
 **Priority 1 — Operator vat_mode override (wins everything):**
 
-`customer_master.vat_mode` stores the UI label the operator selected.
-The label is mapped to a VAT **context** (not to a stored numeric id).
-**Any value with no listed mapping MUST produce an ERROR/flag — never guess.**
+`customer_master.vat_mode` stores a **numeric integer** equal to the wFirma
+account-specific `vat_code` id for this installation. The resolver
+(`_VMODE_TO_CONTEXT` in `wfirma_client.py`) maps the stored integer directly to
+`(context, code_string)`. The UI layer maps the operator's display label ("EU
+Reverse Charge", "Export", etc.) to the stored integer before writing; the backend
+sees only the integer. **Any integer without a `_VMODE_TO_CONTEXT` entry raises
+`ValueError` — block the draft, never guess.**
 
-| UI label (stored in vat_mode) | Resolved context | Frozen code string |
-|---|---|---|
-| `"EU Reverse Charge"` | `wdt` | `WDT` |
-| `"Domestic / Standard 23%"` | `domestic` | `23` |
-| `"Export"` | `export` | `EXP` |
-| `"NP"` | `np` | `NP` |
-| `"NP-UE"` | `npue` | `NPUE` |
-| `"Zwolniony (ZW)"` | `zw` | `ZW` |
-| `"0%"` | `zero` | `0` |
-| Any other value | **ERROR — flag; do not post** | — |
+> **Schema note:** `upsert_customer` (`customer_master_db.py:222`) currently
+> validates `vat_mode ∈ {222, 228, 229}` only. Values marked † in the table are
+> handled by the resolver but require a schema extension or direct DB write to store.
+
+| Stored `vat_mode` (int) | UI display label (reference) | Resolved context | Frozen code string | `vat_codes/find` id |
+|---|---|---|---|---|
+| `222` | "Domestic / Standard 23%" | `domestic` | `23` | 222 |
+| `228` | "EU Reverse Charge (WDT)" | `wdt` | `WDT` | 228 |
+| `229` | "Export" | `export` | `EXP` | 229 |
+| `230`† | "NP" | `np` | `NP` | 230 |
+| `231`† | "NP-UE" | `npue` | `NPUE` | 231 |
+| `233`† | "Zwolniony (ZW)" | `zw` | `ZW` | 233 |
+| `234`† | "0%" | `zero` | `0` | 234 |
+| Any other int | — | **ERROR — block post** | — | — |
+
+The `vat_codes/find` id column shows this account's mapping. That id is resolved
+**live at post time** and **never persisted** — only the context string and code
+string are frozen in the draft (preventing stale-id bugs across wFirma account
+migrations).
 
 **Priority 2 — Derived from country + vat_eu_number (when vat_mode null/unset):**
 
@@ -247,7 +261,7 @@ Freeze the account-specific numeric id (222/228/229) into the draft.
 Freezing the id would produce stale-id bugs after a wFirma account change. The
 code string is stable across accounts; live resolution at post is safer.
 
-### Option C — Fix VAT + freeze code string + vat_mode UI label mapping + disclose
+### Option C — Fix VAT + freeze code string + vat_mode numeric id mapping + disclose
 D1+D2+D3+D4 as specified.
 
 **Rejected as partial:** G5 (currency) and G6 (document defaults) left open.
@@ -255,8 +269,8 @@ D1+D2+D3+D4 as specified.
 ### Option D (chosen) — Full D1–D6
 All six decisions. Operator has full visibility of VAT treatment and document
 defaults; no hard blocks; wFirma account-specific ids resolved live; currency and
-terms driven from SSOT; vat_mode UI label→context mapping is explicit and errors
-on unknown labels.
+terms driven from SSOT; vat_mode numeric id→context mapping is explicit and errors
+on unknown integers.
 
 ---
 
@@ -281,8 +295,8 @@ on unknown labels.
   operator configuration; operator can see and verify VAT treatment before Post.
 - **Harder:** three new columns on `proforma_drafts` (additive migration);
   `_build_proforma_request` and `_build_proforma_request_from_draft` updated;
-  vat_mode UI-label→context mapping added to the service layer; D6 fields wired
-  into the XML builder.
+  vat_mode numeric id→context mapping (`_VMODE_TO_CONTEXT`) added to the service
+  layer; D6 fields wired into the XML builder.
 - **Revisit:** whether `vat_eu_valid` should become a hard block (current
   decision: warn-not-block; revisit if legal risk materialises).
 - **Remaining gap:** `default_language_id` was previously not sent; wFirma uses
@@ -290,26 +304,34 @@ on unknown labels.
 
 ---
 
-## Action items (implementation — separate PR, WF2 track)
+## Action items — implementation status
 
-1. [ ] Add `vat_context TEXT`, `vat_code TEXT`, `decision_source TEXT` to
-       `proforma_drafts` (additive migration, nullable).
-2. [ ] New service function `resolve_vat_context_from_master(cm_row)` implementing
-       D2 resolution order (Priority 1 UI-label map → Priority 2 derived → fallback
-       → BLOCKED), returning `(context, code, source)`. Unknown vat_mode label → raises.
-3. [ ] Update `_build_proforma_request()` and `_build_proforma_request_from_draft()`
-       to call `resolve_vat_context_from_master` instead of
-       `decide_proforma_vat_context(wfirma_customers.country, wfirma_customers.vat_id)`.
-4. [ ] Freeze `vat_context`, `vat_code`, `decision_source` into draft at WF2.3.
-5. [ ] Update `payload_disclosure.build_proforma_post_disclosure()` to surface
-       frozen VAT fields and re-resolve; emit DRIFT WARNING on mismatch.
-6. [ ] Emit `vies_unverified` Inbox advisory when D3 condition fires.
-7. [ ] Wire D5 currency: derive from sale-line dominant currency; fallback to
-       `customer_master.default_currency`; emit WARN on mismatch.
-8. [ ] Wire D6 document defaults: include `payment_terms_days`, `preferred_payment_method`,
-       `default_language_id`, `preferred_proforma_series_id` in WF2.4 XML when set;
-       include `preferred_invoice_series_id` in WF3 convert when set; omit if null.
-9. [ ] Tests (wFirma mocked): vat_eu_number drives WDT; vat_mode UI label wins;
-       unknown vat_mode label raises; VIES warning on vat_eu_valid=False; drift
+> Items 1–9 were implemented in `feat/wf2-vat-from-master` (HEAD 7a2e621).
+> Items 5 and 6 are partially done — backend returns the data; modal wiring and
+> inbox advisory are deferred to the post-#418 reconcile (Steps 1–3).
+
+1. [x] Add `vat_context TEXT`, `vat_code TEXT`, `decision_source TEXT` to
+       `proforma_drafts` (additive migration, nullable). **DONE** (`proforma_invoice_link_db.py`).
+2. [x] New `resolve_vat_context_from_master(cm_row)` implementing D2 resolution
+       (Priority 1: numeric id via `_VMODE_TO_CONTEXT` → Priority 2: derived →
+       fallback → BLOCKED). Unknown vat_mode int → `ValueError`. **DONE** (`wfirma_client.py`).
+3. [x] Update `_build_proforma_request()` and `_build_proforma_request_from_draft()`
+       to call `resolve_vat_context_from_master`. **DONE** (`routes_proforma.py`).
+4. [x] Freeze `vat_context`, `vat_code`, `decision_source` into draft after
+       `start_post` (avoids optimistic-lock conflict). **DONE** (`routes_proforma.py`
+       + `freeze_draft_vat_context()` in `proforma_invoice_link_db.py`).
+5. [ ] Update payload-disclosure modal to surface frozen VAT fields and re-resolve;
+       emit DRIFT WARNING on mismatch. **DEFERRED** — backend already returns the
+       fields; modal wiring awaits #418 B5 post-merge reconcile.
+6. [ ] Emit `vies_unverified` Inbox advisory when D3 condition fires. **DEFERRED**
+       — backend returns warning in `vat_warnings[]`; advisory write awaits #418
+       B2 helper post-merge reconcile.
+7. [x] D5 currency: draft currency vs `customer_master.default_currency`; mismatch
+       → `"currency_mismatch"` in `vat_warnings[]`. **DONE** (`routes_proforma.py`).
+8. [x] D6 document defaults in WF2.4 XML: `<paymentdays>` `<paymentmethod>`
+       `<translation_language>` `<series><id>` — all four sent when set, omitted when
+       null. **DONE** (`wfirma_client.py`; `preferred_invoice_series_id` at WF3 noted).
+9. [x] Tests: 22 tests (U1-U11 + I1-I11), wFirma mocked, all green. **DONE**
+       (`test_adr027_vat_from_master.py`).
        warning on context change between creation and post; D6 fields appear in
        XML when set; D6 fields absent from XML when null.

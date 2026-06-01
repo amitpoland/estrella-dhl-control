@@ -187,20 +187,31 @@ occurs on fallback; it fills only the in-flight decision.
 
 **Priority 1 — Operator vat_mode override (wins everything):**
 
-`customer_master.vat_mode` stores the UI-label the operator selected. The UI label
-is mapped to a VAT **context** (not stored as a numeric id). Any UI option that has
-no listed mapping must produce an ERROR/flag — never guess.
+`customer_master.vat_mode` stores a **numeric integer** equal to the wFirma
+account-specific `vat_code` id. The code uses `_VMODE_TO_CONTEXT` (`wfirma_client.py`)
+to map the stored integer directly to `(context, code_string)`. The UI layer maps
+the operator's display label to the numeric id before writing; the backend only
+ever sees the integer. Any integer without a `_VMODE_TO_CONTEXT` entry raises
+`ValueError` (blocks draft — never guesses).
 
-| UI label (stored in vat_mode) | Resolved context | Frozen code |
-|---|---|---|
-| `"EU Reverse Charge"` | `wdt` | `WDT` |
-| `"Domestic / Standard 23%"` | `domestic` | `23` |
-| `"Export"` | `export` | `EXP` |
-| `"NP"` | `np` | `NP` |
-| `"NP-UE"` | `npue` | `NPUE` |
-| `"Zwolniony (ZW)"` | `zw` | `ZW` |
-| `"0%"` | `zero` | `0` |
-| Any other value | **ERROR — flag; do not post** | — |
+> **Schema note:** `upsert_customer` (`customer_master_db.py`) currently validates
+> `vat_mode ∈ {222, 228, 229}` only. Entries marked † in the table are handled by
+> the resolver but require a schema extension or direct DB write to store.
+
+| Stored `vat_mode` (int) | UI display label (reference) | Resolved context | Frozen code string | `vat_codes/find` id |
+|---|---|---|---|---|
+| `222` | "Domestic / Standard 23%" | `domestic` | `23` | 222 |
+| `228` | "EU Reverse Charge (WDT)" | `wdt` | `WDT` | 228 |
+| `229` | "Export" | `export` | `EXP` | 229 |
+| `230`† | "NP" | `np` | `NP` | 230 |
+| `231`† | "NP-UE" | `npue` | `NPUE` | 231 |
+| `233`† | "Zwolniony (ZW)" | `zw` | `ZW` | 233 |
+| `234`† | "0%" | `zero` | `0` | 234 |
+| Any other int | — | **ERROR — block post** | — | — |
+
+Note: the `vat_codes/find` id column shows this account's mapping. The id is
+**resolved live at post** (via `resolve_vat_code_id_for_context`) and **never
+persisted** — only the context string and code string are frozen in the draft.
 
 **Priority 2 — Derived from country + vat_eu_number (when vat_mode is null/unset):**
 
@@ -212,21 +223,8 @@ no listed mapping must produce an ERROR/flag — never guess.
 | `country ∉ EU-27` | `export` | `EXP` | |
 | `country` empty (cm) → fallback `wfirma_customers` → still empty | **BLOCKED** | — | ValueError; do not post |
 
-**Locked code → wFirma account-specific numeric id (resolved LIVE at post only):**
-
-| Code string | wFirma `<code>` field | Numeric id (this account) |
-|---|---|---|
-| `23` | `23` | 222 |
-| `WDT` | `WDT` | 228 |
-| `EXP` | `EXP` | 229 |
-| `NP` | `NP` | 230 |
-| `NPUE` | `NPUE` | 231 |
-| `ZW` | `ZW` | 233 |
-| `0` | `0` | 234 |
-
-Numeric ids are resolved live via `vat_codes/find` at post time (cached in-process).
-Only the context string and code string are frozen in the draft — numeric ids are
-never persisted, preventing stale-id bugs across wFirma account migrations.
+Numeric ids for derived-path codes are resolved live via `vat_codes/find` at post
+time (in-process cache). Only the context string and code string are frozen.
 
 ### D3 — VIES warning (NOT a block)
 
