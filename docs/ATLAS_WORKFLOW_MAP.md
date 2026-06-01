@@ -149,40 +149,72 @@ documents; the only wFirma write in this pipeline is PZ export (WF1.8, flag
 
 ---
 
-## 1D. WF2 VAT Resolution (spec — ADR-027)
+## 1D. WF2 VAT + Document Defaults from customer_master (spec — ADR-027)
 
-> **Context (audit finding):** the pre-ADR-027 implementation reads `wfirma_customers.vat_id`
-> and `wfirma_customers.country` to decide the VAT context. It ignores
-> `customer_master.vat_eu_number`, `vat_eu_valid`, and `vat_mode`. The VAT context is not
-> frozen into the draft and is not shown before Post. The verify-after-create gate only
-> catches codes that wFirma *changed* — not codes that were *sent wrong from the start*.
-> This is the root of the PROF 92 WDT→23% class of error.
+> **Context (audit finding, origin/main @ c09fdfa):** the pre-ADR-027 implementation
+> reads `wfirma_customers.vat_id` and `wfirma_customers.country` to decide the VAT
+> context. It ignores `customer_master.vat_eu_number`, `vat_eu_valid`, and `vat_mode`.
+> Document-default fields (`payment_terms_days`, `default_language_id`,
+> `preferred_proforma_series_id`) may be read from `customer_master` (where they exist)
+> but the currency fallback and terms are not consistently applied from SSOT.
+> The VAT context is not frozen into the draft and not shown before Post.
+> The verify-after-create gate catches codes wFirma *changed*, not codes *sent wrong
+> from the start*. This is the root of the PROF 92 WDT→23% class of error.
 
-### D1 — VAT decision source: `customer_master` is the SSOT
+### D1 — Source authority: `customer_master` is the SSOT for VAT + document defaults
 
-The VAT decision reads **`customer_master`** fields (`country`, `vat_eu_number`,
-`vat_eu_valid`, `vat_mode`) — not the `wfirma_customers` mirror.
+All proforma VAT and document-default fields are driven from **`customer_master`**.
+The `wfirma_customers` mirror is a **last-resort read-only fallback** used only when
+`customer_master` has no `country` AND `wfirma_customers` is also empty. No DB write
+occurs on fallback; it fills only the in-flight decision.
 
-Live `wfirma_client.search_customer` is a **last-resort read-only fallback only** when
-`customer_master` has no `country` AND the `wfirma_customers` row is also empty. No DB
-write occurs on fallback; it fills only the in-flight decision.
+**Fields owned by `customer_master` for proforma creation:**
 
-### D2 — Resolution order (one context per proforma)
+| Field | Purpose |
+|---|---|
+| `country` | D2 VAT derivation (primary) |
+| `vat_eu_number` | D2 WDT eligibility |
+| `vat_eu_valid` | D3 VIES warning trigger |
+| `vat_mode` | D2 operator VAT override (wins all derived logic) |
+| `default_currency` | D5 currency fallback |
+| `payment_terms_days` | D6 payment terms → `<paymentmethod>` days |
+| `preferred_payment_method` | D6 payment method code |
+| `default_language_id` | D6 language sent to wFirma |
+| `preferred_proforma_series_id` | D6 proforma series at create |
+| `preferred_invoice_series_id` | D6 invoice series at convert-to-invoice |
 
-| Priority | Condition | Resolved context | Locked code |
+### D2 — VAT resolution order (one context per proforma)
+
+**Priority 1 — Operator vat_mode override (wins everything):**
+
+`customer_master.vat_mode` stores the UI-label the operator selected. The UI label
+is mapped to a VAT **context** (not stored as a numeric id). Any UI option that has
+no listed mapping must produce an ERROR/flag — never guess.
+
+| UI label (stored in vat_mode) | Resolved context | Frozen code |
+|---|---|---|
+| `"EU Reverse Charge"` | `wdt` | `WDT` |
+| `"Domestic / Standard 23%"` | `domestic` | `23` |
+| `"Export"` | `export` | `EXP` |
+| `"NP"` | `np` | `NP` |
+| `"NP-UE"` | `npue` | `NPUE` |
+| `"Zwolniony (ZW)"` | `zw` | `ZW` |
+| `"0%"` | `zero` | `0` |
+| Any other value | **ERROR — flag; do not post** | — |
+
+**Priority 2 — Derived from country + vat_eu_number (when vat_mode is null/unset):**
+
+| Condition | Resolved context | Frozen code | Notes |
 |---|---|---|---|
-| **1 — Operator override** | `customer_master.vat_mode` is set (non-null) | interpret as context (see map below) | same map |
-| **2a** | `country == "PL"` | `domestic` | `23` |
-| **2b** | `country ∈ EU-27` AND `vat_eu_number` set | `wdt` | `WDT` |
-| **2c** | `country ∈ EU-27` AND `vat_eu_number` empty | `wdt-intent` (FLAGGED — see D3) | `WDT` (with warning) |
-| **2d** | `country ∉ EU-27` | `export` | `EXP` |
+| `country == "PL"` | `domestic` | `23` | |
+| `country ∈ EU-27` AND `vat_eu_number` set | `wdt` | `WDT` | |
+| `country ∈ EU-27` AND `vat_eu_number` empty | `wdt-intent` (FLAGGED) | `WDT` | D3 warning fires |
+| `country ∉ EU-27` | `export` | `EXP` | |
+| `country` empty (cm) → fallback `wfirma_customers` → still empty | **BLOCKED** | — | ValueError; do not post |
 
-**`vat_mode` → context mapping:**
-`vat_mode=222` → `domestic` · `vat_mode=228` → `wdt` · `vat_mode=229` → `export`
+**Locked code → wFirma account-specific numeric id (resolved LIVE at post only):**
 
-**Locked code → wFirma account-specific id (resolved LIVE at post):**
-
-| Code string | wFirma vat_code `<code>` | Numeric id (this account) |
+| Code string | wFirma `<code>` field | Numeric id (this account) |
 |---|---|---|
 | `23` | `23` | 222 |
 | `WDT` | `WDT` | 228 |
@@ -192,75 +224,109 @@ write occurs on fallback; it fills only the in-flight decision.
 | `ZW` | `ZW` | 233 |
 | `0` | `0` | 234 |
 
-The numeric id is looked up live via `vat_codes/find` at post time and cached in-process.
-Only the **context string** (`domestic`/`wdt`/`export`) and the **code string** (`23`/`WDT`/`EXP`)
-are stored in the draft — the numeric id is never persisted, preventing stale-id bugs.
+Numeric ids are resolved live via `vat_codes/find` at post time (cached in-process).
+Only the context string and code string are frozen in the draft — numeric ids are
+never persisted, preventing stale-id bugs across wFirma account migrations.
 
 ### D3 — VIES warning (NOT a block)
 
 When the resolved context is `wdt` and `customer_master.vat_eu_valid` is **not `True`**
-(missing, unverified, or invalid):
+(missing, unverified, or explicitly invalid):
 
-1. A **WARNING** is emitted in the pre-post payload-disclosure modal.
-2. A **`vies_unverified` Inbox advisory proposal** is written (see §7).
-3. The operator may **acknowledge-and-proceed** — the system does NOT hard-block.
-4. The system does **NOT silently downgrade** to domestic (23%); the VAT treatment
-   remains `wdt` unless the operator explicitly overrides `vat_mode`.
-5. The operator owns the legal call.
+1. A **WARNING** is shown in the pre-post payload-disclosure modal.
+2. A **`vies_unverified` Inbox advisory** is written (see §7).
+3. The operator may **acknowledge-and-proceed** — no hard block.
+4. The system does **NOT silently downgrade** to domestic (23%).
+5. The operator owns the legal call; can override via `vat_mode` if needed.
+
+Rationale: hard blocks jam live shipments. The operator is informed; they decide.
 
 ### D4 — Freeze and disclose
 
-**At draft creation (WF2.3)**, the resolved VAT fields are stored in `proforma_draft`:
+**At draft creation (WF2.3)**, freeze into `proforma_draft`:
 
 | Draft field | What is stored |
 |---|---|
-| `vat_context` | `"domestic"` / `"wdt"` / `"export"` |
-| `vat_code` | `"23"` / `"WDT"` / `"EXP"` (code string, NOT numeric id) |
+| `vat_context` | `"domestic"` / `"wdt"` / `"export"` / `"np"` / `"npue"` / `"zw"` / `"zero"` |
+| `vat_code` | Code string (`"23"` / `"WDT"` / `"EXP"` / etc.) — NOT numeric id |
 | `decision_source` | `"operator_vat_mode"` \| `"derived"` \| `"fallback_wfirma"` |
 
 **In the payload-disclosure modal (before WF2.4 Post):**
-- All three frozen fields are surfaced to the operator.
-- The modal fetches `/api/v1/proforma/draft/{id}/disclose-post` which re-resolves
-  the VAT context at that moment and **compares to the frozen values**.
-- If they differ (e.g., the customer's country was corrected between draft creation
-  and posting), a **DRIFT WARNING** is displayed — no silent change.
+- All three frozen fields are surfaced.
+- `/api/v1/proforma/draft/{id}/disclose-post` re-resolves the VAT context and
+  **compares to frozen values**. A **DRIFT WARNING** fires if they differ.
+- Operator must acknowledge warnings before post proceeds.
 
-**At post (WF2.4)**, the numeric `vat_code_id` is resolved live (D2 map) and sent to
-wFirma. The verify-after-create gate checks the persisted id matches what was sent.
+**At post (WF2.4):** the numeric `vat_code_id` is resolved live (D2 locked map) and
+sent. Verify-after-create gate checks the persisted id matches what was sent (retained
+as defence-in-depth; insufficient alone — see note below).
 
-### VAT field map: customer_master → draft → wFirma post
+### D5 — Currency
 
-| customer\_master field | Old source | New role | Stored in draft? | Sent to wFirma? |
-|---|---|---|---|---|
-| `country` | `wfirma_customers.country` | **Primary D2 input** | No (used at draft creation) | No |
-| `vat_eu_number` | **Not consulted** | **Primary D2 input (EU VAT for WDT)** | No | No |
-| `vat_eu_valid` | **Not consulted** | D3 VIES warning trigger | No | No |
-| `vat_mode` | **Not consulted** | D2 operator override (wins) | No (→ `decision_source`) | No |
-| `nip` | `wfirma_customers.vat_id` | Fallback only (live wFirma search) | No | No |
-| `preferred_proforma_series_id` | customer\_master (unchanged) | Series id → `<series><id>` | No (read at post) | Yes |
-| `preferred_payment_method` | customer\_master (unchanged) | Payment method → `<paymentmethod>` | No (read at post) | Yes |
-| **`vat_context`** (draft field) | **NEW** | Frozen resolved context | **Yes** | No |
-| **`vat_code`** (draft field) | **NEW** | Frozen code string | **Yes** | No (id resolved live) |
-| **`decision_source`** (draft field) | **NEW** | Provenance of the decision | **Yes** | No |
-| `vat_code_id` (numeric, in-process) | Live `vat_codes/find` (unchanged) | Account-specific id resolved at post | **No** | Yes (`<vat_code><id>`) |
+- **Proforma currency** = dominant currency of the sale lines being included.
+- **Fallback**: `customer_master.default_currency` when lines carry no currency.
+- **Mismatch warning**: if the resolved currency differs from `customer_master.default_currency`,
+  a WARN is logged and surfaced in the disclosure modal (not a block).
+- Currency is **not** frozen in the draft — it is re-derived at post from current sale-line state.
+
+### D6 — Document defaults sent to wFirma at proforma create
+
+On proforma create (WF2.4 post), the following `customer_master` fields are included
+in the wFirma XML payload, **overriding** whatever wFirma would infer from its own
+contractor record:
+
+| customer\_master field | wFirma XML element | Notes |
+|---|---|---|
+| `payment_terms_days` | `<paymentdays>` | Integer days; if null → wFirma default |
+| `preferred_payment_method` | `<paymentmethod>` | e.g. `"transfer"` |
+| `default_language_id` | `<lang>` | e.g. `"en"` / `"pl"` |
+| `preferred_proforma_series_id` | `<series><id>` | Proforma numbering series |
+
+On **convert-to-invoice** (WF3):
+
+| customer\_master field | wFirma XML element | Notes |
+|---|---|---|
+| `preferred_invoice_series_id` | `<series><id>` | Invoice numbering series |
+
+If a field is null in `customer_master`, **do not send the element** — let wFirma
+use its contractor default. Do not substitute a hardcoded fallback.
+
+### Full field map: customer\_master → proforma\_draft → wFirma post
+
+| customer\_master field | Source classification | Old source | Post-ADR-027 role | Frozen in draft? | Sent to wFirma? |
+|---|---|---|---|---|---|
+| `country` | wFirma-sync | `wfirma_customers.country` | **Primary D2 VAT input** | No | No |
+| `vat_eu_number` | Operator | Not consulted | **D2 WDT eligibility** | No | No |
+| `vat_eu_valid` | VIES result | Not consulted | **D3 VIES warning trigger** | No | No |
+| `vat_mode` | Operator | Not consulted | **D2 override — wins all** | No (→ `decision_source`) | No |
+| `nip` | wFirma-sync | `wfirma_customers.vat_id` | D2 fallback (last resort) | No | No |
+| `default_currency` | Operator | Partial | D5 currency fallback | No | No (sale-line driven) |
+| `payment_terms_days` | Operator | wFirma contractor default | D6 → `<paymentdays>` | No (read at post) | **Yes** (if set) |
+| `preferred_payment_method` | Operator | customer\_master ✓ | D6 → `<paymentmethod>` | No (read at post) | **Yes** (if set) |
+| `default_language_id` | Operator | Not sent | D6 → `<lang>` | No (read at post) | **Yes** (if set) |
+| `preferred_proforma_series_id` | Operator | customer\_master ✓ | D6 → `<series><id>` (proforma) | No (read at post) | **Yes** (if set) |
+| `preferred_invoice_series_id` | Operator | Not sent | D6 → `<series><id>` (invoice) | No (read at convert) | **Yes** at WF3 (if set) |
+| **`vat_context`** (NEW draft field) | — | N/A | Frozen resolved context | **Yes** | No |
+| **`vat_code`** (NEW draft field) | — | N/A | Frozen code string | **Yes** | No (id live at post) |
+| **`decision_source`** (NEW draft field) | — | N/A | Provenance of decision | **Yes** | No |
+| `vat_code_id` (in-process) | — | Live `vat_codes/find` | Account-specific id at post | **No** | Yes (`<vat_code><id>`) |
 
 ### Why verify-after-create is insufficient alone
 
-`create_proforma_draft()` fetches the created proforma back from wFirma and checks
-that the persisted `vat_code.id` on each line matches `req.vat_code_id`. This catches
-codes that **wFirma changed** after receiving them. It does **not** catch a code that
-was **sent wrong from the start** — because sent == persisted, the check passes.
+`create_proforma_draft()` fetches the created proforma back and checks that each
+line's persisted `vat_code.id` matches `req.vat_code_id`. This catches codes that
+**wFirma changed** after receiving them. It does **not** catch a code **sent wrong
+from the start** — because sent == persisted, the check passes.
 
-The D1–D4 fixes are required to ensure the correct code is sent in the first place.
-The verify-after-create gate is retained as a defence-in-depth layer but is no longer
-the primary correctness control.
+D1–D4 ensure the correct code is sent. The verify-after-create gate is retained
+unchanged as defence-in-depth; it is no longer the primary correctness control.
 
 ### Scope and write-flag posture
 
 - Posting remains behind `WFIRMA_CREATE_PROFORMA_ALLOWED` (unchanged).
-- wFirma is mocked in all tests (no live API calls in dev).
-- No new flag is introduced; the VAT source fix is a behaviour change behind the
-  existing flag.
+- wFirma mocked in all tests; no live writes in dev.
+- No new feature flag introduced — D1–D6 are correctness fixes under the existing flag.
+- Convert-to-invoice remains behind `WFIRMA_CREATE_INVOICE_ALLOWED` (unchanged).
 
 ---
 
