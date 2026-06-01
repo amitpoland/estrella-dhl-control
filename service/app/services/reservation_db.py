@@ -160,6 +160,19 @@ _PRODUCT_MASTER_ADDITIVE_COLUMNS = (
     ("last_seen_batch_id", "TEXT NOT NULL DEFAULT ''"),
 )
 
+# Phase 4 — Composite identity columns (Atlas Campaign).
+# Composite identity = supplier_id + supplier_product_code + normalized_design_attributes.
+# Additive: existing rows keep '' defaults; EJL codes remain globally unique.
+# 417G codes: supplier_id populated → (supplier_id, product_code) is the
+# effective composite key (not SQL-enforced cross-row, but logically unique).
+# is_globally_unique mirrors the same field in product_descriptions; 0 = 417G-class.
+_PRODUCT_MASTER_PHASE4_COLUMNS = (
+    ("supplier_id",                   "TEXT NOT NULL DEFAULT ''"),
+    ("supplier_product_code",         "TEXT NOT NULL DEFAULT ''"),
+    ("normalized_design_attributes",  "TEXT NOT NULL DEFAULT ''"),
+    ("is_globally_unique",            "INTEGER NOT NULL DEFAULT 1"),
+)
+
 
 # ── Init ───────────────────────────────────────────────────────────────────────
 
@@ -170,6 +183,20 @@ def init_reservation_db(db_path: Path) -> None:
         con.executescript(_DDL)
         for col, ddl in _PRODUCT_MASTER_ADDITIVE_COLUMNS:
             _add_column_if_missing(con, "product_master", col, ddl)
+        # Phase 4 composite identity columns
+        for col, ddl in _PRODUCT_MASTER_PHASE4_COLUMNS:
+            _add_column_if_missing(con, "product_master", col, ddl)
+        # Phase 4 — partial unique index on (supplier_id, product_code) for 417G rows.
+        # Only applies when supplier_id is non-empty (EJL rows keep the existing
+        # UNIQUE(product_code) constraint; 417G rows need the composite constraint).
+        try:
+            con.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_supplier_composite "
+                "ON product_master(supplier_id, product_code) "
+                "WHERE supplier_id != ''"
+            )
+        except Exception:
+            pass  # index may already exist
 
 
 # ── product_master ─────────────────────────────────────────────────────────────
@@ -184,19 +211,27 @@ def upsert_product_master(
     source_invoice_no: str = "",
     source_batch_id: str = "",
     *,
-    item_type:          str   = "",
-    hsn_code:           str   = "",
-    unit_price_ref:     float = 0.0,
-    currency_ref:       str   = "",
-    confidence:         str   = "high",
-    source_document_id: str   = "",
-    last_seen_batch_id: str   = "",
+    item_type:                   str   = "",
+    hsn_code:                    str   = "",
+    unit_price_ref:              float = 0.0,
+    currency_ref:                str   = "",
+    confidence:                  str   = "high",
+    source_document_id:          str   = "",
+    last_seen_batch_id:          str   = "",
+    # Phase 4 — composite identity fields
+    supplier_id:                 str   = "",
+    supplier_product_code:       str   = "",
+    normalized_design_attributes: str  = "",
+    is_globally_unique:          int   = 1,
 ) -> int:
     """Insert or update a product_master row. Returns the row id.
 
-    Idempotency key: UNIQUE(product_code). Re-running with the same
-    product_code UPDATEs the existing row and refreshes ``updated_at`` —
-    no duplicate row is ever created.
+    Idempotency key: UNIQUE(product_code) for EJL-class (globally unique) codes.
+    For 417G-class codes (is_globally_unique=0), the effective composite key is
+    (supplier_id, product_code) — enforced by a partial unique index.
+
+    Re-running with the same product_code UPDATEs the existing row and
+    refreshes ``updated_at`` — no duplicate row is ever created.
 
     Preserve-on-blank semantics: when an existing row has a non-empty
     ``design_no`` and the caller passes ``design_no=""`` (e.g. at invoice
@@ -214,10 +249,18 @@ def upsert_product_master(
     now = _now()
     with _connect(db_path) as con:
         con.execute("PRAGMA foreign_keys=ON")
-        existing = con.execute(
-            "SELECT * FROM product_master WHERE product_code=?",
-            (product_code,),
-        ).fetchone()
+        # Phase 4: 417G codes use composite (supplier_id, product_code) as key.
+        # EJL codes (supplier_id='') continue to use product_code alone.
+        if supplier_id:
+            existing = con.execute(
+                "SELECT * FROM product_master WHERE supplier_id=? AND product_code=?",
+                (supplier_id, product_code),
+            ).fetchone()
+        else:
+            existing = con.execute(
+                "SELECT * FROM product_master WHERE product_code=?",
+                (product_code,),
+            ).fetchone()
         if existing:
             # Preserve-on-blank semantics for the originating identity:
             #   - design_no:          keep existing when new is blank
@@ -238,6 +281,10 @@ def upsert_product_master(
             keep_source_doc_id    = (existing["source_document_id"] or source_document_id)
             new_last_seen         = (last_seen_batch_id or source_batch_id
                                      or existing["last_seen_batch_id"] or "")
+            # Phase 4: preserve-on-blank for composite identity fields too
+            new_supplier_id    = _keep(supplier_id, "supplier_id") if "supplier_id" in existing.keys() else supplier_id
+            new_sup_prod_code  = _keep(supplier_product_code, "supplier_product_code") if "supplier_product_code" in existing.keys() else supplier_product_code
+            new_norm_attrs     = _keep(normalized_design_attributes, "normalized_design_attributes") if "normalized_design_attributes" in existing.keys() else normalized_design_attributes
             con.execute(
                 """UPDATE product_master
                    SET design_no=?, description=?, metal=?, category=?,
@@ -245,14 +292,17 @@ def upsert_product_master(
                        item_type=?, hsn_code=?, unit_price_ref=?,
                        currency_ref=?, confidence=?,
                        source_document_id=?, last_seen_batch_id=?,
+                       supplier_id=?, supplier_product_code=?,
+                       normalized_design_attributes=?, is_globally_unique=?,
                        updated_at=?
                    WHERE product_code=?""",
                 (new_design_no, description, metal, category,
                  keep_source_invoice, keep_source_batch_id,
                  item_type, hsn_code, unit_price_ref,
                  currency_ref, confidence,
-                 keep_source_doc_id,
-                 new_last_seen,
+                 keep_source_doc_id, new_last_seen,
+                 new_supplier_id, new_sup_prod_code,
+                 new_norm_attrs, is_globally_unique,
                  now, product_code),
             )
             return existing["id"]
@@ -263,14 +313,18 @@ def upsert_product_master(
                 item_type, hsn_code, unit_price_ref,
                 currency_ref, confidence,
                 source_document_id, last_seen_batch_id,
+                supplier_id, supplier_product_code,
+                normalized_design_attributes, is_globally_unique,
                 created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (product_code, design_no, description, metal, category,
              source_invoice_no, source_batch_id,
              item_type, hsn_code, unit_price_ref,
              currency_ref, confidence,
              source_document_id,
              (last_seen_batch_id or source_batch_id),
+             supplier_id, supplier_product_code,
+             normalized_design_attributes, is_globally_unique,
              now, now),
         )
         return cur.lastrowid
@@ -283,6 +337,52 @@ def get_product_master(db_path: Path, product_code: str) -> Optional[Dict[str, A
             (product_code,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def get_product_master_by_composite(
+    db_path: Path,
+    supplier_id: str,
+    product_code: str,
+) -> Optional[Dict[str, Any]]:
+    """Phase 4 — look up a product_master row by (supplier_id, product_code).
+
+    For 417G-class codes (is_globally_unique=0), the same product_code string
+    may appear under different suppliers. This function resolves by the
+    composite key (supplier_id, product_code) to disambiguate.
+
+    Falls back to get_product_master(product_code) when supplier_id is empty
+    or when no composite match is found (preserves backward compatibility with
+    EJL-class codes that have supplier_id='').
+    """
+    if not supplier_id:
+        return get_product_master(db_path, product_code)
+    with _connect(db_path) as con:
+        row = con.execute(
+            "SELECT * FROM product_master WHERE supplier_id=? AND product_code=?",
+            (supplier_id, product_code),
+        ).fetchone()
+    if row:
+        return dict(row)
+    # Fallback: try without supplier constraint (EJL codes)
+    return get_product_master(db_path, product_code)
+
+
+def validate_product_code_in_master(
+    db_path: Path,
+    product_code: str,
+    supplier_id: str = "",
+) -> bool:
+    """Phase 4 — GAP 17 logical link: verify product_code exists in product_master.
+
+    Used at write time by inventory, proforma, and sales surfaces to assert that
+    every product_code references a known master row. This is a logical (not SQL FK)
+    check because the line tables live in different DB files.
+
+    Returns True when the product_code is found. Returns False (not raises) when
+    absent — callers decide whether to block or emit an advisory.
+    """
+    row = get_product_master_by_composite(db_path, supplier_id, product_code)
+    return row is not None
 
 
 def list_product_masters(
