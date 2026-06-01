@@ -690,8 +690,8 @@
                   {/* Duplicate = POST /clone → NEW unposted draft; source untouched */}
                   <Btn variant="ghost" small onClick={e=>{e.stopPropagation();setModal('duplicate');}} disabled={!canDuplicate} data-testid="btn-duplicate">Duplicate</Btn>
                   <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
-                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('post');}} disabled={!canPost} data-testid="btn-post-wfirma">Post to wFirma</Btn>
-                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('convert');}} disabled={!canConvert} style={canConvert?{color:'var(--badge-amber-text)',borderColor:'var(--badge-amber-border)'}:{}} data-testid="btn-convert-invoice">⚠ Convert to Invoice</Btn>
+                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('post');}} disabled={!canPost} data-testid="btn-post-wfirma" data-wf-id="WF2.4" data-wf-gate="WFIRMA_CREATE_PROFORMA_ALLOWED">Post to wFirma</Btn>
+                  <Btn variant="outline" small onClick={e=>{e.stopPropagation();setModal('convert');}} disabled={!canConvert} style={canConvert?{color:'var(--badge-amber-text)',borderColor:'var(--badge-amber-border)'}:{}} data-testid="btn-convert-invoice" data-wf-id="WF2.5" data-wf-gate="WFIRMA_CREATE_INVOICE_ALLOWED">⚠ Convert to Invoice</Btn>
                   <div style={{ width:1, height:20, background:'var(--border)', margin:'0 2px' }} />
                   {/* Print = HTML preview (always available, no posting required) */}
                   <Btn variant="ghost" small onClick={e=>{e.stopPropagation();window.open(`/api/v1/proforma/draft/${DRAFT_ID}/preview.html`,'_blank');}} data-testid="btn-print">Print</Btn>
