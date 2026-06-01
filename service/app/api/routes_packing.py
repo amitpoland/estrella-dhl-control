@@ -79,10 +79,37 @@ def seed_purchase_transit(batch_id: str, line_records: List[Dict[str, Any]]) -> 
                     continue
                 if ise.get_state(sc) is not None:
                     continue
+                # GAP-17: advisory validation — product_code must exist in product_master.
+                # Emits an advisory warning to audit.json (NOT a hard block) when absent.
+                # The inventory transition still proceeds; the operator sees the advisory in Inbox.
+                _pc = str(line.get("product_code") or "")
+                if _pc:
+                    try:
+                        from ..services.reservation_db import validate_product_code_in_master as _gap17_validate
+                        from ..core.config import settings as _gap17_settings
+                        _gap17_rq = _gap17_settings.storage_root / "reservation_queue.db"
+                        if _gap17_rq.exists() and not _gap17_validate(_gap17_rq, _pc):
+                            from ..pipelines.pz import _advisory_to_action_proposal, _write_advisory_proposal
+                            _gap17_audit_path = (
+                                __import__("pathlib", fromlist=["Path"]).Path(
+                                    _gap17_settings.storage_root) / "outputs" / batch_id / "audit.json"
+                            )
+                            _gap17_adv = _advisory_to_action_proposal(
+                                {
+                                    "code": "GAP17_PRODUCT_NOT_IN_MASTER",
+                                    "message": f"product_code {_pc!r} has no product_master row "
+                                               f"(GAP-17). Register the product before final PZ.",
+                                    "action": "Run product master backfill or register the product.",
+                                },
+                                batch_id, "packing_upload",
+                            )
+                            _write_advisory_proposal(_gap17_audit_path, _gap17_adv)
+                    except Exception as _gap17_exc:
+                        log.debug("[%s] GAP-17 check failed (non-fatal): %s", batch_id, _gap17_exc)
                 ise.transition(
                     scan_code    = sc,
                     to_state     = ise.PURCHASE_TRANSIT,
-                    product_code = str(line.get("product_code") or ""),
+                    product_code = _pc,
                     design_no    = str(line.get("design_no") or ""),
                     batch_id     = batch_id,
                 )

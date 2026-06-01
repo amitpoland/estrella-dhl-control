@@ -1516,6 +1516,38 @@ def proforma_create(
             service_charges_json  = _service_charges_json_snapshot,
         )
 
+    # ── GAP-17: advisory check — each line product_code should exist in product_master ──
+    # Advisory only (NOT a hard block). If a product_code is absent from product_master,
+    # write an advisory action_proposal to audit.json so the operator sees it in the Inbox.
+    try:
+        from ..services.reservation_db import validate_product_code_in_master as _gap17_val
+        _gap17_rq = settings.storage_root / "reservation_queue.db"
+        _gap17_audit = settings.storage_root / "outputs" / batch_id / "audit.json"
+        if _gap17_rq.exists() and _gap17_audit.exists():
+            _gap17_missing = [
+                ln.get("product_code", "")
+                for ln in (preview.get("lines") or [])
+                if ln.get("product_code") and not _gap17_val(_gap17_rq, ln["product_code"])
+            ]
+            if _gap17_missing:
+                from ..pipelines.pz import _advisory_to_action_proposal, _write_advisory_proposal
+                _gap17_adv_entry = _advisory_to_action_proposal(
+                    {
+                        "code": "GAP17_PRODUCT_NOT_IN_MASTER",
+                        "message": (
+                            f"{len(_gap17_missing)} product_code(s) not in product_master "
+                            f"(GAP-17): {_gap17_missing[:5]}"
+                        ),
+                        "action": "Run product master backfill or register the products.",
+                    },
+                    batch_id, "proforma_create",
+                )
+                _gap17_audit_data = json.loads(_gap17_audit.read_text(encoding="utf-8"))
+                _write_advisory_proposal(_gap17_audit, _gap17_adv_entry)
+    except Exception as _gap17_exc:
+        log.debug("[%s/%s] GAP-17 editable_lines check failed (non-fatal): %s",
+                  batch_id, cn, _gap17_exc)
+
     # ── 4b. Export gate — wFirma PZ required for live issuance ──────────────
     # The local draft has been persisted as pending_local. Live issuance to
     # wFirma defers until wFirma PZ is created. Operator can see the draft
