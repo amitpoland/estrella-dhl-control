@@ -5234,13 +5234,15 @@ def _build_proforma_request_from_draft(
             vat_code_str     = _fallback["vat_code"]
             _resolved_ctx    = _fallback["context"]
             _decision_source = "fallback_wfirma"
+            _d3_vies_flag    = False   # fallback path — D3 not applicable
         else:
             vat_code_str     = _cm_vat["vat_code"]
             _resolved_ctx    = _cm_vat["context"]
             _decision_source = _cm_vat["decision_source"]
             _vat_warnings_draft.extend(_cm_vat["warnings"])
+            _d3_vies_flag    = bool(_cm_vat.get("d3_vies_warning", False))
     else:
-        # No customer_master — legacy path
+        # No customer_master — legacy path; D3 not applicable
         customer_country = ((cust or {}).get("country") or "").strip()
         customer_vat_id  = ((cust or {}).get("vat_id")  or "").strip()
         if not customer_country or (customer_country.upper() != "PL"
@@ -5263,6 +5265,7 @@ def _build_proforma_request_from_draft(
         vat_code_str     = _legacy["vat_code"]
         _resolved_ctx    = _legacy["context"]
         _decision_source = "fallback_wfirma"
+        _d3_vies_flag    = False   # legacy path — D3 not applicable
 
     # ── D4: drift check (ADR-027) ─────────────────────────────────────────
     # If the draft already has a frozen vat_context and it differs from what
@@ -5386,7 +5389,9 @@ def _build_proforma_request_from_draft(
         if _sc_extra_note and not _sc_wfirma_note:
             _sc_wfirma_note = _sc_extra_note
 
-    _vat_freeze = (_resolved_ctx, vat_code_str, _decision_source)
+    # _d3_vies_flag is the structured D3 signal (not a substring check) —
+    # True when context==wdt AND vat_eu_valid is not True.
+    _vat_freeze = (_resolved_ctx, vat_code_str, _decision_source, _d3_vies_flag)
     return wfirma_client.ProformaRequest(
         client_name                   = client_name,
         client_zip                    = "",
@@ -5533,7 +5538,7 @@ def post_proforma_draft_to_wfirma(
     # The freeze UPDATE changes updated_at, but start_post already succeeded
     # so the lock is no longer in use. Best-effort: never blocks the post.
     try:
-        _f_ctx, _f_code, _f_src = _vat_freeze
+        _f_ctx, _f_code, _f_src, _f_d3 = _vat_freeze
         pildb.freeze_draft_vat_context(
             db, posting.id,
             vat_context     = _f_ctx,
@@ -5545,21 +5550,29 @@ def post_proforma_draft_to_wfirma(
                     draft_id, _fe)
 
     # ── D3 VIES advisory (ADR-027): write Inbox proposal for vies_unverified ──
-    # If any warning is VIES-related, write an action_proposal to audit.json so
-    # the operator sees it in the Inbox (in addition to the response warning).
+    # Keyed off the structured _f_d3 flag (context==wdt + vat_eu_valid not True)
+    # — NOT a substring of the warning text, so wording changes don't silently
+    # break advisory firing.
     # Acknowledge-and-proceed — never blocks the post; never silent-downgrade.
-    _vies_warnings = [w for w in (_post_vat_warnings or [])
-                      if "vies_unverified" in w.lower()]
-    if _vies_warnings:
+    if _f_d3:
         try:
             from ..pipelines.pz import _advisory_to_action_proposal, _write_advisory_proposal
             _vies_audit = (
                 settings.storage_root / "outputs"
                 / (pre.batch_id or f"draft-{draft_id}") / "audit.json"
             )
+            # Pull the human-readable message from vat_warnings if present;
+            # fall back to a default so advisory still fires even if warning list
+            # is empty (structured flag is the source of truth).
+            _vies_msg_candidates = [
+                w for w in (_post_vat_warnings or [])
+                if "vies_unverified" in w.lower()
+            ]
             _vies_adv = {
                 "code":    "vies_unverified",
-                "message": _vies_warnings[0],
+                "message": (_vies_msg_candidates[0] if _vies_msg_candidates else
+                            "WDT context applied but VIES validity not confirmed "
+                            "(D3 ADR-027). Operator acknowledged and proceeded."),
                 "action":  (
                     "Verify the customer's EU VAT number via VIES "
                     "(https://ec.europa.eu/taxation_customs/vies/) or set "

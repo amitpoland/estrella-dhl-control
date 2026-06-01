@@ -680,3 +680,183 @@ class TestADR027Integration:
         assert data["status"] == "blocked", f"unexpected status: {data}"
         add_calls = [b for b in captured if "proforma" in b and "invoice" in b]
         assert not add_calls, "no wFirma call should occur when gate is off"
+
+    def test_i12_d3_advisory_written_to_audit_wdt_vies_not_valid(
+        self, tmp_path, monkeypatch, app_client
+    ):
+        """I12: WDT + vat_eu_valid=False → advisory IS written to audit.json
+        (type=vies_unverified, channel=advisory_gate) AND post is NOT blocked.
+
+        This test pins the structured D3 advisory write end-to-end:
+        - resolve_vat_context_from_master returns d3_vies_warning=True
+        - The flag (not substring of warning text) triggers _write_advisory_proposal
+        - audit.json gets an action_proposal with the correct type/channel
+        - The post succeeds (acknowledge-and-proceed, never block)
+        """
+        import json as _json
+
+        cm = _make_cm(
+            bill_to_contractor_id=CONTRACTOR_ID,
+            bill_to_name=CLIENT,
+            country="FR",
+            vat_eu_number="FR12345678",
+            vat_eu_valid=False,   # D3 fires: vat_eu_valid is not True
+            vat_mode=None,        # derived path so d3_vies_flag is set from resolver
+        )
+        self._patch_env(tmp_path, monkeypatch, cm)
+        draft = _setup_db_for_draft(tmp_path, cm)
+        self._mock_wfirma_http(monkeypatch, vat_code_id="228")
+
+        # Create audit.json so _write_advisory_proposal has a target to write
+        audit_dir = tmp_path / "outputs" / BATCH
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_path = audit_dir / "audit.json"
+        audit_path.write_text(
+            _json.dumps({"batch_id": BATCH, "action_proposals": []}),
+            encoding="utf-8",
+        )
+
+        resp = _post_draft(app_client, draft.id, draft)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        # Post must succeed — D3 is warn-not-block
+        assert data["status"] == "posted", \
+            f"D3 must not block post: {data}"
+
+        # Advisory must have been written to audit.json
+        audit_after = _json.loads(audit_path.read_text(encoding="utf-8"))
+        proposals = audit_after.get("action_proposals", [])
+        vies_proposals = [
+            p for p in proposals
+            if p.get("type") == "vies_unverified"
+            and p.get("channel") == "advisory_gate"
+        ]
+        assert vies_proposals, (
+            f"Expected vies_unverified advisory_gate proposal in audit.json "
+            f"action_proposals, got: {proposals}"
+        )
+        # Status must be pending_review (operator must acknowledge)
+        assert vies_proposals[0]["status"] == "pending_review", \
+            f"proposal status should be pending_review: {vies_proposals[0]}"
+
+    def test_i13_d3_advisory_not_fired_when_vies_valid(
+        self, tmp_path, monkeypatch, app_client
+    ):
+        """I13: WDT + vat_eu_valid=True → no advisory proposal written.
+
+        Confirms the D3 gate fires ONLY on the structured condition
+        (vat_eu_valid not True) — valid customers don't generate noise.
+        """
+        import json as _json
+
+        cm = _make_cm(
+            bill_to_contractor_id=CONTRACTOR_ID,
+            bill_to_name=CLIENT,
+            country="DE",
+            vat_eu_number="DE123456789",
+            vat_eu_valid=True,    # D3 does NOT fire
+            vat_mode=None,
+        )
+        self._patch_env(tmp_path, monkeypatch, cm)
+        draft = _setup_db_for_draft(tmp_path, cm)
+        self._mock_wfirma_http(monkeypatch, vat_code_id="228")
+
+        audit_dir = tmp_path / "outputs" / BATCH
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_path = audit_dir / "audit.json"
+        audit_path.write_text(
+            _json.dumps({"batch_id": BATCH, "action_proposals": []}),
+            encoding="utf-8",
+        )
+
+        resp = _post_draft(app_client, draft.id, draft)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "posted"
+
+        audit_after = _json.loads(audit_path.read_text(encoding="utf-8"))
+        vies_proposals = [
+            p for p in audit_after.get("action_proposals", [])
+            if p.get("type") == "vies_unverified"
+        ]
+        assert not vies_proposals, \
+            f"vies advisory should NOT fire when vat_eu_valid=True: {vies_proposals}"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# D4 + disclosure unit tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestPayloadDisclosureVatResolution:
+    """Tests for vat_resolution in build_proforma_post_disclosure (ADR-027 Step 3)."""
+
+    def test_disclosure_includes_vat_resolution_when_frozen(self):
+        """build_proforma_post_disclosure includes vat_resolution when draft has frozen VAT."""
+        from app.services.payload_disclosure import build_proforma_post_disclosure
+        from app.services.proforma_invoice_link_db import ProformaDraft
+
+        draft = ProformaDraft(
+            batch_id="B-DISC-TEST",
+            client_name="TestCo",
+            status="approved",
+            currency="EUR",
+            vat_context="wdt",
+            vat_code="WDT",
+            decision_source="operator_vat_mode",
+        )
+        result = build_proforma_post_disclosure(draft)
+        assert "vat_resolution" in result, "vat_resolution key missing"
+        vr = result["vat_resolution"]
+        assert vr["vat_context"] == "wdt"
+        assert vr["vat_code"] == "WDT"
+        assert vr["decision_source"] == "operator_vat_mode"
+        assert vr["draft_has_vat_freeze"] is True
+
+    def test_disclosure_vat_resolution_unfrozen_flag(self):
+        """draft_has_vat_freeze=False when vat_context/vat_code are empty."""
+        from app.services.payload_disclosure import build_proforma_post_disclosure
+        from app.services.proforma_invoice_link_db import ProformaDraft
+
+        draft = ProformaDraft(
+            batch_id="B-DISC-NO-FREEZE",
+            client_name="TestCo",
+            status="approved",
+            currency="PLN",
+            # vat_context/vat_code/decision_source all default to None
+        )
+        result = build_proforma_post_disclosure(draft)
+        vr = result["vat_resolution"]
+        assert vr["draft_has_vat_freeze"] is False
+        assert vr["vat_context"] == ""
+        assert vr["vat_code"] == ""
+
+    def test_disclosure_existing_fields_unchanged(self):
+        """vat_resolution addition does not disturb existing disclosure fields."""
+        from app.services.payload_disclosure import build_proforma_post_disclosure
+        from app.services.proforma_invoice_link_db import ProformaDraft
+        import json
+
+        lines_json = json.dumps([{
+            "product_code": "X", "design_no": "Y",
+            "qty": 2.0, "unit_price": 100.0, "currency": "EUR",
+        }])
+        draft = ProformaDraft(
+            batch_id="B-DISC-COMPAT",
+            client_name="ClientX",
+            status="approved",
+            currency="EUR",
+            editable_lines_json=lines_json,
+            vat_context="domestic",
+            vat_code="23",
+            decision_source="derived",
+        )
+        result = build_proforma_post_disclosure(draft)
+        # All pre-existing keys still present
+        for key in ("disclosure_type", "draft_id", "batch_id", "write_target",
+                    "flag_required", "fields_to_write", "lines",
+                    "confirm_token_required", "warning"):
+            assert key in result, f"missing key: {key}"
+        # fields_to_write still correct
+        assert result["fields_to_write"]["client_name"] == "ClientX"
+        assert result["fields_to_write"]["currency"] == "EUR"
+        assert result["fields_to_write"]["line_count"] == 1

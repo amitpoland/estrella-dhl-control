@@ -1825,12 +1825,13 @@ def resolve_vat_context_from_master(cm: Any) -> Dict[str, Any]:
             )
         ctx, code = mapping
         return {
-            "context":         ctx,
-            "vat_code":        code,
-            "decision_source": "operator_vat_mode",
-            "warnings":        warnings,
-            "blocked":         False,
-            "blocked_reason":  "",
+            "context":          ctx,
+            "vat_code":         code,
+            "decision_source":  "operator_vat_mode",
+            "warnings":         warnings,
+            "blocked":          False,
+            "blocked_reason":   "",
+            "d3_vies_warning":  False,   # operator override — D3 is not applicable
         }
 
     # ── Priority 2: derived from country + vat_eu_number ─────────────────
@@ -1840,28 +1841,34 @@ def resolve_vat_context_from_master(cm: Any) -> Dict[str, Any]:
 
     if not country:
         return {
-            "context":         "blocked",
-            "vat_code":        None,
-            "decision_source": "derived",
-            "warnings":        warnings,
-            "blocked":         True,
-            "blocked_reason":  (
+            "context":          "blocked",
+            "vat_code":         None,
+            "decision_source":  "derived",
+            "warnings":         warnings,
+            "blocked":          True,
+            "blocked_reason":   (
                 "customer_master.country is empty — cannot determine VAT "
                 "treatment; set country in customer master or use vat_mode override"
             ),
+            "d3_vies_warning":  False,
         }
 
     if country == "PL":
         return {
-            "context":         "domestic",
-            "vat_code":        "23",
-            "decision_source": "derived",
-            "warnings":        warnings,
-            "blocked":         False,
-            "blocked_reason":  "",
+            "context":          "domestic",
+            "vat_code":         "23",
+            "decision_source":  "derived",
+            "warnings":         warnings,
+            "blocked":          False,
+            "blocked_reason":   "",
+            "d3_vies_warning":  False,
         }
 
     if country in _EU_COUNTRIES:
+        # D3: fire when WDT + vat_eu_valid not confirmed True.
+        # The structured flag is the canonical signal for the advisory;
+        # the warnings list carries the human-readable message.
+        _d3 = (not vat_eu) or (vat_eu_valid is not True)
         if not vat_eu:
             warnings.append(
                 "vies_unverified: EU customer has no vat_eu_number set; "
@@ -1875,22 +1882,24 @@ def resolve_vat_context_from_master(cm: Any) -> Dict[str, Any]:
                 "vat_mode override to confirm WDT eligibility"
             )
         return {
-            "context":         "wdt",
-            "vat_code":        "WDT",
-            "decision_source": "derived",
-            "warnings":        warnings,
-            "blocked":         False,
-            "blocked_reason":  "",
+            "context":          "wdt",
+            "vat_code":         "WDT",
+            "decision_source":  "derived",
+            "warnings":         warnings,
+            "blocked":          False,
+            "blocked_reason":   "",
+            "d3_vies_warning":  _d3,  # True → fire Inbox advisory (not a block)
         }
 
     # Non-EU
     return {
-        "context":         "export",
-        "vat_code":        "EXP",
-        "decision_source": "derived",
-        "warnings":        warnings,
-        "blocked":         False,
-        "blocked_reason":  "",
+        "context":          "export",
+        "vat_code":         "EXP",
+        "decision_source":  "derived",
+        "warnings":         warnings,
+        "blocked":          False,
+        "blocked_reason":   "",
+        "d3_vies_warning":  False,
     }
 
 
