@@ -263,7 +263,7 @@ class Settings(BaseSettings):
     wfirma_company_id:              str  = Field(default="")
     wfirma_warehouse_id:            str  = Field(default="")
     wfirma_warehouse_module_enabled: bool = Field(default=False)
-    wfirma_create_product_allowed:  bool = Field(default=True)   # permanent — product creation enabled
+    wfirma_create_product_allowed:  bool = Field(default=False)  # Atlas campaign invariant: OFF by default
     wfirma_create_customer_allowed: bool = Field(default=False)
     wfirma_create_proforma_allowed: bool = Field(default=False)
     wfirma_edit_product_allowed:    bool = Field(default=True)   # permanent — product name-sync enabled
