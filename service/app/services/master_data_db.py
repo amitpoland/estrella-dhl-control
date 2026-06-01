@@ -1485,6 +1485,9 @@ class CompanyProfile:
     signatory_title:   Optional[str] = None
     returns_policy_pl: Optional[str] = None
     gdpr_text_pl:      Optional[str] = None
+    # Legal identifiers (Phase D — additive)
+    krs:               Optional[str] = None   # KRS registration number (PL)
+    eori:              Optional[str] = None   # EORI customs identifier (EU)
     # Meta
     updated_at:        Optional[str] = None
 
@@ -1511,6 +1514,8 @@ def _row_to_company_profile(row: sqlite3.Row) -> "CompanyProfile":
         signatory_title   = row["signatory_title"],
         returns_policy_pl = row["returns_policy_pl"],
         gdpr_text_pl      = row["gdpr_text_pl"],
+        krs               = row["krs"]  if "krs"  in row.keys() else None,
+        eori              = row["eori"] if "eori" in row.keys() else None,
         updated_at        = row["updated_at"],
     )
 
@@ -1520,7 +1525,9 @@ _COMPANY_PROFILE_COLUMNS = [
     "nip", "vat_eu", "regon", "email", "phone",
     "iban_eur", "iban_usd", "iban_pln", "swift", "bank_name",
     "place_of_issue", "signatory_name", "signatory_title",
-    "returns_policy_pl", "gdpr_text_pl", "updated_at",
+    "returns_policy_pl", "gdpr_text_pl",
+    "krs", "eori",  # Phase D — additive (KRS registration, EORI customs id)
+    "updated_at",
 ]
 
 
@@ -1548,6 +1555,8 @@ def _ensure_company_profile_table(conn: sqlite3.Connection) -> None:
             signatory_title   TEXT,
             returns_policy_pl TEXT,
             gdpr_text_pl      TEXT,
+            krs               TEXT,
+            eori              TEXT,
             updated_at        TEXT
         )
     """)
@@ -1572,6 +1581,8 @@ def _ensure_company_profile_table(conn: sqlite3.Connection) -> None:
         ("signatory_title",   "TEXT"),
         ("returns_policy_pl", "TEXT"),
         ("gdpr_text_pl",      "TEXT"),
+        ("krs",               "TEXT"),   # Phase D — KRS registration number (PL)
+        ("eori",              "TEXT"),   # Phase D — EORI customs identifier (EU)
         ("updated_at",        "TEXT"),
     ]:
         try:

@@ -267,6 +267,7 @@ The `sandbox` value is new: routes through the live adapter against DHL's non-bi
 | Prerequisite | Paths | Status |
 |---|---|---|
 | `company_profile.legal_name + address` for shipper | **BOTH** | ⚠ **REQUIRED** — currently no row in production. Must be populated before either path can print a valid shipper identity. (PR #416 wires the UI; operator must fill the data.) |
+| `company_profile.eori` for shipper EORI | **BOTH** (Path-LIVE customs data + Path-DOC CN23) | ⚠ **REQUIRED for international shipments** — EORI is mandatory on the customs declaration (CN23 / PLT data). `company_profile.eori` (TEXT, nullable) is the sole source of truth for Estrella's EORI; must be populated. |
 | `client_carrier_accounts.account_number` for per-client DHL billing | Path-LIVE | **GAP-8** — table populated (5 rows in production), not consumed by carrier subsystem (`ShipmentRequest.shipper_account` is a free-text field today) |
 | Recipient address completeness | **BOTH** | Advisory → Inbox — `customer_master.ship_to_*` / `bill_to_*` fields exist but are often empty. Advisory validation should emit an `INBOX` proposal if ship-to fields are blank before label generation proceeds. |
 | Weight + Dimensions (kg, L×W×H cm) | **Path-LIVE and Path-DOC** | **MISSING** — no data source in any table. `ShipmentRequest.dimensions` + `weight_kg` are free-form fields. Must be captured at label-generation time via mandatory UI input (no batch-level source to pre-fill). Required for both paths. |
