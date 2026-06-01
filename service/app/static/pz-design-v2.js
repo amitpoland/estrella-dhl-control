@@ -80,6 +80,7 @@
     { id: 'g_setup', label: 'Setup', icon: '⚙', defaultId: 'admin', children: [
       { id: 'admin',        label: 'Settings' },
       { id: 'master',       label: 'Master Data' },
+      { id: 'box-types',    label: 'Box Types' },    // Phase D — WF4.5 outbound packaging
       { id: 'carriers',     label: 'Carriers' },
       { id: 'wfirma_setup', label: 'wFirma' },
       { id: 'api_status',   label: 'API Status' },
@@ -102,6 +103,7 @@
     'inventory':  '/dashboard/inventory-v2.html',
     'reports':    '/dashboard/dashboard.html',
     'master':     '/dashboard/customer-master-v2.html',
+    'box-types':  '/dashboard/master-data-v2.html',  // Phase D — WF4.5 box types catalog
     'admin':      '/dashboard/admin-users.html',
     'api_status': '/dashboard/ai-advisory-v2.html',
   };

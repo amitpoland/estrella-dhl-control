@@ -604,6 +604,34 @@ const ENTITIES = [
       { key: "notes",        label: "Notes", multiline: true, full: true },
     ],
   },
+  // Phase D — Box Types (WF4.5 / Path-DOC outbound label packaging catalogue)
+  {
+    key: "box_types", label: "Box Types", available: true,
+    apiBase: "/api/v1/box-types",
+    listKey: "box_types", pkField: "code",
+    auditEntity: "box_types",
+    authority: "local",
+    createsViaPost: true,
+    banner: "Packaging catalogue for outbound DHL label generation (WF4.5 / Path-DOC). Each entry defines the box code, dimensions (L×W×H cm), and tare/empty weight (kg) used when generating a label package. Must have at least one active box type before using the Generate DHL Label button.",
+    columns: [
+      { key: "code",           label: "Code" },
+      { key: "name",           label: "Name" },
+      { key: "length_cm",      label: "L (cm)" },
+      { key: "width_cm",       label: "W (cm)" },
+      { key: "height_cm",      label: "H (cm)" },
+      { key: "tare_weight_kg", label: "Tare (kg)" },
+      { key: "active",         label: "Active" },
+    ],
+    formFields: [
+      { key: "code",           label: "Code (e.g. BOX-S, JIFFY-M)", required: true },
+      { key: "name",           label: "Name / description" },
+      { key: "length_cm",      label: "Length (cm)", type: "number" },
+      { key: "width_cm",       label: "Width (cm)",  type: "number" },
+      { key: "height_cm",      label: "Height (cm)", type: "number" },
+      { key: "tare_weight_kg", label: "Tare / empty weight (kg)", type: "number" },
+      { key: "notes",          label: "Notes", multiline: true, full: true },
+    ],
+  },
 ];
 
 

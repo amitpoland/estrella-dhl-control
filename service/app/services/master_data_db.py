@@ -359,6 +359,31 @@ def init_db(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_designs_collection ON designs (collection)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_designs_product_ref ON designs (product_ref)")
 
+        # ── Phase D — box_types master (outbound label / Path-DOC) ──────────
+        # Operator-maintained packaging catalogue. Drives dims + tare for the
+        # label-package endpoint. No seed data; operator populates via API.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS box_types (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                code             TEXT NOT NULL UNIQUE,
+                name             TEXT,
+                length_cm        REAL,
+                width_cm         REAL,
+                height_cm        REAL,
+                tare_weight_kg   REAL,
+                active           INTEGER NOT NULL DEFAULT 1,
+                notes            TEXT,
+                created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_box_types_code ON box_types (code)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_box_types_active ON box_types (active)"
+        )
+
         # ── Phase 4B Wave 1 — soft-delete deleted_at column migration ─────
         # Idempotent ALTER TABLE for each of the six Wave 1 entities.
         # Tables created on Wave 1 deploy already include deleted_at via
@@ -1457,6 +1482,146 @@ def delete_design(db_path: Path, design_code: str) -> bool:
             return False
 
 
+# ── BoxTypes (Phase D — outbound label packaging catalogue) ──────────────────
+
+@dataclass
+class BoxType:
+    """One row in box_types — operator-maintained packaging catalogue."""
+    code:            str
+    name:            Optional[str] = None
+    length_cm:       Optional[float] = None
+    width_cm:        Optional[float] = None
+    height_cm:       Optional[float] = None
+    tare_weight_kg:  Optional[float] = None
+    active:          bool = True
+    notes:           Optional[str] = None
+    id:              Optional[int] = None
+    created_at:      Optional[str] = None
+    updated_at:      Optional[str] = None
+
+
+def _row_to_box_type(row: sqlite3.Row) -> BoxType:
+    keys = row.keys() if hasattr(row, "keys") else []
+    def _f(k: str) -> Optional[float]:
+        v = row[k] if k in keys else None
+        return float(v) if v is not None else None
+    return BoxType(
+        id             = row["id"]   if "id"   in keys else None,
+        code           = row["code"] if "code" in keys else "",
+        name           = row["name"] if "name" in keys else None,
+        length_cm      = _f("length_cm"),
+        width_cm       = _f("width_cm"),
+        height_cm      = _f("height_cm"),
+        tare_weight_kg = _f("tare_weight_kg"),
+        active         = bool(row["active"]) if "active" in keys else True,
+        notes          = row["notes"] if "notes" in keys else None,
+        created_at     = row["created_at"] if "created_at" in keys else None,
+        updated_at     = row["updated_at"] if "updated_at" in keys else None,
+    )
+
+
+def get_box_type(db_path: Path, box_type_id: int) -> Optional[BoxType]:
+    """Fetch a box_type row by primary key. Returns None if absent."""
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM box_types WHERE id=? AND active=1",
+            (int(box_type_id),),
+        ).fetchone()
+    return _row_to_box_type(row) if row else None
+
+
+def get_box_type_by_code(db_path: Path, code: str) -> Optional[BoxType]:
+    """Fetch a box_type row by code. Returns None if absent or inactive."""
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM box_types WHERE code=? AND active=1",
+            (code,),
+        ).fetchone()
+    return _row_to_box_type(row) if row else None
+
+
+def list_box_types(db_path: Path, *, active: Optional[bool] = True,
+                   limit: int = 200) -> List[BoxType]:
+    """List all box_types, optionally filtered by active state."""
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        if active is None:
+            rows = conn.execute(
+                "SELECT * FROM box_types ORDER BY code ASC LIMIT ?", (limit,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM box_types WHERE active=? ORDER BY code ASC LIMIT ?",
+                (int(active), limit),
+            ).fetchall()
+    return [_row_to_box_type(r) for r in rows]
+
+
+def upsert_box_type(db_path: Path, data: Dict[str, Any]) -> BoxType:
+    """Insert or update a box_type row. Returns the resulting row."""
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    code = _clean(data.get("code"))
+    if not code:
+        raise ValueError("box_type code is required")
+    now = _now()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute(
+            "SELECT id FROM box_types WHERE code=?", (code,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE box_types SET name=?, length_cm=?, width_cm=?, height_cm=?,
+                   tare_weight_kg=?, active=?, notes=?, updated_at=? WHERE code=?""",
+                (
+                    _clean(data.get("name")),
+                    data.get("length_cm"),
+                    data.get("width_cm"),
+                    data.get("height_cm"),
+                    data.get("tare_weight_kg"),
+                    1 if data.get("active", True) else 0,
+                    _clean(data.get("notes")),
+                    now,
+                    code,
+                ),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO box_types
+                   (code, name, length_cm, width_cm, height_cm, tare_weight_kg,
+                    active, notes, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    code,
+                    _clean(data.get("name")),
+                    data.get("length_cm"),
+                    data.get("width_cm"),
+                    data.get("height_cm"),
+                    data.get("tare_weight_kg"),
+                    1 if data.get("active", True) else 0,
+                    _clean(data.get("notes")),
+                    now, now,
+                ),
+            )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM box_types WHERE code=?", (code,)
+        ).fetchone()
+    return _row_to_box_type(row)
+
+
 # ── CompanyProfile (Phase 7 — commercial document platform) ──────────────────
 
 @dataclass
@@ -1485,6 +1650,9 @@ class CompanyProfile:
     signatory_title:   Optional[str] = None
     returns_policy_pl: Optional[str] = None
     gdpr_text_pl:      Optional[str] = None
+    # Legal identifiers (Phase D — additive)
+    krs:               Optional[str] = None   # KRS registration number (PL)
+    eori:              Optional[str] = None   # EORI customs identifier (EU)
     # Meta
     updated_at:        Optional[str] = None
 
@@ -1511,6 +1679,8 @@ def _row_to_company_profile(row: sqlite3.Row) -> "CompanyProfile":
         signatory_title   = row["signatory_title"],
         returns_policy_pl = row["returns_policy_pl"],
         gdpr_text_pl      = row["gdpr_text_pl"],
+        krs               = row["krs"]  if "krs"  in row.keys() else None,
+        eori              = row["eori"] if "eori" in row.keys() else None,
         updated_at        = row["updated_at"],
     )
 
@@ -1520,7 +1690,9 @@ _COMPANY_PROFILE_COLUMNS = [
     "nip", "vat_eu", "regon", "email", "phone",
     "iban_eur", "iban_usd", "iban_pln", "swift", "bank_name",
     "place_of_issue", "signatory_name", "signatory_title",
-    "returns_policy_pl", "gdpr_text_pl", "updated_at",
+    "returns_policy_pl", "gdpr_text_pl",
+    "krs", "eori",  # Phase D — additive (KRS registration, EORI customs id)
+    "updated_at",
 ]
 
 
@@ -1548,6 +1720,8 @@ def _ensure_company_profile_table(conn: sqlite3.Connection) -> None:
             signatory_title   TEXT,
             returns_policy_pl TEXT,
             gdpr_text_pl      TEXT,
+            krs               TEXT,
+            eori              TEXT,
             updated_at        TEXT
         )
     """)
@@ -1572,6 +1746,8 @@ def _ensure_company_profile_table(conn: sqlite3.Connection) -> None:
         ("signatory_title",   "TEXT"),
         ("returns_policy_pl", "TEXT"),
         ("gdpr_text_pl",      "TEXT"),
+        ("krs",               "TEXT"),   # Phase D — KRS registration number (PL)
+        ("eori",              "TEXT"),   # Phase D — EORI customs identifier (EU)
         ("updated_at",        "TEXT"),
     ]:
         try:
