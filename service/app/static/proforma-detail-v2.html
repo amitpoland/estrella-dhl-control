@@ -462,6 +462,31 @@
 
   // ── Tab bodies ────────────────────────────────────────────────────────────
 
+  // ── Dual-Valuation panel (Phase 5 §6) ─────────────────────────────────────
+  function DualValuationPanel({ batchId, clientName }) {
+    const [dv, setDv]   = useState(null);
+    const [dvErr, setDvErr] = useState('');
+    React.useEffect(() => {
+      if (!batchId || !clientName) return;
+      apiFetch(`/api/v1/proforma/${encodeURIComponent(batchId)}/${encodeURIComponent(clientName)}/dual-valuation`)
+        .then(d => setDv(d))
+        .catch(e => setDvErr(e.message));
+    }, [batchId, clientName]);
+    if (dvErr) return null; // silent — dual valuation is supplementary
+    if (!dv) return null;
+    const fmt = v => v != null ? parseFloat(v).toLocaleString('pl-PL', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+    return (
+      <div data-testid="dual-valuation-panel" style={{ marginTop:12, padding:'10px 14px', background:'var(--bg-subtle)', borderRadius:6, border:'1px solid var(--border-subtle)', fontSize:12 }}>
+        <div style={{ fontWeight:700, marginBottom:6, color:'var(--text-2)' }}>Dual Valuation (Phase 5 §6)</div>
+        <div style={{ display:'flex', gap:24 }}>
+          <div><span style={{ color:'var(--text-3)' }}>Purchase basis (customs/PZ):</span> <b>USD {fmt(dv.purchase_total_usd)}</b> <span style={{ color:'var(--text-3)', fontSize:11 }}>({dv.purchase_source})</span></div>
+          <div><span style={{ color:'var(--text-3)' }}>Sales basis (warehouse):</span> <b>{dv.sales_currency} {fmt(dv.sales_total)}</b> <span style={{ color:'var(--text-3)', fontSize:11 }}>({dv.sales_source})</span></div>
+          <div style={{ color:'var(--text-3)', fontSize:11 }}>confidence: {dv.confidence}</div>
+        </div>
+      </div>
+    );
+  }
+
   function OverviewTab({ draft, invoiceLink }) {
     const d = draft||{}; const il = invoiceLink?.ok?invoiceLink:null;
     const pt = d.payment_terms||{};
@@ -494,6 +519,7 @@
         </div>
         {d.remarks && <div style={{ marginTop:12, padding:'10px 14px', background:'var(--bg-subtle)', borderRadius:6, border:'1px solid var(--border-subtle)', fontSize:12 }}><strong>Remarks:</strong> {d.remarks}</div>}
         {d.needs_pricing_refresh && <div data-testid="pricing-warning" style={{ marginTop:10, padding:'8px 12px', background:'var(--badge-amber-bg)', border:'1px solid var(--badge-amber-border)', borderRadius:6, fontSize:12, color:'var(--badge-amber-text)', fontWeight:600 }}>⚠ One or more lines have unit price ≤ 0 — reset from packing list.</div>}
+        <DualValuationPanel batchId={d.batch_id} clientName={d.client_name} />
       </div>
     );
   }

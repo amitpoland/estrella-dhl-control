@@ -6260,4 +6260,21 @@ def disclose_proforma_convert(
     )
 
 
+# ── Phase 5 — Dual-valuation endpoint ────────────────────────────────────────
+
+@router.get("/{batch_id}/{client_name}/dual-valuation", dependencies=[_auth],
+            summary="Phase 5: return purchase (customs) and sales (warehouse) values")
+def get_dual_valuation(batch_id: str, client_name: str) -> JSONResponse:
+    """Return both value bases for a batch.
+
+    purchase_* = customs / SAD / PZ cost basis (from purchase invoice)
+    sales_*    = warehouse / sales value (from sales packing list)
+
+    Read-only. No wFirma call.
+    """
+    from ..services.dual_valuation import resolve_dual_values, summarize
+    result = resolve_dual_values(batch_id, settings.storage_root)
+    return JSONResponse(summarize(result))
+
+
 # (clone_proforma_draft already defined at line 3412 from PR #407 Phase 2/3 — no duplicate needed)
