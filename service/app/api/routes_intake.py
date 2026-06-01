@@ -1188,6 +1188,26 @@ async def shipment_intake(
                     batch_id, exc)
 
     # ── G. Return intake summary ──────────────────────────────────────────────
+    # ── F2. Rule-based reverification (WF1.3) — post-parse advisory check
+    # Runs rule_based_reverification against the freshly-parsed batch.
+    # Proposals written to audit.json so they appear in the Inbox.
+    # Best-effort: never blocks the intake response.
+    try:
+        from ..services.rule_based_reverification import (
+            reverify_purchase_batch,
+            write_reverification_proposals_to_audit,
+        )
+        if audit_path.exists():
+            _rev_audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            _proposals = reverify_purchase_batch(batch_id, _rev_audit, settings.storage_root)
+            if _proposals:
+                added = write_reverification_proposals_to_audit(_rev_audit, _proposals)
+                if added:
+                    write_json_atomic(audit_path, _rev_audit)
+    except Exception as _rev_exc:
+        log.warning("[%s] rule_based_reverification failed (non-fatal): %s",
+                    batch_id, _rev_exc)
+
     return JSONResponse({
         "ok":            True,
         "batch_id":      batch_id,
