@@ -149,6 +149,121 @@ documents; the only wFirma write in this pipeline is PZ export (WF1.8, flag
 
 ---
 
+## 1D. WF2 VAT Resolution (spec — ADR-027)
+
+> **Context (audit finding):** the pre-ADR-027 implementation reads `wfirma_customers.vat_id`
+> and `wfirma_customers.country` to decide the VAT context. It ignores
+> `customer_master.vat_eu_number`, `vat_eu_valid`, and `vat_mode`. The VAT context is not
+> frozen into the draft and is not shown before Post. The verify-after-create gate only
+> catches codes that wFirma *changed* — not codes that were *sent wrong from the start*.
+> This is the root of the PROF 92 WDT→23% class of error.
+
+### D1 — VAT decision source: `customer_master` is the SSOT
+
+The VAT decision reads **`customer_master`** fields (`country`, `vat_eu_number`,
+`vat_eu_valid`, `vat_mode`) — not the `wfirma_customers` mirror.
+
+Live `wfirma_client.search_customer` is a **last-resort read-only fallback only** when
+`customer_master` has no `country` AND the `wfirma_customers` row is also empty. No DB
+write occurs on fallback; it fills only the in-flight decision.
+
+### D2 — Resolution order (one context per proforma)
+
+| Priority | Condition | Resolved context | Locked code |
+|---|---|---|---|
+| **1 — Operator override** | `customer_master.vat_mode` is set (non-null) | interpret as context (see map below) | same map |
+| **2a** | `country == "PL"` | `domestic` | `23` |
+| **2b** | `country ∈ EU-27` AND `vat_eu_number` set | `wdt` | `WDT` |
+| **2c** | `country ∈ EU-27` AND `vat_eu_number` empty | `wdt-intent` (FLAGGED — see D3) | `WDT` (with warning) |
+| **2d** | `country ∉ EU-27` | `export` | `EXP` |
+
+**`vat_mode` → context mapping:**
+`vat_mode=222` → `domestic` · `vat_mode=228` → `wdt` · `vat_mode=229` → `export`
+
+**Locked code → wFirma account-specific id (resolved LIVE at post):**
+
+| Code string | wFirma vat_code `<code>` | Numeric id (this account) |
+|---|---|---|
+| `23` | `23` | 222 |
+| `WDT` | `WDT` | 228 |
+| `EXP` | `EXP` | 229 |
+| `NP` | `NP` | 230 |
+| `NPUE` | `NPUE` | 231 |
+| `ZW` | `ZW` | 233 |
+| `0` | `0` | 234 |
+
+The numeric id is looked up live via `vat_codes/find` at post time and cached in-process.
+Only the **context string** (`domestic`/`wdt`/`export`) and the **code string** (`23`/`WDT`/`EXP`)
+are stored in the draft — the numeric id is never persisted, preventing stale-id bugs.
+
+### D3 — VIES warning (NOT a block)
+
+When the resolved context is `wdt` and `customer_master.vat_eu_valid` is **not `True`**
+(missing, unverified, or invalid):
+
+1. A **WARNING** is emitted in the pre-post payload-disclosure modal.
+2. A **`vies_unverified` Inbox advisory proposal** is written (see §7).
+3. The operator may **acknowledge-and-proceed** — the system does NOT hard-block.
+4. The system does **NOT silently downgrade** to domestic (23%); the VAT treatment
+   remains `wdt` unless the operator explicitly overrides `vat_mode`.
+5. The operator owns the legal call.
+
+### D4 — Freeze and disclose
+
+**At draft creation (WF2.3)**, the resolved VAT fields are stored in `proforma_draft`:
+
+| Draft field | What is stored |
+|---|---|
+| `vat_context` | `"domestic"` / `"wdt"` / `"export"` |
+| `vat_code` | `"23"` / `"WDT"` / `"EXP"` (code string, NOT numeric id) |
+| `decision_source` | `"operator_vat_mode"` \| `"derived"` \| `"fallback_wfirma"` |
+
+**In the payload-disclosure modal (before WF2.4 Post):**
+- All three frozen fields are surfaced to the operator.
+- The modal fetches `/api/v1/proforma/draft/{id}/disclose-post` which re-resolves
+  the VAT context at that moment and **compares to the frozen values**.
+- If they differ (e.g., the customer's country was corrected between draft creation
+  and posting), a **DRIFT WARNING** is displayed — no silent change.
+
+**At post (WF2.4)**, the numeric `vat_code_id` is resolved live (D2 map) and sent to
+wFirma. The verify-after-create gate checks the persisted id matches what was sent.
+
+### VAT field map: customer_master → draft → wFirma post
+
+| customer\_master field | Old source | New role | Stored in draft? | Sent to wFirma? |
+|---|---|---|---|---|
+| `country` | `wfirma_customers.country` | **Primary D2 input** | No (used at draft creation) | No |
+| `vat_eu_number` | **Not consulted** | **Primary D2 input (EU VAT for WDT)** | No | No |
+| `vat_eu_valid` | **Not consulted** | D3 VIES warning trigger | No | No |
+| `vat_mode` | **Not consulted** | D2 operator override (wins) | No (→ `decision_source`) | No |
+| `nip` | `wfirma_customers.vat_id` | Fallback only (live wFirma search) | No | No |
+| `preferred_proforma_series_id` | customer\_master (unchanged) | Series id → `<series><id>` | No (read at post) | Yes |
+| `preferred_payment_method` | customer\_master (unchanged) | Payment method → `<paymentmethod>` | No (read at post) | Yes |
+| **`vat_context`** (draft field) | **NEW** | Frozen resolved context | **Yes** | No |
+| **`vat_code`** (draft field) | **NEW** | Frozen code string | **Yes** | No (id resolved live) |
+| **`decision_source`** (draft field) | **NEW** | Provenance of the decision | **Yes** | No |
+| `vat_code_id` (numeric, in-process) | Live `vat_codes/find` (unchanged) | Account-specific id resolved at post | **No** | Yes (`<vat_code><id>`) |
+
+### Why verify-after-create is insufficient alone
+
+`create_proforma_draft()` fetches the created proforma back from wFirma and checks
+that the persisted `vat_code.id` on each line matches `req.vat_code_id`. This catches
+codes that **wFirma changed** after receiving them. It does **not** catch a code that
+was **sent wrong from the start** — because sent == persisted, the check passes.
+
+The D1–D4 fixes are required to ensure the correct code is sent in the first place.
+The verify-after-create gate is retained as a defence-in-depth layer but is no longer
+the primary correctness control.
+
+### Scope and write-flag posture
+
+- Posting remains behind `WFIRMA_CREATE_PROFORMA_ALLOWED` (unchanged).
+- wFirma is mocked in all tests (no live API calls in dev).
+- No new flag is introduced; the VAT source fix is a behaviour change behind the
+  existing flag.
+
+---
+
 ## 2. Button → transition binding (spec; endpoints to be confirmed in Phase 12)
 
 | Screen | Button label | WF id | Gate |
