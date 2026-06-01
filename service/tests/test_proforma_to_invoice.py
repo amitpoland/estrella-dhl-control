@@ -290,11 +290,15 @@ def test_plan_copies_lines_unchanged():
     assert ok, diffs
 
 
-def test_plan_blocks_missing_series_id():
+def test_plan_allows_empty_series_id():
+    """ADR-027 D6 step 3: empty final_series_id is valid (omit <series>; wFirma default).
+    Replaces the old test_plan_blocks_missing_series_id which asserted the now-removed
+    ValueError guard."""
     snap = parse_proforma_xml(_proforma_xml())
-    with pytest.raises(ValueError, match="final_series_id is required"):
-        build_final_invoice_plan(snap, final_series_id="",
-                                 invoice_date=date(2026, 6, 1))
+    # Must NOT raise
+    plan = build_final_invoice_plan(snap, final_series_id="",
+                                    invoice_date=date(2026, 6, 1))
+    assert plan.series_id == ""
 
 
 def test_plan_carries_source_proforma_for_audit():
@@ -452,6 +456,55 @@ def test_lines_match_detects_count_mismatch():
     ok, diffs = lines_match(snap.contents, snap.contents[:2])
     assert ok is False
     assert any("count" in d for d in diffs)
+
+
+# ── ADR-027 D6 — invoice series precedence (WF3) ────────────────────────────
+#
+# Spec: final_series_id → customer_master.preferred_invoice_series_id → omit
+# These tests pin the builder-layer half of that contract (route-layer tests
+# live in test_wf3_invoice_series.py).
+
+def test_plan_empty_series_id_allowed():
+    """build_final_invoice_plan must NOT raise when final_series_id is empty.
+
+    ADR-027 D6 step 3: empty means 'omit <series>; wFirma contractor default'.
+    """
+    snap = parse_proforma_xml(_proforma_xml())
+    plan = build_final_invoice_plan(snap, final_series_id="",
+                                    invoice_date=date(2026, 6, 1))
+    assert plan.series_id == ""
+
+
+def test_xml_omits_series_when_empty():
+    """build_final_invoice_xml omits <series> when plan.series_id is empty.
+
+    wFirma uses its own contractor-level default series in that case.
+    """
+    snap = parse_proforma_xml(_proforma_xml())
+    plan = build_final_invoice_plan(snap, final_series_id="",
+                                    invoice_date=date(2026, 6, 1))
+    xml = build_final_invoice_xml(plan)
+    assert "<series>" not in xml, (
+        "Expected <series> to be absent when series_id is empty; got:\n" + xml
+    )
+
+
+def test_xml_includes_series_when_set():
+    """<series><id> IS emitted when a series_id is resolved (regression guard)."""
+    snap = parse_proforma_xml(_proforma_xml())
+    plan = build_final_invoice_plan(snap, final_series_id="15827921",
+                                    invoice_date=date(2026, 6, 1))
+    xml = build_final_invoice_xml(plan)
+    assert "<series><id>15827921</id></series>" in xml
+
+
+def test_xml_omits_series_for_zero_sentinel():
+    """Literal '0' series_id (wFirma 'no series' sentinel) is also omitted."""
+    snap = parse_proforma_xml(_proforma_xml())
+    plan = build_final_invoice_plan(snap, final_series_id="0",
+                                    invoice_date=date(2026, 6, 1))
+    xml = build_final_invoice_xml(plan)
+    assert "<series>" not in xml
 
 
 # ── No I/O leak ──────────────────────────────────────────────────────────────
