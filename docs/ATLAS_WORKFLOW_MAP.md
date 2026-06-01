@@ -178,7 +178,7 @@ All file:line citations are from origin/main @ c09fdfa.
 
 | Setting | Default | Role |
 |---|---|---|
-| `carrier_api_status` | `"pending"` | Master gate: `pending` → 503; `shadow` → shadow adapter; `live` → live adapter (Phase D) |
+| `carrier_api_status` | `"pending"` | Master gate: `pending` → 503; `shadow` → shadow adapter (no HTTP, offline sim); `sandbox` → live adapter against `DHL_EXPRESS_API_URL` **test base** (`https://express.api.dhl.com/mydhlapi/test`), creds required, allowlist NOT enforced, non-billable; `live` → live adapter against prod base (`https://express.api.dhl.com/mydhlapi`), creds required, allowlist enforced, billable |
 | `carrier_plt_status` | `"pending"` | PLT (Paperless Trade) gate — independent of `carrier_api_status` |
 | `carrier_live_allowlist` | `""` | CSV of batch_ids permitted for live calls (empty = no live calls even when status=live) |
 | `DHL_EXPRESS_API_KEY` | None | Shipment-creation credential (NOT the same as tracking/clearance DHL client) |
@@ -242,17 +242,24 @@ at the counter.
 ```
 operator clicks "Generate DHL label" (WF4.5)
   ↓
+if carrier_api_status == "sandbox":
+     → attempt Path-LIVE against DHL test endpoint (allowlist NOT enforced, non-billable)
+     on success: store test AWB (flagged sandbox), show result
+     on failure: surface error; Path-DOC available as manual fallback
 if carrier_api_status == "live"
    AND DHL_EXPRESS_API_KEY + DHL_EXPRESS_API_SECRET + DHL_EXPRESS_ACCOUNT_NUMBER set
    AND batch_id in carrier_live_allowlist:
-     → attempt Path-LIVE
+     → attempt Path-LIVE (prod endpoint)
      on success: store real AWB, mark CLIENT_DISPATCHED, show tracking ref
      on failure: fall back to Path-DOC, surface error in Inbox
   else:
      → Path-DOC (generate document package; operator takes to DHL counter)
 ```
 
-**Gate = existing `carrier_api_status` progression** (`pending → shadow → live`).
+Mandatory inputs at label-generation time (both Path-LIVE and Path-DOC): **weight (kg)** and **dimensions (L×W×H cm)** — no batch-level source exists; the UI must require these fields before submission.
+
+**Gate = existing `carrier_api_status` progression** (`pending → shadow → sandbox → live`).
+The `sandbox` value is new: routes through the live adapter against DHL's non-billable test endpoint (`https://express.api.dhl.com/mydhlapi/test`); allowlist NOT enforced; requires sandbox credentials (≠ production credentials — separate DHL provisioning step). Auth = HTTP Basic `Authorization: Basic base64(API_KEY:API_SECRET)` — `API_KEY` is the username, `API_SECRET` is the password — for both `sandbox` and `live`. `shadow` mode is the offline fallback (no HTTP, no credentials required).
 **No new boolean flag is introduced.** The progression is deliberate and operator-driven.
 
 ### Prerequisites and gaps
@@ -262,10 +269,10 @@ if carrier_api_status == "live"
 | `company_profile.legal_name + address` for shipper | **BOTH** | ⚠ **REQUIRED** — currently no row in production. Must be populated before either path can print a valid shipper identity. (PR #416 wires the UI; operator must fill the data.) |
 | `client_carrier_accounts.account_number` for per-client DHL billing | Path-LIVE | **GAP-8** — table populated (5 rows in production), not consumed by carrier subsystem (`ShipmentRequest.shipper_account` is a free-text field today) |
 | Recipient address completeness | **BOTH** | Advisory → Inbox — `customer_master.ship_to_*` / `bill_to_*` fields exist but are often empty. Advisory validation should emit an `INBOX` proposal if ship-to fields are blank before label generation proceeds. |
-| Dimensions (L×W×H cm) | Path-LIVE | **MISSING** — no data source in any table. `ShipmentRequest.dimensions` is a free-form dict. Must be captured at label-generation time via a UI input (no batch-level source to pre-fill). |
+| Weight + Dimensions (kg, L×W×H cm) | **Path-LIVE and Path-DOC** | **MISSING** — no data source in any table. `ShipmentRequest.dimensions` + `weight_kg` are free-form fields. Must be captured at label-generation time via mandatory UI input (no batch-level source to pre-fill). Required for both paths. |
 | Incoterm | **BOTH** (CN23 / commercial invoice) | **GAP-7** — `proforma_draft.incoterm` is nullable, often NULL. Required on CN23 for customs. Must be resolved before dispatch. |
 | DHL Express credentials in .env | Path-LIVE only | **MISSING** in production — `DHL_EXPRESS_API_KEY`, `DHL_EXPRESS_API_SECRET`, `DHL_EXPRESS_ACCOUNT_NUMBER` all unset. |
-| `carrier_api_status` advanced to `"live"` | Path-LIVE only | **operator step** — currently `"pending"` in production; must progress through `shadow` first. |
+| `carrier_api_status` advanced to `"sandbox"` then `"live"` | Path-LIVE only | **operator step** — currently `"pending"` in production; must progress `pending → shadow → sandbox → live`. `sandbox` validates end-to-end against DHL test endpoint before production enablement. |
 | PLT eligibility (Paperless Trade) | Path-LIVE international | `carrier_plt_status` currently `"pending"`; invoice + customs doc paths + country allowlist all checked by existing `plt/eligibility.py`. Gated separately. |
 
 ### AWB storage decision (ASSUMPTION — to confirm)

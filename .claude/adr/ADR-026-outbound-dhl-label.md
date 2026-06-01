@@ -22,7 +22,7 @@ DHL Express shipment creation:
   any persistence
 - `ShipmentRequest` / `ShipmentResult` data models
 - PLT eligibility checker (country + invoice + customs doc gates)
-- Gate fields: `carrier_api_status` (`pending` / `shadow` / `live`),
+- Gate fields: `carrier_api_status` (`pending` / `shadow` / `sandbox` / `live`),
   `carrier_plt_status`, `carrier_live_allowlist`, `DHL_EXPRESS_API_*` creds
   (all in `config.py:305-324`, all unset/pending in production today)
 
@@ -72,14 +72,30 @@ the guaranteed fallback when Path-LIVE is unavailable or fails.
 
 ```
 operator clicks "Generate DHL label" (WF4.5)
-  if carrier_api_status=live AND creds AND batch in allowlist:
-    → Path-LIVE; on failure → fall back to Path-DOC + Inbox proposal
+  [weight + dimensions are mandatory UI inputs — required before submission]
+  if carrier_api_status=sandbox AND creds:
+    → Path-LIVE against DHL test endpoint (allowlist NOT enforced, non-billable)
+  elif carrier_api_status=live AND creds AND batch in allowlist:
+    → Path-LIVE (prod); on failure → fall back to Path-DOC + Inbox proposal
   else:
     → Path-DOC
 ```
 
 **No new boolean flag.** Gate = existing `carrier_api_status` progression
-(`pending → shadow → live`), which is already operator-driven and deliberate.
+(`pending → shadow → sandbox → live`), which is already operator-driven and deliberate.
+
+### `carrier_api_status` routing
+
+| Value | Adapter | HTTP | Endpoint | Allowlist enforced | Billable |
+|---|---|---|---|---|---|
+| `pending` | — | 503 returned immediately | — | — | — |
+| `shadow` | `DhlExpressShadowAdapter` | No | — | No | No |
+| `sandbox` | `DhlExpressLiveAdapter` | Yes | `https://express.api.dhl.com/mydhlapi/test` | **No** | **No** |
+| `live` | `DhlExpressLiveAdapter` | Yes | `https://express.api.dhl.com/mydhlapi` (prod) | **Yes** | Yes |
+
+`sandbox` uses the same live adapter code path as `live` but against DHL's non-billable test endpoint (`https://express.api.dhl.com/mydhlapi/test`). Sandbox credentials ≠ production credentials — they are provisioned separately by DHL and must be treated as distinct secrets. Auth = HTTP Basic `base64(DHL_EXPRESS_API_KEY:DHL_EXPRESS_API_SECRET)` where `API_KEY` is the username and `API_SECRET` is the password, for both `sandbox` and `live`.
+
+The `sandbox` step is the mandatory integration-test gate before production enablement.
 
 ---
 
@@ -109,10 +125,10 @@ The Phase-C scaffold is the right architecture. Phase D completes it.
 |---|---|---|
 | `company_profile.legal_name + address` for shipper | REQUIRED | No row in production. Must be populated before either path can produce a valid document. |
 | `DHL_EXPRESS_API_KEY`, `DHL_EXPRESS_API_SECRET`, `DHL_EXPRESS_ACCOUNT_NUMBER` | Path-LIVE | Not set in production. Operator configures via `.env`. |
-| `carrier_api_status` progression | Path-LIVE | Currently `"pending"`. Operator advances to `"shadow"` then `"live"`. |
+| `carrier_api_status` progression | Path-LIVE | Currently `"pending"`. Operator advances to `"shadow"` → `"sandbox"` → `"live"`. `sandbox` validates end-to-end against DHL test endpoint before production enablement. |
 | `client_carrier_accounts.account_number` per-client DHL account | Path-LIVE | GAP-8 — table populated (5 rows), not consumed by carrier subsystem. Phase D wires it. |
 | Recipient address completeness | BOTH | Advisory → Inbox when `ship_to_*` / `bill_to_*` are blank. |
-| Dimensions (L×W×H) | Path-LIVE | Missing — no data source. Captured at label-generation time via UI input. |
+| Weight (kg) + Dimensions (L×W×H cm) | **Path-LIVE and Path-DOC** | **MISSING** — no data source in any table. Must be captured at label-generation time as **mandatory UI inputs** (no batch-level source to pre-fill). Required for both paths. |
 | Incoterm | BOTH (CN23) | GAP-7 — `proforma_draft.incoterm` often NULL. Required on CN23. |
 | PLT eligibility | Path-LIVE international | Gated by `carrier_plt_status` (currently `"pending"`); existing `plt/eligibility.py` checks invoice, customs doc, country. |
 
@@ -141,9 +157,27 @@ DHL Express credentials (`DHL_EXPRESS_API_KEY`, `DHL_EXPRESS_API_SECRET`,
 `config.py:315-318`. They are **never** logged, printed, or surfaced to the UI
 (enforced by the `CarrierResponseRedactor` credential strip table).
 
+**Sandbox credentials ≠ production credentials.** DHL provisions them
+separately; they must be stored under distinct env vars (or the same vars with
+an explicit `sandbox` env profile). Production enablement is a separate DHL
+step — sandbox access does not automatically grant live/billable access.
+
+**Auth method:** HTTP Basic Authentication — `Authorization: Basic base64(KEY:SECRET)` —
+where `KEY` (`DHL_EXPRESS_API_KEY`) is the **username** and `SECRET` (`DHL_EXPRESS_API_SECRET`)
+is the **password**. Applies to both `sandbox` (`https://express.api.dhl.com/mydhlapi/test`)
+and `live` (`https://express.api.dhl.com/mydhlapi`) modes.
+
+**Path-LIVE integration test** runs in `sandbox` mode against the real DHL test
+endpoint (`https://express.api.dhl.com/mydhlapi/test`). The `shadow` adapter is the
+offline fallback only (deterministic sim, no HTTP, used when network access is
+unavailable or creds are not yet provisioned). The `sandbox` gate enforces that a
+real HTTP handshake has validated the adapter before any `live` promotion is attempted.
+
 The `carrier_live_allowlist` (`config.py:312`) requires explicit opt-in per
 batch. Live calls cannot fire for a batch not on this list even if all other gates
-pass. This is the primary safety guard during Phase-D testing.
+pass. This is the primary safety guard during Phase-D production testing.
+The `sandbox` mode intentionally bypasses the allowlist — sandbox runs should not
+require batch-by-batch approval since no real shipment is created.
 
 ---
 
