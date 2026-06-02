@@ -711,6 +711,64 @@ _GLOBAL_METAL_TABLE: Dict[str, Dict[str, str]] = {
 }
 
 
+def _normalise_type_key(item_type: str) -> str:
+    """Normalise packing-list item-type abbreviations to _GLOBAL_TYPE_TABLE keys.
+
+    The packing parser stores 3–4 letter codes (PND, RNG, ERG, BRC, …) from the
+    'Ctg' column; the table expects full English words (PENDANT, RING, EARRING, …).
+
+    Examples:
+        "PND" → "PENDANT"
+        "RNG" → "RING"
+        "ERG" / "EAR" / "PRS" → "EARRING"
+        "BRC"  → "BRACELET"
+        "PENDANT" → "PENDANT"  (already full-word — unchanged)
+    """
+    _ABBR = {
+        "PND": "PENDANT", "PEND": "PENDANT",
+        "RNG": "RING",
+        "ERG": "EARRING", "EAR": "EARRING", "PRS": "EARRING", "ERS": "EARRING",
+        "BRC": "BRACELET", "BR": "BRACELET",
+        "NCK": "NECKLACE", "NK": "NECKLACE",
+        "BNG": "BANGLE",
+        "CFL": "CUFFLINK",
+        "CHN": "CHAIN",
+    }
+    s = (item_type or "").strip().upper()
+    return _ABBR.get(s, s)
+
+
+def _normalise_metal_key(metal: str) -> str:
+    """Normalise a packing-list metal code to the _GLOBAL_METAL_TABLE key format.
+
+    The packing parser extracts karat+colour codes (18KT/Y, 18KT/P, 14KT/W, etc.)
+    while the table uses canonical keys (18KT GOLD, 14KT GOLD, etc.).
+    This function strips colour suffixes and adds " GOLD" so the lookup succeeds.
+
+    Examples:
+        "18KT/Y" → "18KT GOLD"   (18 karat yellow gold)
+        "18KT/P" → "18KT GOLD"   (18 karat pink/rose gold — same customs class)
+        "14KT/W" → "14KT GOLD"   (14 karat white gold)
+        "18KT GOLD" → "18KT GOLD" (already canonical — unchanged)
+        "PT950"     → "PT950"     (platinum — no normalisation needed)
+    """
+    import re as _re_norm
+    s = (metal or "").strip().upper()
+    # If it already matches a table key exactly, return as-is
+    if s in _GLOBAL_METAL_TABLE:
+        return s
+    # Strip trailing colour code: /Y /W /P /R /RG /WG /YG /PG and similar
+    s_stripped = _re_norm.sub(r'/[A-Z]{1,3}$', '', s).strip()
+    # Map bare karat code (e.g. "18KT", "14KT", "9KT") → "<N>KT GOLD"
+    if _re_norm.fullmatch(r'\d{1,2}KT', s_stripped):
+        return s_stripped + " GOLD"
+    # Map "<N> GOLD" variants
+    m = _re_norm.match(r'(\d{1,2})\s*K\s*T?\s*GOLD', s_stripped)
+    if m:
+        return m.group(1) + "KT GOLD"
+    return s_stripped  # best effort; may still miss, but won't silently corrupt
+
+
 def _global_render_pl_en(item_type: str, metal: str, stone_text: str
                          ) -> Dict[str, str]:
     """Render operator-locked PL/EN description for a Global packing row.
@@ -718,6 +776,9 @@ def _global_render_pl_en(item_type: str, metal: str, stone_text: str
     Inputs come straight from packing_lines columns. Rules:
       - Type token (Ring/Bracelet/...) → Pierścionek/Bransoletka/...
       - Metal canonical (925 SILVER/9KT GOLD/...) → ze srebra próby 925/ze złota próby 375/...
+        Colour-suffix codes (18KT/Y, 18KT/P, 14KT/W, …) are normalised via
+        _normalise_metal_key() before lookup — they all resolve to the same
+        customs class as their base karat (18KT/Y = 18KT GOLD, etc.).
       - Stone text (free-text from packing parser) is scanned for vocabulary
         markers: LGD → diamenty laboratoryjne; CZ → cyrkonie; combinations.
       - Unknown type or metal → returns empty strings; caller must NOT emit
@@ -725,11 +786,11 @@ def _global_render_pl_en(item_type: str, metal: str, stone_text: str
         rows for Global supplier).
     """
     import re as _re_g
-    t_key = (item_type or "").strip().upper()
+    t_key = _normalise_type_key(item_type)  # PND→PENDANT, RNG→RING, etc.
     if t_key.endswith("S") and t_key[:-1] in _GLOBAL_TYPE_TABLE:
         t_key = t_key[:-1]
     type_info = _GLOBAL_TYPE_TABLE.get(t_key)
-    metal_info = _GLOBAL_METAL_TABLE.get((metal or "").strip().upper())
+    metal_info = _GLOBAL_METAL_TABLE.get(_normalise_metal_key(metal))
     if not type_info or not metal_info:
         return {"pl": "", "en": "", "item_type": "", "item_type_pl": ""}
 
