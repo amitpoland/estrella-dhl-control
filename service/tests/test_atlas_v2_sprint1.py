@@ -223,3 +223,41 @@ def test_v2_index_no_cross_path_for_shared_layer():
     assert "/dashboard/pz-api.js" not in html, "pz-api.js referenced via /dashboard/ in index.html"
     assert "/dashboard/pz-state.js" not in html, "pz-state.js referenced via /dashboard/ in index.html"
     assert "/dashboard/dashboard-shared.js" not in html, "dashboard-shared.js referenced via /dashboard/"
+
+
+# ── Parse-smoke: structural completeness of all v2 JSX files ────────────────
+# This test class would have caught the proforma-list.jsx truncation in PR #423.
+# Every *.jsx under static/v2/ must end with a proper closing line (not a
+# mid-expression fragment). The invariant: last non-empty line ends with ";"
+# or "}" -- matching the registration/closure patterns used by all v2 components.
+
+_JSX_SUFFIX_REQUIRED = (";", "}")
+
+
+def test_v2_jsx_all_files_structurally_complete():
+    """Every *.jsx under static/v2/ must end on a syntactically closed line.
+
+    A file whose last non-empty line ends with neither ';' nor '}' is truncated
+    (e.g. '<td style={{ padding: ...' -- the PR #423 defect pattern).
+    This test is the minimal parse-smoke that would have blocked that merge.
+    """
+    jsx_files = sorted(_V2.glob("*.jsx"))
+    assert jsx_files, f"No .jsx files found under {_V2}"
+
+    failures: list[str] = []
+    for f in jsx_files:
+        content = f.read_text(encoding="utf-8", errors="replace")
+        non_empty = [ln.rstrip() for ln in content.splitlines() if ln.strip()]
+        if not non_empty:
+            failures.append(f"{f.name}: file is empty")
+            continue
+        last = non_empty[-1]
+        if not (last.endswith(";") or last.endswith("}")):
+            failures.append(
+                f"{f.name}: last non-empty line does not close properly: {last!r}"
+            )
+
+    assert not failures, (
+        "Structurally incomplete JSX file(s) -- likely truncated:\n"
+        + "\n".join(f"  {e}" for e in failures)
+    )
