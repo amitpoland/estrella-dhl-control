@@ -384,6 +384,39 @@ def init_db(db_path: Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_box_types_active ON box_types (active)"
         )
 
+        # ── Description mappings — operator-approved metal/purity resolver ──
+        # Stores known token → facts approved by a human via Inbox proposal.
+        # Resolver reads this table before falling through to the engine.
+        # Governance: only approved Inbox actions write here; AI never writes.
+        # Auditability: approved_by / approved_at / source_proposal_id are
+        # non-nullable — every row is permanently answerable.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS description_mappings (
+                id                 TEXT PRIMARY KEY,
+                token              TEXT NOT NULL,
+                canonical_metal    TEXT,
+                purity             TEXT,
+                material_pl        TEXT NOT NULL,
+                purity_gen         TEXT,
+                description_pl     TEXT,
+                approved_by        TEXT NOT NULL,
+                approved_at        TEXT NOT NULL,
+                source_proposal_id TEXT NOT NULL,
+                source_text        TEXT NOT NULL,
+                confidence         TEXT NOT NULL DEFAULT 'medium',
+                supplier_scope     TEXT DEFAULT NULL,
+                active             INTEGER NOT NULL DEFAULT 1,
+                created_at         TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_dm_token_supplier "
+            "ON description_mappings(token, COALESCE(supplier_scope, ''))"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_dm_active ON description_mappings (active)"
+        )
+
         # ── Phase 4B Wave 1 — soft-delete deleted_at column migration ─────
         # Idempotent ALTER TABLE for each of the six Wave 1 entities.
         # Tables created on Wave 1 deploy already include deleted_at via

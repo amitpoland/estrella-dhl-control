@@ -128,16 +128,35 @@ def check_customs_description_accuracy(
                 and desc.startswith("(placeholder")):
             continue
 
-        # Skip lines that already have an approved correction
+        # Skip lines that already have an approved correction (shipment scope)
+        # or a global mapping (resolver scope — checked below)
         corrections = audit.get("description_corrections") or {}
         if product_code in corrections:
             continue
+
+        # ── Resolver path (global facts) ────────────────────────────────────
+        # Consult the description_mappings DB before running the engine.
+        # On a hit, pass resolved_facts to the engine so it skips the
+        # GOLD_PURITY scan — single parse authority.
+        resolved_facts: Optional[Dict[str, Any]] = None
+        token_matched:  Optional[str]             = None
+        try:
+            from .description_resolver import lookup as _dr_lookup, _tokenize  # noqa: PLC0415
+            for _tok in _tokenize(desc):
+                _facts = _dr_lookup(_tok)
+                if _facts:
+                    resolved_facts = _facts
+                    token_matched  = _tok
+                    break
+        except Exception as _dr_exc:
+            log.warning("[%s] resolver lookup failed (non-fatal): %s", batch_id, _dr_exc)
 
         try:
             norm = cde.normalize_item_description(
                 desc,
                 item_type        = "",
                 hsn_from_invoice = str(ln.get("hsn_code") or ln.get("hs_code") or ""),
+                resolved_facts   = resolved_facts,  # None → existing GOLD_PURITY path
             )
         except Exception as exc:
             log.warning(
@@ -152,7 +171,18 @@ def check_customs_description_accuracy(
         is_forbidden = material_pl in FORBIDDEN_MATERIAL_PL or not material_pl
 
         if not is_forbidden:
-            continue  # this line is fine
+            continue  # resolver or engine resolved it — no proposal needed
+
+        # ── Suggestion (advisory only — no pattern heuristics, no AI) ───────
+        # Consult GOLD_PURITY for the matched token only.
+        # If the token is not in GOLD_PURITY, return empty (system declines to guess).
+        suggestion = ""
+        if token_matched:
+            try:
+                from .description_resolver import _suggest_material_pl  # noqa: PLC0415
+                suggestion = _suggest_material_pl(token_matched) or ""
+            except Exception:
+                pass
 
         # Emit proposal
         import uuid as _uuid
@@ -172,24 +202,34 @@ def check_customs_description_accuracy(
             # Evidence + proposed correction
             "data": {
                 "source":               desc,
+                "token_detected":       token_matched or "",
                 "current_material_pl":  material_pl or "(empty)",
                 "issue":                issue_code,
+                # suggested_material_pl: GOLD_PURITY lookup on matched token only.
+                # Empty when token is unknown — system declines to guess.
+                # Advisory only: never written to DB or PDF without approval.
+                "suggested_material_pl": suggestion,
+                "scope_hint": "global_mapping" if token_matched else "shipment",
+                "confidence": "high" if suggestion else "low",
                 "reason": (
-                    f"Engine resolved material_pl to {material_pl!r} — a forbidden "
-                    f"placeholder — for invoice line {invoice_no!r} position "
-                    f"{line_pos} (product {product_code!r}). "
-                    f"Raw description: {desc!r}"
+                    f"Resolver and engine could not resolve metal/purity for "
+                    f"token {token_matched!r} in invoice line {invoice_no!r} "
+                    f"position {line_pos} (product {product_code!r}). "
+                    f"Raw description: {desc!r}. "
+                    f"Engine output: {material_pl!r}."
                 ),
                 "hint": (
-                    "Enter the correct Polish purity/material description at approval "
-                    "time (e.g. 'platyna próby 950', 'złoto próby 750'). "
-                    "The corrected value will be used when the customs PDF is regenerated."
+                    "Investigate the source invoice and enter the correct Polish "
+                    "purity/material description at approval time "
+                    "(e.g. 'platyna próby 950', 'złoto próby 750'). "
+                    "Choose scope='shipment' to fix this batch only or "
+                    "scope='global_mapping' to create a reusable rule."
                 ),
-                # Operator fills these in at approval:
-                "proposed_material_pl":     "",
+                # Operator fills/confirms at approval:
+                "proposed_material_pl":     suggestion,
                 "proposed_description_pl":  "",
             },
-            "confidence": "high",
+            "confidence": "high" if suggestion else "low",
             "approved_by": None,
             "approved_at": None,
             "rejected_by": None,

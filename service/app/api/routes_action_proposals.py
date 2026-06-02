@@ -136,10 +136,14 @@ class DescriptionCorrection(BaseModel):
     """Correction values supplied by the operator when approving a
     ``customs_description_mismatch`` proposal.
 
-    At least one of ``material_pl`` or ``description_pl`` must be non-empty.
+    ``material_pl`` is required.  All other fields are optional.
     """
-    material_pl:    Optional[str] = None   # e.g. "platyna próby 950"
-    description_pl: Optional[str] = None   # full customs sentence (optional)
+    material_pl:     Optional[str] = None   # e.g. "platyna próby 950" (required in practice)
+    purity_gen:      Optional[str] = None   # genitive, e.g. "platyny próby 950"
+    canonical_metal: Optional[str] = None   # "platinum" | "gold" | "silver"
+    purity:          Optional[str] = None   # "950" | "750" | "925"
+    description_pl:  Optional[str] = None   # full customs sentence override (rare)
+    supplier_scope:  Optional[str] = None   # None = global; "ejl" = EJL-only
 
 
 class ApproveBody(BaseModel):
@@ -148,6 +152,11 @@ class ApproveBody(BaseModel):
     # Only consumed for customs_description_mismatch proposals.
     # Ignored for all other proposal types.
     correction: Optional[DescriptionCorrection] = None
+    # scope selects write target for customs_description_mismatch proposals.
+    #   "shipment"      → audit["description_corrections"][product_code]
+    #   "global_mapping" → description_mappings table (description_resolver)
+    # Defaults to "shipment" so existing callers without scope are unchanged.
+    scope: str = "shipment"
 
 
 class RejectBody(BaseModel):
@@ -811,28 +820,87 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
     if body.note:
         proposal["approval_note"] = body.note
 
-    # ── customs_description_mismatch: apply correction to audit ──────────────
-    # When the operator approves a description-mismatch proposal and supplies a
-    # correction, store it in audit["description_corrections"][product_code].
-    # The generate-description route reads this dict and applies overrides
-    # before passing rows to the customs description engine.
+    # ── customs_description_mismatch: route by scope ─────────────────────────
+    # scope="shipment"      → audit["description_corrections"][product_code]
+    #                          (this batch only; apply_description_corrections reads it)
+    # scope="global_mapping" → description_mappings table via description_resolver
+    #                          (persists for all future shipments with same token)
+    # These are separate authorities. Shipment path is unchanged from PR #424.
+    # Global mapping path is new in this sprint.
     correction_applied: Optional[Dict[str, Any]] = None
     if proposal.get("type") == "customs_description_mismatch" and body.correction:
         product_code = proposal.get("product_code") or ""
-        mat_pl  = (body.correction.material_pl    or "").strip()
-        desc_pl = (body.correction.description_pl or "").strip()
-        if product_code and (mat_pl or desc_pl):
-            corr_entry: Dict[str, Any] = {
-                "material_pl":     mat_pl,
-                "description_pl":  desc_pl,
-                "approved_by":     body.approved_by.strip(),
-                "approved_at":     _now(),
-                "source_proposal_id": proposal_id,
-            }
-            audit.setdefault("description_corrections", {})[product_code] = corr_entry
-            # Record back on the proposal so the history is self-contained.
-            proposal["correction"] = corr_entry
-            correction_applied = corr_entry
+        mat_pl       = (body.correction.material_pl    or "").strip()
+        desc_pl      = (body.correction.description_pl or "").strip()
+        purity_gen   = (body.correction.purity_gen     or "").strip()
+        canon_metal  = (body.correction.canonical_metal or "").strip()
+        purity       = (body.correction.purity         or "").strip()
+        scope        = (body.scope or "shipment").strip().lower()
+        approved_at  = _now()
+
+        if mat_pl:
+            if scope == "global_mapping":
+                # ── Global mapping write (new path) ──────────────────────────
+                # Resolver token is stored in proposal data when checker fired.
+                token = (
+                    (proposal.get("data") or {}).get("token_detected") or ""
+                ).strip()
+                source_text = (
+                    (proposal.get("data") or {}).get("source") or ""
+                ).strip()
+                if not token:
+                    # Fallback: derive from product_code (less precise but safe)
+                    token = product_code
+                try:
+                    from ..services.description_resolver import write_mapping  # noqa: PLC0415
+                    mapping_id = write_mapping(
+                        token              = token,
+                        material_pl        = mat_pl,
+                        approved_by        = body.approved_by.strip(),
+                        approved_at        = approved_at,
+                        source_proposal_id = proposal_id,
+                        source_text        = source_text,
+                        canonical_metal    = canon_metal,
+                        purity             = purity,
+                        purity_gen         = purity_gen or mat_pl,
+                        description_pl     = desc_pl or None,
+                        confidence         = (proposal.get("data") or {}).get("confidence") or "medium",
+                        supplier_scope     = body.correction.supplier_scope or None,
+                    )
+                    correction_applied = {
+                        "scope":            "global_mapping",
+                        "token":            token,
+                        "mapping_id":       mapping_id,
+                        "material_pl":      mat_pl,
+                        "approved_by":      body.approved_by.strip(),
+                        "approved_at":      approved_at,
+                        "source_proposal_id": proposal_id,
+                    }
+                except Exception as _gm_exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"global_mapping write failed: {_gm_exc}",
+                    ) from _gm_exc
+
+            else:
+                # ── Shipment-scoped correction (existing path, unchanged) ────
+                if product_code:
+                    corr_entry: Dict[str, Any] = {
+                        "material_pl":        mat_pl,
+                        "description_pl":     desc_pl,
+                        "approved_by":        body.approved_by.strip(),
+                        "approved_at":        approved_at,
+                        "source_proposal_id": proposal_id,
+                    }
+                    audit.setdefault("description_corrections", {})[product_code] = corr_entry
+                    correction_applied = {
+                        "scope": "shipment",
+                        **corr_entry,
+                    }
+
+            if correction_applied:
+                # Record on the proposal so the history is self-contained.
+                proposal["correction"] = correction_applied
 
     _save_audit(batch_id, audit)
     tl.log_event(

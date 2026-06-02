@@ -320,6 +320,7 @@ def normalize_item_description(
     raw_description: str,
     item_type: str = "",
     hsn_from_invoice: str = "",
+    resolved_facts: "Optional[dict]" = None,
 ) -> dict:
     """
     Parse a raw invoice item description and return normalized fields.
@@ -329,6 +330,20 @@ def normalize_item_description(
     raw_description  : str   — e.g. "14KT RING DIA&CLS"
     item_type        : str   — optional pre-resolved item type (RING, PENDANT…)
     hsn_from_invoice : str   — HSN/HS code from invoice line (e.g. "71131911")
+    resolved_facts   : dict | None
+        When provided by the description resolver, the metal/purity detection
+        loop (GOLD_PURITY scan) is skipped entirely.  The resolver is the sole
+        authority for metal/purity interpretation when it has a DB hit.
+
+        Expected keys (all optional — absent keys fall back to empty string):
+            canonical_metal : str  — "platinum" | "gold" | "silver"
+            purity          : str  — "950" | "750" | "925" …
+            material_pl     : str  — "platyna próby 950" (nominative)
+            purity_gen      : str  — "platyny próby 950" (genitive for sentences)
+
+        Hard rule: when resolved_facts is not None, the engine MUST NOT
+        re-parse metal/purity from raw_description.  Item type, stones, and
+        descriptors are still parsed from raw text as normal.
 
     Returns
     -------
@@ -341,7 +356,7 @@ def normalize_item_description(
     """
     raw = raw_description or ""
 
-    # ── Detect item type ──────────────────────────────────────────────────────
+    # ── Detect item type (always from raw text) ───────────────────────────────
     detected_type = item_type.upper().strip() if item_type else ""
     if not detected_type:
         m = _ITEM_TYPE_RE.search(raw)
@@ -358,15 +373,28 @@ def normalize_item_description(
     hs_candidate = HS_CANDIDATES.get(lookup_type) or HS_CANDIDATES.get(detected_type) or "7113"
 
     # ── Detect purity / material ──────────────────────────────────────────────
-    purity_raw  = ""
-    purity_pl   = ""
-    raw_upper = raw.upper()
-    for key, val in GOLD_PURITY.items():
-        pattern = re.compile(r"\b" + re.escape(key) + r"\b", re.IGNORECASE)
-        if pattern.search(raw):
-            purity_raw = key
-            purity_pl  = val
-            break
+    # When resolved_facts is provided by the description resolver, use those
+    # facts directly and skip the GOLD_PURITY scan.  The resolver has already
+    # determined the canonical metal/purity; re-parsing would risk divergence.
+    if resolved_facts is not None:
+        # Resolver path: take facts verbatim, no GOLD_PURITY scan.
+        purity_raw = (resolved_facts.get("canonical_metal") or "").strip()
+        purity_pl  = (resolved_facts.get("material_pl") or "").strip()
+        # Caller may supply a pre-computed genitive; fall back to nominative.
+        _resolved_purity_gen = (
+            resolved_facts.get("purity_gen") or purity_pl
+        ).strip()
+    else:
+        # Original path: scan GOLD_PURITY from raw text (unchanged).
+        purity_raw  = ""
+        purity_pl   = ""
+        for key, val in GOLD_PURITY.items():
+            pattern = re.compile(r"\b" + re.escape(key) + r"\b", re.IGNORECASE)
+            if pattern.search(raw):
+                purity_raw = key
+                purity_pl  = val
+                break
+        _resolved_purity_gen = None  # computed below from _PURITY_GENITIVE
 
     # ── Detect stones ─────────────────────────────────────────────────────────
     stones_raw = ""
@@ -411,7 +439,12 @@ def normalize_item_description(
             stones_pl = stones_pl.rstrip() + " laboratoryjne"
 
     # ── Resolve genitive / instrumental forms for Polish grammar ─────────────
-    purity_gen    = _PURITY_GENITIVE.get(purity_raw, purity_pl)   # "złota próby 585"
+    # When resolved_facts supplied a purity_gen, use it directly.
+    # Otherwise fall back to _PURITY_GENITIVE lookup (original path).
+    if _resolved_purity_gen:
+        purity_gen = _resolved_purity_gen
+    else:
+        purity_gen = _PURITY_GENITIVE.get(purity_raw, purity_pl)  # "złota próby 585"
     stones_instr  = _STONE_INSTRUMENTAL.get(stones_pl.strip(), stones_pl)  # "diamentami"
 
     # Preposition: "ze" before words starting with z/ż/ź/zł, "z" otherwise
