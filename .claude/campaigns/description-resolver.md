@@ -5,7 +5,26 @@
 **Branch convention:** `feat/description-resolver`  
 **Do not touch:** PR #424 content, `customs_description_engine.py` GOLD_PURITY dict (those are now stable)
 
-**Last reviewed:** 2026-06-02 — operator line-by-line review. All adjustments incorporated below.
+**Last reviewed:** 2026-06-02 — operator line-by-line review + governance corrections. Final rule confirmed.
+
+---
+
+## Canonical rule (locked — do not override in implementation)
+
+```
+Known metal/purity token
+→ deterministic resolver/engine renders
+
+Unknown metal/purity token
+→ no AI guess
+→ Inbox proposal with empty suggestion
+→ human verifies supplier/source
+→ human enters approved mapping
+→ future shipments can use it
+```
+
+Every implementation decision in this campaign must be consistent with this rule.
+When in doubt, the rule wins.
 
 ---
 
