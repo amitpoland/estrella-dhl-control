@@ -57,6 +57,24 @@ def test_v2_index_loads_pz_api():
     assert "pz-api.js" in html, "pz-api.js not loaded in v2 shell"
 
 
+def test_v2_self_contained_no_cross_path():
+    """Shared-layer scripts must be co-located in static/v2/ (no /dashboard/ cross-path).
+
+    The shell must be self-contained: pz-api.js, pz-state.js, dashboard-shared.js
+    must live under static/v2/ and be referenced without the /dashboard/ prefix.
+    A cross-path reference creates a coupling between the /v2/ and /dashboard/ handlers
+    that breaks if either is deployed or gated independently.
+    """
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert "/dashboard/pz-api.js" not in html, "pz-api.js referenced via /dashboard/ (not self-contained)"
+    assert "/dashboard/pz-state.js" not in html, "pz-state.js referenced via /dashboard/ (not self-contained)"
+    assert "/dashboard/dashboard-shared.js" not in html, "dashboard-shared.js referenced via /dashboard/"
+    # Confirm co-located copies exist
+    assert (_V2 / "pz-api.js").exists(), "pz-api.js not co-located in static/v2/"
+    assert (_V2 / "pz-state.js").exists(), "pz-state.js not co-located in static/v2/"
+    assert (_V2 / "dashboard-shared.js").exists(), "dashboard-shared.js not co-located in static/v2/"
+
+
 def test_v2_mock_badge_jsx_present():
     """mock-badge.jsx must exist under static/v2/."""
     assert (_V2 / "mock-badge.jsx").exists(), "mock-badge.jsx missing"
@@ -150,3 +168,58 @@ def test_v2_root_redirect(dev_client):
     """GET /v2 (no trailing slash) must redirect to /v2/index.html."""
     r = dev_client.get("/v2", follow_redirects=False)
     assert r.status_code in (302, 307), f"Expected redirect from /v2, got {r.status_code}"
+
+
+# ── URL sync contract tests (Phase 1, Sprint 1 increment) ────────────────────
+
+def test_v2_deep_link_proforma_served(dev_client):
+    """Deep link GET /v2/proforma?batch_id=X must serve the shell (200).
+
+    The /v2/{path:path} handler falls back to index.html for any unknown path,
+    so /v2/proforma serves the shell which then reads location on mount.
+    """
+    r = dev_client.get("/v2/proforma?batch_id=BATCH-TEST-001")
+    assert r.status_code == 200, f"Expected 200 for deep link, got {r.status_code}"
+    assert "text/html" in r.headers.get("content-type", ""), "Response not HTML"
+
+
+def test_v2_deep_link_inbox_served(dev_client):
+    """Any page deep link must serve the shell."""
+    r = dev_client.get("/v2/inbox")
+    assert r.status_code == 200
+
+
+def test_v2_url_sync_present_in_shell():
+    """index.html must contain the URL-sync logic (parseV2Location, handleNav pushState, popstate)."""
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert "parseV2Location" in html, "parseV2Location missing from shell"
+    assert "pushState" in html, "history.pushState missing from shell"
+    assert "popstate" in html, "popstate listener missing from shell"
+    assert "pageToUrl" in html, "pageToUrl helper missing from shell"
+
+
+def test_v2_batch_scoped_pages_defined():
+    """BATCH_SCOPED_PAGES must contain proforma and proforma_detail."""
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert "BATCH_SCOPED_PAGES" in html, "BATCH_SCOPED_PAGES missing from shell"
+    assert "'proforma'" in html or '"proforma"' in html, "proforma missing from BATCH_SCOPED_PAGES"
+    assert "'proforma_detail'" in html or '"proforma_detail"' in html, "proforma_detail missing"
+
+
+def test_v2_route_redirects_in_shell():
+    """ROUTE_REDIRECTS must be present (preserves legacy deep links)."""
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert "ROUTE_REDIRECTS" in html, "ROUTE_REDIRECTS missing from shell"
+
+
+def test_v2_index_no_cross_path_for_shared_layer():
+    """index.html must not reference /dashboard/ for the shared-layer scripts.
+
+    Cross-path references create coupling between /v2/ and /dashboard/ handlers.
+    The self-containment fix uses relative paths (dashboard-shared.js, pz-api.js)
+    or absolute /v2/ paths -- never /dashboard/pz-api.js etc.
+    """
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert "/dashboard/pz-api.js" not in html, "pz-api.js referenced via /dashboard/ in index.html"
+    assert "/dashboard/pz-state.js" not in html, "pz-state.js referenced via /dashboard/ in index.html"
+    assert "/dashboard/dashboard-shared.js" not in html, "dashboard-shared.js referenced via /dashboard/"

@@ -10,11 +10,12 @@
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
-<!-- Shared layer: apiFetch (cookie-authed, same-origin, survives PR #422 enforcement) -->
-<script src="/dashboard/dashboard-shared.js"></script>
-<!-- Proforma API + state hooks (wires Pro Forma to live backend) -->
-<script type="text/babel" src="/dashboard/pz-api.js"></script>
-<script type="text/babel" src="/dashboard/pz-state.js"></script>
+<!-- Shared layer: co-located copies (self-contained; no cross-path dependency) -->
+<!-- dashboard-shared.js: apiFetch (cookie-authed, same-origin, survives PR #422 enforcement) -->
+<script src="dashboard-shared.js"></script>
+<!-- pz-api.js + pz-state.js: proforma API + state hooks (wires Pro Forma to live backend) -->
+<script type="text/babel" src="pz-api.js"></script>
+<script type="text/babel" src="pz-state.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html, body, #root { height: 100%; }
@@ -259,50 +260,11 @@ function App() {
     document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
   }, [isDark]);
 
-  const [page, setPage] = React.useState('dashboard');
-  const [activeNav, setActiveNav] = React.useState('dashboard');
-  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
-  const [selectedShipment, setSelectedShipment] = React.useState(null);
-  const [showNewShipment, setShowNewShipment] = React.useState(false);
-  const [showApiChecklist, setShowApiChecklist] = React.useState(false);
-  const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false);
-  const [viewerDoc, setViewerDoc] = React.useState(null);
-  const [searchOpen, setSearchOpen] = React.useState(false);
-  const [proformaDraft, setProformaDraft] = React.useState(null);
+  // ── URL helpers ──────────────────────────────────────────────────────────────
+  // Pages that carry a persistent ?batch_id= param (preserved across their sub-routes)
+  const BATCH_SCOPED_PAGES = ['proforma', 'proforma_detail'];
 
-  const openViewer = (doc) => setViewerDoc(doc);
-  const closeViewer = () => setViewerDoc(null);
-  
-  const handleProformaDrill = (draft) => {
-    setProformaDraft(draft);
-    setPage('proforma_detail');
-  };
-  
-  const handleProformaBack = () => {
-    setProformaDraft(null);
-    setPage('proforma');
-  };
-
-  // Cmd-K / Ctrl-K toggles global search
-  React.useEffect(() => {
-    const onKey = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setSearchOpen(o => !o);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
-  const handleViewShipment = (shipment) => {
-    setSelectedShipment(shipment);
-    setPage('detail');
-    setActiveNav('shipments');
-  };
-
-  // Legacy route slugs → new simplified homes (preserves deep links from
-  // earlier IA). Old pages still reachable via tabs inside their new home.
+  // Legacy route slugs → canonical page ids
   const ROUTE_REDIRECTS = {
     actions:       'inbox',
     proposals:     'inbox',
@@ -319,11 +281,103 @@ function App() {
     return_prod:   'inventory',
   };
 
+  // Parse /v2/<page>[?query] → { page, search }
+  function parseV2Location() {
+    const raw = window.location.pathname.replace(/^\/v2\/?/, '') || 'dashboard';
+    const slug = raw.split('/')[0] || 'dashboard';
+    const target = ROUTE_REDIRECTS[slug] || slug;
+    return { page: target, search: window.location.search };
+  }
+
+  // Build the URL for a given page, preserving batch_id for proforma pages
+  function pageToUrl(target, currentSearch) {
+    const sp = new URLSearchParams(currentSearch || '');
+    const batchId = sp.get('batch_id') || '';
+    const draftId = sp.get('draft') || '';
+    const params = new URLSearchParams();
+    if (BATCH_SCOPED_PAGES.includes(target) && batchId) {
+      params.set('batch_id', batchId);
+      if (target === 'proforma_detail' && draftId) params.set('draft', draftId);
+    }
+    const qs = params.toString();
+    return '/v2/' + target + (qs ? '?' + qs : '');
+  }
+
+  // ── Initial state from URL ─────────────────────────────────────────────────
+  const _initialLocation = parseV2Location();
+  const [page, setPage] = React.useState(_initialLocation.page);
+  const [activeNav, setActiveNav] = React.useState(_initialLocation.page);
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+  const [selectedShipment, setSelectedShipment] = React.useState(null);
+  const [showNewShipment, setShowNewShipment] = React.useState(false);
+  const [showApiChecklist, setShowApiChecklist] = React.useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false);
+  const [viewerDoc, setViewerDoc] = React.useState(null);
+  const [searchOpen, setSearchOpen] = React.useState(false);
+  const [proformaDraft, setProformaDraft] = React.useState(null);
+  // Track current search string for URL construction
+  const [currentSearch, setCurrentSearch] = React.useState(_initialLocation.search);
+
+  const openViewer = (doc) => setViewerDoc(doc);
+  const closeViewer = () => setViewerDoc(null);
+
+  const handleProformaDrill = (draft) => {
+    setProformaDraft(draft);
+    const url = pageToUrl('proforma_detail', currentSearch);
+    history.pushState({ page: 'proforma_detail' }, '', url);
+    setPage('proforma_detail');
+    setActiveNav('proforma');
+  };
+
+  const handleProformaBack = () => {
+    setProformaDraft(null);
+    const url = pageToUrl('proforma', currentSearch);
+    history.pushState({ page: 'proforma' }, '', url);
+    setPage('proforma');
+  };
+
+  // ── popstate: browser back/forward ─────────────────────────────────────────
+  React.useEffect(() => {
+    const onPop = () => {
+      const loc = parseV2Location();
+      setPage(loc.page);
+      setActiveNav(loc.page);
+      setCurrentSearch(loc.search);
+      if (loc.page !== 'proforma_detail') setProformaDraft(null);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  // ── Cmd-K / Ctrl-K: global search ─────────────────────────────────────────
+  React.useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchOpen(o => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const handleViewShipment = (shipment) => {
+    setSelectedShipment(shipment);
+    const url = pageToUrl('shipments', '');
+    history.pushState({ page: 'shipments' }, '', url);
+    setPage('detail');
+    setActiveNav('shipments');
+  };
+
+  // ── handleNav: sidebar / programmatic navigation + pushState ───────────────
   const handleNav = (id) => {
     const target = ROUTE_REDIRECTS[id] || id;
+    const url = pageToUrl(target, currentSearch);
+    history.pushState({ page: target }, '', url);
     setActiveNav(target);
     setPage(target);
     setMobileSidebarOpen(false);
+    if (!BATCH_SCOPED_PAGES.includes(target)) setProformaDraft(null);
   };
 
   return (
