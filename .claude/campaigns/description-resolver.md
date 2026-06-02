@@ -125,9 +125,10 @@ default and the existing code path is unchanged.
 | `inject_facts(string)` is permanently rejected | It would cause double-parsing. Use `resolved_facts=` parameter on the engine call. |
 | AI never writes to `description_mappings` | Only `write_mapping()` writes; only called from approved Inbox handler |
 | AI never auto-approves | `scope` comes from operator request body, never from checker or AI |
-| Unknown purity → proposal, not output | PT960 creates an Inbox proposal. It does NOT auto-render "platyna próby 960". See PT960 rule below. |
+| Unknown token → empty proposal, not output | An unknown token creates an Inbox proposal with `suggested_material_pl = ""`. The system does not guess. Operator investigates and decides. |
+| `_suggest_material_pl()` uses GOLD_PURITY only | No pattern-matching heuristics for unknown purities. Only tokens already in GOLD_PURITY get a suggestion. PT960 → None. |
+| LLM not used for metal/purity tokens | An LLM guess on a customs metal code is as dangerous as a silent automatic write. Unknown metal → empty suggestion → human decides. |
 | `scope_hint` is advisory only | Label it "AI recommends" in UI; operator makes the final choice |
-| Deterministic heuristics suggest, never render | Pattern `PT\d{3}` tells the checker what to suggest. It does not produce output without DB approval. |
 | No supplier-specific metal meaning without explicit `supplier_scope` | See governance rule below |
 | Every global_mapping approval stores full audit trail | See auditability rule below |
 
@@ -135,17 +136,46 @@ default and the existing code path is unchanged.
 
 ## PT950 vs PT960 — the canonical governance example
 
-**PT950 (known — render):**
+PT960 is not a known platinum standard. It appears here as a governance example
+to show how the system handles an **unknown token**. The rule that matters is
+about the unknown path, not the specific value 960.
+
+---
+
+**Known path — PT950, PT900, PT850:**
+
+These are approved platinum standards. They are present in `GOLD_PURITY`
+(engine fallback) and will also be pre-seeded into `description_mappings`
+at sprint start.
+
 ```
 Invoice: "PCS, PT950 Platinum, Plain RING"
-resolver.lookup("PT950") → HIT (row exists in description_mappings)
+resolver.lookup("PT950") → HIT
 resolved_facts = {canonical_metal: "platinum", purity: "950",
                   material_pl: "platyna próby 950"}
 engine.normalize_item_description(raw, resolved_facts=facts)
-→ material_pl: "platyna próby 950"  ✅  No proposal. No Inbox action required.
+→ material_pl: "platyna próby 950"  ✅
+
+No AI. No proposal. No human approval needed.
+The system knows. It renders.
 ```
 
-**PT960 (unknown — propose, do not render):**
+---
+
+**Unknown path — PT960 as a governance example:**
+
+The system receives a token it has never seen before. It cannot know whether
+the token is:
+- a legitimate platinum fineness
+- a supplier-specific code
+- a typo
+- a marketing label
+- an internal SKU fragment
+- something else entirely
+
+The system must not guess. Guessing would produce an unverified value on
+customs paperwork, which is exactly what the design exists to prevent.
+
 ```
 Invoice: "PCS, PT960 Premium Platinum, Plain RING"
 resolver.lookup("PT960") → MISS (not in description_mappings)
@@ -153,31 +183,81 @@ engine.normalize_item_description(raw, resolved_facts=None)
 → material_pl: "metal szlachetny"  ← GOLD_PURITY has no PT960 entry
 checker detects forbidden placeholder.
 
-AI deterministic heuristic: PT + 3-digit fineness → suggest "platyna próby 960"
-→ proposal emitted:
+suggested_material_pl = ""   ← intentionally empty
+                              The system does not know what PT960 means.
+                              It does not guess.
+
+Proposal emitted:
   {
-    "current_output":          "metal szlachetny",
-    "suggested_material_pl":   "platyna próby 960",   ← suggestion only
-    "scope_hint":              "global_mapping",
-    "confidence":              "high",
-    "reason":                  "PT + 3-digit fineness pattern matched"
+    "source_text":           "PCS, PT960 Premium Platinum, Plain RING",
+    "token_detected":        "PT960",
+    "current_output":        "metal szlachetny",
+    "suggested_material_pl": "",       ← system declines to guess
+    "scope_hint":            "global_mapping",
+    "confidence":            "low",
+    "reason":                "Token 'PT960' not found in description_mappings
+                              or GOLD_PURITY. Cannot determine whether this
+                              is a platinum fineness, supplier code, or typo.
+                              Human decision required."
   }
 
-❌ "platyna próby 960" is NOT written to the output PDF.
-❌ PT960 is NOT added to the mapping table.
-✅ Inbox proposal created. Human approval required.
+❌ Nothing is written to the PDF.
+❌ Nothing is written to description_mappings.
+✅ Inbox proposal created. Operator investigates and decides.
 ```
+
+Operator receives the proposal, consults the source invoice and supplier
+documentation, determines what PT960 actually means, and approves with the
+correct value — or rejects if the token is a typo.
 
 **After operator approves PT960 as global_mapping:**
 ```
-description_mappings: {token: "PT960", purity: "960", material_pl: "platyna próby 960", ...}
-Next shipment: resolver.lookup("PT960") → HIT → engine renders correctly.
-No proposal on future shipments.
+description_mappings row written:
+  token           = "PT960"
+  canonical_metal = "platinum"      ← operator confirmed
+  purity          = "960"           ← operator confirmed
+  material_pl     = "platyna próby 960"
+  approved_by     = "operator_name"
+  approved_at     = "2026-06-02T..."
+  source_proposal_id = "..."
+  source_text     = "PCS, PT960 Premium Platinum, Plain RING"
+
+Next shipment:
+  resolver.lookup("PT960") → HIT
+  → engine renders "platyna próby 960" without a proposal.
 ```
 
-**The rule in one sentence:**
-> The deterministic heuristic tells the checker what to SUGGEST.
-> It does not produce output without an explicit DB approval.
+---
+
+**Why `_suggest_material_pl()` must NOT pattern-match unknown purities:**
+
+The previous draft had `_suggest_material_pl("PT960") → "platyna próby 960"`
+using the heuristic `PT + 3-digit fineness → platinum`. This was incorrect.
+
+The heuristic cannot know whether PT960 is platinum próby 960 or something
+else. Suggesting "platyna próby 960" in the proposal would anchor the
+operator's decision toward an unverified value and undermine the governance
+model. On customs paperwork, an anchored guess is as dangerous as a silent
+automatic output.
+
+**`_suggest_material_pl()` only suggests for patterns where the interpretation
+is unambiguous by industry convention — i.e., patterns already covered by
+`GOLD_PURITY`. For anything not in `GOLD_PURITY`, it returns `None`.**
+
+If `_suggest_material_pl()` returns `None`, the `suggested_material_pl` field
+in the proposal is empty. The operator sees: *"Unknown token — please
+investigate and enter the correct value."*
+
+This is the correct behavior. The Inbox is the decision point. The suggestion
+field is for operator convenience, not for the system to pre-decide.
+
+---
+
+**The governance rule in two lines:**
+```
+Known token (in resolver or GOLD_PURITY) → render.
+Unknown token                            → Inbox proposal, empty suggestion, human decides.
+```
 
 ---
 
@@ -303,25 +383,37 @@ def _tokenize(description: str) -> List[str]:
     """
 
 def _suggest_material_pl(token: str) -> Optional[str]:
-    """Deterministic heuristic — suggests what material_pl SHOULD be.
+    """Deterministic lookup — returns a suggestion ONLY for tokens whose
+    interpretation is already established by industry convention in GOLD_PURITY.
 
     Used by the checker to populate data.suggested_material_pl in proposals.
     This is ADVISORY ONLY. Output is never rendered without DB approval.
 
-    Rules (evaluated in order):
-      PT + 3-digit fineness  → "platyna próby {fineness}"
-      NNkt / NN KT           → look up in _KARAT_FINENESS → "złoto próby {fineness}"
-      925 / SL925 / SS925    → "srebro próby 925"
-      Any other pattern      → None (LLM fallback if configured)
+    Strategy: consult GOLD_PURITY (the engine's stable allowlist) directly.
+      If token is in GOLD_PURITY → return that value as a suggestion.
+      If token is not in GOLD_PURITY → return None.
 
-    Returns None for genuinely unknown patterns. Caller then invokes ai_gateway
-    if available. If ai_gateway also returns None, suggestion field is left empty
-    and the operator fills it at approval time.
+    Intentional limitation:
+      Pattern-matching heuristics (e.g. PT + 3-digit fineness → assume platinum)
+      are PROHIBITED. The system cannot know whether an unknown purity code is
+      a valid fineness, a supplier code, a typo, or something else. Guessing
+      and presenting it as a suggestion would anchor the operator's decision
+      toward an unverified value on customs paperwork.
 
-    PT960 example:
-      _suggest_material_pl("PT960") → "platyna próby 960"
-      This is a suggestion in the proposal. It does NOT write to description_mappings.
-      It does NOT appear in the PDF unless the operator approves.
+      Unknown token → None → empty suggestion field → operator investigates.
+
+    Examples:
+      _suggest_material_pl("PT950") → "platyna próby 950"  (in GOLD_PURITY)
+      _suggest_material_pl("18KT")  → "złoto próby 750"    (in GOLD_PURITY)
+      _suggest_material_pl("PT960") → None  (NOT in GOLD_PURITY; system declines to guess)
+      _suggest_material_pl("UNOBTAINIUM") → None
+
+    Caller behaviour when None:
+      suggested_material_pl = ""   # explicitly empty
+      confidence = "low"
+      reason = "Token not in known allowlist — human investigation required."
+      LLM fallback (ai_gateway) is NOT invoked for unknown metal tokens.
+      Unknown metals require a human decision, not an AI guess.
     """
 ```
 
@@ -371,20 +463,24 @@ emit proposal:
 # Nothing is written. Nothing is rendered. Only a proposal.
 ```
 
-**AI suggestion is advisory only:**
-- `suggested_material_pl` populates a pre-filled field in the Inbox UI.
-- Operator sees: *"AI suggests: platyna próby 960 — approve, edit, or reject."*
-- The suggestion never writes to `description_mappings`.
-- The suggestion never appears in the PDF.
-- Empty suggestion (`""`) is valid — operator fills the field manually.
+**Suggestion rules — no guessing:**
+- `_suggest_material_pl(token)` only returns a value when the token is in `GOLD_PURITY`.
+- For unknown tokens it returns `None` → `suggested_material_pl = ""` in the proposal.
+- LLM (`ai_gateway`) is NOT invoked for unknown metal tokens. An AI guess on a
+  metal/purity code would anchor the operator toward an unverified customs value.
+- Operator sees: *"Unknown token 'PT960'. Token not in known allowlist — please
+  investigate source invoice and enter the correct value."*
+- The suggestion field, when populated, is advisory only and never renders.
 
-**AI order (non-negotiable):**
-1. `resolver._suggest_material_pl(token)` — deterministic patterns, no external call
-2. `_ai_suggest(description)` via `ai_gateway` — only if (1) returned None
-3. Empty string — if both return None; operator fills manually at approval
+**Suggestion order:**
+1. `_suggest_material_pl(token)` — GOLD_PURITY lookup only, no patterns, no LLM
+2. Empty string if (1) returns None — operator fills manually
 
-PT950 and any token matching existing `GOLD_PURITY` entries will be resolved
-by the engine on a resolver miss and must never reach the suggest step at all.
+LLM is not in this chain for metal/purity. The system does not guess on
+customs paperwork.
+
+PT950 and any token in `GOLD_PURITY` will be resolved by the engine on a
+resolver miss. They will never reach the proposal path at all.
 
 ### 4. Updated proposal `data` block
 
@@ -464,11 +560,14 @@ description_resolver.write_mapping(
 - `write_mapping()` with missing `source_proposal_id` → raises ValueError
 - `write_mapping()` with missing `source_text` → raises ValueError
 
-**AI suggest order:**
-- `_suggest_material_pl("PT960")` → "platyna próby 960" (deterministic, no LLM)
-- `_suggest_material_pl("14KT")` → "złoto próby 585" (deterministic, no LLM)
-- `_suggest_material_pl("UNOBTAINIUM-X")` → None (unknown pattern, LLM fallback path)
-- LLM (`ai_gateway`) never called when deterministic returns a result
+**AI suggest — GOLD_PURITY-only, no guessing:**
+- `_suggest_material_pl("PT950")` → "platyna próby 950" (in GOLD_PURITY — suggestion populated)
+- `_suggest_material_pl("18KT")`  → "złoto próby 750" (in GOLD_PURITY — suggestion populated)
+- `_suggest_material_pl("PT960")` → None (NOT in GOLD_PURITY — system declines to guess)
+- `_suggest_material_pl("UNOBTAINIUM-X")` → None (unknown — system declines to guess)
+- LLM (`ai_gateway`) never called for metal/purity tokens — unknown metal requires human decision
+- `PT960` proposal has `suggested_material_pl = ""`, `confidence = "low"` — operator investigates
+- `PT950` never reaches `_suggest_material_pl` (resolved by GOLD_PURITY before proposal path)
 
 **Soft-delete:**
 - Mapping with `active=0` → `lookup()` returns None → falls through to engine
