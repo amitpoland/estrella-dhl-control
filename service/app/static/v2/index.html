@@ -4,18 +4,40 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Estrella Atlas — Operations Control</title>
+<!-- base href: resolves all relative script src= against /v2/ regardless of sub-path -->
+<!-- Safe: all API calls (/api/v1/...) and pushState (/v2/<page>) are already absolute -->
+<base href="/v2/">
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
-<!-- Shared layer: co-located copies (self-contained; no cross-path dependency) -->
-<!-- dashboard-shared.js: apiFetch (cookie-authed, same-origin, survives PR #422 enforcement) -->
-<script src="dashboard-shared.js"></script>
+<!-- Same CDN pattern as all working v2 pages (no integrity attr — avoids SRI hash mismatch) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- apiFetch shim: provides EstrellaShared.apiFetch for pz-api.js -->
+<!-- dashboard-shared.js intentionally excluded — it exports Track-1 components
+     (Sidebar, Badge, Btn, etc.) that would overwrite the design's components.jsx.
+     Only apiFetch is needed here; provided by this inline shim. -->
+<script>
+window.EstrellaShared = {
+  apiFetch: async function(url, opts) {
+    var res = await fetch(url, Object.assign({ credentials: 'include' }, opts || {}));
+    if (res.status === 401 || res.status === 403) {
+      var e = new Error('Session expired or access denied.'); e.type = 'auth'; throw e;
+    }
+    if (!res.ok) {
+      var t = await res.text().catch(function(){return '';});
+      throw new Error('HTTP ' + res.status + ': ' + t.slice(0, 200));
+    }
+    if (res.status === 204 || res.status === 205) return null;
+    var ct = res.headers.get('content-type') || '';
+    return ct.includes('json') ? res.json() : res.text();
+  }
+};
+</script>
 <!-- pz-api.js + pz-state.js: proforma API + state hooks (wires Pro Forma to live backend) -->
-<script type="text/babel" src="pz-api.js"></script>
-<script type="text/babel" src="pz-state.js"></script>
+<script type="text/babel" data-presets="env,react" src="pz-api.js"></script>
+<script type="text/babel" data-presets="env,react" src="pz-state.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html, body, #root { height: 100%; }

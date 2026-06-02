@@ -68,6 +68,7 @@ PROP_SALES_PURCHASE_LINE_MISMATCH   = "sales_purchase_line_mismatch"
 PROP_DHL_DELIVERED_NOT_RECEIVED     = "dhl_delivered_not_received"
 PROP_PRODUCT_NOT_SYNCED_TO_WFIRMA   = "product_not_synced_to_wfirma"
 PROP_PZ_PROFORMA_READY              = "pz_proforma_invoice_ready_for_approval"
+PROP_CUSTOMS_DESC_MISMATCH          = "customs_description_mismatch"
 ALL_REVERIFICATION_TYPES = frozenset({
     PROP_SUPPLIER_MISMATCH,
     PROP_CLIENT_MISMATCH,
@@ -423,6 +424,31 @@ def reverify_purchase_batch(
             confidence=CONFIDENCE_LOW,
             evidence={"error": str(exc)},
         ))
+
+    # ── WF1.4: customs description accuracy check ─────────────────────────────
+    # Runs in its own try/except so a failure here never silences the checks
+    # above.  Proposals are plain dicts written directly to audit (not returned
+    # as ReverificationProposal objects) so the caller's audit must be saved
+    # after this function returns when desc_proposals were appended.
+    try:
+        from .customs_desc_checker import (  # noqa: PLC0415
+            check_customs_description_accuracy,
+            write_customs_desc_proposals_to_audit,
+        )
+        desc_proposals = check_customs_description_accuracy(
+            batch_id, audit, storage_root,
+        )
+        _desc_added = write_customs_desc_proposals_to_audit(audit, desc_proposals)
+        if _desc_added:
+            log.info(
+                "[%s] customs_desc_checker: %d description mismatch proposal(s) "
+                "written to audit", batch_id, _desc_added,
+            )
+    except Exception as _desc_exc:
+        log.warning(
+            "[%s] customs_desc_checker: non-fatal failure: %s", batch_id, _desc_exc,
+        )
+
     return proposals
 
 
