@@ -45,10 +45,23 @@ def test_v2_index_no_estrella_docs():
     assert "estrella-docs/" not in html, "estrella-docs reference found in v2/index.html"
 
 
-def test_v2_index_loads_dashboard_shared():
-    """dashboard-shared.js must be loaded (provides EstrellaShared.apiFetch)."""
+def test_v2_index_provides_api_fetch():
+    """EstrellaShared.apiFetch must be available in the v2 shell.
+
+    dashboard-shared.js is intentionally excluded: it exports Track-1 components
+    (Sidebar, Badge, Btn, etc.) that would overwrite Track-2 design's components.jsx.
+    The shell instead uses an inline apiFetch shim that provides only apiFetch
+    without polluting the window with Track-1 UI primitives.
+    """
     html = _INDEX.read_text(encoding="utf-8", errors="replace")
-    assert "dashboard-shared.js" in html, "dashboard-shared.js not loaded in v2 shell"
+    # The shim must be present (inline or via any script providing EstrellaShared.apiFetch)
+    assert "EstrellaShared" in html, "EstrellaShared not defined in v2 shell"
+    assert "apiFetch" in html, "apiFetch not provided in v2 shell"
+    # dashboard-shared.js must NOT be loaded (Track-1 component pollution)
+    assert 'src="dashboard-shared.js"' not in html, (
+        "dashboard-shared.js loaded in v2 shell — removes Track-1 components that "
+        "would overwrite design's components.jsx"
+    )
 
 
 def test_v2_index_loads_pz_api():
@@ -260,4 +273,43 @@ def test_v2_jsx_all_files_structurally_complete():
     assert not failures, (
         "Structurally incomplete JSX file(s) -- likely truncated:\n"
         + "\n".join(f"  {e}" for e in failures)
+    )
+
+
+# ── apiFetch shim contract tests (ADR-028) ────────────────────────────────────
+# These pin the inline shim's behavioral contract so that future edits cannot
+# silently drop D1 (network error handling) or D2 (err.status on auth).
+# They are structural (text-grep) tests — they verify the contract is EXPRESSED
+# in the shim source, not that it executes correctly at runtime.
+
+def test_v2_shim_has_network_error_catch():
+    """apiFetch shim must wrap fetch() in try/catch and surface a 'network' error.
+
+    D1 fix: a service-down condition (fetch() throws TypeError) must produce
+    a user-friendly error with err.type='network', not an uncaught TypeError.
+    Contract source: dashboard-shared.js canonical apiFetch.
+    """
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert "try {" in html, "apiFetch shim missing try-block (D1: network error catch)"
+    assert "catch" in html, "apiFetch shim missing catch clause (D1: network error catch)"
+    assert "Service unreachable" in html, (
+        "apiFetch shim missing 'Service unreachable' message (D1: canonical network error text)"
+    )
+    assert "type = 'network'" in html or "ne.type" in html, (
+        "apiFetch shim missing err.type='network' assignment (D1)"
+    )
+
+
+def test_v2_shim_sets_err_status_on_auth():
+    """apiFetch shim must set err.status on 401/403 responses.
+
+    D2 fix: callers that branch on err.status (e.g. to distinguish 401 from 403)
+    must not receive undefined. Contract source: dashboard-shared.js canonical apiFetch.
+    """
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert ".status = res.status" in html, (
+        "apiFetch shim missing err.status = res.status assignment (D2: auth error status)"
+    )
+    assert "type = 'auth'" in html or "e.type = 'auth'" in html, (
+        "apiFetch shim missing err.type='auth' (D2: auth error type)"
     )

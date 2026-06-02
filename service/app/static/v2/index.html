@@ -10,20 +10,32 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-<!-- Same CDN pattern as all working v2 pages (no integrity attr — avoids SRI hash mismatch) -->
+<!-- Production React builds — floating react@18 (SECURITY_CONSIDERATION: SRI dropped; accepted
+     for internal tool; operator may pin sha384 in a maintenance window). -->
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<!-- apiFetch shim: provides EstrellaShared.apiFetch for pz-api.js -->
-<!-- dashboard-shared.js intentionally excluded — it exports Track-1 components
-     (Sidebar, Badge, Btn, etc.) that would overwrite the design's components.jsx.
-     Only apiFetch is needed here; provided by this inline shim. -->
+<!-- apiFetch shim: provides EstrellaShared.apiFetch for pz-api.js.
+     dashboard-shared.js intentionally excluded. Reason: only EstrellaShared.apiFetch is
+     consumed by v2 (pz-api.js:_apiFetch, proforma-detail.jsx direct call). All other
+     EstrellaShared exports are dead code in this context. Loading dashboard-shared.js would
+     introduce unnecessary coupling to the Track-1 shared layer (ADR-028). -->
 <script>
 window.EstrellaShared = {
   apiFetch: async function(url, opts) {
-    var res = await fetch(url, Object.assign({ credentials: 'include' }, opts || {}));
+    var res;
+    try {
+      res = await fetch(url, Object.assign({ credentials: 'include' }, opts || {}));
+    } catch (netErr) {
+      var ne = new Error('Service unreachable — check that the backend is running.');
+      ne.type = 'network';
+      throw ne;
+    }
     if (res.status === 401 || res.status === 403) {
-      var e = new Error('Session expired or access denied.'); e.type = 'auth'; throw e;
+      var e = new Error('Session expired or access denied.');
+      e.type = 'auth';
+      e.status = res.status;
+      throw e;
     }
     if (!res.ok) {
       var t = await res.text().catch(function(){return '';});
