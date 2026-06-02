@@ -213,6 +213,12 @@ class TestGlobalRenderPlEn:
         ("RNG", "22KT/Y"),
         ("RNG", "24KT"),        # former gap
         ("RNG", "24KT GOLD"),   # former gap
+        ("RNG", "22KT"),        # ✅ bare 22KT (audited green, now pinned in render test)
+        ("RNG", "14KT/P"),      # ✅ 14KT pink
+        ("RNG", "18KT/R"),      # ✅ 18KT rose
+        ("RNG", "18KT/WG"),     # ✅ 18KT white-gold compound suffix
+        ("RNG", "18KT/WPD"),    # ✅ 18KT white+pave compound suffix
+        ("RNG", "18KT/YG"),     # ✅ 18KT yellow-gold compound suffix
         ("EAR", "09KT/W"),      # former gap (leading-zero karat)
         # Platinum
         ("BRC", "PT950"),
