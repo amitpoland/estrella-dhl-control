@@ -72,33 +72,50 @@ ITEM_TYPE_PL: dict[str, str] = {
 
 # Gold/silver purity → Polish name (nominative — used in field displays)
 GOLD_PURITY: dict[str, str] = {
-    "9KT":    "złoto próby 375",
-    "09KT":   "złoto próby 375",
-    "10KT":   "złoto próby 417",
-    "14KT":   "złoto próby 585",
-    "18KT":   "złoto próby 750",
-    "22KT":   "złoto próby 916",
-    "24KT":   "złoto próby 999",
-    "925":    "srebro próby 925",
-    "SL925":  "srebro próby 925",
-    "SILVER": "srebro",
-    "SS":     "stal szlachetna",
+    # Gold
+    "9KT":      "złoto próby 375",
+    "09KT":     "złoto próby 375",
+    "10KT":     "złoto próby 417",
+    "14KT":     "złoto próby 585",
+    "18KT":     "złoto próby 750",
+    "22KT":     "złoto próby 916",
+    "24KT":     "złoto próby 999",
+    # Silver
+    "925":      "srebro próby 925",
+    "SL925":    "srebro próby 925",
+    "SILVER":   "srebro",
+    # Steel
+    "SS":       "stal szlachetna",
+    # Platinum — specific purities before generic fallback so PT950 wins over PLATINUM
+    "PT950":    "platyna próby 950",
+    "PT900":    "platyna próby 900",
+    "PT850":    "platyna próby 850",
+    "PLATINUM": "platyna",
 }
 
 # Genitive forms — used after preposition "z/ze" in Polish sentences
 # e.g. "Pierścionek ze złota próby 585 z diamentami"
+# e.g. "Pierścionek z platyny próby 950"
 _PURITY_GENITIVE: dict[str, str] = {
-    "9KT":    "złota próby 375",
-    "09KT":   "złota próby 375",
-    "10KT":   "złota próby 417",
-    "14KT":   "złota próby 585",
-    "18KT":   "złota próby 750",
-    "22KT":   "złota próby 916",
-    "24KT":   "złota próby 999",
-    "925":    "srebra próby 925",
-    "SL925":  "srebra próby 925",
-    "SILVER": "srebra",
-    "SS":     "stali szlachetnej",
+    # Gold
+    "9KT":      "złota próby 375",
+    "09KT":     "złota próby 375",
+    "10KT":     "złota próby 417",
+    "14KT":     "złota próby 585",
+    "18KT":     "złota próby 750",
+    "22KT":     "złota próby 916",
+    "24KT":     "złota próby 999",
+    # Silver
+    "925":      "srebra próby 925",
+    "SL925":    "srebra próby 925",
+    "SILVER":   "srebra",
+    # Steel
+    "SS":       "stali szlachetnej",
+    # Platinum — specific purities before generic fallback
+    "PT950":    "platyny próby 950",
+    "PT900":    "platyny próby 900",
+    "PT850":    "platyny próby 850",
+    "PLATINUM": "platyny",
 }
 
 # Stone ablative forms — used after "z" (instrumental in Polish)
