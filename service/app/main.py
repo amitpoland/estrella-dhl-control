@@ -562,6 +562,46 @@ def serve_chrome_autofill(path: str, request: Request) -> Response:
                     headers={"Cache-Control": "public, max-age=3600"})
 
 
+# ── Atlas-V2 design shell — /v2/* (Sprint 1, same auth gate as /dashboard/) ──
+
+_v2_static_dir = _static_dir / "v2"
+
+@app.get("/v2", include_in_schema=False)
+def serve_v2_index_redirect() -> Response:
+    return RedirectResponse(url="/v2/index.html", status_code=302)
+
+@app.get("/v2/{path:path}", include_in_schema=False)
+def serve_v2_static(path: str, request: Request) -> Response:
+    """Serve Atlas-V2 design shell — identical session gate to /dashboard/.
+
+    /v2/ is NOT an open surface: unauth in prod → /login redirect (same as /dashboard/).
+    Source files live in service/app/static/v2/ (Sprint 1 shell + 23 jsx).
+    """
+    if settings.environment != "dev":
+        import hmac as _hmac  # noqa: PLC0415
+        raw_key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
+        api_key_ok = (bool(raw_key) and bool(settings.api_key)
+                      and _hmac.compare_digest(raw_key, settings.api_key))
+        if not api_key_ok:
+            user = check_session_or_redirect(request)
+            if not user:
+                return RedirectResponse(url="/login", status_code=302)
+
+    file_path = _v2_static_dir / (path or "index.html")
+    if not file_path.exists() or not file_path.is_file():
+        file_path = _v2_static_dir / "index.html"
+
+    content = file_path.read_bytes()
+    mime, _ = _mimetypes.guess_type(str(file_path))
+    mime    = mime or "application/octet-stream"
+    headers = (
+        {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+        if file_path.suffix in (".html", ".js", ".jsx")
+        else {"Cache-Control": "public, max-age=3600"}
+    )
+    return Response(content=content, media_type=mime, headers=headers)
+
+
 # ── Protected static dashboard files ─────────────────────────────────────────
 
 @app.get("/dashboard/{path:path}", include_in_schema=False)
