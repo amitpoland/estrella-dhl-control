@@ -116,4 +116,21 @@ function ProformaListPage({ onDrill }) {
                     </td>
                     <td style={{ padding: '14px 16px', fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{d.client_name || '—'}</td>
                     <td style={{ padding: '14px 16px' }}><ProformaStatusChip status={d.draft_state || d.status} /></td>
-                    <td style={{ padding: '14px 16px'
+                    {/* [INFERRED] columns 4-6: Currency/Lines/Created from headers (line 92) and
+                        backend shape (lines 7-9). lineCount computed at lines 100-101.
+                        formatRelativeTime absent — use .slice(0,10) on ISO timestamp. */}
+                    <td style={{ padding: '14px 16px', fontSize: 13, color: 'var(--text)' }}>{d.currency || '—'}</td>
+                    <td style={{ padding: '14px 16px', fontSize: 13, color: 'var(--text)' }}>{lineCount}</td>
+                    <td style={{ padding: '14px 16px', fontSize: 11, color: 'var(--text-2)' }}>{(d.created_at || '—').slice(0, 10)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { ProformaListPage });
