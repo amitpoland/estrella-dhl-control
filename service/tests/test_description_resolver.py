@@ -376,6 +376,59 @@ class TestResolverEngineIntegration:
         assert r["material_pl"] == "platyna proby 960"
         assert "platyny proby 960" in r["polish_customs_description"]
 
+    def test_pt961_unknown_produces_proposal_empty_suggestion(self, resolver_db, tmp_path):
+        """PT961 is NOT in the resolver DB and NOT in GOLD_PURITY.
+
+        The checker must:
+          1. Emit exactly one Inbox proposal.
+          2. Set suggested_material_pl = "" (system declines to guess).
+          3. Write nothing to description_mappings.
+
+        This pins the canonical governance rule:
+          Unknown token → Inbox proposal → human decision → optional mapping.
+        """
+        _, dr = resolver_db   # empty DB — PT961 not seeded
+
+        line = {
+            "description":   "PCS, PT961 Platinum, Plain Jewel RING",
+            "product_code":  "EJL/PT961/1",
+            "invoice_no":    "EJL/PT961",
+            "line_position": 1,
+            "quantity":      1.0,
+            "total_value":   3000.0,
+        }
+        from app.services.customs_desc_checker import check_customs_description_accuracy
+        audit = {"batch_id": BATCH_ID, "action_proposals": []}
+
+        with patch("app.services.customs_desc_checker._get_invoice_lines",
+                   return_value=[line]):
+            proposals = check_customs_description_accuracy(BATCH_ID, audit, tmp_path)
+
+        # 1. Proposal emitted
+        assert len(proposals) == 1, (
+            f"Expected exactly 1 proposal for unknown PT961, got {len(proposals)}"
+        )
+        p = proposals[0]
+        assert p["type"] == "customs_description_mismatch"
+        assert p["product_code"] == "EJL/PT961/1"
+
+        # 2. Suggestion is empty — system declines to guess
+        sugg = p["data"].get("suggested_material_pl", "MISSING_KEY")
+        assert sugg == "", (
+            f"suggested_material_pl must be empty for unknown token PT961, got {sugg!r}. "
+            "Governance rule: no AI guess on unknown metal/purity."
+        )
+
+        # 3. DB untouched — no mapping was written
+        assert dr.lookup("PT961") is None, (
+            "PT961 must NOT be in description_mappings without operator approval."
+        )
+
+        # 4. No platinum wording in the suggestion
+        assert "platyna" not in (sugg or "").lower(), (
+            f"No platinum wording may appear in suggestion for unknown PT961: {sugg!r}"
+        )
+
     def test_checker_uses_resolver_hit_no_proposal(self, resolver_db, tmp_path):
         """Once PT960 is in the DB, checker must NOT emit a proposal for it."""
         db_file, dr = resolver_db
