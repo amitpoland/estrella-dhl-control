@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Estrella Atlas — Operations Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<!-- Shared layer: apiFetch (cookie-authed, same-origin, survives PR #422 enforcement) -->
+<script src="/dashboard/dashboard-shared.js"></script>
+<!-- Proforma API + state hooks (wires Pro Forma to live backend) -->
+<script type="text/babel" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" src="/dashboard/pz-state.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; }
+  body { font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); color: var(--text); }
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ── Responsive — tablet (≤1100px) */
+  @media (max-width: 1100px) {
+    /* Stat tile rows: 4 → 2 cols */
+    [data-screen-label="Shipment Detail"] [style*="repeat(4, 1fr)"],
+    .responsive-grid-4 { grid-template-columns: repeat(2, 1fr) !important; }
+    /* Two-col panel grids → 1 col */
+    [data-screen-label="Shipment Detail"] [style*="grid-template-columns: 1fr 1fr"],
+    .responsive-grid-2 { grid-template-columns: 1fr !important; }
+    /* Tighter padding */
+    [data-screen-label="Shipment Detail"] > div[style*="padding: '24px 32px'"],
+    .responsive-page-padding { padding: 16px 18px !important; }
+  }
+
+  /* ── Tablet & narrower (≤900px) */
+  @media (max-width: 900px) {
+    .sidebar-desktop { display: none !important; }
+    .mobile-hamburger { display: flex !important; }
+    /* Page-level padding everywhere */
+    [style*="padding: '24px 32px'"], [style*="padding:'24px 32px'"] { padding: 14px 16px !important; }
+    /* Sub-header & workflow strip */
+    [style*="padding: '16px 32px'"] { padding: 12px 16px !important; gap: 12px !important; flex-wrap: wrap !important; }
+    [style*="padding: '20px 32px 0'"] { padding: 14px 12px 0 !important; overflow-x: auto !important; }
+    /* Tab bars allow horizontal scroll */
+    [style*="borderBottom: '1px solid var(--border)'"][style*="display: 'flex'"][style*="gap: 4"] {
+      overflow-x: auto !important; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch;
+    }
+    /* Tables: horizontal scroll wrapper via card */
+    table { display: block !important; overflow-x: auto !important; white-space: nowrap !important; -webkit-overflow-scrolling: touch; }
+    /* Inline stat divider lines hide */
+    [style*="width: 1, height: 32"], [style*="width: 1px"][style*="height: 32px"] { display: none !important; }
+  }
+
+  /* ── Phone (≤600px) */
+  @media (max-width: 600px) {
+    .docs-grid { grid-template-columns: 1fr !important; }
+    /* All multi-col grids collapse to 1 col */
+    [style*="grid-template-columns: repeat(4, 1fr)"],
+    [style*="grid-template-columns: repeat(3, 1fr)"],
+    [style*="grid-template-columns: repeat(2, 1fr)"],
+    [style*="grid-template-columns: 1fr 1fr"],
+    .responsive-grid-4, .responsive-grid-3, .responsive-grid-2 { grid-template-columns: 1fr !important; }
+    /* Typography downsizes a touch */
+    [data-screen-label="Shipment Detail"] [style*="fontSize: 16"] { font-size: 14px !important; }
+    [data-screen-label="Shipment Detail"] [style*="fontSize: 22"],
+    [data-screen-label="Shipment Detail"] [style*="fontSize: 20"] { font-size: 18px !important; }
+    /* Workflow stage labels: shrink */
+    [data-screen-label="Shipment Detail"] [style*="fontSize: 10"][style*="fontWeight"] { font-size: 9px !important; }
+    /* Buttons stack */
+    [style*="display: 'flex'"][style*="flexWrap: 'wrap'"][style*="gap: 8"] > button,
+    [style*="display: 'flex'"][style*="flexWrap: 'wrap'"][style*="gap: 10"] > button {
+      flex: 1 1 calc(50% - 4px) !important; min-width: 0 !important;
+    }
+    /* Page header: vertical stack */
+    [style*="display: 'flex'"][style*="justifyContent: 'space-between'"][style*="alignItems: 'center'"] {
+      flex-wrap: wrap !important; gap: 10px !important;
+    }
+    /* Top-bar search shrinks */
+    input[placeholder*="Search"] { max-width: 140px !important; }
+    /* Sub-header inner items wrap nicely */
+    [data-screen-label="Shipment Detail"] > div:first-of-type > div { min-width: 0 !important; }
+  }
+
+  /* ── Estrella Brand Theme — Ink Navy / Bone / Champagne (refined) */
+  :root {
+    --bg:          #F4F1EA;
+    --bg-subtle:   #FAF8F2;
+    --card:        #FFFFFF;
+    --row-hover:   #F6F2EA;
+    --border:      #E5DECF;
+    --border-subtle:#EFE9DA;
+    --text:        #1B2538;
+    --text-2:      #4E5A72;
+    --text-3:      #8B97AE;
+    --shadow:      rgba(27,37,56,0.06);
+    --shadow-heavy:rgba(27,37,56,0.16);
+    --overlay:     rgba(19,28,46,0.6);
+
+    --accent:       #B89968;
+    --accent-light: #D4B884;
+    --accent-text:  #1B2538;
+    --accent-subtle:#F8EFD8;
+    --accent-border:#CFB178;
+
+    --sidebar-bg:        #131C2E;
+    --sidebar-border:    #25334C;
+    --sidebar-active:    #1F2A42;
+    --sidebar-hover:     #1A2438;
+    --sidebar-text:      #F2EBD9;
+    --sidebar-text-muted:#7C89A3;
+    --sidebar-icon:      #B89968;
+
+    --badge-neutral-bg:    #EEF0F4; --badge-neutral-text:#4A5A70; --badge-neutral-border:#CED4E0;
+    --badge-blue-bg:       #E8EFF8; --badge-blue-text:   #1A4A90; --badge-blue-border:  #AABEE0;
+    --badge-amber-bg:      #FBF5E0; --badge-amber-text:  #805A00; --badge-amber-border: #DEC870;
+    --badge-orange-bg:     #FBF0E4; --badge-orange-text: #804000; --badge-orange-border:#DEB870;
+    --badge-green-bg:      #E8F5EE; --badge-green-text:  #186838; --badge-green-border: #96CCA8;
+    --badge-red-bg:        #FBE8E6; --badge-red-text:    #902018; --badge-red-border:   #E0A8A0;
+    --badge-purple-bg:     #EEE8F8; --badge-purple-text: #481898; --badge-purple-border:#BEA4E8;
+    --badge-accent-bg:     #131C2E; --badge-accent-text: #B89968; --badge-accent-border:#B89968;
+  }
+
+  /* ── Dark Theme — Deep Navy / Gold */
+  [data-theme="dark"] {
+    --bg:          #111928;
+    --bg-subtle:   #172030;
+    --card:        #1C2638;
+    --row-hover:   #223040;
+    --border:      #2C3C54;
+    --border-subtle:#243050;
+    --text:        #EEE8DC;
+    --text-2:      #8A9AB6;
+    --text-3:      #566478;
+    --shadow:      rgba(0,0,0,0.3);
+    --shadow-heavy:rgba(0,0,0,0.5);
+    --overlay:     rgba(0,0,0,0.72);
+
+    --accent:       #D4AA5C;
+    --accent-light: #ECC870;
+    --accent-text:  #111928;
+    --accent-subtle:#1E2808;
+    --accent-border:#5A4A18;
+
+    --sidebar-bg:        #0E1A30;
+    --sidebar-border:    #1A2A48;
+    --sidebar-active:    #1A2A48;
+    --sidebar-hover:     #14223C;
+    --sidebar-text:      #F0EAE0;
+    --sidebar-text-muted:#6E7E96;
+    --sidebar-icon:      #C9A456;
+
+    --badge-neutral-bg:    #1C2838; --badge-neutral-text:#8A9AB6; --badge-neutral-border:#2C3C54;
+    --badge-blue-bg:       #0E1E38; --badge-blue-text:   #80AAEE; --badge-blue-border:  #1E3A64;
+    --badge-amber-bg:      #20180A; --badge-amber-text:  #E8C040; --badge-amber-border: #584010;
+    --badge-orange-bg:     #201008; --badge-orange-text: #E89860; --badge-orange-border:#582010;
+    --badge-green-bg:      #0E2018; --badge-green-text:  #68CC88; --badge-green-border: #1A4830;
+    --badge-red-bg:        #200E10; --badge-red-text:    #EE8880; --badge-red-border:   #581018;
+    --badge-purple-bg:     #160E28; --badge-purple-text: #AA88EE; --badge-purple-border:#341860;
+    --badge-accent-bg:     #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border:#5A4A18;
+  }
+</style>
+</head>
+<body>
+<template id="__bundler_thumbnail" data-bg-color="#F5F2EE">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect x="0" y="0" width="200" height="800" fill="#1E2D4A"/>
+    <rect x="16" y="22" width="28" height="28" rx="6" fill="#C9A456"/>
+    <text x="56" y="34" font-family="serif" font-size="13" font-weight="700" fill="#F0EAE0" letter-spacing="2">ESTRELLA</text>
+    <text x="56" y="46" font-family="sans-serif" font-size="8" fill="#C9A456" letter-spacing="3">PZ CUSTOMS</text>
+    <rect x="0" y="70" width="200" height="1" fill="#28395E"/>
+    <rect x="0" y="82" width="3" height="28" fill="#C9A456"/>
+    <rect x="16" y="90" width="14" height="14" rx="2" fill="#C9A45644"/>
+    <rect x="36" y="93" width="60" height="8" rx="2" fill="#F0EAE0"/>
+    <rect x="36" y="127" width="50" height="7" rx="2" fill="#6A7A96"/>
+    <rect x="36" y="155" width="70" height="7" rx="2" fill="#6A7A96"/>
+    <rect x="36" y="183" width="65" height="7" rx="2" fill="#6A7A96"/>
+    <rect x="200" y="0" width="1000" height="56" fill="#FFFFFF"/>
+    <rect x="200" y="56" width="1000" height="1" fill="#E4DDD0"/>
+    <rect x="220" y="16" width="280" height="26" rx="6" fill="#FAF8F4" stroke="#E4DDD0" stroke-width="1"/>
+    <rect x="820" y="14" width="130" height="28" rx="6" fill="#C9A456"/>
+    <text x="832" y="32" font-family="sans-serif" font-size="11" font-weight="700" fill="#1E2D4A">+ New Shipment</text>
+    <rect x="220" y="90" width="148" height="72" rx="8" fill="#FFFFFF" stroke="#E4DDD0" stroke-width="1"/>
+    <rect x="378" y="90" width="148" height="72" rx="8" fill="#FFFFFF" stroke="#E4DDD0" stroke-width="1"/>
+    <rect x="536" y="90" width="148" height="72" rx="8" fill="#FFFFFF" stroke="#E4DDD0" stroke-width="1"/>
+    <rect x="694" y="90" width="148" height="72" rx="8" fill="#FFFFFF" stroke="#E4DDD0" stroke-width="1"/>
+    <rect x="852" y="90" width="148" height="72" rx="8" fill="#FFFFFF" stroke="#E4DDD0" stroke-width="1"/>
+    <rect x="1010" y="90" width="170" height="72" rx="8" fill="#FFFFFF" stroke="#C9A456" stroke-width="1.5"/>
+    <text x="240" y="120" font-family="serif" font-size="22" font-weight="700" fill="#1E2D4A">7</text>
+    <text x="398" y="120" font-family="serif" font-size="22" font-weight="700" fill="#805A00">1</text>
+    <text x="556" y="120" font-family="serif" font-size="22" font-weight="700" fill="#804000">2</text>
+    <text x="714" y="120" font-family="serif" font-size="22" font-weight="700" fill="#186838">2</text>
+    <text x="872" y="120" font-family="serif" font-size="22" font-weight="700" fill="#902018">1</text>
+    <text x="1022" y="120" font-family="serif" font-size="16" font-weight="700" fill="#C9A456">PLN 1,643</text>
+    <rect x="220" y="188" width="960" height="340" rx="8" fill="#FFFFFF" stroke="#E4DDD0" stroke-width="1"/>
+    <rect x="220" y="188" width="960" height="36" rx="8" fill="#FAF8F4"/>
+    <rect x="220" y="224" width="960" height="1" fill="#E4DDD0"/>
+    <rect x="220" y="225" width="960" height="38" fill="#FFFFFF"/>
+    <rect x="220" y="263" width="960" height="1" fill="#EEE8DE"/>
+    <rect x="220" y="264" width="960" height="38" fill="#FFFFFF"/>
+    <rect x="220" y="302" width="960" height="1" fill="#EEE8DE"/>
+    <rect x="220" y="303" width="960" height="38" fill="#FFFFFF"/>
+    <rect x="220" y="341" width="960" height="1" fill="#EEE8DE"/>
+    <rect x="220" y="342" width="960" height="38" fill="#FFFFFF"/>
+    <rect x="0" y="796" width="1200" height="4" fill="#C9A456"/>
+  </svg>
+</template>
+<div id="root"></div>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="dashboard-page.jsx"></script>
+<script type="text/babel" src="shipment-detail-page.jsx"></script>
+<script type="text/babel" src="modals.jsx"></script>
+<script type="text/babel" src="pages.jsx"></script>
+<script type="text/babel" src="pages-v2.jsx"></script>
+<script type="text/babel" src="master-page.jsx"></script>
+<script type="text/babel" src="inventory-page.jsx"></script>
+<script type="text/babel" src="ledgers-page.jsx"></script>
+<script type="text/babel" src="client-kyc-and-consignment.jsx"></script>
+<script type="text/babel" src="wireframe-update.jsx"></script>
+<script type="text/babel" src="shipping-ops.jsx"></script>
+<script type="text/babel" src="ops-cell.jsx"></script>
+<script type="text/babel" src="carriers-page.jsx"></script>
+<script type="text/babel" src="api-status-page.jsx"></script>
+<script type="text/babel" src="documents-hub.jsx"></script>
+<script type="text/babel" src="accounting-hub.jsx"></script>
+<script type="text/babel" src="dashboard-kanban.jsx"></script>
+<script type="text/babel" src="inbox-page.jsx"></script>
+<script type="text/babel" src="proforma-list.jsx"></script>
+<script type="text/babel" src="proforma-detail.jsx"></script>
+<script type="text/babel" src="global-search.jsx"></script>
+<!-- tweaks-panel.jsx excluded — omelette runtime not available in production -->
+<script type="text/babel" src="mock-badge.jsx"></script>
+<script type="text/babel">
+
+// tweaks-panel replaced with inline state (no omelette runtime needed)
+const TWEAK_DEFAULTS = {
+  "darkMode": false,
+  "compactRows": false,
+  "showApiChecklist": false
+};
+
+// Minimal useTweaks shim — replaces omelette-backed version
+function useTweaks(defaults) {
+  const [tweaks, setTweaks] = React.useState(defaults);
+  const setTweak = (k, v) => setTweaks(prev => ({ ...prev, [k]: v }));
+  return { tweaks, setTweak };
+}
+
+function App() {
+  const { tweaks, setTweak } = useTweaks(TWEAK_DEFAULTS);
+  const isDark = tweaks?.darkMode ?? false;
+  const setIsDark = v => setTweak('darkMode', v);
+
+  React.useEffect(() => {
+    document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+  }, [isDark]);
+
+  const [page, setPage] = React.useState('dashboard');
+  const [activeNav, setActiveNav] = React.useState('dashboard');
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+  const [selectedShipment, setSelectedShipment] = React.useState(null);
+  const [showNewShipment, setShowNewShipment] = React.useState(false);
+  const [showApiChecklist, setShowApiChecklist] = React.useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false);
+  const [viewerDoc, setViewerDoc] = React.useState(null);
+  const [searchOpen, setSearchOpen] = React.useState(false);
+  const [proformaDraft, setProformaDraft] = React.useState(null);
+
+  const openViewer = (doc) => setViewerDoc(doc);
+  const closeViewer = () => setViewerDoc(null);
+  
+  const handleProformaDrill = (draft) => {
+    setProformaDraft(draft);
+    setPage('proforma_detail');
+  };
+  
+  const handleProformaBack = () => {
+    setProformaDraft(null);
+    setPage('proforma');
+  };
+
+  // Cmd-K / Ctrl-K toggles global search
+  React.useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchOpen(o => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const handleViewShipment = (shipment) => {
+    setSelectedShipment(shipment);
+    setPage('detail');
+    setActiveNav('shipments');
+  };
+
+  // Legacy route slugs → new simplified homes (preserves deep links from
+  // earlier IA). Old pages still reachable via tabs inside their new home.
+  const ROUTE_REDIRECTS = {
+    actions:       'inbox',
+    proposals:     'inbox',
+    email_queue:   'inbox',
+    reservation:   'inbox',
+    dhl:           'shipments',
+    shipping:      'shipments',
+    move_stock:    'inventory',
+    scanner:       'inventory',
+    identity:      'inventory',
+    sample_out:    'inventory',
+    sample_return: 'inventory',
+    goods_return:  'inventory',
+    return_prod:   'inventory',
+  };
+
+  const handleNav = (id) => {
+    const target = ROUTE_REDIRECTS[id] || id;
+    setActiveNav(target);
+    setPage(target);
+    setMobileSidebarOpen(false);
+  };
+
+  return (
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+
+      {/* Desktop Sidebar */}
+      <div className="sidebar-desktop" style={{ display: 'flex', flexShrink: 0 }}>
+        <Sidebar
+          active={activeNav}
+          onNav={handleNav}
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(v => !v)}
+        />
+      </div>
+
+      {/* Mobile overlay */}
+      {mobileSidebarOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex' }}>
+          <div style={{ flex: 1, background: 'rgba(0,0,0,0.5)' }} onClick={() => setMobileSidebarOpen(false)} />
+          <div style={{ width: 220, background: '#18160F', height: '100%', overflowY: 'auto', flexShrink: 0 }}>
+            <Sidebar active={activeNav} onNav={handleNav} collapsed={false} onToggle={() => setMobileSidebarOpen(false)} />
+          </div>
+        </div>
+      )}
+
+      {/* Main */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <TopBar onNewShipment={() => setShowNewShipment(true)} onToggleDark={() => setIsDark(d => !d)} isDark={isDark} onOpenSearch={() => setSearchOpen(true)} />
+          <OperationalStatusStrip />
+          <button
+            className="mobile-hamburger"
+            onClick={() => setMobileSidebarOpen(true)}
+            style={{
+              display: 'none', position: 'absolute', left: 12, top: '50%',
+              transform: 'translateY(-50%)', background: 'none', border: 'none',
+              cursor: 'pointer', fontSize: 20, alignItems: 'center',
+            }}
+          >☰</button>
+        </div>
+
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: '#F2F0EB' }}>
+
+          {/* MOCK badge — shown for every un-wired page (Sprint 1, Phase 3) */}
+          {!viewerDoc && <MockBanner page={page} />}
+
+          {/* Document viewer — full-page route */}
+          {viewerDoc && (
+            <DocumentViewerPage doc={viewerDoc} onBack={closeViewer} />
+          )}
+
+          {/* Dashboard — Kanban pipeline (simplified flow) */}
+          {!viewerDoc && (page === 'dashboard') && (
+            <>
+              <PageHeader
+                title="Dashboard"
+                subtitle={`${new Date().toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} · Pipeline view — every active shipment, one glance`}
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="outline" small>↓ Export CSV</Btn></div>}
+              />
+              <DashboardKanban onNav={handleNav} onOpenNewShipment={() => setShowNewShipment(true)} onOpenSearch={() => setSearchOpen(true)} />
+            </>
+          )}
+
+          {/* Inbox — unified queue (replaces Action Center · Email Queue · Operator Queue · Action Proposals · Reservations) */}
+          {!viewerDoc && page === 'inbox' && (
+            <>
+              <PageHeader title="Inbox"
+                subtitle="Everything that needs your attention — emails · proposals · approvals · reservations · customs holds"
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small>↻ Sync now</Btn><Btn variant="outline" small>⚙ Rules</Btn></div>}
+              />
+              <InboxPage onNav={handleNav} />
+            </>
+          )}
+
+          {/* Shipments */}
+          {!viewerDoc && page === 'shipments' && (
+            <>
+              <PageHeader title="Shipments" subtitle="All shipments — click any AWB to open detail"
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="outline" small>↓ Export CSV</Btn></div>}
+              />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <DashboardPage onViewShipment={handleViewShipment} />
+            </>
+          )}
+
+          {/* Detail view */}
+          {!viewerDoc && page === 'detail' && selectedShipment && (
+            <>
+              <div style={{ padding: '20px 32px 0', flexShrink: 0 }}>
+                <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, fontFamily: '"DM Serif Display", serif', color: '#18160F' }}>Shipment Detail</h1>
+              </div>
+              <ShipmentDetailPage shipment={selectedShipment} onBack={() => { setPage('dashboard'); setActiveNav('dashboard'); }} />
+            </>
+          )}
+
+          {/* DHL / Customs (merged) */}
+          {!viewerDoc && page === 'dhl' && (
+            <>
+              <PageHeader title="DHL / Customs" subtitle="Inbox monitoring, reply queue, SAD/ZC429 documents, and clearance status" />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <DhlCustomsPage onViewShipment={handleViewShipment} />
+            </>
+          )}
+
+          {/* Accounting — wFirma-mapped documents + ledgers */}
+          {!viewerDoc && page === 'accounting' && (
+            <>
+              <PageHeader title="Accounting"
+                subtitle="Proforma · Invoice · WZ · PZ · PW · RW · MM · Client Balance · Client Ledger · Supplier Ledger — all mapped from wFirma"
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="outline" small>↻ Sync wFirma</Btn><Btn variant="outline" small>↓ Export</Btn></div>}
+              />
+              <AccountingHub onNav={handleNav} />
+            </>
+          )}
+
+          {/* Inventory — two-stage architecture */}
+          {!viewerDoc && page === 'inventory' && (
+            <>
+              <PageHeader title="Inventory" subtitle="Two-stage inventory — Stage 1 (Temp Purchase / Warehouse / Sale) · Stage 2 (Final Stock, Samples, Returns)"
+                actions={
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Btn variant="outline" small onClick={() => window.dispatchEvent(new CustomEvent('inv:upload'))}>↑ Upload Document</Btn>
+                    <Btn variant="outline" small onClick={() => window.dispatchEvent(new CustomEvent('inv:move'))}>⇄ Move Stock</Btn>
+                    <Btn variant="outline" small>Cycle count</Btn>
+                    <Btn variant="outline" small>↓ Export</Btn>
+                  </div>
+                }
+              />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <InventoryPage openViewer={openViewer} />
+            </>
+          )}
+
+          {/* Action Proposals */}
+          {!viewerDoc && page === 'proposals' && (
+            <>
+              <PageHeader title="Action Proposals" subtitle="Cross-batch AI suggestions awaiting operator review and approval"
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small>Filter: Pending</Btn><Btn variant="outline" small>↓ Export</Btn></div>}
+              />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <ActionProposalsPage />
+            </>
+          )}
+
+          {/* Intelligence (was Learning / Parser) */}
+          {!viewerDoc && page === 'intelligence' && (
+            <>
+              <PageHeader title="Intelligence" subtitle="Parser tuning, locked formulas, classification rules, and learning feedback" />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <LearningParserPage />
+            </>
+          )}
+
+          {/* AI Bridge — renamed Automation Center */}
+          {!viewerDoc && page === 'automation' && (
+            <>
+              <PageHeader title="Automation Center" subtitle="Cowork task queue, results, errors, capabilities, and prompt templates"
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small>System Status</Btn><Btn variant="outline" small>↓ Export Logs</Btn></div>}
+              />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <AiBridgePage />
+            </>
+          )}
+
+          {/* Shipping Operations — future-planned carrier module */}
+          {!viewerDoc && page === 'shipping' && (
+            <>
+              <PageHeader title="Label & Print Ops" subtitle="Carrier shipment & label operations — DHL Express · FedEx · multi-package · print queue · returns. Wireframe only — no live carrier integrations." />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <ShippingOpsPage />
+            </>
+          )}
+
+          {/* Carriers — multi-carrier login & API integration */}
+          {!viewerDoc && page === 'carriers' && (
+            <>
+              <PageHeader title="Carriers" subtitle="Multi-carrier login · API integration · webhooks · sessions · audit log. Backend wireframe — no live credentials."
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="gold" small disabled style={{ opacity: 0.7, cursor: 'not-allowed' }}>+ Connect Carrier</Btn></div>}
+              />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <CarriersPage />
+            </>
+          )}
+
+          {/* API Status — consolidated single-page health for every integration */}
+          {!viewerDoc && page === 'api_status' && (
+            <>
+              <PageHeader title="API Status" subtitle="Consolidated health for every backend integration · carriers · accounting · customs · internal services · webhooks. Replaces scattered API-status surfaces."
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="outline" small disabled style={{ opacity: 0.7, cursor: 'not-allowed' }}>↻ Re-probe All</Btn></div>}
+              />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <ApiStatusPage />
+            </>
+          )}
+
+          {/* Documents Hub — full CRUD for every document type */}
+          {!viewerDoc && page === 'documents' && (
+            <>
+              <PageHeader title="Documents" subtitle="Unified workspace for every document the system creates · Proforma · Invoice · PZ · Order · Customs · Shipping · Email. Full create / edit / delete / view / download."
+                actions={<Btn variant="outline" small disabled style={{ opacity: 0.7, cursor: 'not-allowed' }}>⬇ Export CSV</Btn>}
+              />
+              <DocumentsHubPage />
+            </>
+          )}
+
+          {/* Pro Forma — Screen A (list) */}
+          {!viewerDoc && page === 'proforma' && (
+            <>
+              <PageHeader title="Pro Forma" subtitle="Draft pro forma invoices · Convert to invoice when ready"
+                actions={<Btn variant="outline" small>↓ Export CSV</Btn>}
+              />
+              <ProformaListPage onDrill={handleProformaDrill} />
+            </>
+          )}
+
+          {/* Pro Forma — Screen B (detail) */}
+          {!viewerDoc && page === 'proforma_detail' && proformaDraft && (
+            <ProformaDetailPage 
+              draft={proformaDraft} 
+              onBack={handleProformaBack}
+              onConvert={(draft) => {
+                alert(`Convert to Invoice: ${draft.number} → Invoice created (stub)`);
+                handleProformaBack();
+              }}
+            />
+          )}
+
+          {/* Action Center */}
+          {!viewerDoc && page === 'actions' && (
+            <>
+              <PageHeader title="Action Center" subtitle="Operator queue — approvals, executes, and risk-gated writes" />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <ActionCenterPage />
+            </>
+          )}
+
+          {/* Coverage Matrix */}
+          {!viewerDoc && page === 'coverage' && (
+            <>
+              <PageHeader title="Coverage Matrix" subtitle="Feature × status × API placeholders — wireframe coverage of existing & planned modules" />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <CoverageMatrix />
+            </>
+          )}
+
+          {/* Identity / Mapping */}
+          {!viewerDoc && page === 'identity' && (
+            <><PageHeader title="Identity / Mapping" subtitle="Two-way mapping between supplier SKUs, internal designs, and customer SKUs" /><SubTabStrip active={page} onNav={handleNav} /><IdentityMappingPage /></>
+          )}
+          {/* Move Stock */}
+          {!viewerDoc && page === 'move_stock' && (
+            <><PageHeader title="Move Stock" subtitle="Move identified items from Temp Warehouse → Final Stock" /><SubTabStrip active={page} onNav={handleNav} /><MoveStockPage /></>
+          )}
+          {/* Sample Out */}
+          {!viewerDoc && page === 'sample_out' && (
+            <><PageHeader title="Sample Out" subtitle="Release samples to clients for evaluation" /><SubTabStrip active={page} onNav={handleNav} /><SampleOutPage /></>
+          )}
+          {/* Sample Return */}
+          {!viewerDoc && page === 'sample_return' && (
+            <><PageHeader title="Sample Return" subtitle="Receive samples back into Final Stock or convert to a sale" /><SubTabStrip active={page} onNav={handleNav} /><SampleReturnPage /></>
+          )}
+          {/* Goods Return from Client */}
+          {!viewerDoc && page === 'goods_return' && (
+            <><PageHeader title="Goods Return from Client" subtitle="Post-sale RMA — receive returns, generate credit notes" /><SubTabStrip active={page} onNav={handleNav} /><GoodsReturnPage /></>
+          )}
+          {/* Return to Producer */}
+          {!viewerDoc && page === 'return_prod' && (
+            <><PageHeader title="Return to Producer" subtitle="Send goods back to original supplier — debit-note request" /><SubTabStrip active={page} onNav={handleNav} /><ReturnToProducerPage /></>
+          )}
+
+          {/* Email Queue */}
+          {!viewerDoc && page === 'email_queue' && (
+            <>
+              <PageHeader title="Email Queue" subtitle="Inbound, outbound, and pending emails — DHL, customs, and system notifications"
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small>Retry Failed</Btn><Btn variant="outline" small>↻ Refresh</Btn></div>}
+              />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <EmailQueuePage onViewShipment={handleViewShipment} />
+            </>
+          )}
+
+          {/* Reports — financial & sales focused */}
+          {!viewerDoc && page === 'reports' && (
+            <>
+              <PageHeader title="Reports" subtitle="Financial, sales, purchase, and shipping reports — date-filtered with drill-down"
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small>↓ Export PDF</Btn><Btn variant="outline" small>↓ Export CSV</Btn></div>}
+              />
+              <ReportsPage />
+            </>
+          )}
+
+          {/* Master Data */}
+          {!viewerDoc && page === 'master' && (
+            <>
+              <PageHeader title="Master Data" subtitle="Create and edit all master records — clients, suppliers, products, designs, HS codes, FX, users, roles" />
+              <MasterPage />
+            </>
+          )}
+
+          {/* Warehouse Scanner — POST /api/v1/warehouse/scan */}
+          {!viewerDoc && page === 'scanner' && (
+            <>
+              <PageHeader title="Warehouse Scanner" subtitle="Scan / move / dispatch — mobile-safe operator interface" />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <WarehouseScannerPage />
+            </>
+          )}
+
+          {/* Reservation Cell — Warehouse Audit + Sales Linkage + wFirma Preview */}
+          {!viewerDoc && page === 'reservation' && (
+            <>
+              <PageHeader title="Reservation Cell" subtitle="Three-stage gate — warehouse audit · sales linkage · wFirma preview" />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <ReservationCellPage />
+            </>
+          )}
+
+          {/* wFirma Setup & Mapping */}
+          {!viewerDoc && page === 'wfirma_setup' && (
+            <>
+              <PageHeader title="wFirma Mapping" subtitle="Customer + product mapping · capabilities · reservation gate readiness" />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <WfirmaMappingPage />
+            </>
+          )}
+
+          {/* System Diagnostics */}
+          {!viewerDoc && page === 'diagnostics' && (
+            <>
+              <PageHeader title="System Diagnostics" subtitle="Health checks · storage · locks · CLI diagnostic tools" />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <DiagnosticsPage />
+            </>
+          )}
+
+          {/* Admin / Settings */}
+          {!viewerDoc && page === 'admin' && (
+            <>
+              <PageHeader title="Admin / Settings" subtitle="API configuration, users, and system status"
+                actions={<Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn>}
+              />
+              <SubTabStrip active={page} onNav={handleNav} />
+              <AdminSettingsPage />
+            </>
+          )}
+
+        </div>
+      </div>
+
+      {showNewShipment && (
+        <NewShipmentModal
+          onClose={() => setShowNewShipment(false)}
+          onCreated={(data) => {
+            setShowNewShipment(false);
+            handleViewShipment({
+              id: 'SHP-NEW', awb: data.awb, carrier: data.carrier,
+              dhlStatus: data.runPrecheck ? 'Pre-check Pending' : 'Draft',
+              dhlRec: '—', sadStatus: 'SAD Pending', mrn: '—',
+              pzStatus: 'Locked', net: '—', gross: '—', duty: '—',
+              overall: 'In Preparation',
+            });
+          }}
+        />
+      )}
+
+      {showApiChecklist && <ApiChecklistModal onClose={() => setShowApiChecklist(false)} />}
+
+      <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} onNav={handleNav} />
+
+      {/* TweaksPanel removed — omelette runtime not available in production */}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
