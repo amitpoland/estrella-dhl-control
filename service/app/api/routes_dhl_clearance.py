@@ -2264,6 +2264,19 @@ async def generate_description(
         else (None, None)
     )
 
+    # ── Apply operator-approved description corrections ───────────────────────
+    # If the AI-validation layer detected a description mismatch and the
+    # operator approved a correction via the Inbox, that correction is stored
+    # in audit["description_corrections"][product_code].  Apply it to the
+    # projected rows NOW, before passing ``audit`` to the engine, so the
+    # engine renders the corrected material_pl rather than the placeholder.
+    try:
+        from ..services.customs_desc_checker import apply_description_corrections  # noqa: PLC0415
+        apply_description_corrections(audit)
+    except Exception as _corr_exc:
+        log.warning("[%s] apply_description_corrections: non-fatal failure: %s",
+                    batch_id, _corr_exc)
+
     try:
         pkg = generate_customs_description_package(
             batch          = audit,

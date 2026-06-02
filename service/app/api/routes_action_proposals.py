@@ -132,9 +132,22 @@ def _record_proactive_failure(
 
 # ── Request models ─────────────────────────────────────────────────────────────
 
+class DescriptionCorrection(BaseModel):
+    """Correction values supplied by the operator when approving a
+    ``customs_description_mismatch`` proposal.
+
+    At least one of ``material_pl`` or ``description_pl`` must be non-empty.
+    """
+    material_pl:    Optional[str] = None   # e.g. "platyna próby 950"
+    description_pl: Optional[str] = None   # full customs sentence (optional)
+
+
 class ApproveBody(BaseModel):
     approved_by: str
     note: Optional[str] = None
+    # Only consumed for customs_description_mismatch proposals.
+    # Ignored for all other proposal types.
+    correction: Optional[DescriptionCorrection] = None
 
 
 class RejectBody(BaseModel):
@@ -798,6 +811,29 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
     if body.note:
         proposal["approval_note"] = body.note
 
+    # ── customs_description_mismatch: apply correction to audit ──────────────
+    # When the operator approves a description-mismatch proposal and supplies a
+    # correction, store it in audit["description_corrections"][product_code].
+    # The generate-description route reads this dict and applies overrides
+    # before passing rows to the customs description engine.
+    correction_applied: Optional[Dict[str, Any]] = None
+    if proposal.get("type") == "customs_description_mismatch" and body.correction:
+        product_code = proposal.get("product_code") or ""
+        mat_pl  = (body.correction.material_pl    or "").strip()
+        desc_pl = (body.correction.description_pl or "").strip()
+        if product_code and (mat_pl or desc_pl):
+            corr_entry: Dict[str, Any] = {
+                "material_pl":     mat_pl,
+                "description_pl":  desc_pl,
+                "approved_by":     body.approved_by.strip(),
+                "approved_at":     _now(),
+                "source_proposal_id": proposal_id,
+            }
+            audit.setdefault("description_corrections", {})[product_code] = corr_entry
+            # Record back on the proposal so the history is self-contained.
+            proposal["correction"] = corr_entry
+            correction_applied = corr_entry
+
     _save_audit(batch_id, audit)
     tl.log_event(
         _audit_path(batch_id),
@@ -805,12 +841,20 @@ def approve_proposal(proposal_id: str, body: ApproveBody) -> Dict[str, Any]:
         "admin",
         actor=body.approved_by,
         detail={
-            "proposal_id":   proposal_id,
-            "proposal_type": proposal["type"],
-            "note":          body.note,
+            "proposal_id":    proposal_id,
+            "proposal_type":  proposal["type"],
+            "note":           body.note,
+            "correction":     correction_applied,
         },
     )
-    return {"status": "approved", "proposal_id": proposal_id, "approved_by": body.approved_by}
+    resp: Dict[str, Any] = {
+        "status":      "approved",
+        "proposal_id": proposal_id,
+        "approved_by": body.approved_by,
+    }
+    if correction_applied:
+        resp["correction_applied"] = correction_applied
+    return resp
 
 
 @router.post("/{proposal_id}/reject")
