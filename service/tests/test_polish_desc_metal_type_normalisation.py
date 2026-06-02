@@ -295,3 +295,93 @@ class TestGlobalRenderPlEn:
                     )
                 except _UnrecognisedMetalCode:
                     pass  # 999_AMBIGUOUS — expected
+
+
+# ── HTTP-level 422 proof (TestClient) ────────────────────────────────────────
+# Closes #4: proves _UnrecognisedMetalCode converts to HTTP 422 (not 500)
+# through the actual FastAPI endpoint, without a production batch.
+
+class TestUnrecognisedMetalReturns422NotHttp500:
+    """When the metal-code normaliser hits an unrecognised code, the route must
+    return HTTP 422 with code='unrecognised_metal_code' — not an uncaught 500.
+
+    Strategy: stub _inject_rows_from_sources (which is called AFTER all pre-run
+    gates) to raise HTTPException(422, ...) with the unrecognised_metal_code
+    payload — exactly what _inject_rows_from_packing_lines emits when it catches
+    _UnrecognisedMetalCode.  This tests that FastAPI propagates the exception
+    correctly without us having to construct a full valid batch.
+
+    Gate stubs applied:
+      • guard_dhl_requires_email  → return None (no error)
+      • invoice_totals.total_cif_usd set to 1000 so cif_zero guard passes
+      • dhl_awb set so AWB-resolution guard passes
+
+    The normaliser itself (the unit that raises _UnrecognisedMetalCode) is
+    tested exhaustively by TestNormaliseMetalKey and TestGlobalRenderPlEn above.
+    """
+
+    def test_unrecognised_metal_returns_422_not_500(self, tmp_path, monkeypatch):
+        """HTTPException(422, code=unrecognised_metal_code) from a helper
+        surfaces as an HTTP 422 response with the expected error structure."""
+        from fastapi.testclient import TestClient
+        from fastapi import HTTPException as _HTTPEx
+        from app.core.config import settings
+        from app.api import routes_dhl_clearance as rdhl
+        import json
+
+        monkeypatch.setattr(settings, "storage_root", tmp_path)
+
+        # Stub DHL email gate (fires before source injection)
+        monkeypatch.setattr(rdhl, "guard_dhl_requires_email", lambda audit: None)
+
+        # Stub _inject_rows_from_sources to raise the exact HTTPException that
+        # _inject_rows_from_packing_lines emits when it catches _UnrecognisedMetalCode.
+        def _raise_unrecognised(batch_id, audit, customs_view=None):
+            raise _HTTPEx(
+                status_code=422,
+                detail={
+                    "guard":  "unrecognised_metal_code",
+                    "error":  "Unrecognised metal code 'TESTMETAL' (normalised to 'TESTMETAL') "
+                              "on row 'EJL/TEST-1 (RNG/TESTMETAL)'. Add it to _GLOBAL_METAL_TABLE.",
+                    "code":   "unrecognised_metal_code",
+                    "row":    "EJL/TEST-1 (RNG/TESTMETAL)",
+                    "hint":   "Correct the metal code on the packing list.",
+                },
+            )
+
+        monkeypatch.setattr(rdhl, "_inject_rows_from_sources", _raise_unrecognised)
+
+        # Minimal audit that passes the remaining pre-injection gates:
+        #   cif_zero guard → needs invoice_totals.total_cif_usd > 0
+        #   AWB resolution → needs dhl_awb or similar
+        audit_dir = tmp_path / "outputs" / "TEST_BATCH_UNKNOWN_METAL"
+        audit_dir.mkdir(parents=True)
+        (audit_dir / "audit.json").write_text(
+            json.dumps({
+                "batch_id": "TEST_BATCH_UNKNOWN_METAL",
+                "status":   "draft",
+                "dhl_awb":  "0000000000",
+                "invoice_totals": {"total_cif_usd": 1000.0},
+                "clearance_decision": {"clearance_path": "self_clearance"},
+            }),
+            encoding="utf-8",
+        )
+
+        from app.main import app
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.post(
+                "/api/v1/dhl/generate-description/TEST_BATCH_UNKNOWN_METAL",
+                headers={"X-API-Key": "test-key"},
+            )
+
+        assert r.status_code == 422, (
+            f"Expected HTTP 422 for unrecognised metal, got {r.status_code}: {r.text[:300]}"
+        )
+        body = r.json()
+        detail = body.get("detail", {})
+        assert detail.get("code") == "unrecognised_metal_code", (
+            f"Expected code='unrecognised_metal_code' in detail, got: {detail}"
+        )
+        assert "TESTMETAL" in detail.get("error", ""), (
+            f"Expected metal code name in error message, got: {detail.get('error')}"
+        )
