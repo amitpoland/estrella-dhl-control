@@ -699,100 +699,184 @@ _GLOBAL_TYPE_TABLE: Dict[str, Dict[str, str]] = {
 }
 
 _GLOBAL_METAL_TABLE: Dict[str, Dict[str, str]] = {
-    # canonical key (as stored in packing_lines.metal) → PL phrase + EN form
+    # canonical key → PL phrase + EN form
+    # Keys use the NNkt GOLD / PTNNN / 925 SILVER convention.
+    # _normalise_metal_key() maps every parser variant to one of these keys.
     "925 SILVER":   {"pl": "ze srebra próby 925", "en": "925 Silver"},
     "9KT GOLD":     {"pl": "ze złota próby 375",  "en": "09KT Gold"},
     "9 GOLD":       {"pl": "ze złota próby 375",  "en": "09KT Gold"},
     "14KT GOLD":    {"pl": "ze złota próby 585",  "en": "14KT Gold"},
     "18KT GOLD":    {"pl": "ze złota próby 750",  "en": "18KT Gold"},
     "22KT GOLD":    {"pl": "ze złota próby 916",  "en": "22KT Gold"},
-    "PT950":        {"pl": "z platyny próby 950", "en": "PT950 Platinum"},
+    "24KT GOLD":    {"pl": "ze złota próby 999",  "en": "24KT Gold"},   # fine gold
+    "PT850":        {"pl": "z platyny próby 850", "en": "PT850 Platinum"},
     "PT900":        {"pl": "z platyny próby 900", "en": "PT900 Platinum"},
+    "PT950":        {"pl": "z platyny próby 950", "en": "PT950 Platinum"},
+}
+
+# Karat-integer → standard Polish próby value.
+# DO NOT derive via arithmetic (14×1000/24=583≠585, 22×1000/24=917≠916).
+# These are industry-standard fineness marks, not mathematical results.
+_KARAT_FINENESS: Dict[int, int] = {
+    9: 375, 10: 417, 14: 585, 18: 750, 21: 875, 22: 916, 24: 999,
 }
 
 
 def _normalise_type_key(item_type: str) -> str:
-    """Normalise packing-list item-type abbreviations to _GLOBAL_TYPE_TABLE keys.
+    """Normalise packing-list item-type codes to _GLOBAL_TYPE_TABLE keys.
 
-    The packing parser stores 3–4 letter codes (PND, RNG, ERG, BRC, …) from the
-    'Ctg' column; the table expects full English words (PENDANT, RING, EARRING, …).
+    Uses the SAME alias map as the packing parser (_EJL_TOKEN_MAP) so the two
+    vocabularies can't drift. Resolves every code the parser can emit, including
+    2-letter aliases (ER→EARRING) and plurals (EARS→EARRING).
 
-    Examples:
-        "PND" → "PENDANT"
-        "RNG" → "RING"
-        "ERG" / "EAR" / "PRS" → "EARRING"
-        "BRC"  → "BRACELET"
-        "PENDANT" → "PENDANT"  (already full-word — unchanged)
+    Returns the full English word in UPPER CASE (e.g. "PENDANT", "RING") or
+    the original uppercased code if unrecognised (caller treats as a miss).
     """
-    _ABBR = {
-        "PND": "PENDANT", "PEND": "PENDANT",
-        "RNG": "RING",
-        "ERG": "EARRING", "EAR": "EARRING", "PRS": "EARRING", "ERS": "EARRING",
-        "BRC": "BRACELET", "BR": "BRACELET",
-        "NCK": "NECKLACE", "NK": "NECKLACE",
-        "BNG": "BANGLE",
-        "CFL": "CUFFLINK",
-        "CHN": "CHAIN",
+    # Shared with invoice_packing_extractor._EJL_TOKEN_MAP — keep in sync.
+    # Map to UPPER CASE values matching _GLOBAL_TYPE_TABLE keys.
+    _ALIAS: Dict[str, str] = {
+        # Pendant
+        "PND": "PENDANT",  "PEND": "PENDANT",  "PENDANT": "PENDANT",
+        # Ring
+        "RNG": "RING",     "RING":  "RING",
+        # Earring — all EJL aliases including 2-letter ER and plural EARS
+        "ERG": "EARRING",  "EAR":   "EARRING",  "ER":       "EARRING",
+        "EARS": "EARRING", "ERS":   "EARRING",  "EARRING":  "EARRING",
+        "EARRINGS": "EARRING",
+        "PRS": "EARRING",   # EJL packing: "PRS" (pairs) = earrings
+        # Bracelet
+        "BRC": "BRACELET", "BR":    "BRACELET", "BRACELET": "BRACELET",
+        # Necklace
+        "NCK": "NECKLACE", "NK":    "NECKLACE", "NECKLACE": "NECKLACE",
+        # Bangle
+        "BNG": "BANGLE",   "BANGLE": "BANGLE",
+        # Cufflinks
+        "CFL": "CUFFLINK", "CUFFLINK": "CUFFLINK", "CUFFLINKS": "CUFFLINK",
+        # Chain
+        "CHN": "CHAIN",    "CHAIN": "CHAIN",
     }
-    s = (item_type or "").strip().upper()
-    return _ABBR.get(s, s)
+    return _ALIAS.get((item_type or "").strip().upper(),
+                      (item_type or "").strip().upper())
 
 
 def _normalise_metal_key(metal: str) -> str:
-    """Normalise a packing-list metal code to the _GLOBAL_METAL_TABLE key format.
+    """Normalise ANY packing-list metal code to a _GLOBAL_METAL_TABLE key.
 
-    The packing parser extracts karat+colour codes (18KT/Y, 18KT/P, 14KT/W, etc.)
-    while the table uses canonical keys (18KT GOLD, 14KT GOLD, etc.).
-    This function strips colour suffixes and adds " GOLD" so the lookup succeeds.
+    Strategy (pattern-class approach — a new code in the same family resolves
+    without another patch):
 
-    Examples:
-        "18KT/Y" → "18KT GOLD"   (18 karat yellow gold)
-        "18KT/P" → "18KT GOLD"   (18 karat pink/rose gold — same customs class)
-        "14KT/W" → "14KT GOLD"   (14 karat white gold)
-        "18KT GOLD" → "18KT GOLD" (already canonical — unchanged)
-        "PT950"     → "PT950"     (platinum — no normalisation needed)
+    Step 1 — strip qualifier suffix: split on '/' and keep only the first token.
+             Handles 18KT/Y, 18KT/P, 18KT/RG, 18KT/YWPD, 925/-, PT950/-, etc.
+    Step 2 — classify the first token by structure:
+      GOLD    : matches r'(\\d+)\\s*KT?' (karat number)
+                → look up fineness in _KARAT_FINENESS (NOT arithmetic)
+                → return "<N>KT GOLD"  e.g. "18KT GOLD", "14KT GOLD"
+                  (if karat unknown → legible error: not silent fallback)
+      PLATINUM: contains 'PT' or 'PLAT' with optional 3-digit suffix
+                → normalise to "PTNNN" e.g. "PT950", "PT900", "PT850"
+      SILVER  : contains '925' or '999' or starts with SL/SS/SILVER
+                → "925 SILVER" or "999 SILVER"
+                  EXCEPTION: bare '999' is ambiguous (fine gold or fine silver)
+                  → return sentinel "999_AMBIGUOUS" so the caller raises legibly.
+    Step 3 — pass-through if already a canonical key.
+
+    Returns the canonical key string. Unrecognised codes that clear step 1-3
+    return the post-strip token; caller sees a miss in the table and raises.
+
+    NOTE: '999' alone is intentionally ambiguous. Do not map it silently.
+    The operator or a future mapping decision must resolve it.
     """
-    import re as _re_norm
+    import re as _re_m
+
     s = (metal or "").strip().upper()
-    # If it already matches a table key exactly, return as-is
+    if not s:
+        return s
+
+    # Step 3 fast-path: already a canonical key
     if s in _GLOBAL_METAL_TABLE:
         return s
-    # Strip trailing colour code: /Y /W /P /R /RG /WG /YG /PG and similar
-    s_stripped = _re_norm.sub(r'/[A-Z]{1,3}$', '', s).strip()
-    # Map bare karat code (e.g. "18KT", "14KT", "9KT") → "<N>KT GOLD"
-    if _re_norm.fullmatch(r'\d{1,2}KT', s_stripped):
-        return s_stripped + " GOLD"
-    # Map "<N> GOLD" variants
-    m = _re_norm.match(r'(\d{1,2})\s*K\s*T?\s*GOLD', s_stripped)
-    if m:
-        return m.group(1) + "KT GOLD"
-    return s_stripped  # best effort; may still miss, but won't silently corrupt
+
+    # Step 1: strip qualifier suffix — everything after the first '/'
+    base = s.split("/")[0].strip()
+
+    # Step 2a — GOLD: NNkt or NN karat
+    m_karat = _re_m.match(r'^(\d+)\s*K(?:T)?$', base)
+    if m_karat:
+        karat_int = int(m_karat.group(1))
+        # Bare '24' from '24KT' is unambiguous gold; '999' without KT is ambiguous.
+        if karat_int == 24:
+            return "24KT GOLD"
+        if karat_int not in _KARAT_FINENESS:
+            # Unknown karat — return raw so caller raises legibly
+            return base
+        return f"{karat_int}KT GOLD"
+
+    # Step 2b — PLATINUM: PT followed by 3 digits (any order, optional space)
+    m_pt = _re_m.search(r'PT\s*(\d{3})', base) or _re_m.search(r'(\d{3})\s*PT', base)
+    if m_pt or 'PLAT' in base:
+        if m_pt:
+            fineness = m_pt.group(1)
+            return f"PT{fineness}"
+        # "PLAT" without digits — pass through as-is (caller may miss)
+        return base
+
+    # Step 2c — SILVER: 925, SL925, SS925, SILVER 925, 999
+    # Bare 999 is ambiguous — return sentinel
+    if _re_m.search(r'(?<!\d)999(?!\d)', base):
+        return "999_AMBIGUOUS"
+    if _re_m.search(r'(?<!\d)925(?!\d)', base) or base.startswith(("SL", "SS")) or "SILVER" in base:
+        return "925 SILVER"
+
+    # Pass-through: caller looks up in table; miss = legible failure
+    return base
 
 
-def _global_render_pl_en(item_type: str, metal: str, stone_text: str
-                         ) -> Dict[str, str]:
+class _UnrecognisedMetalCode(ValueError):
+    """Raised by _global_render_pl_en when a metal code cannot be classified.
+
+    Surfaced as a legible 422 (not a silent 'metal szlachetny' fallback).
+    """
+
+
+def _global_render_pl_en(item_type: str, metal: str, stone_text: str,
+                         _row_context: str = "") -> Dict[str, str]:
     """Render operator-locked PL/EN description for a Global packing row.
 
     Inputs come straight from packing_lines columns. Rules:
       - Type token (Ring/Bracelet/...) → Pierścionek/Bransoletka/...
-      - Metal canonical (925 SILVER/9KT GOLD/...) → ze srebra próby 925/ze złota próby 375/...
-        Colour-suffix codes (18KT/Y, 18KT/P, 14KT/W, …) are normalised via
-        _normalise_metal_key() before lookup — they all resolve to the same
-        customs class as their base karat (18KT/Y = 18KT GOLD, etc.).
-      - Stone text (free-text from packing parser) is scanned for vocabulary
-        markers: LGD → diamenty laboratoryjne; CZ → cyrkonie; combinations.
-      - Unknown type or metal → returns empty strings; caller must NOT emit
-        the row (operator spec: never produce UNKNOWN / metal szlachetny
-        rows for Global supplier).
+      - Metal canonical: colour-suffix codes (18KT/Y, 18KT/P, …) and all
+        silver/platinum variants normalised by _normalise_metal_key().
+      - Stone text scanned for vocabulary markers.
+      - Unknown TYPE → returns empty strings (caller skips row).
+      - Unknown METAL → raises _UnrecognisedMetalCode (legible error surfaced
+        to operator; never falls through to 'metal szlachetny' placeholder).
+      - '999' alone → raises _UnrecognisedMetalCode (ambiguous: fine gold vs
+        fine silver — operator must map it before the Polish description runs).
     """
     import re as _re_g
-    t_key = _normalise_type_key(item_type)  # PND→PENDANT, RNG→RING, etc.
+    t_key = _normalise_type_key(item_type)
     if t_key.endswith("S") and t_key[:-1] in _GLOBAL_TYPE_TABLE:
         t_key = t_key[:-1]
     type_info = _GLOBAL_TYPE_TABLE.get(t_key)
-    metal_info = _GLOBAL_METAL_TABLE.get(_normalise_metal_key(metal))
-    if not type_info or not metal_info:
+    if not type_info:
+        # Unknown type — skip row (same as before; not a legible error)
         return {"pl": "", "en": "", "item_type": "", "item_type_pl": ""}
+
+    metal_key = _normalise_metal_key(metal)
+    if metal_key == "999_AMBIGUOUS":
+        raise _UnrecognisedMetalCode(
+            f"Metal code '999' is ambiguous (fine gold vs fine silver) on "
+            f"row {_row_context!r}. Set a specific metal code "
+            f"(e.g. '24KT GOLD' or '999 SILVER') before generating the "
+            f"Polish description."
+        )
+    metal_info = _GLOBAL_METAL_TABLE.get(metal_key)
+    if not metal_info:
+        raise _UnrecognisedMetalCode(
+            f"Unrecognised metal code {metal!r} (normalised to {metal_key!r}) "
+            f"on row {_row_context!r}. Add it to _GLOBAL_METAL_TABLE or "
+            f"correct the packing-list data before generating the Polish description."
+        )
 
     # Stone vocabulary scan
     stone_up = (stone_text or "").upper()
@@ -1073,10 +1157,26 @@ def _inject_rows_from_packing_lines(batch_id: str, audit: dict) -> dict:
             skipped += 1
             continue
 
-        desc = _global_render_pl_en(item_type, metal, stone)
+        row_ctx = f"{product_code} ({item_type}/{metal})"
+        try:
+            desc = _global_render_pl_en(item_type, metal, stone,
+                                        _row_context=row_ctx)
+        except _UnrecognisedMetalCode as _exc:
+            # Legible failure: propagate immediately so the operator sees
+            # the exact code + row — never fall through to "metal szlachetny".
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "guard":  "unrecognised_metal_code",
+                    "error":  str(_exc),
+                    "code":   "unrecognised_metal_code",
+                    "row":    row_ctx,
+                    "hint":   "Correct the metal code on the packing list or "
+                              "add a mapping before regenerating.",
+                },
+            ) from _exc
         if not desc.get("pl") or not desc.get("en"):
-            # Unmapped type/metal — skip rather than emit UNKNOWN. The
-            # 422 guard at the route fires if NO rows survive.
+            # Unknown item type (not metal — that would have raised above).
             skipped += 1
             continue
 
