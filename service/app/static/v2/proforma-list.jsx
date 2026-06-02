@@ -96,9 +96,9 @@ function ProformaListPage({ onDrill }) {
             </thead>
             <tbody>
               {drafts.map((d, i) => {
-                // Parse lines count from editable_lines_json if present
-                let lineCount = '—';
-                try { lineCount = JSON.parse(d.editable_lines_json || '[]').length; } catch (_) {}
+                // line_count is a computed integer from the list endpoint (Sprint 1.1).
+                // 0 = draft genuinely has no lines; '—' = field missing (old API / unexpected).
+                const lineCount = d.line_count ?? '—';
                 return (
                   <tr
                     key={d.id}
