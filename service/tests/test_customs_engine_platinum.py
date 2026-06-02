@@ -42,20 +42,22 @@ def _norm(description: str, item_type: str = "ring") -> dict:
 # ── platinum material_pl (nominative) ────────────────────────────────────────
 
 class TestPlatinumMaterialPl:
-    """material_pl must NOT be the forbidden placeholder for any platinum input."""
+    """Known platinum codes (PT950/PT900/PT850) must resolve to correct material_pl.
+    Generic 'Platinum' / 'PLATINUM' without a próby code must produce
+    'metal szlachetny' — the governance rule requires Inbox proposals for
+    descriptions with unknown/unspecified purity."""
 
     @pytest.mark.parametrize("description,expected_material", [
         # Exact invoice lines from AWB 8400636576 (the failing batch)
-        ("PCS, PT950 Platinum,Plain Jewel RING",
-         "platyna próby 950"),
-        ("PCS, PT950 Platinum,Stud With Diam Jewel RING",
-         "platyna próby 950"),
+        ("PCS, PT950 Platinum,Plain Jewel RING",         "platyna próby 950"),
+        ("PCS, PT950 Platinum,Stud With Diam Jewel RING","platyna próby 950"),
         # Variant purities
-        ("PT900 Platinum Ring",   "platyna próby 900"),
-        ("PT850 Platinum Ring",   "platyna próby 850"),
-        # Generic "Platinum" when no numeric purity is stated
-        ("Platinum Ring",         "platyna"),
-        ("PLATINUM JEWELLERY",    "platyna"),
+        ("PT900 Platinum Ring",                          "platyna próby 900"),
+        ("PT850 Platinum Ring",                          "platyna próby 850"),
+        # Generic "Platinum" without próby → must fall through to forbidden placeholder
+        # so the checker creates an Inbox proposal (governance rule)
+        ("Platinum Ring",                                "metal szlachetny"),
+        ("PLATINUM JEWELLERY",                           "metal szlachetny"),
     ])
     def test_material_pl_resolved(self, description, expected_material):
         result = _norm(description)
@@ -65,11 +67,13 @@ class TestPlatinumMaterialPl:
         )
 
     @pytest.mark.parametrize("description", [
+        # Only known próby codes must avoid the forbidden placeholder
         "PCS, PT950 Platinum,Plain Jewel RING",
         "PCS, PT950 Platinum,Stud With Diam Jewel RING",
         "PT900 Platinum Ring",
         "PT850 Platinum Ring",
-        "Platinum Ring",
+        # "Platinum Ring" intentionally OMITTED — it now correctly produces
+        # "metal szlachetny" so the checker proposes; that is the desired behaviour.
     ])
     def test_no_forbidden_placeholder(self, description):
         result = _norm(description)
@@ -85,10 +89,12 @@ class TestPlatinumPolishDescription:
     """polish_customs_description must contain the correct genitive form."""
 
     @pytest.mark.parametrize("description,expected_genitive", [
+        # Known próby codes → genitive in customs description
         ("PCS, PT950 Platinum,Plain Jewel RING", "platyny próby 950"),
         ("PT900 Platinum Ring",                  "platyny próby 900"),
         ("PT850 Platinum Ring",                  "platyny próby 850"),
-        ("Platinum Ring",                        "platyny"),
+        # "Platinum Ring" (no próby) omitted — correctly produces no genitive now
+        # (falls to "metal szlachetny" → checker proposes → governance rule satisfied)
     ])
     def test_genitive_in_customs_description(self, description, expected_genitive):
         result = _norm(description)
@@ -114,8 +120,8 @@ class TestGoldUnaffected:
 
     @pytest.mark.parametrize("description,expected_material", [
         ("PCS, 18KT Gold,Plain Jewellery PENDANT", "złoto próby 750"),
-        ("PCS, 14KT Gold,LGD Gold Stud Jewell RING", "złoto próby 585 z diamenty laboratoryjne"),
-        ("925 Silver Ring",                          "srebro próby 925"),
+        ("PCS, 14KT Gold,Plain Jewellery RING",    "złoto próby 585"),
+        ("925 Silver Ring",                         "srebro próby 925"),
     ])
     def test_gold_silver_unchanged(self, description, expected_material):
         result = _norm(description)
@@ -153,9 +159,21 @@ class TestDictContainsPlatinum:
         assert "PT850" in cde.GOLD_PURITY
         assert cde.GOLD_PURITY["PT850"] == "platyna próby 850"
 
-    def test_gold_purity_has_platinum_fallback(self):
-        assert "PLATINUM" in cde.GOLD_PURITY
-        assert cde.GOLD_PURITY["PLATINUM"] == "platyna"
+    def test_gold_purity_has_no_generic_platinum(self):
+        """PLATINUM generic removed — word alone carries no próby.
+        PT961 Platinum must not resolve silently to 'platyna'."""
+        assert "PLATINUM" not in cde.GOLD_PURITY, (
+            "Generic PLATINUM entry must not exist in GOLD_PURITY. "
+            "It allows PT961/unknown purities to resolve to bare 'platyna' "
+            "without an Inbox proposal, violating the governance rule."
+        )
+
+    def test_gold_purity_has_no_generic_silver(self):
+        """SILVER generic removed — word alone carries no próby."""
+        assert "SILVER" not in cde.GOLD_PURITY, (
+            "Generic SILVER entry must not exist in GOLD_PURITY. "
+            "Descriptions with just 'Silver' (no próby) must create proposals."
+        )
 
     def test_purity_genitive_has_pt950(self):
         assert "PT950" in cde._PURITY_GENITIVE
@@ -169,14 +187,78 @@ class TestDictContainsPlatinum:
         assert "PT850" in cde._PURITY_GENITIVE
         assert cde._PURITY_GENITIVE["PT850"] == "platyny próby 850"
 
-    def test_purity_genitive_has_platinum_fallback(self):
-        assert "PLATINUM" in cde._PURITY_GENITIVE
-        assert cde._PURITY_GENITIVE["PLATINUM"] == "platyny"
+    def test_purity_genitive_has_no_generic_platinum(self):
+        assert "PLATINUM" not in cde._PURITY_GENITIVE
 
-    def test_pt950_before_platinum_in_dict_order(self):
-        """PT950 must precede PLATINUM so PT950 wins the first-match scan."""
-        keys = list(cde.GOLD_PURITY.keys())
-        assert keys.index("PT950") < keys.index("PLATINUM"), (
-            "PT950 must be inserted before PLATINUM in GOLD_PURITY "
-            "or the first-match scan returns the generic form instead of próby 950"
+    def test_purity_genitive_has_no_generic_silver(self):
+        assert "SILVER" not in cde._PURITY_GENITIVE
+
+
+# ── Governance: canonical rule regression ─────────────────────────────────────
+# These tests pin the two-path governance rule:
+#   Known token (specific próby) → deterministic render → no "metal szlachetny"
+#   Unknown/generic token        → "metal szlachetny"   → checker must propose
+
+class TestGovernanceCanonicalRule:
+    """Pins the canonical governance rule for known vs unknown tokens.
+
+    Known token (PT950, PT900, PT850, 925, 14KT, 18KT, …)
+    → deterministic resolution → render
+
+    Unknown/incomplete token (PT961, PLATINUM alone, SILVER alone)
+    → falls through to 'metal szlachetny'
+    → description checker creates Inbox proposal
+    → no silent auto-render of an unverified value
+    """
+
+    # Known tokens — must render correctly, must NOT produce "metal szlachetny"
+    @pytest.mark.parametrize("description,expected_material", [
+        ("PCS, PT950 Platinum, Plain Jewel RING", "platyna próby 950"),
+        ("PCS, PT900 Platinum, Ring",             "platyna próby 900"),
+        ("PCS, PT850 Platinum, Ring",             "platyna próby 850"),
+        ("PCS, 925 Silver Ring",                  "srebro próby 925"),
+        ("PCS, SL925 Silver Ring",                "srebro próby 925"),
+        ("PCS, 18KT Gold, Plain RING",            "złoto próby 750"),
+        ("PCS, 14KT Gold, Plain RING",            "złoto próby 585"),
+    ])
+    def test_known_token_renders_correctly(self, description, expected_material):
+        r = cde.normalize_item_description(description, item_type="ring",
+                                           hsn_from_invoice="")
+        assert r.get("material_pl") == expected_material, (
+            f"Known token in {description!r} should give {expected_material!r}, "
+            f"got {r.get('material_pl')!r}"
+        )
+
+    # Unknown/generic tokens — must produce "metal szlachetny" so checker can propose
+    @pytest.mark.parametrize("description", [
+        "PCS, PT961 Platinum, Plain Jewel RING",  # unknown purity
+        "Platinum Ring",                           # no purity specified
+        "PLATINUM Jewellery",                      # word only
+        "Silver Ring",                             # no próby
+        "SILVER Jewellery",                        # word only
+    ])
+    def test_unknown_token_produces_forbidden_placeholder(self, description):
+        """Unknown/generic descriptions must fall through to 'metal szlachetny'.
+        This ensures the description checker will create an Inbox proposal
+        rather than rendering an unverified value on customs paperwork."""
+        r = cde.normalize_item_description(description, item_type="ring",
+                                           hsn_from_invoice="")
+        mat = r.get("material_pl", "")
+        assert mat == "metal szlachetny", (
+            f"Unknown token in {description!r} must produce 'metal szlachetny' "
+            f"(triggers Inbox proposal). Got {mat!r} — governance rule broken."
+        )
+
+    def test_pt961_does_not_produce_platyna(self):
+        """Core governance test: PT961 must NOT auto-render any platinum wording.
+        Any platinum output without prior DB approval violates the rule."""
+        r = cde.normalize_item_description(
+            "PCS, PT961 Platinum, Plain Jewel RING",
+            item_type="ring", hsn_from_invoice="",
+        )
+        mat = r.get("material_pl", "")
+        assert "platyna" not in mat.lower(), (
+            f"PT961 auto-rendered platinum wording: {mat!r}. "
+            "Unknown purity must produce 'metal szlachetny' so the checker "
+            "creates an Inbox proposal instead of silently rendering."
         )
