@@ -26,7 +26,6 @@ OQ-4: email-queue items are read-only in the inbox; Send stays on the admin queu
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -76,29 +75,17 @@ _PROPOSAL_TITLE: Dict[str, str] = {
 def _collect_pending_proposals(outputs_dir: Path) -> List[Dict[str, Any]]:
     """Scan all batch audits and collect pending proposals as inbox items.
 
-    Replicates the cross-batch scan from routes_action_proposals._resolve_proposal
-    (routes_action_proposals.py:1342) without importing from that module — avoids
-    circular import and keeps this path strictly read-only (no 404/exception raises
-    on missing batches).
+    Delegates the cross-batch file scan to the shared _iter_batch_proposals
+    generator (proposals_reader.py) — single authority for the traversal loop.
+    This function only filters for pending_review status and shapes the items.
     """
+    from ..services.proposals_reader import _iter_batch_proposals
     items: List[Dict[str, Any]] = []
-    if not outputs_dir.is_dir():
-        return items
-    for batch_dir in outputs_dir.iterdir():
-        if not batch_dir.is_dir():
-            continue
-        ap = batch_dir / "audit.json"
-        if not ap.exists():
-            continue
-        try:
-            audit = json.loads(ap.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        batch_id = batch_dir.name
-        for prop in (audit.get("action_proposals") or []):
+    for batch_id, _audit, proposals in _iter_batch_proposals(outputs_dir):
+        for prop in proposals:
             if prop.get("status") != "pending_review":
                 continue
-            pid  = prop.get("proposal_id", "")
+            pid   = prop.get("proposal_id", "")
             ptype = prop.get("type", "unknown")
             items.append({
                 "id":             f"proposal-{pid}",
