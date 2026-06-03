@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -26,16 +27,27 @@ from datetime import datetime, timezone
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Run the active shipment monitor.")
-    p.add_argument("--base",  default="http://localhost:8000", help="Service base URL")
-    p.add_argument("--force", action="store_true",             help="Include terminal shipments")
-    p.add_argument("--quiet", action="store_true",             help="Suppress per-action log output")
+    p.add_argument("--base",    default="http://localhost:8000", help="Service base URL")
+    p.add_argument("--force",   action="store_true",             help="Include terminal shipments")
+    p.add_argument("--quiet",   action="store_true",             help="Suppress per-action log output")
+    p.add_argument("--api-key", default=os.getenv("API_KEY", ""),
+                   help="X-API-Key for the PZ service (falls back to API_KEY env var)")
     args = p.parse_args()
+
+    api_key = args.api_key
+    if not api_key:
+        print(
+            "[monitor] ERROR: API_KEY is required but not set. "
+            "Pass --api-key <key> or set the API_KEY environment variable.",
+            file=sys.stderr,
+        )
+        return 2
 
     url = f"{args.base.rstrip('/')}/api/v1/monitor/active-shipments/run"
     if args.force:
         url += "?force=true"
 
-    req = urllib.request.Request(url, method="POST")
+    req = urllib.request.Request(url, method="POST", headers={"X-API-Key": api_key})
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read().decode("utf-8"))

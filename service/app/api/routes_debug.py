@@ -169,8 +169,9 @@ async def health_full() -> Dict[str, Any]:
 
     # ── Step 4: Sessions endpoint ─────────────────────────────────────────────
     try:
+        _hdrs = {"X-API-Key": settings.api_key} if settings.api_key else {}
         async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get("http://localhost:8000/api/v1/batch/sessions")
+            r = await client.get("http://localhost:8000/api/v1/batch/sessions", headers=_hdrs)
         if r.status_code == 200:
             d = r.json()
             results["4_sessions_endpoint"] = _ok(f"count={d.get('count', '?')}")
