@@ -153,6 +153,51 @@ class TestListDrafts:
             r = client.get("/api/v1/proforma/drafts/V2C1")
         assert r.status_code in (401, 403)
 
+    def test_list_line_count_matches_detail(self, client, db_path, tmp_path):
+        """list endpoint line_count must equal len(detail.editable_lines).
+
+        Sprint 1.1: list serialiser adds a computed line_count integer so the
+        Pro Forma list view can display line count without parsing the full blob.
+        This test pins list/detail agreement so the two can never silently diverge.
+        Covers: one populated draft (1 line) + one zero-line draft.
+        """
+        with patch.object(settings, "storage_root", tmp_path):
+            # Populated draft: 1 line seeded by _seed_draft
+            draft_with_lines = _seed_draft(db_path, batch="LC_BATCH")
+            # Zero-line draft: create with empty lines list
+            draft_empty, _ = pildb.auto_create_draft_from_sales_packing(
+                db_path, batch_id="LC_BATCH", client_name="ZeroClient",
+                currency="EUR", lines=[],
+            )
+
+        # list endpoint
+        list_r = client.get("/api/v1/proforma/drafts/LC_BATCH", headers=_readonly_auth())
+        assert list_r.status_code == 200
+        list_drafts = {d["id"]: d for d in list_r.json()["drafts"]}
+
+        for draft_id, expected_count in [
+            (draft_with_lines.id, 1),
+            (draft_empty.id,      0),
+        ]:
+            # line_count from list endpoint
+            assert draft_id in list_drafts, f"draft {draft_id} missing from list"
+            list_count = list_drafts[draft_id].get("line_count")
+            assert list_count is not None, (
+                f"draft {draft_id}: line_count absent from list endpoint response"
+            )
+            assert list_count == expected_count, (
+                f"draft {draft_id}: list line_count={list_count}, expected {expected_count}"
+            )
+
+            # detail endpoint: len(editable_lines) must agree
+            detail_r = client.get(f"/api/v1/proforma/draft/{draft_id}", headers=_readonly_auth())
+            assert detail_r.status_code == 200
+            detail_count = len(detail_r.json()["draft"]["editable_lines"])
+            assert list_count == detail_count, (
+                f"draft {draft_id}: list line_count={list_count} != "
+                f"detail editable_lines len={detail_count} — list/detail diverged"
+            )
+
 
 # ── Contract 2: POST /api/v1/proforma/preview/{batch_id}/{client} ─────────
 

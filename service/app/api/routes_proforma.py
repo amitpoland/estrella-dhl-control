@@ -3329,6 +3329,20 @@ def proforma_to_invoice(
 
 # ── Phase 2 — read-only editable-draft endpoints ─────────────────────────────
 
+def _line_count(editable_lines_json: str) -> int:
+    """Return the number of editable lines for a draft, cheaply.
+
+    Same source as _draft_to_full: parses d.editable_lines_json and takes
+    len(). Returns 0 for null / empty string / malformed JSON — identical
+    to the fallback _safe_loads(blob, []) used in the detail path.
+    """
+    try:
+        v = json.loads(editable_lines_json or "[]")
+        return len(v) if isinstance(v, list) else 0
+    except Exception:
+        return 0
+
+
 def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     """Compact projection for the batch listing endpoint. Excludes the big
     JSON blobs so the listing stays cheap.
@@ -3371,6 +3385,10 @@ def _draft_to_summary(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         # Sprint-24 clone provenance
         "clone_generation":           getattr(d, "clone_generation", 0),
         "source_ref_id":              getattr(d, "source_ref_id", None),
+        # Sprint 1.1 — display-only line count for the Pro Forma list view.
+        # Derived from editable_lines_json (same source as _draft_to_full).
+        # Never mutates any customs value.
+        "line_count":                 _line_count(d.editable_lines_json or ""),
     }
 
 
