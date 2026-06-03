@@ -578,3 +578,70 @@ class TestNoAutoSend:
             sug = [_make_suggestion("DSK_MISSING"), _make_suggestion("SAD_DELAY")]
             generate_action_proposals(audit, bid, sug)
             mock_queue.assert_not_called()
+
+
+# ── Test 11: _iter_batch_proposals shared scanner ─────────────────────────────
+
+class TestIterBatchProposals:
+    """Pin the contract of the shared cross-batch scanner used by both
+    _resolve_proposal (routes_action_proposals) and _collect_pending_proposals
+    (routes_inbox).  This is the single authority for the file-scan loop."""
+
+    def test_yields_nothing_when_outputs_dir_absent(self, tmp_path):
+        from app.services.proposals_reader import _iter_batch_proposals
+        results = list(_iter_batch_proposals(tmp_path / "outputs"))
+        assert results == []
+
+    def test_yields_nothing_when_batch_has_no_audit(self, tmp_path):
+        outputs = tmp_path / "outputs"
+        outputs.mkdir()
+        (outputs / "batch1").mkdir()  # dir exists, no audit.json
+        from app.services.proposals_reader import _iter_batch_proposals
+        assert list(_iter_batch_proposals(outputs)) == []
+
+    def test_yields_nothing_when_proposals_list_empty(self, tmp_path):
+        bid, _, ap = _make_batch(tmp_path)  # audit has no action_proposals
+        from app.services.proposals_reader import _iter_batch_proposals
+        assert list(_iter_batch_proposals(tmp_path / "outputs")) == []
+
+    def test_yields_batch_id_audit_and_proposals(self, tmp_path):
+        bid, _, ap = _make_batch(tmp_path)
+        audit = _read_audit(ap)
+        props = [{"proposal_id": "p1", "type": "dhl_followup", "status": "pending_review"}]
+        audit["action_proposals"] = props
+        ap.write_text(json.dumps(audit), encoding="utf-8")
+
+        from app.services.proposals_reader import _iter_batch_proposals
+        results = list(_iter_batch_proposals(tmp_path / "outputs"))
+        assert len(results) == 1
+        b_id, returned_audit, returned_props = results[0]
+        assert b_id == bid
+        assert returned_props == props
+
+    def test_skips_malformed_json_silently(self, tmp_path):
+        outputs = tmp_path / "outputs"
+        bad = outputs / "bad_batch"
+        bad.mkdir(parents=True)
+        (bad / "audit.json").write_text("not valid json", encoding="utf-8")
+        from app.services.proposals_reader import _iter_batch_proposals
+        assert list(_iter_batch_proposals(outputs)) == []
+
+    def test_skips_non_dir_entries(self, tmp_path):
+        outputs = tmp_path / "outputs"
+        outputs.mkdir()
+        (outputs / "somefile.txt").write_text("x")  # file, not a dir
+        from app.services.proposals_reader import _iter_batch_proposals
+        assert list(_iter_batch_proposals(outputs)) == []
+
+    def test_multiple_batches_all_yielded(self, tmp_path):
+        for i in range(3):
+            bid, _, ap = _make_batch(tmp_path, batch_id=f"b{i}")
+            audit = _read_audit(ap)
+            audit["action_proposals"] = [{"proposal_id": f"p{i}", "status": "pending_review"}]
+            ap.write_text(json.dumps(audit), encoding="utf-8")
+
+        from app.services.proposals_reader import _iter_batch_proposals
+        results = list(_iter_batch_proposals(tmp_path / "outputs"))
+        assert len(results) == 3
+        batch_ids = {r[0] for r in results}
+        assert batch_ids == {"b0", "b1", "b2"}

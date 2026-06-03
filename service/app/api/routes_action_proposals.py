@@ -1342,28 +1342,16 @@ def _annotate_can_approve(proposal: Dict[str, Any], audit: Dict[str, Any]) -> Di
 def _resolve_proposal(
     proposal_id: str,
 ) -> tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """
-    Find the (batch_id, audit, proposal) tuple for a given proposal_id.
+    """Find the (batch_id, audit, proposal) tuple for a given proposal_id.
 
-    Searches all active batch audits.  Raises 404 if not found.
+    Searches all active batch audits via the shared _iter_batch_proposals scanner.
+    Raises 404 if not found.
     """
-    if not _OUTPUTS.is_dir():
-        raise HTTPException(status_code=404, detail=f"Proposal {proposal_id!r} not found.")
-
-    for batch_dir in _OUTPUTS.iterdir():
-        if not batch_dir.is_dir():
-            continue
-        ap = batch_dir / "audit.json"
-        if not ap.exists():
-            continue
-        try:
-            audit = json.loads(ap.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        for prop in (audit.get("action_proposals") or []):
+    from ..services.proposals_reader import _iter_batch_proposals
+    for batch_id, audit, proposals in _iter_batch_proposals(_OUTPUTS):
+        for prop in proposals:
             if prop.get("proposal_id") == proposal_id:
-                return batch_dir.name, audit, prop
-
+                return batch_id, audit, prop
     raise HTTPException(status_code=404, detail=f"Proposal {proposal_id!r} not found.")
 
 
