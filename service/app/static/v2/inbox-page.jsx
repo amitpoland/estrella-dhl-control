@@ -1,17 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Inbox — unified action queue (Sprint 2B.2, Option A: read-only display).
+// Inbox — unified action queue (Sprint 2B.3a: type + priority filter tabs).
 //
 // WIRED to GET /api/v1/inbox via EstrellaShared.apiFetch (ADR-028 shim).
 // NOT raw fetch — EstrellaShared.apiFetch carries credentials:'include',
 // D1 network-error catch, and D2 err.status on auth.
 //
-// Response shape (from routes_inbox.py, committed d6a3a36):
+// Response shape (from routes_inbox.py, committed 22cffa5):
 //   { ok, count, items: [{id, type, priority, title, detail, age (ISO),
 //     actor, primary_action, linked_batch_id, actionable, endpoint}],
 //     sources: {proposals, email_queue, dhl_cache}: {ok, count, error?} }
 //
-// Writes (Approve/Reject) → Sprint 2B.3.
-// Filter tabs (type/priority) → deferred chip.
+// Filter tabs pass ?type= and ?priority= as query params — server filters
+// before responding (routes_inbox.py:267-270). "All" = param omitted.
+// Writes (Approve/Reject) → Sprint 2B.3b.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PRIORITY_CONF = {
@@ -150,6 +151,24 @@ function InboxRow({ item, selected, onSelect }) {
 
 // ── InboxPage ─────────────────────────────────────────────────────────────────
 
+// ── Filter constants (must match server values in routes_inbox.py) ────────────
+
+var TYPE_FILTERS = [
+  { id: 'all',      label: 'All types' },
+  { id: 'proposal', label: 'Proposals' },
+  { id: 'email',    label: 'Email' },
+  { id: 'customs',  label: 'Customs' },
+  { id: 'approval', label: 'Approvals' },
+];
+
+var PRIORITY_FILTERS = [
+  { id: 'all',    label: 'All priorities', color: null },
+  { id: 'urgent', label: 'Urgent',         color: 'var(--badge-red-text)' },
+  { id: 'high',   label: 'High',           color: 'var(--badge-amber-text)' },
+  { id: 'normal', label: 'Normal',         color: 'var(--badge-blue-text)' },
+  { id: 'info',   label: 'Info',           color: 'var(--badge-neutral-text)' },
+];
+
 function InboxPage({ onNav }) {
   var _useState0 = React.useState([]);
   var items    = _useState0[0], setItems    = _useState0[1];
@@ -162,12 +181,22 @@ function InboxPage({ onNav }) {
   var _useState4 = React.useState(null);
   var selected = _useState4[0], setSelected = _useState4[1];
   var _useState5 = React.useState(0);
-  var seq      = _useState5[0], setSeq      = _useState5[1];   // increment to trigger refresh
+  var seq           = _useState5[0], setSeq           = _useState5[1];  // refresh trigger
+  var _useState6 = React.useState('all');
+  var typeFilter    = _useState6[0], setTypeFilter    = _useState6[1];  // type filter
+  var _useState7 = React.useState('all');
+  var priorityFilter = _useState7[0], setPriorityFilter = _useState7[1]; // priority filter
 
   React.useEffect(function() {
     setLoading(true);
     setError(null);
-    window.EstrellaShared.apiFetch('/api/v1/inbox')
+    // Build URL with active filter params; omit param when "all" (server returns full list).
+    var url = '/api/v1/inbox';
+    var params = [];
+    if (typeFilter     && typeFilter     !== 'all') params.push('type='     + encodeURIComponent(typeFilter));
+    if (priorityFilter && priorityFilter !== 'all') params.push('priority=' + encodeURIComponent(priorityFilter));
+    if (params.length) url = url + '?' + params.join('&');
+    window.EstrellaShared.apiFetch(url)
       .then(function(d) {
         setItems(d.items   || []);
         setSources(d.sources || {});
@@ -177,7 +206,7 @@ function InboxPage({ onNav }) {
         setError(err.message || String(err));
         setLoading(false);
       });
-  }, [seq]);
+  }, [seq, typeFilter, priorityFilter]);  // refetch on filter change or manual refresh
 
   function refresh() { setSeq(function(s) { return s + 1; }); }
 
@@ -211,6 +240,57 @@ function InboxPage({ onNav }) {
             color: 'var(--text-2)', fontSize: 11, fontWeight: 600,
           }}
         >{loading ? '…' : '↻ Refresh'}</button>
+      </div>
+
+      {/* ── Filter bar ──────────────────────────────────────────────────────── */}
+      <div
+        data-testid="inbox-filter-bar"
+        style={{
+          padding: '8px 24px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap',
+          background: 'var(--bg-subtle)', flexShrink: 0,
+        }}
+      >
+        {/* Type pills */}
+        {TYPE_FILTERS.map(function(t) {
+          var active = typeFilter === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={function() { setTypeFilter(t.id); }}
+              data-testid={'inbox-type-' + t.id}
+              style={{
+                padding: '3px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                border: '1px solid ' + (active ? 'var(--accent)' : 'var(--border)'),
+                background: active ? 'var(--accent-subtle)' : 'transparent',
+                color: active ? 'var(--accent)' : 'var(--text-2)',
+                cursor: 'pointer',
+              }}
+            >{t.label}</button>
+          );
+        })}
+
+        <span style={{ margin: '0 6px', color: 'var(--border-subtle)', userSelect: 'none' }}>│</span>
+
+        {/* Priority pills */}
+        {PRIORITY_FILTERS.map(function(p) {
+          var active = priorityFilter === p.id;
+          var col    = p.color || 'var(--accent)';
+          return (
+            <button
+              key={p.id}
+              onClick={function() { setPriorityFilter(p.id); }}
+              data-testid={'inbox-priority-' + p.id}
+              style={{
+                padding: '3px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                border: '1px solid ' + (active ? col : 'var(--border)'),
+                background: active ? 'var(--bg-subtle)' : 'transparent',
+                color: active ? col : 'var(--text-2)',
+                cursor: 'pointer',
+              }}
+            >{p.label}</button>
+          );
+        })}
       </div>
 
       {/* ── Per-source degradation notices ─────────────────────────────────── */}
