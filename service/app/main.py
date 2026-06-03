@@ -38,6 +38,7 @@ from .api.routes_execute import router as execute_router
 from .api.routes_ai_advisory import router as ai_advisory_router
 from .api.routes_mdi import router as mdi_router
 from .api.routes_search import router as search_router
+from .api.routes_inbox import router as inbox_router
 from .api.routes_intelligence_graph import router as intelligence_graph_router
 from .api.routes_workflow_intelligence import router as workflow_intelligence_router  # Phase 9
 from .api.routes_operations_intelligence import router as operations_intelligence_router  # Phase 10
@@ -413,6 +414,7 @@ app.include_router(execute_router)
 app.include_router(ai_advisory_router)
 app.include_router(mdi_router)              # Phase 4: master-data intelligence (advisory, no writes)
 app.include_router(search_router)           # Phase 7: natural-language search (deterministic, no writes)
+app.include_router(inbox_router)            # Sprint 2B.1: global inbox aggregator (read-only; require_api_key)
 app.include_router(intelligence_graph_router)     # Phase 8: intelligence graph (batch_id-centered, read-only)
 app.include_router(workflow_intelligence_router)      # Phase 9: workflow intelligence (multi-signal, read-only)
 app.include_router(operations_intelligence_router)    # Phase 10: operations intelligence (cross-batch, read-only)

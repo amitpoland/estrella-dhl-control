@@ -242,6 +242,24 @@ def get_by_ticket(ticket: str) -> List[Dict[str, Any]]:
     return _get_records_via_index("by_ticket", ticket)
 
 
+def list_recent(limit: int = 20) -> List[Dict[str, Any]]:
+    """Return the most recently scanned email intelligence records.
+
+    Pure read — never triggers a Zoho scan or any network call.
+    Reads from the master map file cache (storage/email_intelligence/master_email_map.json).
+    Returns records sorted by last_scanned_at descending (newest first).
+    Records with no last_scanned_at sort to the end.
+
+    Used by GET /api/v1/inbox to surface recent DHL scan state without
+    invoking scan-inbox.  The aggregator must never call scan_for_dhl_customs_emails
+    on a read path — this function provides the safe read-only alternative.
+    """
+    master = _load_master()                          # pure file read; no network
+    records = list(master.values())
+    records.sort(key=lambda r: r.get("last_scanned_at") or "", reverse=True)
+    return records[:max(1, limit)]
+
+
 def find_existing_email_context(audit: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Look up a stored email intelligence record for this audit's shipment.
