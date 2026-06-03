@@ -399,3 +399,96 @@ def test_v2_shim_sets_err_status_on_auth():
     assert "type = 'auth'" in html or "e.type = 'auth'" in html, (
         "apiFetch shim missing err.type='auth' (D2: auth error type)"
     )
+
+
+# ── Sprint 2B.3b — Approve/Reject write wiring (first side-effectful UI path) ──
+# Structural (text-grep) contract tests pinning the four write-path guards.
+# These verify the guards are EXPRESSED in source; the SECURITY review verifies
+# behavior. file:line references in the PR body.
+
+_PZAPI = _V2 / "pz-api.js"
+
+
+def test_v2_inbox_2b3b_approve_reject_buttons_gated_on_proposal():
+    """Approve/Reject controls render only for actionable proposals with an /approve endpoint.
+
+    Other inbox types keep their read-only labelled affordance (no Send control — OQ-4).
+    """
+    src = (_V2 / "inbox-page.jsx").read_text(encoding="utf-8", errors="replace")
+    assert "isProposalAction" in src, "inbox-page.jsx must gate write controls on isProposalAction"
+    assert "item.type === 'proposal'" in src, "gate must require type==='proposal'"
+    assert "/\\/approve$/.test(item.endpoint)" in src, (
+        "gate must require item.endpoint to end in /approve"
+    )
+    assert "'inbox-approve-'" in src, "approve button testid prefix missing"
+    assert "'inbox-reject-'" in src, "reject button testid prefix missing"
+
+
+def test_v2_inbox_2b3b_reject_cancel_aborts_no_post():
+    """GUARD 1: reject reason prompt; cancel or blank reason returns BEFORE any POST."""
+    src = (_V2 / "inbox-page.jsx").read_text(encoding="utf-8", errors="replace")
+    assert "window.prompt('Reason for rejecting" in src, "reject must prompt for a reason"
+    # The guard line: a trimmed-empty reason returns with no network call.
+    assert "if (!reason) return;" in src, (
+        "GUARD 1 missing: reject must `if (!reason) return;` before building the reject URL/POST"
+    )
+    # Ensure the return happens before rejectProposal is called (order check).
+    cancel_idx = src.index("if (!reason) return;")
+    post_idx = src.index("PzApi.rejectProposal")
+    assert cancel_idx < post_idx, "GUARD 1: cancel-return must precede the rejectProposal POST"
+
+
+def test_v2_inbox_2b3b_failure_keeps_item():
+    """GUARD 3: on a failed write, item REMAINS (no onActed refetch), error surfaces, acting clears."""
+    src = (_V2 / "inbox-page.jsx").read_text(encoding="utf-8", errors="replace")
+    # onActed (parent refetch that drops the item) only fires inside the res.ok branch.
+    assert "if (res.ok) {" in src, "write handlers must branch on res.ok"
+    assert "onActed && onActed();" in src, "success branch must call onActed (confirmed removal via refetch)"
+    # Failure branch surfaces error and re-enables the buttons.
+    assert "setActErr(res.error" in src, "failure branch must surface res.error"
+    assert "setActing(false)" in src, "failure branch must clear in-flight acting so operator can retry"
+    # No optimistic pre-removal: the list is server-derived; assert we never splice items locally.
+    assert "setItems(" not in src.split("function InboxRow")[1].split("function InboxPage")[0], (
+        "InboxRow must not mutate the item list locally (no optimistic removal)"
+    )
+
+
+def test_v2_inbox_2b3b_double_submit_disabled_in_flight():
+    """GUARD 4 (client half): in-flight `acting` disables both buttons and blocks re-entry."""
+    src = (_V2 / "inbox-page.jsx").read_text(encoding="utf-8", errors="replace")
+    assert "if (acting) return;" in src, "handlers must early-return while acting (no concurrent fire)"
+    assert "disabled={acting}" in src, "both write buttons must be disabled while acting"
+
+
+def test_v2_inbox_2b3b_reject_url_derived_from_approve():
+    """Reject URL is derived from the approve endpoint via .replace(/\\/approve$/, '/reject')."""
+    src = (_V2 / "inbox-page.jsx").read_text(encoding="utf-8", errors="replace")
+    assert "item.endpoint.replace(/\\/approve$/, '/reject')" in src, (
+        "reject must derive its URL from item.endpoint via /approve$ -> /reject"
+    )
+    # Approve uses item.endpoint directly.
+    assert "PzApi.approveProposal(item.endpoint)" in src, "approve must POST to item.endpoint directly"
+
+
+def test_v2_pzapi_proposal_helpers_body_attribution():
+    """GUARD 2: PzApi.approveProposal/rejectProposal send attribution in the BODY
+    (approved_by / rejected_by) — matching the action-proposals contract — and REFUSE
+    to POST when the resolved operator is blank. They must NOT rely on the X-Operator
+    header (_callM): these endpoints read the body, not the header.
+    """
+    src = _PZAPI.read_text(encoding="utf-8", errors="replace")
+    assert "approveProposal:" in src, "PzApi.approveProposal helper missing"
+    assert "rejectProposal:" in src, "PzApi.rejectProposal helper missing"
+    # Exact body field names per the ApproveBody / RejectBody contract.
+    assert "approved_by: op" in src, "approveProposal must send approved_by in the body"
+    assert "rejected_by: op" in src, "rejectProposal must send rejected_by in the body"
+    assert "reason: r" in src, "rejectProposal must send reason in the body"
+    # Blank-operator refusal — no POST.
+    assert "type: 'operator'" in src, "helpers must refuse (type:'operator') when operator is blank"
+    assert "type: 'reason'" in src, "rejectProposal must refuse (type:'reason') when reason is blank"
+    # URL-shape guard before any network call (defense in depth).
+    assert "_isProposalActionUrl" in src, "helpers must validate the endpoint URL shape before POST"
+    # Body-based: helpers use _call (not _postM, which would add an ignored X-Operator header).
+    ap_block = src.split("approveProposal:")[1].split("rejectProposal:")[0]
+    assert "_call('POST'" in ap_block, "approveProposal must use _call (body attribution), not _postM"
+    assert "_postM(" not in ap_block, "approveProposal must NOT use _postM (X-Operator header is ignored here)"
