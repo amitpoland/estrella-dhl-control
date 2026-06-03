@@ -495,3 +495,68 @@ def test_only_pending_review_proposals_surface(tmp_path):
     assert "proposal-p-sent" not in proposal_ids, (
         "sent proposals must NOT appear (terminal state)"
     )
+
+
+# ── Test 11: single-scanner de-dup guard (chip closure) ──────────────────────
+
+def test_inbox_pending_set_equals_shared_scanner(tmp_path):
+    """The inbox pending set must equal the shared scanner's yield filtered to
+    pending_review.  routes_inbox._collect_pending_proposals and
+    routes_action_proposals._resolve_proposal now read through the SAME
+    proposals_reader._iter_batch_proposals scanner — so the two can no longer
+    drift.  This is the guard the duplicate-authority chip wanted.
+    """
+    from app.api.routes_inbox import _collect_pending_proposals
+    from app.services.proposals_reader import _iter_batch_proposals
+
+    # Mixed fixture: pending + non-pending in one batch, a second pending batch,
+    # an empty-proposal batch, and a malformed audit (scanner must skip silently).
+    _seed_batch_with_proposals(tmp_path, "BATCH-A", [
+        _make_proposal("p-a1", status="pending_review", batch_id="BATCH-A"),
+        _make_proposal("p-a2", status="approved",       batch_id="BATCH-A"),
+        _make_proposal("p-a3", status="rejected",       batch_id="BATCH-A"),
+    ])
+    _seed_batch_with_proposals(tmp_path, "BATCH-B", [
+        _make_proposal("p-b1", status="pending_review", batch_id="BATCH-B"),
+    ])
+    _seed_batch_with_proposals(tmp_path, "BATCH-EMPTY", [])
+    bad = tmp_path / "outputs" / "BATCH-BAD"
+    bad.mkdir(parents=True, exist_ok=True)
+    (bad / "audit.json").write_text("not valid json", encoding="utf-8")
+
+    outputs = tmp_path / "outputs"
+
+    inbox_items = _collect_pending_proposals(outputs)
+    inbox_pids = {it["id"].replace("proposal-", "") for it in inbox_items}
+
+    scanner_pids = {
+        p["proposal_id"]
+        for _bid, _audit, props in _iter_batch_proposals(outputs)
+        for p in props
+        if p.get("status") == "pending_review"
+    }
+
+    assert inbox_pids == scanner_pids == {"p-a1", "p-b1"}, (
+        f"inbox pending set {inbox_pids} must equal shared-scanner pending set "
+        f"{scanner_pids} — both callers must read the one scanner (no drift)."
+    )
+    # Envelope unchanged: proposal type, Approve action, /approve endpoint.
+    for it in inbox_items:
+        assert it["type"] == "proposal"
+        assert it["primary_action"] == "Approve"
+        assert it["endpoint"].endswith("/approve")
+        assert it["actionable"] is True
+
+
+def test_inbox_collector_has_no_inline_scan():
+    """Source guard: routes_inbox must NOT reintroduce its own iterdir/audit.json
+    scan — it must delegate to the shared scanner.  Pins the de-dup at the source
+    level so a future inline copy is caught even if behavior happens to match.
+    """
+    import inspect
+    from app.api import routes_inbox
+
+    src = inspect.getsource(routes_inbox._collect_pending_proposals)
+    assert "_iter_batch_proposals" in src, "inbox collector must call the shared scanner"
+    assert ".iterdir()" not in src, "inbox collector must not scan dirs inline (de-dup regression)"
+    assert "audit.json" not in src, "inbox collector must not read audit.json inline (de-dup regression)"
