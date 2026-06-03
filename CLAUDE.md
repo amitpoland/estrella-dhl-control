@@ -25,6 +25,25 @@ Production: `C:\PZ` | Service: `PZService` (NSSM, port 47213) | Public: `https:/
 
 ---
 
+## Canonical working-tree registry (PATH GUARD — permanent)
+
+All subagent file reads, hash verification, and git operations must target exactly one of these paths.
+Reading from any path not listed below is a source-drift risk.
+
+| Path | Role | Status |
+|---|---|---|
+| `C:\PZ` | Production — NSSM AppDirectory (`PZService`, port 47213) | LIVE — never `reset --hard`, never robocopy'd INTO |
+| `C:\PZ-verify` | Verification clone — tracks `origin/main` | SOURCE OF TRUTH for all git/file-hash checks |
+| `C:\Users\Super Fashion\PZ APP` | Former scratch clone | **RETIRED 2026-06-04** — not a source of truth |
+
+**Subagent reading rule (enforced):** All verification reads and git operations must use `C:\PZ-verify`.
+Reading from `C:\Users\Super Fashion\PZ APP` is **forbidden** — that tree is retired, diverged from
+`origin/main`, and returned false-negative verification results on four separate runs (2026-06-04).
+It is NOT the NSSM AppDirectory and NOT safe to read, verify, or deploy from. If any subagent
+or skill needs to inspect the repo, the path is `C:\PZ-verify`, not the scratch clone.
+
+---
+
 ## MANDATORY GOVERNANCE GATES
 
 These gates apply to ALL implementation work in this repository.
