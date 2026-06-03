@@ -52,9 +52,57 @@ function _relTime(iso) {
 
 // ── InboxRow ──────────────────────────────────────────────────────────────────
 
-function InboxRow({ item, selected, onSelect }) {
+function InboxRow({ item, selected, onSelect, onActed }) {
   const p = PRIORITY_CONF[item.priority] || PRIORITY_CONF.info;
   const t = TYPE_CONF[item.type]         || { label: item.type || '?', icon: '?', color: 'var(--text-3)' };
+
+  // Write wiring (Sprint 2B.3b): Approve/Reject only for actionable proposals
+  // that carry an /approve endpoint. All other types keep their read-only
+  // labelled affordance (no Send control here -- OQ-4).
+  var isProposalAction = item.type === 'proposal'
+    && typeof item.endpoint === 'string'
+    && /\/approve$/.test(item.endpoint);
+
+  var _a0 = React.useState(false);
+  var acting = _a0[0], setActing = _a0[1];     // GUARD 4: in-flight disables both buttons
+  var _a1 = React.useState('');
+  var actErr = _a1[0], setActErr = _a1[1];     // GUARD 3: failure surfaces here, item stays
+
+  function doApprove(e) {
+    e.stopPropagation();
+    if (acting) return;                        // GUARD 4: no concurrent fire
+    setActing(true); setActErr('');
+    // GUARD 2: operator resolved + blank-refused inside PzApi.approveProposal
+    // (attribution sent in body as approved_by). No pre-removal of the item.
+    window.PzApi.approveProposal(item.endpoint).then(function(res) {
+      if (res.ok) {
+        onActed && onActed();                  // GUARD 3: confirmed success -> parent refetch
+                                               // drops the now-non-pending proposal. acting
+                                               // stays true; row unmounts on refetch.
+      } else {
+        setActErr(res.error || 'Approve failed.');
+        setActing(false);                      // item REMAINS visible; operator may retry
+      }
+    });
+  }
+
+  function doReject(e) {
+    e.stopPropagation();
+    if (acting) return;
+    // GUARD 1: reason prompt; cancel or blank aborts BEFORE any POST.
+    var reason = (window.prompt('Reason for rejecting this proposal (recorded in audit):', '') || '').trim();
+    if (!reason) return;                       // GUARD 1: no POST on cancel/blank
+    var rejectUrl = item.endpoint.replace(/\/approve$/, '/reject');
+    setActing(true); setActErr('');
+    window.PzApi.rejectProposal(rejectUrl, reason).then(function(res) {
+      if (res.ok) {
+        onActed && onActed();
+      } else {
+        setActErr(res.error || 'Reject failed.');
+        setActing(false);
+      }
+    });
+  }
 
   // batch_id chip: shorten for display but keep full value for navigation
   const batchShort = item.linked_batch_id
@@ -132,18 +180,57 @@ function InboxRow({ item, selected, onSelect }) {
         </div>
       </div>
 
-      {/* Action affordance — Option A: disabled, labelled for 2B.3 */}
-      <div>
-        <button
-          disabled
-          title={item.primary_action + ' — wiring in Sprint 2B.3'}
-          style={{
-            background: 'var(--bg-subtle)', color: 'var(--text-3)',
-            border: '1px solid var(--border)', borderRadius: 4,
-            padding: '4px 12px', fontSize: 11, fontWeight: 700,
-            cursor: 'not-allowed', whiteSpace: 'nowrap', opacity: 0.6,
-          }}
-        >{item.primary_action} →</button>
+      {/* Action affordance */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+        {isProposalAction ? (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={doApprove}
+              disabled={acting}
+              data-testid={'inbox-approve-' + item.id}
+              title={acting ? 'Working…' : 'Approve this proposal'}
+              style={{
+                background: acting ? 'var(--bg-subtle)' : 'var(--badge-green-bg)',
+                color: acting ? 'var(--text-3)' : 'var(--badge-green-text)',
+                border: '1px solid ' + (acting ? 'var(--border)' : 'var(--badge-green-border)'),
+                borderRadius: 4, padding: '4px 12px', fontSize: 11, fontWeight: 700,
+                cursor: acting ? 'default' : 'pointer', whiteSpace: 'nowrap',
+                opacity: acting ? 0.6 : 1,
+              }}
+            >{acting ? '…' : 'Approve'}</button>
+            <button
+              onClick={doReject}
+              disabled={acting}
+              data-testid={'inbox-reject-' + item.id}
+              title={acting ? 'Working…' : 'Reject this proposal'}
+              style={{
+                background: 'transparent',
+                color: acting ? 'var(--text-3)' : 'var(--badge-red-text)',
+                border: '1px solid ' + (acting ? 'var(--border)' : 'var(--badge-red-border)'),
+                borderRadius: 4, padding: '4px 12px', fontSize: 11, fontWeight: 700,
+                cursor: acting ? 'default' : 'pointer', whiteSpace: 'nowrap',
+                opacity: acting ? 0.6 : 1,
+              }}
+            >Reject</button>
+          </div>
+        ) : (
+          <button
+            disabled
+            title={item.primary_action + ' — handled on its source page'}
+            style={{
+              background: 'var(--bg-subtle)', color: 'var(--text-3)',
+              border: '1px solid var(--border)', borderRadius: 4,
+              padding: '4px 12px', fontSize: 11, fontWeight: 700,
+              cursor: 'not-allowed', whiteSpace: 'nowrap', opacity: 0.6,
+            }}
+          >{item.primary_action} →</button>
+        )}
+        {actErr && (
+          <div
+            data-testid={'inbox-acterr-' + item.id}
+            style={{ fontSize: 10, color: 'var(--badge-red-text)', maxWidth: 200, textAlign: 'right' }}
+          >{actErr}</div>
+        )}
       </div>
     </div>
   );
@@ -349,6 +436,7 @@ function InboxPage({ onNav }) {
               item={item}
               selected={selected === item.id}
               onSelect={function() { setSelected(item.id); }}
+              onActed={refresh}
             />
           );
         })}

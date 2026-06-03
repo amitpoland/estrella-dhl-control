@@ -39,6 +39,14 @@
     return name;
   }
 
+  // Validate an action-proposals action URL before POSTing operator identity to it.
+  // Defense in depth: guards against a malformed item.endpoint sending attribution
+  // to an arbitrary path. action is 'approve' or 'reject'.
+  function _isProposalActionUrl(url, action) {
+    const re = new RegExp('^/api/v1/action-proposals/[^/]+/' + action + '$');
+    return typeof url === 'string' && re.test(url);
+  }
+
   // Normalize any outcome (success or thrown error) to a uniform shape.
   async function _call(method, url, body) {
     try {
@@ -222,6 +230,48 @@
     // POST /api/v1/customer-master/dictionaries/refresh — operator-triggered wFirma dict refresh
     refreshCustomerDictionaries: () =>
       _postM(`${BASE}/customer-master/dictionaries/refresh`, {}),
+
+    // -- Action proposals (Inbox 2B.3b write wiring) ----------------------
+    // Attribution rides in the BODY (approved_by / rejected_by) per the
+    // action-proposals contract -- NOT the X-Operator header that _callM
+    // injects. So these use _call (no X-Operator) and place identity in the
+    // body. Operator is resolved once via _resolveOperator() (single audit
+    // identity authority); a blank operator REFUSES to POST. The endpoint is
+    // validated against the action-proposals shape before any network call.
+
+    // POST /api/v1/action-proposals/{id}/approve  body: { approved_by, note? }
+    // endpoint: the full URL carried on the inbox item (item.endpoint).
+    approveProposal: (endpoint, note) => {
+      if (!_isProposalActionUrl(endpoint, 'approve'))
+        return Promise.resolve({ ok: false, status: 0, type: 'guard',
+          error: 'Refused: not a valid action-proposals approve URL.' });
+      const op = _resolveOperator();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required -- approval cancelled.' });
+      const body = { approved_by: op };
+      const n = (note || '').trim();
+      if (n) body.note = n;
+      return _call('POST', endpoint, body);
+    },
+
+    // POST /api/v1/action-proposals/{id}/reject  body: { rejected_by, reason }
+    // endpoint: derive from item.endpoint via .replace(/\/approve$/, '/reject').
+    // reason: operator-provided, REQUIRED by backend (422 if blank).
+    rejectProposal: (endpoint, reason) => {
+      if (!_isProposalActionUrl(endpoint, 'reject'))
+        return Promise.resolve({ ok: false, status: 0, type: 'guard',
+          error: 'Refused: not a valid action-proposals reject URL.' });
+      const op = _resolveOperator();
+      if (!op)
+        return Promise.resolve({ ok: false, status: 0, type: 'operator',
+          error: 'Operator name required -- rejection cancelled.' });
+      const r = (reason || '').trim();
+      if (!r)
+        return Promise.resolve({ ok: false, status: 0, type: 'reason',
+          error: 'Reason required -- rejection cancelled.' });
+      return _call('POST', endpoint, { rejected_by: op, reason: r });
+    },
 
   });
 })();
