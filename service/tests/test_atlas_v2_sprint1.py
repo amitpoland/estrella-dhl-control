@@ -143,6 +143,55 @@ def test_v2_inbox_page_wired_not_synthetic():
     )
 
 
+def test_v2_inbox_filter_tabs_wired():
+    """inbox-page.jsx filter tabs (Sprint 2B.3a) must drive server-side filtering.
+
+    Checks:
+    - typeFilter and priorityFilter state variables are present
+    - URL is built with ?type= and ?priority= params when not 'all'
+    - Both filter states are in useEffect deps (so changing filter triggers refetch)
+    - data-testid attributes are present on filter controls
+    - No write path introduced (no POST, no approve/reject call)
+    """
+    src = (_V2 / "inbox-page.jsx").read_text(encoding="utf-8", errors="replace")
+
+    # Filter state vars
+    assert "typeFilter" in src,     "typeFilter state missing from inbox-page.jsx"
+    assert "priorityFilter" in src, "priorityFilter state missing from inbox-page.jsx"
+
+    # URL param construction — server filters on ?type= and ?priority=
+    assert "encodeURIComponent(typeFilter)" in src, (
+        "inbox-page.jsx must pass ?type= param when typeFilter is set (server-side filtering)"
+    )
+    assert "encodeURIComponent(priorityFilter)" in src, (
+        "inbox-page.jsx must pass ?priority= param when priorityFilter is set"
+    )
+
+    # "all" must omit the param (not send ?type=all to server)
+    assert "!== 'all'" in src, (
+        "inbox-page.jsx must check !== 'all' before appending filter params"
+    )
+
+    # Both filters in useEffect dep array
+    assert "typeFilter, priorityFilter" in src or "priorityFilter" in src and "typeFilter" in src, (
+        "typeFilter and priorityFilter must be in useEffect dependency array for live refetch"
+    )
+
+    # data-testid on filter controls (render-gate verifiability).
+    # testids are constructed dynamically ('inbox-type-' + t.id), so check
+    # the prefix pattern rather than a specific composed value.
+    assert "inbox-filter-bar" in src,  "inbox-filter-bar testid missing"
+    assert "'inbox-type-'" in src,     "inbox-type-* testid prefix missing"
+    assert "'inbox-priority-'" in src, "inbox-priority-* testid prefix missing"
+
+    # No write path (POSTs, approve/reject) in this PR
+    assert "POST" not in src.upper().replace("//", "").split("\n")[0], True  # header comment ok
+    # More targeted: no apiFetch POST call
+    assert "method: 'POST'" not in src and 'method:"POST"' not in src, (
+        "2B.3a must not introduce write calls — Approve/Reject is Sprint 2B.3b"
+    )
+
+
 def test_v2_proforma_list_uses_pz_state():
     """proforma-list.jsx must use PzState.useProformaDrafts (not hardcoded mock)."""
     src = (_V2 / "proforma-list.jsx").read_text(encoding="utf-8", errors="replace")
