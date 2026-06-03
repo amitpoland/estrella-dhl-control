@@ -100,10 +100,47 @@ def test_v2_index_includes_mock_banner_component():
 
 
 def test_v2_mock_badge_wired_pages_correct():
-    """WIRED_PAGES must contain exactly proforma and proforma_detail."""
+    """WIRED_PAGES must contain proforma, proforma_detail, and inbox.
+
+    inbox was added in Sprint 2B.2 when GET /api/v1/inbox was wired.
+    Update this list each time a new page is promoted from MOCK to live.
+    """
     badge_src = (_V2 / "mock-badge.jsx").read_text(encoding="utf-8", errors="replace")
-    assert "proforma" in badge_src, "'proforma' missing from WIRED_PAGES"
-    assert "proforma_detail" in badge_src, "'proforma_detail' missing from WIRED_PAGES"
+    assert "'proforma'" in badge_src or '"proforma"' in badge_src, "'proforma' missing from WIRED_PAGES"
+    assert "'proforma_detail'" in badge_src or '"proforma_detail"' in badge_src, "'proforma_detail' missing"
+    assert "'inbox'" in badge_src or '"inbox"' in badge_src, (
+        "'inbox' missing from WIRED_PAGES — Sprint 2B.2 wired inbox to GET /api/v1/inbox; "
+        "remove the MOCK badge by adding 'inbox' to WIRED_PAGES in mock-badge.jsx"
+    )
+
+
+def test_v2_inbox_page_wired_not_synthetic():
+    """inbox-page.jsx must use EstrellaShared.apiFetch and real field names.
+
+    Sprint 2B.2 contract: INBOX_ITEMS synthetic data removed; real API fields used.
+    Guards against regression to the 14-item hardcoded array.
+    """
+    src = (_V2 / "inbox-page.jsx").read_text(encoding="utf-8", errors="replace")
+
+    # Must use the authenticated fetch shim (ADR-028; NOT raw fetch)
+    assert "EstrellaShared.apiFetch" in src, (
+        "inbox-page.jsx must use EstrellaShared.apiFetch, not raw fetch"
+    )
+    # Must target the real endpoint
+    assert "/api/v1/inbox" in src, "inbox-page.jsx must call GET /api/v1/inbox"
+
+    # Real API field names (from routes_inbox.py shape)
+    assert "primary_action" in src, "inbox-page.jsx must read item.primary_action (not item.primary)"
+    assert "linked_batch_id" in src, "inbox-page.jsx must read item.linked_batch_id (not item.linkedTo)"
+
+    # Old synthetic field names must be gone
+    assert "INBOX_ITEMS" not in src, "INBOX_ITEMS synthetic data must be removed"
+    assert '"linkedTo"' not in src and "'linkedTo'" not in src, "old 'linkedTo' field still present"
+
+    # Registration pattern (ADR-028; not direct window.X = X)
+    assert "Object.assign(window, { InboxPage })" in src, (
+        "inbox-page.jsx must register via Object.assign(window, { InboxPage })"
+    )
 
 
 def test_v2_proforma_list_uses_pz_state():
