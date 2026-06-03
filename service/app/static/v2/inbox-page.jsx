@@ -1,49 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Inbox — unified action queue replacing 5 separate pages:
-//   Action Center · Email Queue · Operator Queue · Action Proposals · Reservations
+// Inbox — unified action queue (Sprint 2B.2, Option A: read-only display).
 //
-// Everything that needs operator attention shows up here, ordered by priority.
-// Click an item → primary action; long-press → all options.
+// WIRED to GET /api/v1/inbox via EstrellaShared.apiFetch (ADR-028 shim).
+// NOT raw fetch — EstrellaShared.apiFetch carries credentials:'include',
+// D1 network-error catch, and D2 err.status on auth.
 //
-// Backend hooks (stubbed):
-//   GET  /api/v1/inbox?priority=&type=
-//   POST /api/v1/inbox/{id}/approve
-//   POST /api/v1/inbox/{id}/reject
-//   POST /api/v1/inbox/{id}/snooze
+// Response shape (from routes_inbox.py, committed d6a3a36):
+//   { ok, count, items: [{id, type, priority, title, detail, age (ISO),
+//     actor, primary_action, linked_batch_id, actionable, endpoint}],
+//     sources: {proposals, email_queue, dhl_cache}: {ok, count, error?} }
+//
+// Writes (Approve/Reject) → Sprint 2B.3.
+// Filter tabs (type/priority) → deferred chip.
 // ─────────────────────────────────────────────────────────────────────────────
-
-const INBOX_ITEMS = [
-  // ── Urgent ──────────────────────────────────────────────
-  { id: 'inbox-1001', type: 'customs',     priority: 'urgent', title: 'SAD verification required',                                    detail: 'SHIP-2026-0420 · Audemars Piguet · CHF 88,400',                  age: '2h ago',  actor: 'Customs Agent', primary: 'Verify', linkedTo: 'SHIP-2026-0420' },
-  { id: 'inbox-1002', type: 'email',       priority: 'urgent', title: 'DHL email — clearance hold notice',                            detail: 'Subject: AWB 1234567803 — additional documentation required',    age: '4h ago',  actor: 'DHL inbox',     primary: 'Open',   linkedTo: 'SHIP-2026-0419' },
-  { id: 'inbox-1003', type: 'proposal',    priority: 'urgent', title: 'Generate PI — Crown Jewelers (USD 24,100)',                    detail: 'AI proposes draft Proforma from order ORD-885',                  age: '15min ago',actor: 'AI Bridge',    primary: 'Approve', linkedTo: 'ORD-885'        },
-
-  // ── High ────────────────────────────────────────────────
-  { id: 'inbox-1004', type: 'reservation', priority: 'high', title: 'Reservation gate — Maison Royale',                              detail: 'Warehouse audit ✓ · Sales linkage pending · wFirma preview ready',age: '1h ago',  actor: 'Reservation cell', primary: 'Confirm', linkedTo: 'PI-2026/0143'   },
-  { id: 'inbox-1005', type: 'email',       priority: 'high',   title: 'New customer email — Atelier Lumière',                          detail: 'Subject: Quote request for collection 2026/SS',                  age: '1h ago',  actor: 'sales@estrella.pl', primary: 'Parse', linkedTo: null              },
-  { id: 'inbox-1006', type: 'proposal',    priority: 'high',   title: 'Match email attachment to SHIP-2026-0419',                       detail: 'AI proposes linking inbound PDF (commercial invoice) — confidence 94%',age: '2h ago',actor: 'AI Bridge',     primary: 'Approve', linkedTo: 'SHIP-2026-0419' },
-  { id: 'inbox-1007', type: 'approval',    priority: 'high',   title: 'Post PI-2026/0142 → wFirma',                                    detail: 'Aurum Watches GmbH · EUR 18,420 · YES_POST_LOCAL_PROFORMA_DRAFT_TO_WFIRMA',age: '3h ago',actor: 'Operator queue',primary: 'Approve', linkedTo: 'PI-2026/0142'   },
-
-  // ── Normal ──────────────────────────────────────────────
-  { id: 'inbox-1008', type: 'email',       priority: 'normal', title: 'Carrier confirmation — InPost',                                 detail: 'Subject: Shipment booking confirmed · INP-552448',               age: '5h ago',  actor: 'noreply@inpost.pl', primary: 'Open',  linkedTo: 'SHIP-2026-0417' },
-  { id: 'inbox-1009', type: 'proposal',    priority: 'normal', title: 'Update HS code mapping — bracelets',                            detail: 'Parser learned new HS code 7113.11.00 from SAD declaration',     age: '6h ago',  actor: 'Parser',         primary: 'Approve', linkedTo: null              },
-  { id: 'inbox-1010', type: 'customs',     priority: 'normal', title: 'ZC429-26-04482 acknowledged',                                   detail: 'Customs notice accepted by PUESC for SAD-PL-26-118472',          age: '1d ago',  actor: 'PUESC webhook',  primary: 'Open',   linkedTo: 'SAD-PL-26-118472'},
-  { id: 'inbox-1011', type: 'reservation', priority: 'normal', title: 'Reservation confirmed — Hôtel Belle Étoile',                    detail: 'All 3 gates clean · proceed with INV generation',                 age: '1d ago',  actor: 'System',         primary: 'Open',   linkedTo: 'ORD-884'         },
-  { id: 'inbox-1012', type: 'approval',    priority: 'normal', title: 'Move 4 items from Temp → Final Stock',                          detail: 'B-2026-014 · audit checksum ok',                                  age: '1d ago',  actor: 'Warehouse',     primary: 'Approve', linkedTo: 'B-2026-014'      },
-
-  // ── Info ────────────────────────────────────────────────
-  { id: 'inbox-1013', type: 'email',       priority: 'info',   title: 'System digest — overnight automation summary',                  detail: '12 emails parsed · 4 PIs drafted · 2 SADs uploaded · 0 errors',  age: '8h ago',  actor: 'Automation',     primary: 'Open',   linkedTo: null              },
-  { id: 'inbox-1014', type: 'email',       priority: 'info',   title: 'Newsletter — Lufthansa Cargo updates',                          detail: 'Quarterly carrier notification',                                  age: '12h ago', actor: 'noreply@lcag.com', primary: 'Open',  linkedTo: null              },
-];
-
-const INBOX_TABS = [
-  { id: 'all',          label: 'All',          icon: '✉', types: null },
-  { id: 'emails',       label: 'Emails',       icon: '✉', types: ['email'] },
-  { id: 'proposals',    label: 'Proposals',    icon: '✦', types: ['proposal'] },
-  { id: 'approvals',    label: 'Approvals',    icon: '◉', types: ['approval'] },
-  { id: 'reservations', label: 'Reservations', icon: '⊕', types: ['reservation'] },
-  { id: 'customs',      label: 'Customs',      icon: '◐', types: ['customs'] },
-];
 
 const PRIORITY_CONF = {
   urgent: { label: 'Urgent',  icon: '⚠', color: 'var(--badge-red-text)',    bg: 'var(--badge-red-bg)',    border: 'var(--badge-red-border)' },
@@ -60,122 +29,51 @@ const TYPE_CONF = {
   customs:     { label: 'Customs',     icon: '◐', color: 'var(--badge-red-text)' },
 };
 
-function InboxPage({ onNav }) {
-  const [tab, setTab] = React.useState('all');
-  const [priorityFilter, setPriorityFilter] = React.useState('all');
-  const [selected, setSelected] = React.useState(null);
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-  const tabConf = INBOX_TABS.find(t => t.id === tab);
-  const filtered = INBOX_ITEMS.filter(i => {
-    if (tabConf.types && !tabConf.types.includes(i.type)) return false;
-    if (priorityFilter !== 'all' && i.priority !== priorityFilter) return false;
-    return true;
-  });
-
-  const counts = INBOX_TABS.reduce((acc, t) => {
-    acc[t.id] = t.types ? INBOX_ITEMS.filter(i => t.types.includes(i.type)).length : INBOX_ITEMS.length;
-    return acc;
-  }, {});
-
-  const priorityCounts = ['urgent','high','normal','info'].reduce((acc, p) => {
-    acc[p] = INBOX_ITEMS.filter(i => i.priority === p).length;
-    return acc;
-  }, {});
-
-  return (
-    <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-      {/* Left rail — tabs */}
-      <div style={{
-        width: 200, flexShrink: 0, background: 'var(--bg-subtle)',
-        borderRight: '1px solid var(--border)',
-        padding: '14px 0', overflowY: 'auto',
-      }}>
-        <div style={{ padding: '0 16px 8px', fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>By type</div>
-        {INBOX_TABS.map(t => {
-          const active = tab === t.id;
-          return (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{
-              width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-              padding: '8px 16px', background: active ? 'var(--card)' : 'transparent',
-              border: 'none', cursor: 'pointer', textAlign: 'left',
-              borderLeft: active ? '3px solid var(--accent)' : '3px solid transparent',
-            }}>
-              <span style={{ fontSize: 13, color: active ? 'var(--accent)' : 'var(--text-3)', width: 14 }}>{t.icon}</span>
-              <span style={{ flex: 1, fontSize: 12, color: active ? 'var(--text)' : 'var(--text-2)', fontWeight: active ? 600 : 400 }}>{t.label}</span>
-              <span style={{
-                fontSize: 10, fontFamily: 'monospace',
-                color: active ? 'var(--accent)' : 'var(--text-3)',
-                background: active ? 'var(--accent-subtle)' : 'transparent',
-                padding: '1px 6px', borderRadius: 3, fontWeight: 600,
-              }}>{counts[t.id]}</span>
-            </button>
-          );
-        })}
-
-        <div style={{ marginTop: 18, padding: '0 16px 8px', fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>By priority</div>
-        {[
-          { id: 'all',    label: 'All priorities',  count: INBOX_ITEMS.length },
-          { id: 'urgent', label: 'Urgent',          count: priorityCounts.urgent, color: 'var(--badge-red-text)' },
-          { id: 'high',   label: 'High',            count: priorityCounts.high,   color: 'var(--badge-amber-text)' },
-          { id: 'normal', label: 'Normal',          count: priorityCounts.normal, color: 'var(--badge-blue-text)' },
-          { id: 'info',   label: 'Info',            count: priorityCounts.info,   color: 'var(--badge-neutral-text)' },
-        ].map(p => {
-          const active = priorityFilter === p.id;
-          return (
-            <button key={p.id} onClick={() => setPriorityFilter(p.id)} style={{
-              width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-              padding: '7px 16px', background: active ? 'var(--card)' : 'transparent',
-              border: 'none', cursor: 'pointer', textAlign: 'left',
-              borderLeft: active ? `3px solid ${p.color || 'var(--accent)'}` : '3px solid transparent',
-            }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: p.color || 'var(--text-3)' }}></span>
-              <span style={{ flex: 1, fontSize: 12, color: active ? 'var(--text)' : 'var(--text-2)', fontWeight: active ? 600 : 400 }}>{p.label}</span>
-              <span style={{ fontSize: 10, fontFamily: 'monospace', color: 'var(--text-3)' }}>{p.count}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Main list */}
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '14px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--card)' }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
-            {tabConf.label} · {priorityFilter === 'all' ? 'all priorities' : priorityFilter}
-          </div>
-          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{filtered.length} {filtered.length === 1 ? 'item' : 'items'}</span>
-          <span style={{ flex: 1 }}></span>
-          <button title="Refresh — GET /api/v1/inbox" style={{
-            background: 'transparent', border: '1px solid var(--border)',
-            borderRadius: 4, padding: '5px 10px', cursor: 'pointer',
-            color: 'var(--text-2)', fontSize: 11, fontWeight: 600,
-          }}>↻ Refresh</button>
-        </div>
-
-        <div style={{ flex: 1 }}>
-          {filtered.length === 0 && (
-            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12, fontStyle: 'italic' }}>
-              ✓ Nothing here. You're all caught up.
-            </div>
-          )}
-          {filtered.map(item => (
-            <InboxRow key={item.id} item={item} selected={selected === item.id}
-              onSelect={() => setSelected(item.id)}
-              onNav={onNav} />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
+function _relTime(iso) {
+  // Convert ISO-8601 timestamp to a human-readable relative string.
+  // age field from GET /api/v1/inbox is ISO (not pre-formatted).
+  if (!iso) return '—';
+  try {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1)  return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24)  return hrs + 'h ago';
+    const days = Math.floor(hrs / 24);
+    return days + 'd ago';
+  } catch (_) {
+    return (iso || '—').slice(0, 10);
+  }
 }
 
-function InboxRow({ item, selected, onSelect, onNav }) {
-  const p = PRIORITY_CONF[item.priority];
-  const t = TYPE_CONF[item.type];
+// ── InboxRow ──────────────────────────────────────────────────────────────────
+
+function InboxRow({ item, selected, onSelect }) {
+  const p = PRIORITY_CONF[item.priority] || PRIORITY_CONF.info;
+  const t = TYPE_CONF[item.type]         || { label: item.type || '?', icon: '?', color: 'var(--text-3)' };
+
+  // batch_id chip: shorten for display but keep full value for navigation
+  const batchShort = item.linked_batch_id
+    ? item.linked_batch_id.replace(/^SHIPMENT_(\d+)_.*/, 'SI-$1')
+    : null;
+
+  function openBatch(e) {
+    e.stopPropagation();
+    if (item.linked_batch_id) {
+      window.location.href = '/v2/proforma?batch_id=' + encodeURIComponent(item.linked_batch_id);
+    }
+  }
+
   return (
-    <div onClick={onSelect}
+    <div
+      onClick={onSelect}
+      data-testid={'inbox-row-' + item.id}
       style={{
         display: 'grid',
-        gridTemplateColumns: '6px 24px 1fr auto auto',
+        gridTemplateColumns: '6px 24px 1fr auto',
         gap: 12, alignItems: 'center',
         padding: '14px 24px',
         borderBottom: '1px solid var(--border-subtle)',
@@ -184,72 +82,200 @@ function InboxRow({ item, selected, onSelect, onNav }) {
         borderLeft: selected ? '3px solid var(--accent)' : '3px solid transparent',
         transition: 'background 0.12s',
       }}
-      onMouseEnter={e => { if (!selected) e.currentTarget.style.background = 'var(--bg-subtle)'; }}
-      onMouseLeave={e => { if (!selected) e.currentTarget.style.background = 'transparent'; }}>
+      onMouseEnter={function(e) { if (!selected) e.currentTarget.style.background = 'var(--bg-subtle)'; }}
+      onMouseLeave={function(e) { if (!selected) e.currentTarget.style.background = 'transparent'; }}
+    >
       {/* Priority dot */}
       <div style={{ width: 6, height: 6, borderRadius: '50%', background: p.color }}></div>
 
       {/* Type icon */}
       <div style={{
         width: 24, height: 24, borderRadius: 4,
-        background: p.bg, color: t.color, border: `1px solid ${p.border}`,
+        background: p.bg, color: t.color, border: '1px solid ' + p.border,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontSize: 12, fontWeight: 700,
       }}>{t.icon}</div>
 
       {/* Content */}
       <div style={{ minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
-          <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.title}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {item.title}
+          </span>
           <span style={{
             fontSize: 9, padding: '0px 5px', borderRadius: 2,
-            background: p.bg, color: p.color, border: `1px solid ${p.border}`,
+            background: p.bg, color: p.color, border: '1px solid ' + p.border,
             fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
           }}>{p.label}</span>
-          {item.linkedTo && (
-            <span style={{
-              fontSize: 9, padding: '0px 5px', borderRadius: 2, fontFamily: 'monospace',
-              background: 'var(--accent-subtle)', color: 'var(--accent)',
-              border: '1px solid var(--accent-border)',
-            }}>{item.linkedTo}</span>
+          {batchShort && (
+            <span
+              onClick={openBatch}
+              title={'Open Pro Forma for ' + item.linked_batch_id}
+              style={{
+                fontSize: 9, padding: '0px 5px', borderRadius: 2, fontFamily: 'monospace',
+                background: 'var(--accent-subtle)', color: 'var(--accent)',
+                border: '1px solid var(--accent-border)', cursor: 'pointer',
+              }}
+            >{batchShort}</span>
           )}
         </div>
-        <div style={{ fontSize: 11, color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.detail}</div>
+        <div style={{ fontSize: 11, color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {item.detail}
+        </div>
         <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
           <span>{t.label}</span>
           <span style={{ margin: '0 6px' }}>·</span>
           <span>{item.actor}</span>
           <span style={{ margin: '0 6px' }}>·</span>
-          <span>{item.age}</span>
+          <span>{_relTime(item.age)}</span>
         </div>
       </div>
 
-      {/* Quick actions */}
-      <div style={{ display: 'flex', gap: 4 }}>
-        <button onClick={(e) => { e.stopPropagation(); }} title={`POST /api/v1/inbox/${item.id}/snooze`}
+      {/* Action affordance — Option A: disabled, labelled for 2B.3 */}
+      <div>
+        <button
+          disabled
+          title={item.primary_action + ' — wiring in Sprint 2B.3'}
           style={{
-            background: 'transparent', border: '1px solid var(--border)',
-            color: 'var(--text-2)', borderRadius: 4, padding: '4px 8px',
-            fontSize: 10.5, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
-          }}>⏰ Snooze</button>
-        <button onClick={(e) => { e.stopPropagation(); }}
-          title={`POST /api/v1/inbox/${item.id}/${item.primary.toLowerCase()}`}
-          style={{
-            background: item.priority === 'urgent' ? 'var(--badge-red-bg)' : item.priority === 'high' ? 'var(--accent)' : 'var(--bg-subtle)',
-            color:      item.priority === 'urgent' ? 'var(--badge-red-text)' : item.priority === 'high' ? 'var(--accent-text)' : 'var(--text)',
-            border: '1px solid ' + (item.priority === 'urgent' ? 'var(--badge-red-border)' : item.priority === 'high' ? 'var(--accent)' : 'var(--border)'),
-            borderRadius: 4, padding: '4px 12px',
-            fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap',
-          }}>{item.primary} →</button>
+            background: 'var(--bg-subtle)', color: 'var(--text-3)',
+            border: '1px solid var(--border)', borderRadius: 4,
+            padding: '4px 12px', fontSize: 11, fontWeight: 700,
+            cursor: 'not-allowed', whiteSpace: 'nowrap', opacity: 0.6,
+          }}
+        >{item.primary_action} →</button>
       </div>
-
-      {/* Overflow */}
-      <button onClick={(e) => { e.stopPropagation(); }} style={{
-        background: 'transparent', border: 'none', cursor: 'pointer',
-        color: 'var(--text-3)', fontSize: 14, padding: 4,
-      }}>⋯</button>
     </div>
   );
 }
 
-window.InboxPage = InboxPage;
+// ── InboxPage ─────────────────────────────────────────────────────────────────
+
+function InboxPage({ onNav }) {
+  var _useState0 = React.useState([]);
+  var items    = _useState0[0], setItems    = _useState0[1];
+  var _useState1 = React.useState({});
+  var sources  = _useState1[0], setSources  = _useState1[1];
+  var _useState2 = React.useState(true);
+  var loading  = _useState2[0], setLoading  = _useState2[1];
+  var _useState3 = React.useState(null);
+  var error    = _useState3[0], setError    = _useState3[1];
+  var _useState4 = React.useState(null);
+  var selected = _useState4[0], setSelected = _useState4[1];
+  var _useState5 = React.useState(0);
+  var seq      = _useState5[0], setSeq      = _useState5[1];   // increment to trigger refresh
+
+  React.useEffect(function() {
+    setLoading(true);
+    setError(null);
+    window.EstrellaShared.apiFetch('/api/v1/inbox')
+      .then(function(d) {
+        setItems(d.items   || []);
+        setSources(d.sources || {});
+        setLoading(false);
+      })
+      .catch(function(err) {
+        setError(err.message || String(err));
+        setLoading(false);
+      });
+  }, [seq]);
+
+  function refresh() { setSeq(function(s) { return s + 1; }); }
+
+  var deadSources = Object.entries(sources).filter(function(entry) { return !entry[1].ok; });
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div style={{
+        padding: '14px 24px', borderBottom: '1px solid var(--border)',
+        display: 'flex', alignItems: 'center', gap: 12, background: 'var(--card)',
+        flexShrink: 0,
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
+          Action Inbox
+          {!loading && !error && (
+            <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 400, color: 'var(--text-3)' }}>
+              {items.length} item{items.length !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+        <span style={{ flex: 1 }}></span>
+        <button
+          onClick={refresh}
+          disabled={loading}
+          title="Refresh inbox"
+          style={{
+            background: 'transparent', border: '1px solid var(--border)', borderRadius: 4,
+            padding: '5px 10px', cursor: loading ? 'default' : 'pointer',
+            color: 'var(--text-2)', fontSize: 11, fontWeight: 600,
+          }}
+        >{loading ? '…' : '↻ Refresh'}</button>
+      </div>
+
+      {/* ── Per-source degradation notices ─────────────────────────────────── */}
+      {deadSources.map(function(entry) {
+        var name = entry[0], s = entry[1];
+        return (
+          <div key={name} style={{
+            margin: '8px 16px 0', padding: '8px 12px',
+            background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
+            borderRadius: 6, fontSize: 11.5, color: 'var(--badge-amber-text)', flexShrink: 0,
+          }}>
+            ⚠ <strong>{name}</strong> unavailable — {s.error || 'unknown error'}. Other sources still shown.
+          </div>
+        );
+      })}
+
+      {/* ── Content ────────────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+
+        {/* Loading */}
+        {loading && (
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-2)', fontSize: 13 }}>
+            <span className="spinner" /> Loading inbox…
+          </div>
+        )}
+
+        {/* Error */}
+        {!loading && error && (
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 13 }}>
+            Failed to load inbox: {error}
+            <br />
+            <button
+              onClick={refresh}
+              style={{
+                marginTop: 12, cursor: 'pointer', padding: '6px 14px',
+                borderRadius: 4, border: '1px solid var(--badge-red-border)',
+                background: 'transparent', color: 'var(--badge-red-text)',
+                fontSize: 12, fontWeight: 600,
+              }}
+            >Retry</button>
+          </div>
+        )}
+
+        {/* Empty */}
+        {!loading && !error && items.length === 0 && (
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12, fontStyle: 'italic' }}>
+            ✓ Nothing here — inbox is empty.
+          </div>
+        )}
+
+        {/* Item list */}
+        {!loading && !error && items.map(function(item) {
+          return (
+            <InboxRow
+              key={item.id}
+              item={item}
+              selected={selected === item.id}
+              onSelect={function() { setSelected(item.id); }}
+            />
+          );
+        })}
+
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { InboxPage });
