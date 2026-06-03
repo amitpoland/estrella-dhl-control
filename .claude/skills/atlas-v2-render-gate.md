@@ -9,6 +9,11 @@ Run after every robocopy sync to C:\PZ\app\static\v2\ before declaring a sprint 
 
 - PZService running (`sc.exe query PZService` → RUNNING)
 - Admin session available (logged-in browser or can log in)
+- **Health watchdog must be disabled for the duration of the deploy and re-enabled after.**
+  See `service/docs/windows-deploy-runbook-template.md` step 0 + step 7.
+  Task name: `PZService-HealthWatchdog` (exact — a wrong name fails silently).
+  ENABLE is also the first step in every rollback path.
+  A deploy that leaves the watchdog disabled after abort is worse than no watchdog.
 
 ---
 
