@@ -26,7 +26,6 @@ OQ-4: email-queue items are read-only in the inbox; Send stays on the admin queu
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -76,26 +75,22 @@ _PROPOSAL_TITLE: Dict[str, str] = {
 def _collect_pending_proposals(outputs_dir: Path) -> List[Dict[str, Any]]:
     """Scan all batch audits and collect pending proposals as inbox items.
 
-    Replicates the cross-batch scan from routes_action_proposals._resolve_proposal
-    (routes_action_proposals.py:1342) without importing from that module — avoids
-    circular import and keeps this path strictly read-only (no 404/exception raises
-    on missing batches).
+    Delegates the cross-batch file scan to the shared proposals_reader scanner —
+    the single traversal authority also used by
+    routes_action_proposals._resolve_proposal.  Importing from the services layer
+    (not the routes module) avoids the circular import that previously justified a
+    duplicated inline loop here.  The path stays strictly read-only: the scanner
+    silently skips missing/unparseable audits and never raises.
+
+    The pending_review filter and the inbox item envelope are applied here.  Output
+    is identical to the previous inline scan: batches with no proposals contribute
+    no items either way, and the batch traversal order is unchanged.
     """
+    from ..services.proposals_reader import _iter_batch_proposals  # noqa: PLC0415
+
     items: List[Dict[str, Any]] = []
-    if not outputs_dir.is_dir():
-        return items
-    for batch_dir in outputs_dir.iterdir():
-        if not batch_dir.is_dir():
-            continue
-        ap = batch_dir / "audit.json"
-        if not ap.exists():
-            continue
-        try:
-            audit = json.loads(ap.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        batch_id = batch_dir.name
-        for prop in (audit.get("action_proposals") or []):
+    for batch_id, _audit, proposals in _iter_batch_proposals(outputs_dir):
+        for prop in proposals:
             if prop.get("status") != "pending_review":
                 continue
             pid  = prop.get("proposal_id", "")
