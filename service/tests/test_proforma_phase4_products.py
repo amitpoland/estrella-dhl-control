@@ -19,9 +19,9 @@ _SYNC = Path(__file__).parent.parent / "app" / "services" / "proforma_draft_sync
 _MDB  = Path(__file__).parent.parent / "app" / "services" / "master_data_db.py"
 _DDB  = Path(__file__).parent.parent / "app" / "services" / "document_db.py"
 
-_sync_src = _SYNC.read_text()
-_mdb_src  = _MDB.read_text()
-_ddb_src  = _DDB.read_text()
+_sync_src = _SYNC.read_text(encoding="utf-8", errors="replace")
+_mdb_src  = _MDB.read_text(encoding="utf-8", errors="replace")
+_ddb_src  = _DDB.read_text(encoding="utf-8", errors="replace")
 
 
 def test_origin_country_in_product_local_dataclass():
