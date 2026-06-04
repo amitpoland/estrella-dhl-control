@@ -612,6 +612,74 @@
     );
   }
 
+  // ── Sel — styled <select> wrapper (ported from dashboard-shared.js) ──────────
+  // Alias: dashboard-shared.js called this "Sel"; PzDesign also exposes it as
+  // "Select" (the FormField primitive). Sel provides the standalone styled variant
+  // for pages migrated off dashboard-shared.js.
+  function Sel({ value, onChange, children, ...rest }) {
+    return (
+      <select value={value} onChange={onChange} {...rest} style={{
+        width: '100%', padding: '8px 10px', borderRadius: 6,
+        border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)',
+        background: 'var(--bg-subtle)', outline: 'none',
+        boxSizing: 'border-box', fontFamily: 'inherit',
+        ...(rest.style || {}),
+      }}>
+        {children}
+      </select>
+    );
+  }
+
+  // ── CompactTable — standard data table (ported from dashboard-shared.js) ─────
+  // cols: [{ key, label, thStyle?, tdStyle?, render? }]
+  // rows: any[]  (use row._key for stable keys, or falls back to index)
+  function CompactTable({ cols = [], rows = [], onRowClick, emptyLabel = 'No data', style: xs }) {
+    if (!rows || rows.length === 0) {
+      return (
+        <div style={{ padding: '12px 0', fontSize: 11, color: 'var(--text-3)', textAlign: 'center', ...xs }}>
+          {emptyLabel}
+        </div>
+      );
+    }
+    return (
+      <div style={{ overflowX: 'auto', ...xs }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr>
+              {cols.map(c => (
+                <th key={c.key} style={{
+                  padding: '5px 8px', textAlign: 'left', fontWeight: 600,
+                  fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em',
+                  color: 'var(--text-2)', borderBottom: '1px solid var(--border)',
+                  whiteSpace: 'nowrap', background: 'var(--bg-subtle)', ...c.thStyle,
+                }}>{c.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={row._key || ri}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+                style={{ cursor: onRowClick ? 'pointer' : undefined }}
+                onMouseEnter={onRowClick ? e => { e.currentTarget.style.background = 'var(--row-hover)'; } : undefined}
+                onMouseLeave={onRowClick ? e => { e.currentTarget.style.background = ''; } : undefined}
+              >
+                {cols.map(c => (
+                  <td key={c.key} style={{
+                    padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)',
+                    ...c.tdStyle,
+                  }}>
+                    {c.render ? c.render(row) : (row[c.key] ?? '—')}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   // ── Export ─────────────────────────────────────────────────────────────────
 
   window.PzDesign = Object.freeze({
@@ -623,6 +691,8 @@
     EstrellaMark, EstrellaWordmark, Badge, Card, Btn,
     // Modals + forms
     Modal, FormField, Input, Select,
+    // Lists + tables
+    Sel, CompactTable,
     // Info
     SectionHeader, InfoRow,
     // Utilities
