@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shipment Detail — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Design tokens — sourced from the Claude Design bundle (estrella_design_bundle / atlas_inner.txt).
+       This page is rebuilt on the bundle's design system: bundle tokens + bundle components.
+       It does NOT load dashboard-shared.js or reuse the old shared components. ── */
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+      --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+      --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+      --shadow: rgba(27,37,56,0.06); --shadow-heavy: rgba(27,37,56,0.16); --overlay: rgba(19,28,46,0.6);
+      --accent: #B89968; --accent-light: #D4B884; --accent-text: #1B2538;
+      --accent-subtle: #F8EFD8; --accent-border: #CFB178;
+      --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+      --badge-blue-bg: #E8EFF8;   --badge-blue-text: #1A4A90;   --badge-blue-border: #AABEE0;
+      --badge-amber-bg: #FBF5E0;  --badge-amber-text: #805A00;  --badge-amber-border: #DEC870;
+      --badge-orange-bg: #FBF0E4; --badge-orange-text: #804000; --badge-orange-border: #DEB870;
+      --badge-green-bg: #E8F5EE;  --badge-green-text: #186838;  --badge-green-border: #96CCA8;
+      --badge-red-bg: #FBE8E6;    --badge-red-text: #902018;    --badge-red-border: #E0A8A0;
+      --badge-purple-bg: #EEE8F8; --badge-purple-text: #481898; --badge-purple-border: #BEA4E8;
+      --badge-accent-bg: #131C2E; --badge-accent-text: #B89968; --badge-accent-border: #B89968;
+      --ok-green: #22A06B;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+        --row-hover: #223040; --border: #2C3C54; --border-subtle: #243050;
+        --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+        --shadow: rgba(0,0,0,0.3); --shadow-heavy: rgba(0,0,0,0.5); --overlay: rgba(0,0,0,0.7);
+        --accent: #D4AA5C; --accent-light: #ECC870; --accent-text: #111928;
+        --accent-subtle: #1E2808; --accent-border: #5A4A18;
+        --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+        --badge-blue-bg: #0E1E38;   --badge-blue-text: #80AAEE;   --badge-blue-border: #1E3A64;
+        --badge-amber-bg: #20180A;  --badge-amber-text: #E8C040;  --badge-amber-border: #584010;
+        --badge-orange-bg: #201008; --badge-orange-text: #E89860; --badge-orange-border: #582010;
+        --badge-green-bg: #0E2018;  --badge-green-text: #68CC88;  --badge-green-border: #1A4830;
+        --badge-red-bg: #200E10;    --badge-red-text: #EE8880;    --badge-red-border: #581018;
+        --badge-purple-bg: #160E28; --badge-purple-text: #AA88EE; --badge-purple-border: #341860;
+        --badge-accent-bg: #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border: #5A4A18;
+        --ok-green: #2DB47C;
+      }
+    }
+    body { margin:0; font-family:'Plus Jakarta Sans',system-ui,sans-serif; background:var(--bg); color:var(--text); font-size:13px; }
+    #root { min-height:100vh; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(-4px);} to { opacity:1; transform:none; } }
+    @keyframes shimmer { 0% { background-position:-300px 0; } 100% { background-position:300px 0; } }
+    .skel { background:linear-gradient(90deg,var(--bg-subtle) 25%,var(--row-hover) 37%,var(--bg-subtle) 63%); background-size:600px 100%; animation:shimmer 1.4s infinite linear; border-radius:6px; }
+    .skel-line { height:12px; margin:8px 0; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- Shipment Detail V3 — Claude Design bundle visual system + verified real-data wiring.
+     Self-contained: bundle components inlined; no dashboard-shared.js, no pz-api.js. -->
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { useState, useEffect, useCallback } = React;
+
+  const _sp = new URLSearchParams(window.location.search);
+  const BATCH_ID = (_sp.get('id') || _sp.get('batch_id') || '').trim();
+
+  // ── transport (inline; replaces EstrellaShared.apiFetch) ──
+  async function apiFetch(path) {
+    const r = await fetch(path, { credentials: 'include' });
+    if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+    return r.json();
+  }
+  function useApi(path) {
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const load = useCallback(async () => {
+      if (!path) { setLoading(false); return; }
+      setLoading(true); setError(null);
+      try { setData(await apiFetch(path)); }
+      catch (e) { setError(e && e.message ? e.message : 'Request failed'); setData(null); }
+      finally { setLoading(false); }
+    }, [path]);
+    useEffect(() => { load(); }, [load]);
+    return { data, loading, error, reload: load };
+  }
+
+  // ════════ BUNDLE COMPONENTS (inlined from components.jsx / shipment-detail-page.jsx) ════════
+  const STATUS_MAP = {
+    'Draft': ['neutral'], 'In Transit': ['blue'], 'Awaiting DHL Email': ['orange'], 'DHL Email Received': ['blue'],
+    'Reply Sent': ['green'], 'SAD Pending': ['amber'], 'SAD Uploaded': ['blue'], 'Customs Parsed': ['green'],
+    'Verification Needed': ['red'], 'Customs Verified': ['green'], 'Locked': ['neutral'], 'Ready for PZ': ['green'],
+    'Processing': ['blue'], 'Generated': ['green'], 'Ready for Booking': ['purple'], 'Exported': ['accent'],
+    'Awaiting DHL': ['amber'], 'Awaiting SAD': ['orange'], 'Action Required': ['red'], 'In Preparation': ['neutral'],
+    'Pending': ['amber'], 'Live': ['green'],
+  };
+  function Badge({ status, small }) {
+    const c = (STATUS_MAP[status] || ['neutral'])[0];
+    return <span style={{
+      display: 'inline-flex', alignItems: 'center',
+      background: `var(--badge-${c}-bg)`, color: `var(--badge-${c}-text)`, border: `1px solid var(--badge-${c}-border)`,
+      borderRadius: 4, padding: small ? '1px 6px' : '2px 8px',
+      fontSize: small ? 10 : 11, fontWeight: 600, letterSpacing: '0.03em', whiteSpace: 'nowrap',
+    }}>{status}</span>;
+  }
+  function Btn({ children, onClick, variant = 'outline', small, disabled, title, ...rest }) {
+    const v = {
+      default: { background: 'var(--text)', color: 'var(--card)', border: '1px solid var(--text)' },
+      gold: { background: 'var(--accent)', color: 'var(--accent-text)', border: '1px solid var(--accent)' },
+      outline: { background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)' },
+      ghost: { background: 'transparent', color: 'var(--text-2)', border: '1px solid transparent' },
+    }[variant] || {};
+    return <button onClick={onClick} disabled={disabled} title={title} {...rest} style={{
+      ...v, borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
+      padding: small ? '4px 10px' : '7px 14px', fontSize: small ? 11 : 12, fontWeight: 600,
+      opacity: disabled ? 0.45 : 1, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
+    }}>{children}</button>;
+  }
+  function SectionLabel({ children, style }) {
+    return <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '4px 0 12px', ...style }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.12em', textTransform: 'uppercase' }}>{children}</span>
+      <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+    </div>;
+  }
+  function PanelCard({ title, subtitle, status, accent, children, testid }) {
+    return <div data-testid={testid} style={{
+      background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10,
+      boxShadow: '0 1px 2px var(--shadow)', overflow: 'hidden',
+      borderLeft: accent ? `3px solid ${accent}` : '1px solid var(--border)',
+    }}>
+      {(title || status) && <div style={{
+        padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: 'var(--bg-subtle)',
+      }}>
+        <div>
+          {title && <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{title}</div>}
+          {subtitle && <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>{subtitle}</div>}
+        </div>
+        {status && <Badge status={status} />}
+      </div>}
+      <div>{children}</div>
+    </div>;
+  }
+  function StatTile({ label, value, accent }) {
+    return <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 18px', boxShadow: '0 1px 2px var(--shadow)' }}>
+      <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 600, color: accent || 'var(--text)' }}>{value == null || value === '' ? '—' : value}</div>
+    </div>;
+  }
+  function InfoRow({ label, value, mono }) {
+    return <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+      <span style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 500 }}>{label}</span>
+      <span style={{ fontSize: 11, color: 'var(--text)', fontWeight: 600, fontFamily: mono ? 'monospace' : 'inherit' }}>{value == null || value === '' ? '—' : value}</span>
+    </div>;
+  }
+  const Skeleton = ({ lines = 3 }) => <div data-testid="skeleton" style={{ padding: '14px 20px' }}>{Array.from({ length: lines }).map((_, i) => <div key={i} className="skel skel-line" style={{ width: (92 - i * 13) + '%' }} />)}</div>;
+
+  // Section: 4-state wrapper rendered as a PanelCard (loading→skeleton, error→retry, empty→hint, populated→children)
+  function Section({ title, subtitle, status, accent, state, testid, emptyWhen, emptyText, children }) {
+    const { data, loading, error, reload } = state;
+    let body;
+    if (loading) body = <Skeleton lines={4} />;
+    else if (error) body = <div data-testid={testid + '-error'} style={{ margin: '14px 20px', padding: '10px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, color: 'var(--badge-red-text)', fontSize: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><span>Couldn’t load: {error}</span><Btn small variant="ghost" onClick={reload} data-testid={testid + '-retry'}>Retry</Btn></div>;
+    else if (emptyWhen && emptyWhen(data)) body = <div data-testid={testid + '-empty'} style={{ padding: '18px 20px', color: 'var(--text-3)', fontStyle: 'italic', fontSize: 12.5 }}>{emptyText || 'Nothing here yet.'}</div>;
+    else body = children(data);
+    return <PanelCard title={title} subtitle={subtitle} status={status} accent={accent} testid={testid}>{body}</PanelCard>;
+  }
+
+  // ════════ DATA DERIVATION (verified bindings + the wrong-key fixes) ════════
+  const STAGES = ['Intake', 'Pre-check', 'DHL Reply', 'SAD / ZC429', 'Verified', 'PZ Generated', 'wFirma Booked'];
+  function deriveStages(b, r) {
+    b = b || {}; r = r || {};
+    const cs = b.clearance_status || '';
+    const wfBooked = !!(b.wfirma_export && b.wfirma_export.wfirma_pz_doc_id) || !!(r.wfirma && r.wfirma.ready);
+    const pzGen = cs === 'pz_generated' || b.pz_generated === true || !!(r.dhl && r.dhl.pz_generated === true) || wfBooked;
+    const sadOk = b.sad_imported === true || /parsed/.test(cs);
+    const done = {
+      'Intake': !!b.batch_id || !!b.timestamp,
+      'Pre-check': b.status !== 'manual_review_missing_sad',
+      'DHL Reply': /reply|clearance|pz_generated|customs|sad_received/.test(cs) || !!(r.dhl && r.dhl.ready),
+      'SAD / ZC429': sadOk,
+      'Verified': Array.isArray(b.failed_checks) && b.failed_checks.length === 0 && sadOk,
+      'PZ Generated': pzGen, 'wFirma Booked': wfBooked,
+    };
+    return STAGES.map(s => ({ label: s, done: !!done[s] }));
+  }
+  function headerStatus(b, r, d) {
+    b = b || {}; r = r || {}; d = d || {};
+    const blocked = d.status === 'action_required' || b.status === 'blocked' || (r.overall && Array.isArray(r.overall.blocked_domains) && r.overall.blocked_domains.length > 0 && !(b.wfirma_export && b.wfirma_export.wfirma_pz_doc_id));
+    const wfBooked = !!(b.wfirma_export && b.wfirma_export.wfirma_pz_doc_id);
+    if (wfBooked) return 'Exported';
+    if (blocked) return 'Action Required';
+    if (b.clearance_status === 'pz_generated' || (r.dhl && r.dhl.pz_generated)) return 'Generated';
+    if (b.sad_imported) return 'Ready for PZ';
+    return 'In Preparation';
+  }
+
+  // ════════ WORKFLOW STRIP (bundle stepper look) ════════
+  function WorkflowStrip({ batchState, readyState }) {
+    if (batchState.loading) return <div style={{ padding: '20px 32px 0', background: 'var(--card)' }}><div className="skel skel-line" style={{ width: '100%', height: 32 }} /></div>;
+    const stages = deriveStages(batchState.data, readyState.data);
+    const firstPending = stages.findIndex(s => !s.done);
+    const colors = {
+      done: { num: '#fff', numBg: 'var(--ok-green)', numBorder: 'var(--ok-green)', label: 'var(--badge-green-text)' },
+      active: { num: 'var(--sidebar-bg,#131C2E)', numBg: 'var(--accent-light)', numBorder: 'var(--accent)', label: 'var(--accent-text)' },
+      pending: { num: 'var(--text-3)', numBg: 'var(--card)', numBorder: 'var(--border)', label: 'var(--text-3)' },
+    };
+    return (
+      <div style={{ padding: '20px 32px 4px', background: 'var(--card)', borderBottom: '1px solid var(--border)' }} data-testid="workflow-strip">
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          {stages.map((s, i) => {
+            const st = s.done ? 'done' : (i === firstPending ? 'active' : 'pending');
+            const c = colors[st]; const isLast = i === stages.length - 1;
+            const nextDone = !isLast && stages[i + 1].done;
+            return (
+              <React.Fragment key={s.label}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, minWidth: 64, padding: '0 4px' }}
+                  data-testid={'step-' + s.label.replace(/\W+/g, '-').toLowerCase()}>
+                  <div style={{ width: 32, height: 32, borderRadius: 16, background: c.numBg, border: `2px solid ${c.numBorder}`, color: c.num, fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: st === 'active' ? '0 0 0 4px rgba(212,168,83,0.18)' : 'none' }}>{s.done ? '✓' : (i + 1)}</div>
+                  <div style={{ fontSize: 10, fontWeight: st === 'active' ? 700 : 600, color: c.label, textAlign: 'center', lineHeight: 1.2 }}>{s.label}</div>
+                </div>
+                {!isLast && <div style={{ flex: 1, height: 2, marginTop: -16, background: (s.done && nextDone) || s.done ? 'var(--ok-green)' : 'var(--border)' }} />}
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ════════ NEXT-ACTION CALLOUT (bundle gradient look) — FIX: from agents/decision.next_step ════════
+  function NextActionCallout({ decisionState }) {
+    const d = decisionState.data;
+    if (decisionState.loading || !d || !(d.next_step || d.primary_action)) return null;
+    return (
+      <div data-testid="next-action" style={{ background: 'linear-gradient(135deg,#FBF5E4,#F8EDD0)', border: '1px solid var(--accent-border)', borderRadius: 10, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 16, boxShadow: '0 1px 3px rgba(201,164,86,0.12)' }}>
+        <div style={{ width: 40, height: 40, borderRadius: 20, background: 'var(--accent)', color: 'var(--accent-text)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 800, flexShrink: 0 }}>▶</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: '#7A5400', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 3 }}>Next operator action</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }} data-testid="next-action-text">{d.next_step || d.primary_action}</div>
+          {d.reason && <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 2 }} data-testid="next-action-reason">{d.reason}</div>}
+        </div>
+        {d.status && <Badge status={d.status === 'action_required' ? 'Action Required' : 'Processing'} />}
+      </div>
+    );
+  }
+
+  // ════════ TAB SECTIONS (real wiring, bundle look) ════════
+  // Control Center / readiness domains
+  function ControlCenter({ readyState }) {
+    const domains = [['Customs / DHL', 'dhl'], ['Warehouse', 'warehouse'], ['Sales', 'sales'], ['wFirma', 'wfirma']];
+    return (
+      <Section testid="tab-control" title="Control Center" subtitle="Per-domain readiness (backend-authoritative)" state={readyState} emptyWhen={() => false}>
+        {(r) => (
+          <div style={{ padding: '14px 20px' }}>
+            {r.overall && r.overall.ready_for_closure === false && r.overall.next_step &&
+              <div style={{ fontSize: 11.5, color: 'var(--badge-amber-text)', marginBottom: 10 }} data-testid="cc-next">{r.overall.next_step}</div>}
+            {domains.map(([label, key], i) => {
+              const dom = r[key]; const ok = !!(dom && dom.ready === true);
+              return (
+                <div key={key} data-testid={'cc-' + key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: i < 3 ? '1px solid var(--border-subtle)' : 'none' }}>
+                  <span style={{ width: 18, height: 18, borderRadius: 9, flex: '0 0 auto', background: ok ? 'var(--ok-green)' : 'var(--badge-amber-bg)', color: ok ? '#fff' : 'var(--badge-amber-text)', border: ok ? 'none' : '1px solid var(--badge-amber-border)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>{ok ? '✓' : '•'}</span>
+                  <span style={{ fontWeight: 600, minWidth: 110 }}>{label}</span>
+                  <span style={{ color: 'var(--text-2)', fontSize: 12 }}>{(dom && dom.message) || (ok ? 'Ready' : '—')}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Section>
+    );
+  }
+
+  // Timeline — grouped into workflow phases (P5)
+  function phaseOf(ev) {
+    const s = JSON.stringify(ev).toLowerCase();
+    if (/batch_created|intake|upload/.test(s)) return 'Intake';
+    if (/customs|clearance|cleared|zc429|sad/.test(s)) return 'Customs / Clearance';
+    if (/pz|wfirma|booked|posted/.test(s)) return 'PZ / Accounting';
+    if (/transit|delivered|arrived|tracking|exception|hold|carrier/.test(s)) return 'Transport';
+    return 'Other';
+  }
+  const PHASE_ORDER = ['Intake', 'Transport', 'Customs / Clearance', 'PZ / Accounting', 'Other'];
+  function TimelineTab({ timelineState }) {
+    return (
+      <Section testid="tab-timeline" title="Activity timeline" subtitle="Events grouped by workflow phase" state={timelineState}
+        emptyWhen={d => { const ev = (d && (d.timeline || d.events || (Array.isArray(d) ? d : []))) || []; return ev.length === 0; }}
+        emptyText="No timeline events recorded yet.">
+        {(d) => {
+          const events = (d.timeline || d.events || (Array.isArray(d) ? d : [])) || [];
+          const groups = {}; events.forEach(e => { const p = phaseOf(e); (groups[p] = groups[p] || []).push(e); });
+          return <div style={{ padding: '16px 20px' }}>
+            {PHASE_ORDER.filter(p => groups[p]).map(p => (
+              <div key={p} style={{ marginBottom: 14 }} data-testid={'tl-phase-' + p.replace(/\W+/g, '-').toLowerCase()}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-2)', borderBottom: '1px solid var(--border-subtle)', paddingBottom: 4, marginBottom: 6 }}>{p} · {groups[p].length}</div>
+                {groups[p].map((e, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 12, padding: '4px 0', fontSize: 12 }}>
+                    <span style={{ color: 'var(--text-3)', fontFamily: 'monospace', fontSize: 11, minWidth: 130 }}>{e.ts || e.timestamp || e.time || ''}</span>
+                    <span style={{ color: 'var(--text)' }}>{e.event || e.status || e.description || e.detail || JSON.stringify(e).slice(0, 80)}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>;
+        }}
+      </Section>
+    );
+  }
+
+  // Intelligence — surface decision actions (P4; advisory, no auto-fire)
+  function IntelligenceTab({ decisionState }) {
+    return (
+      <Section testid="tab-intelligence" title="Intelligence" subtitle="Advisory signals from the decision engine" state={decisionState}
+        emptyWhen={d => !d || (!((d.all_actions || []).length) && !d.primary_action)} emptyText="No advisory signals for this shipment.">
+        {(d) => {
+          const actions = (d.all_actions && d.all_actions.length) ? d.all_actions : (d.primary_action ? [{ action: d.primary_action, reason: d.reason }] : []);
+          return <div style={{ padding: '8px 20px 14px' }}>
+            {actions.map((a, i) => (
+              <div key={i} data-testid={'intel-' + i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '9px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                <div><div style={{ fontWeight: 600 }}>{a.action || a.label || a.title}</div>{a.reason && <div style={{ color: 'var(--text-2)', fontSize: 11.5 }}>{a.reason}</div>}</div>
+                <Badge status="Processing" small />
+              </div>
+            ))}
+          </div>;
+        }}
+      </Section>
+    );
+  }
+
+  // Proposals (P11)
+  function ProposalsTab({ proposalsState }) {
+    return (
+      <Section testid="tab-proposals" title="Action proposals" subtitle="System-generated proposals for this shipment" state={proposalsState}
+        emptyWhen={d => { const p = (d && (d.proposals || (Array.isArray(d) ? d : []))) || []; return p.length === 0; }}
+        emptyText="No action proposals generated for this shipment yet.">
+        {(d) => { const props = (d.proposals || (Array.isArray(d) ? d : [])) || [];
+          return <div style={{ padding: '8px 20px 14px' }}>{props.map((p, i) => (
+            <div key={i} data-testid={'proposal-' + i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '9px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+              <div><div style={{ fontWeight: 600 }}>{p.title || p.action || p.type}</div>{p.reason && <div style={{ color: 'var(--text-2)', fontSize: 11.5 }}>{p.reason}</div>}</div>
+              {p.status && <Badge status="Pending" small />}
+            </div>))}</div>; }}
+      </Section>
+    );
+  }
+
+  // PZ / Accounting — gate-with-reason (readiness domains); §7: no write buttons
+  function PzTab({ readyState, batchState }) {
+    return (
+      <Section testid="tab-pz" title="PZ / Accounting" subtitle="Goods receipt & wFirma readiness" state={readyState} emptyWhen={() => false}>
+        {(r) => {
+          const b = batchState.data || {};
+          const wfBooked = !!(b.wfirma_export && b.wfirma_export.wfirma_pz_doc_id);
+          const domains = [['Warehouse', 'warehouse'], ['Sales', 'sales'], ['wFirma', 'wfirma'], ['Customs / DHL', 'dhl']];
+          return <div>
+            <div style={{ padding: '14px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 8 }}>PZ status</div>
+                <InfoRow label="PZ" value={(r.dhl && r.dhl.pz_generated) ? 'Generated ✓' : (b.clearance_status || '—')} />
+                <InfoRow label="wFirma doc" value={wfBooked ? (b.wfirma_export.wfirma_pz_fullnumber || 'Booked ✓') : 'Not booked'} mono />
+                <InfoRow label="Net (PLN)" value={b.total_net_pln != null ? Number(b.total_net_pln).toLocaleString() : '—'} />
+                <InfoRow label="Duty A00 (PLN)" value={b.duty_a00_pln != null ? Number(b.duty_a00_pln).toLocaleString() : '—'} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 8 }}>Readiness gates</div>
+                {domains.map(([label, key], i) => { const dom = r[key]; const ok = !!(dom && dom.ready === true);
+                  return <div key={key} data-testid={'pz-gate-' + key} style={{ padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 500 }}>{label}</span><Badge status={ok ? 'Customs Verified' : 'Action Required'} small /></div>
+                    {!ok && dom && dom.message && <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 2 }} data-testid={'pz-gate-reason-' + key}>{dom.message}</div>}
+                  </div>; })}
+              </div>
+            </div>
+            <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', fontSize: 11, color: 'var(--text-3)' }}>
+              PZ / wFirma write actions are operator-initiated and routed through backend gates — not exposed as direct buttons here (frontend-design §7).
+            </div>
+          </div>;
+        }}
+      </Section>
+    );
+  }
+
+  // Sales — packing→sales linkage (verified: items[] + blocking_reasons/audit_warnings)
+  function SalesTab({ salesState }) {
+    return (
+      <Section testid="tab-sales" title="Sales linkage" subtitle="Packing → client sales (preview)" state={salesState}
+        emptyWhen={d => !d || !Array.isArray(d.items) || d.items.length === 0} emptyText="No packing→sales items for this shipment yet.">
+        {(d) => <div style={{ padding: '14px 20px' }}>
+          <div style={{ marginBottom: 8 }}><Badge status={d.ready_for_invoice ? 'Ready for PZ' : 'In Preparation'} /> {d.blocked ? <Badge status="Action Required" /> : null}</div>
+          {(d.blocking_reasons || []).map((r, i) => <div key={'b' + i} data-testid={'sales-block-' + i} style={{ fontSize: 11.5, color: 'var(--badge-red-text)' }}>{r}</div>)}
+          {(d.audit_warnings || []).map((w, i) => <div key={'w' + i} data-testid={'sales-warn-' + i} style={{ fontSize: 11.5, color: 'var(--badge-amber-text)' }}>⚠ {w}</div>)}
+          <div style={{ marginTop: 8 }}>{d.items.map((it, i) => (
+            <div key={i} data-testid={'sales-item-' + i} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+              <span>{it.client_name || it.sales_client || it.client || it.name || it.design_no || ('Item ' + (i + 1))}</span>
+              <span style={{ color: 'var(--text-3)' }}>{it.qty != null ? it.qty : (it.pcs != null ? it.pcs : (it.line_count != null ? it.line_count : ''))}</span>
+            </div>))}</div>
+        </div>}
+      </Section>
+    );
+  }
+
+  // Documents — FIX (#396): read files_detail source_files + files; DocCard look
+  function collectDocs(fd) {
+    const out = [];
+    if (!fd) return out;
+    [['source_files', 'source'], ['files', 'generated']].forEach(([k, grp]) => {
+      const node = fd[k]; if (!node || typeof node !== 'object') return;
+      Object.keys(node).forEach(kind => {
+        const v = node[kind];
+        const push = (d) => { if (!d) return; const name = d.name || d.filename || (typeof d === 'string' ? String(d).split(/[\\/]/).pop() : ''); if (name) out.push({ name, url: d.url || d.href || null, kind, group: grp }); };
+        if (Array.isArray(v)) v.forEach(push); else push(v);
+      });
+    });
+    return out;
+  }
+  function DocCard({ doc }) {
+    const ext = (doc.name.split('.').pop() || '').toLowerCase();
+    const av = !!doc.url;
+    const map = { pdf: 'red', xlsx: 'green', json: 'blue' };
+    const c = av ? (map[ext] || 'amber') : 'neutral';
+    return <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--card)', boxShadow: '0 1px 2px var(--shadow)', marginBottom: 8 }}>
+      <div style={{ width: 38, height: 38, borderRadius: 8, background: `var(--badge-${c}-bg)`, color: `var(--badge-${c}-text)`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800 }}>{(ext || '?').toUpperCase()}</div>
+      <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 600, color: av ? 'var(--text)' : 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.name}</div><div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{doc.kind}</div></div>
+      {av ? <a href={doc.url} target="_blank" rel="noopener noreferrer" data-testid="doc-open" style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)', borderRadius: 5, padding: '5px 10px' }}>Open ↗</a> : <span style={{ fontSize: 11, color: 'var(--text-3)' }}>no link</span>}
+    </div>;
+  }
+  function DocumentsTab({ batchState }) {
+    return (
+      <Section testid="tab-documents" title="Documents" subtitle="Source + generated documents" state={batchState}
+        emptyWhen={b => collectDocs((b || {}).files_detail || b).length === 0} emptyText="No documents available for this shipment.">
+        {(b) => { const docs = collectDocs(b.files_detail || b);
+          const groups = { source: docs.filter(d => d.group === 'source'), generated: docs.filter(d => d.group === 'generated') };
+          return <div style={{ padding: '16px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+            <div><SectionLabel>Source documents</SectionLabel>{groups.source.map((d, i) => <DocCard key={i} doc={d} />)}{!groups.source.length && <div style={{ color: 'var(--text-3)', fontSize: 12 }}>—</div>}</div>
+            <div><SectionLabel>Generated documents</SectionLabel>{groups.generated.map((d, i) => <DocCard key={i} doc={d} />)}{!groups.generated.length && <div style={{ color: 'var(--text-3)', fontSize: 12 }}>—</div>}</div>
+          </div>; }}
+      </Section>
+    );
+  }
+
+  // ════════ APP ════════
+  const TABS = ['Overview', 'Timeline', 'Intelligence', 'Proposals', 'PZ / Accounting', 'Sales', 'Documents'];
+  function App() {
+    const [tab, setTab] = useState('Overview');
+    const enc = encodeURIComponent(BATCH_ID);
+    const batchState = useApi(BATCH_ID ? `/api/v1/dashboard/batches/${enc}` : null);
+    const readyState = useApi(BATCH_ID ? `/api/v1/batch/${enc}/readiness` : null);
+    const decisionState = useApi(BATCH_ID ? `/api/v1/agents/decision/${enc}` : null);
+    const timelineState = useApi(BATCH_ID ? `/api/v1/tracking/shipment/${enc}/timeline` : null);
+    const salesState = useApi(BATCH_ID ? `/api/v1/sales/linkage/${enc}?mode=preview` : null);
+    const proposalsState = useApi(BATCH_ID ? `/api/v1/action-proposals/${enc}` : null);
+
+    if (!BATCH_ID) return <div style={{ padding: 32 }}><div data-testid="no-batch" style={{ background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', color: 'var(--badge-red-text)', borderRadius: 8, padding: '12px 16px' }}>No batch id in URL. Use ?id=… or ?batch_id=…</div></div>;
+
+    const b = batchState.data || {};
+    const fmt = v => v == null ? '—' : (typeof v === 'number' ? v.toLocaleString() : v);
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: 'var(--bg)' }}>
+        {/* Sub-header */}
+        <div style={{ padding: '16px 32px', background: 'var(--card)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }} data-testid="shipment-header">
+          <a href="/dashboard/dashboard.html" data-testid="back-to-dashboard" style={{ textDecoration: 'none', border: '1px solid var(--border)', color: 'var(--text-2)', fontSize: 12, padding: '6px 12px', borderRadius: 6, fontWeight: 500 }}>← Back</a>
+          <div><div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>AWB / Tracking</div><div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace' }} data-testid="header-awb">{batchState.loading ? '…' : (b.tracking_no || b.awb || '—')}</div></div>
+          <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
+          <div><div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Importer</div><div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{b.importer || b.client || b.client_name || '—'}</div></div>
+          <div style={{ width: 1, height: 32, background: 'var(--border)' }} />
+          <div><div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 2 }}>Carrier</div><div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{b.carrier || '—'}</div></div>
+          <div style={{ flex: 1 }} />
+          {!batchState.loading && <Badge status={headerStatus(b, readyState.data, decisionState.data)} />}
+        </div>
+
+        <WorkflowStrip batchState={batchState} readyState={readyState} />
+
+        {/* Tab nav */}
+        <div style={{ display: 'flex', gap: 4, padding: '0 32px', background: 'var(--card)', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }} data-testid="tabs">
+          {TABS.map(t => (
+            <button key={t} onClick={() => setTab(t)} data-testid={'tab-btn-' + t.replace(/\W+/g, '-').toLowerCase()} style={{ padding: '12px 16px', background: 'none', border: 'none', cursor: 'pointer', borderBottom: `2px solid ${tab === t ? 'var(--accent)' : 'transparent'}`, color: tab === t ? 'var(--text)' : 'var(--text-2)', fontSize: 13, fontWeight: tab === t ? 700 : 500, marginBottom: -1 }}>{t}</button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div style={{ padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 1100, width: '100%', margin: '0 auto' }}>
+          <NextActionCallout decisionState={decisionState} />
+
+          {tab === 'Overview' && <>
+            <SectionLabel>Key figures</SectionLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
+              <StatTile label="Net (PLN)" value={fmt(b.total_net_pln != null ? Number(b.total_net_pln) : b.net)} />
+              <StatTile label="Gross (PLN)" value={fmt(b.total_gross_pln != null ? Number(b.total_gross_pln) : b.gross)} />
+              <StatTile label="Duty A00 (PLN)" value={fmt(b.duty_a00_pln != null ? Number(b.duty_a00_pln) : b.duty)} />
+              <StatTile label="Invoices" value={Array.isArray(b.invoice_refs) ? b.invoice_refs.length : (Array.isArray(b.invoice_names) ? b.invoice_names.length : '—')} />
+            </div>
+            <SectionLabel style={{ marginTop: 8 }}>Status</SectionLabel>
+            <ControlCenter readyState={readyState} />
+          </>}
+          {tab === 'Timeline' && <TimelineTab timelineState={timelineState} />}
+          {tab === 'Intelligence' && <IntelligenceTab decisionState={decisionState} />}
+          {tab === 'Proposals' && <ProposalsTab proposalsState={proposalsState} />}
+          {tab === 'PZ / Accounting' && <PzTab readyState={readyState} batchState={batchState} />}
+          {tab === 'Sales' && <SalesTab salesState={salesState} />}
+          {tab === 'Documents' && <DocumentsTab batchState={batchState} />}
+        </div>
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

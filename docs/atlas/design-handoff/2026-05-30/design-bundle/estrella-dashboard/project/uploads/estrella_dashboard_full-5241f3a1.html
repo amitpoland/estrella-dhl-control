@@ -1,0 +1,1448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Estrella PZ · Customs Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════
+   DESIGN TOKENS — DARK INDUSTRIAL THEME
+══════════════════════════════════════════ */
+:root {
+  --bg:          #09090f;
+  --bg1:         #0e0e18;
+  --bg2:         #13131f;
+  --bg3:         #191928;
+  --bg4:         #1e1e30;
+  --border:      #252538;
+  --border2:     #2e2e48;
+  --border-hi:   #3a3a60;
+
+  --tx1: #f0f0ff;
+  --tx2: #9898c0;
+  --tx3: #5c5c80;
+  --tx4: #3a3a58;
+
+  --gold:    #e8b84b;
+  --gold2:   #c99a30;
+  --goldbg:  rgba(232,184,75,0.08);
+  --goldbr:  rgba(232,184,75,0.25);
+
+  --green:   #34d399;
+  --greenbg: rgba(52,211,153,0.08);
+  --greenbr: rgba(52,211,153,0.2);
+
+  --amber:   #fbbf24;
+  --amberbg: rgba(251,191,36,0.08);
+  --amberbr: rgba(251,191,36,0.22);
+
+  --red:     #f87171;
+  --redbg:   rgba(248,113,113,0.08);
+  --redbr:   rgba(248,113,113,0.22);
+
+  --blue:    #60a5fa;
+  --bluebg:  rgba(96,165,250,0.08);
+  --bluebr:  rgba(96,165,250,0.22);
+
+  --purple:  #a78bfa;
+  --purplebg: rgba(167,139,250,0.08);
+
+  --font-head: 'Syne', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'DM Mono', monospace;
+
+  --r1: 4px; --r2: 8px; --r3: 12px; --r4: 16px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.6);
+  --shadow2: 0 8px 48px rgba(0,0,0,0.8);
+}
+
+/* ══ RESET ══ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:13px;scroll-behavior:smooth}
+body{background:var(--bg);color:var(--tx1);font-family:var(--font-body);min-height:100vh;overflow-x:hidden}
+button{font-family:inherit;cursor:pointer}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--bg1)}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+
+/* ══ SHELL LAYOUT ══ */
+.shell{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
+
+/* ══ SIDEBAR ══ */
+.sidebar{
+  background:var(--bg1);
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  position:sticky;top:0;height:100vh;overflow-y:auto;
+}
+.sidebar-logo{
+  padding:20px 16px 16px;
+  border-bottom:1px solid var(--border);
+}
+.logo-mark{
+  font-family:var(--font-head);font-size:1.1rem;font-weight:800;
+  color:var(--gold);letter-spacing:0.05em;
+}
+.logo-sub{font-size:0.7rem;color:var(--tx3);margin-top:2px;letter-spacing:0.08em;text-transform:uppercase}
+
+.sidebar-section{padding:16px 10px 8px;font-size:0.65rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--tx4)}
+
+.nav-item{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 14px;border-radius:var(--r2);margin:1px 6px;
+  font-size:0.82rem;font-weight:500;color:var(--tx2);
+  cursor:pointer;border:none;background:none;width:calc(100% - 12px);
+  text-align:left;transition:all 0.12s;position:relative;
+}
+.nav-item:hover{background:var(--bg3);color:var(--tx1)}
+.nav-item.active{background:var(--goldbg);color:var(--gold);border:1px solid var(--goldbr)}
+.nav-icon{font-size:0.9rem;width:18px;flex-shrink:0;text-align:center}
+.nav-badge{
+  margin-left:auto;background:var(--red);color:#fff;
+  font-size:0.6rem;font-weight:700;padding:1px 5px;border-radius:10px;
+}
+.nav-badge.warn{background:var(--amber);color:#000}
+.nav-badge.ok{background:var(--green);color:#000}
+
+.sidebar-bottom{margin-top:auto;padding:12px;border-top:1px solid var(--border)}
+.batch-selector{
+  background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r2);
+  padding:10px 12px;cursor:pointer;
+}
+.batch-selector-label{font-size:0.65rem;color:var(--tx3);text-transform:uppercase;letter-spacing:0.08em}
+.batch-selector-awb{font-family:var(--font-mono);font-size:0.82rem;color:var(--gold);margin-top:2px}
+.batch-selector-sub{font-size:0.7rem;color:var(--tx3);margin-top:1px}
+
+/* ══ MAIN AREA ══ */
+.main{display:flex;flex-direction:column;min-height:100vh;overflow:hidden}
+
+/* ══ TOP BAR ══ */
+.topbar{
+  position:sticky;top:0;z-index:50;
+  background:rgba(9,9,15,0.92);backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:12px;
+  padding:0 24px;height:52px;
+}
+.topbar-awb{font-family:var(--font-mono);font-size:0.88rem;color:var(--tx2)}
+.topbar-sep{color:var(--tx4)}
+.topbar-stage{
+  display:flex;align-items:center;gap:6px;
+  background:var(--amberbg);border:1px solid var(--amberbr);
+  border-radius:20px;padding:3px 10px;
+  font-size:0.7rem;font-weight:600;color:var(--amber);letter-spacing:0.04em;
+}
+.topbar-stage::before{content:'●';font-size:0.55rem}
+.topbar-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.topbar-btn{
+  display:flex;align-items:center;gap:5px;
+  padding:5px 12px;border-radius:var(--r1);
+  font-size:0.75rem;font-weight:500;border:1px solid var(--border2);
+  background:var(--bg2);color:var(--tx2);transition:all 0.12s;
+}
+.topbar-btn:hover{border-color:var(--border-hi);color:var(--tx1)}
+.topbar-btn.primary{background:var(--gold);border-color:var(--gold);color:#000;font-weight:700}
+.topbar-btn.primary:hover{background:#f0c855}
+
+/* ══ TAB NAV ══ */
+.tab-nav{
+  display:flex;gap:0;border-bottom:1px solid var(--border);
+  padding:0 24px;background:var(--bg1);
+  overflow-x:auto;
+}
+.tab-nav::-webkit-scrollbar{height:0}
+.tab{
+  padding:11px 16px;cursor:pointer;
+  background:none;border:none;border-bottom:2px solid transparent;
+  font-family:var(--font-body);font-size:0.78rem;font-weight:500;
+  color:var(--tx3);white-space:nowrap;transition:all 0.12s;
+}
+.tab:hover{color:var(--tx2)}
+.tab.active{color:var(--gold);border-bottom-color:var(--gold)}
+.tab-dot{width:5px;height:5px;border-radius:50%;background:var(--red);display:inline-block;margin-left:5px;vertical-align:middle}
+.tab-dot.ok{background:var(--green)}
+.tab-dot.warn{background:var(--amber)}
+
+/* ══ CONTENT ══ */
+.content{padding:20px 24px;flex:1;overflow-y:auto}
+
+/* ══ PANELS ══ */
+.panel{display:none}
+.panel.active{display:block}
+
+/* ══ WORKFLOW PROGRESS (top of overview) ══ */
+.wf-strip{
+  display:flex;gap:0;margin-bottom:20px;
+  background:var(--bg1);border:1px solid var(--border);border-radius:var(--r3);
+  overflow:hidden;
+}
+.wf-step{
+  flex:1;padding:10px 8px;text-align:center;
+  border-right:1px solid var(--border);position:relative;
+  cursor:default;
+}
+.wf-step:last-child{border-right:none}
+.wf-num{font-family:var(--font-mono);font-size:0.65rem;color:var(--tx4);margin-bottom:4px}
+.wf-label{font-size:0.68rem;font-weight:600;color:var(--tx3);line-height:1.3}
+.wf-step.done   .wf-label{color:var(--green)}
+.wf-step.done   .wf-num{color:var(--green)}
+.wf-step.active .wf-label{color:var(--amber)}
+.wf-step.active .wf-num{color:var(--amber)}
+.wf-step.active{background:var(--amberbg)}
+.wf-step.done{background:var(--greenbg)}
+.wf-step.blocked .wf-label{color:var(--tx4)}
+.wf-step-icon{font-size:1rem;display:block;margin-bottom:2px}
+
+/* ══ GRID LAYOUTS ══ */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.col{display:flex;flex-direction:column;gap:16px}
+
+/* ══ CARD ══ */
+.card{
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r3);
+  overflow:hidden;
+}
+.card-h{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:11px 16px;border-bottom:1px solid var(--border);
+}
+.card-title{
+  font-family:var(--font-head);font-size:0.72rem;font-weight:700;
+  letter-spacing:0.1em;text-transform:uppercase;color:var(--tx3);
+}
+.card-body{padding:16px}
+.card-body.p0{padding:0}
+
+/* ══ CONTROL CENTER ══ */
+.bcc{
+  background:var(--bg1);
+  border:1px solid var(--border2);
+  border-radius:var(--r4);overflow:hidden;margin-bottom:20px;
+}
+.bcc-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 20px;border-bottom:1px solid var(--border);
+  background:linear-gradient(135deg,var(--bg2) 0%,var(--bg1) 100%);
+}
+.bcc-title{font-family:var(--font-head);font-size:1rem;font-weight:800;color:var(--tx1)}
+.bcc-subtitle{font-size:0.72rem;color:var(--tx3);margin-top:2px}
+.bcc-body{padding:16px 20px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+
+.step-list{display:flex;flex-direction:column;gap:1px}
+.step-row{
+  display:flex;align-items:center;gap:10px;
+  padding:7px 0;border-bottom:1px solid var(--border);
+}
+.step-row:last-child{border-bottom:none}
+.step-icon{
+  width:18px;height:18px;border-radius:50%;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:0.6rem;font-weight:700;
+}
+.step-icon.done{background:var(--green);color:#000}
+.step-icon.active{background:var(--amber);color:#000;box-shadow:0 0 0 3px var(--amberbg)}
+.step-icon.pending{background:var(--bg4);border:1px solid var(--border2);color:var(--tx4)}
+.step-icon.blocked{background:var(--redbg);border:1px solid var(--redbr);color:var(--red)}
+.step-label{flex:1;font-size:0.8rem;color:var(--tx2)}
+.step-label.done{color:var(--tx2)}
+.step-label.active{color:var(--amber);font-weight:600}
+.step-label.blocked{color:var(--red)}
+.step-meta{font-size:0.68rem;color:var(--tx4);font-family:var(--font-mono)}
+.step-meta.overdue{color:var(--red)}
+
+.next-action-box{
+  background:var(--goldbg);border:1px solid var(--goldbr);border-radius:var(--r2);
+  padding:12px 14px;margin:0 20px 16px;
+}
+.next-label{font-size:0.65rem;font-weight:700;color:var(--gold);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px}
+.next-desc{font-size:0.82rem;color:var(--tx1);font-weight:500;margin-bottom:8px}
+.next-btn{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:6px 14px;background:var(--gold);border:none;border-radius:var(--r1);
+  font-size:0.75rem;font-weight:700;color:#000;transition:all 0.12s;
+}
+.next-btn:hover{background:#f0c855}
+
+/* ══ BADGE ══ */
+.badge{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:2px 8px;border-radius:20px;
+  font-size:0.65rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;
+}
+.badge::before{content:'●';font-size:0.5rem}
+.b-ok    {background:var(--greenbg);color:var(--green);border:1px solid var(--greenbr)}
+.b-warn  {background:var(--amberbg);color:var(--amber);border:1px solid var(--amberbr)}
+.b-err   {background:var(--redbg);  color:var(--red);  border:1px solid var(--redbr)}
+.b-info  {background:var(--bluebg); color:var(--blue); border:1px solid var(--bluebr)}
+.b-gold  {background:var(--goldbg); color:var(--gold); border:1px solid var(--goldbr)}
+.b-muted {background:var(--bg3);    color:var(--tx3);  border:1px solid var(--border)}
+
+/* ══ ACTION BUTTON ══ */
+.act-btn{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:7px 14px;border-radius:var(--r1);
+  font-size:0.76rem;font-weight:600;border:1px solid var(--border2);
+  background:var(--bg3);color:var(--tx2);transition:all 0.12s;
+}
+.act-btn:hover{border-color:var(--border-hi);color:var(--tx1);background:var(--bg4)}
+.act-btn.gold{background:var(--goldbg);border-color:var(--goldbr);color:var(--gold)}
+.act-btn.gold:hover{background:var(--gold);color:#000}
+.act-btn.green{background:var(--greenbg);border-color:var(--greenbr);color:var(--green)}
+.act-btn.red{background:var(--redbg);border-color:var(--redbr);color:var(--red)}
+.act-btn.disabled{opacity:0.35;cursor:not-allowed;pointer-events:none}
+.act-btn.full{width:100%;justify-content:center}
+
+/* ══ DATA TABLE ══ */
+.dt{width:100%;border-collapse:collapse;font-size:0.8rem}
+.dt th{
+  text-align:left;padding:8px 12px;
+  background:var(--bg3);color:var(--tx3);
+  font-size:0.65rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;
+  border-bottom:1px solid var(--border);
+}
+.dt td{
+  padding:9px 12px;border-bottom:1px solid var(--border);color:var(--tx1);
+  vertical-align:middle;
+}
+.dt tbody tr:last-child td{border-bottom:none}
+.dt tbody tr:hover{background:var(--bg3)}
+.dt .mono{font-family:var(--font-mono);font-size:0.76rem}
+.dt .right{text-align:right}
+.dt .muted{color:var(--tx3)}
+
+/* ══ KV ROWS ══ */
+.kv{display:flex;flex-direction:column;gap:0}
+.kv-row{
+  display:flex;align-items:flex-start;gap:8px;
+  padding:8px 0;border-bottom:1px solid var(--border);
+}
+.kv-row:last-child{border-bottom:none}
+.kv-label{width:148px;flex-shrink:0;font-size:0.74rem;color:var(--tx3)}
+.kv-val{flex:1;font-size:0.82rem;color:var(--tx1);font-weight:500}
+.kv-val.mono{font-family:var(--font-mono);font-size:0.76rem}
+
+/* ══ SECTION HEADING ══ */
+.sec-h{
+  display:flex;align-items:center;gap:10px;
+  margin:20px 0 12px;
+  font-family:var(--font-head);font-size:0.7rem;font-weight:700;
+  letter-spacing:0.12em;text-transform:uppercase;color:var(--tx3);
+}
+.sec-h::after{content:'';flex:1;height:1px;background:var(--border)}
+.sec-h:first-child{margin-top:0}
+
+/* ══ READINESS DOMAINS ══ */
+.domain-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.domain-card{
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);
+  padding:12px;text-align:center;
+}
+.domain-icon{font-size:1.4rem;margin-bottom:6px}
+.domain-name{font-size:0.7rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--tx3);margin-bottom:6px}
+.domain-score{font-family:var(--font-mono);font-size:1.4rem;font-weight:500}
+.domain-score.ok{color:var(--green)}
+.domain-score.warn{color:var(--amber)}
+.domain-score.err{color:var(--red)}
+
+/* ══ PIPELINE STEP ══ */
+.pipe-step{
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);
+  padding:14px 16px;display:flex;align-items:flex-start;gap:14px;
+  transition:border-color 0.12s;
+}
+.pipe-step:hover{border-color:var(--border2)}
+.pipe-step.current{border-color:var(--amberbr);background:var(--amberbg)}
+.pipe-step.done-step{border-color:var(--greenbr);background:var(--greenbg)}
+.pipe-step.blocked-step{border-color:var(--redbr);background:var(--redbg)}
+.pipe-number{
+  width:28px;height:28px;border-radius:50%;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--font-mono);font-size:0.76rem;font-weight:500;
+  background:var(--bg4);border:1px solid var(--border2);color:var(--tx3);
+}
+.pipe-step.current .pipe-number{background:var(--amber);border-color:var(--amber);color:#000}
+.pipe-step.done-step .pipe-number{background:var(--green);border-color:var(--green);color:#000}
+.pipe-step.blocked-step .pipe-number{background:var(--red);border-color:var(--red);color:#fff}
+.pipe-content{flex:1}
+.pipe-title{font-size:0.85rem;font-weight:600;color:var(--tx1);margin-bottom:3px}
+.pipe-step.current .pipe-title{color:var(--amber)}
+.pipe-desc{font-size:0.75rem;color:var(--tx3);margin-bottom:8px;line-height:1.5}
+.pipe-actions{display:flex;gap:8px;flex-wrap:wrap}
+.pipe-meta{
+  font-size:0.7rem;color:var(--tx4);font-family:var(--font-mono);
+  margin-top:4px;
+}
+.pipe-route{
+  font-size:0.65rem;font-family:var(--font-mono);color:var(--tx4);
+  background:var(--bg4);border:1px solid var(--border);border-radius:3px;
+  padding:1px 6px;margin-top:6px;display:inline-block;
+}
+
+/* ══ DOC GRID ══ */
+.doc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.doc-tile{
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);
+  border-left:3px solid var(--green);padding:10px 12px;
+  display:flex;flex-direction:column;gap:5px;
+}
+.doc-tile.missing{border-left-color:var(--red)}
+.doc-tile.warn{border-left-color:var(--amber)}
+.doc-tile-name{font-family:var(--font-mono);font-size:0.74rem;color:var(--tx1);font-weight:500}
+.doc-tile-type{font-size:0.68rem;color:var(--tx3)}
+.doc-tile-acts{display:flex;gap:6px;margin-top:4px}
+.doc-btn{
+  padding:3px 8px;border-radius:3px;font-size:0.68rem;font-weight:500;
+  border:1px solid var(--border2);background:var(--bg3);color:var(--tx2);cursor:pointer;
+}
+.doc-btn:hover{border-color:var(--gold);color:var(--gold)}
+.doc-btn.primary{background:var(--goldbg);border-color:var(--goldbr);color:var(--gold)}
+
+/* ══ TIMELINE ══ */
+.timeline{display:flex;flex-direction:column;gap:0}
+.tl-item{display:flex;gap:14px;align-items:flex-start;padding-bottom:16px;position:relative}
+.tl-item:not(:last-child)::after{
+  content:'';position:absolute;left:8px;top:22px;
+  width:2px;height:calc(100% - 8px);background:var(--border);
+}
+.tl-dot{
+  width:18px;height:18px;border-radius:50%;flex-shrink:0;
+  background:var(--bg4);border:2px solid var(--border2);margin-top:1px;z-index:1;
+}
+.tl-dot.done{background:var(--green);border-color:var(--green)}
+.tl-dot.active{background:var(--amber);border-color:var(--amber);box-shadow:0 0 0 4px var(--amberbg)}
+.tl-dot.pending{background:var(--bg3);border-color:var(--border)}
+.tl-info{flex:1}
+.tl-event{font-size:0.82rem;font-weight:600;color:var(--tx1)}
+.tl-meta{font-size:0.72rem;color:var(--tx3);margin-top:2px}
+.tl-body{font-size:0.75rem;color:var(--tx2);margin-top:4px;line-height:1.5}
+
+/* ══ SLA CHIP ══ */
+.sla-chip{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:2px 8px;border-radius:20px;font-size:0.65rem;font-weight:700;
+}
+.sla-ok{background:var(--greenbg);color:var(--green)}
+.sla-warn{background:var(--amberbg);color:var(--amber)}
+.sla-breach{background:var(--redbg);color:var(--red)}
+
+/* ══ STAT ROW ══ */
+.stat-row{display:flex;gap:12px;margin-bottom:16px}
+.stat{
+  flex:1;background:var(--bg2);border:1px solid var(--border);
+  border-radius:var(--r2);padding:12px 14px;
+}
+.stat-val{font-family:var(--font-head);font-size:1.6rem;font-weight:800;color:var(--tx1);line-height:1}
+.stat-val.gold{color:var(--gold)}
+.stat-val.green{color:var(--green)}
+.stat-val.red{color:var(--red)}
+.stat-val.amber{color:var(--amber)}
+.stat-lbl{font-size:0.68rem;color:var(--tx3);margin-top:4px;text-transform:uppercase;letter-spacing:0.06em}
+
+/* ══ MODAL OVERLAY ══ */
+.modal-bg{
+  position:fixed;inset:0;background:rgba(0,0,0,0.8);backdrop-filter:blur(4px);
+  z-index:1000;display:none;align-items:center;justify-content:center;
+}
+.modal-bg.open{display:flex}
+.modal{
+  background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r4);
+  width:560px;max-width:95vw;max-height:90vh;overflow-y:auto;
+  box-shadow:var(--shadow2);
+}
+.modal-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 20px;border-bottom:1px solid var(--border);
+}
+.modal-title{font-family:var(--font-head);font-size:0.95rem;font-weight:700;color:var(--tx1)}
+.modal-close{background:none;border:none;color:var(--tx3);font-size:1.2rem;cursor:pointer;padding:4px}
+.modal-close:hover{color:var(--tx1)}
+.modal-body{padding:20px}
+.modal-foot{padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+
+/* ══ CONFIRM BOX ══ */
+.confirm-box{
+  background:var(--redbg);border:1px solid var(--redbr);border-radius:var(--r2);
+  padding:12px 14px;margin-bottom:16px;font-size:0.8rem;color:var(--red);
+  display:flex;gap:8px;align-items:flex-start;
+}
+.confirm-box.warn{background:var(--amberbg);border-color:var(--amberbr);color:var(--amber)}
+.confirm-box.info{background:var(--bluebg);border-color:var(--bluebr);color:var(--blue)}
+
+/* ══ INPUT ══ */
+.form-row{margin-bottom:14px}
+.form-label{font-size:0.72rem;font-weight:600;color:var(--tx2);margin-bottom:5px;display:block;text-transform:uppercase;letter-spacing:0.06em}
+.form-input{
+  width:100%;background:var(--bg3);border:1px solid var(--border2);
+  border-radius:var(--r1);padding:8px 10px;color:var(--tx1);
+  font-family:var(--font-body);font-size:0.82rem;outline:none;
+}
+.form-input:focus{border-color:var(--gold)}
+
+/* ══ PARKED NOTICE ══ */
+.parked{
+  background:var(--purplebg);border:1px dashed var(--purple);
+  border-radius:var(--r2);padding:10px 14px;
+  display:flex;gap:10px;align-items:center;
+  font-size:0.78rem;color:var(--purple);
+}
+
+/* ══ TOAST ══ */
+#toast{
+  position:fixed;bottom:20px;right:20px;z-index:2000;
+  background:var(--bg3);border:1px solid var(--greenbr);color:var(--green);
+  padding:8px 16px;border-radius:var(--r2);font-size:0.8rem;font-weight:600;
+  opacity:0;transform:translateY(8px);transition:all 0.2s;pointer-events:none;
+}
+#toast.show{opacity:1;transform:translateY(0)}
+
+/* ══ RESPONSIVE ══ */
+@media(max-width:1100px){
+  .domain-grid{grid-template-columns:repeat(2,1fr)}
+  .g4{grid-template-columns:repeat(2,1fr)}
+}
+@media(max-width:820px){
+  .shell{grid-template-columns:1fr}
+  .sidebar{display:none}
+  .g2{grid-template-columns:1fr}
+  .domain-grid{grid-template-columns:repeat(2,1fr)}
+  .bcc-body{grid-template-columns:1fr}
+  .wf-strip{flex-wrap:wrap}
+  .wf-step{min-width:80px}
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+<!-- ══════════════════════════════
+     SIDEBAR
+══════════════════════════════ -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">💎 ESTRELLA</div>
+    <div class="logo-sub">PZ · Customs Control v2</div>
+  </div>
+
+  <div class="sidebar-section">Batches</div>
+  <button class="nav-item active" onclick="showTab('overview')">
+    <span class="nav-icon">⬡</span> Overview
+  </button>
+  <button class="nav-item" onclick="showTab('dhl')">
+    <span class="nav-icon">✈</span> DHL / Customs
+    <span class="nav-badge warn">SLA</span>
+  </button>
+  <button class="nav-item" onclick="showTab('warehouse')">
+    <span class="nav-icon">🏭</span> Warehouse
+  </button>
+  <button class="nav-item" onclick="showTab('sales')">
+    <span class="nav-icon">📊</span> Sales
+  </button>
+  <button class="nav-item" onclick="showTab('pz')">
+    <span class="nav-icon">📋</span> PZ / wFirma
+    <span class="nav-badge">3</span>
+  </button>
+  <button class="nav-item" onclick="showTab('timeline')">
+    <span class="nav-icon">🕐</span> Timeline
+  </button>
+  <button class="nav-item" onclick="showTab('documents')">
+    <span class="nav-icon">📁</span> Documents
+  </button>
+
+  <div class="sidebar-section">System</div>
+  <button class="nav-item" onclick="showTab('intelligence')">
+    <span class="nav-icon">🧠</span> Intelligence
+  </button>
+  <button class="nav-item" onclick="showTab('proposals')">
+    <span class="nav-icon">⚡</span> Proposals
+    <span class="nav-badge">2</span>
+  </button>
+  <button class="nav-item" onclick="showTab('analytics')">
+    <span class="nav-icon">📈</span> Analytics
+  </button>
+
+  <div class="sidebar-bottom">
+    <div class="batch-selector" onclick="openModal('batch-modal')">
+      <div class="batch-selector-label">Active Batch</div>
+      <div class="batch-selector-awb">AWB 6876258325</div>
+      <div class="batch-selector-sub">07 Apr 2026 · 76 pcs · IN→PL</div>
+    </div>
+  </div>
+</aside>
+
+<!-- ══════════════════════════════
+     MAIN CONTENT
+══════════════════════════════ -->
+<div class="main">
+
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <span class="topbar-awb">6876258325</span>
+    <span class="topbar-sep">·</span>
+    <span style="font-size:0.78rem;color:var(--tx3)">EJL/26-27/013-014-015</span>
+    <div class="topbar-stage">DHL AWAITED · 50.5h SLA BREACH</div>
+    <div class="topbar-right">
+      <button class="topbar-btn" onclick="openModal('email-modal')">📧 Rescan Emails</button>
+      <button class="topbar-btn" onclick="openModal('new-modal')">+ New Batch</button>
+      <button class="topbar-btn primary" onclick="showAction('Send DSK Reply to DHL')">▶ Next Action</button>
+    </div>
+  </div>
+
+  <!-- TAB NAV -->
+  <div class="tab-nav">
+    <button class="tab active" onclick="switchTab('overview',this)">Overview <span class="tab-dot warn"></span></button>
+    <button class="tab" onclick="switchTab('dhl',this)">DHL / Customs <span class="tab-dot warn"></span></button>
+    <button class="tab" onclick="switchTab('warehouse',this)">Warehouse</button>
+    <button class="tab" onclick="switchTab('sales',this)">Sales</button>
+    <button class="tab" onclick="switchTab('pz',this)">PZ / wFirma <span class="tab-dot ok"></span></button>
+    <button class="tab" onclick="switchTab('timeline',this)">Timeline</button>
+    <button class="tab" onclick="switchTab('documents',this)">Documents</button>
+    <button class="tab" onclick="switchTab('intelligence',this)">Intelligence</button>
+    <button class="tab" onclick="switchTab('proposals',this)">Proposals <span class="tab-dot"></span></button>
+    <button class="tab" onclick="switchTab('analytics',this)">Analytics</button>
+  </div>
+
+  <!-- ══════════ CONTENT AREA ══════════ -->
+  <div class="content">
+
+    <!-- ░░░░░ OVERVIEW TAB ░░░░░ -->
+    <div class="panel active" id="panel-overview">
+
+      <!-- Workflow Progress Strip -->
+      <div class="wf-strip">
+        <div class="wf-step done"><span class="wf-num">01</span><span class="wf-step-icon">✅</span><div class="wf-label">Intake</div></div>
+        <div class="wf-step done"><span class="wf-num">02</span><span class="wf-step-icon">✅</span><div class="wf-label">SAD Upload</div></div>
+        <div class="wf-step done"><span class="wf-num">03</span><span class="wf-step-icon">✅</span><div class="wf-label">PZ Gen</div></div>
+        <div class="wf-step done"><span class="wf-num">04</span><span class="wf-step-icon">✅</span><div class="wf-label">DHL Notified</div></div>
+        <div class="wf-step active"><span class="wf-num">05</span><span class="wf-step-icon">⏳</span><div class="wf-label">DSK Docs</div></div>
+        <div class="wf-step blocked"><span class="wf-num">06</span><span class="wf-step-icon">⬜</span><div class="wf-label">Agency Fwd</div></div>
+        <div class="wf-step blocked"><span class="wf-num">07</span><span class="wf-step-icon">⬜</span><div class="wf-label">SAD/PZC</div></div>
+        <div class="wf-step blocked"><span class="wf-num">08</span><span class="wf-step-icon">⬜</span><div class="wf-label">Warehouse</div></div>
+        <div class="wf-step blocked"><span class="wf-num">09</span><span class="wf-step-icon">⬜</span><div class="wf-label">Sales Link</div></div>
+        <div class="wf-step blocked"><span class="wf-num">10</span><span class="wf-step-icon">⬜</span><div class="wf-label">wFirma Res.</div></div>
+        <div class="wf-step blocked"><span class="wf-num">11</span><span class="wf-step-icon">⬜</span><div class="wf-label">PZ Confirm</div></div>
+        <div class="wf-step blocked"><span class="wf-num">12</span><span class="wf-step-icon">⬜</span><div class="wf-label">Close</div></div>
+      </div>
+
+      <!-- Batch Control Center -->
+      <div class="bcc">
+        <div class="bcc-header">
+          <div>
+            <div class="bcc-title">🔵 Batch Control Center</div>
+            <div class="bcc-subtitle">GET /api/v1/batch/{id}/readiness · /api/v1/dhl/readiness/{id}</div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <span class="badge b-err">SLA BREACH</span>
+            <span class="badge b-gold">CLEARED</span>
+          </div>
+        </div>
+        <div class="bcc-body">
+          <!-- Step list left -->
+          <div class="step-list">
+            <div class="step-row"><div class="step-icon done">✓</div><div class="step-label done">Shipment created &amp; invoices uploaded</div><div class="step-meta">07 Apr</div></div>
+            <div class="step-row"><div class="step-icon done">✓</div><div class="step-label done">SAD / ZC429 uploaded</div><div class="step-meta">07 Apr</div></div>
+            <div class="step-row"><div class="step-icon done">✓</div><div class="step-label done">PZ generated — v1.4</div><div class="step-meta">gaps ⚠</div></div>
+            <div class="step-row"><div class="step-icon done">✓</div><div class="step-label done">DHL initial request sent</div><div class="step-meta">07 Apr</div></div>
+            <div class="step-row"><div class="step-icon active">►</div><div class="step-label active">DHL reply / DSK awaited</div><div class="step-meta overdue">50.5h overdue</div></div>
+            <div class="step-row"><div class="step-icon pending">○</div><div class="step-label">DSK documents received</div><div class="step-meta">—</div></div>
+          </div>
+          <!-- Step list right -->
+          <div class="step-list">
+            <div class="step-row"><div class="step-icon pending">○</div><div class="step-label">Agency forwarded</div><div class="step-meta">—</div></div>
+            <div class="step-row"><div class="step-icon pending">○</div><div class="step-label">SAD / PZC received from agency</div><div class="step-meta">—</div></div>
+            <div class="step-row"><div class="step-icon pending">○</div><div class="step-label">Warehouse scanned</div><div class="step-meta">—</div></div>
+            <div class="step-row"><div class="step-icon pending">○</div><div class="step-label">Sales linked</div><div class="step-meta">—</div></div>
+            <div class="step-row"><div class="step-icon pending">○</div><div class="step-label">wFirma reservation created</div><div class="step-meta">—</div></div>
+            <div class="step-row"><div class="step-icon pending">○</div><div class="step-label">PZ confirmed &amp; shipment closed</div><div class="step-meta">—</div></div>
+          </div>
+        </div>
+        <!-- Next Action -->
+        <div class="next-action-box">
+          <div class="next-label">▶ Next Operator Action</div>
+          <div class="next-desc">Send DSK reply to DHL — SLA is 50.5h overdue. DHL is waiting for customs clearance documents.</div>
+          <button class="next-btn" onclick="switchTab('dhl',null)">Go to DHL / Customs tab →</button>
+        </div>
+      </div>
+
+      <!-- 4-Domain Readiness -->
+      <div class="sec-h">Readiness Domains</div>
+      <div class="domain-grid">
+        <div class="domain-card">
+          <div class="domain-icon">✈</div>
+          <div class="domain-name">DHL Clearance</div>
+          <div class="domain-score warn">45%</div>
+          <div style="margin-top:6px"><span class="badge b-warn">IN PROGRESS</span></div>
+        </div>
+        <div class="domain-card">
+          <div class="domain-icon">🏭</div>
+          <div class="domain-name">Warehouse</div>
+          <div class="domain-score err">0%</div>
+          <div style="margin-top:6px"><span class="badge b-err">NOT STARTED</span></div>
+        </div>
+        <div class="domain-card">
+          <div class="domain-icon">📊</div>
+          <div class="domain-name">Sales Linkage</div>
+          <div class="domain-score warn">60%</div>
+          <div style="margin-top:6px"><span class="badge b-warn">GAPS</span></div>
+        </div>
+        <div class="domain-card">
+          <div class="domain-icon">📋</div>
+          <div class="domain-name">PZ / wFirma</div>
+          <div class="domain-score ok">80%</div>
+          <div style="margin-top:6px"><span class="badge b-ok">READY</span></div>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="stat-row">
+        <div class="stat"><div class="stat-val gold">76</div><div class="stat-lbl">Total Pieces</div></div>
+        <div class="stat"><div class="stat-val">$19,196</div><div class="stat-lbl">Invoice Value</div></div>
+        <div class="stat"><div class="stat-val green">4</div><div class="stat-lbl">Clients</div></div>
+        <div class="stat"><div class="stat-val red">50.5h</div><div class="stat-lbl">DHL SLA Overdue</div></div>
+        <div class="stat"><div class="stat-val amber">3</div><div class="stat-lbl">Open Issues</div></div>
+      </div>
+
+      <!-- Parked Modules -->
+      <div class="sec-h">Parked Modules</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div class="parked">🟣 <strong>Proforma → Invoice Converter</strong> — service + DB exist, tests pass, no route/UI. Awaiting Phase 3 decision.</div>
+        <div class="parked">🟣 <strong>Barcode / Label Print</strong> — routes_packing.py + warehouse.html. No tab in batch detail.</div>
+        <div class="parked">🟣 <strong>Shipment Closure Evaluation</strong> — routes_lifecycle.py /closure exists. No UI trigger.</div>
+        <div class="parked">🟣 <strong>Agency + Service Invoice Receipt</strong> — endpoints live. No UI buttons added yet.</div>
+      </div>
+    </div><!-- /overview -->
+
+    <!-- ░░░░░ DHL / CUSTOMS TAB ░░░░░ -->
+    <div class="panel" id="panel-dhl">
+      <div class="sec-h">7-Stage DHL Clearance Pipeline</div>
+
+      <!-- pipeline stages -->
+      <div style="display:flex;flex-direction:column;gap:8px">
+
+        <div class="pipe-step done-step">
+          <div class="pipe-number">1</div>
+          <div class="pipe-content">
+            <div class="pipe-title">✅ DHL Description Generated</div>
+            <div class="pipe-desc">Custom DHL content description created from invoice items.</div>
+            <div class="pipe-route">POST /api/v1/dhl-clearance/{id}/description</div>
+          </div>
+        </div>
+
+        <div class="pipe-step done-step">
+          <div class="pipe-number">2</div>
+          <div class="pipe-content">
+            <div class="pipe-title">✅ DHL Reply Email Sent</div>
+            <div class="pipe-desc">Initial customs clearance request sent to DHL Poland.</div>
+            <div class="pipe-actions">
+              <button class="act-btn green" onclick="toast('Email resent')">↺ Resend</button>
+              <button class="act-btn" onclick="switchTab('timeline',null)">View Evidence</button>
+            </div>
+            <div class="pipe-route">POST /api/v1/dhl-clearance/{id}/send-reply</div>
+          </div>
+        </div>
+
+        <div class="pipe-step done-step">
+          <div class="pipe-number">3</div>
+          <div class="pipe-content">
+            <div class="pipe-title">✅ DSK Document Generated</div>
+            <div class="pipe-desc">Broker notification package (DSK) prepared and ready to send.</div>
+            <div class="pipe-actions">
+              <button class="act-btn" onclick="openModal('dsk-modal')">View DSK</button>
+            </div>
+            <div class="pipe-route">POST /api/v1/dsk/generate/{id}</div>
+          </div>
+        </div>
+
+        <div class="pipe-step current">
+          <div class="pipe-number">4</div>
+          <div class="pipe-content">
+            <div class="pipe-title">⏳ CURRENT — DSK Transfer to DHL</div>
+            <div class="pipe-desc">Send the broker notification package to DHL Express Poland. SLA is 50.5h overdue — action required immediately.</div>
+            <div class="pipe-actions">
+              <button class="act-btn gold" onclick="openModal('send-dsk-modal')">📧 Send DSK to DHL</button>
+              <button class="act-btn" onclick="openModal('preview-modal')">Preview Email</button>
+            </div>
+            <div class="pipe-route">POST /api/v1/agency/email-package/{id} · /dsk/email-package</div>
+            <div class="pipe-meta" style="color:var(--red)">⚠ SLA BREACH: 50.5h since last outbound</div>
+          </div>
+        </div>
+
+        <div class="pipe-step">
+          <div class="pipe-number">5</div>
+          <div class="pipe-content">
+            <div class="pipe-title">⬜ DHL Documents Received</div>
+            <div class="pipe-desc">Record receipt of DSK documents from DHL. Unlocks agency forwarding.</div>
+            <div class="pipe-actions">
+              <button class="act-btn disabled">📥 Mark Received</button>
+              <span style="font-size:0.72rem;color:var(--red)">Requires step 4 first</span>
+            </div>
+            <div class="pipe-route">POST /api/v1/dhl-documents/{id}/received</div>
+          </div>
+        </div>
+
+        <div class="pipe-step">
+          <div class="pipe-number">6</div>
+          <div class="pipe-content">
+            <div class="pipe-title">⬜ Agency Forward</div>
+            <div class="pipe-desc">Forward customs package to Agencja Celna Spedycja Kuźmicz after DHL docs received.</div>
+            <div class="pipe-actions">
+              <button class="act-btn disabled">📤 Send to Agency</button>
+              <span style="font-size:0.72rem;color:var(--tx4)">Requires DSK docs received</span>
+            </div>
+            <div class="pipe-route">POST /api/v1/agency/email-package/{id}</div>
+          </div>
+        </div>
+
+        <div class="pipe-step">
+          <div class="pipe-number">7</div>
+          <div class="pipe-content">
+            <div class="pipe-title">⬜ Agency Documents Received (SAD/PZC)</div>
+            <div class="pipe-desc">Record receipt of final customs documents (SAD/PZC) from the agency.</div>
+            <div class="pipe-actions">
+              <button class="act-btn disabled">📥 Mark Agency Docs Received</button>
+              <button class="act-btn disabled">⬆ Upload SAD</button>
+            </div>
+            <div class="pipe-route">POST /api/v1/agency-documents/{id}/received · /upload/shipment/{id}/sad</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ZC429 Summary -->
+      <div class="sec-h">Customs Declaration</div>
+      <div class="g2">
+        <div class="card">
+          <div class="card-h"><div class="card-title">ZC429 Details</div><span class="badge b-gold">CLEARED</span></div>
+          <div class="card-body">
+            <div class="kv">
+              <div class="kv-row"><div class="kv-label">MRN</div><div class="kv-val mono">26PL44302D007UH7R0 <button class="doc-btn" onclick="toast('Copied!')">copy</button></div></div>
+              <div class="kv-row"><div class="kv-label">LRN</div><div class="kv-val mono">26S00PT30S</div></div>
+              <div class="kv-row"><div class="kv-label">Filed</div><div class="kv-val">07 Apr 2026 · 11:49</div></div>
+              <div class="kv-row"><div class="kv-label">Accepted</div><div class="kv-val">07 Apr 2026 · 12:39</div></div>
+              <div class="kv-row"><div class="kv-label">Invoice Value</div><div class="kv-val mono">$15,323.00 USD</div></div>
+              <div class="kv-row"><div class="kv-label">Agent</div><div class="kv-val">Agencja Celna Spedycja Kuźmicz</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><div class="card-title">DHL SLA Monitor</div><span class="sla-chip sla-breach">BREACH</span></div>
+          <div class="card-body">
+            <div class="kv">
+              <div class="kv-row"><div class="kv-label">Last Outbound</div><div class="kv-val mono" style="color:var(--red)">50.5h ago</div></div>
+              <div class="kv-row"><div class="kv-label">SLA Limit</div><div class="kv-val mono">48h</div></div>
+              <div class="kv-row"><div class="kv-label">Stage</div><div class="kv-val">dhl_contacted (step 4/7)</div></div>
+              <div class="kv-row"><div class="kv-label">Follow-up</div><div class="kv-val"><button class="act-btn" onclick="openModal('followup-modal')">Send Follow-up</button></div></div>
+            </div>
+            <div class="pipe-route" style="margin-top:8px">GET /api/v1/dhl/readiness/{id} · POST /api/v1/dhl-followup/{id}</div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /dhl -->
+
+    <!-- ░░░░░ WAREHOUSE TAB ░░░░░ -->
+    <div class="panel" id="panel-warehouse">
+      <div class="sec-h">Warehouse Audit</div>
+      <div class="stat-row">
+        <div class="stat"><div class="stat-val err">0</div><div class="stat-lbl">Items Scanned</div></div>
+        <div class="stat"><div class="stat-val">76</div><div class="stat-lbl">Expected</div></div>
+        <div class="stat"><div class="stat-val amber">0%</div><div class="stat-lbl">Completion</div></div>
+      </div>
+      <div class="confirm-box warn">⚠ Scanning has not started. Open the Warehouse Scanner app to begin scanning. The audit tab shows read-only status.</div>
+      <div style="margin-bottom:16px">
+        <button class="act-btn gold" onclick="toast('Opening warehouse scanner…')">🏭 Open Warehouse Scanner</button>
+        <span style="font-size:0.75rem;color:var(--tx4);margin-left:10px">Opens /warehouse.html in new window</span>
+      </div>
+
+      <div class="g2">
+        <div class="card">
+          <div class="card-h"><div class="card-title">Audit Status</div></div>
+          <div class="card-body">
+            <div class="kv">
+              <div class="kv-row"><div class="kv-label">Mode</div><div class="kv-val">Read-only from this tab</div></div>
+              <div class="kv-row"><div class="kv-label">Scan App</div><div class="kv-val"><span class="badge b-warn">SEPARATE PAGE</span></div></div>
+              <div class="kv-row"><div class="kv-label">Barcode Print</div><div class="kv-val"><span class="badge b-muted">PARKED</span></div></div>
+            </div>
+            <div class="pipe-route" style="margin-top:8px">GET /api/v1/warehouse/audit/{id} · POST /api/v1/warehouse/scan</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><div class="card-title">Expected Items Summary</div></div>
+          <div class="card-body p0">
+            <table class="dt">
+              <thead><tr><th>Client</th><th>Pcs</th><th>Category</th><th>Scanned</th></tr></thead>
+              <tbody>
+                <tr><td>🇫🇷 Verhoeven</td><td class="mono">2</td><td>Ring</td><td><span class="badge b-err">0</span></td></tr>
+                <tr><td>🇭🇺 Clear-Diamonds</td><td class="mono">68</td><td>Mixed</td><td><span class="badge b-err">0</span></td></tr>
+                <tr><td>🇧🇬 Juliany EOOD</td><td class="mono">5</td><td>Pendant</td><td><span class="badge b-err">0</span></td></tr>
+                <tr><td>🇸🇰 Dream Rings</td><td class="mono">1</td><td>Ring</td><td><span class="badge b-err">0</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div><!-- /warehouse -->
+
+    <!-- ░░░░░ SALES TAB ░░░░░ -->
+    <div class="panel" id="panel-sales">
+      <div class="sec-h">Sales Linkage</div>
+      <div class="stat-row">
+        <div class="stat"><div class="stat-val amber">60%</div><div class="stat-lbl">Link Coverage</div></div>
+        <div class="stat"><div class="stat-val">76</div><div class="stat-lbl">Items Total</div></div>
+        <div class="stat"><div class="stat-val green">46</div><div class="stat-lbl">Linked</div></div>
+        <div class="stat"><div class="stat-val red">30</div><div class="stat-lbl">Unlinked</div></div>
+      </div>
+      <div class="confirm-box warn">⚠ Sales linkage has gaps — 30 items not matched to Allegro orders. Fix in Allegro admin panel — no action available here.</div>
+      <div class="card">
+        <div class="card-h"><div class="card-title">Linkage by Client</div></div>
+        <div class="card-body p0">
+          <table class="dt">
+            <thead><tr><th>Client</th><th>Items</th><th>Linked</th><th>Gaps</th><th>Source</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td>🇫🇷 Verhoeven</td><td class="mono">2</td><td class="mono">2</td><td class="mono">0</td><td>Direct</td><td><span class="badge b-ok">OK</span></td></tr>
+              <tr><td>🇭🇺 Clear-Diamonds</td><td class="mono">68</td><td class="mono">38</td><td class="mono">30</td><td>Allegro</td><td><span class="badge b-warn">GAPS</span></td></tr>
+              <tr><td>🇧🇬 Juliany EOOD</td><td class="mono">5</td><td class="mono">5</td><td class="mono">0</td><td>Direct</td><td><span class="badge b-ok">OK</span></td></tr>
+              <tr><td>🇸🇰 Dream Rings</td><td class="mono">1</td><td class="mono">1</td><td class="mono">0</td><td>Direct</td><td><span class="badge b-ok">OK</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="pipe-route" style="margin-top:8px">GET /api/v1/sales/linkage/{id}</div>
+    </div><!-- /sales -->
+
+    <!-- ░░░░░ PZ / WFIRMA TAB ░░░░░ -->
+    <div class="panel" id="panel-pz">
+      <div class="sec-h">PZ Entry &amp; wFirma Integration</div>
+
+      <div class="g2">
+        <div class="col">
+          <!-- PZ Status -->
+          <div class="card">
+            <div class="card-h"><div class="card-title">PZ Receipt Status</div><span class="badge b-ok">GENERATED</span></div>
+            <div class="card-body">
+              <div class="kv">
+                <div class="kv-row"><div class="kv-label">PZ Number</div><div class="kv-val mono">PZ 2/4/2026</div></div>
+                <div class="kv-row"><div class="kv-label">Version</div><div class="kv-val mono">v1.4</div></div>
+                <div class="kv-row"><div class="kv-label">Warehouse</div><div class="kv-val">Główny (Main)</div></div>
+                <div class="kv-row"><div class="kv-label">Confirmed</div><div class="kv-val"><span class="badge b-warn">PENDING</span></div></div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+                <button class="act-btn gold" onclick="openModal('pz-confirm-modal')">✓ Confirm PZ Number</button>
+                <button class="act-btn" onclick="toast('Regenerating PZ…')">↺ Regenerate PZ</button>
+              </div>
+              <div class="pipe-route" style="margin-top:8px">POST /api/v1/upload/shipment/{id}/set_pz · /pz/regenerate</div>
+            </div>
+          </div>
+
+          <!-- wFirma Reservation -->
+          <div class="card">
+            <div class="card-h"><div class="card-title">wFirma Reservation</div><span class="badge b-warn">NOT CREATED</span></div>
+            <div class="card-body">
+              <div class="confirm-box info">ℹ Preview the reservation data before creating. Once created, duplicate prevention will be enforced.</div>
+              <div class="kv">
+                <div class="kv-row"><div class="kv-label">Status</div><div class="kv-val">Ready to preview</div></div>
+                <div class="kv-row"><div class="kv-label">Items</div><div class="kv-val mono">76 pcs</div></div>
+                <div class="kv-row"><div class="kv-label">Total Net</div><div class="kv-val mono">~PLN 64,200</div></div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+                <button class="act-btn" onclick="openModal('wfirma-preview-modal')">👁 Preview Reservation</button>
+                <button class="act-btn gold" onclick="openModal('wfirma-create-modal')">+ Create Reservation</button>
+              </div>
+              <div class="pipe-route" style="margin-top:8px">GET /api/v1/wfirma/reservations/preview/{id} · POST /create</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col">
+          <!-- Clipboard Export -->
+          <div class="card">
+            <div class="card-h"><div class="card-title">wFirma Clipboard Export</div><span class="badge b-ok">READY</span></div>
+            <div class="card-body">
+              <p style="font-size:0.8rem;color:var(--tx2);margin-bottom:12px">Copy PZ data to clipboard for manual paste into wFirma web app. Preview the data before copying.</p>
+              <div style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r2);padding:10px;font-family:var(--font-mono);font-size:0.68rem;color:var(--tx3);max-height:100px;overflow:auto;margin-bottom:10px">
+                PZ 2/4/2026 · 76 pcs · IN→PL<br>
+                EJL/26-27/013: Verhoeven+Juliany 7pcs $2,045<br>
+                EJL/26-27/014: Dream Ring 1pc $1,828<br>
+                EJL/26-27/015: Clear-Diamonds 68pcs $15,323<br>
+                NBP Rate: [loaded] · VAT: 23%
+              </div>
+              <div style="display:flex;gap:8px">
+                <button class="act-btn gold" onclick="toast('Copied to clipboard!')">📋 Copy wFirma PZ</button>
+                <button class="act-btn" onclick="toast('Downloading PZ_READY.json…')">⬇ PZ_READY.json</button>
+              </div>
+              <div class="pipe-route" style="margin-top:8px">GET /api/v1/wfirma/clipboard · /wfirma/json</div>
+            </div>
+          </div>
+
+          <!-- Chrome AutoFill -->
+          <div class="card">
+            <div class="card-h"><div class="card-title">Chrome AutoFill Guide</div><span class="badge b-gold">v3 ACTIVE</span></div>
+            <div class="card-body">
+              <div class="confirm-box info">ℹ Install the script once in Chrome DevTools console. It auto-fills the wFirma PZ form using the JSON data.</div>
+              <div style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r2);padding:10px;font-family:var(--font-mono);font-size:0.7rem;color:var(--green);margin-bottom:10px">
+                // Step 1: Download PZ_READY.json (above)<br>
+                // Step 2: Open wFirma.pl → New PZ<br>
+                // Step 3: Open DevTools (F12) → Console<br>
+                // Step 4: Paste script → Press Enter<br>
+                // Step 5: Script auto-fills all fields ✓
+              </div>
+              <div style="display:flex;gap:8px">
+                <button class="act-btn gold" onclick="toast('Downloading autofill_pz_select_v3.js…')">⬇ Download Script v3</button>
+              </div>
+              <div style="font-size:0.68rem;color:var(--tx4);margin-top:6px">Versions v1, v2 deprecated. Always use v3.</div>
+              <div class="pipe-route" style="margin-top:6px">GET /chrome_wfirma_autofill/autofill_pz_select_v3.js</div>
+            </div>
+          </div>
+
+          <!-- Proforma Converter (Parked) -->
+          <div class="card" style="border-color:rgba(167,139,250,0.2)">
+            <div class="card-h"><div class="card-title" style="color:var(--purple)">🟣 Proforma → Invoice Converter</div><span class="badge b-muted">PARKED</span></div>
+            <div class="card-body">
+              <div class="parked" style="margin-bottom:10px">Service + DB exist. Tests pass. No route or UI decision made yet. Will be exposed in Phase 3.</div>
+              <div class="kv">
+                <div class="kv-row"><div class="kv-label">DB Records</div><div class="kv-val mono">—</div></div>
+                <div class="kv-row"><div class="kv-label">Files</div><div class="kv-val mono" style="font-size:0.68rem">proforma_to_invoice.py · proforma_invoice_link_db.py</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /pz -->
+
+    <!-- ░░░░░ TIMELINE TAB ░░░░░ -->
+    <div class="panel" id="panel-timeline">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <div class="sec-h" style="margin:0">Email Evidence Timeline</div>
+        <div style="display:flex;gap:8px">
+          <button class="act-btn" onclick="toast('Rescanning mailbox…')">↺ Rescan Emails</button>
+          <button class="act-btn" onclick="openModal('email-modal')">+ Process Email</button>
+        </div>
+      </div>
+      <div class="pipe-route" style="margin-bottom:16px">GET /api/v1/email-evidence/{id} · POST /rescan</div>
+
+      <div class="timeline">
+        <div class="tl-item">
+          <div class="tl-dot done"></div>
+          <div class="tl-info">
+            <div class="tl-event">✅ Batch Created + Invoices Uploaded</div>
+            <div class="tl-meta">07 Apr 2026 · 09:15 · intake</div>
+            <div class="tl-body">EJL/26-27/013, 014, 015 uploaded. AWB 6876258325 linked. ZC429 reference created.</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot done"></div>
+          <div class="tl-info">
+            <div class="tl-event">✅ Our DHL Request Sent</div>
+            <div class="tl-meta">07 Apr 2026 · 10:45 · routes_dhl_clearance.py /send-reply</div>
+            <div class="tl-body">Initial DHL customs notification sent to DHL Express Poland. DSK package attached. Reference: EJL/26-27/013-014-015 Z 04.04.2026</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot done"></div>
+          <div class="tl-info">
+            <div class="tl-event">✅ ZC429 Accepted by Customs</div>
+            <div class="tl-meta">07 Apr 2026 · 12:39 · MRN 26PL44302D007UH7R0</div>
+            <div class="tl-body">Polish customs cleared the shipment. Declared value $15,323 USD. Importer: Estrella Jewels Sp. z o.o. Sp.k</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot active"></div>
+          <div class="tl-info">
+            <div class="tl-event">⏳ AWAITING — DHL Document Response <span class="sla-chip sla-breach">50.5h BREACH</span></div>
+            <div class="tl-meta">Current stage · routes_dhl_documents.py</div>
+            <div class="tl-body">Waiting for DHL to return DSK documents. SLA is 50.5 hours past deadline. Follow-up required.</div>
+            <div style="margin-top:8px"><button class="act-btn gold" onclick="openModal('followup-modal')">Send Follow-up Now</button></div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot pending"></div>
+          <div class="tl-info">
+            <div class="tl-event" style="color:var(--tx3)">⬜ Agency Forwarding (pending)</div>
+            <div class="tl-meta">routes_agency.py</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot pending"></div>
+          <div class="tl-info">
+            <div class="tl-event" style="color:var(--tx3)">⬜ SAD / PZC Received (pending)</div>
+            <div class="tl-meta">routes_lifecycle.py</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot pending"></div>
+          <div class="tl-info">
+            <div class="tl-event" style="color:var(--tx3)">⬜ Shipment Closure (pending)</div>
+            <div class="tl-meta">routes_lifecycle.py /closure</div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /timeline -->
+
+    <!-- ░░░░░ DOCUMENTS TAB ░░░░░ -->
+    <div class="panel" id="panel-documents">
+      <div class="sec-h">Customs &amp; Import</div>
+      <div class="doc-grid">
+        <div class="doc-tile"><div class="doc-tile-name">ZC429_26PL44302D007UH7R0</div><div class="doc-tile-type">Customs Declaration · HTML+PDF</div><div style="margin-top:4px"><span class="badge b-gold">CLEARED</span></div><div class="doc-tile-acts"><button class="doc-btn primary">View HTML</button><button class="doc-btn">PDF</button></div></div>
+        <div class="doc-tile"><div class="doc-tile-name">6876258325_DSK</div><div class="doc-tile-type">DHL Broker Notification</div><div class="doc-tile-acts"><button class="doc-btn primary">View</button></div></div>
+        <div class="doc-tile"><div class="doc-tile-name">NBP_Rate</div><div class="doc-tile-type">Exchange Rate</div><div class="doc-tile-acts"><button class="doc-btn primary">View</button></div></div>
+        <div class="doc-tile"><div class="doc-tile-name">ESTRELLAawizacja26PL...</div><div class="doc-tile-type">Duty Notification 1414</div><div class="doc-tile-acts"><button class="doc-btn primary">View</button></div></div>
+      </div>
+
+      <div class="sec-h">Internal Invoices</div>
+      <div class="doc-grid">
+        <div class="doc-tile"><div class="doc-tile-name">013_Invoice_EJL2627013</div><div class="doc-tile-type">Polish Invoice · 7 pcs</div><div class="doc-tile-acts"><button class="doc-btn primary">PDF</button><button class="doc-btn">XLS</button></div></div>
+        <div class="doc-tile"><div class="doc-tile-name">014_Invoice_EJL2627014</div><div class="doc-tile-type">Polish Invoice · 1 pc</div><div class="doc-tile-acts"><button class="doc-btn primary">PDF</button><button class="doc-btn">XLS</button></div></div>
+        <div class="doc-tile"><div class="doc-tile-name">015_Invoice_EJL2627015</div><div class="doc-tile-type">Polish Invoice · 68 pcs</div><div class="doc-tile-acts"><button class="doc-btn primary">PDF</button><button class="doc-btn">XLS</button></div></div>
+      </div>
+
+      <div class="sec-h">Packing Lists</div>
+      <div class="doc-grid">
+        <div class="doc-tile"><div class="doc-tile-name">013_PL_Poland_7pcs</div><div class="doc-tile-type">Poland version</div><div class="doc-tile-acts"><button class="doc-btn primary">PDF</button><button class="doc-btn">XLS</button></div></div>
+        <div class="doc-tile"><div class="doc-tile-name">014_PL_Poland_1pc</div><div class="doc-tile-type">Poland version</div><div class="doc-tile-acts"><button class="doc-btn primary">PDF</button><button class="doc-btn">XLS</button></div></div>
+        <div class="doc-tile"><div class="doc-tile-name">015_PL_Poland_68pcs</div><div class="doc-tile-type">Poland version</div><div class="doc-tile-acts"><button class="doc-btn primary">PDF</button><button class="doc-btn">XLS</button></div></div>
+        <div class="doc-tile warn"><div class="doc-tile-name">015_PL_ClearDiamonds_REVISED</div><div class="doc-tile-type">Client version · REVISED</div><div class="doc-tile-acts"><button class="doc-btn primary">PDF</button></div></div>
+      </div>
+
+      <div class="sec-h">Client Documents</div>
+      <div class="doc-grid">
+        <div class="doc-tile"><div class="doc-tile-name">PROF 68 · WDT 63 — Verhoeven</div><div class="doc-tile-type">🇫🇷 Pro-forma + Invoice + PL + Tracking</div><div class="doc-tile-acts"><button class="doc-btn primary">All</button><button class="doc-btn">Track</button></div></div>
+        <div class="doc-tile warn"><div class="doc-tile-name">PROF 69 · WDT 64 — Clear-Diamonds</div><div class="doc-tile-type">🇭🇺 PL revised</div><div class="doc-tile-acts"><button class="doc-btn primary">All</button><button class="doc-btn">Revised PL</button></div></div>
+        <div class="doc-tile"><div class="doc-tile-name">PROF 70 · WDT 65 — Juliany EOOD</div><div class="doc-tile-type">🇧🇬 Pro-forma + Invoice + PL</div><div class="doc-tile-acts"><button class="doc-btn primary">All</button></div></div>
+        <div class="doc-tile"><div class="doc-tile-name">PROF 71 · WDT 66 — Dream Rings</div><div class="doc-tile-type">🇸🇰 Pro-forma + Invoice + PL</div><div class="doc-tile-acts"><button class="doc-btn primary">All</button></div></div>
+      </div>
+
+      <div class="sec-h">Warehouse</div>
+      <div class="doc-grid">
+        <div class="doc-tile"><div class="doc-tile-name">PZ_2_4_2026</div><div class="doc-tile-type">Warehouse Receipt</div><div class="doc-tile-acts"><button class="doc-btn primary">PDF</button><button class="doc-btn">XLS</button></div></div>
+        <div class="doc-tile missing"><div class="doc-tile-name">Packing List Upload</div><div class="doc-tile-type">routes_packing.py — No UI tab</div><div class="doc-tile-acts"><button class="doc-btn primary">Upload</button></div></div>
+      </div>
+    </div><!-- /documents -->
+
+    <!-- ░░░░░ INTELLIGENCE TAB ░░░░░ -->
+    <div class="panel" id="panel-intelligence">
+      <div class="confirm-box info">ℹ Intelligence panel is for admin / AI use. Operator actions should come from Overview → Next Action.</div>
+      <div class="sec-h">Intelligence Engine</div>
+      <div class="g2">
+        <div class="card">
+          <div class="card-h"><div class="card-title">AI Analysis</div><span class="badge b-gold">ACTIVE</span></div>
+          <div class="card-body">
+            <div class="kv">
+              <div class="kv-row"><div class="kv-label">Last Run</div><div class="kv-val mono">07 Apr 2026 · 14:00</div></div>
+              <div class="kv-row"><div class="kv-label">Findings</div><div class="kv-val">3 action proposals generated</div></div>
+              <div class="kv-row"><div class="kv-label">SLA Alert</div><div class="kv-val" style="color:var(--red)">DHL reply 50.5h overdue</div></div>
+            </div>
+            <button class="act-btn gold" style="margin-top:12px" onclick="toast('Running intelligence scan…')">▶ Run Analysis</button>
+            <div class="pipe-route" style="margin-top:8px">GET /api/v1/intelligence/run/{id}</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><div class="card-title">AI Bridge (Cowork)</div></div>
+          <div class="card-body">
+            <div class="kv">
+              <div class="kv-row"><div class="kv-label">Mode</div><div class="kv-val">Operator-delegated tasks</div></div>
+              <div class="kv-row"><div class="kv-label">Active Tasks</div><div class="kv-val mono">1</div></div>
+            </div>
+            <button class="act-btn" style="margin-top:12px" onclick="toast('Opening AI Bridge…')">Open AI Bridge</button>
+            <div class="pipe-route" style="margin-top:8px">POST /api/v1/ai-bridge/tasks</div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /intelligence -->
+
+    <!-- ░░░░░ PROPOSALS TAB ░░░░░ -->
+    <div class="panel" id="panel-proposals">
+      <div class="confirm-box warn">⚠ Approving proposals is irreversible. Review each one carefully before approving. A confirmation modal will appear.</div>
+      <div class="sec-h">Action Proposals</div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+
+        <div class="card" style="border-color:var(--amberbr)">
+          <div class="card-h">
+            <div>
+              <div class="card-title">Proposal #1 — Send DHL Follow-up</div>
+              <div style="font-size:0.72rem;color:var(--tx3);margin-top:2px">Generated: 07 Apr 2026 · Source: Intelligence Engine</div>
+            </div>
+            <span class="badge b-warn">PENDING</span>
+          </div>
+          <div class="card-body">
+            <p style="font-size:0.8rem;color:var(--tx2);margin-bottom:12px">DHL reply is 50.5h overdue. Send a follow-up email referencing AWB 6876258325 to re-initiate DSK document transfer.</p>
+            <div style="display:flex;gap:8px">
+              <button class="act-btn green" onclick="openModal('approve-modal')">✓ Approve</button>
+              <button class="act-btn red" onclick="toast('Proposal rejected')">✗ Reject</button>
+              <button class="act-btn">View Details</button>
+            </div>
+            <div class="pipe-route" style="margin-top:8px">POST /api/v1/action-proposals/1/approve</div>
+          </div>
+        </div>
+
+        <div class="card" style="border-color:var(--bluebr)">
+          <div class="card-h">
+            <div>
+              <div class="card-title">Proposal #2 — Regenerate PZ (v1.5)</div>
+              <div style="font-size:0.72rem;color:var(--tx3);margin-top:2px">Generated: 07 Apr 2026 · Source: PZ Audit</div>
+            </div>
+            <span class="badge b-info">PENDING</span>
+          </div>
+          <div class="card-body">
+            <p style="font-size:0.8rem;color:var(--tx2);margin-bottom:12px">PZ v1.4 has verification gaps for items in EJL/26-27/015. Regenerate to v1.5 with corrected item descriptions.</p>
+            <div style="display:flex;gap:8px">
+              <button class="act-btn green" onclick="openModal('approve-modal')">✓ Approve</button>
+              <button class="act-btn red" onclick="toast('Proposal rejected')">✗ Reject</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /proposals -->
+
+    <!-- ░░░░░ ANALYTICS TAB ░░░░░ -->
+    <div class="panel" id="panel-analytics">
+      <div class="sec-h">Batch Analytics &amp; Reports</div>
+      <div class="g4" style="margin-bottom:20px">
+        <div class="stat"><div class="stat-val gold">1</div><div class="stat-lbl">Active Batches</div></div>
+        <div class="stat"><div class="stat-val">76</div><div class="stat-lbl">Total Pieces</div></div>
+        <div class="stat"><div class="stat-val green">$19k</div><div class="stat-lbl">Invoice Value</div></div>
+        <div class="stat"><div class="stat-val amber">4.2 days</div><div class="stat-lbl">Avg Process Time</div></div>
+      </div>
+      <div class="g2">
+        <div class="card">
+          <div class="card-h"><div class="card-title">SLA Performance</div></div>
+          <div class="card-body">
+            <table class="dt">
+              <thead><tr><th>Stage</th><th>SLA</th><th>Actual</th><th>Status</th></tr></thead>
+              <tbody>
+                <tr><td>DHL Initial</td><td class="mono">24h</td><td class="mono">1.5h</td><td><span class="badge b-ok">OK</span></td></tr>
+                <tr><td>DHL Reply Wait</td><td class="mono">48h</td><td class="mono">50.5h</td><td><span class="badge b-err">BREACH</span></td></tr>
+                <tr><td>Agency Fwd</td><td class="mono">4h</td><td class="mono">—</td><td><span class="badge b-muted">PENDING</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><div class="card-title">Feature Coverage</div></div>
+          <div class="card-body">
+            <table class="dt">
+              <thead><tr><th>Module</th><th>Backend</th><th>UI</th><th>Tests</th></tr></thead>
+              <tbody>
+                <tr><td>Intake</td><td><span class="badge b-ok">✓</span></td><td><span class="badge b-ok">✓</span></td><td><span class="badge b-ok">✓</span></td></tr>
+                <tr><td>DHL Clearance</td><td><span class="badge b-ok">✓</span></td><td><span class="badge b-ok">✓</span></td><td><span class="badge b-ok">✓</span></td></tr>
+                <tr><td>Proforma Conv.</td><td><span class="badge b-ok">✓</span></td><td><span class="badge b-err">✗</span></td><td><span class="badge b-ok">✓</span></td></tr>
+                <tr><td>Packing/Barcode</td><td><span class="badge b-ok">✓</span></td><td><span class="badge b-err">✗</span></td><td><span class="badge b-ok">✓</span></td></tr>
+                <tr><td>Closure</td><td><span class="badge b-ok">✓</span></td><td><span class="badge b-err">✗</span></td><td><span class="badge b-warn">~</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="pipe-route">GET /api/v1/analytics/batch-summary · /reports/export</div>
+    </div><!-- /analytics -->
+
+  </div><!-- /content -->
+</div><!-- /main -->
+</div><!-- /shell -->
+
+
+<!-- ══════════════════════════════
+     MODALS
+══════════════════════════════ -->
+
+<!-- Send DSK Modal -->
+<div class="modal-bg" id="send-dsk-modal">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">📧 Send DSK Transfer to DHL</div><button class="modal-close" onclick="closeModal('send-dsk-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="confirm-box warn">⚠ SLA is 50.5h overdue. This action will send the DSK package to DHL Express Poland.</div>
+      <div class="kv" style="margin-bottom:16px">
+        <div class="kv-row"><div class="kv-label">Recipient</div><div class="kv-val">dhl-customs-pl@dhl.com</div></div>
+        <div class="kv-row"><div class="kv-label">AWB Ref</div><div class="kv-val mono">6876258325</div></div>
+        <div class="kv-row"><div class="kv-label">DSK Version</div><div class="kv-val mono">v3 · Generated 07 Apr</div></div>
+        <div class="kv-row"><div class="kv-label">Attachments</div><div class="kv-val">ZC429 · Invoice 015 · DSK doc</div></div>
+      </div>
+      <div class="form-row"><label class="form-label">Additional Note</label><textarea class="form-input" rows="2" placeholder="Optional note to DHL operator…"></textarea></div>
+    </div>
+    <div class="modal-foot">
+      <button class="act-btn" onclick="closeModal('send-dsk-modal')">Cancel</button>
+      <button class="act-btn gold" onclick="closeModal('send-dsk-modal');toast('DSK sent to DHL ✓')">📧 Confirm Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- DHL Follow-up Modal -->
+<div class="modal-bg" id="followup-modal">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">⚡ DHL Follow-up SLA</div><button class="modal-close" onclick="closeModal('followup-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="confirm-box" style="background:var(--redbg);border-color:var(--redbr);color:var(--red)">🚨 SLA breach: 50.5h since last outbound. DHL follow-up is overdue.</div>
+      <div class="form-row" style="margin-top:12px"><label class="form-label">Follow-up Template</label>
+        <select class="form-input"><option>Standard SLA Reminder</option><option>Escalation Level 1</option><option>Escalation Level 2</option></select>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="act-btn" onclick="closeModal('followup-modal')">Cancel</button>
+      <button class="act-btn red" onclick="closeModal('followup-modal');toast('Follow-up sent to DHL ✓')">⚡ Send Follow-up</button>
+    </div>
+  </div>
+</div>
+
+<!-- PZ Confirm Modal -->
+<div class="modal-bg" id="pz-confirm-modal">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">✓ Confirm PZ Number</div><button class="modal-close" onclick="closeModal('pz-confirm-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row"><label class="form-label">PZ Number (from wFirma)</label><input class="form-input" type="text" placeholder="e.g. PZ 2/4/2026" value="PZ 2/4/2026"></div>
+      <div class="confirm-box info">ℹ This will lock the PZ number and mark the entry as confirmed.</div>
+    </div>
+    <div class="modal-foot">
+      <button class="act-btn" onclick="closeModal('pz-confirm-modal')">Cancel</button>
+      <button class="act-btn gold" onclick="closeModal('pz-confirm-modal');toast('PZ number confirmed ✓')">✓ Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- wFirma Create Modal -->
+<div class="modal-bg" id="wfirma-create-modal">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">+ Create wFirma Reservation</div><button class="modal-close" onclick="closeModal('wfirma-create-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="confirm-box warn">⚠ Once created, duplicate prevention is enforced. Review the preview before proceeding.</div>
+      <div class="kv">
+        <div class="kv-row"><div class="kv-label">Items</div><div class="kv-val mono">76 pcs</div></div>
+        <div class="kv-row"><div class="kv-label">Total Net</div><div class="kv-val mono">~PLN 64,200</div></div>
+        <div class="kv-row"><div class="kv-label">VAT Rate</div><div class="kv-val mono">23%</div></div>
+        <div class="kv-row"><div class="kv-label">Readiness</div><div class="kv-val"><span class="badge b-ok">Ready</span></div></div>
+      </div>
+      <div style="margin-top:12px"><strong style="font-size:0.8rem;color:var(--tx1)">Type CONFIRM to proceed:</strong>
+        <input class="form-input" style="margin-top:6px" type="text" placeholder="CONFIRM" id="confirm-input">
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="act-btn" onclick="closeModal('wfirma-create-modal')">Cancel</button>
+      <button class="act-btn gold" onclick="closeModal('wfirma-create-modal');toast('wFirma reservation created ✓')">+ Create Reservation</button>
+    </div>
+  </div>
+</div>
+
+<!-- Approve Proposal Modal -->
+<div class="modal-bg" id="approve-modal">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">✓ Approve Action Proposal</div><button class="modal-close" onclick="closeModal('approve-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="confirm-box warn">⚠ This action will be executed immediately. It cannot be undone.</div>
+      <p style="font-size:0.8rem;color:var(--tx2);margin-top:12px">Confirm that you want to approve this proposal and execute the recommended action.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="act-btn" onclick="closeModal('approve-modal')">Cancel</button>
+      <button class="act-btn green" onclick="closeModal('approve-modal');toast('Proposal approved and executed ✓')">✓ Approve &amp; Execute</button>
+    </div>
+  </div>
+</div>
+
+<!-- Email Rescan Modal -->
+<div class="modal-bg" id="email-modal">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">📧 Email Rescan</div><button class="modal-close" onclick="closeModal('email-modal')">✕</button></div>
+    <div class="modal-body">
+      <p style="font-size:0.8rem;color:var(--tx2);margin-bottom:12px">Rescan the mailbox for new DHL or agency email responses related to this batch.</p>
+      <div class="kv">
+        <div class="kv-row"><div class="kv-label">Mailbox</div><div class="kv-val">import@estrellajewels.eu</div></div>
+        <div class="kv-row"><div class="kv-label">Last Scan</div><div class="kv-val mono">07 Apr 2026 · 14:00</div></div>
+        <div class="kv-row"><div class="kv-label">New Emails</div><div class="kv-val mono">3 unprocessed</div></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="act-btn" onclick="closeModal('email-modal')">Cancel</button>
+      <button class="act-btn gold" onclick="closeModal('email-modal');toast('Email rescan complete ✓')">↺ Rescan Now</button>
+    </div>
+  </div>
+</div>
+
+<!-- Batch selector modal -->
+<div class="modal-bg" id="batch-modal">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">Switch Batch</div><button class="modal-close" onclick="closeModal('batch-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row"><input class="form-input" type="text" placeholder="Search AWB or date…"></div>
+      <table class="dt">
+        <thead><tr><th>AWB</th><th>Date</th><th>Pieces</th><th>Stage</th></tr></thead>
+        <tbody>
+          <tr style="cursor:pointer" onclick="closeModal('batch-modal');toast('Switched to 6876258325')">
+            <td class="mono" style="color:var(--gold)">6876258325</td>
+            <td>07 Apr 2026</td>
+            <td>76</td>
+            <td><span class="badge b-warn">DHL WAIT</span></td>
+          </tr>
+          <tr style="cursor:pointer" onclick="closeModal('batch-modal');toast('Switched to 1012178215')">
+            <td class="mono">1012178215</td>
+            <td>29 Apr 2026</td>
+            <td>42</td>
+            <td><span class="badge b-ok">CLEARED</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// Tab switching
+function switchTab(id, btn) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('panel-' + id).classList.add('active');
+  if(btn) btn.classList.add('active');
+  // sync sidebar
+  document.querySelectorAll('.nav-item').forEach(n => {
+    if(n.textContent.trim().toLowerCase().startsWith(id.toLowerCase().split('/')[0])) n.classList.add('active');
+  });
+}
+function showTab(id) {
+  const tab = Array.from(document.querySelectorAll('.tab'))
+    .find(t => t.textContent.toLowerCase().includes(id.toLowerCase().split('/')[0]));
+  switchTab(id, tab);
+}
+
+// Modals
+function openModal(id) { document.getElementById(id).classList.add('open') }
+function closeModal(id) { document.getElementById(id).classList.remove('open') }
+document.querySelectorAll('.modal-bg').forEach(m => {
+  m.addEventListener('click', e => { if(e.target === m) m.classList.remove('open') });
+});
+
+// Toast
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = '✓ ' + msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function showAction(label) {
+  switchTab('dhl', document.querySelectorAll('.tab')[1]);
+  toast('Action: ' + label);
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  const tabs = ['overview','dhl','warehouse','sales','pz','timeline','documents','intelligence','proposals','analytics'];
+  const n = parseInt(e.key);
+  if(n >= 1 && n <= tabs.length) {
+    const btn = document.querySelectorAll('.tab')[n-1];
+    switchTab(tabs[n-1], btn);
+  }
+  if(e.key === 'Escape') document.querySelectorAll('.modal-bg').forEach(m => m.classList.remove('open'));
+});
+
+// URL routing
+const p = new URLSearchParams(window.location.search);
+if(p.get('tab')) {
+  const btn = document.querySelectorAll('.tab')[0];
+  switchTab(p.get('tab'), btn);
+}
+</script>
+</body>
+</html>

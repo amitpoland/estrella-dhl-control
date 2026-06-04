@@ -1,0 +1,1556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1280, initial-scale=1">
+<title>Atlas Pro Forma — Preview · preview.estrellajewels.eu</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --navy: #0c1828;
+    --navy-2: #142339;
+    --navy-hover: #1c3052;
+    --gold: #b8965a;
+    --gold-soft: #d4b87c;
+    --gold-band: #c5a163;
+    --green-band: #1d3a2e;
+    --green-band-2: #1f4534;
+    --paper: #f7f5f0;
+    --paper-2: #efece3;
+    --ink: #1a1f2c;
+    --ink-2: #3a4254;
+    --ink-3: #6b7280;
+    --ink-4: #9ca3af;
+    --line: #e5e1d6;
+    --line-strong: #d4cfc0;
+    --surface: #ffffff;
+    --surface-hover: #f2efe6;
+    --amber-bg: #fdf6e3;
+    --amber-border: #e8d59a;
+    --amber-ink: #8b6a1a;
+    --green-bg: #e8f0e8;
+    --green-border: #b8d4b8;
+    --green-ink: #2d5a2d;
+    --blue-bg: #e7eef8;
+    --blue-border: #b8cee8;
+    --blue-ink: #2d4d8a;
+    --red-bg: #fbe9e9;
+    --red-border: #e8b8b8;
+    --red-ink: #8a2d2d;
+    --shadow-sm: 0 1px 2px rgba(20,30,50,0.04), 0 1px 1px rgba(20,30,50,0.03);
+    --shadow-md: 0 4px 12px rgba(20,30,50,0.06), 0 2px 4px rgba(20,30,50,0.04);
+    --shadow-lg: 0 24px 48px rgba(20,30,50,0.18), 0 8px 16px rgba(20,30,50,0.08);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Manrope', -apple-system, system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  code, .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  /* ── Preview banner ─────────────────────────────────────── */
+  .preview-banner {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--navy);
+    color: var(--paper);
+    padding: 8px 24px;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 2px solid var(--gold);
+  }
+  .preview-banner strong { color: var(--gold-soft); font-weight: 700; letter-spacing: 0.08em; }
+  .preview-banner .right { font-size: 11px; color: var(--ink-4); }
+
+  /* ── App shell ──────────────────────────────────────────── */
+  .app { display: flex; min-height: calc(100vh - 32px); }
+  .sidebar {
+    width: 224px;
+    background: var(--navy);
+    color: #cfd6e2;
+    padding: 20px 0;
+    flex-shrink: 0;
+  }
+  .brand {
+    padding: 0 20px 24px;
+    border-bottom: 1px solid var(--navy-2);
+    margin-bottom: 16px;
+  }
+  .brand-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .brand-diamond {
+    width: 32px; height: 32px;
+    background: linear-gradient(135deg, var(--gold) 0%, var(--gold-soft) 100%);
+    transform: rotate(45deg);
+    border-radius: 4px;
+    display: inline-block;
+  }
+  .brand-name { font-weight: 800; font-size: 16px; color: white; letter-spacing: 0.02em; }
+  .brand-sub { font-size: 10px; color: var(--ink-4); letter-spacing: 0.18em; margin-top: 2px; }
+
+  .nav-item {
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #aab3c2;
+  }
+  .nav-item:hover { background: var(--navy-2); color: white; }
+  .nav-item.active { background: var(--navy-2); color: white; border-left: 3px solid var(--gold); padding-left: 17px; }
+  .nav-icon { width: 16px; opacity: 0.6; }
+
+  .main { flex: 1; min-width: 0; }
+
+  /* ── Top bar ─────────────────────────────────────────────── */
+  .topbar {
+    background: var(--paper);
+    border-bottom: 1px solid var(--line);
+    padding: 14px 32px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .search {
+    flex: 1;
+    max-width: 480px;
+    background: white;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink-3);
+  }
+  .search input { border: 0; outline: 0; flex: 1; font: inherit; color: var(--ink); background: transparent; }
+  .kbd {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: var(--paper-2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--ink-3);
+  }
+  .top-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+  .btn-new-shipment {
+    background: var(--navy);
+    color: var(--paper);
+    border: 0;
+    padding: 9px 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-new-shipment:hover { background: var(--navy-hover); }
+  .user-chip { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--gold); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+  .role { font-size: 10px; color: var(--green-ink); background: var(--green-bg); padding: 2px 8px; border-radius: 4px; letter-spacing: 0.06em; font-weight: 600; }
+
+  /* ── Page body ───────────────────────────────────────────── */
+  .page { padding: 24px 32px 80px; max-width: 1280px; }
+  .breadcrumb {
+    font-size: 12px;
+    color: var(--ink-3);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .breadcrumb a { color: var(--ink-3); text-decoration: none; cursor: pointer; }
+  .breadcrumb a:hover { color: var(--ink); text-decoration: underline; }
+  .breadcrumb .sep { color: var(--ink-4); }
+
+  .h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 4px; }
+  .h1-sub { font-size: 13px; color: var(--ink-3); margin-bottom: 20px; }
+
+  /* ── Stepper ─────────────────────────────────────────────── */
+  .stepper {
+    display: flex;
+    align-items: center;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 24px;
+    margin-bottom: 14px;
+    box-shadow: var(--shadow-sm);
+  }
+  .step { display: flex; align-items: center; gap: 10px; flex: 1; }
+  .step-num {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700;
+    border: 2px solid var(--line-strong);
+    color: var(--ink-4);
+    background: white;
+    flex-shrink: 0;
+  }
+  .step.done .step-num { background: var(--green-ink); color: white; border-color: var(--green-ink); }
+  .step.done .step-num::after { content: '✓'; }
+  .step.done .step-num span { display: none; }
+  .step-label { font-size: 11px; }
+  .step-label-name { font-weight: 600; color: var(--ink); }
+  .step.done .step-label-name { color: var(--green-ink); }
+  .step:not(.done) .step-label-name { color: var(--ink-4); }
+  .step-line { flex: 1; height: 1px; background: var(--line-strong); margin: 0 4px; }
+
+  /* ── Next action banner ─────────────────────────────────── */
+  .banner {
+    background: var(--amber-bg);
+    border: 1px solid var(--amber-border);
+    border-radius: 12px;
+    padding: 14px 20px;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .banner-arrow {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--amber-ink);
+    color: white;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    font-weight: 700;
+  }
+  .banner-text { flex: 1; }
+  .banner-label { font-size: 10px; color: var(--amber-ink); letter-spacing: 0.14em; font-weight: 700; }
+  .banner-title { font-weight: 600; color: var(--ink); margin-top: 2px; }
+  .banner-cta {
+    background: var(--navy);
+    color: var(--paper);
+    border: 0;
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  /* ── Document Suite header band ─────────────────────────── */
+  .suite-card {
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 24px;
+    box-shadow: var(--shadow-sm);
+  }
+  .suite-band {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    background: var(--green-band);
+    color: var(--paper);
+  }
+  .suite-band-left {
+    padding: 16px 22px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .suite-band-right {
+    background: var(--gold-band);
+    padding: 16px 22px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 14px;
+  }
+  .suite-logo {
+    width: 32px; height: 32px;
+    background: var(--green-band-2);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800;
+    font-size: 12px;
+    color: var(--gold-soft);
+    letter-spacing: 0.05em;
+  }
+  .suite-eyebrow { font-size: 10px; letter-spacing: 0.18em; opacity: 0.7; font-weight: 600; }
+  .suite-title { font-weight: 700; font-size: 15px; }
+  .suite-count { font-size: 11px; letter-spacing: 0.16em; font-weight: 700; opacity: 0.95; }
+  .btn-new-draft {
+    background: white;
+    color: var(--green-band);
+    border: 0;
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+    box-shadow: var(--shadow-sm);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .btn-new-draft:hover { background: var(--paper); }
+
+  /* ── Drafts list (Screen A) ─────────────────────────────── */
+  .drafts-intro {
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--line);
+    background: var(--paper-2);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .drafts-intro-icon {
+    width: 28px; height: 28px;
+    background: var(--gold-soft);
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+    color: var(--navy);
+  }
+  .drafts-intro-text { flex: 1; }
+  .drafts-intro-title { font-weight: 700; font-size: 13px; }
+  .drafts-intro-sub { font-size: 12px; color: var(--ink-3); margin-top: 1px; }
+
+  .draft-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 140px 130px 110px 140px 24px;
+    gap: 18px;
+    align-items: center;
+    padding: 16px 22px;
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .draft-row:hover { background: var(--surface-hover); }
+  .draft-row:last-child { border-bottom: 0; }
+
+  .chip {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .chip-draft { background: var(--paper-2); color: var(--ink-2); border-color: var(--line-strong); }
+  .chip-posted { background: var(--blue-bg); color: var(--blue-ink); border-color: var(--blue-border); }
+  .chip-convertblocked { background: var(--amber-bg); color: var(--amber-ink); border-color: var(--amber-border); }
+  .chip-invoiced { background: var(--green-bg); color: var(--green-ink); border-color: var(--green-border); }
+  .chip-warn { background: var(--red-bg); color: var(--red-ink); border-color: var(--red-border); }
+
+  .draft-client { font-weight: 600; }
+  .draft-source { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+  .draft-doc { font-size: 12px; color: var(--ink-3); font-family: 'JetBrains Mono', monospace; }
+  .sync-chip {
+    font-size: 10px;
+    color: var(--ink-3);
+    background: var(--paper-2);
+    padding: 2px 8px;
+    border-radius: 4px;
+    display: inline-block;
+  }
+  .draft-total { text-align: right; font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 13px; }
+  .draft-updated { text-align: right; font-size: 11px; color: var(--ink-3); font-family: 'JetBrains Mono', monospace; }
+  .draft-chevron { color: var(--ink-4); font-size: 18px; text-align: center; }
+
+  /* ── Screen B ────────────────────────────────────────────── */
+  .back-link {
+    font-size: 13px;
+    color: var(--ink-3);
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .back-link:hover { color: var(--ink); }
+
+  .detail-toolbar {
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 12px 12px 0 0;
+    border-bottom: 0;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    box-shadow: var(--shadow-sm);
+  }
+  .tb-btn {
+    background: transparent;
+    border: 0;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 500;
+  }
+  .tb-btn:hover { background: var(--surface-hover); }
+  .tb-btn[disabled] { color: var(--ink-4); cursor: not-allowed; }
+  .tb-btn[disabled]:hover { background: transparent; }
+  .tb-btn-warn { color: var(--amber-ink); font-weight: 600; }
+  .tb-btn-warn:hover { background: var(--amber-bg); }
+  .tb-sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  .tb-spacer { flex: 1; }
+  .tb-icon { font-weight: 700; }
+
+  .detail-cards {
+    background: white;
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    padding: 22px 24px 8px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+  }
+  .party-card {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    background: var(--paper);
+  }
+  .party-label {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--ink-3);
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .party-name { font-weight: 600; margin-bottom: 4px; }
+  .party-line { font-size: 12px; color: var(--ink-2); line-height: 1.55; }
+  .party-warn {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--amber-border);
+    font-size: 11px;
+    color: var(--amber-ink);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .party-warn a { color: var(--amber-ink); font-weight: 600; cursor: pointer; }
+
+  .tab-strip {
+    background: white;
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    padding: 0 24px;
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--line);
+  }
+  .tab {
+    padding: 14px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-3);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--ink); font-weight: 700; border-bottom-color: var(--gold); }
+
+  .tab-body {
+    background: white;
+    border: 1px solid var(--line);
+    border-top: 0;
+    border-radius: 0 0 12px 12px;
+    padding: 24px;
+    min-height: 280px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .kv-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 22px 32px;
+  }
+  .kv .k {
+    font-size: 11px;
+    color: var(--ink-3);
+    margin-bottom: 3px;
+    font-weight: 500;
+  }
+  .kv .v {
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--ink);
+  }
+  .kv .v.mono { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+  .kv .v a { color: var(--blue-ink); text-decoration: none; cursor: pointer; }
+  .kv .v a:hover { text-decoration: underline; }
+  .kv .v-muted { color: var(--ink-4); font-weight: 500; }
+
+  /* Lines tab table */
+  .lines-table { width: 100%; border-collapse: collapse; }
+  .lines-table th { text-align: left; font-size: 10px; letter-spacing: 0.12em; color: var(--ink-3); padding: 8px 12px; border-bottom: 1px solid var(--line); font-weight: 700; }
+  .lines-table th.num { text-align: right; }
+  .lines-table td { padding: 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .lines-table td.num { text-align: right; font-family: 'JetBrains Mono', monospace; }
+  .lines-table tfoot td { font-weight: 700; border-top: 2px solid var(--ink); border-bottom: 0; padding-top: 14px; }
+
+  /* Customer mapping */
+  .cm-grid {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 14px 24px;
+    max-width: 720px;
+  }
+  .cm-k { color: var(--ink-3); font-size: 13px; padding-top: 2px; }
+  .cm-v { font-weight: 600; }
+  .cm-status-row { grid-column: 1 / -1; padding-top: 14px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
+
+  /* Reservation tab */
+  .cap-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 18px;
+  }
+  .cap-chip {
+    padding: 6px 12px;
+    border: 1px solid var(--green-border);
+    background: var(--green-bg);
+    color: var(--green-ink);
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cap-chip.warn { background: var(--amber-bg); border-color: var(--amber-border); color: var(--amber-ink); }
+  .cap-summary { margin-left: auto; font-size: 12px; color: var(--ink-3); display: flex; gap: 18px; }
+  .cap-summary strong { color: var(--ink); }
+
+  .block-card {
+    background: var(--amber-bg);
+    border: 1px solid var(--amber-border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 18px;
+  }
+  .block-card-title { font-weight: 700; color: var(--amber-ink); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+  .block-card ul { margin: 0; padding-left: 22px; font-size: 13px; color: var(--ink-2); }
+  .block-card li { margin: 4px 0; }
+
+  .res-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+  }
+  .btn {
+    background: white;
+    border: 1px solid var(--line-strong);
+    padding: 9px 16px;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    color: var(--ink);
+  }
+  .btn:hover { background: var(--surface-hover); }
+  .btn[disabled] { color: var(--ink-4); background: var(--paper-2); cursor: not-allowed; }
+  .btn-primary { background: var(--navy); color: var(--paper); border-color: var(--navy); }
+  .btn-primary:hover { background: var(--navy-hover); }
+  .btn-warn { background: var(--amber-ink); color: white; border-color: var(--amber-ink); }
+  .btn-warn:hover { background: #6f5414; }
+
+  /* History */
+  .history-event {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    gap: 18px;
+  }
+  .history-event:last-child { border-bottom: 0; }
+  .he-time { font-size: 12px; color: var(--ink-3); font-family: 'JetBrains Mono', monospace; }
+  .he-title { font-weight: 600; margin-bottom: 4px; }
+  .he-detail { font-size: 12px; color: var(--ink-3); }
+  .he-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; letter-spacing: 0.08em; font-weight: 700; background: var(--paper-2); color: var(--ink-2); margin-right: 6px; }
+
+  /* ── Modals ──────────────────────────────────────────────── */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(12, 24, 40, 0.55);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    padding: 40px 20px;
+    overflow-y: auto;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: white;
+    border-radius: 12px;
+    max-width: 640px;
+    width: 100%;
+    box-shadow: var(--shadow-lg);
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-large { max-width: 720px; }
+  .modal-head {
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .modal-title { font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .modal-close { background: 0; border: 0; font-size: 22px; cursor: pointer; color: var(--ink-3); line-height: 1; padding: 0 4px; }
+  .modal-close:hover { color: var(--ink); }
+  .modal-body { padding: 22px 24px; overflow-y: auto; }
+  .modal-foot {
+    padding: 16px 24px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    background: var(--paper);
+    border-radius: 0 0 12px 12px;
+  }
+
+  .step-block { margin-bottom: 22px; }
+  .step-block:last-child { margin-bottom: 0; }
+  .step-eyebrow { font-size: 10px; letter-spacing: 0.18em; color: var(--ink-3); font-weight: 700; margin-bottom: 10px; }
+  .source-option {
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+  }
+  .source-option:hover { background: var(--surface-hover); }
+  .source-option.selected { border-color: var(--gold); background: var(--paper); box-shadow: 0 0 0 2px rgba(184,150,90,0.18); }
+  .source-option.disabled { opacity: 0.5; cursor: not-allowed; }
+  .radio-dot {
+    width: 18px; height: 18px;
+    border: 2px solid var(--line-strong);
+    border-radius: 50%;
+    flex-shrink: 0;
+    position: relative;
+  }
+  .source-option.selected .radio-dot { border-color: var(--gold); }
+  .source-option.selected .radio-dot::after {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    background: var(--gold);
+    border-radius: 50%;
+  }
+  .source-text { flex: 1; }
+  .source-label { font-weight: 600; font-size: 13px; }
+  .source-sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+  .source-badge {
+    background: var(--paper-2);
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .field-label { font-size: 11px; color: var(--ink-3); font-weight: 600; margin-bottom: 5px; letter-spacing: 0.02em; }
+  .field input, .field select {
+    width: 100%;
+    padding: 9px 11px;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 13px;
+    background: white;
+  }
+  .field input:focus { outline: 0; border-color: var(--gold); box-shadow: 0 0 0 2px rgba(184,150,90,0.18); }
+
+  /* Convert modal payload disclosure */
+  .pl-warn {
+    background: var(--amber-bg);
+    border-left: 3px solid var(--amber-ink);
+    padding: 12px 14px;
+    border-radius: 0 6px 6px 0;
+    margin-bottom: 18px;
+    font-size: 13px;
+    color: var(--ink-2);
+  }
+  .pl-warn strong { color: var(--amber-ink); }
+  .pl-section-label {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--ink-3);
+    font-weight: 700;
+    margin: 16px 0 10px;
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+  }
+  .pl-section-label:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
+  .pl-row { display: grid; grid-template-columns: 130px 1fr; gap: 14px; padding: 5px 0; font-size: 13px; }
+  .pl-k { color: var(--ink-3); }
+  .pl-v { font-family: 'JetBrains Mono', monospace; font-size: 12px; word-break: break-word; }
+  .pl-v.normal { font-family: inherit; font-size: 13px; }
+  .pl-lines {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-top: 6px;
+  }
+  .pl-line { font-size: 12px; padding: 4px 0; display: flex; justify-content: space-between; gap: 12px; }
+  .pl-line:not(:last-child) { border-bottom: 1px dashed var(--line); }
+  .pl-line-name { color: var(--ink-2); }
+  .pl-line-qty { font-family: 'JetBrains Mono', monospace; color: var(--ink-3); font-size: 11px; }
+
+  /* Screen switcher (preview-only control) */
+  .preview-debug {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    background: var(--navy);
+    color: var(--paper);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 11px;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: var(--shadow-lg);
+  }
+  .preview-debug strong { color: var(--gold-soft); letter-spacing: 0.1em; font-weight: 700; }
+  .preview-debug a { color: var(--paper); text-decoration: underline; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<!-- ── Preview banner ──────────────────────────────────────── -->
+<div class="preview-banner">
+  <div><strong>PREVIEW · NOT PRODUCTION</strong> &nbsp; preview.estrellajewels.eu &nbsp;·&nbsp; Pro Forma redesign mockup &nbsp;·&nbsp; data is hardcoded, no writes</div>
+  <div class="right">Build: drilldown-v0.1 · Throwaway artifact</div>
+</div>
+
+<div class="app">
+
+  <!-- ── Sidebar ───────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">
+        <span class="brand-diamond"></span>
+        <div>
+          <div class="brand-name">Estrella</div>
+          <div class="brand-sub">ATLAS</div>
+        </div>
+      </div>
+    </div>
+    <div class="nav-item">▣ &nbsp;Dashboard</div>
+    <div class="nav-item">✉ &nbsp;Inbox</div>
+    <div class="nav-item active">◆ &nbsp;Shipments</div>
+    <div class="nav-item">▤ &nbsp;Documents</div>
+    <div class="nav-item">⊞ &nbsp;Accounting</div>
+    <div class="nav-item">⊡ &nbsp;Inventory</div>
+    <div class="nav-item">≡ &nbsp;Reports</div>
+    <div class="nav-item">⚙ &nbsp;Setup</div>
+  </aside>
+
+  <!-- ── Main ──────────────────────────────────────────────── -->
+  <main class="main">
+
+    <div class="topbar">
+      <div class="search">
+        <span>⌕</span>
+        <input placeholder="Search shipments, drafts, customers…">
+        <span class="kbd">⌘K</span>
+      </div>
+      <div class="top-actions">
+        <button class="btn-new-shipment">+ New Shipment</button>
+        <div class="user-chip">
+          <div class="avatar">AS</div>
+          <div>
+            <div style="font-weight:600">Amit Saniya</div>
+            <span class="role">ADMIN ✓</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         SCREEN A — Drafts list (shown inside Shipment detail page)
+         ============================================================ -->
+    <div class="page" id="screen-a">
+
+      <div class="breadcrumb">
+        <a onclick="goShipments()">Shipments</a>
+        <span class="sep">/</span>
+        <a>EJL26-27013</a>
+        <span class="sep">/</span>
+        <span>Pro Forma</span>
+      </div>
+      <h1 class="h1">Shipment EJL26-27013</h1>
+      <div class="h1-sub">AWB 6876258325 · 4 packing lines · Pro Forma stage</div>
+
+      <!-- Stepper -->
+      <div class="stepper">
+        <div class="step done"><span class="step-num"><span>1</span></span><div class="step-label"><div class="step-label-name">Intake</div></div></div>
+        <div class="step-line"></div>
+        <div class="step"><span class="step-num"><span>2</span></span><div class="step-label"><div class="step-label-name">Pre-check</div></div></div>
+        <div class="step-line"></div>
+        <div class="step"><span class="step-num"><span>3</span></span><div class="step-label"><div class="step-label-name">DHL Reply</div></div></div>
+        <div class="step-line"></div>
+        <div class="step"><span class="step-num"><span>4</span></span><div class="step-label"><div class="step-label-name">SAD / ZC429</div></div></div>
+        <div class="step-line"></div>
+        <div class="step"><span class="step-num"><span>5</span></span><div class="step-label"><div class="step-label-name">Verified</div></div></div>
+        <div class="step-line"></div>
+        <div class="step"><span class="step-num"><span>6</span></span><div class="step-label"><div class="step-label-name">PZ Generated</div></div></div>
+        <div class="step-line"></div>
+        <div class="step"><span class="step-num"><span>7</span></span><div class="step-label"><div class="step-label-name">wFirma Booked</div></div></div>
+      </div>
+
+      <!-- Next action -->
+      <div class="banner">
+        <div class="banner-arrow">→</div>
+        <div class="banner-text">
+          <div class="banner-label">NEXT ACTION</div>
+          <div class="banner-title">Scan DHL inbox for clearance email</div>
+        </div>
+        <button class="banner-cta">DHL / Customs →</button>
+      </div>
+
+      <!-- Document Suite card -->
+      <div class="suite-card">
+        <div class="suite-band">
+          <div class="suite-band-left">
+            <div class="suite-logo">EJ</div>
+            <div>
+              <div class="suite-eyebrow">ESTRELLA JEWELS · DOCUMENT SUITE</div>
+              <div class="suite-title">Pro Forma · Faktura proforma</div>
+            </div>
+          </div>
+          <div class="suite-band-right">
+            <div class="suite-count">4 DRAFTS</div>
+            <button class="btn-new-draft" onclick="openNewDraftModal()">+ New Draft</button>
+          </div>
+        </div>
+
+        <div class="drafts-intro">
+          <div class="drafts-intro-icon">◇</div>
+          <div class="drafts-intro-text">
+            <div class="drafts-intro-title">Local Proforma Drafts</div>
+            <div class="drafts-intro-sub">Click a row to edit, post, or convert. Drafts are local until posted to wFirma.</div>
+          </div>
+        </div>
+
+        <!-- Draft rows -->
+        <div class="draft-row" onclick="openDraft('diamond')">
+          <span class="chip chip-posted">PROFORMA POSTED</span>
+          <div>
+            <div class="draft-client">Diamond Point</div>
+            <div class="draft-source">cloned from packing line #1</div>
+          </div>
+          <div class="draft-doc">PROF 92/2026 · v1</div>
+          <span class="sync-chip">packing synced</span>
+          <div class="draft-total">2 450,00 USD</div>
+          <div class="draft-updated">2026-05-18 10:34</div>
+          <div class="draft-chevron">›</div>
+        </div>
+
+        <div class="draft-row" onclick="openDraft('verhoeven')">
+          <span class="chip chip-convertblocked">CONVERT BLOCKED</span>
+          <div>
+            <div class="draft-client">Verhoeven Joaillier</div>
+            <div class="draft-source">cloned from packing line #2</div>
+          </div>
+          <div class="draft-doc">PROF 93/2026 · v1</div>
+          <span class="sync-chip">packing synced</span>
+          <div class="draft-total">1 850,00 USD</div>
+          <div class="draft-updated">2026-05-18 10:34</div>
+          <div class="draft-chevron">›</div>
+        </div>
+
+        <div class="draft-row" onclick="openDraft('dream')">
+          <span class="chip chip-draft">DRAFT</span>
+          <div>
+            <div class="draft-client">Dream Ring</div>
+            <div class="draft-source">cloned from packing line #3 · customer unmapped</div>
+          </div>
+          <div class="draft-doc">— · v1</div>
+          <span class="sync-chip">packing synced</span>
+          <div class="draft-total">0,00 USD</div>
+          <div class="draft-updated">2026-05-18 10:34</div>
+          <div class="draft-chevron">›</div>
+        </div>
+
+        <div class="draft-row" onclick="openDraft('panakas')">
+          <span class="chip chip-draft">DRAFT</span>
+          <div>
+            <div class="draft-client">Panakas</div>
+            <div class="draft-source">cloned from packing line #4 · customer unmapped</div>
+          </div>
+          <div class="draft-doc">draft #18 · v1</div>
+          <span class="sync-chip">packing synced</span>
+          <div class="draft-total">405,00 EUR</div>
+          <div class="draft-updated">2026-05-18 10:34</div>
+          <div class="draft-chevron">›</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ============================================================
+         SCREEN B — Draft detail
+         ============================================================ -->
+    <div class="page" id="screen-b" style="display:none">
+
+      <a class="back-link" onclick="backToList()">← Shipment EJL26-27013</a>
+
+      <div class="breadcrumb">
+        <a onclick="goShipments()">Shipments</a>
+        <span class="sep">/</span>
+        <a onclick="backToList()">EJL26-27013</a>
+        <span class="sep">/</span>
+        <a onclick="backToList()">Pro Forma</a>
+        <span class="sep">/</span>
+        <span id="bc-draft">Diamond Point</span>
+      </div>
+      <h1 class="h1" id="b-title">Pro Forma · <span id="b-client">Diamond Point</span></h1>
+      <div class="h1-sub" id="b-sub">PROF 92/2026 · v1 · cloned from packing line #1</div>
+
+      <!-- Action toolbar -->
+      <div class="detail-toolbar">
+        <button class="tb-btn"><span class="tb-icon">✎</span> Edit</button>
+        <button class="tb-btn"><span class="tb-icon">🗑</span> Delete</button>
+        <button class="tb-btn"><span class="tb-icon">⎘</span> Duplicate</button>
+        <div class="tb-sep"></div>
+        <button class="tb-btn" id="tb-post"><span class="tb-icon">↑</span> Post to wFirma</button>
+        <button class="tb-btn tb-btn-warn" id="tb-convert" onclick="openConvertModal()"><span class="tb-icon">⚠</span> Convert to Invoice</button>
+        <div class="tb-sep"></div>
+        <button class="tb-btn"><span class="tb-icon">⎙</span> Print</button>
+        <button class="tb-btn"><span class="tb-icon">➤</span> Send</button>
+        <button class="tb-btn"><span class="tb-icon">⚙</span> Generate ▾</button>
+        <div class="tb-spacer"></div>
+        <button class="tb-btn">⋯</button>
+      </div>
+
+      <!-- Party cards -->
+      <div class="detail-cards" id="party-cards">
+        <!-- populated by JS -->
+      </div>
+
+      <!-- Tab strip -->
+      <div class="tab-strip">
+        <div class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</div>
+        <div class="tab" data-tab="lines" onclick="switchTab('lines')">Lines</div>
+        <div class="tab" data-tab="mapping" onclick="switchTab('mapping')">Customer Mapping</div>
+        <div class="tab" data-tab="reservation" onclick="switchTab('reservation')">Reservation</div>
+        <div class="tab" data-tab="history" onclick="switchTab('history')">History</div>
+      </div>
+
+      <!-- Tab body -->
+      <div class="tab-body" id="tab-body"><!-- populated by JS --></div>
+
+    </div>
+
+  </main>
+</div>
+
+<!-- ── New Draft modal ─────────────────────────────────────── -->
+<div class="modal-overlay" id="new-draft-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">New Proforma Draft</div>
+      <button class="modal-close" onclick="closeModal('new-draft-modal')">×</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="step-block">
+        <div class="step-eyebrow">STEP 1 · PICK SOURCE</div>
+        <div class="source-option selected" onclick="pickSource(this)">
+          <div class="radio-dot"></div>
+          <div class="source-text">
+            <div class="source-label">Packing list on this shipment</div>
+            <div class="source-sub">4 packing lines — pick one to clone client, lines, prices</div>
+          </div>
+          <div class="source-badge">4 available</div>
+        </div>
+        <div class="source-option" onclick="pickSource(this)">
+          <div class="radio-dot"></div>
+          <div class="source-text">
+            <div class="source-label">Existing draft on this shipment</div>
+            <div class="source-sub">Clone an existing draft (lines + client preserved)</div>
+          </div>
+          <div class="source-badge">4 available</div>
+        </div>
+        <div class="source-option" onclick="pickSource(this)">
+          <div class="radio-dot"></div>
+          <div class="source-text">
+            <div class="source-label">Prior proforma from wFirma cache</div>
+            <div class="source-sub">Search any past proforma — useful for repeat customers</div>
+          </div>
+          <div class="source-badge">128 available</div>
+        </div>
+        <div class="source-option" onclick="pickSource(this)">
+          <div class="radio-dot"></div>
+          <div class="source-text">
+            <div class="source-label">Prior invoice from wFirma cache</div>
+            <div class="source-sub">Clone a past WDT invoice as a new proforma</div>
+          </div>
+          <div class="source-badge">412 available</div>
+        </div>
+      </div>
+
+      <div class="step-block">
+        <div class="step-eyebrow">STEP 2 · EDIT METADATA</div>
+        <div class="form-grid">
+          <div class="field">
+            <div class="field-label">Client name</div>
+            <input type="text" value="Diamond Point" />
+          </div>
+          <div class="field">
+            <div class="field-label">Currency</div>
+            <select><option>USD</option><option>EUR</option><option>PLN</option></select>
+          </div>
+          <div class="field">
+            <div class="field-label">Sale date</div>
+            <input type="date" value="2026-05-18" />
+          </div>
+          <div class="field">
+            <div class="field-label">Payment terms</div>
+            <select><option>Bank transfer · 7 days</option><option>Bank transfer · 14 days</option><option>Prepaid</option></select>
+          </div>
+        </div>
+        <div style="margin-top: 14px; font-size: 12px; color: var(--ink-3);">
+          Lines preview: <strong style="color: var(--ink);">3 lines</strong> · <strong style="color: var(--ink);">2 450,00 USD</strong>
+          <span style="color: var(--ink-4);">— line edits happen on the draft detail page after creation</span>
+        </div>
+      </div>
+
+      <div class="step-block">
+        <div class="step-eyebrow">STEP 3 · CONFIRM</div>
+        <div style="font-size: 13px; color: var(--ink-2);">
+          Creating this draft does <strong>not</strong> post anything to wFirma. The draft saves locally and you'll be taken to its detail page to review, edit lines, then post.
+        </div>
+      </div>
+
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('new-draft-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmNewDraft()">Create draft</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Convert to Invoice modal ────────────────────────────── -->
+<div class="modal-overlay" id="convert-modal">
+  <div class="modal modal-large">
+    <div class="modal-head">
+      <div class="modal-title">⚠ Convert Proforma → Invoice</div>
+      <button class="modal-close" onclick="closeModal('convert-modal')">×</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="pl-warn">
+        This will create a wFirma <strong>WDT invoice</strong> and link it to this proforma.
+        The invoice <strong>cannot be cancelled in wFirma</strong> after creation — only corrected via Korekta.
+      </div>
+
+      <div class="pl-section-label">PAYLOAD</div>
+      <div class="pl-row"><span class="pl-k">Endpoint</span><span class="pl-v">POST /wfirma/invoices/convert</span></div>
+      <div class="pl-row"><span class="pl-k">Source proforma</span><span class="pl-v normal">PROF 92/2026 <span style="color: var(--ink-4);">(wFirma id: prof-92-7a3c)</span></span></div>
+      <div class="pl-row"><span class="pl-k">Customer</span><span class="pl-v normal">Diamond Point Sp. z o.o.<br><span style="color: var(--ink-3); font-size: 11px;">NIP: PL5252812119 · wFirma id: cust-3401</span></span></div>
+      <div class="pl-row"><span class="pl-k">Currency</span><span class="pl-v">USD</span></div>
+      <div class="pl-row"><span class="pl-k">FX rate</span><span class="pl-v">3.9847 PLN <span style="color: var(--ink-3); font-family: inherit; font-size: 11px;">(NBP table date 2026-05-17)</span></span></div>
+      <div class="pl-row"><span class="pl-k">Sale date</span><span class="pl-v">2026-05-18</span></div>
+      <div class="pl-row"><span class="pl-k">Payment</span><span class="pl-v normal">Bank transfer · 7 days · due 2026-05-25</span></div>
+      <div class="pl-row"><span class="pl-k">Total</span><span class="pl-v">2 450,00 USD <span style="color: var(--ink-3); font-family: inherit; font-size: 11px;">(9 762,52 PLN)</span></span></div>
+
+      <div class="pl-row"><span class="pl-k">Lines (3)</span><div class="pl-v normal" style="grid-column: auto;">
+        <div class="pl-lines">
+          <div class="pl-line"><span class="pl-line-name">Diamond ring 0.5ct VVS · 18k WG</span><span class="pl-line-qty">1 pc × 1 850,00 USD</span></div>
+          <div class="pl-line"><span class="pl-line-name">Sapphire pendant · oval cut · 18k YG</span><span class="pl-line-qty">2 pc × 280,00 USD</span></div>
+          <div class="pl-line"><span class="pl-line-name">Gold chain 18k · 45cm</span><span class="pl-line-qty">1 pc × 40,00 USD</span></div>
+        </div>
+      </div></div>
+
+      <div class="pl-section-label">AUDIT</div>
+      <div class="pl-row"><span class="pl-k">Idempotency key</span><span class="pl-v">prof-92-conv-7a3c <span style="color: var(--green-ink); font-family: inherit; font-size: 11px;">(reserved)</span></span></div>
+      <div class="pl-row"><span class="pl-k">Audit row</span><span class="pl-v normal">Written pre-call as <code style="background: var(--paper-2); padding: 1px 6px; border-radius: 3px; font-size: 11px;">pending</code>, updated to <code style="background: var(--paper-2); padding: 1px 6px; border-radius: 3px; font-size: 11px;">success</code> or <code style="background: var(--paper-2); padding: 1px 6px; border-radius: 3px; font-size: 11px;">failed</code> post-call</span></div>
+      <div class="pl-row"><span class="pl-k">Actor</span><span class="pl-v normal">Amit Saniya · admin</span></div>
+
+      <div style="margin-top: 22px; padding: 12px 14px; background: var(--paper-2); border-radius: 6px; font-size: 12px; color: var(--ink-2);">
+        <strong>If the call fails or times out</strong>, do not retry from here.
+        Check <a style="color: var(--blue-ink); text-decoration: underline; cursor: pointer;">Inbox → Action Required</a> for the retry proposal —
+        it reuses this idempotency key so wFirma will not double-charge.
+      </div>
+
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('convert-modal')">Cancel</button>
+      <button class="btn btn-warn" onclick="confirmConvert()">⚠ Convert to Invoice</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Debug panel ─────────────────────────────────────────── -->
+<div class="preview-debug">
+  <strong>MOCKUP</strong>
+  <a onclick="backToList()">Screen A</a>
+  <span style="color: var(--ink-4);">·</span>
+  <a onclick="openDraft('diamond')">Diamond</a>
+  <a onclick="openDraft('verhoeven')">Verhoeven (blocked)</a>
+  <a onclick="openDraft('dream')">Dream (unmapped)</a>
+  <a onclick="openDraft('panakas')">Panakas (unmapped)</a>
+</div>
+
+<script>
+// ── Hardcoded draft data ─────────────────────────────────
+const DRAFTS = {
+  diamond: {
+    chip: 'PROFORMA POSTED',
+    chipClass: 'chip-posted',
+    client: 'Diamond Point',
+    clientFull: 'Diamond Point Sp. z o.o.',
+    doc: 'PROF 92/2026 · v1',
+    docNum: 'PROF 92/2026',
+    source: 'cloned from packing line #1',
+    total: '2 450,00 USD',
+    totalPLN: '9 762,52 PLN',
+    currency: 'USD',
+    fx: '3.9847',
+    fxDate: '2026-05-17',
+    saleDate: '2026-05-18',
+    paymentTerms: 'Bank transfer · 7 days',
+    paymentDue: '2026-05-25',
+    nip: 'PL5252812119',
+    customerId: 'cust-3401',
+    address: ['ul. Złota 14', '00-019 Warszawa', 'Polska'],
+    wfirmaProforma: 'prof-92-7a3c',
+    wfirmaInvoice: '—',
+    ksef: '—',
+    convertEnabled: true,
+    customerMapped: true,
+    blockingReasons: [],
+    lines: [
+      { name: 'Diamond ring 0.5ct VVS · 18k WG', qty: 1, unit: 'pc', price: '1 850,00', total: '1 850,00' },
+      { name: 'Sapphire pendant · oval cut · 18k YG', qty: 2, unit: 'pc', price: '280,00', total: '560,00' },
+      { name: 'Gold chain 18k · 45cm', qty: 1, unit: 'pc', price: '40,00', total: '40,00' },
+    ],
+    history: [
+      { time: '2026-05-18 10:34', tag: 'CLONE', title: 'Draft cloned from packing line #1', detail: 'source: packing/line/EJL26-27013/1' },
+      { time: '2026-05-18 11:12', tag: 'EDIT', title: 'Lines edited by Amit Saniya', detail: '3 lines added, total 2 450,00 USD' },
+      { time: '2026-05-18 14:02', tag: 'POSTED', title: 'Posted to wFirma as PROF 92/2026', detail: 'wFirma id: prof-92-7a3c · idempotency: prof-92-post-7a3c' },
+    ],
+  },
+  verhoeven: {
+    chip: 'CONVERT BLOCKED',
+    chipClass: 'chip-convertblocked',
+    client: 'Verhoeven Joaillier',
+    clientFull: 'Verhoeven Joaillier SARL',
+    doc: 'PROF 93/2026 · v1',
+    docNum: 'PROF 93/2026',
+    source: 'cloned from packing line #2',
+    total: '1 850,00 USD',
+    totalPLN: '7 371,70 PLN',
+    currency: 'USD',
+    fx: '3.9847',
+    fxDate: '2026-05-17',
+    saleDate: '2026-05-18',
+    paymentTerms: 'Bank transfer · 14 days',
+    paymentDue: '2026-06-01',
+    nip: 'FR12345678901',
+    customerId: 'cust-2890',
+    address: ['12 rue de la Paix', '75002 Paris', 'France'],
+    wfirmaProforma: 'prof-93-9b1d',
+    wfirmaInvoice: '—',
+    ksef: '—',
+    convertEnabled: false,
+    customerMapped: true,
+    blockingReasons: [
+      '8 packing line(s) not yet scanned into warehouse',
+      'wFirma warehouse module not enabled (WFIRMA_WAREHOUSE_MODULE_ENABLED / WFIRMA_WAREHOUSE_ID)',
+    ],
+    lines: [
+      { name: 'Emerald ring · platinum · 0.8ct', qty: 1, unit: 'pc', price: '1 850,00', total: '1 850,00' },
+    ],
+    history: [
+      { time: '2026-05-18 10:34', tag: 'CLONE', title: 'Draft cloned from packing line #2', detail: 'source: packing/line/EJL26-27013/2' },
+      { time: '2026-05-18 13:48', tag: 'POSTED', title: 'Posted to wFirma as PROF 93/2026', detail: 'wFirma id: prof-93-9b1d' },
+      { time: '2026-05-18 14:15', tag: 'BLOCKED', title: 'Conversion blocked', detail: 'wFirma warehouse module not enabled — see Reservation tab' },
+    ],
+  },
+  dream: {
+    chip: 'DRAFT',
+    chipClass: 'chip-draft',
+    client: 'Dream Ring',
+    clientFull: 'Dream Ring s.r.o.',
+    doc: '— · v1',
+    docNum: '—',
+    source: 'cloned from packing line #3',
+    total: '0,00 USD',
+    totalPLN: '—',
+    currency: 'USD',
+    fx: '—',
+    fxDate: '—',
+    saleDate: '—',
+    paymentTerms: '—',
+    paymentDue: '—',
+    nip: '—',
+    customerId: null,
+    address: ['Václavské náměstí 1', '110 00 Praha', 'Czech Republic'],
+    wfirmaProforma: '—',
+    wfirmaInvoice: '—',
+    ksef: '—',
+    convertEnabled: false,
+    customerMapped: false,
+    blockingReasons: [
+      "customer 'Dream Ring' not matched in wfirma_customers",
+      'Lines empty — add at least one line to post',
+    ],
+    lines: [],
+    history: [
+      { time: '2026-05-18 10:34', tag: 'CLONE', title: 'Draft cloned from packing line #3', detail: 'source: packing/line/EJL26-27013/3' },
+    ],
+  },
+  panakas: {
+    chip: 'DRAFT',
+    chipClass: 'chip-draft',
+    client: 'Panakas',
+    clientFull: 'Anastazia Panakova — Zlatnictvo Panaks',
+    doc: 'draft #18 · v1',
+    docNum: 'draft #18',
+    source: 'cloned from packing line #4',
+    total: '405,00 EUR',
+    totalPLN: '1 712,50 PLN',
+    currency: 'EUR',
+    fx: '4.2284',
+    fxDate: '2026-05-10',
+    saleDate: '2026-05-11',
+    paymentTerms: 'Bank transfer · 7 days',
+    paymentDue: '2026-05-18',
+    nip: 'SK1020315978',
+    customerId: null,
+    address: ['Námestie SNP 79/7', '91101 Trenčianske Teplice', 'Slovakia'],
+    wfirmaProforma: '—',
+    wfirmaInvoice: '—',
+    ksef: '—',
+    convertEnabled: false,
+    customerMapped: false,
+    blockingReasons: [
+      "customer 'Panakas' not matched in wfirma_customers (register via PUT /api/v1/wfirma/customers/<name>)",
+    ],
+    lines: [
+      { name: 'Silver chain · rhodium plated · 50cm', qty: 3, unit: 'pc', price: '85,00', total: '255,00' },
+      { name: 'Pearl earrings · freshwater', qty: 1, unit: 'pair', price: '150,00', total: '150,00' },
+    ],
+    history: [
+      { time: '2026-05-18 10:34', tag: 'CLONE', title: 'Draft cloned from packing line #4', detail: 'source: packing/line/EJL26-27013/4' },
+      { time: '2026-05-18 10:34', tag: 'WARN', title: 'Customer name not matched in wFirma', detail: "Tried lookup on 'Panakas' — no result" },
+    ],
+  },
+};
+
+const SELLER = {
+  name: 'ESTRELLA JEWELS Sp. z o. o. SPÓŁKA KOMANDYTOWA',
+  lines: [
+    'ul. Wybrzeże Kościuszkowskie 31/33',
+    '00-379 Warszawa, Polska',
+    'NIP/VAT UE: PL5252812119',
+    'Santander Bank Polska S.A. (EURO)',
+  ],
+};
+
+let currentDraft = 'diamond';
+let currentTab = 'overview';
+
+// ── Navigation ───────────────────────────────────────────
+function openDraft(key) {
+  currentDraft = key;
+  currentTab = 'overview';
+  document.getElementById('screen-a').style.display = 'none';
+  document.getElementById('screen-b').style.display = 'block';
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'overview'));
+  renderScreenB();
+  window.scrollTo(0, 0);
+}
+
+function backToList() {
+  document.getElementById('screen-a').style.display = 'block';
+  document.getElementById('screen-b').style.display = 'none';
+  window.scrollTo(0, 0);
+}
+
+function goShipments() {
+  alert('Mockup: in the real app this navigates to the Shipments list.');
+}
+
+// ── Render Screen B ──────────────────────────────────────
+function renderScreenB() {
+  const d = DRAFTS[currentDraft];
+
+  document.getElementById('b-client').textContent = d.client;
+  document.getElementById('b-sub').textContent = d.doc + ' · ' + d.source;
+  document.getElementById('bc-draft').textContent = d.client;
+
+  // Convert button gating
+  const cv = document.getElementById('tb-convert');
+  if (d.convertEnabled) {
+    cv.removeAttribute('disabled');
+    cv.title = 'Convert this proforma to a wFirma WDT invoice';
+  } else {
+    cv.setAttribute('disabled', '');
+    cv.title = 'Blocked: ' + d.blockingReasons.join(' · ');
+  }
+
+  // Party cards
+  const partyCards = `
+    <div class="party-card">
+      <div class="party-label">SELLER</div>
+      <div class="party-name">${SELLER.name}</div>
+      ${SELLER.lines.map(l => `<div class="party-line">${l}</div>`).join('')}
+    </div>
+    <div class="party-card">
+      <div class="party-label">BUYER</div>
+      <div class="party-name">${d.clientFull}</div>
+      ${d.address.map(l => `<div class="party-line">${l}</div>`).join('')}
+      <div class="party-line" style="margin-top:6px;">VAT UE: ${d.nip}</div>
+      ${d.customerMapped ? '' : `
+        <div class="party-warn">
+          <span>⚠</span>
+          Not mapped to wFirma customer — <a>Open Customer Master</a>
+        </div>
+      `}
+    </div>
+    <div class="party-card">
+      <div class="party-label">RECIPIENT</div>
+      <div class="party-name">${d.clientFull}</div>
+      <div class="party-line" style="color: var(--ink-3); font-style: italic;">Same as Buyer</div>
+    </div>
+  `;
+  document.getElementById('party-cards').innerHTML = partyCards;
+
+  renderTab();
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  renderTab();
+}
+
+function renderTab() {
+  const d = DRAFTS[currentDraft];
+  const body = document.getElementById('tab-body');
+
+  if (currentTab === 'overview') {
+    body.innerHTML = `
+      <div class="kv-grid">
+        <div class="kv"><div class="k">Numer</div><div class="v mono">${d.docNum}</div></div>
+        <div class="kv"><div class="k">Zamówienie</div><div class="v"><a>EJL26-27013 (AWB)</a></div></div>
+        <div class="kv"><div class="k">Numer KSeF</div><div class="v ${d.ksef === '—' ? 'v-muted' : 'mono'}">${d.ksef}</div></div>
+        <div class="kv"><div class="k">Metoda płatności</div><div class="v">${d.paymentTerms === '—' ? '<span class="v-muted">—</span>' : 'przelew'}</div></div>
+
+        <div class="kv"><div class="k">Data wystawienia</div><div class="v mono">2026-05-18</div></div>
+        <div class="kv"><div class="k">Termin płatności</div><div class="v mono ${d.paymentDue === '—' ? 'v-muted' : ''}">${d.paymentDue}</div></div>
+        <div class="kv"><div class="k">Data sprzedaży</div><div class="v mono ${d.saleDate === '—' ? 'v-muted' : ''}">${d.saleDate}</div></div>
+        <div class="kv"><div class="k">Zapłacono</div><div class="v">0,00 ${d.currency}</div></div>
+
+        <div class="kv"><div class="k">Do zapłacenia</div><div class="v">${d.total}</div></div>
+        <div class="kv"><div class="k">Schemat księgowy</div><div class="v">Zwykły</div></div>
+        <div class="kv"><div class="k">Kody w JPK_V7</div><div class="v v-muted">brak</div></div>
+        <div class="kv"><div class="k">Razem</div><div class="v">${d.total} <span style="font-size:11px; color: var(--ink-3); font-weight:500;">(Kurs: ${d.fx} PLN)</span></div></div>
+
+        <div class="kv"><div class="k">Magazyn</div><div class="v">Główny</div></div>
+        <div class="kv"><div class="k">wFirma proforma ID</div><div class="v ${d.wfirmaProforma === '—' ? 'v-muted' : 'mono'}">${d.wfirmaProforma}</div></div>
+        <div class="kv"><div class="k">wFirma invoice ID</div><div class="v ${d.wfirmaInvoice === '—' ? 'v-muted' : 'mono'}">${d.wfirmaInvoice}</div></div>
+        <div class="kv"><div class="k">Source</div><div class="v" style="font-size:13px;">${d.source}</div></div>
+      </div>
+    `;
+  }
+
+  else if (currentTab === 'lines') {
+    if (d.lines.length === 0) {
+      body.innerHTML = `<div style="text-align:center; padding: 40px 20px; color: var(--ink-3);">
+        <div style="font-size: 32px; opacity: 0.4;">◯</div>
+        <div style="font-weight: 600; margin-top: 12px;">No lines yet</div>
+        <div style="font-size: 12px; margin-top: 4px;">Add a line item to populate this draft.</div>
+        <button class="btn btn-primary" style="margin-top: 16px;">+ Add line</button>
+      </div>`;
+    } else {
+      const rows = d.lines.map((l, i) => `
+        <tr>
+          <td style="color: var(--ink-3); font-family: 'JetBrains Mono', monospace; font-size: 12px;">${i+1}</td>
+          <td>${l.name}</td>
+          <td class="num">${l.qty}</td>
+          <td>${l.unit}</td>
+          <td class="num">${l.price}</td>
+          <td class="num">${l.total} ${d.currency}</td>
+        </tr>
+      `).join('');
+      const total = d.lines.reduce((s, l) => s + (parseFloat(l.total.replace(/\s/g, '').replace(',', '.')) || 0), 0);
+      body.innerHTML = `
+        <table class="lines-table">
+          <thead><tr><th>#</th><th>DESCRIPTION</th><th class="num">QTY</th><th>UNIT</th><th class="num">PRICE</th><th class="num">TOTAL</th></tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr><td colspan="5" style="text-align:right;">Total</td><td class="num">${d.total}</td></tr></tfoot>
+        </table>
+      `;
+    }
+  }
+
+  else if (currentTab === 'mapping') {
+    body.innerHTML = `
+      <div class="cm-grid">
+        <div class="cm-k">Sales client name</div>
+        <div class="cm-v">${d.client}</div>
+        <div class="cm-k">wFirma customer ID</div>
+        <div class="cm-v ${d.customerId ? 'mono' : ''}">${d.customerId || '<span style="color: var(--red-ink); font-weight: 600;">— unmatched —</span>'}</div>
+        <div class="cm-k">wFirma stored name</div>
+        <div class="cm-v">${d.customerMapped ? d.clientFull : '<span style="color: var(--ink-4);">—</span>'}</div>
+        <div class="cm-k">Match strategy</div>
+        <div class="cm-v">${d.customerMapped ? '<span class="chip chip-invoiced">EXACT NAME</span>' : '<span class="chip chip-warn">NONE</span>'}</div>
+        <div class="cm-status-row">
+          ${d.customerMapped
+            ? '<span style="color: var(--green-ink); font-size: 13px;">✓ Customer is mapped and ready for posting.</span>'
+            : '<span style="color: var(--ink-3); font-size: 13px;">Not auto-resolvable. Use the Customer Master surface to map this client to a wFirma customer before posting.</span><button class="btn btn-primary" style="margin-left: auto;">Open Customer Master</button>'}
+        </div>
+      </div>
+    `;
+  }
+
+  else if (currentTab === 'reservation') {
+    const blocked = d.blockingReasons.length > 0;
+    body.innerHTML = `
+      <div class="cap-strip">
+        <span class="cap-chip">✓ wFirma configured</span>
+        <span class="cap-chip ${blocked ? 'warn' : ''}">${blocked ? '⚠' : '✓'} Audit clean</span>
+        <span class="cap-chip ${blocked ? 'warn' : ''}">${blocked ? '⚠' : '✓'} Reservation supported</span>
+        <div class="cap-summary">
+          <div>Ready: <strong>${blocked ? '0' : '1'} / 1</strong></div>
+          <div>Currency: <strong>${d.currency}</strong></div>
+        </div>
+      </div>
+
+      ${blocked ? `
+        <div class="block-card">
+          <div class="block-card-title">⚠ Reservation BLOCKED</div>
+          <ul>${d.blockingReasons.map(r => `<li>${r}</li>`).join('')}</ul>
+        </div>
+      ` : `
+        <div style="padding: 16px 0; color: var(--green-ink); font-size: 13px;">
+          ✓ All preconditions met. Conversion can proceed from the toolbar above.
+        </div>
+      `}
+
+      <div class="res-footer">
+        <button class="btn" ${blocked ? 'disabled' : ''}>Create Reservation</button>
+        <button class="btn btn-warn" ${blocked ? 'disabled' : ''} onclick="openConvertModal()">⚠ Convert Proforma to Invoice</button>
+      </div>
+    `;
+  }
+
+  else if (currentTab === 'history') {
+    body.innerHTML = `
+      <div>
+        ${d.history.map(e => `
+          <div class="history-event">
+            <div class="he-time">${e.time}</div>
+            <div>
+              <div class="he-title"><span class="he-tag">${e.tag}</span>${e.title}</div>
+              <div class="he-detail">${e.detail}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+}
+
+// ── Modals ───────────────────────────────────────────────
+function openNewDraftModal() {
+  document.getElementById('new-draft-modal').classList.add('open');
+}
+
+function openConvertModal() {
+  const d = DRAFTS[currentDraft];
+  if (!d.convertEnabled) {
+    alert('Blocked:\n\n' + d.blockingReasons.map(r => '• ' + r).join('\n'));
+    return;
+  }
+  document.getElementById('convert-modal').classList.add('open');
+}
+
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+
+function pickSource(el) {
+  document.querySelectorAll('.source-option').forEach(o => o.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+function confirmNewDraft() {
+  closeModal('new-draft-modal');
+  alert('Mockup: in the real app this would create the draft and navigate to its detail page.');
+}
+
+function confirmConvert() {
+  closeModal('convert-modal');
+  alert('Mockup: in the real app this would POST to wFirma with idempotency key prof-92-conv-7a3c.\n\nOn success: draft chip becomes INVOICED, Overview shows wFirma invoice ID + KSeF number.\nOn failure: Inbox proposal created for retry.');
+}
+
+// Initial render
+renderScreenB();
+
+// ESC closes modals
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
+  }
+});
+</script>
+
+</body>
+</html>
