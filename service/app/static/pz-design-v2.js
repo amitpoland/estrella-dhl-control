@@ -95,7 +95,7 @@
   const NAV_ROUTES = {
     'dashboard':  '/dashboard/dashboard-v2.html',
     'inbox':      '/dashboard/inbox-v2.html',
-    'shipments':  '/dashboard/shipment-v2.html',
+    'shipments':  '/dashboard/shipment-detail-v3.html',
     'proforma':         '/dashboard/proforma-v2.html',
     'proforma-detail':  '/dashboard/proforma-detail-v2.html',
     'documents':  '/dashboard/documents-v2.html',
