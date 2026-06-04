@@ -42,6 +42,14 @@ Reading from `C:\Users\Super Fashion\PZ APP` is **forbidden** — that tree is r
 It is NOT the NSSM AppDirectory and NOT safe to read, verify, or deploy from. If any subagent
 or skill needs to inspect the repo, the path is `C:\PZ-verify`, not the scratch clone.
 
+**One-session rule (enforced):** Only one Claude Code session may operate against
+`C:\PZ-verify` at a time. A second concurrent session on the same tree races branch
+state and produces duplicate commits (incident 2026-06-04: two sessions on VERIFY_DIR
+produced `0c22cfb` direct-to-main and `6ad62a6` on a competing branch). A second
+session must be read-only or must use a separate git worktree.
+
+Elaboration: `service/docs/ops/working-tree-convention.md` (rule 6).
+
 ---
 
 ## MANDATORY GOVERNANCE GATES

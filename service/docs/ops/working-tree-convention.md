@@ -52,6 +52,23 @@ deploys robocopy verified bytes into it; never `git` against `C:\PZ`.
    "VERIFY_DIR (`C:\PZ-verify`) only — NOT `C:\Users\Super Fashion\PZ APP`" and pin the
    expected SHA, so a fresh session cannot accidentally act on the stale scratch clone.
 
+6. **One session per working tree.** Only one Claude Code session may operate against
+   `C:\PZ-verify` at a time. Two sessions on one tree race branch state and produce
+   duplicate commits (incident 2026-06-04: `0c22cfb` committed direct-to-main by one
+   session, `6ad62a6` landed on the wrong branch by another). If a second session must
+   be opened to investigate while a first is mid-task, the second session must be
+   read-only (no branch creates, no commits) or must use a separate git worktree.
+
+## Operational notes
+
+**proforma_drafts.db (0-byte stub):** `C:\PZ\app\storage\proforma_drafts.db` is an
+empty 0-byte placeholder. It is NOT in the `main.py` lifespan init sequence. Real
+proforma drafts live in the `proforma_drafts` table inside `proforma_links.db`.
+The 0-byte file is safe to delete, but verify first:
+`Select-String "proforma_drafts.db" C:\PZ-verify\service\app\main.py`
+(should return nothing). Add this check before any cleanup so the file is not
+silently referenced elsewhere at runtime.
+
 ## Why hard-reset of the scratch tree is safe
 
 Before retiring, every file that mattered was confirmed to live in git or on an open
