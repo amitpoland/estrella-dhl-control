@@ -108,6 +108,11 @@
     'api_status': '/dashboard/ai-advisory-v2.html',
   };
 
+  // Nav-route IDs whose target pages are not yet built.
+  // Clicking these shows a disabled state — no 404, no navigation.
+  // Remove an id from this set when its page is deployed.
+  const STUB_ROUTES = new Set(['inbox', 'accounting', 'inventory']);
+
   const NAV_INDEX = (() => {
     const idx = {};
     for (const node of NAV_TREE) {
@@ -207,6 +212,7 @@
     }, [activeGroup]);
 
     const nav = (id) => {
+      if (STUB_ROUTES.has(id)) return;
       if (onNav) {
         onNav(id);
       } else {
@@ -245,6 +251,20 @@
           {NAV_TREE.map(node => {
             if (!node.children) {
               const isActive = active === node.id;
+              const isStub  = STUB_ROUTES.has(node.id);
+              if (isStub) {
+                return (
+                  <button key={node.id}
+                    disabled
+                    title="Coming soon"
+                    style={{ ...rowStyle(false, false), opacity: 0.38, cursor: 'not-allowed' }}
+                    data-testid={`nav-${node.id}`}>
+                    <span style={{ color: 'var(--sidebar-icon)', fontSize: 14, minWidth: 18, textAlign: 'center' }}>{node.icon}</span>
+                    {!collapsed && <span style={{ color: 'var(--sidebar-text-muted)', fontSize: 12, fontWeight: 400, flex: 1 }}>{node.label}</span>}
+                    {!collapsed && <span style={{ fontSize: 8, fontWeight: 600, letterSpacing: '0.04em', color: 'var(--sidebar-text-muted)', opacity: 0.7, flexShrink: 0 }}>Soon</span>}
+                  </button>
+                );
+              }
               return (
                 <button key={node.id} onClick={() => nav(node.id)}
                   style={rowStyle(isActive, false)}
