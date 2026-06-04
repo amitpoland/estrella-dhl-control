@@ -139,6 +139,7 @@ _STONE_INSTRUMENTAL: dict[str, str] = {
 STONE_ABBR: dict[str, Optional[str]] = {
     "DIA":     "diamenty",
     "DIA&CLS": "diamenty i kamienie szlachetne",
+    "DIAM":    "diamenty",
     "CLS":     "kamienie szlachetne",
     "LGD":     "diamenty laboratoryjne",
     "LG":      "diamenty laboratoryjne",
@@ -359,9 +360,15 @@ def normalize_item_description(
     # ── Detect item type (always from raw text) ───────────────────────────────
     detected_type = item_type.upper().strip() if item_type else ""
     if not detected_type:
-        m = _ITEM_TYPE_RE.search(raw)
-        if m:
-            detected_type = m.group(1).upper()
+        # Authority rule: the LAST item-type keyword in the description is the
+        # final product noun and takes precedence over earlier descriptor words.
+        # "LGD Gold Stud Jewell RING" → RING  (not STUD)
+        # "Stud With Diam Jewel RING" → RING  (not STUD)
+        # "Gold Stud Earring"         → EARRING (last = authority)
+        # "Gold Stud"                 → STUD  (only match)
+        matches = _ITEM_TYPE_RE.findall(raw)
+        if matches:
+            detected_type = matches[-1].upper()
     # Normalise EARRING → EARRINGS for dict lookup; keep original for english
     lookup_type = detected_type
     if lookup_type == "EARRING":
