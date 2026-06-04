@@ -15,6 +15,40 @@ or became unresponsive while NSSM's PID-watch reported it alive — the "zombie"
 
 ---
 
+## Incident Timeline (UTC+2, 2026-06-03)
+
+Extracted from original incident draft — exact timestamps from `pz_stdout.log` and manual observation.
+
+| Time | Event |
+|------|-------|
+| 16:16:23 | PZService started — PID alive, port 47213 bound, accept loop running |
+| 16:21:03 | `active_shipment_monitor` ran after a full email-ingest cycle |
+| 16:21:03 | `ConnectionResetError: [WinError 10054]` — remote host (DHL or Zoho) forcibly closed a TCP connection mid-IOCP operation |
+| 16:21:03 | `OSError: [WinError 64]` — "The specified network name is no longer available" — IOCP completion port for the listening socket became invalid |
+| 16:21:03 | uvicorn logged **"Accept failed on a socket"** — `IocpProactor.accept_coro()` raised; server-side accept loop **exited silently** |
+| 16:21–17:17 | **56-minute silent outage.** Python process alive; background loops (`batch_manager`, `dhl_orchestrator`, `email_ingestor`) still running. Port 47213 technically bound but not accepting new HTTP connections. NSSM `sc.exe query` reported `STATE 4 RUNNING`. |
+| 17:17 | Manual `sc stop PZService` — zombie killed; NSSM auto-restarted (`AppRestartDelay=3s`); service recovered |
+
+**Key diagnostic signal**: only the accept loop dies, not the process. NSSM watches the PID, not the port. `netstat -ano | Select-String ":47213.*LISTEN"` would have shown the port bound with no new connections accepted.
+
+---
+
+## NSSM Configuration Audit (at time of incident)
+
+NSSM's restart machinery is entirely process-exit driven. None of it fires on zombie states.
+
+```
+AppExit Default   = Restart       <- restarts on process exit — NOT triggered (process stays alive)
+AppRestartDelay   = 3000 ms       <- delay before restart — NOT triggered
+AppThrottle       = 10000 ms      <- throttle between restarts — NOT triggered
+AppHang           = (not set)     <- NSSM has no hang detection
+HTTP health check = (none)        <- gap closed by Fix A watchdog
+```
+
+**Why NSSM missed it**: The Python process never exited. NSSM's `AppExit Restart` requires the managed process to terminate. A zombie (process alive, server deaf) is structurally undetectable by NSSM alone — external health probing (Fix A) is the only viable detection mechanism.
+
+---
+
 ## Fix A — Health watchdog (detection, ~120s worst-case recovery)
 
 **File:** `C:\PZ\scripts\health-watchdog.ps1`  

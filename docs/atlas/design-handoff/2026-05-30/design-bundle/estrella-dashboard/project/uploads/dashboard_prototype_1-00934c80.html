@@ -1,0 +1,1509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Estrella Jewels — Shipment Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ===== DESIGN TOKENS ===== */
+:root {
+  --bg:            #0f1117;
+  --surface:       #181b24;
+  --surface-2:     #1e2230;
+  --surface-3:     #242840;
+  --border:        #2a2f3e;
+  --border-focus:  #4a6fa5;
+
+  --text-primary:  #e8eaf0;
+  --text-secondary:#8b92a8;
+  --text-muted:    #555d70;
+
+  --gold:          #d4a853;
+  --gold-soft:     rgba(212,168,83,0.12);
+  --gold-dim:      rgba(212,168,83,0.06);
+
+  --ok:            #3ecf8e;
+  --ok-soft:       rgba(62,207,142,0.12);
+  --warn:          #f5a623;
+  --warn-soft:     rgba(245,166,35,0.12);
+  --error:         #e55a5a;
+  --error-soft:    rgba(229,90,90,0.12);
+  --info:          #4a90d9;
+  --info-soft:     rgba(74,144,217,0.12);
+
+  --font-display: 'Playfair Display', Georgia, serif;
+  --font-ui:      'DM Sans', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', monospace;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --shadow: 0 2px 20px rgba(0,0,0,0.45);
+  --shadow-lg: 0 8px 48px rgba(0,0,0,0.7);
+}
+
+/* ===== RESET & BASE ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 14px; }
+body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+a { color: var(--gold); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ===== SCROLLBAR ===== */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: var(--border-focus); border-radius: 3px; }
+
+/* ===== TOP NAV ===== */
+.topnav {
+  position: sticky; top: 0; z-index: 100;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 20px;
+  padding: 0 32px; height: 58px;
+  backdrop-filter: blur(8px);
+}
+.nav-logo {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--font-display); font-size: 1.15rem;
+  color: var(--gold); letter-spacing: 0.01em;
+  flex-shrink: 0;
+}
+.nav-logo .gem { font-size: 1.3rem; }
+.nav-title {
+  color: var(--text-secondary); font-size: 0.85rem; font-weight: 400;
+}
+.nav-spacer { flex: 1; }
+.nav-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: var(--r-sm);
+  font-family: var(--font-ui); font-size: 0.82rem; font-weight: 500;
+  cursor: pointer; border: 1px solid var(--border);
+  background: transparent; color: var(--text-secondary);
+  transition: all 0.15s;
+}
+.nav-btn:hover { border-color: var(--gold); color: var(--gold); }
+.nav-btn.primary {
+  background: var(--gold); border-color: var(--gold);
+  color: #0f1117; font-weight: 600;
+}
+.nav-btn.primary:hover { background: #e0b860; }
+
+/* ===== BACK HEADER (detail page) ===== */
+.page-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 32px;
+}
+.page-header-top {
+  display: flex; align-items: center; gap: 16px;
+  padding: 16px 0 12px;
+}
+.back-btn {
+  display: flex; align-items: center; gap: 6px;
+  background: none; border: none; color: var(--text-secondary);
+  font-family: var(--font-ui); font-size: 0.82rem; cursor: pointer;
+  padding: 4px 8px; border-radius: var(--r-sm);
+  transition: all 0.15s;
+}
+.back-btn:hover { color: var(--text-primary); background: var(--surface-2); }
+.awb-display {
+  font-family: var(--font-mono); font-size: 1rem; font-weight: 500;
+  color: var(--text-primary); letter-spacing: 0.05em;
+}
+.header-meta {
+  font-size: 0.8rem; color: var(--text-muted); margin-left: auto;
+}
+.badges-row {
+  display: flex; gap: 8px; align-items: center;
+}
+
+/* ===== STATUS BADGE ===== */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 20px;
+  font-size: 0.7rem; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.badge::before { content: '●'; font-size: 0.6rem; }
+.badge-ok    { background: var(--ok-soft);   color: var(--ok);   }
+.badge-warn  { background: var(--warn-soft); color: var(--warn); }
+.badge-error { background: var(--error-soft);color: var(--error);}
+.badge-info  { background: var(--info-soft); color: var(--info); }
+.badge-gold  { background: var(--gold-soft); color: var(--gold); }
+
+/* ===== TAB BAR ===== */
+.tab-bar {
+  display: flex; gap: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 0 32px;
+  background: var(--surface);
+  position: sticky; top: 58px; z-index: 90;
+}
+.tab-btn {
+  padding: 12px 18px; cursor: pointer;
+  background: none; border: none; border-bottom: 3px solid transparent;
+  font-family: var(--font-ui); font-size: 0.82rem; font-weight: 500;
+  color: var(--text-secondary); transition: all 0.15s;
+  white-space: nowrap;
+}
+.tab-btn:hover { color: var(--text-primary); }
+.tab-btn.active { color: var(--gold); border-bottom-color: var(--gold); }
+
+/* ===== MAIN CONTENT ===== */
+.main-content {
+  padding: 28px 32px;
+  max-width: 1400px; margin: 0 auto;
+}
+
+/* ===== CARD ===== */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.card-header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.card-title {
+  font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.card-body { padding: 20px; }
+
+/* ===== DATA ROWS ===== */
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table tr { border-bottom: 1px solid var(--border); }
+.data-table tr:last-child { border-bottom: none; }
+.data-table td { padding: 10px 0; vertical-align: top; }
+.data-table .label {
+  width: 160px; font-size: 0.78rem; color: var(--text-secondary);
+  font-weight: 400; padding-right: 16px;
+}
+.data-table .value {
+  font-size: 0.88rem; color: var(--text-primary); font-weight: 500;
+}
+.data-table .value.mono { font-family: var(--font-mono); font-size: 0.82rem; }
+.copy-btn {
+  background: none; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text-muted); font-size: 0.7rem; cursor: pointer;
+  padding: 2px 6px; margin-left: 8px; transition: all 0.15s;
+}
+.copy-btn:hover { border-color: var(--gold); color: var(--gold); }
+
+/* ===== GRID LAYOUTS ===== */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.col-stack { display: flex; flex-direction: column; gap: 20px; }
+
+/* ===== CHECKLIST ===== */
+.checklist { list-style: none; }
+.checklist li {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 0; font-size: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+.checklist li:last-child { border-bottom: none; }
+.check-icon { font-size: 1rem; flex-shrink: 0; }
+
+/* ===== CLIENT CARDS ===== */
+.client-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.client-card:hover { border-color: var(--border-focus); }
+.client-card-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px 20px; cursor: pointer;
+  user-select: none;
+}
+.client-flag { font-size: 1.4rem; }
+.client-name {
+  font-size: 0.92rem; font-weight: 600; color: var(--text-primary);
+  flex: 1;
+}
+.client-country { font-size: 0.78rem; color: var(--text-muted); }
+.client-stats {
+  display: flex; gap: 20px; align-items: center;
+}
+.client-stat { text-align: right; }
+.client-stat .num {
+  font-family: var(--font-mono); font-size: 0.9rem; font-weight: 500;
+  color: var(--text-primary);
+}
+.client-stat .lbl { font-size: 0.7rem; color: var(--text-muted); }
+.expand-arrow {
+  color: var(--text-muted); font-size: 0.8rem; transition: transform 0.2s;
+}
+.client-card.open .expand-arrow { transform: rotate(90deg); }
+.client-card-body {
+  display: none; padding: 0 20px 20px;
+  border-top: 1px solid var(--border);
+}
+.client-card.open .client-card-body { display: block; }
+
+/* ===== ITEMS TABLE ===== */
+.items-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 0.8rem; margin-top: 16px;
+}
+.items-table th {
+  text-align: left; padding: 8px 10px;
+  background: var(--surface-2); color: var(--text-muted);
+  font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.items-table th:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.items-table th:last-child  { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.items-table td {
+  padding: 9px 10px; border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+.items-table td.mono { font-family: var(--font-mono); font-size: 0.75rem; }
+.items-table tr:last-child td { border-bottom: none; }
+
+/* ===== CLIENT ACTIONS ===== */
+.client-actions {
+  display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap;
+}
+.action-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: var(--r-sm);
+  font-size: 0.78rem; font-weight: 500; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--text-secondary); transition: all 0.15s;
+}
+.action-btn:hover { border-color: var(--gold); color: var(--gold); }
+
+/* ===== DOCUMENTS GRID ===== */
+.doc-section-title {
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-muted);
+  margin: 24px 0 12px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.doc-section-title:first-child { margin-top: 0; }
+.doc-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.doc-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 6px;
+  transition: border-color 0.15s;
+}
+.doc-tile:hover { border-color: var(--border-focus); border-left-color: var(--ok); }
+.doc-tile.missing { border-left-color: var(--error); }
+.doc-tile-name {
+  font-size: 0.82rem; font-weight: 600; color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+.doc-tile-type { font-size: 0.72rem; color: var(--text-muted); }
+.doc-tile-actions { display: flex; gap: 6px; margin-top: 4px; }
+.doc-btn {
+  padding: 4px 10px; border-radius: 4px; font-size: 0.72rem;
+  font-weight: 500; cursor: pointer; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text-secondary);
+  transition: all 0.15s;
+}
+.doc-btn:hover { border-color: var(--gold); color: var(--gold); }
+.doc-btn.primary {
+  background: var(--gold-soft); border-color: var(--gold);
+  color: var(--gold);
+}
+
+/* ===== TRACKING ===== */
+.tracking-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md); overflow: hidden;
+}
+.tracking-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+}
+.tracking-client {
+  font-size: 0.92rem; font-weight: 600;
+}
+.tracking-awb {
+  font-family: var(--font-mono); font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.tracking-timeline { padding: 16px 20px; }
+.timeline-step {
+  display: flex; gap: 16px; align-items: flex-start;
+  padding-bottom: 16px; position: relative;
+}
+.timeline-step:not(:last-child)::after {
+  content: ''; position: absolute;
+  left: 7px; top: 20px; width: 2px;
+  height: calc(100% - 4px);
+  background: var(--border);
+}
+.timeline-dot {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--border); border: 2px solid var(--border-focus);
+  flex-shrink: 0; margin-top: 2px; z-index: 1;
+}
+.timeline-step.done .timeline-dot {
+  background: var(--ok); border-color: var(--ok);
+}
+.timeline-step.current .timeline-dot {
+  background: var(--warn); border-color: var(--warn);
+  box-shadow: 0 0 0 4px var(--warn-soft);
+}
+.timeline-info { flex: 1; }
+.timeline-event { font-size: 0.85rem; font-weight: 500; }
+.timeline-meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; }
+
+/* ===== FINANCE TABLE ===== */
+.finance-table {
+  width: 100%; border-collapse: collapse; font-size: 0.85rem;
+}
+.finance-table th {
+  text-align: left; padding: 10px 14px;
+  background: var(--surface-2); color: var(--text-muted);
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.finance-table td {
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+.finance-table tr:last-child td { border-bottom: none; }
+.finance-table .amount {
+  font-family: var(--font-mono); text-align: right; font-weight: 500;
+}
+.finance-table tfoot td {
+  padding: 12px 14px; font-weight: 700;
+  border-top: 2px solid var(--border);
+  background: var(--surface-2);
+}
+
+/* ===== CUSTOMS ===== */
+.customs-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.duties-table {
+  width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 8px;
+}
+.duties-table th {
+  text-align: left; padding: 8px 12px;
+  background: var(--surface-2); color: var(--text-muted);
+  font-size: 0.7rem; letter-spacing: 0.04em; text-transform: uppercase;
+}
+.duties-table td {
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono); font-size: 0.8rem;
+}
+
+/* ===== LIST PAGE ===== */
+.list-controls {
+  display: flex; gap: 12px; align-items: center; margin-bottom: 20px;
+}
+.search-box {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 8px 14px;
+  transition: border-color 0.15s;
+}
+.search-box:focus-within { border-color: var(--border-focus); }
+.search-box input {
+  background: none; border: none; outline: none;
+  color: var(--text-primary); font-family: var(--font-ui); font-size: 0.88rem;
+  flex: 1;
+}
+.search-box input::placeholder { color: var(--text-muted); }
+.filter-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: var(--r-sm);
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-secondary); font-family: var(--font-ui);
+  font-size: 0.82rem; cursor: pointer; transition: all 0.15s;
+}
+.filter-btn:hover { border-color: var(--border-focus); color: var(--text-primary); }
+
+.shipments-table {
+  width: 100%; border-collapse: collapse;
+}
+.shipments-table thead tr {
+  border-bottom: 1px solid var(--border);
+}
+.shipments-table th {
+  text-align: left; padding: 10px 14px;
+  color: var(--text-muted); font-size: 0.72rem;
+  font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.shipments-table tbody tr {
+  border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background 0.12s;
+}
+.shipments-table tbody tr:hover { background: var(--surface-2); }
+.shipments-table td {
+  padding: 14px 14px; vertical-align: middle;
+}
+.awb-cell {
+  font-family: var(--font-mono); font-size: 0.88rem;
+  font-weight: 500; color: var(--gold);
+}
+.open-arrow {
+  color: var(--text-muted); font-size: 1rem; transition: color 0.15s;
+}
+.shipments-table tbody tr:hover .open-arrow { color: var(--gold); }
+
+/* ===== PAGE SHELL ===== */
+.page { display: none; }
+.page.active { display: block; }
+
+/* ===== QUICK ACTIONS ===== */
+.quick-actions {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+}
+.qa-btn {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 6px; padding: 16px 8px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); cursor: pointer; transition: all 0.15s;
+}
+.qa-btn:hover { border-color: var(--gold); background: var(--gold-dim); }
+.qa-icon { font-size: 1.3rem; }
+.qa-label {
+  font-size: 0.72rem; font-weight: 500; color: var(--text-secondary);
+  text-align: center; line-height: 1.3;
+}
+
+/* ===== DESTINATIONS MINI LIST ===== */
+.dest-list { display: flex; flex-direction: column; gap: 0; }
+.dest-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.dest-row:last-child { border-bottom: none; }
+.dest-flag { font-size: 1.2rem; flex-shrink: 0; }
+.dest-name { font-size: 0.88rem; font-weight: 500; flex: 1; }
+.dest-city { font-size: 0.75rem; color: var(--text-muted); }
+
+/* ===== PAGE TRANSITIONS ===== */
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ===== TOAST ===== */
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  background: var(--surface-2); border: 1px solid var(--ok);
+  color: var(--ok); padding: 10px 18px; border-radius: var(--r-sm);
+  font-size: 0.82rem; font-weight: 500; z-index: 9999;
+  opacity: 0; transform: translateY(10px);
+  transition: all 0.2s; pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 900px) {
+  .main-content { padding: 20px 16px; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr; }
+  .topnav { padding: 0 16px; }
+  .tab-bar { padding: 0 16px; overflow-x: auto; }
+  .page-header { padding: 0 16px; }
+  .quick-actions { grid-template-columns: repeat(2, 1fr); }
+  .customs-row { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  .grid-3 { grid-template-columns: 1fr; }
+  .client-stats { gap: 12px; }
+  .page-header-top { flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+
+<!-- ===== TOP NAVIGATION ===== -->
+<nav class="topnav">
+  <div class="nav-logo">
+    <span class="gem">💎</span>
+    <div>
+      <div>ESTRELLA JEWELS</div>
+      <div class="nav-title">Shipment Manager</div>
+    </div>
+  </div>
+  <div class="nav-spacer"></div>
+  <button class="nav-btn" onclick="showPage('list')">☰ All Shipments</button>
+  <button class="nav-btn primary">+ New Shipment</button>
+</nav>
+
+<!-- ===== TOAST ===== -->
+<div class="toast" id="toast">✓ Copied to clipboard</div>
+
+<!-- ============================= -->
+<!-- PAGE: SHIPMENT LIST           -->
+<!-- ============================= -->
+<div class="page active" id="page-list">
+  <div class="main-content">
+    <div style="margin-bottom:24px;">
+      <h1 style="font-family:var(--font-display);font-size:1.6rem;font-weight:500;color:var(--text-primary);">Shipment Overview</h1>
+      <p style="color:var(--text-muted);font-size:0.85rem;margin-top:4px;">April 2026 · 1 shipment batch · 4 clients · 76 pieces</p>
+    </div>
+
+    <div class="list-controls">
+      <div class="search-box">
+        <span style="color:var(--text-muted);">🔍</span>
+        <input type="text" placeholder="Search by AWB, client, date…" id="searchInput" oninput="filterTable()">
+      </div>
+      <button class="filter-btn">April 2026 ▾</button>
+      <button class="filter-btn">All Status ▾</button>
+      <button class="filter-btn">All Clients ▾</button>
+    </div>
+
+    <div class="card" style="overflow:visible;">
+      <table class="shipments-table" id="shipmentsTable">
+        <thead>
+          <tr>
+            <th>AWB #</th>
+            <th>Date</th>
+            <th>Clients</th>
+            <th>Pieces</th>
+            <th>Total Value</th>
+            <th>Customs</th>
+            <th>Delivery</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr onclick="showShipment('6876258325')">
+            <td><span class="awb-cell">6876258325</span></td>
+            <td style="color:var(--text-secondary);">07 Apr 2026</td>
+            <td>
+              <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                <span style="font-size:1rem;">🇫🇷</span>
+                <span style="font-size:1rem;">🇭🇺</span>
+                <span style="font-size:1rem;">🇧🇬</span>
+                <span style="font-size:1rem;">🇸🇰</span>
+              </div>
+              <div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px;">4 destinations</div>
+            </td>
+            <td style="font-family:var(--font-mono);font-weight:500;">76 pcs</td>
+            <td style="font-family:var(--font-mono);">≈ $19,196</td>
+            <td><span class="badge badge-gold">CLEARED</span></td>
+            <td>
+              <span class="badge badge-ok">DELIVERED</span>
+              <div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px;">3/4 confirmed</div>
+            </td>
+            <td><span class="open-arrow">→</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="padding:20px;border-top:1px solid var(--border);font-size:0.8rem;color:var(--text-muted);">
+        Showing 1 shipment batch · <a href="#" style="color:var(--gold);">View archived</a>
+      </div>
+    </div>
+
+    <!-- STAT CARDS -->
+    <div class="grid-3" style="margin-top:24px;">
+      <div class="card">
+        <div class="card-body" style="text-align:center;padding:24px;">
+          <div style="font-size:2rem;font-family:var(--font-mono);font-weight:600;color:var(--gold);">76</div>
+          <div style="font-size:0.78rem;color:var(--text-muted);margin-top:4px;">Pieces Shipped</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body" style="text-align:center;padding:24px;">
+          <div style="font-size:2rem;font-family:var(--font-mono);font-weight:600;color:var(--ok);">4</div>
+          <div style="font-size:0.78rem;color:var(--text-muted);margin-top:4px;">Client Destinations</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body" style="text-align:center;padding:24px;">
+          <div style="font-size:2rem;font-family:var(--font-mono);font-weight:600;color:var(--text-primary);">$19k</div>
+          <div style="font-size:0.78rem;color:var(--text-muted);margin-top:4px;">Total Invoice Value</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ============================= -->
+<!-- PAGE: SHIPMENT DETAIL         -->
+<!-- ============================= -->
+<div class="page" id="page-detail">
+
+  <!-- Page Header -->
+  <div class="page-header">
+    <div class="page-header-top">
+      <button class="back-btn" onclick="showPage('list')">← All Shipments</button>
+      <div>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span style="font-size:0.75rem;color:var(--text-muted);">AWB</span>
+          <span class="awb-display">6876258325</span>
+          <span class="badge badge-gold">CLEARED</span>
+          <span class="badge badge-ok">DELIVERED</span>
+        </div>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-top:4px;">
+          DHL Express Worldwide · Warsaw → 4 destinations · 07 April 2026
+        </div>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:8px;">
+        <button class="nav-btn">📊 Export</button>
+        <button class="nav-btn">🔗 Share</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab Bar -->
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('overview',this)">Overview</button>
+    <button class="tab-btn" onclick="switchTab('clients',this)">Clients & Packages</button>
+    <button class="tab-btn" onclick="switchTab('documents',this)">Documents</button>
+    <button class="tab-btn" onclick="switchTab('customs',this)">Customs / ZC429</button>
+    <button class="tab-btn" onclick="switchTab('finance',this)">Finance</button>
+    <button class="tab-btn" onclick="switchTab('tracking',this)">Tracking</button>
+  </div>
+
+  <div class="main-content">
+
+    <!-- ======= TAB: OVERVIEW ======= -->
+    <div class="tab-panel active" id="tab-overview">
+      <div class="grid-2">
+
+        <!-- Left column -->
+        <div class="col-stack">
+          <div class="card">
+            <div class="card-header"><span class="card-title">Shipment Summary</span></div>
+            <div class="card-body">
+              <table class="data-table">
+                <tr><td class="label">AWB Number</td><td class="value mono">6876258325 <button class="copy-btn" onclick="copyText('6876258325')">copy</button></td></tr>
+                <tr><td class="label">Shipment Date</td><td class="value">07 April 2026</td></tr>
+                <tr><td class="label">Carrier</td><td class="value">DHL Express Worldwide</td></tr>
+                <tr><td class="label">Origin</td><td class="value">Warsaw, Poland 🇵🇱</td></tr>
+                <tr><td class="label">Total Pieces</td><td class="value mono">76 pcs · 4 packages</td></tr>
+                <tr><td class="label">Invoice Value</td><td class="value mono">$19,196 USD</td></tr>
+                <tr><td class="label">Customs MRN</td><td class="value mono">26PL44302D007UH7R0 <button class="copy-btn" onclick="copyText('26PL44302D007UH7R0')">copy</button></td></tr>
+                <tr><td class="label">Customs Status</td><td class="value"><span class="badge badge-gold">CLEARED</span></td></tr>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><span class="card-title">Quick Actions</span></div>
+            <div class="card-body">
+              <div class="quick-actions">
+                <button class="qa-btn" onclick="switchTabByName('customs')">
+                  <span class="qa-icon">📋</span>
+                  <span class="qa-label">View ZC429</span>
+                </button>
+                <button class="qa-btn" onclick="switchTabByName('documents')">
+                  <span class="qa-icon">📁</span>
+                  <span class="qa-label">All Documents</span>
+                </button>
+                <button class="qa-btn">
+                  <span class="qa-icon">📊</span>
+                  <span class="qa-label">Export Excel</span>
+                </button>
+                <button class="qa-btn" onclick="switchTabByName('tracking')">
+                  <span class="qa-icon">📍</span>
+                  <span class="qa-label">Live Tracking</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right column -->
+        <div class="col-stack">
+          <div class="card">
+            <div class="card-header"><span class="card-title">Client Destinations</span></div>
+            <div class="card-body" style="padding:0 20px;">
+              <div class="dest-list">
+                <div class="dest-row">
+                  <span class="dest-flag">🇫🇷</span>
+                  <div style="flex:1;">
+                    <div class="dest-name">Verhoeven Joaillier</div>
+                    <div class="dest-city">Dunkerque, France · 2 pcs · € 1,448</div>
+                  </div>
+                  <span class="badge badge-ok">DELIVERED</span>
+                </div>
+                <div class="dest-row">
+                  <span class="dest-flag">🇭🇺</span>
+                  <div style="flex:1;">
+                    <div class="dest-name">Clear-Diamonds Ltd.</div>
+                    <div class="dest-city">Budapest, Hungary · 68 pcs · $15,826</div>
+                  </div>
+                  <span class="badge badge-warn">PENDING</span>
+                </div>
+                <div class="dest-row">
+                  <span class="dest-flag">🇧🇬</span>
+                  <div style="flex:1;">
+                    <div class="dest-name">Juliany EOOD</div>
+                    <div class="dest-city">Sofia, Bulgaria · 5 pcs · € 160</div>
+                  </div>
+                  <span class="badge badge-ok">DELIVERED</span>
+                </div>
+                <div class="dest-row">
+                  <span class="dest-flag">🇸🇰</span>
+                  <div style="flex:1;">
+                    <div class="dest-name">Dream Rings s.r.o.</div>
+                    <div class="dest-city">Trencin, Slovakia · 1 pc · € 1,828</div>
+                  </div>
+                  <span class="badge badge-ok">DELIVERED</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Shipment Checklist</span>
+              <span class="badge badge-ok">6/7 Done</span>
+            </div>
+            <div class="card-body" style="padding:0 20px;">
+              <ul class="checklist">
+                <li><span class="check-icon">✅</span> All internal invoices generated (013, 014, 015)</li>
+                <li><span class="check-icon">✅</span> Packing lists completed (Poland + Client versions)</li>
+                <li><span class="check-icon">✅</span> DHL waybills created (4 packages)</li>
+                <li><span class="check-icon">✅</span> ZC429 customs declaration filed & accepted</li>
+                <li><span class="check-icon">✅</span> Broker notification (DSK) submitted to DHL</li>
+                <li><span class="check-icon">✅</span> PZ warehouse receipt generated (2/4/2026)</li>
+                <li><span class="check-icon">⚠️</span> <span style="color:var(--warn);">Clear-Diamonds delivery confirmation pending</span></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ======= TAB: CLIENTS ======= -->
+    <div class="tab-panel" id="tab-clients">
+      <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:20px;">4 client shipments · 76 pieces total · Click a row to expand details</p>
+
+      <div class="col-stack">
+
+        <!-- Verhoeven -->
+        <div class="client-card" id="client-verhoeven">
+          <div class="client-card-header" onclick="toggleClient('client-verhoeven')">
+            <span class="dest-flag">🇫🇷</span>
+            <div style="flex:1;">
+              <div class="client-name">Verhoeven Joaillier</div>
+              <div class="client-country">37, Place Jean Bart · 59140 Dunkerque, France</div>
+            </div>
+            <div class="client-stats">
+              <div class="client-stat"><div class="num">2</div><div class="lbl">pcs</div></div>
+              <div class="client-stat"><div class="num">€ 1,448</div><div class="lbl">value</div></div>
+              <span class="badge badge-ok">DELIVERED</span>
+            </div>
+            <span class="expand-arrow">›</span>
+          </div>
+          <div class="client-card-body">
+            <table class="data-table" style="margin-top:8px;">
+              <tr><td class="label">Waybill (DHL)</td><td class="value mono">4288739626</td></tr>
+              <tr><td class="label">Contact</td><td class="value">Axel Verhoeven · +33624090393</td></tr>
+              <tr><td class="label">Reference</td><td class="value mono">PROF 68/2026</td></tr>
+              <tr><td class="label">Delivery Est.</td><td class="value">08 April 2026</td></tr>
+              <tr><td class="label">Invoice WDT</td><td class="value mono">WDT 63/2026</td></tr>
+            </table>
+            <table class="items-table">
+              <thead><tr><th>#</th><th>Design No.</th><th>Category</th><th>Karat</th><th>Quality</th><th>Dia Wt</th><th>Value</th><th>Size</th></tr></thead>
+              <tbody>
+                <tr><td>2</td><td class="mono">CSTR07596</td><td>Ring</td><td>18KT WPD</td><td>—</td><td class="mono">0.00</td><td class="mono">€ 782</td><td>58mm</td></tr>
+                <tr><td>3</td><td class="mono">J4007R01591-.62</td><td>Ring</td><td>PT950</td><td>GH-SI</td><td class="mono">0.62</td><td class="mono">€ 666</td><td>52mm</td></tr>
+              </tbody>
+            </table>
+            <div class="client-actions">
+              <button class="action-btn">📄 Pro-forma PROF 68</button>
+              <button class="action-btn">🧾 Invoice WDT 63</button>
+              <button class="action-btn">📦 Packing List</button>
+              <button class="action-btn">📍 Tracking</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Clear-Diamonds -->
+        <div class="client-card" id="client-clear">
+          <div class="client-card-header" onclick="toggleClient('client-clear')">
+            <span class="dest-flag">🇭🇺</span>
+            <div style="flex:1;">
+              <div class="client-name">Clear-Diamonds Ltd.</div>
+              <div class="client-country">Bláthy Ottó str 4-8 · 1089 Budapest, Hungary</div>
+            </div>
+            <div class="client-stats">
+              <div class="client-stat"><div class="num">68</div><div class="lbl">pcs</div></div>
+              <div class="client-stat"><div class="num">$15,826</div><div class="lbl">value</div></div>
+              <span class="badge badge-warn">PENDING</span>
+            </div>
+            <span class="expand-arrow">›</span>
+          </div>
+          <div class="client-card-body">
+            <table class="data-table" style="margin-top:8px;">
+              <tr><td class="label">Waybill (DHL)</td><td class="value mono">7012284871</td></tr>
+              <tr><td class="label">Contact</td><td class="value">Anita Hercsik · +36209417983 · info@noordia.hu</td></tr>
+              <tr><td class="label">Reference</td><td class="value mono">PROF 69/2026</td></tr>
+              <tr><td class="label">Delivery Est.</td><td class="value">08 April 2026 (pending confirmation)</td></tr>
+              <tr><td class="label">Invoice WDT</td><td class="value mono">WDT 64/2026</td></tr>
+              <tr><td class="label">Note</td><td class="value" style="color:var(--warn);">⚠ Largest shipment — 68 pieces. Confirm delivery.</td></tr>
+            </table>
+            <p style="font-size:0.8rem;color:var(--text-muted);margin-top:12px;">68 items — see full packing list document for complete item breakdown.</p>
+            <div class="client-actions">
+              <button class="action-btn">📄 Pro-forma PROF 69</button>
+              <button class="action-btn">🧾 Invoice WDT 64</button>
+              <button class="action-btn">📦 Packing List (68 pcs)</button>
+              <button class="action-btn">📦 Revised Packing List</button>
+              <button class="action-btn">📍 Tracking</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Juliany EOOD -->
+        <div class="client-card" id="client-juliany">
+          <div class="client-card-header" onclick="toggleClient('client-juliany')">
+            <span class="dest-flag">🇧🇬</span>
+            <div style="flex:1;">
+              <div class="client-name">Juliany EOOD</div>
+              <div class="client-country">ul. Georgi Benkovski 14-16 · 1000 Sofia, Bulgaria</div>
+            </div>
+            <div class="client-stats">
+              <div class="client-stat"><div class="num">5</div><div class="lbl">pcs</div></div>
+              <div class="client-stat"><div class="num">€ 160</div><div class="lbl">value</div></div>
+              <span class="badge badge-ok">DELIVERED</span>
+            </div>
+            <span class="expand-arrow">›</span>
+          </div>
+          <div class="client-card-body">
+            <table class="data-table" style="margin-top:8px;">
+              <tr><td class="label">Waybill (DHL)</td><td class="value mono">7012286761</td></tr>
+              <tr><td class="label">Contact</td><td class="value">Rosen Dimitrov · +359896608510</td></tr>
+              <tr><td class="label">Reference</td><td class="value mono">PROF 70/2026</td></tr>
+              <tr><td class="label">VAT EU</td><td class="value mono">BG121281167</td></tr>
+              <tr><td class="label">Invoice WDT</td><td class="value mono">WDT 65/2026</td></tr>
+            </table>
+            <table class="items-table">
+              <thead><tr><th>#</th><th>Category</th><th>Design</th><th>Karat</th><th>Value</th><th>Qty</th></tr></thead>
+              <tbody>
+                <tr><td>1</td><td>Pendant</td><td class="mono">PND</td><td>18KT W</td><td class="mono">€ 32 ea.</td><td>5</td></tr>
+              </tbody>
+            </table>
+            <div class="client-actions">
+              <button class="action-btn">📄 Pro-forma PROF 70</button>
+              <button class="action-btn">🧾 Invoice WDT 65</button>
+              <button class="action-btn">📦 Packing List</button>
+              <button class="action-btn">📍 Tracking</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dream Rings -->
+        <div class="client-card" id="client-dream">
+          <div class="client-card-header" onclick="toggleClient('client-dream')">
+            <span class="dest-flag">🇸🇰</span>
+            <div style="flex:1;">
+              <div class="client-name">Dream Rings s.r.o.</div>
+              <div class="client-country">Námestie SNP 79/7 · 91101 Trencin, Slovakia</div>
+            </div>
+            <div class="client-stats">
+              <div class="client-stat"><div class="num">1</div><div class="lbl">pc</div></div>
+              <div class="client-stat"><div class="num">€ 1,828</div><div class="lbl">value</div></div>
+              <span class="badge badge-ok">DELIVERED</span>
+            </div>
+            <span class="expand-arrow">›</span>
+          </div>
+          <div class="client-card-body">
+            <table class="data-table" style="margin-top:8px;">
+              <tr><td class="label">Contact</td><td class="value">+421905983995</td></tr>
+              <tr><td class="label">Reference</td><td class="value mono">PROF 71/2026</td></tr>
+              <tr><td class="label">Invoice WDT</td><td class="value mono">WDT 66/2026</td></tr>
+            </table>
+            <table class="items-table">
+              <thead><tr><th>#</th><th>Design No.</th><th>Category</th><th>Karat</th><th>Quality</th><th>Dia Wt</th><th>Value</th><th>Size</th></tr></thead>
+              <tbody>
+                <tr><td>1</td><td class="mono">CSTR07598</td><td>Ring</td><td>14KT W</td><td>GH-SI</td><td class="mono">1.01</td><td class="mono">€ 1,828</td><td>53mm</td></tr>
+              </tbody>
+            </table>
+            <div class="client-actions">
+              <button class="action-btn">📄 Pro-forma PROF 71</button>
+              <button class="action-btn">🧾 Invoice WDT 66</button>
+              <button class="action-btn">📦 Packing List</button>
+              <button class="action-btn">📍 Tracking</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ======= TAB: DOCUMENTS ======= -->
+    <div class="tab-panel" id="tab-documents">
+      <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:8px;">All documents for shipment batch AWB 6876258325</p>
+
+      <div class="doc-section-title">🏛 Customs & Import</div>
+      <div class="doc-grid">
+        <div class="doc-tile">
+          <div class="doc-tile-name">ZC429_26PL44302D007UH7R0</div>
+          <div class="doc-tile-type">Customs Declaration · HTML + PDF</div>
+          <div style="margin-top:6px;"><span class="badge badge-gold">CLEARED</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View HTML</button>
+            <button class="doc-btn">View PDF</button>
+          </div>
+        </div>
+        <div class="doc-tile">
+          <div class="doc-tile-name">6876258325_DSK</div>
+          <div class="doc-tile-type">DHL Broker Notification · PDF</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">PRESENT</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View PDF</button>
+          </div>
+        </div>
+        <div class="doc-tile">
+          <div class="doc-tile-name">NBP_Rate</div>
+          <div class="doc-tile-type">NBP Exchange Rate · PDF</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">PRESENT</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View PDF</button>
+          </div>
+        </div>
+        <div class="doc-tile">
+          <div class="doc-tile-name">ESTRELLAawizacja26PL...</div>
+          <div class="doc-tile-type">Duty Notification · PDF</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">PRESENT</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View PDF</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-section-title">📄 Internal Invoices (Poland)</div>
+      <div class="doc-grid">
+        <div class="doc-tile">
+          <div class="doc-tile-name">013_Invoice_EJL2627013</div>
+          <div class="doc-tile-type">Polish Invoice #013 · 7 pcs</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">PRESENT</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View PDF</button>
+            <button class="doc-btn">View XLS</button>
+          </div>
+        </div>
+        <div class="doc-tile">
+          <div class="doc-tile-name">014_Invoice_EJL2627014</div>
+          <div class="doc-tile-type">Polish Invoice #014 · 1 pc</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">PRESENT</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View PDF</button>
+            <button class="doc-btn">View XLS</button>
+          </div>
+        </div>
+        <div class="doc-tile">
+          <div class="doc-tile-name">015_Invoice_EJL2627015</div>
+          <div class="doc-tile-type">Polish Invoice #015 · 68 pcs</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">PRESENT</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View PDF</button>
+            <button class="doc-btn">View XLS</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-section-title">📦 Packing Lists (Poland)</div>
+      <div class="doc-grid">
+        <div class="doc-tile">
+          <div class="doc-tile-name">013_EJL2627013_PL_Poland</div>
+          <div class="doc-tile-type">Poland Packing List · 7 pcs</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">PRESENT</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View PDF</button>
+            <button class="doc-btn">View XLS</button>
+          </div>
+        </div>
+        <div class="doc-tile">
+          <div class="doc-tile-name">014_EJL2526014_PL_Poland</div>
+          <div class="doc-tile-type">Poland Packing List · 1 pc</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">PRESENT</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View PDF</button>
+            <button class="doc-btn">View XLS</button>
+          </div>
+        </div>
+        <div class="doc-tile">
+          <div class="doc-tile-name">015_EJL2627015_PL_Poland</div>
+          <div class="doc-tile-type">Poland Packing List · 68 pcs</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">PRESENT</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View PDF</button>
+            <button class="doc-btn">View XLS</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-section-title">👥 Client Documents</div>
+      <div class="doc-grid">
+        <div class="doc-tile">
+          <div class="doc-tile-name" style="font-size:0.75rem;">Verhoeven — PROF 68 / WDT 63</div>
+          <div class="doc-tile-type">🇫🇷 Pro-forma + Invoice + PL + Tracking</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">COMPLETE</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">All Docs</button>
+            <button class="doc-btn">Tracking</button>
+          </div>
+        </div>
+        <div class="doc-tile">
+          <div class="doc-tile-name" style="font-size:0.75rem;">Clear-Diamonds — PROF 69 / WDT 64</div>
+          <div class="doc-tile-type">🇭🇺 Pro-forma + Invoice + PL (×2) + Tracking</div>
+          <div style="margin-top:6px;"><span class="badge badge-warn">REVISED PL</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">All Docs</button>
+            <button class="doc-btn">Revised PL</button>
+          </div>
+        </div>
+        <div class="doc-tile">
+          <div class="doc-tile-name" style="font-size:0.75rem;">Juliany EOOD — PROF 70 / WDT 65</div>
+          <div class="doc-tile-type">🇧🇬 Pro-forma + Invoice + PL + Tracking</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">COMPLETE</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">All Docs</button>
+            <button class="doc-btn">Tracking</button>
+          </div>
+        </div>
+        <div class="doc-tile">
+          <div class="doc-tile-name" style="font-size:0.75rem;">Dream Rings — PROF 71 / WDT 66</div>
+          <div class="doc-tile-type">🇸🇰 Pro-forma + Invoice + PL + Tracking</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">COMPLETE</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">All Docs</button>
+            <button class="doc-btn">Tracking</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-section-title">🏭 Warehouse</div>
+      <div class="doc-grid">
+        <div class="doc-tile">
+          <div class="doc-tile-name">PZ_2_4_2026</div>
+          <div class="doc-tile-type">PZ Warehouse Receipt · 07 Apr 2026</div>
+          <div style="margin-top:6px;"><span class="badge badge-ok">PRESENT</span></div>
+          <div class="doc-tile-actions">
+            <button class="doc-btn primary">View PDF</button>
+            <button class="doc-btn">View XLS</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= TAB: CUSTOMS ======= -->
+    <div class="tab-panel" id="tab-customs">
+      <div class="customs-row">
+        <div class="col-stack">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Declaration ZC429</span>
+              <span class="badge badge-gold">CLEARED</span>
+            </div>
+            <div class="card-body">
+              <table class="data-table">
+                <tr><td class="label">MRN</td><td class="value mono">26PL44302D007UH7R0 <button class="copy-btn" onclick="copyText('26PL44302D007UH7R0')">copy</button></td></tr>
+                <tr><td class="label">LRN</td><td class="value mono">26S00PT30S</td></tr>
+                <tr><td class="label">Filed At</td><td class="value">07 Apr 2026 · 11:49:28</td></tr>
+                <tr><td class="label">Accepted At</td><td class="value">07 Apr 2026 · 12:39:45</td></tr>
+                <tr><td class="label">Importer</td><td class="value">Estrella Jewels Sp. z o.o. Sp.k</td></tr>
+                <tr><td class="label">NIP / VAT</td><td class="value mono">5252812119 / PL525281211900000</td></tr>
+                <tr><td class="label">Agent</td><td class="value">Agencja Celna Spedycja Kuźmicz K.</td></tr>
+                <tr><td class="label">Agent NIP</td><td class="value mono">6651923252</td></tr>
+                <tr><td class="label">Origin Country</td><td class="value">India 🇮🇳 (IN)</td></tr>
+                <tr><td class="label">Destination</td><td class="value">Poland 🇵🇱 (PL)</td></tr>
+                <tr><td class="label">Gross Weight</td><td class="value mono">1.000 kg</td></tr>
+                <tr><td class="label">Invoice Value</td><td class="value mono">$15,323.00 USD</td></tr>
+                <tr><td class="label">Transport</td><td class="value">Air · Flight QY5546</td></tr>
+              </table>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button class="action-btn" style="flex:1;justify-content:center;">📋 View Full ZC429 HTML</button>
+            <button class="action-btn" style="flex:1;justify-content:center;">📄 Download ZC429 PDF</button>
+          </div>
+        </div>
+
+        <div class="col-stack">
+          <div class="card">
+            <div class="card-header"><span class="card-title">Duties & Taxes</span></div>
+            <div class="card-body" style="padding:0;">
+              <table class="duties-table">
+                <thead>
+                  <tr><th>Type</th><th>Base Amount</th><th>Rate</th><th>Due</th><th>Method</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>A00 (Import Duty)</td><td>3,010.00 PLN</td><td>2.5%</td><td>75.25 PLN</td><td>E</td></tr>
+                  <tr><td>B00 (VAT)</td><td>—</td><td>23%</td><td>—</td><td>E</td></tr>
+                </tbody>
+              </table>
+              <div style="padding:14px 16px;font-size:0.78rem;color:var(--text-muted);">
+                Guarantee: GRN 17PL39000ST002200 · PLN
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">Previous Documents</span></div>
+            <div class="card-body">
+              <table class="data-table">
+                <tr><td class="label">Previous MRN</td><td class="value mono">26PL44302D007TCYU8</td></tr>
+                <tr><td class="label">Attached Doc</td><td class="value mono">N935 — EJL/26-27/015 Z 04.04.2026</td></tr>
+                <tr><td class="label">Packages</td><td class="value mono">0 PA</td></tr>
+                <tr><td class="label">Permit No.</td><td class="value mono">PLTST443000170001</td></tr>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">NBP Exchange Rate</span></div>
+            <div class="card-body">
+              <table class="data-table">
+                <tr><td class="label">Currency</td><td class="value">USD / PLN</td></tr>
+                <tr><td class="label">Rate Date</td><td class="value">07 April 2026</td></tr>
+              </table>
+              <button class="action-btn" style="margin-top:12px;">📄 View NBP Rate PDF</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= TAB: FINANCE ======= -->
+    <div class="tab-panel" id="tab-finance">
+      <div class="grid-2">
+        <div class="col-stack">
+          <div class="card">
+            <div class="card-header"><span class="card-title">Internal Invoices Summary</span></div>
+            <div class="card-body" style="padding:0;">
+              <table class="finance-table">
+                <thead>
+                  <tr><th>Invoice</th><th>Reference</th><th>Pieces</th><th class="amount">Value (USD)</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="mono">EJL/26-27/013</td>
+                    <td style="color:var(--text-muted);font-size:0.78rem;">Verhoeven + Juliany</td>
+                    <td class="mono">7</td>
+                    <td class="amount">$ 2,045</td>
+                    <td><span class="badge badge-ok">INVOICED</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">EJL/26-27/014</td>
+                    <td style="color:var(--text-muted);font-size:0.78rem;">Dream Ring</td>
+                    <td class="mono">1</td>
+                    <td class="amount">$ 1,828</td>
+                    <td><span class="badge badge-ok">INVOICED</span></td>
+                  </tr>
+                  <tr>
+                    <td class="mono">EJL/26-27/015</td>
+                    <td style="color:var(--text-muted);font-size:0.78rem;">Clear-Diamonds</td>
+                    <td class="mono">68</td>
+                    <td class="amount">$15,323</td>
+                    <td><span class="badge badge-ok">INVOICED</span></td>
+                  </tr>
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colspan="2"><strong>TOTAL</strong></td>
+                    <td class="mono"><strong>76</strong></td>
+                    <td class="amount"><strong>$19,196</strong></td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><span class="card-title">Client Pro-forma Values</span></div>
+            <div class="card-body" style="padding:0;">
+              <table class="finance-table">
+                <thead>
+                  <tr><th>Client</th><th>Pro-forma</th><th>Currency</th><th class="amount">Value</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>🇫🇷 Verhoeven</td><td class="mono">PROF 68/2026</td><td>EUR</td><td class="amount">€ 1,448</td></tr>
+                  <tr><td>🇭🇺 Clear-Diamonds</td><td class="mono">PROF 69/2026</td><td>USD</td><td class="amount">$15,826</td></tr>
+                  <tr><td>🇧🇬 Juliany EOOD</td><td class="mono">PROF 70/2026</td><td>EUR</td><td class="amount">€ 160</td></tr>
+                  <tr><td>🇸🇰 Dream Rings</td><td class="mono">PROF 71/2026</td><td>EUR</td><td class="amount">€ 1,828</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-stack">
+          <div class="card">
+            <div class="card-header"><span class="card-title">PZ Warehouse Receipt · 2/4/2026</span></div>
+            <div class="card-body">
+              <table class="data-table">
+                <tr><td class="label">Date</td><td class="value">07 April 2026</td></tr>
+                <tr><td class="label">Supplier</td><td class="value">Estrella Jewels LLP (India)</td></tr>
+                <tr><td class="label">Recipient</td><td class="value">Estrella Jewels Sp. z o.o. Sp.k</td></tr>
+                <tr><td class="label">Warehouse</td><td class="value">Główny (Main)</td></tr>
+                <tr><td class="label">VAT Rate</td><td class="value mono">23%</td></tr>
+              </table>
+              <button class="action-btn" style="margin-top:12px;width:100%;justify-content:center;">📄 View PZ Receipt</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><span class="card-title">Polish Faktury (VAT Invoices)</span></div>
+            <div class="card-body" style="padding:0;">
+              <table class="finance-table">
+                <thead>
+                  <tr><th>Faktura</th><th>Client</th><th class="amount">Value (PLN)</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><button class="doc-btn" style="font-size:0.75rem;">013 Faktura PDF</button></td>
+                    <td style="font-size:0.78rem;color:var(--text-muted);">Verhoeven + Juliany</td>
+                    <td class="amount">—</td>
+                  </tr>
+                  <tr>
+                    <td><button class="doc-btn" style="font-size:0.75rem;">014 Faktura PDF</button></td>
+                    <td style="font-size:0.78rem;color:var(--text-muted);">Dream Ring</td>
+                    <td class="amount">—</td>
+                  </tr>
+                  <tr>
+                    <td><button class="doc-btn" style="font-size:0.75rem;">015 Faktura PDF</button></td>
+                    <td style="font-size:0.78rem;color:var(--text-muted);">Clear-Diamonds</td>
+                    <td class="amount">—</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= TAB: TRACKING ======= -->
+    <div class="tab-panel" id="tab-tracking">
+      <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:20px;">DHL Express Worldwide · All shipments from 07 April 2026</p>
+
+      <div class="grid-2">
+
+        <!-- Verhoeven tracking -->
+        <div class="tracking-card">
+          <div class="tracking-header">
+            <div>
+              <div class="tracking-client">🇫🇷 Verhoeven Joaillier</div>
+              <div class="tracking-awb">AWB: 4288739626 · PROF 68/2026</div>
+            </div>
+            <span class="badge badge-ok">DELIVERED</span>
+          </div>
+          <div class="tracking-timeline">
+            <div class="timeline-step done">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event">Picked up</div>
+                <div class="timeline-meta">07 Apr 2026 · Warsaw, Poland</div>
+              </div>
+            </div>
+            <div class="timeline-step done">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event">In transit — Hub</div>
+                <div class="timeline-meta">07 Apr 2026 · Frankfurt</div>
+              </div>
+            </div>
+            <div class="timeline-step done">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event">✅ Delivered</div>
+                <div class="timeline-meta">08 Apr 2026 · Dunkerque, France · Signed</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Clear-Diamonds tracking -->
+        <div class="tracking-card">
+          <div class="tracking-header">
+            <div>
+              <div class="tracking-client">🇭🇺 Clear-Diamonds Ltd.</div>
+              <div class="tracking-awb">AWB: 7012284871 · PROF 69/2026</div>
+            </div>
+            <span class="badge badge-warn">IN TRANSIT</span>
+          </div>
+          <div class="tracking-timeline">
+            <div class="timeline-step done">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event">Picked up</div>
+                <div class="timeline-meta">07 Apr 2026 · Warsaw, Poland</div>
+              </div>
+            </div>
+            <div class="timeline-step done">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event">In transit</div>
+                <div class="timeline-meta">07 Apr 2026 · Frankfurt Hub</div>
+              </div>
+            </div>
+            <div class="timeline-step current">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event">Out for Delivery</div>
+                <div class="timeline-meta">08 Apr 2026 · Budapest, Hungary</div>
+              </div>
+            </div>
+            <div class="timeline-step">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event" style="color:var(--text-muted);">Delivery Confirmation</div>
+                <div class="timeline-meta">Expected 08 Apr 2026</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Juliany tracking -->
+        <div class="tracking-card">
+          <div class="tracking-header">
+            <div>
+              <div class="tracking-client">🇧🇬 Juliany EOOD</div>
+              <div class="tracking-awb">AWB: 7012286761 · PROF 70/2026</div>
+            </div>
+            <span class="badge badge-ok">DELIVERED</span>
+          </div>
+          <div class="tracking-timeline">
+            <div class="timeline-step done">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event">Picked up</div>
+                <div class="timeline-meta">07 Apr 2026 · Warsaw, Poland</div>
+              </div>
+            </div>
+            <div class="timeline-step done">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event">✅ Delivered</div>
+                <div class="timeline-meta">08 Apr 2026 · Sofia, Bulgaria · Signed</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dream Ring tracking -->
+        <div class="tracking-card">
+          <div class="tracking-header">
+            <div>
+              <div class="tracking-client">🇸🇰 Dream Rings s.r.o.</div>
+              <div class="tracking-awb">PROF 71/2026</div>
+            </div>
+            <span class="badge badge-ok">DELIVERED</span>
+          </div>
+          <div class="tracking-timeline">
+            <div class="timeline-step done">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event">Picked up</div>
+                <div class="timeline-meta">07 Apr 2026 · Warsaw, Poland</div>
+              </div>
+            </div>
+            <div class="timeline-step done">
+              <div class="timeline-dot"></div>
+              <div class="timeline-info">
+                <div class="timeline-event">✅ Delivered</div>
+                <div class="timeline-meta">08 Apr 2026 · Trencin, Slovakia · Signed</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div><!-- /main-content -->
+</div><!-- /page-detail -->
+
+
+<!-- ===== JAVASCRIPT ===== -->
+<script>
+// Page navigation
+function showPage(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  window.scrollTo(0, 0);
+}
+
+function showShipment(awb) {
+  showPage('detail');
+  history.replaceState(null, '', '?id=SHIPMENT_' + awb + '_2026-04');
+}
+
+// Tab switching
+function switchTab(tabId, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + tabId).classList.add('active');
+  if(btn) btn.classList.add('active');
+}
+
+function switchTabByName(tabId) {
+  const btn = Array.from(document.querySelectorAll('.tab-btn'))
+    .find(b => b.textContent.trim().toLowerCase().includes(tabId.toLowerCase().split('/')[0]));
+  switchTab(tabId, btn);
+}
+
+// Client card toggle
+function toggleClient(id) {
+  const card = document.getElementById(id);
+  card.classList.toggle('open');
+}
+
+// Copy to clipboard
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const toast = document.getElementById('toast');
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2000);
+  });
+}
+
+// Search filter
+function filterTable() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  document.querySelectorAll('#shipmentsTable tbody tr').forEach(row => {
+    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+// URL routing on load
+window.addEventListener('DOMContentLoaded', () => {
+  const params = new URLSearchParams(window.location.search);
+  const id = params.get('id');
+  if (id) {
+    showPage('detail');
+  }
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    const detail = document.getElementById('page-detail');
+    if (!detail.classList.contains('active')) return;
+    const tabs = ['overview','clients','documents','customs','finance','tracking'];
+    const n = parseInt(e.key);
+    if (n >= 1 && n <= 6) {
+      const btn = document.querySelectorAll('.tab-btn')[n-1];
+      switchTab(tabs[n-1], btn);
+    }
+    if (e.key === 'Escape') showPage('list');
+  });
+});
+</script>
+
+</body>
+</html>
