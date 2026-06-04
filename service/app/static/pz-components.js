@@ -35,9 +35,10 @@
     approved:      { label: 'Approved',    statusToken: 'Completed'         },
     cancelled:     { label: 'Cancelled',   statusToken: 'Action Required'   },
     failed:        { label: 'Failed',      statusToken: 'Action Required'   },
-    post_failed:   { label: 'Post Failed', statusToken: 'Action Required'   },
-    issued:        { label: 'Issued',      statusToken: 'Completed'         },
-    posted:        { label: 'Posted',      statusToken: 'Completed'         },
+    post_failed:     { label: 'Post Failed',      statusToken: 'Action Required' },
+    convert_blocked: { label: 'Convert Blocked', statusToken: 'Action Required' },
+    issued:          { label: 'Issued',           statusToken: 'Completed'       },
+    posted:          { label: 'Posted',           statusToken: 'Completed'       },
   };
 
   // ── DraftStateChip ────────────────────────────────────────────────────────

@@ -223,5 +223,41 @@
     refreshCustomerDictionaries: () =>
       _postM(`${BASE}/customer-master/dictionaries/refresh`, {}),
 
+    // ── Proforma — extended lifecycle (Sprint 26) ────────────────────────────
+
+    // POST /api/v1/proforma/draft/{draft_id}/post
+    // Posts draft to wFirma as a proforma invoice.
+    // Gated by wfirma_create_proforma_allowed flag — backend enforces; frontend should
+    // gate the button on the visibility/disclose-post response.
+    postDraftToWfirma: (draftId) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/post`, {}),
+
+    // POST /api/v1/proforma/draft/{draft_id}/clone
+    // Clones draft — creates a new draft from this one.
+    cloneDraft: (draftId) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/clone`, {}),
+
+    // POST /api/v1/proforma/draft/{draft_id}/to-invoice
+    // Converts posted proforma to a final wFirma invoice.
+    // Gated by wfirma_create_invoice_allowed flag — backend enforces.
+    // body: { confirm: 'YES_CREATE_FINAL_INVOICE_FROM_PROFORMA', ... }
+    draftToInvoice: (draftId, body) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/to-invoice`, body || {}),
+
+    // GET /api/v1/proforma/draft/{draft_id}/events
+    // Returns event timeline for the draft.
+    getDraftEvents: (draftId) =>
+      _get(`${BASE}/proforma/draft/${draftId}/events`),
+
+    // GET /api/v1/proforma/draft/{draft_id}/disclose-convert
+    // Returns conversion disclosure payload (invoice preview before committing).
+    discloseDraftConvert: (draftId) =>
+      _get(`${BASE}/proforma/draft/${draftId}/disclose-convert`),
+
+    // GET /api/v1/proforma/draft/{draft_id}/visibility
+    // Returns visibility state and workflow gate readiness for this draft.
+    getDraftVisibility: (draftId) =>
+      _get(`${BASE}/proforma/draft/${draftId}/visibility`),
+
   });
 })();

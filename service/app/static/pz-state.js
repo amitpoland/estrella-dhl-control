@@ -127,6 +127,18 @@
     );
   }
 
+  // ── useProformaDraftEvents ────────────────────────────────────────────────
+  // Fetches the event timeline for a draft.
+  // Returns { data: eventsObj, loading, error, reload }
+  function useProformaDraftEvents(draftId) {
+    return _useApiCall(
+      () => (draftId != null && draftId !== '')
+        ? window.PzApi.getDraftEvents(draftId)
+        : Promise.resolve({ ok: true, data: null }),
+      [draftId],
+    );
+  }
+
   // ── Export ────────────────────────────────────────────────────────────────
   window.PzState = Object.freeze({
     useProformaDrafts,
@@ -134,5 +146,6 @@
     useDraft,
     useCustomerMaster,
     useCustomerList,
+    useProformaDraftEvents,
   });
 })();
