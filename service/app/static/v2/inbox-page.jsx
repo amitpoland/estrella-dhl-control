@@ -79,6 +79,8 @@ function InboxRow({ item, selected, onSelect, onActed }) {
         onActed && onActed();                  // GUARD 3: confirmed success -> parent refetch
                                                // drops the now-non-pending proposal. acting
                                                // stays true; row unmounts on refetch.
+      } else if (res.status === 409) {
+        onActed && onActed();                  // 409 = already resolved; re-fetch, row leaves inbox
       } else {
         setActErr(res.error || 'Approve failed.');
         setActing(false);                      // item REMAINS visible; operator may retry
@@ -97,6 +99,8 @@ function InboxRow({ item, selected, onSelect, onActed }) {
     window.PzApi.rejectProposal(rejectUrl, reason).then(function(res) {
       if (res.ok) {
         onActed && onActed();
+      } else if (res.status === 409) {
+        onActed && onActed();                  // 409 = already resolved; re-fetch, row leaves inbox
       } else {
         setActErr(res.error || 'Reject failed.');
         setActing(false);

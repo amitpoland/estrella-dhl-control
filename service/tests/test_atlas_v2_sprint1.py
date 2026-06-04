@@ -470,6 +470,35 @@ def test_v2_inbox_2b3b_reject_url_derived_from_approve():
     assert "PzApi.approveProposal(item.endpoint)" in src, "approve must POST to item.endpoint directly"
 
 
+def test_v2_inbox_2b3b_409_treated_as_resolved():
+    """GUARD 5 (#439): a 409 response (terminal-status — proposal already approved/rejected
+    by another actor) must trigger onActed (parent refetch, row leaves inbox), NOT setActErr
+    (no red error banner). setActing(false) is intentionally omitted — matching the success
+    path; the row will unmount on refetch.
+
+    Contract: PzApi._call wraps ALL 4xx responses as resolved { ok:false, status:N, error }
+    objects (pz-api.js:60-67). Handlers use .then(res) — there is NO .catch(err).
+    Therefore res.status is the correct predicate; err.status would be unreachable.
+    """
+    src = (_V2 / "inbox-page.jsx").read_text(encoding="utf-8", errors="replace")
+
+    # Both doApprove and doReject must have the 409 branch
+    assert src.count("res.status === 409") >= 2, (
+        "Both doApprove and doReject must have a res.status === 409 branch"
+    )
+    # The 409 branch must call onActed (re-fetch, not display an error)
+    idx_409 = src.index("res.status === 409")
+    idx_acted = src.index("onActed && onActed();", idx_409)
+    assert idx_acted > idx_409, "onActed must be called after the 409 check (order assertion)"
+
+    # No setActErr between the 409 check and the onActed call
+    segment = src[idx_409:idx_acted]
+    assert "setActErr" not in segment, (
+        "setActErr must NOT appear in the 409 branch — "
+        "409 is a terminal-status signal (already resolved), not an error"
+    )
+
+
 def test_v2_pzapi_proposal_helpers_body_attribution():
     """GUARD 2: PzApi.approveProposal/rejectProposal send attribution in the BODY
     (approved_by / rejected_by) — matching the action-proposals contract — and REFUSE
