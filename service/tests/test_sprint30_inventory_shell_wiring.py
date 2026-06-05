@@ -236,3 +236,47 @@ def test_mock_banner_not_shown_for_inventory():
     assert "inventory" in wired, (
         "inventory must be in WIRED_PAGES so mock-banner is suppressed"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# G. index.html inventory route — NO dead/write-implying shell-header buttons
+#    (Browser-smoke finding 2026-06-06: the old mock PageHeader rendered
+#     Upload Document / Move Stock / Cycle count / Export buttons that dispatched
+#     events the live read-only component does not handle → dead + write-implying.)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _inventory_route_block(src: str) -> str:
+    """Extract the `page === 'inventory'` JSX block from index.html."""
+    idx = src.index("page === 'inventory'")
+    # The block ends at the next sibling route comment/condition
+    end = src.find("page === 'identity'", idx)
+    if end < 0:
+        end = src.find("page === 'move_stock'", idx)
+    return src[idx:end] if end > idx else src[idx:idx + 1500]
+
+
+def test_inventory_route_has_no_write_implying_buttons():
+    src = _INDEX_HTML.read_text(encoding="utf-8")
+    block = _inventory_route_block(src)
+    forbidden = ["Upload Document", "Move Stock", "inv:upload", "inv:move", "Cycle count"]
+    present = [p for p in forbidden if p in block]
+    assert not present, (
+        f"inventory route header must not render write-implying/dead buttons: {present}"
+    )
+
+
+def test_inventory_route_subtitle_declares_read_only():
+    src = _INDEX_HTML.read_text(encoding="utf-8")
+    block = _inventory_route_block(src)
+    assert "No write actions" in block or "Read-only" in block, (
+        "inventory route PageHeader subtitle must declare the page is read-only"
+    )
+
+
+def test_inventory_route_stale_two_stage_subtitle_removed():
+    """The old mock 'Two-stage inventory — Stage 1...' subtitle must be gone."""
+    src = _INDEX_HTML.read_text(encoding="utf-8")
+    block = _inventory_route_block(src)
+    assert "Two-stage inventory — Stage 1" not in block, (
+        "stale mock 'Two-stage inventory' subtitle must be removed from inventory route"
+    )

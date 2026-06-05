@@ -671,17 +671,10 @@ function DocumentViewerPage({ doc, onBack }) {
   // ── InventoryPage — shell entry point ───────────────────────────────────────
 
   function InventoryPage({ openViewer }) {  // openViewer accepted; inventory is read-only so unused
+    // Title + subtitle are provided by the shell <PageHeader> (index.html inventory route).
+    // This component renders the read-only panel body only — no duplicate title block.
     return (
       <div style={{ maxWidth: 980, margin: '0 auto', padding: '28px 24px' }} data-testid="inventory-hub-root">
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 4 }}>Inventory</div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--text)' }}>Inventory Hub</h1>
-          <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
-            Read-only inventory toolkit. Stage 2 overview and location list load automatically.
-            All other lookups require an operator-provided ID. No write actions are available.
-          </p>
-        </div>
-
         <Stage2Panel />
         <BatchPanel />
         <PiecePanel />
