@@ -2006,12 +2006,88 @@ async def scan_dhl_inbox(
     }
 
 
+def _scan_status_path() -> "Path":
+    """Canonical path for the DHL auto-scan status file."""
+    return settings.storage_root / "dhl_auto_scan_status.json"
+
+
+def _write_scan_status(status: Dict[str, Any]) -> None:
+    """Atomically write the scan status to disk. Non-fatal on failure."""
+    try:
+        write_json_atomic(_scan_status_path(), status)
+    except Exception as exc:
+        log.warning("[lane-a] status write failed (non-fatal): %s", exc)
+
+
+@router.get("/auto-scan-status", dependencies=[_auth])
+def get_auto_scan_status() -> Dict[str, Any]:
+    """
+    GET /api/v1/dhl/auto-scan-status — read-only DHL inbox-scanner status card.
+
+    Returns the last recorded scan outcome from storage_root/dhl_auto_scan_status.json.
+    Computes next_run_at as started_at + 10 minutes when status is success/failed.
+
+    Status values: running | success | failed | timed_out | never_run
+    Read-only: never triggers a scan, never modifies audit files, never sends email.
+    """
+    p = _scan_status_path()
+    if not p.exists():
+        return {
+            "status":           "never_run",
+            "started_at":       None,
+            "completed_at":     None,
+            "duration_seconds": None,
+            "batches_checked":  None,
+            "received_set":     None,
+            "b2_triggered":     None,
+            "b2_sent":          None,
+            "skipped_inactive": None,
+            "skipped_excluded": None,
+            "errors_count":     None,
+            "last_error":       None,
+            "next_run_at":      None,
+        }
+    try:
+        st = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"status": "status_read_error", "error": str(exc)}
+
+    # Compute next_run_at from started_at + 10-minute interval
+    next_run: Optional[str] = None
+    if st.get("started_at"):
+        try:
+            from datetime import datetime, timezone, timedelta
+            started = datetime.fromisoformat(
+                str(st["started_at"]).replace("Z", "+00:00")
+            )
+            next_run = (started + timedelta(minutes=10)).isoformat()
+        except Exception:
+            pass
+
+    return {
+        "status":           st.get("status", "unknown"),
+        "started_at":       st.get("started_at"),
+        "completed_at":     st.get("completed_at"),
+        "duration_seconds": st.get("duration_seconds"),
+        "batches_checked":  st.get("batches_checked"),
+        "received_set":     st.get("received_set"),
+        "b2_triggered":     st.get("b2_triggered"),
+        "b2_sent":          st.get("b2_sent"),
+        "skipped_inactive": st.get("skipped_inactive"),
+        "skipped_excluded": st.get("skipped_excluded"),
+        "errors_count":     st.get("errors_count"),
+        "last_error":       st.get("last_error"),
+        "next_run_at":      next_run,
+    }
+
+
 @router.post("/scheduled-inbox-check", dependencies=[_auth])
 def run_scheduled_inbox_check() -> Dict[str, Any]:
     """
     Lane A — automated DHL customs-email scanner (every 10 minutes).
 
     Kill switch: DHL_AUTO_SCAN_ENABLED=false returns immediately.
+    Writes scan status to storage_root/dhl_auto_scan_status.json for the status card.
 
     Pipeline (one Zoho scan per call — NOT per batch):
       1. Kill-switch check (dhl_auto_scan_enabled)
@@ -2020,7 +2096,8 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
            a. find_existing_email_context() → _apply_cache_to_audit()
               writes dhl_email.received when a T# match is found
            b. _ensure_dhl_reply()     → triggers B2 DSK reply if conditions met
-      4. Return summary {lane, batches_checked, received_set, b2_triggered, errors}
+      4. Write final status to dhl_auto_scan_status.json
+      5. Return summary {lane, batches_checked, received_set, b2_triggered, errors}
 
     Guards (all inherited):
       - dhl_auto_scan_enabled kill switch
@@ -2029,6 +2106,11 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
       - B2 idempotency: build_started_at prevents duplicate sends
       - DSK-present gate: dsk_path must resolve to a real file
     """
+    from datetime import datetime, timezone as _tz
+
+    def _now_iso() -> str:
+        return datetime.now(_tz.utc).isoformat()
+
     # ── Kill switch ───────────────────────────────────────────────────────────
     if not settings.dhl_auto_scan_enabled:
         log.info("[lane-a] DHL_AUTO_SCAN_ENABLED=false — skipping")
@@ -2045,10 +2127,11 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
         _ensure_dhl_reply,
     )
 
-    # AWBs explicitly excluded from automation pending operator decision.
-    # 5665916826: carrier_self_clearance, April 2026, dsk_path missing.
-    #   Requires manual review — see DHL hardening audit 2026-06-05.
     _EXCLUDED_AWBS: frozenset = frozenset({"5665916826"})
+    _started = _now_iso()
+
+    # ── Write "running" status at scan start ──────────────────────────────────
+    _write_scan_status({"status": "running", "started_at": _started})
 
     out: Dict[str, Any] = {
         "ok":               True,
@@ -2063,71 +2146,108 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
         "ingestion":        {},
     }
 
-    # ── Step 1: one global Zoho scan, results cached per AWB ─────────────────
     try:
-        ing = _run_ing()
-        out["ingestion"] = {
-            "ok":             ing.get("ok"),
-            "active_batches": ing.get("active_batches"),
-            "shipments":      len(ing.get("shipments") or []),
-        }
-    except Exception as exc:
-        out["ingestion"] = {"ok": False, "error": str(exc)}
-        log.warning("[lane-a] ingestion cycle failed (non-fatal): %s", exc)
-
-    # ── Step 2: apply cached evidence + trigger B2 per active batch ───────────
-    for ap in _audit_paths():
+        # ── Step 1: one global Zoho scan, results cached per AWB ─────────────
         try:
-            audit = json.loads(ap.read_text(encoding="utf-8"))
-        except Exception:
-            continue
+            ing = _run_ing()
+            out["ingestion"] = {
+                "ok":             ing.get("ok"),
+                "active_batches": ing.get("active_batches"),
+                "shipments":      len(ing.get("shipments") or []),
+            }
+        except Exception as exc:
+            out["ingestion"] = {"ok": False, "error": str(exc)}
+            log.warning("[lane-a] ingestion cycle failed (non-fatal): %s", exc)
 
-        # Exclusion list — skip manually excluded AWBs
-        _awb = (audit.get("awb") or audit.get("tracking_no") or "").strip()
-        if _awb in _EXCLUDED_AWBS:
-            out["skipped_excluded"] += 1
-            continue
-
-        # Eligibility guard — skip terminal/delivered batches
-        if not _batch_active(audit):
-            out["skipped_inactive"] += 1
-            continue
-
-        out["batches_checked"] += 1
-        batch_id = ap.parent.name
-
-        # Apply cached email evidence (sets dhl_email.received if cache has match)
-        try:
-            cached = _find_cache(audit)
-            if cached and cached.get("matched", 0) > 0:
-                _apply_cache_to_audit(ap, audit, cached)
-                # Re-read after potential write
+        # ── Step 2: apply cached evidence + trigger B2 per active batch ───────
+        for ap in _audit_paths():
+            try:
                 audit = json.loads(ap.read_text(encoding="utf-8"))
-                if (audit.get("dhl_email") or {}).get("received"):
-                    out["received_set"] += 1
-        except Exception as exc:
-            out["errors"].append(f"{batch_id}:cache:{exc}")
-            log.warning("[lane-a] cache apply failed batch=%s: %s", batch_id, exc)
+            except Exception:
+                continue
 
-        # Trigger B2 if conditions met (dhl_email.received + dsk_present + idempotent)
+            _awb = (audit.get("awb") or audit.get("tracking_no") or "").strip()
+            if _awb in _EXCLUDED_AWBS:
+                out["skipped_excluded"] += 1
+                continue
+
+            if not _batch_active(audit):
+                out["skipped_inactive"] += 1
+                continue
+
+            out["batches_checked"] += 1
+            batch_id = ap.parent.name
+
+            try:
+                cached = _find_cache(audit)
+                if cached and cached.get("matched", 0) > 0:
+                    _apply_cache_to_audit(ap, audit, cached)
+                    audit = json.loads(ap.read_text(encoding="utf-8"))
+                    if (audit.get("dhl_email") or {}).get("received"):
+                        out["received_set"] += 1
+            except Exception as exc:
+                out["errors"].append(f"{batch_id}:cache:{exc}")
+                log.warning("[lane-a] cache apply failed batch=%s: %s", batch_id, exc)
+
+            try:
+                reply_result = _ensure_dhl_reply(ap, audit)
+                if reply_result.get("built"):
+                    out["b2_triggered"] += 1
+                if reply_result.get("sent"):
+                    out["b2_sent"] += 1
+                    log.info("[lane-a] B2 sent batch=%s", batch_id)
+            except Exception as exc:
+                out["errors"].append(f"{batch_id}:b2:{exc}")
+                log.warning("[lane-a] B2 failed batch=%s: %s", batch_id, exc)
+
+        _completed = _now_iso()
         try:
-            reply_result = _ensure_dhl_reply(ap, audit)
-            if reply_result.get("built"):
-                out["b2_triggered"] += 1
-            if reply_result.get("sent"):
-                out["b2_sent"] += 1
-                log.info("[lane-a] B2 sent batch=%s", batch_id)
-        except Exception as exc:
-            out["errors"].append(f"{batch_id}:b2:{exc}")
-            log.warning("[lane-a] B2 failed batch=%s: %s", batch_id, exc)
+            from datetime import datetime as _dt
+            _dur = round(
+                (_dt.fromisoformat(_completed.replace("Z", "+00:00")) -
+                 _dt.fromisoformat(_started.replace("Z", "+00:00"))).total_seconds(),
+                1,
+            )
+        except Exception:
+            _dur = None
 
-    log.info(
-        "[lane-a] done: checked=%d received_set=%d b2_triggered=%d "
-        "b2_sent=%d skipped_inactive=%d skipped_excluded=%d errors=%d",
-        out["batches_checked"], out["received_set"], out["b2_triggered"],
-        out["b2_sent"], out["skipped_inactive"], out["skipped_excluded"],
-        len(out["errors"]),
-    )
+        log.info(
+            "[lane-a] done: checked=%d received_set=%d b2_triggered=%d "
+            "b2_sent=%d skipped_inactive=%d skipped_excluded=%d errors=%d",
+            out["batches_checked"], out["received_set"], out["b2_triggered"],
+            out["b2_sent"], out["skipped_inactive"], out["skipped_excluded"],
+            len(out["errors"]),
+        )
+
+        # ── Write "success" status on clean completion ────────────────────────
+        _write_scan_status({
+            "status":           "success",
+            "started_at":       _started,
+            "completed_at":     _completed,
+            "duration_seconds": _dur,
+            "batches_checked":  out["batches_checked"],
+            "received_set":     out["received_set"],
+            "b2_triggered":     out["b2_triggered"],
+            "b2_sent":          out["b2_sent"],
+            "skipped_inactive": out["skipped_inactive"],
+            "skipped_excluded": out["skipped_excluded"],
+            "errors_count":     len(out["errors"]),
+            "last_error":       out["errors"][-1] if out["errors"] else None,
+        })
+
+    except Exception as _fatal:
+        _completed = _now_iso()
+        log.error("[lane-a] fatal error in scan: %s", _fatal)
+        _write_scan_status({
+            "status":     "failed",
+            "started_at": _started,
+            "completed_at": _completed,
+            "errors_count": 1,
+            "last_error": str(_fatal),
+        })
+        out["ok"] = False
+        out["errors"].append(str(_fatal))
+
     return out
 
 
