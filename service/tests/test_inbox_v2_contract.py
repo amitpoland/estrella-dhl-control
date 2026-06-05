@@ -16,7 +16,7 @@ Asserts (static source-grep; no server required):
   C. NAV_ROUTES and STUB_ROUTES in pz-design-v2.js (7–9)
      7. pz-design-v2.js routes inbox to /dashboard/inbox-v2.html.
      8. 'inbox' is NOT in STUB_ROUTES (sidebar link is live).
-     9. 'inventory' remains in STUB_ROUTES ('accounting' promoted in Sprint 28).
+     9. STUB_ROUTES is empty — all sidebar routes now live (inventory promoted in Sprint 29).
 
   D. Preserved boundaries (10–12)
     10. wfirma-inbox-v2.html still exists (separate wFirma recovery domain).
@@ -108,14 +108,17 @@ def test_inbox_not_in_stub_routes():
     )
 
 
-def test_inventory_remains_in_stub_routes():
-    # 'accounting' was promoted in Sprint 28 (accounting-hub-v2.html now live).
-    # Only 'inventory' should remain as a stub.
+def test_stub_routes_now_empty():
+    # Sprint 29 promoted inventory-v2.html. All sidebar routes are now live.
+    # STUB_ROUTES should be an empty Set.
+    import re as _re
     src = _read("pz-design-v2.js")
     stub_idx = src.index("STUB_ROUTES")
-    stub_block = src[stub_idx:stub_idx + 100]
-    assert "'inventory'" in stub_block, \
-        "'inventory' must remain in STUB_ROUTES (page not yet built)"
+    stub_block = src[stub_idx:stub_idx + 150]
+    match = _re.search(r"new Set\(\[(.*?)\]\)", stub_block)
+    if match:
+        assert match.group(1).strip() == '', \
+            "STUB_ROUTES should be empty Set([]) — all V2 routes now live"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
