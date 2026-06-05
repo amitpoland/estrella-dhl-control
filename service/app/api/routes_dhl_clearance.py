@@ -1896,6 +1896,73 @@ async def scan_dhl_inbox(
                     "method=%s mode=%s awb=%s",
                     batch_id, scanned, matched, scan_method, search_mode, target_awb,
                 )
+
+                # ── Mark dhl_email.received when DHL customs email found ────────────
+                # odprawacelna@dhl.com sends T# emails when a high-value shipment
+                # arrives at customs. The active_shipment_monitor's B2 path
+                # (_ensure_dhl_dsk_transfer_reply) fires automatically on the next
+                # sweep once audit.dhl_email.received is True. Without this write,
+                # the scan only logs EV_DHL_INBOX_SCANNED and the B2 path never fires
+                # because its entry gate checks dhl_email.received first.
+                # Idempotent: skipped if received is already set.
+                _DHL_CUSTOMS_SENDERS = frozenset({
+                    "odprawacelna@dhl.com",
+                    "administracja_centralna@dhl.com",
+                })
+                _customs_hit = next(
+                    (
+                        e for e in emails
+                        if (e.get("from") or "").lower().strip() in _DHL_CUSTOMS_SENDERS
+                        and (e.get("dhl_ticket") or e.get("ticket"))
+                    ),
+                    None,
+                )
+                if _customs_hit:
+                    try:
+                        from ..utils.io import write_json_atomic as _wja_scan  # noqa: PLC0415
+                        _cur_audit = json.loads(_ap.read_text(encoding="utf-8"))
+                        if not (_cur_audit.get("dhl_email") or {}).get("received"):
+                            _ticket = (
+                                _customs_hit.get("dhl_ticket")
+                                or _customs_hit.get("ticket")
+                                or ""
+                            )
+                            _cur_audit["dhl_email"] = {
+                                "received":     True,
+                                "source":       "scan_dhl_inbox",
+                                "sender":       _customs_hit.get("from", ""),
+                                "subject":      (
+                                    _customs_hit.get("subject")
+                                    or _customs_hit.get("raw_subject", "")
+                                ),
+                                "ticket":       _ticket,
+                                "request_type": "dhl_customs_request",
+                                "received_at":  _customs_hit.get("received_at", ""),
+                            }
+                            if _ticket:
+                                _cur_audit["dhl_ticket"] = _ticket
+                            _wja_scan(_ap, _cur_audit)
+                            tl.log_event(
+                                _ap,
+                                tl.EV_DHL_EMAIL_RECEIVED,
+                                trigger_source="dashboard",
+                                actor="admin",
+                                detail={
+                                    "ticket":     _ticket,
+                                    "written_by": "scan_dhl_inbox",
+                                },
+                            )
+                            log.info(
+                                "[scan-inbox] dhl_email.received set for batch=%s ticket=%s",
+                                batch_id, _ticket,
+                            )
+                    except Exception as _set_exc:
+                        log.warning(
+                            "[scan-inbox] dhl_email.received write failed for "
+                            "batch=%s: %s",
+                            batch_id, _set_exc,
+                        )
+
                 break
 
     log.info(
