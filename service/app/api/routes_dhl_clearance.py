@@ -2006,6 +2006,115 @@ async def scan_dhl_inbox(
     }
 
 
+@router.post("/scheduled-inbox-check", dependencies=[_auth])
+def run_scheduled_inbox_check() -> Dict[str, Any]:
+    """
+    Lightweight automated DHL customs-email scanner.
+
+    Designed to be called every 10 minutes by Windows Task Scheduler.
+
+    Pipeline (one Zoho scan per call — NOT per batch):
+      1. run_ingestion_cycle()         — scan Zoho inbox once, cache matched emails
+      2. For each active batch:
+           a. find_existing_email_context() → _apply_cache_to_audit()
+              writes dhl_email.received when a T# match is found
+           b. _ensure_dhl_reply()     → triggers B2 DSK reply if conditions met
+      3. Return summary {batches_checked, received_set, b2_triggered, errors}
+
+    Guards (all inherited from existing code):
+      - _is_active() checked per batch — terminal/delivered batches skipped
+      - B2 idempotency: build_started_at prevents duplicate sends
+      - DSK-present gate: dsk_path must resolve to a real file
+      - PR #454 / #455 received-write guards preserved via cache path
+
+    Note on event naming:
+      The ingestion cache uses "dhl_customs_email_received" (AI Bridge path).
+      The scan handler (PR #454) uses direct write. Both set dhl_email.received.
+      The carrier_arrived event (sla_engine SLA anchor) is separate and preserved.
+    """
+    from ..services.email_ingestion_worker import run_ingestion_cycle as _run_ing
+    from ..services.email_intelligence_store import (
+        find_existing_email_context as _find_cache,
+    )
+    from ..services.active_shipment_monitor import (
+        _all_audit_paths   as _audit_paths,
+        _is_active         as _batch_active,
+        _apply_cache_to_audit,
+        _ensure_dhl_reply,
+    )
+
+    out: Dict[str, Any] = {
+        "ok":               True,
+        "batches_checked":  0,
+        "received_set":     0,
+        "b2_triggered":     0,
+        "b2_sent":          0,
+        "skipped_inactive": 0,
+        "errors":           [],
+        "ingestion":        {},
+    }
+
+    # ── Step 1: one global Zoho scan, results cached per AWB ─────────────────
+    try:
+        ing = _run_ing()
+        out["ingestion"] = {
+            "ok":             ing.get("ok"),
+            "active_batches": ing.get("active_batches"),
+            "shipments":      len(ing.get("shipments") or []),
+        }
+    except Exception as exc:
+        out["ingestion"] = {"ok": False, "error": str(exc)}
+        log.warning("[auto-scan] ingestion cycle failed (non-fatal): %s", exc)
+
+    # ── Step 2: apply cached evidence + trigger B2 per active batch ───────────
+    for ap in _audit_paths():
+        try:
+            audit = json.loads(ap.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        # Eligibility guard — skip terminal/delivered batches
+        if not _batch_active(audit):
+            out["skipped_inactive"] += 1
+            continue
+
+        out["batches_checked"] += 1
+        batch_id = ap.parent.name
+
+        # Apply cached email evidence (sets dhl_email.received if cache has match)
+        try:
+            cached = _find_cache(audit)
+            if cached and cached.get("matched", 0) > 0:
+                _apply_cache_to_audit(ap, audit, cached)
+                # Re-read after potential write
+                audit = json.loads(ap.read_text(encoding="utf-8"))
+                if (audit.get("dhl_email") or {}).get("received"):
+                    out["received_set"] += 1
+        except Exception as exc:
+            out["errors"].append(f"{batch_id}:cache:{exc}")
+            log.warning("[auto-scan] cache apply failed batch=%s: %s", batch_id, exc)
+
+        # Trigger B2 if conditions met (dhl_email.received + dsk_present + idempotent)
+        try:
+            reply_result = _ensure_dhl_reply(ap, audit)
+            if reply_result.get("built"):
+                out["b2_triggered"] += 1
+            if reply_result.get("sent"):
+                out["b2_sent"] += 1
+                log.info("[auto-scan] B2 sent batch=%s", batch_id)
+        except Exception as exc:
+            out["errors"].append(f"{batch_id}:b2:{exc}")
+            log.warning("[auto-scan] B2 failed batch=%s: %s", batch_id, exc)
+
+    log.info(
+        "[auto-scan] done: checked=%d received_set=%d b2_triggered=%d "
+        "b2_sent=%d skipped=%d errors=%d",
+        out["batches_checked"], out["received_set"], out["b2_triggered"],
+        out["b2_sent"], out["skipped_inactive"], len(out["errors"]),
+    )
+    return out
+
+
 @router.post("/match-and-handle", dependencies=[_auth])
 async def match_and_handle(body: MatchAndHandleRequest) -> Dict[str, Any]:
     """
