@@ -267,6 +267,9 @@ window.EstrellaShared = {
 <script type="text/babel" src="proforma-list.jsx"></script>
 <script type="text/babel" src="proforma-detail.jsx"></script>
 <script type="text/babel" src="global-search.jsx"></script>
+<!-- Sprint 31: live DHL cards composed by DhlCustomsPage (window.DhlScanStatus / window.DhlDailySummary). -->
+<script type="text/babel" src="dhl-scan-status.jsx"></script>
+<script type="text/babel" src="dhl-daily-summary.jsx"></script>
 <!-- tweaks-panel.jsx excluded — omelette runtime not available in production -->
 <script type="text/babel" src="mock-badge.jsx"></script>
 <script type="text/babel">
@@ -298,13 +301,15 @@ function App() {
   // Pages that carry a persistent ?batch_id= param (preserved across their sub-routes)
   const BATCH_SCOPED_PAGES = ['proforma', 'proforma_detail'];
 
-  // Legacy route slugs → canonical page ids
+  // Legacy route slugs → canonical page ids.
+  // Sprint 31: the 'dhl: shipments' redirect was removed — DHL is now a
+  // discoverable top-level page (NAV_TREE entry + page === 'dhl' route).
+  // Routing 'dhl' to 'shipments' would silently bypass the live DHL Hub.
   const ROUTE_REDIRECTS = {
     actions:       'inbox',
     proposals:     'inbox',
     email_queue:   'inbox',
     reservation:   'inbox',
-    dhl:           'shipments',
     shipping:      'shipments',
     move_stock:    'inventory',
     scanner:       'inventory',
@@ -507,10 +512,12 @@ function App() {
             </>
           )}
 
-          {/* DHL / Customs (merged) */}
+          {/* DHL Hub — read-only observer (Sprint 31). Visibility only:
+              Lane A / Lane B / Task Scheduler remain the sole automation authority.
+              No Retry / Requeue / Scan / Lane / Force / Refresh affordances. */}
           {!viewerDoc && page === 'dhl' && (
             <>
-              <PageHeader title="DHL / Customs" subtitle="Inbox monitoring, reply queue, SAD/ZC429 documents, and clearance status" />
+              <PageHeader title="DHL / Customs" subtitle="Read-only DHL observer — live automation status, daily operations report, inbox-scanner health, and shipment queue. No write actions." />
               <SubTabStrip active={page} onNav={handleNav} />
               <DhlCustomsPage onViewShipment={handleViewShipment} />
             </>

@@ -56,234 +56,246 @@ function Pill({ children, tone = 'neutral', small }) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// DHL / Customs (merged page) — clearance pipeline + DHL emails + SAD docs
+// DHL Hub — read-only observer (Sprint 31)
+// ────────────────────────────────────────────────────────────────────────────
+// Wires the V2 shell `page === 'dhl'` route to live DHL authority. This is a
+// VISIBILITY-ONLY surface — Lane A / Lane B / Task Scheduler remain the sole
+// automation actors. The Hub renders truth produced by the backend; it never
+// mutates server state in any way.
+//
+// Allowed endpoints (exactly 4 — and nothing else):
+//   GET /api/v1/dhl/followup-automation/status     — automation status projection
+//   GET /api/v1/dhl/followup-automation/shipments  — DHL shipment rows (projector)
+//   GET /api/v1/dhl/auto-scan-status               — Lane A inbox-scanner health (DhlScanStatus)
+//   GET /api/v1/dhl/daily-summary                  — daily DHL operations (DhlDailySummary)
+//
+// Note: the brief originally summarised the first two without the router
+// prefix segment "followup-automation". The actual registered prefix in
+// routes_dhl_followup_status.py is the followup-automation subpath, so the
+// canonical paths include that segment. Authority owner unchanged
+// (dhl_followup_status_projector); only the URL shape was corrected.
+//
+// Composes the existing live cards:
+//   window.DhlScanStatus    (service/app/static/v2/dhl-scan-status.jsx)
+//   window.DhlDailySummary  (service/app/static/v2/dhl-daily-summary.jsx)
+//
+// Retired (P3) by this sprint: DhlClearancePipeline, DhlEmailInbox,
+// EmailDetailModal, SadDocsTable, and the inline mock arrays.
+// Those components held write-implying affordances that this observer must
+// never expose; see the brief at .claude/campaigns/atlas-v2/sprint-31-dhl-hub.md
+// §4 for the exhaustive forbidden list.
 // ════════════════════════════════════════════════════════════════════════════
+
 function DhlCustomsPage({ onViewShipment }) {
-  const [tab, setTab] = React.useState('clearance');
-  const [openEmail, setOpenEmail] = React.useState(null);
+  // Live data from the 4 allowed GET endpoints.
+  const [statusData,    setStatusData]    = React.useState(null);
+  const [statusLoading, setStatusLoading] = React.useState(true);
+  const [statusError,   setStatusError]   = React.useState(null);
 
-  const emails = [
-    { id: 'em-1', awb: 'DHL-7733991122', subject: 'RE: Customs clearance — pre-check required', from: 'clearance@dhl.com.pl', received: '2 min ago', dir: 'in', status: 'new', summary: 'CIF value EUR 1,840 below threshold. Standard procedure recommended.', flags: ['CIF<EUR 6,000', 'GOLD JEWELLERY'] },
-    { id: 'em-2', awb: 'DHL-8825441199', subject: 'Reply: Documents attached for clearance', from: 'estrella@example.com', received: '14 min ago', dir: 'out', status: 'sent', summary: 'Polish description + DSK + invoice + AWB attached. 4 files, 2.3 MB.', flags: ['BUNDLE READY'] },
-    { id: 'em-3', awb: 'DHL-9988776655', subject: 'Customs: SAD ZC429/2024/000847 issued', from: 'clearance@dhl.com.pl', received: '1 h ago', dir: 'in', status: 'parsed', summary: 'SAD attached. Duty A00 PLN 380. Verified against pre-check.', flags: ['SAD ATTACHED', 'A00 PLN 380'] },
-    { id: 'em-4', awb: 'DHL-2244668800', subject: 'RE: Clearance request', from: 'clearance@dhl.com.pl', received: '3 h ago', dir: 'in', status: 'error', summary: 'Parser could not extract MRN. Manual review required.', flags: ['PARSE FAILED'] },
-    { id: 'em-5', awb: 'DHL-5566778899', subject: 'Reply queued: Polish description + DSK', from: 'estrella@example.com', received: 'pending', dir: 'out', status: 'queued', summary: 'Awaiting operator approval. AI-generated DSK recommendation: PROBLEMATIC.', flags: ['NEEDS APPROVAL', 'DSK: PROBLEMATIC'] },
-  ];
+  const [shipData,    setShipData]    = React.useState(null);
+  const [shipLoading, setShipLoading] = React.useState(true);
+  const [shipError,   setShipError]   = React.useState(null);
 
-  const sadDocs = [
-    { id: 'sad-1', mrn: 'ZC429/2024/000847', awb: 'DHL-9988776655', issued: '27 Apr 2024', a00: 'PLN 380', vat: 'PLN 1,420', status: 'Verified' },
-    { id: 'sad-2', mrn: 'ZC429/2024/000845', awb: 'DHL-7733991122', issued: '26 Apr 2024', a00: 'PLN 0', vat: 'PLN 0', status: 'Pending parser' },
-    { id: 'sad-3', mrn: 'ZC429/2024/000844', awb: 'DHL-8825441199', issued: '26 Apr 2024', a00: 'PLN 215', vat: 'PLN 962', status: 'Verified' },
-    { id: 'sad-4', mrn: '—', awb: 'DHL-2244668800', issued: '—', a00: '—', vat: '—', status: 'Awaiting upload' },
-  ];
+  // Re-render key forces the embedded DhlScanStatus + DhlDailySummary cards to
+  // re-mount on a passive Reload (they auto-fetch on mount). Zero server side-effect.
+  const [reloadKey, setReloadKey] = React.useState(0);
+
+  const loadStatus = React.useCallback(() => {
+    setStatusLoading(true); setStatusError(null);
+    window.EstrellaShared.apiFetch('/api/v1/dhl/followup-automation/status')
+      .then(d => { setStatusData(d); setStatusLoading(false); })
+      .catch(e => { setStatusError((e && e.message) || String(e)); setStatusLoading(false); });
+  }, []);
+
+  const loadShipments = React.useCallback(() => {
+    setShipLoading(true); setShipError(null);
+    window.EstrellaShared.apiFetch('/api/v1/dhl/followup-automation/shipments')
+      .then(d => { setShipData(d); setShipLoading(false); })
+      .catch(e => { setShipError((e && e.message) || String(e)); setShipLoading(false); });
+  }, []);
+
+  React.useEffect(() => { loadStatus();    }, [loadStatus]);
+  React.useEffect(() => { loadShipments(); }, [loadShipments]);
+
+  // Passive client-side reload: re-issues the same 4 GETs. No POST, no server
+  // side-effect. Brief §3 permits this only with a non-mutating label.
+  const reloadAll = React.useCallback(() => {
+    loadStatus();
+    loadShipments();
+    setReloadKey(k => k + 1);
+  }, [loadStatus, loadShipments]);
+
+  // Normalise the projector shipment rows. We render whatever fields the
+  // projector emits without inventing semantics; if shape changes, the
+  // operator sees the raw projector output rather than stale assumptions.
+  const ships = (shipData && (shipData.shipments || shipData.rows || shipData.items)) || [];
 
   return (
-    <div style={{ padding: '20px 32px', overflowY: 'auto', flex: 1 }}>
-      {/* Stat row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }} className="grid-stats">
-        <StatTile label="Inbox new" value="3" sub="DHL replies awaiting parse" />
-        <StatTile label="Reply queue" value="2" sub="Drafts pending operator approval" accent="var(--accent)" />
-        <StatTile label="SAD pending" value="1" sub="Awaiting customs agent upload" />
-        <StatTile label="Cleared today" value="5" sub="Verified · 100% match" accent="var(--badge-green-text)" />
+    <div data-testid="dhl-hub-root" style={{ padding: '20px 32px', overflowY: 'auto', flex: 1 }}>
+      {/* Reload-all bar (passive client-side; zero server side-effect) */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button
+          data-testid="dhl-hub-reload"
+          onClick={reloadAll}
+          disabled={statusLoading || shipLoading}
+          style={{
+            background: 'transparent', border: '1px solid var(--border)', borderRadius: 4,
+            padding: '4px 10px', fontSize: 11, color: 'var(--text-2)',
+            cursor: (statusLoading || shipLoading) ? 'default' : 'pointer',
+          }}
+        >↻ Reload</button>
       </div>
 
-      <Tabs
-        active={tab}
-        onChange={setTab}
-        tabs={[
-          { id: 'clearance', label: 'Clearance Pipeline' },
-          { id: 'inbox',     label: 'DHL Email Queue', count: emails.filter(e => e.status === 'new' || e.status === 'queued').length },
-          { id: 'sad',       label: 'SAD / ZC429 Documents', count: sadDocs.length },
-          { id: 'shipments', label: 'All DHL Shipments' },
-        ]}
-      />
+      {/* Row 1: Lane A scanner health + daily operations report (existing live cards) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 380px) 1fr', gap: 16, marginBottom: 20 }}>
+        <div data-testid="dhl-hub-scan-card">
+          {window.DhlScanStatus
+            ? React.createElement(window.DhlScanStatus, { key: 'scan-' + reloadKey })
+            : <div style={{ padding: 12, fontSize: 11, color: 'var(--text-3)' }}>Scanner card unavailable.</div>}
+        </div>
+        <div data-testid="dhl-hub-summary-card">
+          {window.DhlDailySummary
+            ? React.createElement(window.DhlDailySummary, { key: 'sum-' + reloadKey })
+            : <div style={{ padding: 12, fontSize: 11, color: 'var(--text-3)' }}>Daily summary card unavailable.</div>}
+        </div>
+      </div>
 
-      {tab === 'clearance' && <DhlClearancePipeline onViewShipment={onViewShipment} />}
-      {tab === 'inbox'     && <DhlEmailInbox emails={emails} onOpen={setOpenEmail} />}
-      {tab === 'sad'       && <SadDocsTable docs={sadDocs} onView={onViewShipment} />}
-      {tab === 'shipments' && <FilteredShipmentsTable filterFn={r => r.carrier === 'DHL'} onViewShipment={onViewShipment} />}
+      {/* Panel: DHL automation status (/dhl/status) */}
+      <DhlPanel
+        title="DHL automation status"
+        subtitle="Live projection from dhl_followup_status_projector — Lane A / Lane B authority"
+        testid="dhl-hub-status-panel"
+      >
+        {statusLoading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
+        {statusError   && <div style={{ fontSize: 12, color: 'var(--badge-red-text)' }}>{statusError}</div>}
+        {statusData && (
+          <DhlJsonReadout data={statusData} testid="dhl-hub-status-readout" />
+        )}
+        <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-3)' }}>
+          Read-only. No write calls are made from this panel.
+        </div>
+      </DhlPanel>
 
-      {openEmail && <EmailDetailModal email={openEmail} onClose={() => setOpenEmail(null)} />}
+      {/* Panel: DHL shipment rows (/dhl/shipments) */}
+      <DhlPanel
+        title="DHL shipment queue"
+        subtitle="Projector rows — read-only visibility into the active DHL workflow"
+        testid="dhl-hub-shipments-panel"
+      >
+        {shipLoading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
+        {shipError   && <div style={{ fontSize: 12, color: 'var(--badge-red-text)' }}>{shipError}</div>}
+        {shipData && (
+          <DhlShipmentsTable rows={ships} onViewShipment={onViewShipment} testid="dhl-hub-shipments-table" />
+        )}
+        <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-3)' }}>
+          Read-only. No write calls are made from this panel.
+        </div>
+      </DhlPanel>
+
+      {/* Authority statement */}
+      <div style={{
+        marginTop: 8, padding: '12px 16px', background: 'var(--bg-subtle)',
+        border: '1px solid var(--border)', borderRadius: 8,
+        fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5,
+      }}>
+        <strong style={{ color: 'var(--text-2)' }}>Observer only.</strong>{' '}
+        Lane A · Lane B · Task Scheduler remain the sole DHL automation authority.
+        This surface is read-only — no write actions, no workflow triggers, no automation controls.{' '}
+        <strong style={{ color: 'var(--text-2)' }}>Endpoints:</strong>{' '}
+        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/dhl/followup-automation/status</code> ·{' '}
+        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/dhl/followup-automation/shipments</code> ·{' '}
+        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/dhl/auto-scan-status</code> ·{' '}
+        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/dhl/daily-summary</code>.
+      </div>
     </div>
   );
 }
 
-function DhlClearancePipeline({ onViewShipment }) {
-  // Reuse the existing DhlClearancePage's layout but trimmed.
-  const [scanning, setScanning] = React.useState(false);
-  const stages = [
-    { num: 1, label: 'Inbox scan', count: 3, tone: 'blue' },
-    { num: 2, label: 'Pre-check', count: 2, tone: 'amber' },
-    { num: 3, label: 'Reply build', count: 2, tone: 'gold' },
-    { num: 4, label: 'Awaiting SAD', count: 1, tone: 'purple' },
-    { num: 5, label: 'SAD verified', count: 5, tone: 'green' },
-  ];
+// ── DHL Hub primitives (private to DhlCustomsPage) ──────────────────────────
+
+function DhlPanel({ title, subtitle, testid, children }) {
   return (
-    <div>
-      <Card style={{ padding: 16, marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Pipeline overview</div>
-            <div style={{ fontSize: 18, fontWeight: 600, fontFamily: '"DM Serif Display", serif', color: 'var(--text)', marginTop: 2 }}>Today · 13 active items across 5 stages</div>
-          </div>
-          <Btn variant="gold" small onClick={() => setScanning(true)}>{scanning ? 'Scanning…' : '↻ Scan DHL Inbox'}</Btn>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8 }}>
-          {stages.map(s => (
-            <div key={s.num} style={{ padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <div style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--card)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'var(--text-2)' }}>{s.num}</div>
-                <Pill tone={s.tone} small>{s.count} items</Pill>
-              </div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
-      </Card>
-      <FilteredShipmentsTable filterFn={r => r.carrier === 'DHL' && r.overall !== 'Done'} onViewShipment={onViewShipment} />
+    <div data-testid={testid} style={{
+      background: 'var(--card)', border: '1px solid var(--border)',
+      borderRadius: 10, overflow: 'hidden',
+      boxShadow: '0 1px 3px var(--shadow)', marginBottom: 20,
+    }}>
+      <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{title}</div>
+        {subtitle && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{subtitle}</div>}
+      </div>
+      <div style={{ padding: '16px 20px' }}>{children}</div>
     </div>
   );
 }
 
-function DhlEmailInbox({ emails, onOpen }) {
-  const [filter, setFilter] = React.useState('all');
-  const filters = [
-    { id: 'all', label: 'All', count: emails.length },
-    { id: 'in', label: 'Inbound', count: emails.filter(e => e.dir === 'in').length },
-    { id: 'out', label: 'Outbound', count: emails.filter(e => e.dir === 'out').length },
-    { id: 'queued', label: 'Pending Send', count: emails.filter(e => e.status === 'queued').length },
-    { id: 'error', label: 'Errors', count: emails.filter(e => e.status === 'error').length },
-  ];
-  const visible = emails.filter(e => filter === 'all' ? true : filter === 'in' || filter === 'out' ? e.dir === filter : e.status === filter);
-
+// Read-only JSON readout — pretty-print whatever the projector emits without
+// inventing semantics. Sprint 30 used a similar pattern for unfamiliar payloads.
+function DhlJsonReadout({ data, testid }) {
   return (
-    <Card style={{ overflow: 'hidden' }}>
-      <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 6, borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle)' }}>
-        {filters.map(f => (
-          <button key={f.id} onClick={() => setFilter(f.id)} style={{
-            padding: '4px 10px', background: filter === f.id ? 'var(--card)' : 'transparent',
-            border: '1px solid ' + (filter === f.id ? 'var(--border)' : 'transparent'),
-            borderRadius: 4, fontSize: 11, fontWeight: 600,
-            color: filter === f.id ? 'var(--text)' : 'var(--text-3)', cursor: 'pointer',
-          }}>{f.label} <span style={{ opacity: 0.6, marginLeft: 4 }}>{f.count}</span></button>
-        ))}
-      </div>
-      <div>
-        {visible.map(e => (
-          <div key={e.id} onClick={() => onOpen(e)} style={{
-            padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', cursor: 'pointer',
-            display: 'flex', alignItems: 'flex-start', gap: 12,
-          }} onMouseEnter={ev => ev.currentTarget.style.background = 'var(--row-hover)'}
-             onMouseLeave={ev => ev.currentTarget.style.background = 'transparent'}>
-            <div style={{ width: 24, height: 24, borderRadius: '50%', background: e.dir === 'in' ? 'var(--badge-blue-bg)' : 'var(--bg-subtle)', color: e.dir === 'in' ? 'var(--badge-blue-text)' : 'var(--text-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, flexShrink: 0, marginTop: 2 }}>{e.dir === 'in' ? '↓' : '↑'}</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--badge-blue-text)', fontWeight: 600 }}>{e.awb}</span>
-                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>·</span>
-                <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{e.from}</span>
-                {e.status === 'new'    && <Pill tone="blue"   small>NEW</Pill>}
-                {e.status === 'queued' && <Pill tone="gold"   small>PENDING SEND</Pill>}
-                {e.status === 'sent'   && <Pill tone="green"  small>SENT</Pill>}
-                {e.status === 'parsed' && <Pill tone="purple" small>PARSED</Pill>}
-                {e.status === 'error'  && <Pill tone="red"    small>ERROR</Pill>}
-              </div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>{e.subject}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 6 }}>{e.summary}</div>
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                {e.flags.map(f => <Pill key={f} tone="neutral" small>{f}</Pill>)}
-              </div>
-            </div>
-            <div style={{ flexShrink: 0, fontSize: 11, color: 'var(--text-3)' }}>{e.received}</div>
-          </div>
-        ))}
-      </div>
-    </Card>
+    <pre data-testid={testid} style={{
+      margin: 0, padding: '12px 14px', background: 'var(--bg-subtle)',
+      border: '1px solid var(--border)', borderRadius: 6,
+      fontSize: 11, color: 'var(--text)',
+      overflowX: 'auto', maxHeight: 360, overflowY: 'auto',
+      whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+      fontFamily: 'monospace', lineHeight: 1.5,
+    }}>{JSON.stringify(data, null, 2)}</pre>
   );
 }
 
-function EmailDetailModal({ email, onClose }) {
+// Defensive renderer: accepts an array of projector rows, picks a stable
+// column set from common fields, and renders read-only. No row actions.
+function DhlShipmentsTable({ rows, onViewShipment, testid }) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No DHL shipments in the projector output.</div>;
+  }
+  // Pick a column set from the first row's actual keys (caps at 8 for layout).
+  const pick = ['batch_id', 'awb', 'carrier', 'status', 'state', 'waiting_for', 'updated_at', 'next_action'];
+  const present = pick.filter(k => Object.prototype.hasOwnProperty.call(rows[0], k));
+  const cols = present.length > 0 ? present : Object.keys(rows[0]).slice(0, 8);
+
   return (
-    <Modal title={`Email · ${email.awb}`} onClose={onClose} wide>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 20 }}>
-        <div>
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Subject</div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>{email.subject}</div>
-          </div>
-          <div style={{ display: 'flex', gap: 16, marginBottom: 12, fontSize: 11 }}>
-            <div><span style={{ color: 'var(--text-3)' }}>From:</span> <span style={{ color: 'var(--text)' }}>{email.from}</span></div>
-            <div><span style={{ color: 'var(--text-3)' }}>Received:</span> <span style={{ color: 'var(--text)' }}>{email.received}</span></div>
-          </div>
-          <div style={{ padding: 14, background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 12 }}>
-            <div style={{ fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
-{`Hello,
-
-${email.summary}
-
-Please find attached:
-  • Polish description (auto-generated)
-  • DSK recommendation
-  • Commercial invoice
-  • AWB / Tracking sheet
-
-Best regards,
-Estrella Jewels Customs Bridge`}
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {email.status === 'queued' && <Btn variant="gold" small>📤 Send Now</Btn>}
-            {email.status === 'error'  && <Btn variant="gold" small>↻ Retry Parse</Btn>}
-            <Btn variant="outline" small>View Shipment</Btn>
-            <Btn variant="outline" small>Edit Reply</Btn>
-            <Btn variant="outline" small>↓ Download .eml</Btn>
-          </div>
-        </div>
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>AI Bridge result</div>
-          <Card style={{ padding: 12, marginBottom: 12 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 4 }}>Classification</div>
-            <Pill tone={email.flags.some(f => f.includes('PROBLEMATIC')) ? 'amber' : 'green'} small>
-              {email.flags.find(f => f.includes('DSK')) || 'STANDARD'}
-            </Pill>
-          </Card>
-          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Detected flags</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {email.flags.map(f => <Pill key={f} tone="neutral" small>{f}</Pill>)}
-          </div>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function SadDocsTable({ docs, onView }) {
-  return (
-    <Card style={{ overflow: 'hidden' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+    <div style={{ overflowX: 'auto', maxHeight: 360, overflowY: 'auto' }} data-testid={testid}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
         <thead>
-          <tr style={{ background: 'var(--bg-subtle)' }}>
-            {['MRN', 'AWB', 'Issued', 'A00 (Duty)', 'VAT', 'Status', ''].map(h => (
-              <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', borderBottom: '1px solid var(--border)' }}>{h}</th>
+          <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+            {cols.map(h => (
+              <th key={h} style={{
+                padding: '6px 10px', textAlign: 'left',
+                fontWeight: 700, color: 'var(--text-3)',
+                letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10,
+              }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {docs.map(d => (
-            <tr key={d.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-              <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{d.mrn}</td>
-              <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--badge-blue-text)' }}>{d.awb}</td>
-              <td style={{ padding: '10px 12px', color: 'var(--text-2)' }}>{d.issued}</td>
-              <td style={{ padding: '10px 12px', color: 'var(--accent)', fontWeight: 700, textAlign: 'right' }}>{d.a00}</td>
-              <td style={{ padding: '10px 12px', color: 'var(--text)', textAlign: 'right' }}>{d.vat}</td>
-              <td style={{ padding: '10px 12px' }}>
-                <Pill tone={d.status === 'Verified' ? 'green' : d.status === 'Pending parser' ? 'amber' : 'neutral'} small>{d.status}</Pill>
-              </td>
-              <td style={{ padding: '10px 12px' }}><Btn small variant="outline">View</Btn></td>
+          {rows.slice(0, 200).map((r, i) => (
+            <tr key={r.batch_id || r.id || i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              {cols.map(c => {
+                const v = r[c];
+                const display = v == null ? '—' :
+                  typeof v === 'object' ? JSON.stringify(v) :
+                  String(v);
+                return (
+                  <td key={c} style={{
+                    padding: '5px 10px',
+                    fontFamily: c === 'batch_id' || c === 'awb' ? 'monospace' : undefined,
+                    color: 'var(--text-2)',
+                    maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>{display}</td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
       </table>
-    </Card>
+      {rows.length > 200 && (
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+          Showing first 200 of {rows.length}.
+        </div>
+      )}
+    </div>
   );
 }
 
