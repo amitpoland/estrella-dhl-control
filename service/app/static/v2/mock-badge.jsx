@@ -3,7 +3,8 @@
 // Must be prominent and unmissable -- no mock data may appear without it.
 
 // Sprint 2B.2: 'inbox' added — read-only display wired to GET /api/v1/inbox.
-const WIRED_PAGES = ['proforma', 'proforma_detail', 'inbox'];
+// Sprint 30:   'inventory' added — live hub from inventory-v2.html (Sprint 29).
+const WIRED_PAGES = ['proforma', 'proforma_detail', 'inbox', 'inventory'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;
