@@ -3341,6 +3341,8 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 **OQ**: operator's final authenticated visual click on `https://pz.estrellajewels.eu/v2/dhl` to confirm production render. Same as Sprint 30 OQ remains pending.
 
+**Scorecard** (RULE 6): `.claude/memory/scorecards/2026-06-06-sprint31-dhl-hub-deploy.md` — 7 deploy-gate agents all EXEMPLARY (29–33/35), zero NEEDS-TUNING/UNRELIABLE (no GATE 4 disposition required). Positive signal logged again: browser smoke caught three real defects (cards not loaded, endpoint path mismatch, NAV+redirect blocking discoverability) — second consecutive sprint where browser verification was load-bearing. Observer self-eval performed (7 days since last).
+
 ---
 
 # DECISIONS
