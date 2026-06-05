@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inventory — Estrella Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      --bg: #F4F1EA; --bg-subtle: #FAF8F2; --card: #FFFFFF;
+      --row-hover: #F6F2EA; --border: #E5DECF; --border-subtle: #EFE9DA;
+      --text: #1B2538; --text-2: #4E5A72; --text-3: #8B97AE;
+      --shadow: rgba(27,37,56,0.06);
+      --accent: #B89968; --accent-subtle: #F8EFD8; --accent-border: #CFB178; --accent-text: #1B2538;
+      --badge-neutral-bg: #EEF0F4; --badge-neutral-text: #4A5A70; --badge-neutral-border: #CED4E0;
+      --badge-blue-bg: #E8EFF8;   --badge-blue-text: #1A4A90;   --badge-blue-border: #AABEE0;
+      --badge-amber-bg: #FBF5E0;  --badge-amber-text: #805A00;  --badge-amber-border: #DEC870;
+      --badge-green-bg: #E8F5EE;  --badge-green-text: #186838;  --badge-green-border: #96CCA8;
+      --badge-red-bg: #FBE8E6;    --badge-red-text: #902018;    --badge-red-border: #E0A8A0;
+      --badge-purple-bg: #EEE8F8; --badge-purple-text: #481898; --badge-purple-border: #BEA4E8;
+      --ok-green: #22A06B;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111928; --bg-subtle: #172030; --card: #1C2638;
+        --row-hover: #223040; --border: #2C3C54; --border-subtle: #243050;
+        --text: #EEE8DC; --text-2: #8A9AB6; --text-3: #566478;
+        --badge-neutral-bg: #1C2838; --badge-neutral-text: #8A9AB6; --badge-neutral-border: #2C3C54;
+        --badge-blue-bg: #0E1E38;   --badge-blue-text: #80AAEE;   --badge-blue-border: #1E3A64;
+        --badge-amber-bg: #20180A;  --badge-amber-text: #E8C040;  --badge-amber-border: #584010;
+        --badge-green-bg: #0E2018;  --badge-green-text: #68CC88;  --badge-green-border: #1A4830;
+        --badge-red-bg: #200E10;    --badge-red-text: #EE8880;    --badge-red-border: #581018;
+        --badge-purple-bg: #160E28; --badge-purple-text: #AA88EE; --badge-purple-border: #341860;
+        --ok-green: #2DB47C;
+      }
+    }
+    body { margin: 0; font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); color: var(--text); font-size: 13px; min-height: 100vh; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="env,react" src="/dashboard/dashboard-shared.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-api.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-state.js"></script>
+<script type="text/babel" data-presets="env,react" src="/dashboard/pz-components.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+(function () {
+  'use strict';
+  const { useState, useEffect, useCallback, useRef } = React;
+  const { apiFetch } = window.EstrellaShared;
+
+  // ── Shared UI atoms ────────────────────────────────────────────────────────────
+
+  function Label({ children }) {
+    return <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 6 }}>{children}</div>;
+  }
+
+  function Input({ value, onChange, placeholder, type = 'text', ...rest }) {
+    return (
+      <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12, fontFamily: 'monospace', outline: 'none' }}
+        {...rest}
+      />
+    );
+  }
+
+  function FetchBtn({ onClick, loading, label, disabled, ...rest }) {
+    return (
+      <button onClick={onClick} disabled={disabled || loading}
+        style={{ padding: '7px 14px', borderRadius: 6, border: '1px solid var(--accent-border)', background: loading ? 'var(--bg-subtle)' : 'var(--accent-subtle)', color: loading ? 'var(--text-3)' : 'var(--accent-text)', fontSize: 12, fontWeight: 600, cursor: disabled || loading ? 'not-allowed' : 'pointer', opacity: disabled ? 0.45 : 1 }}
+        {...rest}
+      >
+        {loading ? '…' : label}
+      </button>
+    );
+  }
+
+  function StatBadge({ count, label, tone, sub }) {
+    const c = tone === 'green' ? '--badge-green' : tone === 'amber' ? '--badge-amber' : tone === 'red' ? '--badge-red' : '--badge-neutral';
+    return (
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', boxShadow: '0 1px 2px var(--shadow)' }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 6 }}>{label}</div>
+        <div style={{ fontSize: 26, fontWeight: 700, color: count == null ? 'var(--text-3)' : `var(${c}-text)` }}>
+          {count == null ? '—' : count}
+        </div>
+        {sub && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{sub}</div>}
+      </div>
+    );
+  }
+
+  function StateChip({ state }) {
+    const MAP = {
+      WAREHOUSE_STOCK:        { label: 'In Stock',          bg: 'var(--badge-green-bg)',  text: 'var(--badge-green-text)',  border: 'var(--badge-green-border)' },
+      PURCHASE_TRANSIT:       { label: 'In Transit',         bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   border: 'var(--badge-blue-border)' },
+      SALES_TRANSIT:          { label: 'Sales Transit',      bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   border: 'var(--badge-blue-border)' },
+      DIRECT_DISPATCH_READY:  { label: 'Dispatch Ready',     bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  border: 'var(--badge-amber-border)' },
+      CLIENT_DISPATCHED:      { label: 'Dispatched',         bg: 'var(--badge-purple-bg)', text: 'var(--badge-purple-text)', border: 'var(--badge-purple-border)' },
+      CLOSED:                 { label: 'Closed',             bg: 'var(--badge-neutral-bg)',text: 'var(--badge-neutral-text)',border: 'var(--badge-neutral-border)' },
+      SAMPLE_OUT:             { label: 'Sample Out',         bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  border: 'var(--badge-amber-border)' },
+      RETURNED_FROM_CLIENT:   { label: 'Return / Client',    bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    border: 'var(--badge-red-border)' },
+      RETURNED_TO_PRODUCER:   { label: 'Return / Producer',  bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    border: 'var(--badge-red-border)' },
+    };
+    const s = MAP[state] || { label: state || '?', bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', background: s.bg, color: s.text, border: `1px solid ${s.border}`, borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
+        {s.label}
+      </span>
+    );
+  }
+
+  function ResultBox({ data, error }) {
+    if (!data && !error) return null;
+    if (error) return <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-red-text)', fontFamily: 'monospace' }}>{error}</div>;
+    return <pre style={{ marginTop: 10, padding: '12px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text)', overflowX: 'auto', maxHeight: 360, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace', lineHeight: 1.5 }}>{JSON.stringify(data, null, 2)}</pre>;
+  }
+
+  function Panel({ title, subtitle, children, testid }) {
+    return (
+      <div data-testid={testid} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)', marginBottom: 20 }}>
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{title}</div>
+          {subtitle && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{subtitle}</div>}
+        </div>
+        <div style={{ padding: '16px 20px' }}>{children}</div>
+      </div>
+    );
+  }
+
+  // ── Stage 2 Overview — auto-fetches on mount ──────────────────────────────────
+
+  function Stage2Panel() {
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    const load = useCallback(async () => {
+      setLoading(true); setError(null);
+      try { setData(await apiFetch('/api/v1/inventory/stage2/aggregate')); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    const s2 = data && data.stage2;
+    return (
+      <Panel title="Stage 2 overview" subtitle="Physical inventory counts — auto-loaded from /api/v1/inventory/stage2/aggregate" testid="panel-stage2">
+        {loading && <div style={{ color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>}
+        {error && <div style={{ color: 'var(--badge-red-text)', fontSize: 12 }}>Error: {error}</div>}
+        {s2 && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+            <StatBadge label="Final stock" count={s2.final_stock && s2.final_stock.count} tone="green" sub="WAREHOUSE_STOCK" />
+            <StatBadge label="Samples out" count={s2.samples && s2.samples.count} tone="amber" sub="SAMPLE_OUT" />
+            <StatBadge label="Returns" count={s2.returns && s2.returns.count} tone="red"
+              sub={s2.returns && s2.returns.subcounts ? `${s2.returns.subcounts.from_client} client · ${s2.returns.subcounts.to_producer} producer` : null}
+            />
+          </div>
+        )}
+        {data && data.limitations && data.limitations.length > 0 && (
+          <div style={{ marginTop: 12, fontSize: 11, color: 'var(--badge-amber-text)' }}>
+            ⚠ {data.limitations.join(' · ')}
+          </div>
+        )}
+        <div style={{ marginTop: 10 }}>
+          <button onClick={load} disabled={loading} style={{ fontSize: 11, border: '1px solid var(--border)', background: 'transparent', borderRadius: 4, padding: '4px 10px', cursor: loading ? 'default' : 'pointer', color: 'var(--text-2)' }} data-testid="btn-refresh-stage2">
+            {loading ? '…' : '↻ Refresh'}
+          </button>
+        </div>
+      </Panel>
+    );
+  }
+
+  // ── Batch state panel ─────────────────────────────────────────────────────────
+
+  function BatchPanel() {
+    const [batchId, setBatchId] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [data, setData] = useState(null);
+    const [error, setError] = useState(null);
+
+    const fetch = useCallback(async () => {
+      if (!batchId.trim()) return;
+      setLoading(true); setData(null); setError(null);
+      try { setData(await apiFetch(`/api/v1/inventory/state/${encodeURIComponent(batchId.trim())}`)); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, [batchId]);
+
+    const counts = data && data.counts;
+    const STATES = ['WAREHOUSE_STOCK','PURCHASE_TRANSIT','SALES_TRANSIT','DIRECT_DISPATCH_READY','CLIENT_DISPATCHED','SAMPLE_OUT','RETURNED_FROM_CLIENT','RETURNED_TO_PRODUCER','CLOSED'];
+
+    return (
+      <Panel title="Batch inventory state" subtitle="Per-state piece counts for a shipment batch" testid="panel-batch">
+        <Label>Batch ID</Label>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+          <div style={{ flex: 1 }}>
+            <Input value={batchId} onChange={setBatchId} placeholder="e.g. SHIPMENT_4218922912_2026-05_…" data-testid="input-batch-id" />
+          </div>
+          <FetchBtn onClick={fetch} loading={loading} label="Load state" disabled={!batchId.trim()} data-testid="btn-batch-state" />
+        </div>
+        {error && <div style={{ color: 'var(--badge-red-text)', fontSize: 12 }}>{error}</div>}
+        {data && (
+          <>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+              {STATES.filter(s => counts && counts[s] > 0).map(s => (
+                <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <StateChip state={s} />
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{counts[s]}</span>
+                </div>
+              ))}
+              {counts && STATES.every(s => !counts[s]) && <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No pieces found for this batch.</span>}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+              Total: <strong>{data.total || 0}</strong> · Source: <code style={{ fontFamily: 'monospace', background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>{data.source || '—'}</code>
+              {data.degraded && <span style={{ color: 'var(--badge-amber-text)' }}> · ⚠ degraded</span>}
+            </div>
+            {data.pieces && data.pieces.length > 0 && (
+              <details style={{ marginTop: 12 }}>
+                <summary style={{ fontSize: 12, color: 'var(--text-2)', cursor: 'pointer' }}>Show {data.pieces.length} piece records ▸</summary>
+                <div style={{ marginTop: 8, overflowX: 'auto', maxHeight: 260, overflowY: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                        {['Scan code', 'State', 'Design', 'Updated'].map(h => (
+                          <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.pieces.slice(0, 200).map((p, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                          <td style={{ padding: '5px 10px', fontFamily: 'monospace', fontSize: 11 }}>{p.scan_code || '—'}</td>
+                          <td style={{ padding: '5px 10px' }}><StateChip state={p.state} /></td>
+                          <td style={{ padding: '5px 10px', color: 'var(--text-2)' }}>{p.design_no || '—'}</td>
+                          <td style={{ padding: '5px 10px', color: 'var(--text-3)' }}>{(p.updated_at || '—').slice(0, 16).replace('T', ' ')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {data.pieces.length > 200 && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>Showing first 200 of {data.pieces.length}.</div>}
+                </div>
+              </details>
+            )}
+          </>
+        )}
+        <div style={{ marginTop: 12, fontSize: 10, color: 'var(--text-3)' }}>Read-only. No write calls are made from this panel.</div>
+      </Panel>
+    );
+  }
+
+  // ── Piece / scan-code lookup ──────────────────────────────────────────────────
+
+  function PiecePanel() {
+    const [pieceId, setPieceId]     = useState('');
+    const [scanCode, setScanCode]   = useState('');
+    const [activeMode, setActiveMode] = useState('');
+    const [loading, setLoading]     = useState(false);
+    const [data, setData]           = useState(null);
+    const [error, setError]         = useState(null);
+
+    const fetchPiece = useCallback(async () => {
+      if (!pieceId.trim()) return;
+      setActiveMode('piece'); setLoading(true); setData(null); setError(null);
+      try { setData(await apiFetch(`/api/v1/inventory/pieces/${encodeURIComponent(pieceId.trim())}`)); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, [pieceId]);
+
+    const fetchScan = useCallback(async () => {
+      if (!scanCode.trim()) return;
+      setActiveMode('scan'); setLoading(true); setData(null); setError(null);
+      try { setData(await apiFetch(`/api/v1/warehouse/inventory/${encodeURIComponent(scanCode.trim())}`)); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, [scanCode]);
+
+    const st = data && data.state;
+    const loc = data && data.location;
+    const cur = data && data.current;
+
+    return (
+      <Panel title="Piece / scan-code lookup" subtitle="Fetch piece state + location by piece_id or scan barcode" testid="panel-piece">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 10 }}>
+          <div>
+            <Label>Piece ID (inventory truth key)</Label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ flex: 1 }}><Input value={pieceId} onChange={setPieceId} placeholder="e.g. piece_id" data-testid="input-piece-id" /></div>
+              <FetchBtn onClick={fetchPiece} loading={loading && activeMode === 'piece'} label="Lookup" disabled={!pieceId.trim()} data-testid="btn-lookup-piece" />
+            </div>
+          </div>
+          <div>
+            <Label>Scan code / trace barcode</Label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ flex: 1 }}><Input value={scanCode} onChange={setScanCode} placeholder="e.g. PND-CLASSIC·EJ-…" data-testid="input-scan-code" /></div>
+              <FetchBtn onClick={fetchScan} loading={loading && activeMode === 'scan'} label="Lookup" disabled={!scanCode.trim()} data-testid="btn-lookup-scan" />
+            </div>
+          </div>
+        </div>
+        {error && <div style={{ color: 'var(--badge-red-text)', fontSize: 12, marginBottom: 8 }}>{error}</div>}
+        {data && activeMode === 'piece' && (
+          <div>
+            {!data.found ? (
+              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Piece not found.</div>
+            ) : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 12 }}>
+                  <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Inventory state</div>
+                    {st && <><StateChip state={st.state} /><div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-2)' }}>Scan: <code style={{ fontFamily: 'monospace' }}>{st.scan_code}</code></div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Updated: {(st.updated_at || '—').slice(0, 16).replace('T', ' ')}</div></>}
+                  </div>
+                  <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Location</div>
+                    {loc ? (
+                      <><div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{loc.current_location || '—'}</div><div style={{ fontSize: 11, color: 'var(--text-2)' }}>Status: {loc.current_status || '—'}</div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Updated: {(loc.updated_at || '—').slice(0, 16).replace('T', ' ')}</div></>
+                    ) : <div style={{ fontSize: 11, color: 'var(--text-3)' }}>No warehouse location recorded.</div>}
+                  </div>
+                </div>
+                {data.timeline && data.timeline.length > 0 && (
+                  <details><summary style={{ fontSize: 12, color: 'var(--text-2)', cursor: 'pointer' }}>Timeline ({data.timeline.length} events) ▸</summary>
+                    <div style={{ marginTop: 8, fontSize: 11 }}>
+                      {data.timeline.slice(0, 50).map((ev, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                          <span style={{ color: 'var(--text-3)', fontFamily: 'monospace', minWidth: 130 }}>{(ev.occurred_at || '').slice(0, 16).replace('T', ' ')}</span>
+                          <span style={{ color: 'var(--badge-blue-text)', minWidth: 70 }}>{ev.kind}</span>
+                          <span style={{ color: 'var(--text)' }}>{ev.summary}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        {data && activeMode === 'scan' && (
+          <div>
+            {!cur && !data.packing_line ? (
+              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Scan code not found in warehouse records.</div>
+            ) : (
+              <>
+                {cur && (
+                  <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Current location</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{cur.current_location || '—'}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>Status: {cur.current_status} · Design: {cur.design_no} · Batch: {cur.batch_id}</div>
+                  </div>
+                )}
+                {data.packing_line && <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 8 }}>⚠ {data.note || 'In packing — not yet scanned.'}</div>}
+                {data.history && data.history.length > 0 && (
+                  <details><summary style={{ fontSize: 12, color: 'var(--text-2)', cursor: 'pointer' }}>Movement history ({data.history.length}) ▸</summary>
+                    <div style={{ marginTop: 8, fontSize: 11 }}>
+                      {data.history.map((h, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                          <span style={{ color: 'var(--text-3)', fontFamily: 'monospace', minWidth: 130 }}>{(h.event_time || '').slice(0, 16).replace('T', ' ')}</span>
+                          <span style={{ color: 'var(--badge-blue-text)', minWidth: 70 }}>{h.action}</span>
+                          <span style={{ color: 'var(--text)' }}>{h.from_location ? `${h.from_location} → ` : ''}{h.to_location}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        <div style={{ marginTop: 12, fontSize: 10, color: 'var(--text-3)' }}>Read-only. No write calls are made from this panel.</div>
+      </Panel>
+    );
+  }
+
+  // ── Location browser — auto-fetches locations list on mount ──────────────────
+
+  function LocationPanel() {
+    const [locations, setLocations] = useState(null);
+    const [locLoading, setLocLoading] = useState(true);
+    const [locError, setLocError] = useState(null);
+    const [selectedCode, setSelectedCode] = useState('');
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [detail, setDetail] = useState(null);
+    const [detailError, setDetailError] = useState(null);
+
+    const loadLocations = useCallback(async () => {
+      setLocLoading(true); setLocError(null);
+      try { setLocations(await apiFetch('/api/v1/warehouse/locations')); }
+      catch (e) { setLocError((e && e.message) || String(e)); }
+      finally { setLocLoading(false); }
+    }, []);
+
+    useEffect(() => { loadLocations(); }, [loadLocations]);
+
+    const loadDetail = useCallback(async (code) => {
+      if (!code) return;
+      setDetailLoading(true); setDetail(null); setDetailError(null);
+      try { setDetail(await apiFetch(`/api/v1/warehouse/locations/${encodeURIComponent(code)}/inventory`)); }
+      catch (e) { setDetailError((e && e.message) || String(e)); }
+      finally { setDetailLoading(false); }
+    }, []);
+
+    return (
+      <Panel title="Location browser" subtitle="Warehouse locations — auto-loaded; click a location to see its inventory" testid="panel-locations">
+        {locLoading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading locations…</div>}
+        {locError && <div style={{ fontSize: 12, color: 'var(--badge-red-text)' }}>{locError}</div>}
+        {locations && (
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
+            {(locations.locations || []).map(loc => (
+              <button key={loc.location_code} onClick={() => { setSelectedCode(loc.location_code); loadDetail(loc.location_code); }}
+                data-testid={`btn-location-${loc.location_code}`}
+                style={{
+                  padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: selectedCode === loc.location_code ? 700 : 400,
+                  border: `1px solid ${selectedCode === loc.location_code ? 'var(--accent)' : 'var(--border)'}`,
+                  background: selectedCode === loc.location_code ? 'var(--accent-subtle)' : 'var(--card)',
+                  color: selectedCode === loc.location_code ? 'var(--accent-text)' : 'var(--text-2)',
+                  cursor: 'pointer',
+                }}>
+                {loc.location_code}
+                {loc.location_type && <span style={{ marginLeft: 4, fontSize: 10, color: 'var(--text-3)' }}>({loc.location_type})</span>}
+              </button>
+            ))}
+            {(!locations.locations || locations.locations.length === 0) && <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No locations configured.</span>}
+          </div>
+        )}
+        {detailLoading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading inventory for {selectedCode}…</div>}
+        {detailError && <div style={{ fontSize: 12, color: 'var(--badge-red-text)' }}>{detailError}</div>}
+        {detail && (
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', marginBottom: 8 }}>
+              {detail.location_code} · {detail.count} item{detail.count !== 1 ? 's' : ''}
+            </div>
+            {detail.count === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Location is empty.</div>
+            ) : (
+              <div style={{ overflowX: 'auto', maxHeight: 240, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                      {['Scan code', 'Status', 'Design', 'Bag'].map(h => (
+                        <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(detail.items || []).map((it, i) => (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                        <td style={{ padding: '5px 10px', fontFamily: 'monospace', fontSize: 11 }}>{it.scan_code}</td>
+                        <td style={{ padding: '5px 10px' }}><span style={{ fontSize: 11, color: 'var(--text-2)' }}>{it.current_status}</span></td>
+                        <td style={{ padding: '5px 10px', color: 'var(--text-2)' }}>{it.design_no || '—'}</td>
+                        <td style={{ padding: '5px 10px', color: 'var(--text-3)' }}>{it.bag_id || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+        <div style={{ marginTop: 12, fontSize: 10, color: 'var(--text-3)' }}>Read-only. No write calls are made from this panel.</div>
+      </Panel>
+    );
+  }
+
+  // ── Audit panel ───────────────────────────────────────────────────────────────
+
+  function AuditPanel() {
+    const [batchId, setBatchId] = useState('');
+    const [activeMode, setActiveMode] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [data, setData] = useState(null);
+    const [error, setError] = useState(null);
+
+    const fetchSummary = useCallback(async () => {
+      if (!batchId.trim()) return;
+      setActiveMode('summary'); setLoading(true); setData(null); setError(null);
+      try { setData(await apiFetch(`/api/v1/warehouse/audit-summary/${encodeURIComponent(batchId.trim())}`)); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, [batchId]);
+
+    const fetchFull = useCallback(async () => {
+      if (!batchId.trim()) return;
+      setActiveMode('full'); setLoading(true); setData(null); setError(null);
+      try { setData(await apiFetch(`/api/v1/warehouse/audit/${encodeURIComponent(batchId.trim())}`)); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, [batchId]);
+
+    const pct = data && (data.completion_pct || (data.summary && data.summary.completion_pct));
+    const total = data && (data.total_items || (data.summary && data.summary.total_items));
+    const scanned = data && (data.scanned_items || (data.summary && data.summary.scanned_items));
+
+    return (
+      <Panel title="Warehouse audit" subtitle="Scan completion and anomaly detection for a batch" testid="panel-audit">
+        <Label>Batch ID</Label>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+          <div style={{ flex: 1 }}><Input value={batchId} onChange={setBatchId} placeholder="e.g. SHIPMENT_…" data-testid="input-audit-batch-id" /></div>
+          <FetchBtn onClick={fetchSummary} loading={loading && activeMode === 'summary'} label="Summary" disabled={!batchId.trim()} data-testid="btn-audit-summary" />
+          <FetchBtn onClick={fetchFull} loading={loading && activeMode === 'full'} label="Full audit" disabled={!batchId.trim()} data-testid="btn-audit-full" />
+        </div>
+        {error && <div style={{ color: 'var(--badge-red-text)', fontSize: 12 }}>{error}</div>}
+        {data && pct != null && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+              <div style={{ flex: 1, height: 8, background: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{ width: `${Math.min(100, pct)}%`, height: '100%', background: pct >= 100 ? 'var(--ok-green)' : pct >= 80 ? 'var(--badge-amber-text)' : 'var(--badge-red-text)', borderRadius: 4, transition: 'width 0.4s' }} />
+              </div>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', minWidth: 44 }}>{pct != null ? pct.toFixed(1) : '—'}%</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{scanned} scanned · {total} total · {data.missing_items || (data.summary && data.summary.missing_items) || 0} missing</div>
+          </div>
+        )}
+        {data && activeMode === 'full' && (
+          <div style={{ fontSize: 12 }}>
+            {data.missing_scans && data.missing_scans.length > 0 && <div style={{ color: 'var(--badge-amber-text)', marginBottom: 4 }}>⚠ {data.missing_scans.length} unscanned item(s)</div>}
+            {data.stuck_inventory && data.stuck_inventory.length > 0 && <div style={{ color: 'var(--badge-amber-text)', marginBottom: 4 }}>⚠ {data.stuck_inventory.length} stuck at RECV location(s)</div>}
+            {data.invalid_flows && data.invalid_flows.length > 0 && <div style={{ color: 'var(--badge-red-text)', marginBottom: 4 }}>✗ {data.invalid_flows.length} invalid scan flow(s)</div>}
+            {data.orphan_inventory && data.orphan_inventory.length > 0 && <div style={{ color: 'var(--badge-red-text)', marginBottom: 4 }}>✗ {data.orphan_inventory.length} orphan inventory record(s)</div>}
+            {data.missing_scans && data.stuck_inventory && data.invalid_flows && data.orphan_inventory &&
+              data.missing_scans.length === 0 && data.stuck_inventory.length === 0 && data.invalid_flows.length === 0 && data.orphan_inventory.length === 0 &&
+              <div style={{ color: 'var(--ok-green)', fontWeight: 600 }}>✓ No anomalies detected.</div>}
+            <details style={{ marginTop: 8 }}><summary style={{ cursor: 'pointer', color: 'var(--text-2)' }}>Show raw JSON ▸</summary><ResultBox data={data} error={null} /></details>
+          </div>
+        )}
+        <div style={{ marginTop: 12, fontSize: 10, color: 'var(--text-3)' }}>Read-only. No write calls are made from this panel.</div>
+      </Panel>
+    );
+  }
+
+  // ── App ───────────────────────────────────────────────────────────────────────
+
+  function App() {
+    return (
+      <div style={{ maxWidth: 980, margin: '0 auto', padding: '28px 24px' }} data-testid="inventory-hub-root">
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 4 }}>Inventory</div>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--text)' }}>Inventory Hub</h1>
+          <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            Read-only inventory toolkit. Stage 2 overview and location list load automatically.
+            All other lookups require an operator-provided ID. No write actions are available.
+          </p>
+        </div>
+
+        <Stage2Panel />
+        <BatchPanel />
+        <PiecePanel />
+        <LocationPanel />
+        <AuditPanel />
+
+        <div style={{ marginTop: 8, padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+          <strong style={{ color: 'var(--text-2)' }}>Read-only endpoints:</strong>{' '}
+          /inventory/stage2/aggregate · /inventory/state/&#123;batch_id&#125; ·
+          /inventory/pieces/&#123;piece_id&#125; · /warehouse/inventory/&#123;scan_code&#125; ·
+          /warehouse/locations · /warehouse/locations/&#123;code&#125;/inventory ·
+          /warehouse/audit-summary/&#123;batch_id&#125; · /warehouse/audit/&#123;batch_id&#125;
+        </div>
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+})();
+</script>
+</body>
+</html>

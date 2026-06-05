@@ -111,7 +111,9 @@
   // Nav-route IDs whose target pages are not yet built.
   // Clicking these shows a disabled state — no 404, no navigation.
   // Remove an id from this set when its page is deployed.
-  const STUB_ROUTES = new Set(['inventory']);
+  // All sidebar routes are now live. Update this Set when new planned-but-unbuilt
+  // pages are added to NAV_ROUTES — add the id here to show disabled + "Soon" label.
+  const STUB_ROUTES = new Set([]);
 
   const NAV_INDEX = (() => {
     const idx = {};

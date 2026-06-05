@@ -22,7 +22,7 @@ Asserts (static source-grep; no server required):
   D. NAV_ROUTES and STUB_ROUTES (10–12)
     10. NAV_ROUTES['accounting'] points to /dashboard/accounting-hub-v2.html.
     11. 'accounting' is NOT in STUB_ROUTES.
-    12. 'inventory' remains in STUB_ROUTES.
+    12. STUB_ROUTES is empty (inventory promoted in Sprint 29).
 
   E. Preserved boundaries (13–14)
     13. wfirma-inbox-v2.html still exists.
@@ -158,12 +158,16 @@ def test_accounting_not_in_stub_routes():
         "'accounting' must be removed from STUB_ROUTES — accounting-hub-v2.html is now deployed"
 
 
-def test_inventory_remains_in_stub_routes():
+def test_stub_routes_now_empty():
+    # Sprint 29 promoted inventory-v2.html. STUB_ROUTES should be empty.
+    import re as _re
     src = _read("pz-design-v2.js")
     stub_idx = src.index("STUB_ROUTES")
-    stub_block = src[stub_idx:stub_idx + 100]
-    assert "'inventory'" in stub_block, \
-        "'inventory' must remain in STUB_ROUTES (page not yet built)"
+    stub_block = src[stub_idx:stub_idx + 150]
+    match = _re.search(r"new Set\(\[(.*?)\]\)", stub_block)
+    if match:
+        assert match.group(1).strip() == '', \
+            "STUB_ROUTES should be empty Set([]) — all V2 routes now live"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
