@@ -3302,6 +3302,8 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 **Rollback**: code — `git revert 498b46e --no-edit`; production — restore the 3 files from `C:\PZ\app\static\v2\bak\20260606-sprint30\` (static-only, no restart).
 
+**Scorecard** (RULE 6): `.claude/memory/scorecards/2026-06-06-sprint30-inventory-v2-deploy.md` — 7 deploy-gate agents, all EXEMPLARY (30–34/35), zero NEEDS-TUNING/UNRELIABLE (no GATE 4 disposition required). Positive signal logged: browser smoke caught a real UI defect (dead write-implying buttons) that source-grep tests missed → fixed inline (5aee400). Observer self-eval performed (calendar-triggered, last >7 days).
+
 ---
 
 # DECISIONS
