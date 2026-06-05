@@ -2009,29 +2009,31 @@ async def scan_dhl_inbox(
 @router.post("/scheduled-inbox-check", dependencies=[_auth])
 def run_scheduled_inbox_check() -> Dict[str, Any]:
     """
-    Lightweight automated DHL customs-email scanner.
+    Lane A — automated DHL customs-email scanner (every 10 minutes).
 
-    Designed to be called every 10 minutes by Windows Task Scheduler.
+    Kill switch: DHL_AUTO_SCAN_ENABLED=false returns immediately.
 
     Pipeline (one Zoho scan per call — NOT per batch):
-      1. run_ingestion_cycle()         — scan Zoho inbox once, cache matched emails
-      2. For each active batch:
+      1. Kill-switch check (dhl_auto_scan_enabled)
+      2. run_ingestion_cycle()  — scan Zoho inbox once, cache matched emails
+      3. For each active batch (excluding manually-excluded AWBs):
            a. find_existing_email_context() → _apply_cache_to_audit()
               writes dhl_email.received when a T# match is found
            b. _ensure_dhl_reply()     → triggers B2 DSK reply if conditions met
-      3. Return summary {batches_checked, received_set, b2_triggered, errors}
+      4. Return summary {lane, batches_checked, received_set, b2_triggered, errors}
 
-    Guards (all inherited from existing code):
-      - _is_active() checked per batch — terminal/delivered batches skipped
+    Guards (all inherited):
+      - dhl_auto_scan_enabled kill switch
+      - _is_active() per batch — terminal/delivered batches counted in skipped_inactive
+      - AWB exclusion list — manually excluded batches (e.g. 5665916826 pending operator)
       - B2 idempotency: build_started_at prevents duplicate sends
       - DSK-present gate: dsk_path must resolve to a real file
-      - PR #454 / #455 received-write guards preserved via cache path
-
-    Note on event naming:
-      The ingestion cache uses "dhl_customs_email_received" (AI Bridge path).
-      The scan handler (PR #454) uses direct write. Both set dhl_email.received.
-      The carrier_arrived event (sla_engine SLA anchor) is separate and preserved.
     """
+    # ── Kill switch ───────────────────────────────────────────────────────────
+    if not settings.dhl_auto_scan_enabled:
+        log.info("[lane-a] DHL_AUTO_SCAN_ENABLED=false — skipping")
+        return {"ok": False, "lane": "A", "skipped": "DHL_AUTO_SCAN_ENABLED=false"}
+
     from ..services.email_ingestion_worker import run_ingestion_cycle as _run_ing
     from ..services.email_intelligence_store import (
         find_existing_email_context as _find_cache,
@@ -2043,13 +2045,20 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
         _ensure_dhl_reply,
     )
 
+    # AWBs explicitly excluded from automation pending operator decision.
+    # 5665916826: carrier_self_clearance, April 2026, dsk_path missing.
+    #   Requires manual review — see DHL hardening audit 2026-06-05.
+    _EXCLUDED_AWBS: frozenset = frozenset({"5665916826"})
+
     out: Dict[str, Any] = {
         "ok":               True,
+        "lane":             "A",
         "batches_checked":  0,
         "received_set":     0,
         "b2_triggered":     0,
         "b2_sent":          0,
         "skipped_inactive": 0,
+        "skipped_excluded": 0,
         "errors":           [],
         "ingestion":        {},
     }
@@ -2064,13 +2073,19 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
         }
     except Exception as exc:
         out["ingestion"] = {"ok": False, "error": str(exc)}
-        log.warning("[auto-scan] ingestion cycle failed (non-fatal): %s", exc)
+        log.warning("[lane-a] ingestion cycle failed (non-fatal): %s", exc)
 
     # ── Step 2: apply cached evidence + trigger B2 per active batch ───────────
     for ap in _audit_paths():
         try:
             audit = json.loads(ap.read_text(encoding="utf-8"))
         except Exception:
+            continue
+
+        # Exclusion list — skip manually excluded AWBs
+        _awb = (audit.get("awb") or audit.get("tracking_no") or "").strip()
+        if _awb in _EXCLUDED_AWBS:
+            out["skipped_excluded"] += 1
             continue
 
         # Eligibility guard — skip terminal/delivered batches
@@ -2092,7 +2107,7 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
                     out["received_set"] += 1
         except Exception as exc:
             out["errors"].append(f"{batch_id}:cache:{exc}")
-            log.warning("[auto-scan] cache apply failed batch=%s: %s", batch_id, exc)
+            log.warning("[lane-a] cache apply failed batch=%s: %s", batch_id, exc)
 
         # Trigger B2 if conditions met (dhl_email.received + dsk_present + idempotent)
         try:
@@ -2101,16 +2116,136 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
                 out["b2_triggered"] += 1
             if reply_result.get("sent"):
                 out["b2_sent"] += 1
-                log.info("[auto-scan] B2 sent batch=%s", batch_id)
+                log.info("[lane-a] B2 sent batch=%s", batch_id)
         except Exception as exc:
             out["errors"].append(f"{batch_id}:b2:{exc}")
-            log.warning("[auto-scan] B2 failed batch=%s: %s", batch_id, exc)
+            log.warning("[lane-a] B2 failed batch=%s: %s", batch_id, exc)
 
     log.info(
-        "[auto-scan] done: checked=%d received_set=%d b2_triggered=%d "
-        "b2_sent=%d skipped=%d errors=%d",
+        "[lane-a] done: checked=%d received_set=%d b2_triggered=%d "
+        "b2_sent=%d skipped_inactive=%d skipped_excluded=%d errors=%d",
         out["batches_checked"], out["received_set"], out["b2_triggered"],
-        out["b2_sent"], out["skipped_inactive"], len(out["errors"]),
+        out["b2_sent"], out["skipped_inactive"], out["skipped_excluded"],
+        len(out["errors"]),
+    )
+    return out
+
+
+@router.post("/scheduled-followup-check", dependencies=[_auth])
+def run_scheduled_followup_check() -> Dict[str, Any]:
+    """
+    Lane B — DHL follow-up email check (every 60 minutes, working hours only).
+
+    Kill switches:
+      DHL_FOLLOWUP_ENABLED=false (outer)  → this endpoint returns immediately.
+      DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP     → inner guard in _process_dhl_followup;
+                                            controls whether emails are actually sent.
+      Both must be True for follow-up emails to send.
+
+    Follow-up SLA rules (from dhl_followup_sla.py):
+      - Starts: 4h after customs trigger detected from tracking events
+      - Repeats: once per hour within 08:00–16:00 Warsaw time
+      - Idempotent: last_followup_sent_at + followup_count in audit
+      - Stops automatically when: DHL email received, customs docs received,
+        shipment delivered/closed, operator disables
+
+    Eligibility per batch (all must be True):
+      - _is_active(audit) = True (not delivered/terminal)
+      - dhl_email.received != True (DHL hasn't replied yet)
+      - customs_docs.received != True
+      - AWB not in exclusion list
+      - customs_trigger detected from tracking events (no trigger = no start)
+    """
+    # ── Kill switch ───────────────────────────────────────────────────────────
+    if not settings.dhl_followup_enabled:
+        log.info("[lane-b] DHL_FOLLOWUP_ENABLED=false — skipping")
+        return {"ok": False, "lane": "B", "skipped": "DHL_FOLLOWUP_ENABLED=false"}
+
+    from ..services.active_shipment_monitor import (
+        _all_audit_paths        as _audit_paths,
+        _is_active              as _batch_active,
+        _process_dhl_followup,
+    )
+    from ..services.tracking_intelligence import detect_tracking_triggers
+
+    _EXCLUDED_AWBS: frozenset = frozenset({"5665916826"})
+
+    out: Dict[str, Any] = {
+        "ok":                 True,
+        "lane":               "B",
+        "batches_checked":    0,
+        "followup_started":   0,
+        "followup_sent":      0,
+        "followup_stopped":   0,
+        "followup_suppressed": 0,
+        "skipped_inactive":   0,
+        "skipped_excluded":   0,
+        "skipped_received":   0,
+        "errors":             [],
+    }
+
+    for ap in _audit_paths():
+        try:
+            audit = json.loads(ap.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        # Exclusion list
+        _awb = (audit.get("awb") or audit.get("tracking_no") or "").strip()
+        if _awb in _EXCLUDED_AWBS:
+            out["skipped_excluded"] += 1
+            continue
+
+        # Eligibility: active batch only
+        if not _batch_active(audit):
+            out["skipped_inactive"] += 1
+            continue
+
+        # Skip if DHL already replied — follow-up is unnecessary
+        if (audit.get("dhl_email") or {}).get("received"):
+            out["skipped_received"] += 1
+            continue
+
+        out["batches_checked"] += 1
+        batch_id = ap.parent.name
+
+        # Compute customs trigger from tracking events
+        tr_events = (
+            audit.get("tracking_events")
+            or (audit.get("tracking") or {}).get("events")
+            or []
+        )
+        customs_trigger = None
+        if tr_events:
+            triggers = detect_tracking_triggers(tr_events, audit)
+            customs_trigger = next(
+                (t for t in triggers
+                 if t.get("trigger") == "DHL_CUSTOMS_EMAIL_CHECK_REQUIRED"),
+                None,
+            )
+
+        try:
+            result = _process_dhl_followup(ap, audit, customs_trigger)
+            if result.get("started"):
+                out["followup_started"] += 1
+            if result.get("sent"):
+                out["followup_sent"] += 1
+                log.info("[lane-b] follow-up sent batch=%s", batch_id)
+            if result.get("stopped"):
+                out["followup_stopped"] += 1
+            # Suppression is a normal outcome (flag off, timing gate, etc.)
+            if not result.get("started") and not result.get("sent") and not result.get("stopped"):
+                out["followup_suppressed"] += 1
+        except Exception as exc:
+            out["errors"].append(f"{batch_id}:{exc}")
+            log.warning("[lane-b] follow-up failed batch=%s: %s", batch_id, exc)
+
+    log.info(
+        "[lane-b] done: checked=%d started=%d sent=%d stopped=%d "
+        "skipped_inactive=%d skipped_received=%d errors=%d",
+        out["batches_checked"], out["followup_started"], out["followup_sent"],
+        out["followup_stopped"], out["skipped_inactive"],
+        out["skipped_received"], len(out["errors"]),
     )
     return out
 

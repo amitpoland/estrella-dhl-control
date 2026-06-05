@@ -297,6 +297,18 @@ class Settings(BaseSettings):
     # Example: WFIRMA_RECOVERY_ENABLED_TYPES=wfirma_series_missing
     wfirma_recovery_enabled_types:  str  = Field(default="")
 
+    # ── DHL automated email scheduler (Lane A + Lane B) ─────────────────────
+    # Lane A: POST /api/v1/dhl/scheduled-inbox-check — 10-min Zoho inbox scan.
+    # Default True. Set DHL_AUTO_SCAN_ENABLED=false to disable.
+    # Active-batch guard (_is_active) always applies regardless of this flag.
+    dhl_auto_scan_enabled: bool = Field(default=True)
+
+    # Lane B: POST /api/v1/dhl/scheduled-followup-check — 60-min follow-up.
+    # Default False — explicit operator opt-in required.
+    # ALSO requires dhl_orch_auto_send_dhl_followup=True to actually send emails;
+    # this flag only controls whether the scheduler calls _process_dhl_followup.
+    dhl_followup_enabled: bool = Field(default=False)
+
     # ── Carrier subsystem (DHL Express outbound shipping) ────────────────────
     # Status gate — controls carrier API adapter selection.
     # "pending" (default): all carrier routes return 503; no API calls possible.
