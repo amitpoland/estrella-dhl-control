@@ -11,6 +11,11 @@ const NAV_TREE = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦' },
   { id: 'inbox',     label: 'Inbox',     icon: '✉', badge: 'NEW' },
   { id: 'shipments', label: 'Shipments', icon: '⬡' },
+  // Sprint 31: DHL Hub added as a top-level observer surface so the live
+  // read-only DHL renderer is discoverable in the V2 shell. Without this entry,
+  // P2 ("operator can observe truth") cannot be satisfied — the page exists
+  // but is not reachable. Observer only; Lane A/B remain the sole authority.
+  { id: 'dhl',       label: 'DHL',       icon: '✈' },
   { id: 'proforma',  label: 'Pro Forma', icon: '📋' },
   { id: 'documents', label: 'Documents', icon: '📄' },
   { id: 'accounting', label: 'Accounting', icon: '⊞', badge: 'NEW' },
