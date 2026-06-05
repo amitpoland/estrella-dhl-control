@@ -2131,6 +2131,305 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
     return out
 
 
+@router.get("/daily-summary", dependencies=[_auth])
+def get_dhl_daily_summary() -> Dict[str, Any]:
+    """
+    GET /api/v1/dhl/daily-summary — read-only daily DHL operations report.
+
+    Aggregates across:
+      - storage_root/dhl_auto_scan_status.json  (Lane A last run)
+      - C:\\PZ\\logs\\dhl-auto-scan.log          (24h run history)
+      - storage_root/outputs/*/audit.json        (per-shipment state)
+      - storage_root/email_queue.json            (sent replies)
+
+    Returns:
+      lane_a_health         — last run, 24h run/fail counts, averages
+      active_shipments      — per-shipment dashboard with DHL state
+      dhl_waiting_queue     — DSK sent, no reply yet (oldest first)
+      lane_b_candidates     — read-only preview of who would qualify
+      exceptions            — scanner failures, missing DSK, excluded
+      summary               — executive counters
+
+    Read-only: never triggers scan, never sends email, never modifies audits.
+    """
+    from datetime import datetime, timezone as _tz, timedelta as _td
+    import re as _re
+
+    _now = datetime.now(_tz.utc)
+    _24h_ago = _now - _td(hours=24)
+    _today_start = _now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # ── Lane A health (from status file + log) ────────────────────────────────
+    lane_a_health: Dict[str, Any] = {
+        "last_run_at":       None,
+        "last_run_status":   "never_run",
+        "last_run_duration_s": None,
+        "runs_24h":          0,
+        "failed_runs_24h":   0,
+        "avg_duration_s":    None,
+        "avg_batches_checked": None,
+        "avg_matches_found": None,
+    }
+
+    # Last run from status file (dhl_auto_scan_status.json written by scan handler)
+    _sp = settings.storage_root / "dhl_auto_scan_status.json"
+    if _sp.exists():
+        try:
+            _st = json.loads(_sp.read_text(encoding="utf-8"))
+            lane_a_health["last_run_at"]        = _st.get("started_at")
+            lane_a_health["last_run_status"]     = _st.get("status", "unknown")
+            lane_a_health["last_run_duration_s"] = _st.get("duration_seconds")
+        except Exception:
+            pass
+
+    # 24h history from log file
+    _log_path = Path("C:/PZ/logs/dhl-auto-scan.log")
+    if not _log_path.exists():
+        _log_path = settings.storage_root.parent.parent / "logs" / "dhl-auto-scan.log"
+    _runs: list = []  # list of {ts, status, duration, checked, received}
+    if _log_path.exists():
+        try:
+            _log_lines = _log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            _pending_start: Optional[str] = None
+            for _line in _log_lines:
+                # Parse start timestamp
+                _ts_m = _re.match(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\]", _line)
+                if not _ts_m:
+                    continue
+                try:
+                    _ts = datetime.fromisoformat(_ts_m.group(1) + "+00:00")
+                except Exception:
+                    continue
+                if _ts < _24h_ago:
+                    continue  # outside 24h window
+                if "[Lane-A] Starting" in _line:
+                    _pending_start = _ts_m.group(1)
+                elif "[Lane-A] done:" in _line and _pending_start:
+                    _dur = None
+                    try:
+                        _s = datetime.fromisoformat(_pending_start + "+00:00")
+                        _dur = round((_ts - _s).total_seconds(), 1)
+                    except Exception:
+                        pass
+                    _checked = 0
+                    _received = 0
+                    _cm = _re.search(r"checked=(\d+)", _line)
+                    _rm = _re.search(r"received_set=(\d+)", _line)
+                    if _cm:
+                        _checked = int(_cm.group(1))
+                    if _rm:
+                        _received = int(_rm.group(1))
+                    _runs.append({
+                        "ts": _pending_start, "status": "success",
+                        "duration": _dur, "checked": _checked, "received": _received,
+                    })
+                    _pending_start = None
+                elif ("[Lane-A] HTTP" in _line or "[Lane-A] error" in _line.lower()) and _pending_start:
+                    _runs.append({"ts": _pending_start, "status": "failed", "duration": None,
+                                  "checked": 0, "received": 0})
+                    _pending_start = None
+        except Exception:
+            pass
+
+    lane_a_health["runs_24h"]       = len(_runs)
+    lane_a_health["failed_runs_24h"] = sum(1 for r in _runs if r["status"] != "success")
+    _durs = [r["duration"] for r in _runs if r.get("duration") is not None]
+    _chks = [r["checked"] for r in _runs if r.get("checked", 0) > 0]
+    _mats = [r["received"] for r in _runs]
+    if _durs:
+        lane_a_health["avg_duration_s"] = round(sum(_durs) / len(_durs), 1)
+    if _chks:
+        lane_a_health["avg_batches_checked"] = round(sum(_chks) / len(_chks), 1)
+    if _mats:
+        lane_a_health["avg_matches_found"] = round(sum(_mats) / len(_mats), 2)
+
+    # ── Per-batch state ───────────────────────────────────────────────────────
+    from ..services.active_shipment_monitor import (
+        _all_audit_paths as _audit_paths,
+        _is_active        as _batch_active,
+    )
+
+    _EXCLUDED_AWBS: frozenset = frozenset({"5665916826"})
+    active_shipments:   list = []
+    dhl_waiting_queue:  list = []
+    lane_b_candidates:  list = []
+    exceptions:         list = []
+
+    for ap in sorted(_audit_paths(), key=lambda p: p.stat().st_mtime):
+        try:
+            audit = json.loads(ap.read_text(encoding="utf-8"))
+        except Exception as exc:
+            exceptions.append({"type": "read_error", "batch": ap.parent.name, "detail": str(exc)})
+            continue
+
+        _awb = (audit.get("awb") or audit.get("tracking_no") or "").strip()
+        _is_excluded = _awb in _EXCLUDED_AWBS
+        _is_act = _batch_active(audit)
+
+        # Compute days_open from batch directory month or first timeline event
+        _days_open: Optional[float] = None
+        try:
+            _tl = audit.get("timeline") or []
+            if _tl:
+                _first_ts = _tl[0].get("ts") or _tl[0].get("timestamp") or ""
+                if _first_ts:
+                    _first_dt = datetime.fromisoformat(
+                        str(_first_ts).replace("Z", "+00:00")
+                    )
+                    _days_open = round((_now - _first_dt).total_seconds() / 86400, 1)
+        except Exception:
+            pass
+
+        _cd       = audit.get("clearance_decision") or {}
+        _dhl_email = audit.get("dhl_email") or {}
+        _drp      = audit.get("dhl_reply_package") or {}
+        _dhl_recv = bool(_dhl_email.get("received"))
+        _dsk_sent = _drp.get("status") in ("queued", "sent")
+        _supplier = (
+            audit.get("exporter") or audit.get("supplier_name")
+            or _cd.get("agency") or "—"
+        )
+
+        _row: Dict[str, Any] = {
+            "awb":            _awb or ap.parent.name[:16],
+            "batch_id":       ap.parent.name,
+            "supplier":       _supplier,
+            "clearance_path": _cd.get("clearance_path", "—"),
+            "cif_usd":        _cd.get("total_value_usd"),
+            "status":         audit.get("clearance_status", audit.get("status", "—")),
+            "dhl_received":   _dhl_recv,
+            "dsk_sent":       _dsk_sent,
+            "days_open":      _days_open,
+            "excluded":       _is_excluded,
+            "active":         _is_act,
+        }
+
+        if _is_excluded:
+            exceptions.append({
+                "type":    "excluded_awb",
+                "batch":   ap.parent.name,
+                "awb":     _awb,
+                "reason":  "manual exclusion — pending operator decision",
+            })
+            continue
+
+        if not _is_act:
+            continue  # only active batches in the dashboard
+
+        active_shipments.append(_row)
+
+        # DHL Waiting Queue: DSK sent, no reply yet
+        if _dsk_sent and not _dhl_recv:
+            dhl_waiting_queue.append({
+                "awb":         _awb,
+                "batch_id":    ap.parent.name,
+                "supplier":    _supplier,
+                "clearance_path": _cd.get("clearance_path", "—"),
+                "dsk_sent_at": _drp.get("queued_at") or _drp.get("sent_at"),
+                "days_open":   _days_open,
+                "ticket":      _dhl_email.get("ticket") or audit.get("dhl_ticket"),
+            })
+
+        # Missing DSK exception: received DHL email but no DSK path or reply
+        if _dhl_recv and not _dsk_sent:
+            _dsk_path = (audit.get("dsk_path") or "").strip()
+            exceptions.append({
+                "type":    "dsk_not_sent",
+                "batch":   ap.parent.name,
+                "awb":     _awb,
+                "reason":  "DHL email received but DSK reply not sent" +
+                           (" — dsk_path missing" if not _dsk_path else ""),
+            })
+
+        # Lane B candidates: no DHL reply, active, check if follow-up SLA eligible
+        if not _dhl_recv and not _dsk_sent:
+            # Would follow-up be eligible if Lane B were ON?
+            _fu_state = audit.get("dhl_followup") or {}
+            _fu_active = bool(_fu_state.get("active"))
+            _next_at = _fu_state.get("next_followup_at") or _fu_state.get("first_followup_at")
+            _trigger_at = None
+            try:
+                _tl = audit.get("timeline") or []
+                for _ev in reversed(_tl):
+                    if "customs" in (_ev.get("event") or "").lower() or \
+                       "agency" in (_ev.get("event") or "").lower():
+                        _trigger_at = _ev.get("ts") or _ev.get("timestamp")
+                        break
+            except Exception:
+                pass
+
+            _hours_waiting = None
+            _eligible = False
+            if _trigger_at:
+                try:
+                    _trig_dt = datetime.fromisoformat(
+                        str(_trigger_at).replace("Z", "+00:00")
+                    )
+                    _hours_waiting = round((_now - _trig_dt).total_seconds() / 3600, 1)
+                    _eligible = _hours_waiting >= 4
+                except Exception:
+                    pass
+
+            lane_b_candidates.append({
+                "awb":              _awb,
+                "batch_id":         ap.parent.name,
+                "supplier":         _supplier,
+                "clearance_path":   _cd.get("clearance_path", "—"),
+                "hours_waiting":    _hours_waiting,
+                "eligible":         _eligible,
+                "follow_up_active": _fu_active,
+                "next_followup_at": _next_at,
+                "reason": (
+                    "customs trigger detected, 4h+ elapsed" if _eligible
+                    else ("customs trigger detected, <4h elapsed" if _hours_waiting is not None
+                          else "no customs trigger detected from tracking events")
+                ),
+                "lane_b_status": "ON" if settings.dhl_followup_enabled else "OFF",
+            })
+
+    # Sort DHL waiting queue oldest first
+    dhl_waiting_queue.sort(key=lambda x: x.get("days_open") or 0, reverse=True)
+
+    # ── Email queue counts (replies sent today) ────────────────────────────────
+    _replies_today = 0
+    try:
+        _eq = json.loads(
+            (settings.storage_root / "email_queue.json").read_text(encoding="utf-8")
+        )
+        _today_iso = _today_start.isoformat()
+        _replies_today = sum(
+            1 for e in _eq
+            if e.get("status") in ("sent", "queued")
+            and (e.get("queued_at") or "") >= _today_iso
+            and "odprawacelna" in (e.get("to") or "")
+        )
+    except Exception:
+        pass
+
+    return {
+        "generated_at":    _now.isoformat(),
+        "lane_a_health":   lane_a_health,
+        "active_shipments": active_shipments,
+        "dhl_waiting_queue": dhl_waiting_queue,
+        "lane_b_candidates": sorted(
+            lane_b_candidates,
+            key=lambda x: x.get("hours_waiting") or 0, reverse=True,
+        ),
+        "exceptions": exceptions,
+        "summary": {
+            "active_shipments":    len(active_shipments),
+            "waiting_for_dhl":     len(dhl_waiting_queue),
+            "replies_sent_today":  _replies_today,
+            "scanner_runs_24h":    lane_a_health["runs_24h"],
+            "scanner_failures_24h": lane_a_health["failed_runs_24h"],
+            "lane_b_eligible":     sum(1 for c in lane_b_candidates if c.get("eligible")),
+            "excluded_batches":    len([e for e in exceptions if e.get("type") == "excluded_awb"]),
+            "errors_count":        len([e for e in exceptions if e.get("type") not in
+                                        ("excluded_awb", "dsk_not_sent")]),
+        },
+    }
+
+
 @router.post("/scheduled-followup-check", dependencies=[_auth])
 def run_scheduled_followup_check() -> Dict[str, Any]:
     """
