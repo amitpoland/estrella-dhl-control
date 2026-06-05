@@ -3256,12 +3256,24 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
-## PR #462 — Sprint 30: Inventory V2 Shell Wiring (2026-06-05, OPEN)
+## PR #462 — Sprint 30: Inventory V2 Shell Wiring (2026-06-06, MERGED + DEPLOYED)
 
-**Date**: 2026-06-05
+**Date**: 2026-06-06 (merged + deployed; opened 2026-06-05)
 **PR #462** — `feat(sprint30): wire Inventory V2 live hub into V2 shell`
+**Merge SHA**: `498b46e` (squash-merge to `origin/main`; parent `5b70a1d` / PR #461)
 **Branch**: `feat/sprint30-inventory-v2-shell-wiring`
-**SHA**: `52022a0`
+
+**Browser smoke (2026-06-06, isolated dev server on C:\PZ-verify, temp storage, automation OFF)** — all 10 operator-required checks PASS: /v2/ loads → Inventory opens inside shell, NO MOCK banner, `inventory-hub-root` present, 5 live panels render, Stage 2 + locations auto-load 200 (rendered live counts), operator batch-state lookup fires GET only, ZERO POST/PUT/PATCH/DELETE across the whole session, ZERO console errors (only expected in-browser Babel warning), standalone `inventory-v2.html` still loads (200, 36973 bytes).
+
+**Browser-smoke finding → fixed inline (commit `5aee400`)**: shell `PageHeader` for the inventory route rendered dead, write-implying buttons (Upload Document / Move Stock → `inv:upload`/`inv:move` events the live read-only component does not handle; + dead Cycle count / Export) and a stale "Two-stage inventory — Stage 1…" subtitle. Removed all 4 buttons; replaced subtitle with a read-only descriptor; removed the redundant internal title block from `inventory-page.jsx` (shell `PageHeader` is the single title). +3 regression tests pin the fix. **Final Sprint 30 test count: 18/18 PASS.**
+
+**7-agent deploy gate (2026-06-06): UNANIMOUS READY-TO-DEPLOY.** git-diff CLEAR (3 SAFE_CODE static files, standard robocopy layout, Lesson J N/A), backend-impact CLEAR (0 routes; all 8 GET endpoints pre-exist + auth-guarded), persistence CLEAR (no schema/storage writes), security CLEAR (no secrets, encodeURIComponent on all user paths, GET-only), QA CLEAR (PZ 160/160, Carrier 404 pass / baseline 381, Sprint 30 18/18), release-manager CLEAR (clean tree, ff-only, rollback defined), lead-coordinator READY-TO-DEPLOY.
+
+**Deploy executed (2026-06-06): static-only, NO backend restart.** 3 files synced `C:\PZ-verify\service\app\static\v2\` → `C:\PZ\app\static\v2\` (Copy-Item), verified **byte-identical (sha256 MATCH)**: index.html 39798B, inventory-page.jsx 45371B (replaced 78045B mock), mock-badge.jsx 1455B. Pre-deploy backup: `C:\PZ\app\static\v2\bak\20260606-sprint30\`. Deployed-file content greps on C:\PZ all PASS (WIRED_PAGES has 'inventory'; window.InventoryPage; no INV_TABS; no inv:upload/Move Stock in inventory route; read-only subtitle). PZService Running throughout.
+
+**Production authenticated render: NOT performed** — production `/v2/` is auth-gated (#387; unauthenticated requests return the login page). Live authenticated browser render requires operator login credentials (cannot be entered by the agent). File-level deploy is byte-verified and the identical code passed full browser smoke on the dev server; the on-disk `mock-badge.jsx` WIRED_PAGES guarantees no MOCK banner. **OQ: operator to do the final authenticated visual click on https://pz.estrellajewels.eu/v2/ Inventory.**
+
+**SHA (superseded, pre-merge)**: `52022a0` (branch tip before squash)
 
 **Diff scope (frontend-only, no backend changes)**:
 - `service/app/static/v2/inventory-page.jsx` — full replacement: Sprint 1 MOCK prototype (1226 lines, zero real API calls) → live read-only Inventory Hub (5 panels, 8 real endpoints). All components extracted from `inventory-v2.html` (Sprint 29). `DocumentViewerPage` preserved (shell-global).
@@ -3284,13 +3296,11 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 **Uses**: `window.EstrellaShared.apiFetch` (same auth-aware shim as all V2 pages). No write calls anywhere in the IIFE.
 
-**GATE 2**: 1/3 open PRs (PR #462). Prerequisite: PR #461 already merged.
+**GATE 2**: 0/3 open PRs after merge.
 
-**Sprint 29 standalone preserved**: `service/app/static/inventory-v2.html` untouched.
+**Sprint 29 standalone preserved**: `service/app/static/inventory-v2.html` untouched (verified 200, 36973 bytes post-deploy).
 
-**Deploy plan (post-merge)**: Static-only. `Copy-Item service\app\static\v2\inventory-page.jsx C:\PZ\app\static\v2\` + `Copy-Item service\app\static\v2\mock-badge.jsx C:\PZ\app\static\v2\`. No backend restart required. No engine files.
-
-**Rollback**: `git revert 52022a0 --no-edit` + copy old files from backup.
+**Rollback**: code — `git revert 498b46e --no-edit`; production — restore the 3 files from `C:\PZ\app\static\v2\bak\20260606-sprint30\` (static-only, no restart).
 
 ---
 
