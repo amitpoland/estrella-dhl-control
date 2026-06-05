@@ -67,13 +67,13 @@ def test_scan_handler_calls_write_json_atomic_in_customs_path():
     src = _ROUTE.read_text(encoding="utf-8", errors="replace")
     sender_idx = src.index("_DHL_CUSTOMS_SENDERS")
     # write_json_atomic should appear after the DHL customs sender check
-    try:
-        atomic_idx = src.index("write_json_atomic(_ap, _cur_audit)", sender_idx)
-    except ValueError:
-        atomic_idx = -1
+    # Accepts either the aliased form (_wja_scan) or the direct name
+    alias_idx  = src.find("_wja_scan(_ap, _cur_audit)", sender_idx)
+    direct_idx = src.find("write_json_atomic(_ap, _cur_audit)", sender_idx)
+    atomic_idx = max(alias_idx, direct_idx)
     assert atomic_idx > sender_idx, (
-        "write_json_atomic must be called with the updated audit inside "
-        "the _DHL_CUSTOMS_SENDERS match block"
+        "write_json_atomic (or its alias _wja_scan) must be called with the "
+        "updated audit inside the _DHL_CUSTOMS_SENDERS match block"
     )
 
 
@@ -82,10 +82,13 @@ def test_scan_handler_idempotent_guard():
     src = _ROUTE.read_text(encoding="utf-8", errors="replace")
     # The check for existing received must precede the write
     sender_idx = src.index("_DHL_CUSTOMS_SENDERS")
-    guard_idx = src.index(".get(\"received\")", sender_idx)
-    write_idx  = src.index("write_json_atomic(_ap, _cur_audit)", sender_idx)
+    guard_idx  = src.index(".get(\"received\")", sender_idx)
+    alias_idx  = src.find("_wja_scan(_ap, _cur_audit)", sender_idx)
+    direct_idx = src.find("write_json_atomic(_ap, _cur_audit)", sender_idx)
+    write_idx  = max(alias_idx, direct_idx)
+    assert write_idx > 0, "Atomic write call must exist in customs block"
     assert guard_idx < write_idx, (
-        "Idempotency guard (.get('received')) must appear before write_json_atomic"
+        "Idempotency guard (.get('received')) must appear before the atomic write"
     )
 
 

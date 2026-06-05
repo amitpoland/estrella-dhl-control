@@ -1919,6 +1919,7 @@ async def scan_dhl_inbox(
                 )
                 if _customs_hit:
                     try:
+                        from ..utils.io import write_json_atomic as _wja_scan  # noqa: PLC0415
                         _cur_audit = json.loads(_ap.read_text(encoding="utf-8"))
                         if not (_cur_audit.get("dhl_email") or {}).get("received"):
                             _ticket = (
@@ -1940,7 +1941,7 @@ async def scan_dhl_inbox(
                             }
                             if _ticket:
                                 _cur_audit["dhl_ticket"] = _ticket
-                            write_json_atomic(_ap, _cur_audit)
+                            _wja_scan(_ap, _cur_audit)
                             tl.log_event(
                                 _ap,
                                 tl.EV_DHL_EMAIL_RECEIVED,
