@@ -1920,8 +1920,32 @@ async def scan_dhl_inbox(
                 if _customs_hit:
                     try:
                         from ..utils.io import write_json_atomic as _wja_scan  # noqa: PLC0415
+                        from ..services.active_shipment_monitor import (  # noqa: PLC0415
+                            _is_active as _scan_batch_is_active,
+                        )
                         _cur_audit = json.loads(_ap.read_text(encoding="utf-8"))
-                        if not (_cur_audit.get("dhl_email") or {}).get("received"):
+                        # GAP-1 guard: only write dhl_email.received for active
+                        # (non-terminal, non-delivered) batches. A terminal batch
+                        # whose AWB happens to appear in a new DHL email must NOT
+                        # be re-flagged — doing so would restart B2 automation on
+                        # a closed shipment.
+                        # Note on GAP-2 (deferred): the native email classifier maps
+                        # odprawacelna@dhl.com → type "dhl_arrival" → timeline event
+                        # "carrier_arrived" (correct for SLA/intelligence chains).
+                        # The AI Bridge cache path uses "dhl_customs_request" →
+                        # "dhl_customs_email_received". These are intentionally
+                        # separate: carrier_arrived feeds sla_engine.py SLA anchors;
+                        # dhl_email.received drives B2 DSK-reply automation. Do not
+                        # merge them — see routes_dhl_clearance.py audit note.
+                        if not _scan_batch_is_active(_cur_audit):
+                            log.info(
+                                "[scan-inbox] skipping dhl_email.received — batch=%s "
+                                "is terminal/delivered (clearance=%s tracking=%s)",
+                                batch_id,
+                                _cur_audit.get("clearance_status", ""),
+                                (_cur_audit.get("tracking") or {}).get("status", ""),
+                            )
+                        elif not (_cur_audit.get("dhl_email") or {}).get("received"):
                             _ticket = (
                                 _customs_hit.get("dhl_ticket")
                                 or _customs_hit.get("ticket")

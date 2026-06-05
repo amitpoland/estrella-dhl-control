@@ -6,16 +6,30 @@ T# customs email matched to a known AWB, the route must write
 audit.dhl_email.received = True so the B2 DSK-reply path in
 active_shipment_monitor fires on the next sweep.
 
-Root cause fixed here:
+Root cause fixed here (PR #454):
   routes_dhl_clearance.py scan_dhl_inbox handler — after logging
   EV_DHL_INBOX_SCANNED, the handler now checks each matched email for a
   DHL customs sender + T# ticket and writes dhl_email.received directly
   to the audit. Without this write, the monitor's _apply_derived_events
   exits early (derived_events is empty) and the B2 auto-reply never fires.
 
+Hardened (PR #455 — GAP-1 fix):
+  The write is now gated by _is_active() so terminal/delivered batches
+  whose AWB appears in a late DHL email are not re-flagged. A delivered
+  shipment must never restart B2 automation.
+
 AWB 8400636576 (real incident 2026-06-05):
   odprawacelna@dhl.com sent T#1WA2606050000553; inbox scanned 3×; but
   dhl_email.received was never set; DSK was NOT sent to DHL automatically.
+
+GAP-2 (deferred, documented):
+  The native email classifier maps odprawacelna@dhl.com → "dhl_arrival"
+  → timeline event "carrier_arrived". This feeds sla_engine.py SLA
+  anchors (arrival_to_sad, fedex_arrival_to_cesja) and
+  routes_intelligence.py next-step guidance. Do NOT change this mapping.
+  The AI Bridge path uses "dhl_customs_request" → "dhl_customs_email_received"
+  for the derived-events cache route. The two event names serve different
+  subsystems and must remain separate.
 """
 from __future__ import annotations
 
@@ -111,6 +125,90 @@ def test_scan_handler_stores_ticket_in_dhl_ticket_field():
     assert ticket_write > sender_idx, (
         "audit.dhl_ticket must be populated from the T# ticket inside "
         "the _DHL_CUSTOMS_SENDERS match block"
+    )
+
+
+# ── GAP-1 guard tests (PR #455) ──────────────────────────────────────────────
+
+def test_scan_handler_imports_is_active_guard():
+    """GAP-1: scan handler must import _is_active from active_shipment_monitor."""
+    src = _ROUTE.read_text(encoding="utf-8", errors="replace")
+    # The import must appear inside the _DHL_CUSTOMS_SENDERS block
+    sender_idx = src.index("_DHL_CUSTOMS_SENDERS")
+    # Accept either the aliased name or the direct import
+    alias_import = src.find("_scan_batch_is_active", sender_idx)
+    direct_import = src.find("_is_active as _scan_batch_is_active", sender_idx)
+    found_idx = max(alias_import, direct_import)
+    assert found_idx > sender_idx, (
+        "scan_dhl_inbox must import/use _is_active (as _scan_batch_is_active) "
+        "inside the _DHL_CUSTOMS_SENDERS block to guard against inactive batches"
+    )
+
+
+def test_scan_handler_is_active_check_precedes_received_write():
+    """GAP-1: _is_active check must come BEFORE the dhl_email.received write."""
+    src = _ROUTE.read_text(encoding="utf-8", errors="replace")
+    sender_idx = src.index("_DHL_CUSTOMS_SENDERS")
+    active_check_idx = src.index("_scan_batch_is_active", sender_idx)
+    received_write_idx = src.index('"received":     True', sender_idx)
+    assert active_check_idx < received_write_idx, (
+        "_scan_batch_is_active (GAP-1 guard) must appear before "
+        "'received': True write — active batches must be confirmed eligible "
+        "before the flag is set"
+    )
+
+
+def test_scan_handler_skip_path_for_inactive_batch():
+    """GAP-1: a log.info skip path must exist for inactive batches."""
+    src = _ROUTE.read_text(encoding="utf-8", errors="replace")
+    sender_idx = src.index("_DHL_CUSTOMS_SENDERS")
+    # The skip path must log that the batch is terminal/inactive
+    skip_log_idx = src.find("skipping dhl_email.received", sender_idx)
+    assert skip_log_idx > sender_idx, (
+        "scan_dhl_inbox must log a skip message when _scan_batch_is_active "
+        "returns False — silent skips make incidents hard to diagnose"
+    )
+    # Verify the skip comes BEFORE the write (not after)
+    received_write_idx = src.index('"received":     True', sender_idx)
+    assert skip_log_idx < received_write_idx, (
+        "Skip log for inactive batch must precede the 'received': True write"
+    )
+
+
+def test_scan_handler_active_check_before_idempotency_guard():
+    """GAP-1: _is_active check must precede the idempotency (.get('received')) guard.
+    Order: active-check → idempotency → write. Both guard the write.
+    """
+    src = _ROUTE.read_text(encoding="utf-8", errors="replace")
+    sender_idx = src.index("_DHL_CUSTOMS_SENDERS")
+    active_idx = src.index("_scan_batch_is_active", sender_idx)
+    # .get("received") for idempotency check (first occurrence after sender check)
+    idem_idx = src.index('.get("received")', sender_idx)
+    assert active_idx < idem_idx, (
+        "_scan_batch_is_active (GAP-1 outer guard) must come before the "
+        "idempotency .get('received') inner guard"
+    )
+
+
+def test_gap2_deferral_documented_in_route():
+    """GAP-2 (deferred): the route must carry a comment explaining that
+    carrier_arrived and dhl_customs_email_received serve different subsystems
+    and must NOT be merged.
+    """
+    src = _ROUTE.read_text(encoding="utf-8", errors="replace")
+    sender_idx = src.index("_DHL_CUSTOMS_SENDERS")
+    # The comment must explain the duality
+    gap2_note_idx = src.find("GAP-2", sender_idx)
+    assert gap2_note_idx > sender_idx, (
+        "GAP-2 deferral must be documented with a 'GAP-2' comment inside the "
+        "_DHL_CUSTOMS_SENDERS block so future developers understand why "
+        "carrier_arrived and dhl_customs_email_received are separate"
+    )
+    # Also confirm carrier_arrived is still preserved (not replaced)
+    carrier_arrived_idx = src.find("carrier_arrived", sender_idx)
+    assert carrier_arrived_idx > sender_idx, (
+        "carrier_arrived event name must still appear near the GAP-2 comment "
+        "to confirm the mapping was intentionally preserved"
     )
 
 
