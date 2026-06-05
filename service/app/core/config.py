@@ -297,12 +297,17 @@ class Settings(BaseSettings):
     # Example: WFIRMA_RECOVERY_ENABLED_TYPES=wfirma_series_missing
     wfirma_recovery_enabled_types:  str  = Field(default="")
 
-    # ── DHL automated email scanner (Lane A — inbox scan, every 10 min) ─────
-    # Kill switch for POST /api/v1/dhl/scheduled-inbox-check.
-    # Default True. Set DHL_AUTO_SCAN_ENABLED=false to disable the scheduler.
-    # Active-batch guard (_is_active) always applies regardless of this flag.
-    # Lane B (follow-up automation) is in a separate PR (#457) and not yet deployed.
+    # ── DHL automated email scheduler (Lane A + Lane B) ─────────────────────
+    # Lane A: POST /api/v1/dhl/scheduled-inbox-check — inbox scan, every 10 min.
+    # Default True. Set DHL_AUTO_SCAN_ENABLED=false to disable.
     dhl_auto_scan_enabled: bool = Field(default=True)
+
+    # Lane B: POST /api/v1/dhl/scheduled-followup-check — DHL follow-up SLA.
+    # DEFAULT FALSE — requires explicit operator opt-in.
+    # Set DHL_FOLLOWUP_ENABLED=true in .env ONLY after Lane A runs clean.
+    # ALSO requires DHL_ORCH_AUTO_SEND_DHL_FOLLOWUP=true to actually send
+    # emails (inner guard in _process_dhl_followup / dhl_followup_guard.py).
+    dhl_followup_enabled: bool = Field(default=False)
 
     # ── Carrier subsystem (DHL Express outbound shipping) ────────────────────
     # Status gate — controls carrier API adapter selection.
