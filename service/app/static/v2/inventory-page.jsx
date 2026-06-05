@@ -1,874 +1,27 @@
-// ── Inventory Module — Two-Stage Architecture
-// Stage 1 (Temporary): Temp Purchase · Temp Warehouse · Temp Sale
-// Stage 2 (Physical):  Final Stock · Sample Out · Sample Return · Goods Return from Client · Return to Producer
-// Plus: Identity / Mapping panel
+// ─────────────────────────────────────────────────────────────────────────────
+// inventory-page.jsx — Sprint 30: Live Inventory Hub wired to V2 shell
 //
-// Truth model:
-//   wfirma_good_id, wfirma_product_code  →  read-only external accounting refs
-//   product_family_code, design_id       →  internal commercial identity
-//   batch_id, bag_id                     →  physical batching
-//   stock_unit_id                        →  inventory truth
-//   trace_barcode = family-design-batch-bag
+// Replaces the Sprint 1 MOCK prototype.
+// Live components extracted from inventory-v2.html (Sprint 29).
+// Uses window.EstrellaShared.apiFetch (same auth-aware shim as all V2 pages).
+//
+// Exports:
+//   window.InventoryPage      — live read-only hub (5 panels, 8 endpoints)
+//   window.DocumentViewerPage — shell-global document viewer (used by all pages)
+//
+// Endpoints (read-only, no write calls):
+//   GET /api/v1/inventory/stage2/aggregate   — Stage 2 overview (auto-load)
+//   GET /api/v1/inventory/state/{batch_id}   — Batch inventory state
+//   GET /api/v1/inventory/pieces/{piece_id}  — Piece lookup by ID
+//   GET /api/v1/warehouse/inventory/{scan}   — Piece lookup by scan code
+//   GET /api/v1/warehouse/locations          — Location browser (auto-load)
+//   GET /api/v1/warehouse/locations/{code}/inventory — Location detail
+//   GET /api/v1/warehouse/audit-summary/{batch_id}   — Audit summary
+//   GET /api/v1/warehouse/audit/{batch_id}           — Full audit
+// ─────────────────────────────────────────────────────────────────────────────
 
-const INV_TABS = [
-  { id: 'overview',     label: 'Overview',                 stage: '' },
-  { id: 'tempPurchase', label: 'Temp Purchase',            stage: 'Stage 1' },
-  { id: 'tempWarehouse',label: 'Temp Warehouse',           stage: 'Stage 1' },
-  { id: 'tempSale',     label: 'Temp Sale',                stage: 'Stage 1' },
-  { id: 'consignment',  label: 'Consignment',              stage: 'Stage 2' },
-  { id: 'finalStock',   label: 'Final Stock',              stage: 'Stage 2' },
-  { id: 'sampleOut',    label: 'Sample Out',               stage: 'Stage 2' },
-  { id: 'sampleReturn', label: 'Sample Return',            stage: 'Stage 2' },
-  { id: 'clientReturn', label: 'Goods Return from Client', stage: 'Stage 2' },
-  { id: 'producerReturn',label: 'Return to Producer',      stage: 'Stage 2' },
-  { id: 'mapping',      label: 'Identity / Mapping',       stage: '' },
-];
+// ── Document Viewer (shell-global, used by proforma/pz/inbox via openViewer) ─
 
-// ── Shared inventory primitives ────────────────────────────────────────
-function InvStatTile({ label, value, hint, tone }) {
-  const toneColor = tone === 'red'   ? 'var(--badge-red-text)'
-                  : tone === 'amber' ? 'var(--badge-amber-text)'
-                  : tone === 'green' ? 'var(--badge-green-text)'
-                  : 'var(--text)';
-  return (
-    <div style={{
-      background: 'var(--card)', border: '1px solid var(--border)',
-      borderRadius: 10, padding: '14px 16px', boxShadow: '0 1px 2px var(--shadow)',
-    }}>
-      <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 6, lineHeight: 1.25 }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 600, color: toneColor, lineHeight: 1.25 }}>{value}</div>
-      {hint && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{hint}</div>}
-    </div>
-  );
-}
-
-function StagePill({ stage }) {
-  if (!stage) return null;
-  const isOne = stage === 'Stage 1';
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-      fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
-      padding: '2px 6px', borderRadius: 3,
-      background: isOne ? 'var(--badge-amber-bg)' : 'var(--badge-blue-bg)',
-      color:      isOne ? 'var(--badge-amber-text)' : 'var(--badge-blue-text)',
-      border: `1px solid ${isOne ? 'var(--badge-amber-border)' : 'var(--badge-blue-border)'}`,
-    }}>{stage}</span>
-  );
-}
-
-function InvBadge({ label, tone = 'neutral' }) {
-  const t = {
-    neutral: { bg: 'var(--badge-neutral-bg)', tx: 'var(--badge-neutral-text)', bd: 'var(--badge-neutral-border)' },
-    blue:    { bg: 'var(--badge-blue-bg)',    tx: 'var(--badge-blue-text)',    bd: 'var(--badge-blue-border)' },
-    amber:   { bg: 'var(--badge-amber-bg)',   tx: 'var(--badge-amber-text)',   bd: 'var(--badge-amber-border)' },
-    green:   { bg: 'var(--badge-green-bg)',   tx: 'var(--badge-green-text)',   bd: 'var(--badge-green-border)' },
-    red:     { bg: 'var(--badge-red-bg)',     tx: 'var(--badge-red-text)',     bd: 'var(--badge-red-border)' },
-    orange:  { bg: 'var(--badge-orange-bg)',  tx: 'var(--badge-orange-text)',  bd: 'var(--badge-orange-border)' },
-    purple:  { bg: 'var(--badge-purple-bg)',  tx: 'var(--badge-purple-text)',  bd: 'var(--badge-purple-border)' },
-  }[tone] || { bg: 'var(--badge-neutral-bg)', tx: 'var(--badge-neutral-text)', bd: 'var(--badge-neutral-border)' };
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center',
-      background: t.bg, color: t.tx, border: `1px solid ${t.bd}`,
-      borderRadius: 4, padding: '2px 8px',
-      fontSize: 11, fontWeight: 600, letterSpacing: '0.03em', whiteSpace: 'nowrap',
-    }}>{label}</span>
-  );
-}
-
-function ReadOnlyField({ value }) {
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 6,
-      fontFamily: 'monospace', fontSize: 11.5, color: 'var(--text-2)',
-      background: 'var(--bg-subtle)', border: '1px dashed var(--border)',
-      borderRadius: 4, padding: '2px 6px',
-    }}>
-      <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--text-3)' }}>wF</span>
-      {value}
-    </span>
-  );
-}
-
-function InvTable({ columns, rows, empty }) {
-  if (!rows || rows.length === 0) {
-    return (
-      <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>
-        {empty || 'No records yet'}
-      </div>
-    );
-  }
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 800 }}>
-        <thead>
-          <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-            {columns.map(c => (
-              <th key={c.key || c.label} style={{
-                padding: '10px 12px', textAlign: c.align || 'left',
-                fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
-                letterSpacing: '0.10em', textTransform: 'uppercase', whiteSpace: 'nowrap',
-              }}>{c.label}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-              {columns.map(c => (
-                <td key={c.key || c.label} style={{
-                  padding: '11px 12px', textAlign: c.align || 'left',
-                  fontFamily: c.mono ? 'monospace' : undefined,
-                  fontWeight: c.bold ? 600 : undefined,
-                  color: c.muted ? 'var(--text-2)' : 'var(--text)',
-                  whiteSpace: c.wrap ? 'normal' : 'nowrap',
-                }}>{c.render ? c.render(r) : r[c.key]}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// ── Stage 1 : TEMP PURCHASE ────────────────────────────────────────────
-function TempPurchaseTab({ openViewer }) {
-  const lines = [
-    { plSr: 1, ctg: 'PND', clientPo: 'PROF 70/2026', designNo: 'EJ-PND-0142-A', karat: '18KT', color: 'W', quality: 'VS-GH', diaWt: '0.75', colWt: '—', qty: 2, size: '—', value: 'EUR 480.00', total: 'EUR 960.00', supplier: 'Estrella Jewels LLP', awb: 'DHL-1234567890', expected: '04 Apr 2026', status: 'Awaiting goods' },
-    { plSr: 2, ctg: 'PND', clientPo: 'PROF 70/2026', designNo: 'EJ-PND-0142-B', karat: '18KT', color: 'W', quality: 'VS-GH', diaWt: '0.82', colWt: '—', qty: 3, size: '—', value: 'EUR 510.00', total: 'EUR 1,530.00', supplier: 'Estrella Jewels LLP', awb: 'DHL-1234567890', expected: '04 Apr 2026', status: 'Awaiting goods' },
-    { plSr: 3, ctg: 'Loose Metal', clientPo: '—', designNo: 'LM-18W-04', karat: '18KT', color: 'W', quality: '—', diaWt: '—', colWt: '12.40', qty: 1, size: '—', value: 'EUR 612.00', total: 'EUR 612.00', supplier: 'Estrella Jewels LLP', awb: 'DHL-1234567890', expected: '04 Apr 2026', status: 'Partially arrived' },
-    { plSr: 4, ctg: 'RNG', clientPo: 'PROF 71/2026', designNo: 'EJ-RNG-0089-C', karat: '14KT', color: 'Y', quality: 'SI-FG', diaWt: '0.40', colWt: '—', qty: 4, size: '54-58', value: 'EUR 295.00', total: 'EUR 1,180.00', supplier: 'Estrella Jewels LLP', awb: 'DHL-1234567884', expected: '06 Apr 2026', status: 'Closed-out' },
-  ];
-
-  const stats = [
-    { label: 'Open packing lists', value: '6' },
-    { label: 'Awaiting goods (lines)',value: '14', tone: 'amber' },
-    { label: 'Partially arrived',  value: '2', tone: 'amber' },
-    { label: 'Closed-out',         value: '8', tone: 'green' },
-  ];
-
-  return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        {stats.map(s => <InvStatTile key={s.label} {...s} />)}
-      </div>
-      <div style={{ background: 'var(--accent-bg)', border: '1px solid var(--accent-border)', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 12, color: 'var(--text-2)' }}>
-        <strong style={{ color: 'var(--text)' }}>Stage 1 — Document layer.</strong> These lines come from supplier invoices &amp; packing lists. Goods are <em>expected</em> but not physically confirmed. No final stock is created here.
-      </div>
-
-      <Card>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Open packing-list lines</span>
-            <InvBadge label="from invoices &amp; packing lists" tone="neutral" />
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Btn small variant="outline">Filter</Btn>
-            <Btn small variant="outline">↓ Export CSV</Btn>
-            <Btn small>+ Upload Packing List</Btn>
-          </div>
-        </div>
-        <InvTable
-          columns={[
-            { key: 'plSr',      label: 'Pk Sr', mono: true, align: 'right' },
-            { key: 'ctg',       label: 'Ctg' },
-            { key: 'clientPo',  label: 'Client PO', mono: true },
-            { key: 'designNo',  label: 'Design No', mono: true, bold: true },
-            { key: 'karat',     label: 'Karat' },
-            { key: 'color',     label: 'Color' },
-            { key: 'quality',   label: 'Quality' },
-            { key: 'diaWt',     label: 'Dia Wt', align: 'right', mono: true },
-            { key: 'colWt',     label: 'Col Wt', align: 'right', mono: true },
-            { key: 'qty',       label: 'Qty',    align: 'right', bold: true },
-            { key: 'size',      label: 'Size' },
-            { key: 'total',     label: 'Total', align: 'right', mono: true, bold: true },
-            { key: 'awb',       label: 'AWB', mono: true, muted: true },
-            { key: 'status',    label: 'Status',
-              render: r => <InvBadge label={r.status}
-                tone={r.status === 'Awaiting goods' ? 'amber' : r.status === 'Partially arrived' ? 'orange' : 'green'} /> },
-            { key: 'actions',   label: '',
-              render: r => (
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <Btn small variant="ghost" onClick={() => openViewer && openViewer({
-                    id: 'PL-' + r.designNo, title: 'Packing List · ' + r.clientPo, type: 'Packing List', awb: r.awb,
-                  })}>View doc</Btn>
-                  <Btn small variant="outline">Receive</Btn>
-                </div>
-              ) },
-          ]}
-          rows={lines}
-        />
-      </Card>
-    </div>
-  );
-}
-
-// ── Stage 1 : TEMP WAREHOUSE ───────────────────────────────────────────
-function TempWarehouseTab() {
-  const items = [
-    { plSr: 1, designNo: 'EJ-PND-0142-A', expectedQty: 2, receivedQty: 2, delta: 0,  bag: '—', awb: 'DHL-1234567890', recvDate: '07 Apr 2026', status: 'Pending match' },
-    { plSr: 2, designNo: 'EJ-PND-0142-B', expectedQty: 3, receivedQty: 3, delta: 0,  bag: '—', awb: 'DHL-1234567890', recvDate: '07 Apr 2026', status: 'Pending match' },
-    { plSr: 3, designNo: 'LM-18W-04',     expectedQty: 1, receivedQty: 0, delta: -1, bag: '—', awb: 'DHL-1234567890', recvDate: '—',          status: 'Discrepancy' },
-    { plSr: 5, designNo: 'EJ-NCK-0211-A', expectedQty: 4, receivedQty: 5, delta: +1, bag: 'BAG-2604-A', awb: 'DHL-1234567884', recvDate: '06 Apr 2026', status: 'Discrepancy' },
-    { plSr: 6, designNo: 'EJ-RNG-0098',   expectedQty: 2, receivedQty: 2, delta: 0,  bag: 'BAG-2604-B', awb: 'DHL-1234567884', recvDate: '06 Apr 2026', status: 'Counted, awaiting bag' },
-  ];
-
-  return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        <InvStatTile label="Awaiting count"    value="9"  tone="amber" />
-        <InvStatTile label="Counted"           value="14" />
-        <InvStatTile label="Discrepancies"     value="3"  tone="red" />
-        <InvStatTile label="Ready for matching"value="11" tone="green" />
-      </div>
-      <div style={{ background: 'var(--accent-bg)', border: '1px solid var(--accent-border)', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 12, color: 'var(--text-2)' }}>
-        <strong style={{ color: 'var(--text)' }}>Stage 1 — Physical arrival.</strong> Goods have arrived but are not fully matched, counted or bagged. Discrepancies allowed and tracked. <strong>No FINAL_STOCK is created until matching is complete.</strong>
-      </div>
-
-      <Card>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Pending physical match</span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Btn small variant="outline">Scan barcode</Btn>
-            <Btn small>Begin matching</Btn>
-          </div>
-        </div>
-        <InvTable
-          columns={[
-            { key: 'plSr',        label: 'Pk Sr', mono: true, align: 'right' },
-            { key: 'designNo',    label: 'Design No', mono: true, bold: true },
-            { key: 'expectedQty', label: 'Expected', align: 'right' },
-            { key: 'receivedQty', label: 'Received', align: 'right', bold: true },
-            { key: 'delta',       label: 'Δ', align: 'right',
-              render: r => <span style={{ color: r.delta === 0 ? 'var(--text-2)' : r.delta > 0 ? 'var(--badge-amber-text)' : 'var(--badge-red-text)', fontWeight: 700, fontFamily: 'monospace' }}>{r.delta > 0 ? '+' + r.delta : r.delta}</span> },
-            { key: 'bag',         label: 'Bag ID', mono: true },
-            { key: 'awb',         label: 'AWB', mono: true, muted: true },
-            { key: 'recvDate',    label: 'Received' },
-            { key: 'status',      label: 'Status',
-              render: r => <InvBadge label={r.status}
-                tone={r.status === 'Discrepancy' ? 'red' : r.status === 'Pending match' ? 'amber' : 'blue'} /> },
-            { key: 'actions',     label: '',
-              render: r => (
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <Btn small variant="ghost">Count</Btn>
-                  <Btn small variant="outline">Assign bag</Btn>
-                </div>
-              ) },
-          ]}
-          rows={items}
-        />
-      </Card>
-    </div>
-  );
-}
-
-// ── Stage 1 : TEMP SALE ────────────────────────────────────────────────
-function TempSaleTab() {
-  const reservations = [
-    { proforma: 'PROF 70/2026',  client: 'Juliany EOOD',     designNo: 'EJ-PND-0142-A', qty: 2, value: 'EUR 960.00',   linkedTo: 'TempWarehouse · BAG-2604-A', status: 'Reserved' },
-    { proforma: 'PROF 70/2026',  client: 'Juliany EOOD',     designNo: 'EJ-PND-0142-B', qty: 3, value: 'EUR 1,530.00', linkedTo: 'TempWarehouse · BAG-2604-A', status: 'Reserved' },
-    { proforma: 'PROF 71/2026',  client: 'Verhoeven',        designNo: 'EJ-RNG-0098',   qty: 2, value: 'EUR 590.00',   linkedTo: 'TempWarehouse · BAG-2604-B', status: 'Awaiting goods' },
-    { proforma: 'PROF 72/2026',  client: '38-10 Juliany EOOD',designNo: 'EJ-NCK-0211-A', qty: 4, value: 'EUR 1,180.00', linkedTo: 'TempPurchase · DHL-1234567884', status: 'Pre-reserved' },
-  ];
-
-  return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        <InvStatTile label="Open reservations" value="11" />
-        <InvStatTile label="Awaiting goods"    value="4"  tone="amber" />
-        <InvStatTile label="Reserved"          value="6" />
-        <InvStatTile label="Sales-invoice gate" value="LOCKED" tone="amber" hint="Until FINAL_STOCK confirms" />
-      </div>
-      <div style={{ background: 'var(--badge-orange-bg)', border: '1px solid var(--badge-orange-border)', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 12, color: 'var(--text)' }}>
-        <strong>Sales-invoice gate is enforced.</strong> No commercial sale invoice can be issued from a TEMP_SALE row. The invoice is unlocked only when its linked stock has reached <strong>FINAL_STOCK</strong> after physical verification.
-      </div>
-
-      <Card>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Sales reservations awaiting closure</span>
-        </div>
-        <InvTable
-          columns={[
-            { key: 'proforma', label: 'Proforma', mono: true, bold: true },
-            { key: 'client',   label: 'Client' },
-            { key: 'designNo', label: 'Design No', mono: true },
-            { key: 'qty',      label: 'Qty', align: 'right', bold: true },
-            { key: 'value',    label: 'Value', align: 'right', mono: true },
-            { key: 'linkedTo', label: 'Linked to', muted: true },
-            { key: 'status',   label: 'Status',
-              render: r => <InvBadge label={r.status}
-                tone={r.status === 'Reserved' ? 'blue' : r.status === 'Awaiting goods' ? 'amber' : 'orange'} /> },
-            { key: 'actions',  label: '',
-              render: () => (
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <Btn small variant="ghost">View proforma</Btn>
-                  <Btn small variant="outline" disabled>Issue invoice</Btn>
-                </div>
-              ) },
-          ]}
-          rows={reservations}
-        />
-      </Card>
-    </div>
-  );
-}
-
-// ── Stage 2 : FINAL STOCK ──────────────────────────────────────────────
-function FinalStockTab() {
-  const stock = [
-    { stockUnitId: 'SU-2604-00012', family: 'PND-CLASSIC', design: 'EJ-PND-0142-A', batch: 'B-2604-04',  bag: 'BAG-2604-A',  qty: 2, location: 'Główny / Shelf-A4', valuePln: 'PLN 4,128.00', traceBarcode: 'PND-CLASSIC·EJ-PND-0142-A·B-2604-04·BAG-2604-A', wfGoodId: '78461', wfCode: 'PND-CL-0142', verifiedOn: '07 Apr 2026' },
-    { stockUnitId: 'SU-2604-00013', family: 'PND-CLASSIC', design: 'EJ-PND-0142-B', batch: 'B-2604-04',  bag: 'BAG-2604-A',  qty: 3, location: 'Główny / Shelf-A4', valuePln: 'PLN 6,572.00', traceBarcode: 'PND-CLASSIC·EJ-PND-0142-B·B-2604-04·BAG-2604-A', wfGoodId: '78462', wfCode: 'PND-CL-0142B', verifiedOn: '07 Apr 2026' },
-    { stockUnitId: 'SU-2604-00018', family: 'RNG-CLASSIC', design: 'EJ-RNG-0098',   batch: 'B-2604-04',  bag: 'BAG-2604-B',  qty: 2, location: 'Główny / Shelf-B2', valuePln: 'PLN 2,535.00', traceBarcode: 'RNG-CLASSIC·EJ-RNG-0098·B-2604-04·BAG-2604-B',   wfGoodId: '71204', wfCode: 'RNG-CL-0098', verifiedOn: '07 Apr 2026' },
-    { stockUnitId: 'SU-2603-00097', family: 'NCK-PEARL',   design: 'EJ-NCK-0211-A', batch: 'B-2603-22',  bag: 'BAG-2603-D',  qty: 6, location: 'Główny / Shelf-C1', valuePln: 'PLN 5,068.00', traceBarcode: 'NCK-PEARL·EJ-NCK-0211-A·B-2603-22·BAG-2603-D',  wfGoodId: '64391', wfCode: 'NCK-PRL-0211',verifiedOn: '22 Mar 2026' },
-  ];
-
-  return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 16 }}>
-        <InvStatTile label="Stock units"    value="412" />
-        <InvStatTile label="Pieces on hand" value="1,847" />
-        <InvStatTile label="Reserved"       value="148" />
-        <InvStatTile label="Available"      value="1,699" tone="green" />
-        <InvStatTile label="Stock value"    value="PLN 2.41M" />
-      </div>
-      <div style={{ background: 'var(--badge-green-bg)', border: '1px solid var(--badge-green-border)', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 12, color: 'var(--text)' }}>
-        <strong>Stage 2 — Inventory truth.</strong> Each row is a physically-verified <code style={{ fontFamily: 'monospace', background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>stock_unit_id</code>. wFirma fields are <em>read-only references</em> until controlled execution is approved separately.
-      </div>
-
-      <Card>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Verified stock units</span>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input placeholder="Filter family / design / batch / bag…" style={{
-              padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)', minWidth: 280,
-            }} />
-            <Btn small variant="outline">Cycle count</Btn>
-            <Btn small variant="outline">↓ Export</Btn>
-          </div>
-        </div>
-        <InvTable
-          columns={[
-            { key: 'stockUnitId',  label: 'Stock Unit ID', mono: true, bold: true },
-            { key: 'family',       label: 'Family', mono: true },
-            { key: 'design',       label: 'Design ID', mono: true },
-            { key: 'batch',        label: 'Batch', mono: true },
-            { key: 'bag',          label: 'Bag', mono: true },
-            { key: 'qty',          label: 'Qty', align: 'right', bold: true },
-            { key: 'location',     label: 'Location', muted: true },
-            { key: 'valuePln',     label: 'Value', align: 'right', mono: true },
-            { key: 'wfCode',       label: 'wFirma ref',
-              render: r => <ReadOnlyField value={r.wfCode} /> },
-            { key: 'actions',      label: '',
-              render: () => (
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <Btn small variant="ghost">Trace</Btn>
-                  <Btn small variant="outline">Move</Btn>
-                </div>
-              ) },
-          ]}
-          rows={stock}
-        />
-      </Card>
-    </div>
-  );
-}
-
-// ── Stage 2 : SAMPLE OUT ───────────────────────────────────────────────
-function SampleOutTab() {
-  const samples = [
-    { sampleId: 'SMP-2604-001', stockUnitId: 'SU-2604-00012', design: 'EJ-PND-0142-A', qty: 1, issuedTo: 'Anna K. (Sales)',   issuedFor: 'Client visit · Sofia',  issued: '04 Apr 2026', returnBy: '11 Apr 2026', daysLeft: 4,  status: 'Out' },
-    { sampleId: 'SMP-2604-002', stockUnitId: 'SU-2604-00018', design: 'EJ-RNG-0098',   qty: 1, issuedTo: 'Marek W. (Sales)',  issuedFor: 'Antwerp viewing',        issued: '02 Apr 2026', returnBy: '09 Apr 2026', daysLeft: 2,  status: 'Closing soon' },
-    { sampleId: 'SMP-2603-097', stockUnitId: 'SU-2603-00097', design: 'EJ-NCK-0211-A', qty: 1, issuedTo: 'Juliany EOOD',     issuedFor: 'On approval',            issued: '20 Mar 2026', returnBy: '03 Apr 2026', daysLeft: -4, status: 'Overdue' },
-    { sampleId: 'SMP-2603-082', stockUnitId: 'SU-2603-00081', design: 'EJ-EAR-0357',   qty: 1, issuedTo: 'Verhoeven',         issuedFor: 'On approval',            issued: '18 Mar 2026', returnBy: '01 Apr 2026', daysLeft: 0,  status: 'Returned',  returned: '31 Mar 2026' },
-  ];
-
-  return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        <InvStatTile label="Active out"     value="14" />
-        <InvStatTile label="Closing soon"   value="3"  tone="amber" hint="≤ 3 days" />
-        <InvStatTile label="Overdue"        value="1"  tone="red" />
-        <InvStatTile label="Returned (mo.)" value="22" tone="green" />
-      </div>
-      <Card>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Verified stock issued temporarily</span>
-          <Btn small>+ Issue Sample</Btn>
-        </div>
-        <InvTable
-          columns={[
-            { key: 'sampleId',    label: 'Sample ID', mono: true, bold: true },
-            { key: 'stockUnitId', label: 'Source SU', mono: true, muted: true },
-            { key: 'design',      label: 'Design', mono: true },
-            { key: 'qty',         label: 'Qty', align: 'right' },
-            { key: 'issuedTo',    label: 'Issued to' },
-            { key: 'issuedFor',   label: 'Purpose', muted: true },
-            { key: 'issued',      label: 'Issued' },
-            { key: 'returnBy',    label: 'Return by' },
-            { key: 'daysLeft',    label: 'Days left', align: 'right',
-              render: r => <span style={{ fontWeight: 700, color: r.daysLeft < 0 ? 'var(--badge-red-text)' : r.daysLeft <= 3 ? 'var(--badge-amber-text)' : 'var(--text)' }}>{r.daysLeft}</span> },
-            { key: 'status',      label: 'Status',
-              render: r => <InvBadge label={r.status}
-                tone={r.status === 'Out' ? 'blue' : r.status === 'Closing soon' ? 'amber' : r.status === 'Overdue' ? 'red' : 'green'} /> },
-            { key: 'actions',     label: '',
-              render: r => (
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {r.status !== 'Returned' && <Btn small variant="outline">Mark returned</Btn>}
-                  <Btn small variant="ghost">Trace</Btn>
-                </div>
-              ) },
-          ]}
-          rows={samples}
-        />
-      </Card>
-    </div>
-  );
-}
-
-// ── Stage 2 : SAMPLE RETURN ────────────────────────────────────────────
-function SampleReturnTab() {
-  const returns = [
-    { rtnId: 'SR-2604-001', sampleId: 'SMP-2603-082', design: 'EJ-EAR-0357',   qty: 1, returnedFrom: 'Verhoeven',           received: '31 Mar 2026', condition: 'Mint',   inspectedBy: 'Anna K.',  decision: 'Restock',     status: 'Restocked' },
-    { rtnId: 'SR-2604-002', sampleId: 'SMP-2603-085', design: 'EJ-PND-0140',   qty: 1, returnedFrom: 'Anna K. (Sales)',     received: '30 Mar 2026', condition: 'Light scratches', inspectedBy: 'Marek W.', decision: 'Restock after polish', status: 'In repair' },
-    { rtnId: 'SR-2604-003', sampleId: 'SMP-2603-090', design: 'EJ-RNG-0099',   qty: 1, returnedFrom: 'Juliany EOOD',         received: '02 Apr 2026', condition: 'Damaged stone', inspectedBy: '—',         decision: '—',           status: 'Awaiting inspection' },
-  ];
-
-  return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        <InvStatTile label="Awaiting inspection" value="3" tone="amber" />
-        <InvStatTile label="In repair"           value="2" />
-        <InvStatTile label="Restocked (mo.)"     value="18" tone="green" />
-        <InvStatTile label="Written off (mo.)"   value="1" tone="red" />
-      </div>
-      <Card>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Samples coming back from sales / clients</span>
-        </div>
-        <InvTable
-          columns={[
-            { key: 'rtnId',        label: 'Return ID', mono: true, bold: true },
-            { key: 'sampleId',     label: 'Sample', mono: true, muted: true },
-            { key: 'design',       label: 'Design', mono: true },
-            { key: 'qty',          label: 'Qty', align: 'right' },
-            { key: 'returnedFrom', label: 'Returned from' },
-            { key: 'received',     label: 'Received' },
-            { key: 'condition',    label: 'Condition' },
-            { key: 'inspectedBy',  label: 'Inspector', muted: true },
-            { key: 'decision',     label: 'Decision' },
-            { key: 'status',       label: 'Status',
-              render: r => <InvBadge label={r.status}
-                tone={r.status === 'Awaiting inspection' ? 'amber' : r.status === 'In repair' ? 'blue' : r.status === 'Restocked' ? 'green' : 'neutral'} /> },
-            { key: 'actions',      label: '',
-              render: r => (
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {r.status === 'Awaiting inspection' && <Btn small>Inspect</Btn>}
-                  <Btn small variant="ghost">View</Btn>
-                </div>
-              ) },
-          ]}
-          rows={returns}
-        />
-      </Card>
-    </div>
-  );
-}
-
-// ── Stage 2 : GOODS RETURN FROM CLIENT (RMA) ───────────────────────────
-function ClientReturnTab() {
-  const rmas = [
-    { rmaId: 'RMA-2604-001', invoice: 'INV 2026/0148', client: 'Juliany EOOD', design: 'EJ-PND-0142-A', qty: 1, value: 'EUR 480.00', reason: 'Size exchange',     received: '04 Apr 2026', condition: 'Mint',         decision: 'Restock',       status: 'Restocked' },
-    { rmaId: 'RMA-2604-002', invoice: 'INV 2026/0151', client: 'Verhoeven',     design: 'EJ-RNG-0099',   qty: 1, value: 'EUR 295.00', reason: 'Damaged in transit',received: '05 Apr 2026', condition: 'Stone loose', decision: '—',            status: 'Awaiting inspection' },
-    { rmaId: 'RMA-2604-003', invoice: 'INV 2026/0144', client: '38-10 Juliany', design: 'EJ-NCK-0211-A', qty: 2, value: 'EUR 1,180.00',reason: 'Wrong item shipped',received: '06 Apr 2026', condition: 'Mint',         decision: 'Restock',       status: 'Inspected' },
-    { rmaId: 'RMA-2604-004', invoice: 'INV 2026/0140', client: 'Bijou & Co',    design: 'EJ-EAR-0357',   qty: 1, value: 'EUR 320.00', reason: 'Quality dispute',   received: '02 Apr 2026', condition: 'Discoloured', decision: 'Return to producer', status: 'Routed to RTP' },
-  ];
-
-  return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        <InvStatTile label="Open RMAs"           value="7" />
-        <InvStatTile label="Awaiting inspection" value="2" tone="amber" />
-        <InvStatTile label="Routed to producer"  value="1" tone="orange" />
-        <InvStatTile label="Restocked (mo.)"     value="11" tone="green" />
-      </div>
-      <div style={{ background: 'var(--accent-bg)', border: '1px solid var(--accent-border)', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 12, color: 'var(--text-2)' }}>
-        Post-sale returns (RMA). After inspection, route to <strong>Restock</strong>, <strong>Repair</strong>, <strong>Write-off</strong>, or <strong>Return to Producer</strong>. Credit-note generation stays in Sales / wFirma — not here.
-      </div>
-
-      <Card>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Open RMAs</span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Btn small variant="outline">+ Open RMA</Btn>
-          </div>
-        </div>
-        <InvTable
-          columns={[
-            { key: 'rmaId',    label: 'RMA ID', mono: true, bold: true },
-            { key: 'invoice',  label: 'Invoice', mono: true, muted: true },
-            { key: 'client',   label: 'Client' },
-            { key: 'design',   label: 'Design', mono: true },
-            { key: 'qty',      label: 'Qty', align: 'right' },
-            { key: 'value',    label: 'Value', align: 'right', mono: true },
-            { key: 'reason',   label: 'Reason' },
-            { key: 'received', label: 'Received' },
-            { key: 'decision', label: 'Decision' },
-            { key: 'status',   label: 'Status',
-              render: r => <InvBadge label={r.status}
-                tone={r.status === 'Awaiting inspection' ? 'amber' : r.status === 'Restocked' ? 'green' : r.status === 'Routed to RTP' ? 'orange' : 'blue'} /> },
-            { key: 'actions',  label: '',
-              render: r => (
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {r.status === 'Awaiting inspection' && <Btn small>Inspect</Btn>}
-                  <Btn small variant="ghost">View</Btn>
-                </div>
-              ) },
-          ]}
-          rows={rmas}
-        />
-      </Card>
-    </div>
-  );
-}
-
-// ── Stage 2 : RETURN TO PRODUCER ───────────────────────────────────────
-function ProducerReturnTab() {
-  const rtps = [
-    { rtpId: 'RTP-2604-001', source: 'RMA-2604-004', design: 'EJ-EAR-0357', qty: 1, supplier: 'Estrella Jewels LLP', reason: 'Quality dispute',  prepared: '06 Apr 2026', awbOut: '—',              status: 'Awaiting AWB' },
-    { rtpId: 'RTP-2604-002', source: 'TempWH · LM-18W-04', design: 'LM-18W-04', qty: 1, supplier: 'Estrella Jewels LLP', reason: 'Short-shipped',    prepared: '07 Apr 2026', awbOut: 'DHL-OUT-991224', status: 'Shipped' },
-    { rtpId: 'RTP-2603-018', source: 'SR-2603-022', design: 'EJ-RNG-0089',  qty: 1, supplier: 'Estrella Jewels LLP', reason: 'Sample worn out',  prepared: '24 Mar 2026', awbOut: 'DHL-OUT-991108', status: 'Confirmed by producer' },
-  ];
-
-  return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        <InvStatTile label="In preparation" value="2" />
-        <InvStatTile label="Awaiting AWB"   value="1" tone="amber" />
-        <InvStatTile label="In transit"     value="3" />
-        <InvStatTile label="Confirmed (mo.)" value="9" tone="green" />
-      </div>
-      <Card>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Returns prepared for supplier shipment</span>
-        </div>
-        <InvTable
-          columns={[
-            { key: 'rtpId',    label: 'RTP ID', mono: true, bold: true },
-            { key: 'source',   label: 'Source', mono: true, muted: true },
-            { key: 'design',   label: 'Design', mono: true },
-            { key: 'qty',      label: 'Qty', align: 'right' },
-            { key: 'supplier', label: 'Supplier' },
-            { key: 'reason',   label: 'Reason' },
-            { key: 'prepared', label: 'Prepared' },
-            { key: 'awbOut',   label: 'AWB out', mono: true },
-            { key: 'status',   label: 'Status',
-              render: r => <InvBadge label={r.status}
-                tone={r.status === 'Awaiting AWB' ? 'amber' : r.status === 'Shipped' ? 'blue' : r.status === 'Confirmed by producer' ? 'green' : 'neutral'} /> },
-            { key: 'actions',  label: '',
-              render: r => (
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {r.status === 'Awaiting AWB' && <Btn small>Add AWB</Btn>}
-                  <Btn small variant="ghost">View docs</Btn>
-                </div>
-              ) },
-          ]}
-          rows={rtps}
-        />
-      </Card>
-    </div>
-  );
-}
-
-// ── IDENTITY / MAPPING ─────────────────────────────────────────────────
-function MappingTab() {
-  const fields = [
-    { key: 'wfirma_good_id',      group: 'External (read-only)', label: 'wFirma Good ID',       desc: 'Read-only external accounting product ID',     ex: '78461',          editable: false },
-    { key: 'wfirma_product_code', group: 'External (read-only)', label: 'wFirma Product Code',  desc: 'Read-only external wFirma product code',         ex: 'PND-CL-0142',    editable: false },
-    { key: 'product_family_code', group: 'Internal commercial',  label: 'Product Family Code', desc: 'Internal commercial product family',             ex: 'PND-CLASSIC',    editable: true },
-    { key: 'design_id',           group: 'Internal commercial',  label: 'Design ID',           desc: 'Actual jewelry design / model',                  ex: 'EJ-PND-0142-A',  editable: true },
-    { key: 'batch_id',            group: 'Physical',             label: 'Batch ID',            desc: 'Import / purchase / production batch',           ex: 'B-2604-04',      editable: true },
-    { key: 'bag_id',              group: 'Physical',             label: 'Bag ID',              desc: 'Physical bag / packet',                          ex: 'BAG-2604-A',     editable: true },
-    { key: 'stock_unit_id',       group: 'Truth',                label: 'Stock Unit ID',       desc: 'System-generated physical stock identity',        ex: 'SU-2604-00012',  editable: false, truth: true },
-    { key: 'trace_barcode',       group: 'Truth',                label: 'Trace Barcode',       desc: 'family + design + batch + bag (scan value)',     ex: 'PND-CLASSIC·EJ-PND-0142-A·B-2604-04·BAG-2604-A', editable: false, truth: true },
-  ];
-
-  return (
-    <div>
-      <div style={{ background: 'var(--accent-bg)', border: '1px solid var(--accent-border)', borderRadius: 8, padding: '14px 18px', marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Identity model</div>
-        <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.55 }}>
-          wFirma is <strong>not</strong> the inventory truth. The truth is <code style={{ fontFamily: 'monospace', background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>stock_unit_id</code>, scanned via <code style={{ fontFamily: 'monospace', background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>trace_barcode</code>. wFirma fields appear here as read-only references to keep accounting in sync without letting external mismatches corrupt physical inventory.
-        </div>
-      </div>
-
-      <Card>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>The 8 identity fields</span>
-        </div>
-        <InvTable
-          columns={[
-            { key: 'group',      label: 'Group',
-              render: r => <span style={{
-                fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: r.truth ? 'var(--badge-green-text)' : r.editable ? 'var(--text-2)' : 'var(--text-3)',
-              }}>{r.group}</span> },
-            { key: 'key',        label: 'Field key', mono: true, bold: true },
-            { key: 'label',      label: 'Label' },
-            { key: 'desc',       label: 'Description', muted: true, wrap: true },
-            { key: 'ex',         label: 'Example', mono: true, muted: true },
-            { key: 'access',     label: 'Access',
-              render: r => r.editable
-                ? <InvBadge label="Editable"  tone="blue" />
-                : r.truth
-                  ? <InvBadge label="System-generated" tone="green" />
-                  : <InvBadge label="Read-only (wFirma)" tone="neutral" /> },
-          ]}
-          rows={fields}
-        />
-      </Card>
-
-      <div style={{ marginTop: 24, fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 10, padding: '0 4px' }}>Movement model</div>
-      <Card>
-        <div style={{ padding: '14px 18px', fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Stage 1 — Temporary</div>
-              <div>1. Supplier invoice / packing list → <strong>TEMP_PURCHASE</strong></div>
-              <div>2. DHL / SAD / PZ reference attached</div>
-              <div>3. Goods physically arrive → <strong>TEMP_WAREHOUSE</strong></div>
-              <div>4. Sales reservation → <strong>TEMP_SALE</strong> (gated)</div>
-            </div>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Stage 2 — Physical</div>
-              <div>5. Physical count + bag assignment + match</div>
-              <div>6. <strong>FINAL_STOCK</strong> created (verified)</div>
-              <div>7. Movement: Sale · <strong>SAMPLE_TEMP</strong> · Client return · <strong>RETURN_TO_PRODUCER</strong></div>
-            </div>
-          </div>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-// ── INVENTORY OVERVIEW ─────────────────────────────────────────────────
-function InventoryOverviewTab({ setTab }) {
-  const fire = (evt) => window.dispatchEvent(new CustomEvent(evt));
-  return (
-    <div>
-      {/* Quick actions */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
-        <div onClick={() => fire('inv:upload')} style={{
-          padding: '16px 18px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)',
-          cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14,
-        }}>
-          <div style={{ width: 38, height: 38, borderRadius: 8, background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 700 }}>↑</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Upload Document</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Packing list · Invoice · Transfer · Return — auto-routes by type</div>
-          </div>
-          <span style={{ fontSize: 16, color: 'var(--text-3)' }}>›</span>
-        </div>
-        <div onClick={() => fire('inv:move')} style={{
-          padding: '16px 18px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)',
-          cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14,
-        }}>
-          <div style={{ width: 38, height: 38, borderRadius: 8, background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 700 }}>⇄</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Move Stock</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Warehouse → Warehouse, Main → Sample / Consignment / Return</div>
-          </div>
-          <span style={{ fontSize: 16, color: 'var(--text-3)' }}>›</span>
-        </div>
-        <div onClick={() => setTab('mapping')} style={{
-          padding: '16px 18px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)',
-          cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14,
-        }}>
-          <div style={{ width: 38, height: 38, borderRadius: 8, background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700 }}>≡</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Identity / Mapping</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Family · Design · Batch · Bag · Trace barcode</div>
-          </div>
-          <span style={{ fontSize: 16, color: 'var(--text-3)' }}>›</span>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
-        <InvStatTile label="Stock units (final)" value="412"        tone="green" />
-        <InvStatTile label="Pieces on hand"      value="1,847" />
-        <InvStatTile label="Stock value"         value="PLN 2.41M" />
-        <InvStatTile label="Reorder alerts"      value="6"          tone="amber" hint="below reorder point" />
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
-        <Card>
-          <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 4 }}>Stage 1 — Temporary</div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Document &amp; arrival layer</div>
-            </div>
-          </div>
-          <div style={{ padding: '6px 0' }}>
-            {[
-              { id: 'tempPurchase',  label: 'Temp Purchase',   right: '6 open · 14 lines' },
-              { id: 'tempWarehouse', label: 'Temp Warehouse',  right: '9 awaiting count · 3 discrepancies' },
-              { id: 'tempSale',      label: 'Temp Sale',       right: '11 reserved · invoice gate locked' },
-            ].map(r => (
-              <div key={r.id} onClick={() => setTab(r.id)} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '12px 18px', cursor: 'pointer',
-                borderBottom: '1px solid var(--border-subtle)',
-              }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{r.label}</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{r.right}</span>
-                  <span style={{ fontSize: 14, color: 'var(--text-3)' }}>›</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-
-        <Card>
-          <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-blue-text)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 4 }}>Stage 2 — Physical</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Verified stock &amp; movements</div>
-          </div>
-          <div style={{ padding: '6px 0' }}>
-            {[
-              { id: 'finalStock',     label: 'Final Stock',                right: '412 SU · 1,847 pcs' },
-              { id: 'sampleOut',      label: 'Sample Out',                 right: '14 active · 1 overdue' },
-              { id: 'sampleReturn',   label: 'Sample Return',              right: '3 awaiting inspection' },
-              { id: 'clientReturn',   label: 'Goods Return from Client',   right: '7 open · 2 awaiting inspection' },
-              { id: 'producerReturn', label: 'Return to Producer',         right: '6 open' },
-            ].map(r => (
-              <div key={r.id} onClick={() => setTab(r.id)} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '12px 18px', cursor: 'pointer',
-                borderBottom: '1px solid var(--border-subtle)',
-              }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{r.label}</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{r.right}</span>
-                  <span style={{ fontSize: 14, color: 'var(--text-3)' }}>›</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
-
-      <Card>
-        <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Recent inventory movements</span>
-          <Btn small variant="outline">View full ledger</Btn>
-        </div>
-        <InvTable
-          columns={[
-            { key: 'time',     label: 'When', muted: true },
-            { key: 'kind',     label: 'Movement',
-              render: r => <InvBadge label={r.kind} tone={r.tone} /> },
-            { key: 'su',       label: 'Stock Unit / Line', mono: true },
-            { key: 'design',   label: 'Design', mono: true },
-            { key: 'qty',      label: 'Qty', align: 'right', bold: true },
-            { key: 'who',      label: 'By', muted: true },
-            { key: 'ref',      label: 'Ref', mono: true, muted: true },
-          ]}
-          rows={[
-            { time: '14:42 today',  kind: 'IN — Temp WH',   tone: 'amber', su: 'PL-3 / EJ-PND-0142-A', design: 'EJ-PND-0142-A', qty: 2, who: 'DHL receipt', ref: 'AWB-1234567890' },
-            { time: '11:18 today',  kind: 'MATCH → Final',  tone: 'green', su: 'SU-2604-00018',         design: 'EJ-RNG-0098',   qty: 2, who: 'Anna K.',     ref: 'BAG-2604-B' },
-            { time: '10:05 today',  kind: 'OUT — Sample',   tone: 'blue',  su: 'SU-2604-00012',         design: 'EJ-PND-0142-A', qty: 1, who: 'Marek W.',    ref: 'SMP-2604-002' },
-            { time: 'Yesterday',    kind: 'IN — RMA',       tone: 'orange',su: 'SU-2603-00097',         design: 'EJ-NCK-0211-A', qty: 2, who: '38-10 Juliany',ref: 'RMA-2604-003' },
-            { time: '2 days ago',   kind: 'OUT — RTP',      tone: 'red',   su: 'SU-LM-18W-04',          design: 'LM-18W-04',     qty: 1, who: 'Marek W.',    ref: 'RTP-2604-002' },
-          ]}
-        />
-      </Card>
-    </div>
-  );
-}
-
-// ── MAIN INVENTORY PAGE ────────────────────────────────────────────────
-function InventoryPage({ openViewer }) {
-  const [tab, setTab] = React.useState('overview');
-  const [showMove, setShowMove] = React.useState(false);
-  const [showUpload, setShowUpload] = React.useState(false);
-
-  React.useEffect(() => {
-    const onMove = () => setShowMove(true);
-    const onUpload = () => setShowUpload(true);
-    const onJump = (e) => { if (e?.detail?.tab) setTab(e.detail.tab); };
-    window.addEventListener('inv:move', onMove);
-    window.addEventListener('inv:upload', onUpload);
-    window.addEventListener('inv:jump', onJump);
-    return () => {
-      window.removeEventListener('inv:move', onMove);
-      window.removeEventListener('inv:upload', onUpload);
-      window.removeEventListener('inv:jump', onJump);
-    };
-  }, []);
-
-  const tabsByStage = {
-    '': INV_TABS.filter(t => !t.stage),
-    'Stage 1': INV_TABS.filter(t => t.stage === 'Stage 1'),
-    'Stage 2': INV_TABS.filter(t => t.stage === 'Stage 2'),
-  };
-
-  return (
-    <div style={{ padding: '20px 32px 32px', overflowY: 'auto', flex: 1 }}>
-      {/* Tab strip — grouped by stage */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 0, marginBottom: 20, borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
-        {INV_TABS.map((t, i) => {
-          const isActive = tab === t.id;
-          const prev = INV_TABS[i - 1];
-          const showStageBreak = prev && prev.stage !== t.stage;
-          return (
-            <React.Fragment key={t.id}>
-              {showStageBreak && <div style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 6px 8px' }} />}
-              <button onClick={() => setTab(t.id)} style={{
-                padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer',
-                borderBottom: `2px solid ${isActive ? 'var(--accent)' : 'transparent'}`,
-                color: isActive ? 'var(--text)' : 'var(--text-2)',
-                fontSize: 12.5, fontWeight: isActive ? 700 : 500, marginBottom: -1,
-                display: 'flex', alignItems: 'center', gap: 6,
-              }}>
-                {t.label}
-                {t.stage && (
-                  <span style={{
-                    fontSize: 8.5, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
-                    padding: '1px 5px', borderRadius: 3,
-                    background: t.stage === 'Stage 1' ? 'var(--badge-amber-bg)' : 'var(--badge-blue-bg)',
-                    color:      t.stage === 'Stage 1' ? 'var(--badge-amber-text)' : 'var(--badge-blue-text)',
-                    border: `1px solid ${t.stage === 'Stage 1' ? 'var(--badge-amber-border)' : 'var(--badge-blue-border)'}`,
-                  }}>{t.stage === 'Stage 1' ? 'S1' : 'S2'}</span>
-                )}
-              </button>
-            </React.Fragment>
-          );
-        })}
-      </div>
-
-      {tab === 'overview'        && <InventoryOverviewTab setTab={setTab} />}
-      {tab === 'tempPurchase'    && <TempPurchaseTab openViewer={openViewer} />}
-      {tab === 'tempWarehouse'   && <TempWarehouseTab />}
-      {tab === 'tempSale'        && <TempSaleTab />}
-      {tab === 'consignment'     && <ConsignmentTab />}
-      {tab === 'finalStock'      && <FinalStockTab />}
-      {tab === 'sampleOut'       && <SampleOutTab />}
-      {tab === 'sampleReturn'    && <SampleReturnTab />}
-      {tab === 'clientReturn'    && <ClientReturnTab />}
-      {tab === 'producerReturn'  && <ProducerReturnTab />}
-      {tab === 'mapping'         && <MappingTab />}
-
-      {showMove && <MoveStockModal onClose={() => setShowMove(false)} />}
-      {showUpload && <UploadDocumentModal onClose={() => setShowUpload(false)} onRoute={(t) => { setTab(t); setShowUpload(false); }} />}
-    </div>
-  );
-}
-
-// ── DOCUMENT VIEWER (full-page route) ──────────────────────────────────
 function DocumentViewerPage({ doc, onBack }) {
   const [page, setPageNum] = React.useState(1);
   const [zoom, setZoom] = React.useState(100);
@@ -896,25 +49,25 @@ function DocumentViewerPage({ doc, onBack }) {
         background: 'var(--card)', flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Btn small variant="ghost" onClick={onBack}>← Back</Btn>
+          <Btn small variant="ghost" onClick={onBack}>&larr; Back</Btn>
           <div style={{ width: 1, height: 22, background: 'var(--border)' }} />
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{doc?.title || 'Packing list of shipment'}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'monospace' }}>{doc?.id || 'PL-EJL-26-27-013'} · {doc?.format || 'XLSX'}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'monospace' }}>{doc?.id || 'PL-EJL-26-27-013'} &middot; {doc?.format || 'XLSX'}</div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Btn small variant="ghost" onClick={() => setPageNum(Math.max(1, page - 1))} disabled={page === 1}>‹</Btn>
+          <Btn small variant="ghost" onClick={() => setPageNum(Math.max(1, page - 1))} disabled={page === 1}>&lsaquo;</Btn>
           <span style={{ fontSize: 12, color: 'var(--text-2)', minWidth: 48, textAlign: 'center', fontFamily: 'monospace' }}>{page} / {totalPages}</span>
-          <Btn small variant="ghost" onClick={() => setPageNum(Math.min(totalPages, page + 1))} disabled={page === totalPages}>›</Btn>
+          <Btn small variant="ghost" onClick={() => setPageNum(Math.min(totalPages, page + 1))} disabled={page === totalPages}>&rsaquo;</Btn>
           <div style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px' }} />
-          <Btn small variant="ghost" onClick={() => setZoom(Math.max(50, zoom - 10))}>−</Btn>
+          <Btn small variant="ghost" onClick={() => setZoom(Math.max(50, zoom - 10))}>&minus;</Btn>
           <span style={{ fontSize: 12, color: 'var(--text-2)', minWidth: 44, textAlign: 'center', fontFamily: 'monospace' }}>{zoom}%</span>
           <Btn small variant="ghost" onClick={() => setZoom(Math.min(200, zoom + 10))}>+</Btn>
           <div style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px' }} />
           <Btn small variant="outline">Open in new tab</Btn>
-          <Btn small variant="outline">↓ Download</Btn>
-          <Btn small>↓ Download all (.zip)</Btn>
+          <Btn small variant="outline">&darr; Download</Btn>
+          <Btn small>&darr; Download all (.zip)</Btn>
         </div>
       </div>
 
@@ -927,7 +80,6 @@ function DocumentViewerPage({ doc, onBack }) {
             padding: '40px 48px', color: '#222',
             fontFamily: 'sans-serif', fontSize: 11 * (zoom / 100),
           }}>
-            {/* Mock packing list rendering */}
             <div style={{ background: '#131C2E', color: 'white', padding: '14px 20px', textAlign: 'center', fontWeight: 700, letterSpacing: '0.05em', marginBottom: 16, fontSize: 14 * (zoom / 100) }}>
               SHIPMENT PACKING LIST
             </div>
@@ -935,7 +87,7 @@ function DocumentViewerPage({ doc, onBack }) {
               <div>
                 <div style={{ fontSize: 9 * (zoom / 100), fontWeight: 700, color: '#666', textTransform: 'uppercase', marginBottom: 4 }}>Bill to:</div>
                 <div style={{ fontWeight: 700 }}>Juliany EOOD</div>
-                <div>G.S. Rakovski №70</div>
+                <div>G.S. Rakovski &numero;70</div>
                 <div>1000 Sofia, Bulgaria</div>
                 <div>VAT UE: BG121281167</div>
               </div>
@@ -947,7 +99,7 @@ function DocumentViewerPage({ doc, onBack }) {
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #ddd' }}>
-              <div><strong>Invoice #:</strong> EJL/26-27/013 · PROF 70/2026</div>
+              <div><strong>Invoice #:</strong> EJL/26-27/013 &middot; PROF 70/2026</div>
               <div><strong>Dated:</strong> 07.04.2026</div>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 9.5 * (zoom / 100) }}>
@@ -994,16 +146,14 @@ function DocumentViewerPage({ doc, onBack }) {
               <div style={{ fontSize: 12.5, color: 'var(--text)', fontFamily: m.label === 'Hash' || m.label.includes('#') ? 'monospace' : undefined, wordBreak: 'break-all' }}>{m.value}</div>
             </div>
           ))}
-
           <div style={{ height: 1, background: 'var(--border)', margin: '20px 0' }} />
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Linked entities</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <a href="#" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>→ Shipment SHP-2026-0142</a>
-            <a href="#" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>→ AWB DHL-1234567890</a>
-            <a href="#" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>→ TempPurchase (3 lines)</a>
-            <a href="#" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>→ Proforma PROF 70/2026</a>
+            <a href="#" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>&rarr; Shipment SHP-2026-0142</a>
+            <a href="#" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>&rarr; AWB DHL-1234567890</a>
+            <a href="#" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>&rarr; TempPurchase (3 lines)</a>
+            <a href="#" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>&rarr; Proforma PROF 70/2026</a>
           </div>
-
           <div style={{ height: 1, background: 'var(--border)', margin: '20px 0' }} />
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Other documents in this shipment</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1020,206 +170,529 @@ function DocumentViewerPage({ doc, onBack }) {
   );
 }
 
-// ── MOVE STOCK MODAL ───────────────────────────────────────────────────
-function MoveStockModal({ onClose }) {
-  const [moveType, setMoveType] = React.useState('wh-wh'); // wh-wh | stage
-  const [from, setFrom] = React.useState('main');
-  const [to, setTo] = React.useState('branch');
-  const [stage, setStage] = React.useState('sample');
-  const [su, setSu] = React.useState('SU-2604-00012');
-  const [qty, setQty] = React.useState(1);
-  const [reason, setReason] = React.useState('');
+// ── Inventory Hub — live panels extracted from inventory-v2.html (Sprint 29) ─
+// All components are scoped to this IIFE to avoid global name collisions.
 
-  const fld = {
-    width: '100%', padding: '8px 10px', borderRadius: 6,
-    border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)',
-    background: 'var(--card)', outline: 'none',
-  };
-  const lbl = { display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--text-2)', marginBottom: 5, letterSpacing: '0.06em', textTransform: 'uppercase' };
+(function () {
+  'use strict';
+  const { useState, useEffect, useCallback } = React;
+  const apiFetch = window.EstrellaShared.apiFetch;
 
-  const physicalWarehouses = [
-    { id: 'main',   label: 'Główny — main warehouse (Warsaw)' },
-    { id: 'branch', label: 'Branch — Sofia office' },
-    { id: 'safe',   label: 'Safe vault — high-value' },
-    { id: 'trade',  label: 'Trade fair — Vicenza booth' },
-  ];
-  const stageDestinations = [
-    { id: 'sample',      label: 'Sample Out — issued to salesperson / client' },
-    { id: 'consignment', label: 'Consignment — to client on consignment terms' },
-    { id: 'producer',    label: 'Return to Producer — RTP' },
-    { id: 'tempSale',    label: 'Temp Sale — reserve against proforma' },
-  ];
+  // ── Shared UI atoms (private to this module) ──────────────────────────────
 
-  return (
-    <window.Modal title="Move Stock" onClose={onClose} wide>
-      {/* Type toggle */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 18, padding: 4, background: 'var(--bg-subtle)', borderRadius: 8, border: '1px solid var(--border)' }}>
-        {[
-          { id: 'wh-wh', title: 'Warehouse → Warehouse', desc: 'Physical location transfer' },
-          { id: 'stage', title: 'Stage transition',      desc: 'Main → Sample / Consignment / RTP' },
-        ].map(opt => (
-          <button key={opt.id} onClick={() => setMoveType(opt.id)} style={{
-            padding: '12px 14px', textAlign: 'left', borderRadius: 6, cursor: 'pointer',
-            background: moveType === opt.id ? 'var(--card)' : 'transparent',
-            border: moveType === opt.id ? '1px solid var(--accent)' : '1px solid transparent',
-            boxShadow: moveType === opt.id ? '0 1px 2px var(--shadow)' : 'none',
-          }}>
-            <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>{opt.title}</div>
-            <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 2 }}>{opt.desc}</div>
+  function InvLabel({ children }) {
+    return <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 6 }}>{children}</div>;
+  }
+
+  function InvInput({ value, onChange, placeholder, type, ...rest }) {
+    return (
+      <input type={type || 'text'} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-subtle)', color: 'var(--text)', fontSize: 12, fontFamily: 'monospace', outline: 'none' }}
+        {...rest}
+      />
+    );
+  }
+
+  function InvFetchBtn({ onClick, loading, label, disabled, ...rest }) {
+    return (
+      <button onClick={onClick} disabled={disabled || loading}
+        style={{ padding: '7px 14px', borderRadius: 6, border: '1px solid var(--accent-border)', background: loading ? 'var(--bg-subtle)' : 'var(--accent-subtle)', color: loading ? 'var(--text-3)' : 'var(--accent-text)', fontSize: 12, fontWeight: 600, cursor: disabled || loading ? 'not-allowed' : 'pointer', opacity: disabled ? 0.45 : 1 }}
+        {...rest}
+      >
+        {loading ? '…' : label}
+      </button>
+    );
+  }
+
+  function StatBadge({ count, label, tone, sub }) {
+    const c = tone === 'green' ? '--badge-green' : tone === 'amber' ? '--badge-amber' : tone === 'red' ? '--badge-red' : '--badge-neutral';
+    return (
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', boxShadow: '0 1px 2px var(--shadow)' }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 6 }}>{label}</div>
+        <div style={{ fontSize: 26, fontWeight: 700, color: count == null ? 'var(--text-3)' : `var(${c}-text)` }}>
+          {count == null ? '—' : count}
+        </div>
+        {sub && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{sub}</div>}
+      </div>
+    );
+  }
+
+  function StateChip({ state }) {
+    const MAP = {
+      WAREHOUSE_STOCK:        { label: 'In Stock',          bg: 'var(--badge-green-bg)',  text: 'var(--badge-green-text)',  border: 'var(--badge-green-border)' },
+      PURCHASE_TRANSIT:       { label: 'In Transit',        bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   border: 'var(--badge-blue-border)' },
+      SALES_TRANSIT:          { label: 'Sales Transit',     bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   border: 'var(--badge-blue-border)' },
+      DIRECT_DISPATCH_READY:  { label: 'Dispatch Ready',    bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  border: 'var(--badge-amber-border)' },
+      CLIENT_DISPATCHED:      { label: 'Dispatched',        bg: 'var(--badge-purple-bg)', text: 'var(--badge-purple-text)', border: 'var(--badge-purple-border)' },
+      CLOSED:                 { label: 'Closed',            bg: 'var(--badge-neutral-bg)',text: 'var(--badge-neutral-text)',border: 'var(--badge-neutral-border)' },
+      SAMPLE_OUT:             { label: 'Sample Out',        bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  border: 'var(--badge-amber-border)' },
+      RETURNED_FROM_CLIENT:   { label: 'Return / Client',   bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    border: 'var(--badge-red-border)' },
+      RETURNED_TO_PRODUCER:   { label: 'Return / Producer', bg: 'var(--badge-red-bg)',    text: 'var(--badge-red-text)',    border: 'var(--badge-red-border)' },
+    };
+    const s = MAP[state] || { label: state || '?', bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', background: s.bg, color: s.text, border: `1px solid ${s.border}`, borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
+        {s.label}
+      </span>
+    );
+  }
+
+  function ResultBox({ data, error }) {
+    if (!data && !error) return null;
+    if (error) return <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 11, color: 'var(--badge-red-text)', fontFamily: 'monospace' }}>{error}</div>;
+    return <pre style={{ marginTop: 10, padding: '12px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text)', overflowX: 'auto', maxHeight: 360, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace', lineHeight: 1.5 }}>{JSON.stringify(data, null, 2)}</pre>;
+  }
+
+  function InvPanel({ title, subtitle, children, testid }) {
+    return (
+      <div data-testid={testid} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px var(--shadow)', marginBottom: 20 }}>
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{title}</div>
+          {subtitle && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{subtitle}</div>}
+        </div>
+        <div style={{ padding: '16px 20px' }}>{children}</div>
+      </div>
+    );
+  }
+
+  // ── Stage 2 Overview — auto-fetches on mount ────────────────────────────────
+
+  function Stage2Panel() {
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    const load = useCallback(async () => {
+      setLoading(true); setError(null);
+      try { setData(await apiFetch('/api/v1/inventory/stage2/aggregate')); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, []);
+
+    useEffect(() => { load(); }, [load]);
+
+    const s2 = data && data.stage2;
+    return (
+      <InvPanel title="Stage 2 overview" subtitle="Physical inventory counts — auto-loaded from /api/v1/inventory/stage2/aggregate" testid="panel-stage2">
+        {loading && <div style={{ color: 'var(--text-3)', fontSize: 12 }}>Loading…</div>}
+        {error && <div style={{ color: 'var(--badge-red-text)', fontSize: 12 }}>Error: {error}</div>}
+        {s2 && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+            <StatBadge label="Final stock" count={s2.final_stock && s2.final_stock.count} tone="green" sub="WAREHOUSE_STOCK" />
+            <StatBadge label="Samples out" count={s2.samples && s2.samples.count} tone="amber" sub="SAMPLE_OUT" />
+            <StatBadge label="Returns" count={s2.returns && s2.returns.count} tone="red"
+              sub={s2.returns && s2.returns.subcounts ? `${s2.returns.subcounts.from_client} client · ${s2.returns.subcounts.to_producer} producer` : null}
+            />
+          </div>
+        )}
+        {data && data.limitations && data.limitations.length > 0 && (
+          <div style={{ marginTop: 12, fontSize: 11, color: 'var(--badge-amber-text)' }}>
+            ⚠ {data.limitations.join(' · ')}
+          </div>
+        )}
+        <div style={{ marginTop: 10 }}>
+          <button onClick={load} disabled={loading} style={{ fontSize: 11, border: '1px solid var(--border)', background: 'transparent', borderRadius: 4, padding: '4px 10px', cursor: loading ? 'default' : 'pointer', color: 'var(--text-2)' }} data-testid="btn-refresh-stage2">
+            {loading ? '…' : '↻ Refresh'}
           </button>
-        ))}
-      </div>
+        </div>
+      </InvPanel>
+    );
+  }
 
-      {/* Stock unit + qty */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 14 }}>
-        <div>
-          <label style={lbl}>Stock unit</label>
-          <input value={su} onChange={e => setSu(e.target.value)} style={{ ...fld, fontFamily: 'monospace' }} placeholder="SU-…" />
-          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 4 }}>EJ-PND-0142-A · 18KT W · BAG-2604-A · 2 pcs available</div>
-        </div>
-        <div>
-          <label style={lbl}>Quantity</label>
-          <input type="number" value={qty} onChange={e => setQty(e.target.value)} style={fld} min="1" />
-        </div>
-      </div>
+  // ── Batch state panel ───────────────────────────────────────────────────────
 
-      {/* From / To */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-        <div>
-          <label style={lbl}>From</label>
-          <select value={from} onChange={e => setFrom(e.target.value)} style={fld}>
-            {physicalWarehouses.map(w => <option key={w.id} value={w.id}>{w.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label style={lbl}>{moveType === 'wh-wh' ? 'To warehouse' : 'To stage'}</label>
-          {moveType === 'wh-wh' ? (
-            <select value={to} onChange={e => setTo(e.target.value)} style={fld}>
-              {physicalWarehouses.filter(w => w.id !== from).map(w => <option key={w.id} value={w.id}>{w.label}</option>)}
-            </select>
-          ) : (
-            <select value={stage} onChange={e => setStage(e.target.value)} style={fld}>
-              {stageDestinations.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-            </select>
-          )}
-        </div>
-      </div>
+  function BatchPanel() {
+    const [batchId, setBatchId] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [data, setData] = useState(null);
+    const [error, setError] = useState(null);
 
-      {/* Stage-specific fields */}
-      {moveType === 'stage' && (stage === 'sample' || stage === 'consignment') && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-          <div>
-            <label style={lbl}>{stage === 'sample' ? 'Issued to' : 'Consignee'}</label>
-            <input style={fld} placeholder={stage === 'sample' ? 'Anna K. (Sales)' : 'Juliany EOOD'} />
+    const doFetch = useCallback(async () => {
+      if (!batchId.trim()) return;
+      setLoading(true); setData(null); setError(null);
+      try { setData(await apiFetch(`/api/v1/inventory/state/${encodeURIComponent(batchId.trim())}`)); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, [batchId]);
+
+    const counts = data && data.counts;
+    const STATES = ['WAREHOUSE_STOCK','PURCHASE_TRANSIT','SALES_TRANSIT','DIRECT_DISPATCH_READY','CLIENT_DISPATCHED','SAMPLE_OUT','RETURNED_FROM_CLIENT','RETURNED_TO_PRODUCER','CLOSED'];
+
+    return (
+      <InvPanel title="Batch inventory state" subtitle="Per-state piece counts for a shipment batch" testid="panel-batch">
+        <InvLabel>Batch ID</InvLabel>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+          <div style={{ flex: 1 }}>
+            <InvInput value={batchId} onChange={setBatchId} placeholder="e.g. SHIPMENT_4218922912_2026-05_…" data-testid="input-batch-id" />
           </div>
-          <div>
-            <label style={lbl}>Return by</label>
-            <input type="date" style={fld} />
-          </div>
+          <InvFetchBtn onClick={doFetch} loading={loading} label="Load state" disabled={!batchId.trim()} data-testid="btn-batch-state" />
         </div>
-      )}
-
-      {/* Reason / notes */}
-      <div style={{ marginBottom: 18 }}>
-        <label style={lbl}>Reason / notes</label>
-        <textarea value={reason} onChange={e => setReason(e.target.value)} rows="2" style={{ ...fld, resize: 'vertical', fontFamily: 'inherit' }} placeholder="Optional — visible in audit log" />
-      </div>
-
-      {/* Audit preview */}
-      <div style={{ padding: '12px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 18 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>Audit ledger entry (preview)</div>
-        <div style={{ fontSize: 11.5, color: 'var(--text-2)', fontFamily: 'monospace' }}>
-          {moveType === 'wh-wh' ? 'TRANSFER' : 'STAGE-MOVE'} · {su} · qty {qty} · {from} → {moveType === 'wh-wh' ? to : stage} · by anna.k · {new Date().toISOString().slice(0, 19).replace('T', ' ')}
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-        <window.Btn variant="outline" onClick={onClose}>Cancel</window.Btn>
-        <window.Btn variant="gold" onClick={() => { window.dispatchEvent(new CustomEvent('inv:jump', { detail: { tab: moveType === 'stage' && stage === 'sample' ? 'sampleOut' : moveType === 'stage' && stage === 'consignment' ? 'consignment' : moveType === 'stage' && stage === 'producer' ? 'producerReturn' : moveType === 'stage' && stage === 'tempSale' ? 'tempSale' : 'finalStock' } })); onClose(); }}>Confirm move</window.Btn>
-      </div>
-    </window.Modal>
-  );
-}
-
-// ── UPLOAD DOCUMENT MODAL ──────────────────────────────────────────────
-function UploadDocumentModal({ onClose, onRoute }) {
-  const [docType, setDocType] = React.useState('packingList');
-
-  const docTypes = [
-    { id: 'packingList',   label: 'Packing List',         desc: 'Supplier shipment lines',          route: 'tempPurchase',  badge: 'S1' },
-    { id: 'purchaseInv',   label: 'Purchase Invoice',     desc: 'Supplier commercial invoice',      route: 'tempPurchase',  badge: 'S1' },
-    { id: 'arrivalNote',   label: 'Arrival / Receipt',    desc: 'Goods arrived at warehouse',       route: 'tempWarehouse', badge: 'S1' },
-    { id: 'transferNote',  label: 'Internal Transfer',    desc: 'Warehouse → warehouse',            route: 'finalStock',    badge: 'S2' },
-    { id: 'sampleIssue',   label: 'Sample Issue Form',    desc: 'Goods issued out as samples',      route: 'sampleOut',     badge: 'S2' },
-    { id: 'sampleReturn',  label: 'Sample Return Slip',   desc: 'Sample returned, awaiting QC',     route: 'sampleReturn',  badge: 'S2' },
-    { id: 'rmaForm',       label: 'Client RMA Form',      desc: 'Goods return from client',         route: 'clientReturn',  badge: 'S2' },
-    { id: 'rtpForm',       label: 'Return to Producer',   desc: 'RTP outbound to supplier',         route: 'producerReturn',badge: 'S2' },
-    { id: 'consignment',   label: 'Consignment Note',     desc: 'Stock held on consignment',        route: 'consignment',   badge: 'S2' },
-    { id: 'other',         label: 'Other Document',       desc: 'Will be filed for manual review',  route: 'overview',      badge: '—' },
-  ];
-
-  const selected = docTypes.find(d => d.id === docType);
-
-  return (
-    <window.Modal title="Upload Document" onClose={onClose} wide>
-      <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 14 }}>
-        Drop a file and choose its type — the system will route it to the matching inventory tab and pre-fill what it can extract.
-      </div>
-
-      {/* Drop zone */}
-      <div style={{
-        border: '2px dashed var(--border)', borderRadius: 10, padding: '32px 18px',
-        textAlign: 'center', background: 'var(--bg-subtle)', marginBottom: 18,
-      }}>
-        <div style={{ fontSize: 28, color: 'var(--text-3)', marginBottom: 6 }}>↑</div>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Drag a file here, or click to browse</div>
-        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>PDF · XLSX · DOCX · PNG / JPG · max 25 MB</div>
-      </div>
-
-      {/* Doc type picker */}
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-2)', marginBottom: 8, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Document type</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-          {docTypes.map(d => {
-            const active = docType === d.id;
-            return (
-              <button key={d.id} onClick={() => setDocType(d.id)} style={{
-                padding: '10px 12px', textAlign: 'left', borderRadius: 6, cursor: 'pointer',
-                background: active ? 'var(--card)' : 'transparent',
-                border: active ? '1px solid var(--accent)' : '1px solid var(--border)',
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-              }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{d.label}</div>
-                  <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 2 }}>{d.desc}</div>
+        {error && <div style={{ color: 'var(--badge-red-text)', fontSize: 12 }}>{error}</div>}
+        {data && (
+          <>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+              {STATES.filter(s => counts && counts[s] > 0).map(s => (
+                <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <StateChip state={s} />
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{counts[s]}</span>
                 </div>
-                <span style={{
-                  fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
-                  background: d.badge === 'S1' ? 'var(--badge-amber-bg)' : d.badge === 'S2' ? 'var(--badge-blue-bg)' : 'var(--badge-neutral-bg)',
-                  color:      d.badge === 'S1' ? 'var(--badge-amber-text)' : d.badge === 'S2' ? 'var(--badge-blue-text)' : 'var(--badge-neutral-text)',
-                  border:    `1px solid ${d.badge === 'S1' ? 'var(--badge-amber-border)' : d.badge === 'S2' ? 'var(--badge-blue-border)' : 'var(--badge-neutral-border)'}`,
-                  flexShrink: 0,
-                }}>{d.badge}</span>
+              ))}
+              {counts && STATES.every(s => !counts[s]) && <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No pieces found for this batch.</span>}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+              Total: <strong>{data.total || 0}</strong> · Source: <code style={{ fontFamily: 'monospace', background: 'var(--bg-subtle)', padding: '1px 4px', borderRadius: 3 }}>{data.source || '—'}</code>
+              {data.degraded && <span style={{ color: 'var(--badge-amber-text)' }}> · ⚠ degraded</span>}
+            </div>
+            {data.pieces && data.pieces.length > 0 && (
+              <details style={{ marginTop: 12 }}>
+                <summary style={{ fontSize: 12, color: 'var(--text-2)', cursor: 'pointer' }}>Show {data.pieces.length} piece records ▸</summary>
+                <div style={{ marginTop: 8, overflowX: 'auto', maxHeight: 260, overflowY: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                        {['Scan code', 'State', 'Design', 'Updated'].map(h => (
+                          <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.pieces.slice(0, 200).map((p, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                          <td style={{ padding: '5px 10px', fontFamily: 'monospace', fontSize: 11 }}>{p.scan_code || '—'}</td>
+                          <td style={{ padding: '5px 10px' }}><StateChip state={p.state} /></td>
+                          <td style={{ padding: '5px 10px', color: 'var(--text-2)' }}>{p.design_no || '—'}</td>
+                          <td style={{ padding: '5px 10px', color: 'var(--text-3)' }}>{(p.updated_at || '—').slice(0, 16).replace('T', ' ')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {data.pieces.length > 200 && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>Showing first 200 of {data.pieces.length}.</div>}
+                </div>
+              </details>
+            )}
+          </>
+        )}
+        <div style={{ marginTop: 12, fontSize: 10, color: 'var(--text-3)' }}>Read-only. No write calls are made from this panel.</div>
+      </InvPanel>
+    );
+  }
+
+  // ── Piece / scan-code lookup ────────────────────────────────────────────────
+
+  function PiecePanel() {
+    const [pieceId, setPieceId]       = useState('');
+    const [scanCode, setScanCode]     = useState('');
+    const [activeMode, setActiveMode] = useState('');
+    const [loading, setLoading]       = useState(false);
+    const [data, setData]             = useState(null);
+    const [error, setError]           = useState(null);
+
+    const fetchPiece = useCallback(async () => {
+      if (!pieceId.trim()) return;
+      setActiveMode('piece'); setLoading(true); setData(null); setError(null);
+      try { setData(await apiFetch(`/api/v1/inventory/pieces/${encodeURIComponent(pieceId.trim())}`)); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, [pieceId]);
+
+    const fetchScan = useCallback(async () => {
+      if (!scanCode.trim()) return;
+      setActiveMode('scan'); setLoading(true); setData(null); setError(null);
+      try { setData(await apiFetch(`/api/v1/warehouse/inventory/${encodeURIComponent(scanCode.trim())}`)); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, [scanCode]);
+
+    const st  = data && data.state;
+    const loc = data && data.location;
+    const cur = data && data.current;
+
+    return (
+      <InvPanel title="Piece / scan-code lookup" subtitle="Fetch piece state + location by piece_id or scan barcode" testid="panel-piece">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 10 }}>
+          <div>
+            <InvLabel>Piece ID (inventory truth key)</InvLabel>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ flex: 1 }}><InvInput value={pieceId} onChange={setPieceId} placeholder="e.g. piece_id" data-testid="input-piece-id" /></div>
+              <InvFetchBtn onClick={fetchPiece} loading={loading && activeMode === 'piece'} label="Lookup" disabled={!pieceId.trim()} data-testid="btn-lookup-piece" />
+            </div>
+          </div>
+          <div>
+            <InvLabel>Scan code / trace barcode</InvLabel>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ flex: 1 }}><InvInput value={scanCode} onChange={setScanCode} placeholder="e.g. PND-CLASSIC·EJ-…" data-testid="input-scan-code" /></div>
+              <InvFetchBtn onClick={fetchScan} loading={loading && activeMode === 'scan'} label="Lookup" disabled={!scanCode.trim()} data-testid="btn-lookup-scan" />
+            </div>
+          </div>
+        </div>
+        {error && <div style={{ color: 'var(--badge-red-text)', fontSize: 12, marginBottom: 8 }}>{error}</div>}
+        {data && activeMode === 'piece' && (
+          <div>
+            {!data.found ? (
+              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Piece not found.</div>
+            ) : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 12 }}>
+                  <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Inventory state</div>
+                    {st && (
+                      <>
+                        <StateChip state={st.state} />
+                        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-2)' }}>Scan: <code style={{ fontFamily: 'monospace' }}>{st.scan_code}</code></div>
+                        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Updated: {(st.updated_at || '—').slice(0, 16).replace('T', ' ')}</div>
+                      </>
+                    )}
+                  </div>
+                  <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Location</div>
+                    {loc ? (
+                      <>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{loc.current_location || '—'}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-2)' }}>Status: {loc.current_status || '—'}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Updated: {(loc.updated_at || '—').slice(0, 16).replace('T', ' ')}</div>
+                      </>
+                    ) : <div style={{ fontSize: 11, color: 'var(--text-3)' }}>No warehouse location recorded.</div>}
+                  </div>
+                </div>
+                {data.timeline && data.timeline.length > 0 && (
+                  <details>
+                    <summary style={{ fontSize: 12, color: 'var(--text-2)', cursor: 'pointer' }}>Timeline ({data.timeline.length} events) ▸</summary>
+                    <div style={{ marginTop: 8, fontSize: 11 }}>
+                      {data.timeline.slice(0, 50).map((ev, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                          <span style={{ color: 'var(--text-3)', fontFamily: 'monospace', minWidth: 130 }}>{(ev.occurred_at || '').slice(0, 16).replace('T', ' ')}</span>
+                          <span style={{ color: 'var(--badge-blue-text)', minWidth: 70 }}>{ev.kind}</span>
+                          <span style={{ color: 'var(--text)' }}>{ev.summary}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        {data && activeMode === 'scan' && (
+          <div>
+            {!cur && !data.packing_line ? (
+              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Scan code not found in warehouse records.</div>
+            ) : (
+              <>
+                {cur && (
+                  <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Current location</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{cur.current_location || '—'}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>Status: {cur.current_status} · Design: {cur.design_no} · Batch: {cur.batch_id}</div>
+                  </div>
+                )}
+                {data.packing_line && <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 8 }}>⚠ {data.note || 'In packing — not yet scanned.'}</div>}
+                {data.history && data.history.length > 0 && (
+                  <details>
+                    <summary style={{ fontSize: 12, color: 'var(--text-2)', cursor: 'pointer' }}>Movement history ({data.history.length}) ▸</summary>
+                    <div style={{ marginTop: 8, fontSize: 11 }}>
+                      {data.history.map((h, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                          <span style={{ color: 'var(--text-3)', fontFamily: 'monospace', minWidth: 130 }}>{(h.event_time || '').slice(0, 16).replace('T', ' ')}</span>
+                          <span style={{ color: 'var(--badge-blue-text)', minWidth: 70 }}>{h.action}</span>
+                          <span style={{ color: 'var(--text)' }}>{h.from_location ? `${h.from_location} → ` : ''}{h.to_location}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        <div style={{ marginTop: 12, fontSize: 10, color: 'var(--text-3)' }}>Read-only. No write calls are made from this panel.</div>
+      </InvPanel>
+    );
+  }
+
+  // ── Location browser — auto-fetches on mount ────────────────────────────────
+
+  function LocationPanel() {
+    const [locations, setLocations]     = useState(null);
+    const [locLoading, setLocLoading]   = useState(true);
+    const [locError, setLocError]       = useState(null);
+    const [selectedCode, setSelectedCode] = useState('');
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [detail, setDetail]           = useState(null);
+    const [detailError, setDetailError] = useState(null);
+
+    const loadLocations = useCallback(async () => {
+      setLocLoading(true); setLocError(null);
+      try { setLocations(await apiFetch('/api/v1/warehouse/locations')); }
+      catch (e) { setLocError((e && e.message) || String(e)); }
+      finally { setLocLoading(false); }
+    }, []);
+
+    useEffect(() => { loadLocations(); }, [loadLocations]);
+
+    const loadDetail = useCallback(async (code) => {
+      if (!code) return;
+      setDetailLoading(true); setDetail(null); setDetailError(null);
+      try { setDetail(await apiFetch(`/api/v1/warehouse/locations/${encodeURIComponent(code)}/inventory`)); }
+      catch (e) { setDetailError((e && e.message) || String(e)); }
+      finally { setDetailLoading(false); }
+    }, []);
+
+    return (
+      <InvPanel title="Location browser" subtitle="Warehouse locations — auto-loaded; click a location to see its inventory" testid="panel-locations">
+        {locLoading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading locations…</div>}
+        {locError && <div style={{ fontSize: 12, color: 'var(--badge-red-text)' }}>{locError}</div>}
+        {locations && (
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
+            {(locations.locations || []).map(loc => (
+              <button key={loc.location_code} onClick={() => { setSelectedCode(loc.location_code); loadDetail(loc.location_code); }}
+                data-testid={`btn-location-${loc.location_code}`}
+                style={{
+                  padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: selectedCode === loc.location_code ? 700 : 400,
+                  border: `1px solid ${selectedCode === loc.location_code ? 'var(--accent)' : 'var(--border)'}`,
+                  background: selectedCode === loc.location_code ? 'var(--accent-subtle)' : 'var(--card)',
+                  color: selectedCode === loc.location_code ? 'var(--accent-text)' : 'var(--text-2)',
+                  cursor: 'pointer',
+                }}>
+                {loc.location_code}
+                {loc.location_type && <span style={{ marginLeft: 4, fontSize: 10, color: 'var(--text-3)' }}>({loc.location_type})</span>}
               </button>
-            );
-          })}
+            ))}
+            {(!locations.locations || locations.locations.length === 0) && <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No locations configured.</span>}
+          </div>
+        )}
+        {detailLoading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading inventory for {selectedCode}…</div>}
+        {detailError && <div style={{ fontSize: 12, color: 'var(--badge-red-text)' }}>{detailError}</div>}
+        {detail && (
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', marginBottom: 8 }}>
+              {detail.location_code} · {detail.count} item{detail.count !== 1 ? 's' : ''}
+            </div>
+            {detail.count === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Location is empty.</div>
+            ) : (
+              <div style={{ overflowX: 'auto', maxHeight: 240, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                      {['Scan code', 'Status', 'Design', 'Bag'].map(h => (
+                        <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(detail.items || []).map((it, i) => (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                        <td style={{ padding: '5px 10px', fontFamily: 'monospace', fontSize: 11 }}>{it.scan_code}</td>
+                        <td style={{ padding: '5px 10px' }}><span style={{ fontSize: 11, color: 'var(--text-2)' }}>{it.current_status}</span></td>
+                        <td style={{ padding: '5px 10px', color: 'var(--text-2)' }}>{it.design_no || '—'}</td>
+                        <td style={{ padding: '5px 10px', color: 'var(--text-3)' }}>{it.bag_id || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+        <div style={{ marginTop: 12, fontSize: 10, color: 'var(--text-3)' }}>Read-only. No write calls are made from this panel.</div>
+      </InvPanel>
+    );
+  }
+
+  // ── Warehouse audit panel ───────────────────────────────────────────────────
+
+  function AuditPanel() {
+    const [batchId, setBatchId]       = useState('');
+    const [activeMode, setActiveMode] = useState('');
+    const [loading, setLoading]       = useState(false);
+    const [data, setData]             = useState(null);
+    const [error, setError]           = useState(null);
+
+    const fetchSummary = useCallback(async () => {
+      if (!batchId.trim()) return;
+      setActiveMode('summary'); setLoading(true); setData(null); setError(null);
+      try { setData(await apiFetch(`/api/v1/warehouse/audit-summary/${encodeURIComponent(batchId.trim())}`)); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, [batchId]);
+
+    const fetchFull = useCallback(async () => {
+      if (!batchId.trim()) return;
+      setActiveMode('full'); setLoading(true); setData(null); setError(null);
+      try { setData(await apiFetch(`/api/v1/warehouse/audit/${encodeURIComponent(batchId.trim())}`)); }
+      catch (e) { setError((e && e.message) || String(e)); }
+      finally { setLoading(false); }
+    }, [batchId]);
+
+    const pct     = data && (data.completion_pct || (data.summary && data.summary.completion_pct));
+    const total   = data && (data.total_items || (data.summary && data.summary.total_items));
+    const scanned = data && (data.scanned_items || (data.summary && data.summary.scanned_items));
+
+    return (
+      <InvPanel title="Warehouse audit" subtitle="Scan completion and anomaly detection for a batch" testid="panel-audit">
+        <InvLabel>Batch ID</InvLabel>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+          <div style={{ flex: 1 }}><InvInput value={batchId} onChange={setBatchId} placeholder="e.g. SHIPMENT_…" data-testid="input-audit-batch-id" /></div>
+          <InvFetchBtn onClick={fetchSummary} loading={loading && activeMode === 'summary'} label="Summary" disabled={!batchId.trim()} data-testid="btn-audit-summary" />
+          <InvFetchBtn onClick={fetchFull}    loading={loading && activeMode === 'full'}    label="Full audit" disabled={!batchId.trim()} data-testid="btn-audit-full" />
+        </div>
+        {error && <div style={{ color: 'var(--badge-red-text)', fontSize: 12 }}>{error}</div>}
+        {data && pct != null && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+              <div style={{ flex: 1, height: 8, background: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{ width: `${Math.min(100, pct)}%`, height: '100%', background: pct >= 100 ? 'var(--ok-green)' : pct >= 80 ? 'var(--badge-amber-text)' : 'var(--badge-red-text)', borderRadius: 4, transition: 'width 0.4s' }} />
+              </div>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', minWidth: 44 }}>{pct != null ? pct.toFixed(1) : '—'}%</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{scanned} scanned · {total} total · {data.missing_items || (data.summary && data.summary.missing_items) || 0} missing</div>
+          </div>
+        )}
+        {data && activeMode === 'full' && (
+          <div style={{ fontSize: 12 }}>
+            {data.missing_scans && data.missing_scans.length > 0 && <div style={{ color: 'var(--badge-amber-text)', marginBottom: 4 }}>⚠ {data.missing_scans.length} unscanned item(s)</div>}
+            {data.stuck_inventory && data.stuck_inventory.length > 0 && <div style={{ color: 'var(--badge-amber-text)', marginBottom: 4 }}>⚠ {data.stuck_inventory.length} stuck at RECV location(s)</div>}
+            {data.invalid_flows && data.invalid_flows.length > 0 && <div style={{ color: 'var(--badge-red-text)', marginBottom: 4 }}>✗ {data.invalid_flows.length} invalid scan flow(s)</div>}
+            {data.orphan_inventory && data.orphan_inventory.length > 0 && <div style={{ color: 'var(--badge-red-text)', marginBottom: 4 }}>✗ {data.orphan_inventory.length} orphan inventory record(s)</div>}
+            {data.missing_scans && data.stuck_inventory && data.invalid_flows && data.orphan_inventory &&
+              data.missing_scans.length === 0 && data.stuck_inventory.length === 0 && data.invalid_flows.length === 0 && data.orphan_inventory.length === 0 &&
+              <div style={{ color: 'var(--ok-green)', fontWeight: 600 }}>✓ No anomalies detected.</div>}
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: 'pointer', color: 'var(--text-2)' }}>Show raw JSON ▸</summary>
+              <ResultBox data={data} error={null} />
+            </details>
+          </div>
+        )}
+        <div style={{ marginTop: 12, fontSize: 10, color: 'var(--text-3)' }}>Read-only. No write calls are made from this panel.</div>
+      </InvPanel>
+    );
+  }
+
+  // ── InventoryPage — shell entry point ───────────────────────────────────────
+
+  function InventoryPage({ openViewer }) {  // openViewer accepted; inventory is read-only so unused
+    // Title + subtitle are provided by the shell <PageHeader> (index.html inventory route).
+    // This component renders the read-only panel body only — no duplicate title block.
+    return (
+      <div style={{ maxWidth: 980, margin: '0 auto', padding: '28px 24px' }} data-testid="inventory-hub-root">
+        <Stage2Panel />
+        <BatchPanel />
+        <PiecePanel />
+        <LocationPanel />
+        <AuditPanel />
+
+        <div style={{ marginTop: 8, padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+          <strong style={{ color: 'var(--text-2)' }}>Read-only endpoints:</strong>{' '}
+          /inventory/stage2/aggregate &middot; /inventory/state/&#123;batch_id&#125; &middot;
+          /inventory/pieces/&#123;piece_id&#125; &middot; /warehouse/inventory/&#123;scan_code&#125; &middot;
+          /warehouse/locations &middot; /warehouse/locations/&#123;code&#125;/inventory &middot;
+          /warehouse/audit-summary/&#123;batch_id&#125; &middot; /warehouse/audit/&#123;batch_id&#125;
         </div>
       </div>
+    );
+  }
 
-      {/* Route preview */}
-      <div style={{ padding: '12px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 18 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>Will be routed to</div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
-          Inventory › {selected?.label} → <span style={{ color: 'var(--accent)' }}>{selected?.route === 'tempPurchase' ? 'Temp Purchase' : selected?.route === 'tempWarehouse' ? 'Temp Warehouse' : selected?.route === 'sampleOut' ? 'Sample Out' : selected?.route === 'sampleReturn' ? 'Sample Return' : selected?.route === 'clientReturn' ? 'Goods Return from Client' : selected?.route === 'producerReturn' ? 'Return to Producer' : selected?.route === 'consignment' ? 'Consignment' : selected?.route === 'finalStock' ? 'Final Stock' : 'Overview'}</span>
-        </div>
-      </div>
+  window.InventoryPage = InventoryPage;
+})();
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-        <window.Btn variant="outline" onClick={onClose}>Cancel</window.Btn>
-        <window.Btn variant="gold" onClick={() => onRoute(selected?.route || 'overview')}>Upload &amp; route</window.Btn>
-      </div>
-    </window.Modal>
-  );
-}
-
-Object.assign(window, { InventoryPage, DocumentViewerPage });
+window.DocumentViewerPage = DocumentViewerPage;

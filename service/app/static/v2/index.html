@@ -527,19 +527,12 @@ function App() {
             </>
           )}
 
-          {/* Inventory — two-stage architecture */}
+          {/* Inventory — read-only live hub (Sprint 30). No shell-level write actions:
+              the hub is read-only, so Upload/Move-Stock/Cycle-count/Export buttons
+              were removed (they dispatched events the live component does not handle). */}
           {!viewerDoc && page === 'inventory' && (
             <>
-              <PageHeader title="Inventory" subtitle="Two-stage inventory — Stage 1 (Temp Purchase / Warehouse / Sale) · Stage 2 (Final Stock, Samples, Returns)"
-                actions={
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <Btn variant="outline" small onClick={() => window.dispatchEvent(new CustomEvent('inv:upload'))}>↑ Upload Document</Btn>
-                    <Btn variant="outline" small onClick={() => window.dispatchEvent(new CustomEvent('inv:move'))}>⇄ Move Stock</Btn>
-                    <Btn variant="outline" small>Cycle count</Btn>
-                    <Btn variant="outline" small>↓ Export</Btn>
-                  </div>
-                }
-              />
+              <PageHeader title="Inventory" subtitle="Read-only inventory hub — live Stage 2 counts, batch / piece / location lookups, and warehouse audit. No write actions." />
               <SubTabStrip active={page} onNav={handleNav} />
               <InventoryPage openViewer={openViewer} />
             </>
