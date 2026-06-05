@@ -16,7 +16,7 @@ Asserts (static source-grep; no server required):
   C. NAV_ROUTES and STUB_ROUTES in pz-design-v2.js (7–9)
      7. pz-design-v2.js routes inbox to /dashboard/inbox-v2.html.
      8. 'inbox' is NOT in STUB_ROUTES (sidebar link is live).
-     9. 'accounting' and 'inventory' remain in STUB_ROUTES.
+     9. 'inventory' remains in STUB_ROUTES ('accounting' promoted in Sprint 28).
 
   D. Preserved boundaries (10–12)
     10. wfirma-inbox-v2.html still exists (separate wFirma recovery domain).
@@ -108,12 +108,12 @@ def test_inbox_not_in_stub_routes():
     )
 
 
-def test_accounting_and_inventory_remain_in_stub_routes():
+def test_inventory_remains_in_stub_routes():
+    # 'accounting' was promoted in Sprint 28 (accounting-hub-v2.html now live).
+    # Only 'inventory' should remain as a stub.
     src = _read("pz-design-v2.js")
     stub_idx = src.index("STUB_ROUTES")
-    stub_block = src[stub_idx:stub_idx + 120]
-    assert "'accounting'" in stub_block, \
-        "'accounting' must remain in STUB_ROUTES (page not yet built)"
+    stub_block = src[stub_idx:stub_idx + 100]
     assert "'inventory'" in stub_block, \
         "'inventory' must remain in STUB_ROUTES (page not yet built)"
 

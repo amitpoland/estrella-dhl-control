@@ -111,7 +111,7 @@
   // Nav-route IDs whose target pages are not yet built.
   // Clicking these shows a disabled state — no 404, no navigation.
   // Remove an id from this set when its page is deployed.
-  const STUB_ROUTES = new Set(['accounting', 'inventory']);
+  const STUB_ROUTES = new Set(['inventory']);
 
   const NAV_INDEX = (() => {
     const idx = {};
