@@ -3256,6 +3256,44 @@ Direct SQL `UPDATE customer_master SET preferred_invoice_series_id=?, updated_at
 
 ---
 
+## PR #462 — Sprint 30: Inventory V2 Shell Wiring (2026-06-05, OPEN)
+
+**Date**: 2026-06-05
+**PR #462** — `feat(sprint30): wire Inventory V2 live hub into V2 shell`
+**Branch**: `feat/sprint30-inventory-v2-shell-wiring`
+**SHA**: `52022a0`
+
+**Diff scope (frontend-only, no backend changes)**:
+- `service/app/static/v2/inventory-page.jsx` — full replacement: Sprint 1 MOCK prototype (1226 lines, zero real API calls) → live read-only Inventory Hub (5 panels, 8 real endpoints). All components extracted from `inventory-v2.html` (Sprint 29). `DocumentViewerPage` preserved (shell-global).
+- `service/app/static/v2/mock-badge.jsx` — add `'inventory'` to `WIRED_PAGES` array (MOCK banner suppressed for inventory page)
+- `service/tests/test_sprint30_inventory_shell_wiring.py` — 15 new source-grep regression tests
+
+**Live endpoints (all read-only)**:
+- `GET /api/v1/inventory/stage2/aggregate` — Stage2Panel (auto-load)
+- `GET /api/v1/inventory/state/{batch_id}` — BatchPanel
+- `GET /api/v1/inventory/pieces/{piece_id}` — PiecePanel
+- `GET /api/v1/warehouse/inventory/{scan_code}` — PiecePanel scan lookup
+- `GET /api/v1/warehouse/locations` — LocationPanel (auto-load)
+- `GET /api/v1/warehouse/locations/{code}/inventory` — LocationPanel detail
+- `GET /api/v1/warehouse/audit-summary/{batch_id}` — AuditPanel
+- `GET /api/v1/warehouse/audit/{batch_id}` — AuditPanel full
+
+**Test results**: 15/15 Sprint 30 tests PASS. Full suite: frontend-only change, no backend regression possible.
+
+**WIRED_PAGES after Sprint 30**: `['proforma', 'proforma_detail', 'inbox', 'inventory']`
+
+**Uses**: `window.EstrellaShared.apiFetch` (same auth-aware shim as all V2 pages). No write calls anywhere in the IIFE.
+
+**GATE 2**: 1/3 open PRs (PR #462). Prerequisite: PR #461 already merged.
+
+**Sprint 29 standalone preserved**: `service/app/static/inventory-v2.html` untouched.
+
+**Deploy plan (post-merge)**: Static-only. `Copy-Item service\app\static\v2\inventory-page.jsx C:\PZ\app\static\v2\` + `Copy-Item service\app\static\v2\mock-badge.jsx C:\PZ\app\static\v2\`. No backend restart required. No engine files.
+
+**Rollback**: `git revert 52022a0 --no-edit` + copy old files from backup.
+
+---
+
 # DECISIONS
 
 ## wFirma Push Layer Implementation Decisions (2026-05-24)
