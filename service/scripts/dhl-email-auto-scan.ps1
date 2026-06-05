@@ -34,7 +34,7 @@ $LaneAEndpoint = "$ApiBase/api/v1/dhl/scheduled-inbox-check"
 $EnvFile       = "C:\PZ\.env"
 $LogDir        = "C:\PZ\logs"
 $LogFile       = "$LogDir\dhl-auto-scan.log"
-$TimeoutSec    = 120
+$TimeoutSec    = 300    # 5 min — ingestion cycle scans 25+ active batches via Zoho API
 
 function Write-Log {
     param([string]$Msg, [string]$Level = "INFO")
